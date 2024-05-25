@@ -1,0 +1,23 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format2.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="2">
+        <name>lio</name>
+        <version>0.1.0</version>
+        <description>Simple LiDAR Odometry.</description>
+        <maintainer email="csieh@uos.de">Christopher Sieh</maintainer>
+        <license>MIT</license>
+        <author>Christopher Sieh</author>
+
+        <buildtool_depend>ament_cmake</buildtool_depend>
+
+        <exec_depend>ros2launch</exec_depend>
+
+        <depend>cloudfilter_msgs</depend>
+        <depend>std_msgs</depend>
+        <depend>rcl</depend>
+
+        <build_export_depend>sensor_msgs</build_export_depend>
+        <export>
+                <build_type>ament_cmake</build_type>
+        </export>
+</package>
