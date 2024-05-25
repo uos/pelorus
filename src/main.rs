@@ -1,3 +1,9 @@
+#![allow(non_upper_case_globals)]
+#![allow(non_camel_case_types)]
+#![allow(non_snake_case)]
+
+include!(concat!(env!("OUT_DIR"), "/bindings.rs"));
+
 use futures::executor::LocalPool;
 use futures::task::LocalSpawnExt;
 use futures::{future, StreamExt};
@@ -28,7 +34,7 @@ impl State {
         }
     }
 }
-
+/*
 fn polygon_callback(
     logger: &str,
     state: Arc<Mutex<State>>,
@@ -387,10 +393,11 @@ fn cloud_callback(
         log_info!(logger, "Filtering: {:?}", end_filter - start_filter);
         log_info!(logger, "Callback: {:?}", end_callback - start_callback);
     }
-}
+}*/
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    /*
     let config = Arc::new(Mutex::new(config::ConfigParse::default()));
     let ctx = r2r::Context::create()?;
     let mut node = r2r::Node::create(ctx, "cloudfilter", "")?;
@@ -540,4 +547,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         node.spin_once(std::time::Duration::from_millis(100)); // 100ms timeout
         pool.run_until_stalled();
     }
+    */
+    Ok(())
 }
