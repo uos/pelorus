@@ -1,46 +1,67 @@
 extern crate bindgen;
+extern crate pkg_config;
 
 use std::env;
 
 use std::path::PathBuf;
 
 fn main() {
-    println!("cargo:rerun-if-changed=icp.cpp");
+    println!("cargo:rerun-if-changed=icp/src/icp.cpp");
+    println!("cargo:rerun-if-changed=icp/include/icp.hpp");
+
+    let eigen = match pkg_config::Config::new().probe("eigen3") {
+        Ok(lib) => lib,
+        Err(_) => panic!("Eigen3 not found"),
+    };
+
+    let tbb = match pkg_config::Config::new().probe("tbb") {
+        Ok(lib) => lib,
+        Err(_) => panic!("TBB not found"),
+    };
 
     let bindings = bindgen::Builder::default()
         .header("wrapper.hpp")
-        .parse_callbacks(Box::new(bindgen::CargoCallbacks::new()))
+        .parse_callbacks(Box::new(bindgen::CargoCallbacks))
         .generate()
         .expect("Unable to generate bindings");
 
-        let out_path = PathBuf::from(env::var("OUT_DIR").unwrap());
-        bindings
-            .write_to_file(out_path.join("bindings.rs"))
-            .expect("Couldn't write bindings!");
+    let out_path = PathBuf::from(env::var("OUT_DIR").unwrap());
+    bindings
+        .write_to_file(out_path.join("bindings.rs"))
+        .expect("Couldn't write bindings!");
 
-        let eigen_include_dir = "/usr/include/eigen3";
-    
-        cc::Build::new()
-            .cuda(true)
-            .cpp_link_stdlib("stdc++")
-            .files(["icp.cpp"])
-            .include(eigen_include_dir)
-            .flag_if_supported("-O3")
-            .compile("cupcl");
-    
-        println!("cargo:rustc-link-lib=cupcl");
-    
-        if cfg!(target_arch = "aarch64") {
-            println!("cargo:rustc-link-search=native=/usr/local/cuda/targets/aarch64-linux/lib");
-        } else {
-            println!("cargo:rustc-link-search=native=/usr/local/cuda/lib64");
-        }
-        println!("cargo:rustc-link-lib=cudart");
-    
-        println!("cargo:rustc-link-lib=stdc++");
-    
-        println!("cargo:rustc-link-search=native=/usr/local/lib");
-        println!("cargo:rustc-link-lib=cudacluster");
-        println!("cargo:rustc-link-lib=cudafilter");
+    let mut build = cc::Build::new();
 
+    build.include("icp/include");
+    build.include("icp/small_gicp/include");
+
+    for path in eigen.include_paths {
+        build.include(path);
+    }
+
+    for lib in eigen.libs {
+        build.flag(&format!("-l{}", lib));
+    }
+
+    for path in tbb.include_paths {
+        build.include(path);
+    }
+
+    for lib in tbb.libs {
+        build.flag(&format!("-l{}", lib));
+    }
+
+    build.warnings(false); // there are countless warnings in small_gicp
+
+    build.cpp(true);
+    build.file("icp/src/icp.cpp");
+    build.flag_if_supported("-std=c++17");
+    build.flag_if_supported("-O3");
+    build.compile("lio_icp");
+
+    println!("cargo:rustc-link-lib=static=lio_icp");
+    println!(
+        "cargo:rustc-link-search=native={}",
+        std::env::var("OUT_DIR").unwrap()
+    );
 }
