@@ -12,29 +12,52 @@ struct Map {
 }
 
 impl Map {
-    fn new() -> Self {
+    fn new(voxel_size: f64) -> Self {
         Map {
-            c_map: unsafe { init_map() },
+            c_map: unsafe { init_map(voxel_size) },
         }
     }
 
     /// Assuming PointCloud2 to be in XYZ format, so can copy directly to C++.
     /// Data gets copied on C++ side, so no need to worry about lifetimes.
-    fn add(&mut self, cloud: &PointCloud2) {
+    fn add(&mut self, cloud: &PointCloud2, pose: Option<nalgebra::Isometry3<f64>>) {
         unsafe {
-            // TODO should also have the pose with it, somehow not showing
-            add_to_map(
-                self.c_map,
-                cloud.data.as_ptr() as *mut std::os::raw::c_void,
-                cloud.width as i32,
-            );
-        }
+            match pose {
+                Some(pose) => {
+                    let translation = vec![
+                        pose.translation.vector.x,
+                        pose.translation.vector.y,
+                        pose.translation.vector.z,
+                    ];
+                    let rotation = vec![
+                        pose.rotation.quaternion().i,
+                        pose.rotation.quaternion().j,
+                        pose.rotation.quaternion().k,
+                        pose.rotation.quaternion().w,
+                    ];
+                    add_to_map(
+                        self.c_map,
+                        cloud.data.as_ptr() as *mut std::os::raw::c_void,
+                        cloud.width as i32,
+                        translation.as_ptr() as *mut f64,
+                        rotation.as_ptr() as *mut f64,
+                    )
+                }
+                None => add_to_map(
+                    self.c_map,
+                    cloud.data.as_ptr() as *mut std::os::raw::c_void,
+                    cloud.width as i32,
+                    std::ptr::null_mut(),
+                    std::ptr::null_mut(),
+                ),
+            }
+        };
     }
 
     fn register(&mut self, cloud: &PointCloud2) -> nalgebra::Isometry3<f64> {
+        let translation = vec![0.0; 3];
+        let rotation = vec![0.0; 4];
         let res = unsafe {
-            let translation = vec![0.0; 3];
-            let rotation = vec![0.0; 4];
             align(
                 self.c_map,
                 cloud.data.as_ptr() as *mut std::os::raw::c_void,
@@ -77,11 +100,11 @@ fn transform_cloud(cloud: PointCloud2, pose: &nalgebra::Isometry3<f64>) -> Point
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let ctx = r2r::Context::create()?;
-    let mut node = r2r::Node::create(ctx, "lifis", "")?;
+    let mut node = r2r::Node::create(ctx, "lio", "")?;
 
     let mut lifis_node = lifis_ros::LifisNode::create(lifis_ros::LifisNodeParameters {
         node_name: "lifis",
-        cloud_src_topic: "pointcloud",
+        cloud_src_topic: "cloud",
         imu_src_topic: "imu",
         ..Default::default()
     })
@@ -91,7 +114,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         node.create_publisher::<PointCloud2>("registered", r2r::QosProfile::default())?;
     let odom_publisher = node.create_publisher::<Odometry>("odom", r2r::QosProfile::default())?;
 
-    let mut map = Map::new();
+    let voxel_size = 0.15;
+    let mut map = Map::new(voxel_size);
 
     #[cfg(debug_assertions)]
     r2r::log_warn!("lifis", "Running in dev mode.");
@@ -101,7 +125,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         match lifis_node.tick().await {
             Ok(Some((cloud, mut odom))) => {
                 let pose = map.register(&cloud);
-                map.add(&cloud); // TODO pose where?
+                map.add(&cloud, Some(pose)); // TODO use result of robot_localization for this pose
 
                 let cloud = transform_cloud(cloud, &pose);
 
