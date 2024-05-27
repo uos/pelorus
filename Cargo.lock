@@ -496,13 +496,29 @@ checksum = "4ec2a862134d2a7d32d7983ddcdd1c4923530833c9f2ea1a44fc5fa473989058"
 [[package]]
 name = "lifis"
 version = "0.1.0"
+source = "git+ssh://git@gitlab.informatik.uni-osnabrueck.de/csieh/lifis.git?branch=main#791c80cd93fe821352ad1466cbd618d622848c4f"
 dependencies = [
  "anyhow",
  "dashmap",
- "nalgebra 0.32.5",
+ "nalgebra",
  "rayon",
  "ros_pointcloud2",
  "sophus_lie",
+ "tokio",
+]
+
+[[package]]
+name = "lifis-ros"
+version = "0.1.0"
+source = "git+ssh://git@gitlab.informatik.uni-osnabrueck.de/csieh/lifis-ros.git?branch=lib#9ef70e9ed7cec951d39e8ec6c391ef3c1b9e688e"
+dependencies = [
+ "anyhow",
+ "futures",
+ "lifis",
+ "nalgebra",
+ "r2r",
+ "ros_pointcloud2",
+ "thiserror",
  "tokio",
 ]
 
@@ -519,12 +535,10 @@ dependencies = [
  "bindgen 0.65.1",
  "cc",
  "futures",
- "lifis",
- "nalgebra 0.32.5",
+ "lifis-ros",
  "pkg-config",
- "r2r 0.8.4",
+ "r2r",
  "ros_pointcloud2",
- "tf_r2r",
  "tokio",
 ]
 
@@ -597,47 +611,20 @@ dependencies = [
 
 [[package]]
 name = "nalgebra"
-version = "0.30.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4fb2d0de08694bed883320212c18ee3008576bfe8c306f4c3c4a58b4876998be"
-dependencies = [
- "approx",
- "matrixmultiply",
- "nalgebra-macros 0.1.0",
- "num-complex",
- "num-rational",
- "num-traits",
- "simba 0.7.3",
- "typenum",
-]
-
-[[package]]
-name = "nalgebra"
 version = "0.32.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3ea4908d4f23254adda3daa60ffef0f1ac7b8c3e9a864cf3cc154b251908a2ef"
 dependencies = [
  "approx",
  "matrixmultiply",
- "nalgebra-macros 0.2.1",
+ "nalgebra-macros",
  "num-complex",
  "num-rational",
  "num-traits",
  "rand",
  "rand_distr",
- "simba 0.8.1",
+ "simba",
  "typenum",
-]
-
-[[package]]
-name = "nalgebra-macros"
-version = "0.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "01fcc0b8149b4632adc89ac3b7b31a12fb6099a0317a4eb2ebff574ef7de7218"
-dependencies = [
- "proc-macro2",
- "quote",
- "syn 1.0.109",
 ]
 
 [[package]]
@@ -878,33 +865,6 @@ dependencies = [
 
 [[package]]
 name = "r2r"
-version = "0.8.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ae1e4289daf2e18cb68bbeec3ea7c71a9bacd23794aeee6c9aa95c7b18cb0dc1"
-dependencies = [
- "force-send-sync",
- "futures",
- "lazy_static",
- "log",
- "phf",
- "prettyplease",
- "proc-macro2",
- "quote",
- "r2r_actions 0.8.4",
- "r2r_common 0.8.4",
- "r2r_macros 0.8.4",
- "r2r_msg_gen 0.8.4",
- "r2r_rcl 0.8.4",
- "rayon",
- "serde",
- "serde_json",
- "syn 2.0.66",
- "thiserror",
- "uuid",
-]
-
-[[package]]
-name = "r2r"
 version = "0.9.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d333c7056fd130eb66736f0d622011bd7734bd7b6cae216428f0da7bd30925a0"
@@ -918,11 +878,11 @@ dependencies = [
  "prettyplease",
  "proc-macro2",
  "quote",
- "r2r_actions 0.9.0",
- "r2r_common 0.9.0",
- "r2r_macros 0.9.0",
- "r2r_msg_gen 0.9.0",
- "r2r_rcl 0.9.0",
+ "r2r_actions",
+ "r2r_common",
+ "r2r_macros",
+ "r2r_msg_gen",
+ "r2r_rcl",
  "rayon",
  "serde",
  "serde_json",
@@ -933,38 +893,14 @@ dependencies = [
 
 [[package]]
 name = "r2r_actions"
-version = "0.8.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b659b32555f18cc92702e2eeb4e91579e4788842aace0de0cc35f0d1c84ed7d4"
-dependencies = [
- "bindgen 0.63.0",
- "r2r_common 0.8.4",
- "r2r_msg_gen 0.8.4",
- "r2r_rcl 0.8.4",
-]
-
-[[package]]
-name = "r2r_actions"
 version = "0.9.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0492637220592e316a0708212f0106827215e5768f563b4251993bcec96d40e2"
 dependencies = [
  "bindgen 0.63.0",
- "r2r_common 0.9.0",
- "r2r_msg_gen 0.9.0",
- "r2r_rcl 0.9.0",
-]
-
-[[package]]
-name = "r2r_common"
-version = "0.8.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4d2d5516f98db41f1abfb3f3caa6d6d91d5e1f49303ddb26e67db344f957459b"
-dependencies = [
- "bindgen 0.63.0",
- "os_str_bytes",
- "regex",
- "sha2",
+ "r2r_common",
+ "r2r_msg_gen",
+ "r2r_rcl",
 ]
 
 [[package]]
@@ -981,41 +917,12 @@ dependencies = [
 
 [[package]]
 name = "r2r_macros"
-version = "0.8.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4ff387d2de1cbd1c8462670c3ccc401841982aecef0419237b47c3bac592403f"
-dependencies = [
- "proc-macro2",
- "quote",
- "syn 2.0.66",
-]
-
-[[package]]
-name = "r2r_macros"
 version = "0.9.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7b87edf202755674fb9688a99cdd579547cd284e77150a7ed4467f2d255a8796"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn 2.0.66",
-]
-
-[[package]]
-name = "r2r_msg_gen"
-version = "0.8.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "251a8d0faa8b10bb244cb98d0af22e27760e59de273d4c7828b94e8ef16d6536"
-dependencies = [
- "bindgen 0.63.0",
- "force-send-sync",
- "itertools",
- "phf",
- "proc-macro2",
- "quote",
- "r2r_common 0.8.4",
- "r2r_rcl 0.8.4",
- "rayon",
  "syn 2.0.66",
 ]
 
@@ -1031,22 +938,10 @@ dependencies = [
  "phf",
  "proc-macro2",
  "quote",
- "r2r_common 0.9.0",
- "r2r_rcl 0.9.0",
+ "r2r_common",
+ "r2r_rcl",
  "rayon",
  "syn 2.0.66",
-]
-
-[[package]]
-name = "r2r_rcl"
-version = "0.8.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a773fd2ff11ebb9dcf1aaae083c7388f603d401fba0bb544a889a1a4ddbd858c"
-dependencies = [
- "bindgen 0.63.0",
- "paste",
- "r2r_common 0.8.4",
- "widestring",
 ]
 
 [[package]]
@@ -1057,7 +952,7 @@ checksum = "a6daf71bab8daf11941083b14f404dcfdfb67b05a51ee32b32b9f50a30749f01"
 dependencies = [
  "bindgen 0.63.0",
  "paste",
- "r2r_common 0.9.0",
+ "r2r_common",
  "widestring",
 ]
 
@@ -1172,8 +1067,8 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "321b5c1df9bdb7a20bd4c3ada7a6b501cf4c4e95e574720c046552090f786ab3"
 dependencies = [
  "memoffset",
- "nalgebra 0.32.5",
- "r2r 0.9.0",
+ "nalgebra",
+ "r2r",
  "rayon",
  "rpcl2-derive",
 ]
@@ -1294,19 +1189,6 @@ dependencies = [
 
 [[package]]
 name = "simba"
-version = "0.7.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2f3fd720c48c53cace224ae62bef1bbff363a70c68c4802a78b5cc6159618176"
-dependencies = [
- "approx",
- "num-complex",
- "num-traits",
- "paste",
- "wide",
-]
-
-[[package]]
-name = "simba"
 version = "0.8.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "061507c94fc6ab4ba1c9a0305018408e312e17c041eb63bef8aa726fa33aceae"
@@ -1367,7 +1249,7 @@ dependencies = [
  "approx",
  "assertables",
  "concat-arrays",
- "nalgebra 0.32.5",
+ "nalgebra",
  "ndarray",
  "num-traits",
  "sleef",
@@ -1382,7 +1264,7 @@ checksum = "0d378717af65f2c6bc23feaf58a709f3bae1d54f231359d82aa7542db2d3833e"
 dependencies = [
  "approx",
  "assertables",
- "nalgebra 0.32.5",
+ "nalgebra",
  "num-traits",
  "sophus_core",
 ]
@@ -1407,19 +1289,6 @@ dependencies = [
  "proc-macro2",
  "quote",
  "unicode-ident",
-]
-
-[[package]]
-name = "tf_r2r"
-version = "0.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "95c42c3ebce919f8304a1c0a4f7bb716dd0b16c5c50d3dcfd60d7a2de723d781"
-dependencies = [
- "futures",
- "nalgebra 0.30.1",
- "r2r 0.8.4",
- "thiserror",
- "tokio",
 ]
 
 [[package]]
@@ -1672,3 +1541,11 @@ name = "windows_x86_64_msvc"
 version = "0.52.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "bec47e5bfd1bff0eeaf6d8b485cc1074891a197ab4225d504cb7a1ab88b02bf0"
+
+[[patch.unused]]
+name = "lifis"
+version = "0.1.0"
+
+[[patch.unused]]
+name = "r2r_minimal_node"
+version = "0.1.0"

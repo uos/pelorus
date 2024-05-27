@@ -1,0 +1,26 @@
+[package]
+name = "lio"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+ros_pointcloud2 = { version = "0.5.0-rc.3", features = [
+    "r2r_msg",
+    "nalgebra",
+    "rayon",
+] }
+r2r = "0.9"
+futures = "0.3"
+tokio = { version = "1", features = ["full"] }
+lifis-ros = { git = "ssh://git@gitlab.informatik.uni-osnabrueck.de/csieh/lifis-ros.git", branch = "lib" }
+nalgebra = "0.32"
+
+[build-dependencies]
+bindgen = "0"
+cc = "1"
+pkg-config = "0.3"
+
+[profile.release]
+lto = "fat"
+panic = "abort"
+strip = "debuginfo"
