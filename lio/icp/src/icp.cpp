@@ -24,7 +24,7 @@ void* init_map(double voxel_resolution) {
     return state;
 }
 
-void add_to_map(void* map, void* point_buffer, uint32_t num_points, double* global_translate, double* global_rotate) {
+void add_to_map(void* map, void* point_buffer, int num_points, double* global_translate, double* global_rotate) {
     State* state = static_cast<State*>(map);
     auto voxelmap = state->voxelmap;
 
@@ -40,7 +40,7 @@ void add_to_map(void* map, void* point_buffer, uint32_t num_points, double* glob
     
     PointCloud::Ptr cloud = std::make_shared<PointCloud>();
     cloud->resize(num_points);
-    for (uint32_t i = 0; i < num_points; i++) {
+    for (int i = 0; i < num_points; i++) {
         cloud->point(i) << points_ptr[i].template cast<double>().template head<3>(), 1.0;
     }
 
@@ -49,7 +49,7 @@ void add_to_map(void* map, void* point_buffer, uint32_t num_points, double* glob
 
 // translation: xyz
 // rotation: quaternion xyzw
-void align(void* map, void* point_buffer, uint32_t num_points, double* translation, double* rotation) {
+void align(void* map, void* point_buffer, int num_points, double* translation, double* rotation) {
     State* state = static_cast<State*>(map);
     auto voxelmap = state->voxelmap;
 
@@ -57,7 +57,7 @@ void align(void* map, void* point_buffer, uint32_t num_points, double* translati
 
     PointCloud::Ptr cloud = std::make_shared<PointCloud>();
     cloud->resize(num_points);
-    for (uint32_t i = 0; i < num_points; i++) {
+    for (int i = 0; i < num_points; i++) {
         cloud->point(i) << points_ptr[i].template cast<double>().template head<3>(), 1.0;
     }
 

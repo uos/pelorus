@@ -1,3 +1,3 @@
-[submodule "icp/small_gicp"]
-	path = icp/small_gicp
+[submodule "lio/icp/small_gicp"]
+	path = lio/icp/small_gicp
 	url = https://github.com/koide3/small_gicp
