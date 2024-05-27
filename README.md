@@ -1,23 +1,24 @@
 # lio - LiDAR Inertial Odometry
 
+A simple LiDAR Odometry using IMU data as inertial estimation for GICP on Gaussian Voxel Grids.
+
 ## Setup
 
 You need to have ROS2 Humble installed on your sytem. We assume an Ubuntu installation from here on.
 
-Install `Eigen3` and `TBB`.
+Dependencies
 ```shell
-sudo apt-get install libeigen3-dev libtbb-dev
-```
-
-And Rust if you do not have it already.
-```shell
+sudo apt-get install libeigen3-dev libtbb-dev libclang-dev
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+
+cargo install --debug cargo-ament-build
+pip install git+https://github.com/colcon/colcon-cargo.git
+pip install git+https://github.com/colcon/colcon-ros-cargo.git
 ```
 
-Clone the repository and build the project. We use nightly for interacting with a C library and SIMD acceleration, which is not stable yet.
+
 ```shell
-git clone --recurse-submodules git://gitlab.informatik.uni-osnabrueck.de/csieh/lio.git
-cd lio
-rustup override set nightly
-cargo build
+git clone --recurse-submodules git://gitlab.informatik.uni-osnabrueck.de/csieh/lio.git src/lio
+colcon build --clean-build --cargo-args --release
+ros2 launch src/lio/lio/launch/lio.py
 ```

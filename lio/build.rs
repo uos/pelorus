@@ -20,7 +20,7 @@ fn main() {
     };
 
     let bindings = bindgen::Builder::default()
-        .header("wrapper.hpp")
+        .header("icp/include/icp.hpp")
         .parse_callbacks(Box::new(bindgen::CargoCallbacks::new()))
         .generate()
         .expect("Unable to generate bindings");
@@ -51,17 +51,20 @@ fn main() {
         build.flag(&format!("-l{}", lib));
     }
 
-    build.warnings(false); // there are countless warnings in small_gicp
+    build
+        .warnings(false)
+        .file("icp/src/icp.cpp")
+        .file("icp/include/icp.hpp")
+        .cpp(true)
+        //.shared_flag(true)
+        //.opt_level(3)
+        .cpp_link_stdlib("stdc++")
+        .flag_if_supported("-std=c++17")
+        //.out_dir(out_path.clone())
+        .compile("lio_icp");
 
-    build.cpp(true);
-    build.file("icp/src/icp.cpp");
-    build.flag_if_supported("-std=c++17");
-    build.flag_if_supported("-O3");
-    build.compile("lio_icp");
-
+    println!("cargo:rustc-link-search=native={}", out_path.display());
     println!("cargo:rustc-link-lib=static=lio_icp");
-    println!(
-        "cargo:rustc-link-search=native={}",
-        std::env::var("OUT_DIR").unwrap()
-    );
+    println!("cargo:rustc-link-lib=stdc++");
+    println!("cargo:rustc-link-lib=tbb");
 }
