@@ -10,74 +10,88 @@
 #include <small_gicp/registration/reduction_tbb.hpp>
 #include <small_gicp/registration/registration.hpp>
 
+#include <iostream>
+
 using namespace small_gicp;
 
-typedef struct {
+typedef struct
+{
     std::shared_ptr<GaussianVoxelMap> voxelmap;
     Eigen::Isometry3d global_transform;
 } State;
 
-void* init_map(double voxel_resolution) {
+typedef struct
+{
+    float x, y, z, padding;
+} Point;
+
+void *init_map(double voxel_resolution)
+{
     auto voxelmap = std::make_shared<GaussianVoxelMap>(voxel_resolution);
-    State* state = new State();
+    State *state = new State();
     state->voxelmap = voxelmap;
     return state;
 }
 
-void add_to_map(void* map, void* point_buffer, int num_points, double* global_translate, double* global_rotate) {
-    State* state = static_cast<State*>(map);
+void add_to_map(void *map, const void *point_buffer, int num_points, LioIsometry3d global_transform)
+{
+    State *state = reinterpret_cast<State *>(map);
     auto voxelmap = state->voxelmap;
 
-    if (global_translate != nullptr && global_rotate != nullptr) {
-        Eigen::Isometry3d transform = Eigen::Isometry3d::Identity();
-        transform.translation() = Eigen::Vector3d(global_translate[0], global_translate[1], global_translate[2]);
-        Eigen::Quaterniond q(global_rotate[3], global_rotate[0], global_rotate[1], global_rotate[2]);
-        transform.rotate(q);
-        state->global_transform = transform;
-    }
+    Eigen::Isometry3d transform = Eigen::Isometry3d::Identity();
+    transform.translation() << global_transform.x, global_transform.y, global_transform.z;
+    Eigen::Quaterniond q(global_transform.q_w, global_transform.q_i, global_transform.q_j, global_transform.q_k);
+    transform.rotate(q);
 
-    Eigen::Vector3f* points_ptr = static_cast<Eigen::Vector3f*>(point_buffer);
-    
+    auto points_ptr = reinterpret_cast<const Point *>(point_buffer);
     PointCloud::Ptr cloud = std::make_shared<PointCloud>();
     cloud->resize(num_points);
-    for (int i = 0; i < num_points; i++) {
-        cloud->point(i) << points_ptr[i].template cast<double>().template head<3>(), 1.0;
+    for (int i = 0; i < num_points; i++)
+    {
+        cloud->point(i) << points_ptr[i].x, points_ptr[i].y, points_ptr[i].z, 1.0;
     }
 
-    state->voxelmap->insert(*cloud, state->global_transform);
+    state->voxelmap->insert(*cloud, transform);
 }
 
 // translation: xyz
 // rotation: quaternion xyzw
-void align(void* map, void* point_buffer, int num_points, double* translation, double* rotation) {
-    State* state = static_cast<State*>(map);
+void align(void *map, const void *point_buffer, int num_points, LioIsometry3d init_guess, LioIsometry3d *out)
+{
+    State *state = reinterpret_cast<State *>(map);
     auto voxelmap = state->voxelmap;
 
-    Eigen::Vector3f* points_ptr = static_cast<Eigen::Vector3f*>(point_buffer);
+    auto points_ptr = reinterpret_cast<const Point *>(point_buffer);
 
     PointCloud::Ptr cloud = std::make_shared<PointCloud>();
     cloud->resize(num_points);
-    for (int i = 0; i < num_points; i++) {
-        cloud->point(i) << points_ptr[i].template cast<double>().template head<3>(), 1.0;
+    for (int i = 0; i < num_points; i++)
+    {
+        cloud->point(i) << points_ptr[i].x, points_ptr[i].y, points_ptr[i].z, 1.0;
     }
 
+    Eigen::Isometry3d init_guess_eigen = Eigen::Isometry3d::Identity();
+    init_guess_eigen.translation() << init_guess.x, init_guess.y, init_guess.z;
+    Eigen::Quaterniond q(init_guess.q_w, init_guess.q_i, init_guess.q_j, init_guess.q_k);
+    init_guess_eigen.rotate(q);
+
     Registration<GICPFactor, ParallelReductionTBB> registration;
-    auto result = registration.align(*voxelmap, *cloud, *voxelmap, state->global_transform);
+    auto result = registration.align(*voxelmap, *cloud, *voxelmap, init_guess_eigen);
 
-    translation[0] = result.T_target_source.translation().x();
-    translation[1] = result.T_target_source.translation().y();
-    translation[2] = result.T_target_source.translation().z();
+    out->x = result.T_target_source.translation().x();
+    out->y = result.T_target_source.translation().y();
+    out->z = result.T_target_source.translation().z();
 
-    Eigen::Quaterniond q(result.T_target_source.rotation());
-    rotation[0] = q.x();
-    rotation[1] = q.y();
-    rotation[2] = q.z();
-    rotation[3] = q.w();
+    Eigen::Quaterniond q2(result.T_target_source.rotation());
+    out->q_i = q2.x();
+    out->q_j = q2.y();
+    out->q_k = q2.z();
+    out->q_w = q2.w();
 }
 
-void drop_map(void* map) {
-    State* state = static_cast<State*>(map);
+void drop_map(void *map)
+{
+    State *state = reinterpret_cast<State *>(map);
     delete state;
     state = nullptr;
 }
-

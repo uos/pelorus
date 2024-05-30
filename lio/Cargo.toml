@@ -12,7 +12,7 @@ ros_pointcloud2 = { version = "0.5.0-rc.3", features = [
 r2r = "0.9"
 futures = "0.3"
 tokio = { version = "1", features = ["full"] }
-lifis-ros = { git = "ssh://git@gitlab.informatik.uni-osnabrueck.de/csieh/lifis-ros.git", branch = "lib" }
+lifis-ros = { path = "/home/csieh/projects/lifis-ros" }
 nalgebra = "0.32"
 
 [build-dependencies]

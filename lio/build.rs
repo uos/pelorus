@@ -21,7 +21,7 @@ fn main() {
 
     let bindings = bindgen::Builder::default()
         .header("icp/include/icp.hpp")
-        .parse_callbacks(Box::new(bindgen::CargoCallbacks::new()))
+        .parse_callbacks(Box::new(bindgen::CargoCallbacks))
         .generate()
         .expect("Unable to generate bindings");
 
@@ -56,11 +56,9 @@ fn main() {
         .file("icp/src/icp.cpp")
         .file("icp/include/icp.hpp")
         .cpp(true)
-        //.shared_flag(true)
-        //.opt_level(3)
+        .opt_level(3)
         .cpp_link_stdlib("stdc++")
         .flag_if_supported("-std=c++17")
-        //.out_dir(out_path.clone())
         .compile("lio_icp");
 
     println!("cargo:rustc-link-search=native={}", out_path.display());
