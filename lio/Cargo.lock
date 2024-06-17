@@ -515,6 +515,7 @@ dependencies = [
  "pkg-config",
  "r2r",
  "ros_pointcloud2",
+ "small_gicp-rs",
  "tokio",
 ]
 
@@ -587,9 +588,9 @@ dependencies = [
 
 [[package]]
 name = "nalgebra"
-version = "0.32.5"
+version = "0.32.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3ea4908d4f23254adda3daa60ffef0f1ac7b8c3e9a864cf3cc154b251908a2ef"
+checksum = "7b5c17de023a86f59ed79891b2e5d5a94c705dbe904a5b5c9c952ea6221b03e4"
 dependencies = [
  "approx",
  "matrixmultiply",
@@ -1201,6 +1202,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "small_gicp-rs"
+version = "0.1.0"
+dependencies = [
+ "bindgen",
+ "cc",
+ "nalgebra",
+ "pkg-config",
+ "ros_pointcloud2",
+]
+
+[[package]]
 name = "smallvec"
 version = "1.13.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1519,5 +1531,9 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "bec47e5bfd1bff0eeaf6d8b485cc1074891a197ab4225d504cb7a1ab88b02bf0"
 
 [[patch.unused]]
-name = "lio"
+name = "random_walk"
+version = "0.1.0"
+
+[[patch.unused]]
+name = "rescue_2d"
 version = "0.1.0"

@@ -14,6 +14,7 @@ futures = "0.3"
 tokio = { version = "1", features = ["full"] }
 lifis-ros = { path = "/home/csieh/projects/lifis-ros" }
 nalgebra = "0.32"
+small_gicp-rs = { path = "/home/csieh/projects/small_gicp-rs" }
 
 [build-dependencies]
 bindgen = "0"

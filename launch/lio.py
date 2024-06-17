@@ -11,8 +11,8 @@ def generate_launch_description():
                 { 'global_frame': ''},
                 { 'global_zero_frame': ''},
                 { 'min_dist': 2.0 },
-                { 'min_intensity': 30.0 },
-                { 'max_intensity': 255.0 },
+                #{ 'min_intensity': 30.0 },
+                #{ 'max_intensity': 255.0 },
                 { 'lidar_vendor': 'ouster' },
             ],
             remappings=[
