@@ -31,7 +31,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let cloud_publisher =
         node.create_publisher::<PointCloud2>("registered", r2r::QosProfile::default())?;
-    let odom_publisher = node.create_publisher::<Odometry>("odom", r2r::QosProfile::default())?;
+    let odom_publisher =
+        node.create_publisher::<Odometry>("lifis_odom", r2r::QosProfile::default())?;
 
     let map_voxel_size = 0.15;
     let mut map = Map::new(map_voxel_size);
@@ -51,7 +52,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         match lifis_node.tick().await {
             Ok(Some((orig_cloud, mut odom))) => {
                 let cloud: PointCloud2Msg = orig_cloud.into();
-                let current_cloud_time = timestamp_to_secs(&cloud.header.stamp);
+                let orig_frame = cloud.header.frame_id.clone();
+                let orig_time = cloud.header.stamp.clone();
+                let current_cloud_time = timestamp_to_secs(&orig_time);
                 if let Some(existing_last_scan_time) = last_scan_time {
                     if current_cloud_time < existing_last_scan_time {
                         map.reset(map_voxel_size);
@@ -62,7 +65,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     }
                 }
 
-                last_scan_time = Some(timestamp_to_secs(&cloud.header.stamp));
+                last_scan_time = Some(timestamp_to_secs(&orig_time));
 
                 if first_scan {
                     map.add(&cloud, None);
@@ -74,17 +77,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let init_guess = nalgebra::Isometry3::identity(); // TODO from tick odom
                 let init_guess_world = t_world_lidar * t_last_current * init_guess;
 
-                //let start_time = std::time::Instant::now();
+                let start_time = std::time::Instant::now();
                 let register_pose = map.register(&cloud, &init_guess_world);
-                //let elapsed = start_time.elapsed();
+                let elapsed = start_time.elapsed();
                 //r2r::log_info!("lio", "Registration took: {:?}", elapsed);
 
                 t_last_current = t_world_lidar.inverse() * register_pose.transform_target_to_source;
                 t_world_lidar = register_pose.transform_target_to_source;
 
-                //let start_time = std::time::Instant::now();
+                let start_time = std::time::Instant::now();
                 map.add(&cloud, Some(register_pose.transform_target_to_source));
-                //let elapsed = start_time.elapsed();
+                let elapsed = start_time.elapsed();
                 //r2r::log_info!("lio", "Adding cloud took: {:?}", elapsed);
 
                 odom.header.frame_id = map_frame.clone();
@@ -100,7 +103,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let mut cloud: PointCloud2 = transform_cloud(cloud, &t_world_lidar).into();
 
                 let map_to_lidar_transform = t_world_lidar.clone();
-                let orig_frame = cloud.header.frame_id.clone();
                 cloud.header.frame_id = map_frame.clone();
 
                 let tf = TransformStamped {
