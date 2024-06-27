@@ -15,8 +15,6 @@ def generate_launch_description():
                 #{ 'max_intensity': 255.0 },
                 { 'lidar_vendor': 'ouster' },
                 { 'voxel_size': 0.10 },
-                { 'imu_state_estimation_method': 'ugpm_lpm' }, # 'livox_rotation_only', 'ugpm_lpm', 'ugpm_ugpm' (default), '' (none)
-                { 'imu_rate': 100.0 }, # Hz
             ],
             remappings=[
                 ('cloud', 'ouster/points'),
