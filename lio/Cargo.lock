@@ -286,6 +286,14 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "32688dcc448aa684426ecc398f9af78c55b0769515ccd12baa565daf6f32feb6"
 
 [[package]]
+name = "fusion-rs"
+version = "0.1.0"
+dependencies = [
+ "bindgen 0.69.4",
+ "cc",
+]
+
+[[package]]
 name = "futures"
 version = "0.3.30"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -502,12 +510,12 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "dashmap",
+ "fusion-rs",
  "nalgebra 0.32.6",
  "rayon",
  "ros_pointcloud2",
  "sophus_lie",
  "tokio",
- "ugpm-rs",
 ]
 
 [[package]]
@@ -656,7 +664,6 @@ checksum = "3c4b5f057b303842cf3262c27e465f4c303572e7f6b0648f60e16248ac3397f4"
 dependencies = [
  "approx",
  "matrixmultiply",
- "nalgebra-macros 0.2.2",
  "num-complex",
  "num-rational",
  "num-traits",
@@ -1445,16 +1452,6 @@ name = "typenum"
 version = "1.17.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "42ff0bf0c66b8238c6f3b578df37d0b7848e55df8577b3f74f92a69acceeb825"
-
-[[package]]
-name = "ugpm-rs"
-version = "0.1.0"
-dependencies = [
- "bindgen 0.69.4",
- "cc",
- "nalgebra 0.33.0",
- "pkg-config",
-]
 
 [[package]]
 name = "unicode-ident"

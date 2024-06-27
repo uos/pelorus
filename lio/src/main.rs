@@ -1,3 +1,4 @@
+use nalgebra::Translation3;
 use r2r::{
     geometry_msgs::msg::{Quaternion, Transform, TransformStamped, Vector3},
     nav_msgs::msg::Odometry,
@@ -47,11 +48,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut first_scan = true;
     let mut last_scan_time = None;
 
+    let mut avg_iterations = 0.0;
+    let mut iteration_updates = 0;
+
     loop {
         node.spin_once(std::time::Duration::from_millis(100));
+        let start_tick = std::time::Instant::now();
         match lifis_node.tick().await {
             Ok(Some((orig_cloud, mut odom))) => {
+                let preprocess_time = start_tick.elapsed();
                 let cloud: PointCloud2Msg = orig_cloud.into();
+                let cloud_size = cloud.dimensions.height * cloud.dimensions.width;
                 let orig_frame = cloud.header.frame_id.clone();
                 let orig_time = cloud.header.stamp.clone();
                 let current_cloud_time = timestamp_to_secs(&orig_time);
@@ -74,21 +81,51 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     continue;
                 }
 
-                let init_guess = nalgebra::Isometry3::identity(); // TODO from tick odom
-                let init_guess_world = t_world_lidar * t_last_current * init_guess;
+                // use the last difference if there is no odom from lifis
+                let init_guess = if odom.pose.pose.position.x == 0.0
+                    && odom.pose.pose.position.y == 0.0
+                    && odom.pose.pose.position.z == 0.0
+                {
+                    t_last_current
+                } else {
+                    let initial_guess_translation = Translation3::new(
+                        odom.pose.pose.position.x,
+                        odom.pose.pose.position.y,
+                        odom.pose.pose.position.z,
+                    );
+
+                    let initial_guess_rotation =
+                        nalgebra::UnitQuaternion::from_quaternion(nalgebra::Quaternion::new(
+                            odom.pose.pose.orientation.w,
+                            odom.pose.pose.orientation.x,
+                            odom.pose.pose.orientation.y,
+                            odom.pose.pose.orientation.z,
+                        ));
+
+                    nalgebra::Isometry3::from_parts(
+                        initial_guess_translation,
+                        initial_guess_rotation,
+                    )
+                };
+
+                let init_guess_world = t_world_lidar * init_guess;
 
                 let start_time = std::time::Instant::now();
                 let register_pose = map.register(&cloud, &init_guess_world);
-                let elapsed = start_time.elapsed();
-                //r2r::log_info!("lio", "Registration took: {:?}", elapsed);
+                let elapsed_reg = start_time.elapsed();
 
+                avg_iterations = (avg_iterations * iteration_updates as f64
+                    + register_pose.num_iterations as f64)
+                    / (iteration_updates as f64 + 1.0);
+                iteration_updates += 1;
+
+                // Transformation from the last pose to the current pose in the local frame.
                 t_last_current = t_world_lidar.inverse() * register_pose.transform_target_to_source;
                 t_world_lidar = register_pose.transform_target_to_source;
 
                 let start_time = std::time::Instant::now();
                 map.add(&cloud, Some(register_pose.transform_target_to_source));
-                let elapsed = start_time.elapsed();
-                //r2r::log_info!("lio", "Adding cloud took: {:?}", elapsed);
+                let elapsed_map = start_time.elapsed();
 
                 odom.header.frame_id = map_frame.clone();
                 odom.child_frame_id = cloud.header.frame_id.clone();
@@ -133,6 +170,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 odom_publisher
                     .publish(&odom)
                     .expect("Failed to publish odom");
+
+                let total_cb_time = start_tick.elapsed();
+
+                r2r::log_info!(
+                    "lio",
+                    "\n[pre] {:?}\n[reg] {:?} points in {:?} / {:?} iterations\n[map update] {:?}\n[total] {:?}, %pre {:?} %reg {:?} %map {:?}\n",
+                    preprocess_time,
+                    cloud_size,
+                    elapsed_reg,
+                    avg_iterations,
+                    elapsed_map,
+                    total_cb_time,
+                    (preprocess_time.as_secs_f64() / total_cb_time.as_secs_f64()) * 100.0,
+                    (elapsed_reg.as_secs_f64() / total_cb_time.as_secs_f64()) * 100.0,
+                    (elapsed_map.as_secs_f64() / total_cb_time.as_secs_f64()) * 100.0
+                );
             }
             Err(e) => {
                 r2r::log_error!("lifis", "{}", e);
