@@ -16,6 +16,7 @@ lifis-ros = { path = "/home/csieh/projects/lifis-ros" }
 nalgebra = "0.32"
 small_gicp-rs = { path = "/home/csieh/projects/small_gicp-rs" }
 tf_r2r = { version = "0.2", features = ["ros2"] }
+anyhow = "1.0.86"
 
 [build-dependencies]
 bindgen = "0.69"

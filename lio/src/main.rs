@@ -15,6 +15,8 @@ pub fn timestamp_to_secs(t: &TimeMsg) -> f64 {
     t.sec as f64 + t.nanosec as f64 / 1_000_000_000.0
 }
 
+const FEEDBACK_FPS: u64 = 5;
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let ctx = r2r::Context::create()?;
@@ -51,14 +53,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut avg_iterations = 0.0;
     let mut iteration_updates = 0;
 
+    let mut eval = lifis_ros::timing::RuntimeEvaluator::new();
+    let render_interval = std::time::Duration::from_secs_f64(1.0 / FEEDBACK_FPS as f64);
+    let mut last_render = std::time::Instant::now();
+
     loop {
         node.spin_once(std::time::Duration::from_millis(100));
-        let start_tick = std::time::Instant::now();
         match lifis_node.tick().await {
-            Ok(Some((orig_cloud, mut odom))) => {
-                let preprocess_time = start_tick.elapsed();
+            Ok(Some((orig_cloud, mut odom, lifis_eval))) => {
+                eval.start("total").unwrap();
+                eval.merge(&lifis_eval);
+
                 let cloud: PointCloud2Msg = orig_cloud.into();
-                let cloud_size = cloud.dimensions.height * cloud.dimensions.width;
+                //let cloud_size = cloud.dimensions.height * cloud.dimensions.width;
                 let orig_frame = cloud.header.frame_id.clone();
                 let orig_time = cloud.header.stamp.clone();
                 let current_cloud_time = timestamp_to_secs(&orig_time);
@@ -77,6 +84,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 if first_scan {
                     map.add(&cloud, None);
                     first_scan = false;
+                    eval.stop("total").unwrap();
                     // TODO: rpcl2 - from and into for timemsg
                     continue;
                 }
@@ -110,9 +118,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
                 let init_guess_world = t_world_lidar * init_guess;
 
-                let start_time = std::time::Instant::now();
+                eval.start("reg").unwrap();
                 let register_pose = map.register(&cloud, &init_guess_world);
-                let elapsed_reg = start_time.elapsed();
+                eval.stop("reg").unwrap();
 
                 avg_iterations = (avg_iterations * iteration_updates as f64
                     + register_pose.num_iterations as f64)
@@ -123,9 +131,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 t_last_current = t_world_lidar.inverse() * register_pose.transform_target_to_source;
                 t_world_lidar = register_pose.transform_target_to_source;
 
-                let start_time = std::time::Instant::now();
+                eval.start("map_update").unwrap();
                 map.add(&cloud, Some(register_pose.transform_target_to_source));
-                let elapsed_map = start_time.elapsed();
+                eval.stop("map_update").unwrap();
 
                 odom.header.frame_id = map_frame.clone();
                 odom.child_frame_id = cloud.header.frame_id.clone();
@@ -171,21 +179,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     .publish(&odom)
                     .expect("Failed to publish odom");
 
-                let total_cb_time = start_tick.elapsed();
+                eval.stop("total").unwrap();
 
-                r2r::log_info!(
-                    "lio",
-                    "\n[pre] {:?}\n[reg] {:?} points in {:?} / {:?} iterations\n[map update] {:?}\n[total] {:?}, %pre {:?} %reg {:?} %map {:?}\n",
-                    preprocess_time,
-                    cloud_size,
-                    elapsed_reg,
-                    avg_iterations,
-                    elapsed_map,
-                    total_cb_time,
-                    (preprocess_time.as_secs_f64() / total_cb_time.as_secs_f64()) * 100.0,
-                    (elapsed_reg.as_secs_f64() / total_cb_time.as_secs_f64()) * 100.0,
-                    (elapsed_map.as_secs_f64() / total_cb_time.as_secs_f64()) * 100.0
-                );
+                if last_render.elapsed() > render_interval {
+                    last_render = std::time::Instant::now();
+                    r2r::log_info!(
+                        "lio",
+                        "{}[2J{}[1;1H[LIO] - Simple LiDAR Odometry\n{}",
+                        27 as char,
+                        27 as char,
+                        eval.render()
+                    );
+                }
             }
             Err(e) => {
                 r2r::log_error!("lifis", "{}", e);
