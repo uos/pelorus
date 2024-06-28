@@ -116,6 +116,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     )
                 };
 
+                //dbg!(init_guess);
+
                 let init_guess_world = t_world_lidar * init_guess;
 
                 eval.start("reg").unwrap();
