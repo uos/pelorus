@@ -121,7 +121,28 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     && lifis_tick.imu_odom.pose.pose.position.y == 0.0
                     && lifis_tick.imu_odom.pose.pose.position.z == 0.0
                 {
-                    t_last_current
+                    // lifis did not return a orientation (for example when not using IMU at all), use the last difference as guess
+                    if lifis_tick.imu_odom.pose.pose.orientation.w == 1.0
+                        && lifis_tick.imu_odom.pose.pose.orientation.x == 0.0
+                        && lifis_tick.imu_odom.pose.pose.orientation.y == 0.0
+                        && lifis_tick.imu_odom.pose.pose.orientation.z == 0.0
+                    {
+                        t_last_current
+                    } else {
+                        // there is an orientation calculated by lifis for undeskewing the cloud, so we can use that
+                        let initial_guess_translation = t_last_current.translation.clone();
+                        let initial_guess_rotation =
+                            nalgebra::UnitQuaternion::from_quaternion(nalgebra::Quaternion::new(
+                                lifis_tick.imu_odom.pose.pose.orientation.w,
+                                lifis_tick.imu_odom.pose.pose.orientation.x,
+                                lifis_tick.imu_odom.pose.pose.orientation.y,
+                                lifis_tick.imu_odom.pose.pose.orientation.z,
+                            ));
+                        nalgebra::Isometry3::from_parts(
+                            initial_guess_translation,
+                            initial_guess_rotation,
+                        )
+                    }
                 } else {
                     let initial_guess_translation = Translation3::new(
                         lifis_tick.imu_odom.pose.pose.position.x,
@@ -143,7 +164,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     )
                 };
 
-                dbg!(init_guess);
+                //dbg!(init_guess);
 
                 let init_guess_world = t_world_lidar * init_guess;
 
@@ -278,7 +299,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
                 eval.stop("total").unwrap();
 
-                /*if last_render.elapsed() > render_interval {
+                if last_render.elapsed() > render_interval {
                     last_render = std::time::Instant::now();
                     r2r::log_info!(
                         "lio",
@@ -287,7 +308,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         27 as char,
                         eval.render()
                     );
-                }*/
+                }
             }
             Err(e) => {
                 r2r::log_error!("lifis", "{}", e);
