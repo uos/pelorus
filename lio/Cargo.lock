@@ -179,6 +179,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "cmake"
+version = "0.1.50"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a31c789563b815f77f4250caee12365734369f942439b7defd71e18a48197130"
+dependencies = [
+ "cc",
+]
+
+[[package]]
 name = "concat-arrays"
 version = "0.1.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -437,6 +446,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "imu-calib"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "nalgebra 0.33.0",
+]
+
+[[package]]
 name = "indexmap"
 version = "2.2.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -509,9 +526,13 @@ name = "lifis"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "bindgen 0.69.4",
+ "cmake",
  "dashmap",
  "fusion-rs",
+ "imu-calib",
  "nalgebra 0.32.6",
+ "pkg-config",
  "rayon",
  "ros_pointcloud2",
  "sophus_lie",
@@ -665,6 +686,7 @@ checksum = "3c4b5f057b303842cf3262c27e465f4c303572e7f6b0648f60e16248ac3397f4"
 dependencies = [
  "approx",
  "matrixmultiply",
+ "nalgebra-macros 0.2.2",
  "num-complex",
  "num-rational",
  "num-traits",
@@ -1648,11 +1670,3 @@ name = "windows_x86_64_msvc"
 version = "0.52.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "bec47e5bfd1bff0eeaf6d8b485cc1074891a197ab4225d504cb7a1ab88b02bf0"
-
-[[patch.unused]]
-name = "random_walk"
-version = "0.1.0"
-
-[[patch.unused]]
-name = "rescue_2d"
-version = "0.1.0"
