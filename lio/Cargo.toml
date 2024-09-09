@@ -12,9 +12,9 @@ ros_pointcloud2 = { version = "0.5.0", features = [
 r2r = "0.9"
 futures = "0.3"
 tokio = { version = "1", features = ["full"] }
-lifis-ros = { path = "/home/csieh/projects/lifis-ros" }
+lifis-ros = { git = "ssh://git@github.com/stelzo/lifis-ros.git", branch = "main" }
 nalgebra = "0.32"
-small_gicp-rs = { path = "/home/csieh/projects/small_gicp-rs" }
+small_gicp-rs = { git = "ssh://git@github.com/stelzo/small_gicp-sys.git", branch = "main" }
 tf_r2r = { version = "0.2", features = ["ros2"] }
 anyhow = "1.0.86"
 
