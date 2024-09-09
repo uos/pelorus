@@ -11,9 +11,8 @@ Dependencies
 sudo apt-get install libeigen3-dev libtbb-dev libclang-dev
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 
-cargo install --debug cargo-ament-build
-pip install git+https://github.com/colcon/colcon-cargo.git
-pip install git+https://github.com/colcon/colcon-ros-cargo.git
+cargo install cargo-ament-build
+pip install colcon-ros-cargo
 ```
 
 
