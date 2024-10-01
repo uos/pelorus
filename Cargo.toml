@@ -16,7 +16,7 @@ lifis-ros = { git = "ssh://git@github.com/stelzo/lifis-ros.git", branch = "main"
 nalgebra = "0.32"
 small_gicp-rs = { git = "ssh://git@github.com/stelzo/small_gicp-sys.git", branch = "main" }
 tf_r2r = { version = "0.2", features = ["ros2"] }
-anyhow = "1.0.86"
+anyhow = "1"
 
 [build-dependencies]
 bindgen = "0.69"
@@ -27,3 +27,6 @@ pkg-config = "0.3"
 lto = "fat"
 panic = "abort"
 strip = "debuginfo"
+
+[package.metadata.ros]
+install_to_share = ["launch"]
