@@ -1,2 +1,5 @@
+[env]
+IDL_PACKAGE_FILTER = { value = "std_msgs;sensor_msgs;lifis_msgs;geometry_msgs;nav_msgs;tf2_msgs" }
+
 [net]
 git-fetch-with-cli = true
