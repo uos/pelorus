@@ -33,8 +33,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let mut lifis_node = LifisNode::create(lifis_ros::LifisNodeParameters {
         node_name: "lifis",
-        cloud_src_topic: "ouster/points",
-        imu_src_topic: "ouster/imu",
         ..Default::default()
     })
     .await?;

@@ -18,7 +18,7 @@ def generate_launch_description():
             ],
             remappings=[
                 ('cloud', 'ouster/points'),
-                ('imu', 'imu'),
+                ('imu', 'ouster/imu'),
                 ('registered', 'ouster/registered'),
             ]
         ),
