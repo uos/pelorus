@@ -3,6 +3,7 @@ use r2r::{
     geometry_msgs::msg::{PoseStamped, Quaternion, Transform, TransformStamped, Vector3},
     nav_msgs::msg::{Odometry, Path},
     sensor_msgs::msg::PointCloud2,
+    RosParams,
 };
 
 use tf_r2r::TfBroadcaster;
@@ -22,39 +23,133 @@ pub fn rpcl2_time_to_r2r_time(t: &ros_pointcloud2::ros::TimeMsg) -> TimeMsg {
     }
 }
 
-const FEEDBACK_FPS: u64 = 5;
+/*
+let odom_publisher = node.create_publisher::<Odometry>("odom", r2r::QosProfile::default())?;
+let lidar_path_publisher = node.create_publisher::<Path>("path", r2r::QosProfile::default())?;
+let imu_odom_publisher =
+node.create_publisher::<Odometry>("imu_odom", r2r::QosProfile::default())?;
+let imu_path_publisher =
+node.create_publisher::<Path>("imu_path", r2r::QosProfile::default())?;
+map_resolution
+*/
+
+#[derive(RosParams, Debug, Clone)]
+pub struct LioConfigParse {
+    pub feedback_fps: u32,
+    pub map_frame: String,
+    pub registered_cloud_qos: String, // sensor | system_default
+    pub lidar_qos: String,
+    pub imu_qos: String,
+    pub odom_qos: String,
+    pub imu_odom_qos: String,
+    pub imu_path_qos: String,
+    pub path_qos: String,
+    pub map_resolution: f64,
+}
+
+impl Default for LioConfigParse {
+    fn default() -> Self {
+        Self {
+            feedback_fps: 1,
+            map_frame: "map".to_string(),
+            registered_cloud_qos: "system_default".to_string(),
+            odom_qos: "system_default".to_string(),
+            imu_odom_qos: "system_default".to_string(),
+            imu_path_qos: "system_default".to_string(),
+            path_qos: "system_default".to_string(),
+            imu_qos: "sensor".to_string(),
+            lidar_qos: "sensor".to_string(),
+            map_resolution: 0.15,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct LioConfig {
+    pub feedback_fps: u32,
+    pub registered_cloud_qos: r2r::QosProfile,
+    pub lidar_qos: r2r::QosProfile,
+    pub imu_qos: r2r::QosProfile,
+    pub odom_qos: r2r::QosProfile,
+    pub imu_odom_qos: r2r::QosProfile,
+    pub imu_path_qos: r2r::QosProfile,
+    pub path_qos: r2r::QosProfile,
+    pub map_resolution: f64,
+}
+
+fn parse_qos(qos: &str) -> r2r::QosProfile {
+    match qos {
+        "sensor" => r2r::QosProfile::sensor_data(),
+        "system_default" => r2r::QosProfile::default(),
+        _ => r2r::QosProfile::default(),
+    }
+}
+
+impl From<LioConfigParse> for LioConfig {
+    fn from(parse: LioConfigParse) -> Self {
+        Self {
+            feedback_fps: parse.feedback_fps,
+            map_resolution: parse.map_resolution,
+            registered_cloud_qos: parse_qos(&parse.registered_cloud_qos),
+            lidar_qos: parse_qos(&parse.lidar_qos),
+            imu_qos: parse_qos(&parse.imu_qos),
+            odom_qos: parse_qos(&parse.odom_qos),
+            imu_odom_qos: parse_qos(&parse.imu_odom_qos),
+            imu_path_qos: parse_qos(&parse.imu_path_qos),
+            path_qos: parse_qos(&parse.path_qos),
+        }
+    }
+}
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let ctx = r2r::Context::create()?;
     let mut node = r2r::Node::create(ctx, "lio", "lio")?;
+    let log_prefix = "lio";
+    let config = std::sync::Arc::new(std::sync::Mutex::new(LioConfigParse::default()));
+    let (_, _) = node.make_derived_parameter_handler(config.clone())?;
+    let config = {
+        let config = config.lock().unwrap();
+        config.clone()
+    };
+    let config = LioConfig::from(config);
 
     let tf_broadcaster = TfBroadcaster::new(&mut node);
 
     let mut lifis_node = LifisNode::create(lifis_ros::LifisNodeParameters {
         node_name: "lifis",
+        imu_qos: config.imu_qos,
+        cloud_qos: config.lidar_qos,
         ..Default::default()
     })
     .await?;
 
-    let cloud_publisher =
-        node.create_publisher::<PointCloud2>("registered", r2r::QosProfile::default())?;
-    let odom_publisher = node.create_publisher::<Odometry>("odom", r2r::QosProfile::default())?;
-    let lidar_path_publisher = node.create_publisher::<Path>("path", r2r::QosProfile::default())?;
-    let imu_odom_publisher =
-        node.create_publisher::<Odometry>("imu_odom", r2r::QosProfile::default())?;
-    let imu_path_publisher =
-        node.create_publisher::<Path>("imu_path", r2r::QosProfile::default())?;
+    let map_frame = {
+        lifis_node
+            .state
+            .lock()
+            .unwrap()
+            .config
+            .lock()
+            .unwrap()
+            .map_frame
+            .clone()
+    };
 
-    let map_voxel_size = 0.15;
-    let mut map = Map::new(map_voxel_size);
+    let cloud_publisher =
+        node.create_publisher::<PointCloud2>("registered", config.registered_cloud_qos)?;
+    let odom_publisher = node.create_publisher::<Odometry>("odom", config.odom_qos)?;
+    let lidar_path_publisher = node.create_publisher::<Path>("path", config.path_qos)?;
+    let imu_odom_publisher = node.create_publisher::<Odometry>("imu_odom", config.imu_odom_qos)?;
+    let imu_path_publisher = node.create_publisher::<Path>("imu_path", config.imu_path_qos)?;
+
+    let mut map = Map::new(config.map_resolution);
 
     #[cfg(debug_assertions)]
-    r2r::log_warn!("lio", "Running in dev mode.");
+    r2r::log_warn!(log_prefix, "Running in dev mode.");
 
     let mut t_world_lidar = nalgebra::Isometry3::identity();
     let mut t_last_current = nalgebra::Isometry3::identity();
-    let map_frame = "map".to_string();
 
     let mut lidar_path = Path {
         header: Default::default(),
@@ -79,7 +174,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let path_update_translate_threshold = 0.0; // default 0.15 meters - TODO config
 
     let mut eval = lifis_ros::timing::RuntimeEvaluator::new();
-    let render_interval = std::time::Duration::from_secs_f64(1.0 / FEEDBACK_FPS as f64);
+
+    let render_interval = if config.feedback_fps == 0 {
+        None
+    } else {
+        Some(std::time::Duration::from_secs_f64(
+            1.0 / config.feedback_fps as f64,
+        ))
+    };
     let mut last_render = std::time::Instant::now();
 
     loop {
@@ -96,8 +198,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let current_cloud_time = timestamp_to_secs(&orig_time);
                 if let Some(existing_last_scan_time) = last_scan_time {
                     if current_cloud_time < existing_last_scan_time {
-                        map.reset(map_voxel_size);
-                        r2r::log_info!("lio", "Resetting map");
+                        map.reset(config.map_resolution);
+                        r2r::log_info!(log_prefix, "Resetting map");
                         first_scan = true;
                         t_world_lidar = nalgebra::Isometry3::identity();
                         t_last_current = nalgebra::Isometry3::identity();
@@ -297,15 +399,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
                 eval.stop("total").unwrap();
 
-                if last_render.elapsed() > render_interval {
-                    last_render = std::time::Instant::now();
-                    r2r::log_info!(
-                        "lio",
-                        "{}[2J{}[1;1H[LIO] - Simple LiDAR Odometry\n{}",
-                        27 as char,
-                        27 as char,
-                        eval.render()
-                    );
+                if let Some(render_interval) = render_interval {
+                    if last_render.elapsed() > render_interval {
+                        last_render = std::time::Instant::now();
+                        r2r::log_info!(
+                            log_prefix,
+                            "{}[2J{}[1;1H[LIO] - Simple LiDAR Odometry\n{}",
+                            27 as char,
+                            27 as char,
+                            eval.render()
+                        );
+                    }
                 }
             }
             Err(e) => {
