@@ -10,7 +10,7 @@ use tf_r2r::TfBroadcaster;
 
 use lifis_ros::LifisNode;
 use ros_pointcloud2::prelude::*;
-use small_gicp_rs::*;
+use small_gicp_sys::*;
 
 pub fn timestamp_to_secs(t: &TimeMsg) -> f64 {
     t.sec as f64 + t.nanosec as f64 / 1_000_000_000.0
@@ -22,16 +22,6 @@ pub fn rpcl2_time_to_r2r_time(t: &ros_pointcloud2::ros::TimeMsg) -> TimeMsg {
         nanosec: t.nanosec,
     }
 }
-
-/*
-let odom_publisher = node.create_publisher::<Odometry>("odom", r2r::QosProfile::default())?;
-let lidar_path_publisher = node.create_publisher::<Path>("path", r2r::QosProfile::default())?;
-let imu_odom_publisher =
-node.create_publisher::<Odometry>("imu_odom", r2r::QosProfile::default())?;
-let imu_path_publisher =
-node.create_publisher::<Path>("imu_path", r2r::QosProfile::default())?;
-map_resolution
-*/
 
 #[derive(RosParams, Debug, Clone)]
 pub struct LioConfigParse {
@@ -192,7 +182,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 eval.merge(&lifis_tick.runtime_eval);
 
                 let cloud: PointCloud2Msg = lifis_tick.deskewed_cloud.into();
-                //let cloud_size = cloud.dimensions.height * cloud.dimensions.width;
                 let orig_frame = cloud.header.frame_id.clone();
                 let orig_time = cloud.header.stamp.clone();
                 let current_cloud_time = timestamp_to_secs(&orig_time);
@@ -263,8 +252,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         initial_guess_rotation,
                     )
                 };
-
-                //dbg!(init_guess);
 
                 let init_guess_world = t_world_lidar * init_guess;
 
