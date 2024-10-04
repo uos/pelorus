@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-ros_pointcloud2 = { version = "0.5.0", features = [
+ros_pointcloud2 = { version = "0.5.1", features = [
     "r2r_msg",
     "nalgebra",
     "rayon",
@@ -13,8 +13,8 @@ r2r = "0.9"
 futures = "0.3"
 tokio = { version = "1", features = ["full"] }
 lifis-ros = { git = "ssh://git@github.com/stelzo/lifis-ros.git", branch = "main" }
-nalgebra = "0.32"
-small_gicp-rs = { git = "ssh://git@github.com/stelzo/small_gicp-sys.git", branch = "main" }
+nalgebra = "0.33"
+small_gicp-sys = { git = "ssh://git@github.com/stelzo/small_gicp-sys.git", branch = "main" }
 tf_r2r = { version = "0.2", features = ["ros2"] }
 anyhow = "1"
 
