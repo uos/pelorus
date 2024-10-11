@@ -4,8 +4,8 @@ from launch_ros.actions import Node
 def generate_launch_description():
     return LaunchDescription([
         Node(
-            package='lio',
-            executable='lio',
+            package='pelorus',
+            executable='pelorus',
             parameters=[
                 { 'verbose': True },
                 { 'feedback_fps': 1 }, # terminal fps of timing. 0 to disable.

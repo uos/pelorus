@@ -1,9 +1,19 @@
-[package]
-name = "lio"
-version = "0.1.0"
-edition = "2021"
+[workspace]
+members = ["crates/pelorus"]
+resolver = "2"
 
-[dependencies]
+[workspace.package]
+edition = "2021"
+include = ["**/*.rs", "**/*.md", "**/Cargo.toml"]
+keywords = ["robotics"]
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/stelzo/pelorus/"
+version = "0.1.0"
+
+[workspace.dependencies]
+pelorus = { path = "crates/pelorus", version = "0.1.0" }
+pelorus-reg = { path = "crates/pelorus-reg", version = "0.1.0" }
+
 ros_pointcloud2 = { version = "0.5.1", features = [
     "r2r_msg",
     "nalgebra",
@@ -17,16 +27,6 @@ nalgebra = "0.33"
 small_gicp-sys = { git = "ssh://git@github.com/stelzo/small_gicp-sys.git", branch = "main" }
 tf_r2r = { version = "0.2", features = ["ros2"] }
 anyhow = "1"
-
-[build-dependencies]
-bindgen = "0.69"
-cc = "1"
-pkg-config = "0.3"
-
-[profile.release]
-lto = "fat"
-panic = "abort"
-strip = "debuginfo"
-
-[package.metadata.ros]
-install_to_share = ["launch"]
+sophus_lie = "0.9"
+rayon = "1"
+dashmap = "6"

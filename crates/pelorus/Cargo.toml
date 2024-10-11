@@ -1,0 +1,35 @@
+[package]
+name = "pelorus"
+description = "LiDAR Odometry"
+
+version.workspace = true
+edition.workspace = true
+repository.workspace = true
+license.workspace = true
+keywords.workspace = true
+include.workspace = true
+
+[dependencies]
+ros_pointcloud2.workspace = true
+r2r.workspace = true
+futures.workspace = true
+tokio.workspace = true
+lifis-ros.workspace = true
+pelorus-reg.workspace = true
+nalgebra.workspace = true
+small_gicp-sys.workspace = true
+tf_r2r.workspace = true
+anyhow.workspace = true
+
+[build-dependencies]
+bindgen = "0.69"
+cc = "1"
+pkg-config = "0.3"
+
+[profile.release]
+lto = "fat"
+panic = "abort"
+strip = "debuginfo"
+
+[package.metadata.ros]
+install_to_share = ["launch"]

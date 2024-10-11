@@ -1,0 +1,18 @@
+[package]
+name = "pelorus-reg"
+description = "LiDAR Odometry Registration"
+
+version.workspace = true
+edition.workspace = true
+repository.workspace = true
+license.workspace = true
+keywords.workspace = true
+include.workspace = true
+
+[dependencies]
+ros_pointcloud2.workspace = true
+anyhow.workspace = true
+nalgebra.workspace = true
+sophus_lie.workspace = true
+rayon.workspace = true
+dashmap.workspace = true
