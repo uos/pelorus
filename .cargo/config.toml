@@ -1,11 +1,2 @@
 [net]
 git-fetch-with-cli = true
-
-[patch."ssh://git@github.com/stelzo/lifis-ros.git"]
-lifis-ros = { path = '/home/csieh/projects/lifis-ros' }
-
-[patch."ssh://git@github.com/stelzo/lifis.git"]
-lifis = { path = '/home/csieh/projects/lifis' }
-
-[patch."ssh://git@github.com/stelzo/small_gicp-sys.git"]
-small_gicp-sys = { path = '/home/csieh/projects/small_gicp-sys' }
