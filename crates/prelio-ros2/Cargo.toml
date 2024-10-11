@@ -1,0 +1,24 @@
+[package]
+name = "prelio-ros2"
+description = "ROS2 Wrapper for prelio"
+
+version.workspace = true
+edition.workspace = true
+repository.workspace = true
+license.workspace = true
+keywords.workspace = true
+include.workspace = true
+
+[dependencies]
+ros_pointcloud2.workspace = true
+anyhow.workspace = true
+nalgebra.workspace = true
+tokio.workspace = true
+r2r.workspace = true
+futures.workspace = true
+prelio.workspace = true
+thiserror = "1.0"
+
+[features]
+default = []
+gtsam = ["prelio/gtsam"]

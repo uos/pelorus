@@ -1,5 +1,10 @@
 [workspace]
-members = ["crates/pelorus"]
+members = [
+    "crates/pelorus",
+    "crates/pelorus-reg",
+    "crates/prelio",
+    "crates/prelio-ros2",
+]
 resolver = "2"
 
 [workspace.package]
@@ -13,6 +18,8 @@ version = "0.1.0"
 [workspace.dependencies]
 pelorus = { path = "crates/pelorus", version = "0.1.0" }
 pelorus-reg = { path = "crates/pelorus-reg", version = "0.1.0" }
+prelio = { path = "crates/prelio", version = "0.1.0" }
+prelio-ros2 = { path = "crates/prelio-ros2", version = "0.1.0" }
 
 ros_pointcloud2 = { version = "0.5.1", features = [
     "r2r_msg",
@@ -22,11 +29,11 @@ ros_pointcloud2 = { version = "0.5.1", features = [
 r2r = "0.9"
 futures = "0.3"
 tokio = { version = "1", features = ["full"] }
-lifis-ros = { git = "ssh://git@github.com/stelzo/lifis-ros.git", branch = "main" }
+lifis-ros = { git = "ssh://git@github.com/stelzo/lifis-ros.git", branch = "jlio" }
 nalgebra = "0.33"
 small_gicp-sys = { git = "ssh://git@github.com/stelzo/small_gicp-sys.git", branch = "main" }
 tf_r2r = { version = "0.2", features = ["ros2"] }
 anyhow = "1"
 sophus_lie = "0.9"
 rayon = "1"
-dashmap = "6"
+dashmap = { version = "6", features = ["rayon", "inline"] }
