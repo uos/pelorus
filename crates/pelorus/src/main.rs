@@ -188,7 +188,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let path_update_translate_threshold = 0.0; // default 0.15 meters - TODO config
 
-    let mut eval = lifis_ros::timing::RuntimeEvaluator::new();
+    let mut eval = lifis_ros::lifis::timing::RuntimeEvaluator::new();
 
     let render_interval = if config.feedback_fps == 0 {
         None
