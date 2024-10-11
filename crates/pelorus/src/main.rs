@@ -1,8 +1,10 @@
 use nalgebra::Translation3;
 use r2r::{
+    builtin_interfaces::msg::Time,
     geometry_msgs::msg::{PoseStamped, Quaternion, Transform, TransformStamped, Vector3},
     nav_msgs::msg::{Odometry, Path},
     sensor_msgs::msg::PointCloud2,
+    std_msgs::msg::Header,
     RosParams,
 };
 
@@ -23,6 +25,27 @@ pub fn rpcl2_time_to_r2r_time(t: &ros_pointcloud2::ros::TimeMsg) -> TimeMsg {
     }
 }
 
+#[derive(Debug, Clone, Default)]
+pub enum LioMethod {
+    SmallGICPCPU,
+
+    #[default]
+    SFasterLioCPU,
+
+    JlioGPU,
+}
+
+impl From<&str> for LioMethod {
+    fn from(s: &str) -> Self {
+        match s {
+            "small_gicp_cpu" => LioMethod::SmallGICPCPU,
+            "sfasterlio_cpu" => LioMethod::SFasterLioCPU,
+            "jlio_gpu" => LioMethod::JlioGPU,
+            _ => LioMethod::SFasterLioCPU,
+        }
+    }
+}
+
 #[derive(RosParams, Debug, Clone)]
 pub struct LioConfigParse {
     pub feedback_fps: u32,
@@ -35,6 +58,7 @@ pub struct LioConfigParse {
     pub imu_path_qos: String,
     pub path_qos: String,
     pub map_resolution: f64,
+    pub method: String,
 }
 
 impl Default for LioConfigParse {
@@ -50,6 +74,7 @@ impl Default for LioConfigParse {
             imu_qos: "sensor".to_string(),
             lidar_qos: "sensor".to_string(),
             map_resolution: 0.15,
+            method: "sfasterlio_cpu".to_string(),
         }
     }
 }
@@ -327,7 +352,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 cloud.header.frame_id = map_frame.clone();
 
                 let tf = TransformStamped {
-                    header: cloud.header.clone().into(),
+                    header: Header {
+                        frame_id: map_frame.to_string(),
+                        stamp: Time {
+                            sec: orig_time.sec,
+                            nanosec: orig_time.nanosec,
+                        },
+                    },
                     child_frame_id: orig_frame,
                     transform: Transform {
                         translation: Vector3 {
