@@ -1,7 +1,7 @@
 use nalgebra::*;
 use ros_pointcloud2::prelude::*;
 
-mod imu;
+pub mod imu;
 mod localmap;
 pub mod sfasterlio;
 mod sophus_ekf;
@@ -41,7 +41,11 @@ impl Default for ImuEkfPrediction {
 }
 
 pub trait Registration {
-    fn register_and_map(&mut self, cloud: &[PointXYZ]) -> anyhow::Result<CloudRegisterResult>;
+    fn register_and_map(
+        &mut self,
+        cloud: &[PointXYZ],
+        initial_guess: &Isometry3<f64>,
+    ) -> anyhow::Result<CloudRegisterResult>;
     fn imu_ekf_predict(&mut self, acc: [f64; 3], gyro: [f64; 3], dt: f64) -> ImuEkfPrediction;
-    fn init_imu_ekf(&mut self, message_buffer: &[ImuMsg]);
+    fn init_imu_ekf(&mut self, message_buffer: &[ImuMsg]) -> Vector3<f64>;
 }

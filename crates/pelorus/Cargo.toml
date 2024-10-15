@@ -14,10 +14,10 @@ ros_pointcloud2.workspace = true
 r2r.workspace = true
 futures.workspace = true
 tokio.workspace = true
-lifis-ros.workspace = true
+prelio-ros2.workspace = true
 pelorus-reg.workspace = true
 nalgebra.workspace = true
-small_gicp-sys.workspace = true
+#small_gicp-sys.workspace = true
 tf_r2r.workspace = true
 anyhow.workspace = true
 

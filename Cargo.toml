@@ -25,15 +25,17 @@ ros_pointcloud2 = { version = "0.5.1", features = [
     "r2r_msg",
     "nalgebra",
     "rayon",
+    "derive",
 ] }
 r2r = "0.9"
 futures = "0.3"
 tokio = { version = "1", features = ["full"] }
-lifis-ros = { git = "ssh://git@github.com/stelzo/lifis-ros.git", branch = "jlio" }
 nalgebra = "0.33"
-small_gicp-sys = { git = "ssh://git@github.com/stelzo/small_gicp-sys.git", branch = "main" }
+#small_gicp-sys = { git = "ssh://git@github.com/stelzo/small_gicp-sys.git", branch = "main" }
 tf_r2r = { version = "0.2", features = ["ros2"] }
 anyhow = "1"
 sophus_lie = "0.9"
 rayon = "1"
 dashmap = { version = "6", features = ["rayon", "inline"] }
+imu-fusion = "0.2"
+imu-calib = "0.1"

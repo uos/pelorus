@@ -4,7 +4,7 @@
 use nalgebra::*;
 use ros_pointcloud2::points::PointXYZ;
 
-use crate::localmap::NearbyType;
+pub use crate::localmap::NearbyType;
 
 pub struct SFasterLio {
     ekf: crate::sophus_ekf::Esekf,
@@ -196,6 +196,7 @@ impl crate::Registration for SFasterLio {
     fn register_and_map(
         &mut self,
         cloud: &[PointXYZ],
+        initial_guess: &Isometry3<f64>,
     ) -> anyhow::Result<crate::CloudRegisterResult> {
         if !self.map.is_empty() {
             let map = &mut self.map;
@@ -219,8 +220,15 @@ impl crate::Registration for SFasterLio {
                     let planes: Vec<(Vector3<f64>, [f64; 4])> = cloud
                         .into_iter()
                         .filter_map(|point| {
+                            let p_t = initial_guess.transform_point(&Point3::new(
+                                point.x as f64,
+                                point.y as f64,
+                                point.z as f64,
+                            ));
+                            let query_point =
+                                PointXYZ::new(p_t.x as f32, p_t.y as f32, p_t.z as f32);
                             Self::plane_from_points(&map.k_nearest_neighbor_query(
-                                &point,
+                                &query_point,
                                 k,
                                 neighbor_max_range,
                             ))
@@ -333,8 +341,8 @@ impl crate::Registration for SFasterLio {
             .unwrap()
     }
 
-    fn init_imu_ekf(&mut self, message_buffer: &[crate::ImuMsg]) {
+    fn init_imu_ekf(&mut self, message_buffer: &[crate::ImuMsg]) -> Vector3<f64> {
         self.imu_processing
-            .initialize(message_buffer, &mut self.ekf);
+            .initialize(message_buffer, &mut self.ekf)
     }
 }
