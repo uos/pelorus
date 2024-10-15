@@ -18,8 +18,9 @@ rayon.workspace = true
 dashmap.workspace = true
 tokio.workspace = true
 
-fusion-sys = "0.1"
-imu-calib = "0.1"
+imu-fusion.workspace = true
+imu-calib.workspace = true
+
 gtsam-sys = { git = "ssh://git@github.com/stelzo/gtsam-sys.git", optional = true }
 
 [features]

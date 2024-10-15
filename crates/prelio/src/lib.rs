@@ -4,6 +4,7 @@ mod naive_preint;
 mod naive_preint_eth;
 pub mod timing;
 
+use imu_fusion::FusionAhrs;
 use nalgebra::*;
 use timing::RuntimeEvaluator;
 
@@ -16,6 +17,56 @@ use ros_pointcloud2::prelude::*;
 use imu::*;
 
 pub type ImuPredictor = dyn FnMut(&[imu::ImuMsg], f64, f64) -> ImuPosePrediction;
+
+struct ImuMadgwick {
+    fusion: imu_fusion::FusionAhrs,
+    gravity: f64,
+}
+
+impl ImuMadgwick {
+    pub fn new(gravity: f64) -> Self {
+        ImuMadgwick {
+            fusion: FusionAhrs::new(),
+            gravity,
+        }
+    }
+    /// Update the AHRS with new sensor data.
+    /// gyroscope units are radians/s
+    /// accelerometer units are m/s^2
+    pub fn update_no_magnetometer_ros(&mut self, dt: f64, gyro: [f64; 3], accel: [f64; 3]) {
+        let gyro = gyro.map(|v| v.to_degrees());
+        let gyro = imu_fusion::FusionVector::new(gyro[0] as f32, gyro[1] as f32, gyro[2] as f32);
+
+        let accel = accel.map(|a| a / self.gravity);
+        let accel =
+            imu_fusion::FusionVector::new(accel[0] as f32, accel[1] as f32, accel[2] as f32);
+
+        self.fusion.update_no_mag(gyro, accel, dt as f32)
+    }
+
+    /// Get orientation in world frame as a quaternion.
+    /// The quaternion is in the form [w, x, y, z].
+    pub fn get_quaternion(&self) -> [f64; 4] {
+        [
+            self.fusion.quaternion.w as f64,
+            self.fusion.quaternion.x as f64,
+            self.fusion.quaternion.y as f64,
+            self.fusion.quaternion.z as f64,
+        ]
+    }
+
+    /// Get linear acceleration in sensor frame.
+    /// The acceleration is in the form [x, y, z].
+    /// Units are g.
+    pub fn get_linear_acceleration(&self) -> [f64; 3] {
+        let acc = self.fusion.linear_acc();
+        [acc.x as f64, acc.y as f64, acc.z as f64]
+    }
+
+    pub fn get_linear_acceleration_ros(&self) -> [f64; 3] {
+        self.get_linear_acceleration().map(|a| a * self.gravity)
+    }
+}
 
 #[inline]
 fn safe_angle(angle: f64) -> f64 {
@@ -367,7 +418,6 @@ impl FromStr for MadgwickSetting {
     }
 }
 
-#[derive(Debug)]
 pub struct Lifis {
     imu_buffer: VecDeque<ImuMsg>,
     imu_integrate_buffer: VecDeque<ImuMsg>,
@@ -375,7 +425,7 @@ pub struct Lifis {
     pointcloud_buffer: Arc<Mutex<VecDeque<(Vec<PointXYZT>, f64, f64, HeaderMsg)>>>,
     undistort: ImuProcess,
     last_cloud_time: f64,
-    imu_filter_fusion: fusion_sys::Fusion,
+    imu_filter_fusion: ImuMadgwick,
     last_imu_time: f64,
     runtime_eval: RuntimeEvaluator,
     imu_calibration_apply: Option<imu_calib::CalibrationApplication>,
@@ -408,7 +458,7 @@ impl Lifis {
             imu_integrate_buffer: VecDeque::with_capacity(20 * CLOUDS_BUFFER_SIZE),
             last_cloud_time: 0.0,
             undistort: ImuProcess::new(gravity, imu_intrinsic_calibration.is_some()),
-            imu_filter_fusion: fusion_sys::Fusion::new(gravity),
+            imu_filter_fusion: ImuMadgwick::new(gravity),
             last_imu_time: 0.0,
             runtime_eval: RuntimeEvaluator::new(),
             imu_calibration_apply: imu_intrinsic_calibration,
@@ -768,35 +818,61 @@ impl Lifis {
             Some(imu_cloud) => {
                 // ------------ imu integration ------------
                 self.runtime_eval.start("imu_int").unwrap();
-                let estimated_pose = if given_imu_calib {
-                    // given a calibration, we trust the IMU data and use it for the pose
-                    #[cfg(feature = "gtsam")]
-                    {
-                        ImuProcess::integrate_imu_gtsam(
-                            &Vec::from_iter(self.imu_integrate_buffer.iter().rev().cloned()),
-                            self.last_cloud_time,
-                            Some(&params.undistort),
-                            params.imu.clone(), // TODO maybe not clone but changes inside the function?
-                        )
-                    }
+                let imu_int = match imu_pose_prediction_init_guess {
+                    Some(mut imu_pose_prediction_init_guess) => imu_pose_prediction_init_guess(
+                        &Vec::from_iter(self.imu_integrate_buffer.iter().rev().cloned()),
+                        cloud_begin_time,
+                        cloud_end_time,
+                    ),
+                    None => {
+                        let estimated_pose = if given_imu_calib {
+                            // given a calibration, we trust the IMU data and use it for the pose
+                            #[cfg(feature = "gtsam")]
+                            {
+                                ImuProcess::integrate_imu_gtsam(
+                                    &Vec::from_iter(
+                                        self.imu_integrate_buffer.iter().rev().cloned(),
+                                    ),
+                                    self.last_cloud_time,
+                                    Some(&params.undistort),
+                                    params.imu.clone(), // TODO maybe not clone but changes inside the function?
+                                )
+                            }
 
-                    #[cfg(not(feature = "gtsam"))]
-                    {
-                        naive_preint_eth::integrate_imu(
-                            &Vec::from_iter(self.imu_integrate_buffer.iter().rev().cloned()),
-                            self.last_cloud_time,
-                            Some(&params.undistort),
-                            false, // TODO check ahrs orientation via config or if enabled
-                            params.imu.gravity,
-                        )
+                            #[cfg(not(feature = "gtsam"))]
+                            {
+                                naive_preint_eth::integrate_imu(
+                                    &Vec::from_iter(
+                                        self.imu_integrate_buffer.iter().rev().cloned(),
+                                    ),
+                                    self.last_cloud_time,
+                                    Some(&params.undistort),
+                                    false, // TODO check ahrs orientation via config or if enabled
+                                    params.imu.gravity,
+                                )
+                            }
+                        } else {
+                            // no calibration, gyro is used for rotation but nothing else
+                            Isometry3::from_parts(
+                                Translation::identity(),
+                                imu_cloud.end_of_frame_guess.rotation,
+                            )
+                        };
+
+                        ImuPosePrediction {
+                            pose: estimated_pose,
+                            linear_velocity: Vector3::zeros(),
+                            angular_velocity: Vector3::new(
+                                imu_cloud.last_twist[3],
+                                imu_cloud.last_twist[4],
+                                imu_cloud.last_twist[5],
+                            ),
+                            lidar_imu_extrinsic_rotation: Matrix3::identity(), // TODO never used?
+                            lidar_imu_extrinsic_translation: Vector3::zeros(), // TODO never used?
+                        }
                     }
-                } else {
-                    // no calibration, gyro is used for rotation but nothing else
-                    Isometry3::from_parts(
-                        Translation::identity(),
-                        imu_cloud.end_of_frame_guess.rotation,
-                    )
                 };
+
                 self.runtime_eval.stop("imu_int").unwrap();
 
                 bg_filtering.drop(g_cloud_buffer).await?;
@@ -807,7 +883,7 @@ impl Lifis {
                 Ok(Some(LifisProcessedCloud {
                     cloud: imu_cloud.cloud,
                     header,
-                    end_of_frame_guess: estimated_pose,
+                    end_of_frame_guess: imu_int.pose,
                     end_of_frame_time: self.imu_integrate_buffer.back().unwrap().stamp.clone(),
                     pose_covariance: imu_cloud.integrated_covariance,
                     twist_covariance: imu_cloud.last_covariance,
