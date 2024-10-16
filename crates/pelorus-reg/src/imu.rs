@@ -211,7 +211,7 @@ impl ImuProcessing {
             q.fixed_view_mut::<3, 3>(3, 3).copy_from(&self.ekf_cov_acc);
             q.fixed_view_mut::<3, 3>(6, 6)
                 .copy_from(&self.ekf_cov_gyr_bias);
-            q.fixed_view_mut::<3, 3>(12, 12)
+            q.fixed_view_mut::<3, 3>(9, 9)
                 .copy_from(&self.ekf_cov_acc_bias);
 
             q

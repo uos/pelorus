@@ -119,11 +119,10 @@ impl From<LioConfigParse> for LioConfig {
     }
 }
 
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
+async fn lio() -> Result<(), Box<dyn std::error::Error>> {
     let ctx = r2r::Context::create()?;
     let mut node = r2r::Node::create(ctx, "lio", "lio")?;
-    let log_prefix = "lio";
+    let log_prefix = "pelorus_lio";
     let config = std::sync::Arc::new(std::sync::Mutex::new(LioConfigParse::default()));
     let (_, _) = node.make_derived_parameter_handler(config.clone())?;
     let config = {
@@ -223,9 +222,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let imu_odom_publisher = node.create_publisher::<Odometry>("imu_odom", config.imu_odom_qos)?;
     let imu_path_publisher = node.create_publisher::<Path>("imu_path", config.imu_path_qos)?;
 
-    #[cfg(debug_assertions)]
-    r2r::log_warn!(log_prefix, "Running in dev mode.");
-
     let mut t_world_lidar = nalgebra::Isometry3::identity();
     let mut t_last_current = nalgebra::Isometry3::identity();
 
@@ -264,102 +260,109 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     loop {
         node.spin_once(std::time::Duration::from_millis(100));
         match lifis_node
-            .tick(None, {
-                let map = map.clone();
-                let mean_acc = mean_acc.clone();
-                Some(Box::new(
-                    move |imu_msgs: &[prelio_ros2::prelio::imu::ImuMsg],
-                          cloud_begin_time,
-                          cloud_end_time| {
-                        let mut map = map.lock().unwrap();
+            .tick(
+                None,
+                {
+                    let map = map.clone();
+                    let mean_acc = mean_acc.clone();
+                    Some(Box::new(
+                        move |imu_msgs: &[prelio_ros2::prelio::imu::ImuMsg],
+                              cloud_begin_time,
+                              cloud_end_time| {
+                            let mut map = map.lock().unwrap();
 
-                        assert!(!imu_msgs.is_empty());
+                            assert!(!imu_msgs.is_empty());
 
-                        let mut last_time = Some(cloud_begin_time);
-                        let mean_acc = {
-                            mean_acc
-                                .lock()
-                                .unwrap()
-                                .expect("IMU not initialized before first prediction")
-                        }
-                        .norm();
+                            let mut last_time = Some(cloud_begin_time);
+                            let mean_acc = {
+                                mean_acc
+                                    .lock()
+                                    .unwrap()
+                                    .expect("IMU not initialized before first prediction")
+                            }
+                            .norm();
 
-                        let mut angvel_avr_x = 0.0;
-                        let mut angvel_avr_y = 0.0;
-                        let mut angvel_avr_z = 0.0;
+                            let mut angvel_avr_x = 0.0;
+                            let mut angvel_avr_y = 0.0;
+                            let mut angvel_avr_z = 0.0;
 
-                        let mut acc_avr_x = 0.0;
-                        let mut acc_avr_y = 0.0;
-                        let mut acc_avr_z = 0.0;
+                            let mut acc_avr_x = 0.0;
+                            let mut acc_avr_y = 0.0;
+                            let mut acc_avr_z = 0.0;
 
-                        let mut current_time = 0.0;
+                            let mut current_time = 0.0;
 
-                        for imu_msg in imu_msgs.windows(2) {
-                            let head = &imu_msg[0];
-                            let tail = &imu_msg[1];
+                            for imu_msg in imu_msgs.windows(2) {
+                                let head = &imu_msg[0];
+                                let tail = &imu_msg[1];
 
-                            let last_time = if let Some(inner_last_time) = last_time {
-                                last_time = None;
-                                inner_last_time
-                            } else {
-                                prelio_ros2::prelio::timestamp_to_secs(&head.stamp)
-                            };
-                            current_time = prelio_ros2::prelio::timestamp_to_secs(&tail.stamp);
-                            let msg_time_rel = current_time - last_time;
+                                let last_time = if let Some(inner_last_time) = last_time {
+                                    last_time = None;
+                                    inner_last_time
+                                } else {
+                                    prelio_ros2::prelio::timestamp_to_secs(&head.stamp)
+                                };
+                                current_time = prelio_ros2::prelio::timestamp_to_secs(&tail.stamp);
+                                let msg_time_rel = current_time - last_time;
 
-                            angvel_avr_x =
-                                (head.angular_velocity[0] + tail.angular_velocity[0]) * 0.5;
-                            angvel_avr_y =
-                                (head.angular_velocity[1] + tail.angular_velocity[1]) * 0.5;
-                            angvel_avr_z =
-                                (head.angular_velocity[2] + tail.angular_velocity[2]) * 0.5;
+                                angvel_avr_x =
+                                    (head.angular_velocity[0] + tail.angular_velocity[0]) * 0.5;
+                                angvel_avr_y =
+                                    (head.angular_velocity[1] + tail.angular_velocity[1]) * 0.5;
+                                angvel_avr_z =
+                                    (head.angular_velocity[2] + tail.angular_velocity[2]) * 0.5;
 
-                            acc_avr_x = (head.linear_acceleration[0] + tail.linear_acceleration[0])
-                                * 0.5
-                                * gravity
-                                / mean_acc;
-                            acc_avr_y = (head.linear_acceleration[1] + tail.linear_acceleration[1])
-                                * 0.5
-                                * gravity
-                                / mean_acc;
-                            acc_avr_z = (head.linear_acceleration[2] + tail.linear_acceleration[2])
-                                * 0.5
-                                * gravity
-                                / mean_acc;
+                                acc_avr_x = (head.linear_acceleration[0]
+                                    + tail.linear_acceleration[0])
+                                    * 0.5
+                                    * gravity
+                                    / mean_acc;
+                                acc_avr_y = (head.linear_acceleration[1]
+                                    + tail.linear_acceleration[1])
+                                    * 0.5
+                                    * gravity
+                                    / mean_acc;
+                                acc_avr_z = (head.linear_acceleration[2]
+                                    + tail.linear_acceleration[2])
+                                    * 0.5
+                                    * gravity
+                                    / mean_acc;
 
-                            map.imu_ekf_predict(
+                                map.imu_ekf_predict(
+                                    [acc_avr_x, acc_avr_y, acc_avr_z],
+                                    [angvel_avr_x, angvel_avr_y, angvel_avr_z],
+                                    msg_time_rel,
+                                );
+                            }
+
+                            // last prediction just extrapolates last imu interpolation to the end of the frame
+                            let dt_cloud_end_to_last_cloud = cloud_end_time - current_time;
+                            let prediction = map.imu_ekf_predict(
                                 [acc_avr_x, acc_avr_y, acc_avr_z],
                                 [angvel_avr_x, angvel_avr_y, angvel_avr_z],
-                                msg_time_rel,
+                                dt_cloud_end_to_last_cloud,
                             );
-                        }
 
-                        // last prediction just extrapolates last imu interpolation to the end of the frame
-                        let dt_cloud_end_to_last_cloud = cloud_end_time - current_time;
-                        let prediction = map.imu_ekf_predict(
-                            [acc_avr_x, acc_avr_y, acc_avr_z],
-                            [angvel_avr_x, angvel_avr_y, angvel_avr_z],
-                            dt_cloud_end_to_last_cloud,
-                        );
-
-                        prelio_ros2::prelio::ImuPosePrediction {
-                            pose: prediction.pose,
-                            linear_velocity: prediction.linear_velocity,
-                            angular_velocity: nalgebra::Vector3::default(),
-                            lidar_imu_extrinsic_rotation: prediction
-                                .lidar_imu_extrinsic
-                                .rotation
-                                .to_rotation_matrix()
-                                .matrix()
-                                .clone(),
-                            lidar_imu_extrinsic_translation: prediction
-                                .lidar_imu_extrinsic
-                                .translation
-                                .vector,
-                        }
-                    },
-                ))
-            })
+                            prelio_ros2::prelio::ImuPosePrediction {
+                                pose: prediction.pose,
+                                linear_velocity: prediction.linear_velocity,
+                                angular_velocity: nalgebra::Vector3::default(),
+                                lidar_imu_extrinsic_rotation: prediction
+                                    .lidar_imu_extrinsic
+                                    .rotation
+                                    .to_rotation_matrix()
+                                    .matrix()
+                                    .clone(),
+                                lidar_imu_extrinsic_translation: prediction
+                                    .lidar_imu_extrinsic
+                                    .translation
+                                    .vector,
+                            }
+                        },
+                    ))
+                },
+                &std::time::Duration::from_millis(10),
+            )
             .await
         {
             Ok(Some(lifis_tick)) => {
@@ -598,7 +601,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         last_render = std::time::Instant::now();
                         r2r::log_info!(
                             log_prefix,
-                            "{}[2J{}[1;1H[LIO] - Simple LiDAR Odometry\n{}",
+                            "{}[2J{}[1;1HAccelerated LiDAR Odometry Framework\n{}",
                             27 as char,
                             27 as char,
                             eval.render()
@@ -612,4 +615,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             _ => {}
         }
     }
+}
+
+#[cfg(debug_assertions)]
+#[tokio::main]
+async fn main() -> color_eyre::eyre::Result<(), Box<dyn std::error::Error>> {
+    color_eyre::install()?;
+    r2r::log_warn!("pelorus", "Running in dev mode.");
+    lio().await
+}
+
+#[cfg(not(debug_assertions))]
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    lio().await
 }

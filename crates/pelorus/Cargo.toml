@@ -1,35 +1,41 @@
+# colcon tools do not support workspace package markings since the package toml will be installed in share, so this is a copy of the workspace
+
 [package]
 name = "pelorus"
 description = "LiDAR Odometry"
-
-version.workspace = true
-edition.workspace = true
-repository.workspace = true
-license.workspace = true
-keywords.workspace = true
-include.workspace = true
+version = "0.1.0"
+edition = "2021"
 
 [dependencies]
-ros_pointcloud2.workspace = true
-r2r.workspace = true
-futures.workspace = true
-tokio.workspace = true
-prelio-ros2.workspace = true
-pelorus-reg.workspace = true
-nalgebra.workspace = true
-#small_gicp-sys.workspace = true
-tf_r2r.workspace = true
-anyhow.workspace = true
+ros_pointcloud2 = { version = "0.5.1", features = [
+    "r2r_msg",
+    "nalgebra",
+    "rayon",
+    "derive",
+] }
+prelio-ros2 = { version = "0.1", path = "../prelio-ros2" }
+pelorus-reg = { version = "0.1", path = "../pelorus-reg" }
+r2r = "0.9"
+futures = "0.3"
+tokio = { version = "1", features = ["full"] }
+nalgebra = "0.33"
+#small_gicp-sys = { git = "ssh://git@github.com/stelzo/small_gicp-sys.git", branch = "main" }
+tf_r2r = { version = "0.2", features = ["ros2"] }
+anyhow = "1"
+color-eyre = "0.6"
 
-[build-dependencies]
-bindgen = "0.69"
-cc = "1"
-pkg-config = "0.3"
+#[build-dependencies]
+#bindgen = "0.69"
+#cc = "1"
+#pkg-config = "0.3"
 
-[profile.release]
-lto = "fat"
-panic = "abort"
-strip = "debuginfo"
+#[profile.release]
+#lto = "fat"
+#panic = "abort"
+#strip = "debuginfo"
+
+[profile.dev.package.backtrace]
+opt-level = 3
 
 [package.metadata.ros]
 install_to_share = ["launch"]

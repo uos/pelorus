@@ -39,3 +39,4 @@ rayon = "1"
 dashmap = { version = "6", features = ["rayon", "inline"] }
 imu-fusion = "0.2"
 imu-calib = "0.1"
+color-eyre = "0.6"
