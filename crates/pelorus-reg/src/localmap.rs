@@ -199,9 +199,11 @@ impl Localmap {
         (gx, gy, gz)
     }
 
-    fn hash(grid_key: &(i32, i32, i32)) -> i32 {
-        const MOD: i32 = 100000;
-        (grid_key.0 * 73856093) ^ (grid_key.1 * 471943) ^ (grid_key.2 * 83492791) % MOD
+    fn hash(grid_key: &(i32, i32, i32)) -> i64 {
+        const MOD: i64 = 100000;
+        (grid_key.0 as i64 * 73856093)
+            ^ (grid_key.1 as i64 * 471943)
+            ^ (grid_key.2 as i64 * 83492791) % MOD
     }
 
     pub fn remove_cold_voxels(&mut self, threshold: usize) {

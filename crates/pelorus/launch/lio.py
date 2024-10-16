@@ -8,7 +8,7 @@ def generate_launch_description():
             executable='pelorus',
             parameters=[
                 { 'verbose': True },
-                { 'feedback_fps': 1 }, # terminal fps of timing. 0 to disable.
+                { 'feedback_fps': 0 }, # terminal fps of timing. 0 to disable.
                 { 'map_frame': 'map' },
                 { 'imu_lidar_tf_override': False }, # Use TF to get IMU to sensor transformation.
                 { 'filter_global_zero_frame': '' }, # Global Ground Frame. When set, points of polygons are transformed to this frame first before filtering. - TODO create global ground frame gravity vector from fusion with lio pose. then this can default to "-auto-"

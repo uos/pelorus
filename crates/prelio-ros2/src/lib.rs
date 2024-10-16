@@ -112,7 +112,7 @@ pub struct State {
 
 impl State {
     pub fn new(config: Arc<std::sync::Mutex<config::ConfigParse>>) -> anyhow::Result<Self> {
-        let (gravity, imu_calibration_params, madgwick_filter) = {
+        let (gravity, imu_calibration_params, madgwick_filter, lidar_vendor) = {
             let config = config.lock().unwrap();
             (
                 config.gravity,
@@ -127,20 +127,44 @@ impl State {
                     }),
                 },
                 MadgwickSetting::from_str(&config.madgwick_filter)?,
+                config::LidarVendor::from_str(&config.lidar_vendor)?,
             )
         };
+
+        let lifis_params = LifisParameters::default(); // TODO via params
 
         Ok(State {
             global_polygon: None,
             sensor_tf: None,
             imu_tf: None,
             config,
-            lifis: Arc::new(Mutex::new(prelio::Lifis::create(
-                gravity,
-                madgwick_filter,
-                imu_calibration_params,
-            )?)),
-            lifis_params: LifisParameters::default(),
+            lifis: match lidar_vendor {
+                config::LidarVendor::Velodyne => {
+                    Arc::new(Mutex::new(prelio::Lifis::create::<5, VelodynePoint>(
+                        gravity,
+                        madgwick_filter,
+                        imu_calibration_params,
+                        &lifis_params,
+                    )?))
+                }
+                config::LidarVendor::Ouster => {
+                    Arc::new(Mutex::new(prelio::Lifis::create::<4, OusterPoint>(
+                        gravity,
+                        madgwick_filter,
+                        imu_calibration_params,
+                        &lifis_params,
+                    )?))
+                }
+                config::LidarVendor::Skip => {
+                    Arc::new(Mutex::new(prelio::Lifis::create::<3, SkipPoint>(
+                        gravity,
+                        madgwick_filter,
+                        imu_calibration_params,
+                        &lifis_params,
+                    )?))
+                }
+            },
+            lifis_params,
             take_nth_scan: N_NTH_SCAN,
         })
     }
@@ -214,12 +238,14 @@ async fn polygon_callback(
     Ok(())
 }
 
-fn cloud_callback(
+async fn cloud_callback(
     state: Arc<Mutex<State>>,
     tf_listener: Arc<tf::TfListener>,
     msg: PointCloud2,
     first_imu_tf: Option<String>,
 ) -> anyhow::Result<()> {
+    dbg!("lifis-ros", "LifisNode::cloud_callback start");
+
     let orig_header = msg.header.clone();
     let in_msg: PointCloud2Msg = msg.into();
 
@@ -229,7 +255,7 @@ fn cloud_callback(
         return Ok(());
     }
 
-    let lidar_vendor = {
+    {
         let (imu_tf, sensor_tf) = {
             let (imu_tf_override, global_zero_frame, _, sensor_tf) = {
                 let mut state = state.lock().unwrap();
@@ -332,15 +358,8 @@ fn cloud_callback(
             state.imu_tf = Some(imu_tf);
         }
 
-        let (params, lidar_vendor) = {
-            let (
-                global_polygon,
-                invert_polygon,
-                global_zero_frame,
-                map_frame,
-                lidar_vendor,
-                mut params,
-            ) = {
+        let params = {
+            let (global_polygon, invert_polygon, global_zero_frame, map_frame, mut params) = {
                 let state = state.lock().unwrap();
                 let config = state.config.lock().unwrap();
                 let params = config::parse(&config)?;
@@ -350,7 +369,6 @@ fn cloud_callback(
                     config.invert_polygon,
                     config.global_zero_frame.clone(),
                     config.map_frame.clone(),
-                    config.lidar_vendor.clone(),
                     params,
                 )
             };
@@ -394,33 +412,22 @@ fn cloud_callback(
                 params.passthrough_filter.invert_polygon = invert_polygon;
             };
 
-            (params, lidar_vendor)
+            params
         };
 
         {
             let mut state = state.lock().unwrap();
             state.lifis_params = params;
         }
-
-        lidar_vendor
     };
 
     {
         let state = state.lock().unwrap();
         let mut lifis = state.lifis.lock().unwrap();
-
-        match config::LidarVendor::from_str(&lidar_vendor)? {
-            config::LidarVendor::Velodyne => {
-                lifis.add_pointcloud::<5, VelodynePoint>(in_msg);
-            }
-            config::LidarVendor::Ouster => {
-                lifis.add_pointcloud::<4, OusterPoint>(in_msg);
-            }
-            config::LidarVendor::Skip => {
-                lifis.add_pointcloud::<3, SkipPoint>(in_msg);
-            }
-        };
+        lifis.add_pointcloud(in_msg);
     }
+
+    dbg!("lifis-ros", "LifisNode::cloud_callback end");
 
     Ok(())
 }
@@ -518,14 +525,19 @@ impl LifisNode {
         pool.spawn(async move {
             cloud_subscriber
                 .for_each(|msg| async {
-                    let state_clone = state_clone.clone();
-                    let tf_listener_clone = tf_listener_clone.clone();
+                    /*let tf_listener_clone = tf_listener_clone.clone();
+                    let imu_tf_frame_lidar_inner =
+                        imu_tf_frame_lidar_inner.clone().lock().unwrap().clone();
+                    //let state_clone = state_clone.clone();*/
+
                     match cloud_callback(
                         state_clone.clone(),
-                        tf_listener_clone,
+                        tf_listener_clone.clone(),
                         msg,
-                        imu_tf_frame_lidar_inner.lock().unwrap().clone(),
-                    ) {
+                        Some("".to_string()),
+                    )
+                    .await
+                    {
                         Ok(_) => {}
                         Err(e) => {
                             log_error!(logger_prefix, "{:?}", e);
@@ -718,6 +730,7 @@ impl LifisNode {
         &mut self,
         imu_pose_prediction_undistort: Option<Box<prelio::ImuPredictor>>,
         imu_pose_prediction_init_guess: Option<Box<prelio::ImuPredictor>>,
+        timeout: &std::time::Duration,
     ) -> anyhow::Result<Option<LifisTick>> {
         self.node.spin_once(std::time::Duration::from_millis(100));
 
@@ -739,10 +752,11 @@ impl LifisNode {
                 config::LidarVendor::Velodyne => {
                     let mut lifis = lifis.lock().unwrap();
                     let cloud = lifis
-                        .tick::<5, VelodynePoint>(
+                        .tick(
                             &lifis_params,
                             imu_pose_prediction_undistort,
                             imu_pose_prediction_init_guess,
+                            timeout,
                         )
                         .await?;
                     cloud
@@ -751,10 +765,11 @@ impl LifisNode {
                     let mut lifis = lifis.lock().unwrap();
                     //let start_timing = std::time::Instant::now();
                     let cloud = lifis
-                        .tick::<4, OusterPoint>(
+                        .tick(
                             &lifis_params,
                             imu_pose_prediction_undistort,
                             imu_pose_prediction_init_guess,
+                            timeout,
                         )
                         .await?;
                     cloud
@@ -762,10 +777,11 @@ impl LifisNode {
                 config::LidarVendor::Skip => {
                     let mut lifis = lifis.lock().unwrap();
                     let cloud = lifis
-                        .tick::<3, SkipPoint>(
+                        .tick(
                             &lifis_params,
                             imu_pose_prediction_undistort,
                             imu_pose_prediction_init_guess,
+                            timeout,
                         )
                         .await?;
                     cloud
