@@ -363,7 +363,7 @@ impl ImuProcess {
         &mut self,
         meas: MeasureGroup,
         config: &config::UndistortParameters,
-        imu_pose_prediction: Option<impl FnMut(&[ImuMsg], f64, f64) -> crate::ImuPosePrediction>,
+        imu_pose_prediction: &Option<impl Fn(&[ImuMsg], f64, f64) -> crate::ImuPosePrediction>,
     ) -> Option<ImuProcessedCloud> {
         debug_assert!(!meas.imu_buffer.is_empty());
         debug_assert!(!meas.cloud.is_empty());
@@ -373,7 +373,8 @@ impl ImuProcess {
         let dt = meas.lidar_end_stamp - meas.lidar_start_stamp;
 
         let estimated_pose = match imu_pose_prediction
-            .map(|mut f| f(&meas.imu_buffer, meas.lidar_start_stamp, dt))
+            .as_ref()
+            .map(|f| f(&meas.imu_buffer, meas.lidar_start_stamp, dt))
         {
             Some(prediction) => {
                 let rot =
