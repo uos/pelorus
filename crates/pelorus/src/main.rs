@@ -192,7 +192,7 @@ async fn lio() -> Result<(), Box<dyn std::error::Error>> {
         }))
     };
 
-    let mut lifis_node = LifisNode::create(
+    let (mut lifis_node, mut synced_rx) = LifisNode::create(
         prelio_ros2::LifisNodeParameters {
             node_name: "lifis",
             imu_qos: config.imu_qos,
@@ -200,19 +200,109 @@ async fn lio() -> Result<(), Box<dyn std::error::Error>> {
             ..Default::default()
         },
         imu_pose_predictor_init,
+        None,
+        {
+            let map = map.clone();
+            let mean_acc = mean_acc.clone();
+            Some(Box::new(
+                move |imu_msgs: &[prelio_ros2::prelio::imu::ImuMsg],
+                      cloud_begin_time,
+                      cloud_end_time| {
+                    let mut map = map.lock().unwrap();
+
+                    let cloud_end_time = cloud_begin_time + cloud_end_time;
+
+                    assert!(!imu_msgs.is_empty());
+
+                    let mut last_time = Some(cloud_begin_time);
+                    let mean_acc = {
+                        mean_acc
+                            .lock()
+                            .unwrap()
+                            .expect("IMU not initialized before first prediction")
+                    }
+                    .norm();
+
+                    let mut angvel_avr_x = 0.0;
+                    let mut angvel_avr_y = 0.0;
+                    let mut angvel_avr_z = 0.0;
+
+                    let mut acc_avr_x = 0.0;
+                    let mut acc_avr_y = 0.0;
+                    let mut acc_avr_z = 0.0;
+
+                    let mut current_time = 0.0;
+
+                    for imu_msg in imu_msgs.windows(2) {
+                        let head = &imu_msg[0];
+                        let tail = &imu_msg[1];
+
+                        let last_time = if let Some(inner_last_time) = last_time {
+                            last_time = None;
+                            inner_last_time
+                        } else {
+                            prelio_ros2::prelio::timestamp_to_secs(&head.stamp)
+                        };
+                        current_time = prelio_ros2::prelio::timestamp_to_secs(&tail.stamp);
+                        let msg_time_rel = current_time - last_time;
+
+                        angvel_avr_x = (head.angular_velocity[0] + tail.angular_velocity[0]) * 0.5;
+                        angvel_avr_y = (head.angular_velocity[1] + tail.angular_velocity[1]) * 0.5;
+                        angvel_avr_z = (head.angular_velocity[2] + tail.angular_velocity[2]) * 0.5;
+
+                        acc_avr_x = (head.linear_acceleration[0] + tail.linear_acceleration[0])
+                            * 0.5
+                            * gravity
+                            / mean_acc;
+                        acc_avr_y = (head.linear_acceleration[1] + tail.linear_acceleration[1])
+                            * 0.5
+                            * gravity
+                            / mean_acc;
+                        acc_avr_z = (head.linear_acceleration[2] + tail.linear_acceleration[2])
+                            * 0.5
+                            * gravity
+                            / mean_acc;
+
+                        map.imu_ekf_predict(
+                            [acc_avr_x, acc_avr_y, acc_avr_z],
+                            [angvel_avr_x, angvel_avr_y, angvel_avr_z],
+                            msg_time_rel,
+                        );
+                    }
+
+                    // last prediction just extrapolates last imu interpolation to the end of the frame
+                    let dt_cloud_end_to_last_cloud = cloud_end_time - current_time;
+                    let prediction = map.imu_ekf_predict(
+                        [acc_avr_x, acc_avr_y, acc_avr_z],
+                        [angvel_avr_x, angvel_avr_y, angvel_avr_z],
+                        dt_cloud_end_to_last_cloud,
+                    );
+
+                    prelio_ros2::prelio::ImuPosePrediction {
+                        pose: prediction.pose,
+                        linear_velocity: prediction.linear_velocity,
+                        angular_velocity: nalgebra::Vector3::default(),
+                        lidar_imu_extrinsic_rotation: prediction
+                            .lidar_imu_extrinsic
+                            .rotation
+                            .to_rotation_matrix()
+                            .matrix()
+                            .clone(),
+                        lidar_imu_extrinsic_translation: prediction
+                            .lidar_imu_extrinsic
+                            .translation
+                            .vector,
+                    }
+                },
+            ))
+        },
     )
     .await?;
 
     let map_frame = {
-        lifis_node
-            .state
-            .lock()
-            .unwrap()
-            .config
-            .lock()
-            .unwrap()
-            .map_frame
-            .clone()
+        let lnode = lifis_node.state.lock().unwrap();
+        let config = lnode.config.lock().unwrap();
+        config.map_frame.clone()
     };
 
     let cloud_publisher =
@@ -257,168 +347,42 @@ async fn lio() -> Result<(), Box<dyn std::error::Error>> {
     };
     let mut last_render = std::time::Instant::now();
 
-    loop {
-        node.spin_once(std::time::Duration::from_millis(100));
-        match lifis_node
-            .tick(
-                None,
-                {
-                    let map = map.clone();
-                    let mean_acc = mean_acc.clone();
-                    Some(Box::new(
-                        move |imu_msgs: &[prelio_ros2::prelio::imu::ImuMsg],
-                              cloud_begin_time,
-                              cloud_end_time| {
-                            let mut map = map.lock().unwrap();
+    tokio::spawn(async move {
+        while let Some(lifis_tick) = synced_rx.recv().await {
+            eval.start("total").unwrap();
+            //eval.merge(&lifis_tick.runtime_eval);
 
-                            assert!(!imu_msgs.is_empty());
-
-                            let mut last_time = Some(cloud_begin_time);
-                            let mean_acc = {
-                                mean_acc
-                                    .lock()
-                                    .unwrap()
-                                    .expect("IMU not initialized before first prediction")
-                            }
-                            .norm();
-
-                            let mut angvel_avr_x = 0.0;
-                            let mut angvel_avr_y = 0.0;
-                            let mut angvel_avr_z = 0.0;
-
-                            let mut acc_avr_x = 0.0;
-                            let mut acc_avr_y = 0.0;
-                            let mut acc_avr_z = 0.0;
-
-                            let mut current_time = 0.0;
-
-                            for imu_msg in imu_msgs.windows(2) {
-                                let head = &imu_msg[0];
-                                let tail = &imu_msg[1];
-
-                                let last_time = if let Some(inner_last_time) = last_time {
-                                    last_time = None;
-                                    inner_last_time
-                                } else {
-                                    prelio_ros2::prelio::timestamp_to_secs(&head.stamp)
-                                };
-                                current_time = prelio_ros2::prelio::timestamp_to_secs(&tail.stamp);
-                                let msg_time_rel = current_time - last_time;
-
-                                angvel_avr_x =
-                                    (head.angular_velocity[0] + tail.angular_velocity[0]) * 0.5;
-                                angvel_avr_y =
-                                    (head.angular_velocity[1] + tail.angular_velocity[1]) * 0.5;
-                                angvel_avr_z =
-                                    (head.angular_velocity[2] + tail.angular_velocity[2]) * 0.5;
-
-                                acc_avr_x = (head.linear_acceleration[0]
-                                    + tail.linear_acceleration[0])
-                                    * 0.5
-                                    * gravity
-                                    / mean_acc;
-                                acc_avr_y = (head.linear_acceleration[1]
-                                    + tail.linear_acceleration[1])
-                                    * 0.5
-                                    * gravity
-                                    / mean_acc;
-                                acc_avr_z = (head.linear_acceleration[2]
-                                    + tail.linear_acceleration[2])
-                                    * 0.5
-                                    * gravity
-                                    / mean_acc;
-
-                                map.imu_ekf_predict(
-                                    [acc_avr_x, acc_avr_y, acc_avr_z],
-                                    [angvel_avr_x, angvel_avr_y, angvel_avr_z],
-                                    msg_time_rel,
-                                );
-                            }
-
-                            // last prediction just extrapolates last imu interpolation to the end of the frame
-                            let dt_cloud_end_to_last_cloud = cloud_end_time - current_time;
-                            let prediction = map.imu_ekf_predict(
-                                [acc_avr_x, acc_avr_y, acc_avr_z],
-                                [angvel_avr_x, angvel_avr_y, angvel_avr_z],
-                                dt_cloud_end_to_last_cloud,
-                            );
-
-                            prelio_ros2::prelio::ImuPosePrediction {
-                                pose: prediction.pose,
-                                linear_velocity: prediction.linear_velocity,
-                                angular_velocity: nalgebra::Vector3::default(),
-                                lidar_imu_extrinsic_rotation: prediction
-                                    .lidar_imu_extrinsic
-                                    .rotation
-                                    .to_rotation_matrix()
-                                    .matrix()
-                                    .clone(),
-                                lidar_imu_extrinsic_translation: prediction
-                                    .lidar_imu_extrinsic
-                                    .translation
-                                    .vector,
-                            }
-                        },
-                    ))
-                },
-                &std::time::Duration::from_millis(10),
-            )
-            .await
-        {
-            Ok(Some(lifis_tick)) => {
-                eval.start("total").unwrap();
-                eval.merge(&lifis_tick.runtime_eval);
-
-                let cloud = lifis_tick.deskewed_cloud;
-                let orig_frame = lifis_tick.cloud_header.frame_id.clone();
-                let orig_time = lifis_tick.cloud_header.stamp.clone();
-                let current_cloud_time = timestamp_to_secs(&orig_time);
-                if let Some(existing_last_scan_time) = last_scan_time {
-                    if current_cloud_time < existing_last_scan_time {
-                        let mut map = map.lock().unwrap();
-                        map.clear_localmap();
-                        r2r::log_info!(log_prefix, "Resetting map");
-                        t_world_lidar = nalgebra::Isometry3::identity();
-                        t_last_current = nalgebra::Isometry3::identity();
-                    }
+            let cloud = lifis_tick.deskewed_cloud;
+            let orig_frame = lifis_tick.cloud_header.frame_id.clone();
+            let orig_time = lifis_tick.cloud_header.stamp.clone();
+            let current_cloud_time = timestamp_to_secs(&orig_time);
+            if let Some(existing_last_scan_time) = last_scan_time {
+                if current_cloud_time < existing_last_scan_time {
+                    let mut map = map.lock().unwrap();
+                    map.clear_localmap();
+                    r2r::log_info!(log_prefix, "Resetting map");
+                    t_world_lidar = nalgebra::Isometry3::identity();
+                    t_last_current = nalgebra::Isometry3::identity();
                 }
+            }
 
-                last_scan_time = Some(timestamp_to_secs(&orig_time));
+            last_scan_time = Some(timestamp_to_secs(&orig_time));
 
-                // use the last difference if there is no odom from lifis
-                let init_guess = if lifis_tick.imu_odom.pose.pose.position.x == 0.0
-                    && lifis_tick.imu_odom.pose.pose.position.y == 0.0
-                    && lifis_tick.imu_odom.pose.pose.position.z == 0.0
+            // use the last difference if there is no odom from lifis
+            let init_guess = if lifis_tick.imu_odom.pose.pose.position.x == 0.0
+                && lifis_tick.imu_odom.pose.pose.position.y == 0.0
+                && lifis_tick.imu_odom.pose.pose.position.z == 0.0
+            {
+                // lifis did not return a orientation (for example when not using IMU at all), use the last difference as guess
+                if lifis_tick.imu_odom.pose.pose.orientation.w == 1.0
+                    && lifis_tick.imu_odom.pose.pose.orientation.x == 0.0
+                    && lifis_tick.imu_odom.pose.pose.orientation.y == 0.0
+                    && lifis_tick.imu_odom.pose.pose.orientation.z == 0.0
                 {
-                    // lifis did not return a orientation (for example when not using IMU at all), use the last difference as guess
-                    if lifis_tick.imu_odom.pose.pose.orientation.w == 1.0
-                        && lifis_tick.imu_odom.pose.pose.orientation.x == 0.0
-                        && lifis_tick.imu_odom.pose.pose.orientation.y == 0.0
-                        && lifis_tick.imu_odom.pose.pose.orientation.z == 0.0
-                    {
-                        t_last_current
-                    } else {
-                        // there is an orientation calculated by lifis for undeskewing the cloud, so we can use that
-                        let initial_guess_translation = t_last_current.translation.clone();
-                        let initial_guess_rotation =
-                            nalgebra::UnitQuaternion::from_quaternion(nalgebra::Quaternion::new(
-                                lifis_tick.imu_odom.pose.pose.orientation.w,
-                                lifis_tick.imu_odom.pose.pose.orientation.x,
-                                lifis_tick.imu_odom.pose.pose.orientation.y,
-                                lifis_tick.imu_odom.pose.pose.orientation.z,
-                            ));
-                        nalgebra::Isometry3::from_parts(
-                            initial_guess_translation,
-                            initial_guess_rotation,
-                        )
-                    }
+                    t_last_current
                 } else {
-                    let initial_guess_translation = Translation3::new(
-                        lifis_tick.imu_odom.pose.pose.position.x,
-                        lifis_tick.imu_odom.pose.pose.position.y,
-                        lifis_tick.imu_odom.pose.pose.position.z,
-                    );
-
+                    // there is an orientation calculated by lifis for undeskewing the cloud, so we can use that
+                    let initial_guess_translation = t_last_current.translation.clone();
                     let initial_guess_rotation =
                         nalgebra::UnitQuaternion::from_quaternion(nalgebra::Quaternion::new(
                             lifis_tick.imu_odom.pose.pose.orientation.w,
@@ -426,194 +390,212 @@ async fn lio() -> Result<(), Box<dyn std::error::Error>> {
                             lifis_tick.imu_odom.pose.pose.orientation.y,
                             lifis_tick.imu_odom.pose.pose.orientation.z,
                         ));
-
                     nalgebra::Isometry3::from_parts(
                         initial_guess_translation,
                         initial_guess_rotation,
                     )
-                };
+                }
+            } else {
+                let initial_guess_translation = Translation3::new(
+                    lifis_tick.imu_odom.pose.pose.position.x,
+                    lifis_tick.imu_odom.pose.pose.position.y,
+                    lifis_tick.imu_odom.pose.pose.position.z,
+                );
 
-                let init_guess_world = t_world_lidar * init_guess;
+                let initial_guess_rotation =
+                    nalgebra::UnitQuaternion::from_quaternion(nalgebra::Quaternion::new(
+                        lifis_tick.imu_odom.pose.pose.orientation.w,
+                        lifis_tick.imu_odom.pose.pose.orientation.x,
+                        lifis_tick.imu_odom.pose.pose.orientation.y,
+                        lifis_tick.imu_odom.pose.pose.orientation.z,
+                    ));
 
-                eval.start("reg").unwrap();
-                let register_pose = {
-                    let mut map = map.lock().unwrap();
-                    match map.register_and_map(&cloud, &init_guess_world) {
-                        Ok(pose) => pose,
-                        Err(err) => {
-                            eval.stop("reg").unwrap();
-                            log_error!(log_prefix, "{:?}", err);
-                            continue;
-                        }
+                nalgebra::Isometry3::from_parts(initial_guess_translation, initial_guess_rotation)
+            };
+
+            let init_guess_world = t_world_lidar * init_guess;
+
+            eval.start("reg").unwrap();
+            let register_pose = {
+                let mut map = map.lock().unwrap();
+                match map.register_and_map(&cloud, &init_guess_world) {
+                    Ok(pose) => pose,
+                    Err(err) => {
+                        eval.stop("reg").unwrap();
+                        log_error!(log_prefix, "{:?}", err);
+                        continue;
                     }
-                };
-                eval.stop("reg").unwrap();
+                }
+            };
+            eval.stop("reg").unwrap();
 
-                //avg_iterations = register_pose.avg_iterations.unwrap_or(0) as f32;
-                /* (avg_iterations * iteration_updates as f64
-                + register_pose.num_iterations as f64)
-                / (iteration_updates as f64 + 1.0); */
+            //avg_iterations = register_pose.avg_iterations.unwrap_or(0) as f32;
+            /* (avg_iterations * iteration_updates as f64
+            + register_pose.num_iterations as f64)
+            / (iteration_updates as f64 + 1.0); */
 
-                //iteration_updates += 1;
+            //iteration_updates += 1;
 
-                // Transformation from the last pose to the current pose in the local frame.
-                t_last_current = t_world_lidar.inverse() * register_pose.pose;
-                t_world_lidar = register_pose.pose;
+            // Transformation from the last pose to the current pose in the local frame.
+            t_last_current = t_world_lidar.inverse() * register_pose.pose;
+            t_world_lidar = register_pose.pose;
 
-                /*eval.start("map_update").unwrap();
-                map.add(&cloud, Some(register_pose.pose));
-                eval.stop("map_update").unwrap();*/
+            /*eval.start("map_update").unwrap();
+            map.add(&cloud, Some(register_pose.pose));
+            eval.stop("map_update").unwrap();*/
 
-                let mut lidar_odom = lifis_tick.imu_odom.clone();
-                lidar_odom.header.frame_id = map_frame.clone();
-                lidar_odom.child_frame_id = orig_frame.clone();
-                lidar_odom.pose.pose.position.x = t_world_lidar.translation.vector.x;
-                lidar_odom.pose.pose.position.y = t_world_lidar.translation.vector.y;
-                lidar_odom.pose.pose.position.z = t_world_lidar.translation.vector.z;
-                lidar_odom.pose.pose.orientation.x = t_world_lidar.rotation.quaternion().i;
-                lidar_odom.pose.pose.orientation.y = t_world_lidar.rotation.quaternion().j;
-                lidar_odom.pose.pose.orientation.z = t_world_lidar.rotation.quaternion().k;
-                lidar_odom.pose.pose.orientation.w = t_world_lidar.rotation.quaternion().w;
+            let mut lidar_odom = lifis_tick.imu_odom.clone();
+            lidar_odom.header.frame_id = map_frame.clone();
+            lidar_odom.child_frame_id = orig_frame.clone();
+            lidar_odom.pose.pose.position.x = t_world_lidar.translation.vector.x;
+            lidar_odom.pose.pose.position.y = t_world_lidar.translation.vector.y;
+            lidar_odom.pose.pose.position.z = t_world_lidar.translation.vector.z;
+            lidar_odom.pose.pose.orientation.x = t_world_lidar.rotation.quaternion().i;
+            lidar_odom.pose.pose.orientation.y = t_world_lidar.rotation.quaternion().j;
+            lidar_odom.pose.pose.orientation.z = t_world_lidar.rotation.quaternion().k;
+            lidar_odom.pose.pose.orientation.w = t_world_lidar.rotation.quaternion().w;
 
-                let changed_lidar_path = match lidar_path.poses.last() {
-                    Some(last_pose) => {
-                        let last_pose = last_pose.pose.clone();
-                        let last_pose_position = last_pose.position;
-                        let current_pose_position = lidar_odom.pose.pose.position.clone();
+            let changed_lidar_path = match lidar_path.poses.last() {
+                Some(last_pose) => {
+                    let last_pose = last_pose.pose.clone();
+                    let last_pose_position = last_pose.position;
+                    let current_pose_position = lidar_odom.pose.pose.position.clone();
 
-                        let distance = nalgebra::distance(
-                            &nalgebra::Point3::new(
-                                last_pose_position.x,
-                                last_pose_position.y,
-                                last_pose_position.z,
-                            ),
-                            &nalgebra::Point3::new(
-                                current_pose_position.x,
-                                current_pose_position.y,
-                                current_pose_position.z,
-                            ),
-                        );
+                    let distance = nalgebra::distance(
+                        &nalgebra::Point3::new(
+                            last_pose_position.x,
+                            last_pose_position.y,
+                            last_pose_position.z,
+                        ),
+                        &nalgebra::Point3::new(
+                            current_pose_position.x,
+                            current_pose_position.y,
+                            current_pose_position.z,
+                        ),
+                    );
 
-                        if distance > path_update_translate_threshold {
-                            lidar_path.poses.push(PoseStamped {
-                                pose: lidar_odom.pose.pose.clone(),
-                                header: lidar_odom.header.clone(),
-                            });
-                            true
-                        } else {
-                            false
-                        }
-                    }
-                    None => {
+                    if distance > path_update_translate_threshold {
                         lidar_path.poses.push(PoseStamped {
                             pose: lidar_odom.pose.pose.clone(),
                             header: lidar_odom.header.clone(),
                         });
                         true
+                    } else {
+                        false
                     }
-                };
-
-                // transform cloud inplace for publish
-                let mut cloud: PointCloud2 = {
-                    let mut cloud = cloud;
-                    cloud.iter_mut().for_each(|p| {
-                        let p_t = t_world_lidar
-                            * nalgebra::Point3::new(p.x as f64, p.y as f64, p.z as f64);
-                        p.x = p_t.x as f32;
-                        p.y = p_t.y as f32;
-                        p.z = p_t.z as f32;
+                }
+                None => {
+                    lidar_path.poses.push(PoseStamped {
+                        pose: lidar_odom.pose.pose.clone(),
+                        header: lidar_odom.header.clone(),
                     });
-                    ros_pointcloud2::PointCloud2Msg::try_from_vec(cloud)
-                        .unwrap()
-                        .into()
-                };
-                let map_to_lidar_transform = t_world_lidar.clone();
-                cloud.header.frame_id = map_frame.clone();
+                    true
+                }
+            };
 
-                let tf = TransformStamped {
-                    header: Header {
-                        frame_id: map_frame.to_string(),
-                        stamp: Time {
-                            sec: orig_time.sec,
-                            nanosec: orig_time.nanosec,
-                        },
-                    },
-                    child_frame_id: orig_frame,
-                    transform: Transform {
-                        translation: Vector3 {
-                            x: map_to_lidar_transform.translation.vector.x,
-                            y: map_to_lidar_transform.translation.vector.y,
-                            z: map_to_lidar_transform.translation.vector.z,
-                        },
-                        rotation: Quaternion {
-                            x: map_to_lidar_transform.rotation.quaternion().i,
-                            y: map_to_lidar_transform.rotation.quaternion().j,
-                            z: map_to_lidar_transform.rotation.quaternion().k,
-                            w: map_to_lidar_transform.rotation.quaternion().w,
-                        },
-                    },
-                };
-
-                let mut imu_odom = lidar_odom.clone();
-                imu_odom.pose.pose.position.x = init_guess_world.translation.vector.x;
-                imu_odom.pose.pose.position.y = init_guess_world.translation.vector.y;
-                imu_odom.pose.pose.position.z = init_guess_world.translation.vector.z;
-                imu_odom.pose.pose.orientation.x = init_guess_world.rotation.quaternion().i;
-                imu_odom.pose.pose.orientation.y = init_guess_world.rotation.quaternion().j;
-                imu_odom.pose.pose.orientation.z = init_guess_world.rotation.quaternion().k;
-                imu_odom.pose.pose.orientation.w = init_guess_world.rotation.quaternion().w;
-
-                imu_path.poses.push(PoseStamped {
-                    pose: imu_odom.pose.pose.clone(),
-                    header: imu_odom.header.clone(),
+            // transform cloud inplace for publish
+            let mut cloud: PointCloud2 = {
+                let mut cloud = cloud;
+                cloud.iter_mut().for_each(|p| {
+                    let p_t =
+                        t_world_lidar * nalgebra::Point3::new(p.x as f64, p.y as f64, p.z as f64);
+                    p.x = p_t.x as f32;
+                    p.y = p_t.y as f32;
+                    p.z = p_t.z as f32;
                 });
+                ros_pointcloud2::PointCloud2Msg::try_from_vec(cloud)
+                    .unwrap()
+                    .into()
+            };
+            let map_to_lidar_transform = t_world_lidar.clone();
+            cloud.header.frame_id = map_frame.clone();
 
-                tf_broadcaster
-                    .send_transform(tf)
-                    .expect("Failed to send transform");
+            let tf = TransformStamped {
+                header: Header {
+                    frame_id: map_frame.to_string(),
+                    stamp: Time {
+                        sec: orig_time.sec,
+                        nanosec: orig_time.nanosec,
+                    },
+                },
+                child_frame_id: orig_frame,
+                transform: Transform {
+                    translation: Vector3 {
+                        x: map_to_lidar_transform.translation.vector.x,
+                        y: map_to_lidar_transform.translation.vector.y,
+                        z: map_to_lidar_transform.translation.vector.z,
+                    },
+                    rotation: Quaternion {
+                        x: map_to_lidar_transform.rotation.quaternion().i,
+                        y: map_to_lidar_transform.rotation.quaternion().j,
+                        z: map_to_lidar_transform.rotation.quaternion().k,
+                        w: map_to_lidar_transform.rotation.quaternion().w,
+                    },
+                },
+            };
 
-                cloud_publisher
-                    .publish(&cloud)
-                    .expect("Failed to publish cloud");
+            let mut imu_odom = lidar_odom.clone();
+            imu_odom.pose.pose.position.x = init_guess_world.translation.vector.x;
+            imu_odom.pose.pose.position.y = init_guess_world.translation.vector.y;
+            imu_odom.pose.pose.position.z = init_guess_world.translation.vector.z;
+            imu_odom.pose.pose.orientation.x = init_guess_world.rotation.quaternion().i;
+            imu_odom.pose.pose.orientation.y = init_guess_world.rotation.quaternion().j;
+            imu_odom.pose.pose.orientation.z = init_guess_world.rotation.quaternion().k;
+            imu_odom.pose.pose.orientation.w = init_guess_world.rotation.quaternion().w;
 
-                odom_publisher
-                    .publish(&lidar_odom)
-                    .expect("Failed to publish odom");
+            imu_path.poses.push(PoseStamped {
+                pose: imu_odom.pose.pose.clone(),
+                header: imu_odom.header.clone(),
+            });
 
-                if changed_lidar_path {
-                    lidar_path_publisher
-                        .publish(&lidar_path)
-                        .expect("Failed to publish path");
-                }
+            tf_broadcaster
+                .send_transform(tf)
+                .expect("Failed to send transform");
 
-                imu_odom_publisher
-                    .publish(&imu_odom)
-                    .expect("Failed to publish imu odom");
+            cloud_publisher
+                .publish(&cloud)
+                .expect("Failed to publish cloud");
 
-                imu_path_publisher
-                    .publish(&imu_path)
-                    .expect("Failed to publish imu path"); // TODO this will spam a lot, maybe also throttle like lidar_path
+            odom_publisher
+                .publish(&lidar_odom)
+                .expect("Failed to publish odom");
 
-                eval.stop("total").unwrap();
+            if changed_lidar_path {
+                lidar_path_publisher
+                    .publish(&lidar_path)
+                    .expect("Failed to publish path");
+            }
 
-                if let Some(render_interval) = render_interval {
-                    if last_render.elapsed() > render_interval {
-                        last_render = std::time::Instant::now();
-                        r2r::log_info!(
-                            log_prefix,
-                            "{}[2J{}[1;1HAccelerated LiDAR Odometry Framework\n{}",
-                            27 as char,
-                            27 as char,
-                            eval.render()
-                        );
-                    }
+            imu_odom_publisher
+                .publish(&imu_odom)
+                .expect("Failed to publish imu odom");
+
+            imu_path_publisher
+                .publish(&imu_path)
+                .expect("Failed to publish imu path"); // TODO this will spam a lot, maybe also throttle like lidar_path
+
+            eval.stop("total").unwrap();
+
+            if let Some(render_interval) = render_interval {
+                if last_render.elapsed() > render_interval {
+                    last_render = std::time::Instant::now();
+                    r2r::log_info!(
+                        log_prefix,
+                        "{}[2J{}[1;1HAccelerated LiDAR Odometry Framework\n{}",
+                        27 as char,
+                        27 as char,
+                        eval.render()
+                    );
                 }
             }
-            Err(e) => {
-                r2r::log_error!("lifis", "{}", e);
-            }
-            _ => {}
         }
+    });
+
+    let spin_timeout = std::time::Duration::from_millis(10);
+
+    loop {
+        node.spin_once(spin_timeout.clone());
+        lifis_node.spin_once(spin_timeout.clone());
     }
 }
 
