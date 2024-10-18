@@ -12,6 +12,7 @@ use r2r::geometry_msgs::msg::{
     Point, PolygonStamped, Pose, PoseWithCovariance, Quaternion, Twist, TwistWithCovariance,
     Vector3,
 };
+use r2r::log_info;
 use r2r::{
     log_error, log_warn,
     nav_msgs::msg::Odometry,
@@ -111,7 +112,11 @@ pub struct State {
 }
 
 impl State {
-    pub fn new(config: Arc<std::sync::Mutex<config::ConfigParse>>) -> anyhow::Result<Self> {
+    pub fn new(
+        config: Arc<std::sync::Mutex<config::ConfigParse>>,
+        imu_pose_prediction_undistort: Option<Box<prelio::ImuPredictor>>,
+        imu_pose_prediction_init_guess: Option<Box<prelio::ImuPredictor>>,
+    ) -> anyhow::Result<Self> {
         let (gravity, imu_calibration_params, madgwick_filter, lidar_vendor) = {
             let config = config.lock().unwrap();
             (
@@ -145,6 +150,8 @@ impl State {
                         madgwick_filter,
                         imu_calibration_params,
                         &lifis_params,
+                        imu_pose_prediction_undistort,
+                        imu_pose_prediction_init_guess,
                     )?))
                 }
                 config::LidarVendor::Ouster => {
@@ -153,6 +160,8 @@ impl State {
                         madgwick_filter,
                         imu_calibration_params,
                         &lifis_params,
+                        imu_pose_prediction_undistort,
+                        imu_pose_prediction_init_guess,
                     )?))
                 }
                 config::LidarVendor::Skip => {
@@ -161,6 +170,8 @@ impl State {
                         madgwick_filter,
                         imu_calibration_params,
                         &lifis_params,
+                        imu_pose_prediction_undistort,
+                        imu_pose_prediction_init_guess,
                     )?))
                 }
             },
@@ -244,8 +255,6 @@ async fn cloud_callback(
     msg: PointCloud2,
     first_imu_tf: Option<String>,
 ) -> anyhow::Result<()> {
-    dbg!("lifis-ros", "LifisNode::cloud_callback start");
-
     let orig_header = msg.header.clone();
     let in_msg: PointCloud2Msg = msg.into();
 
@@ -427,8 +436,6 @@ async fn cloud_callback(
         lifis.add_pointcloud(in_msg);
     }
 
-    dbg!("lifis-ros", "LifisNode::cloud_callback end");
-
     Ok(())
 }
 
@@ -487,14 +494,16 @@ pub struct LifisTick {
     pub deskewed_cloud: Vec<PointXYZ>,
     pub cloud_header: HeaderMsg,
     pub imu_odom: Odometry,
-    pub runtime_eval: prelio::timing::RuntimeEvaluator,
+    //pub runtime_eval: prelio::timing::RuntimeEvaluator,
 }
 
 impl LifisNode {
     pub async fn create(
         params: LifisNodeParameters,
         imu_pose_predictor_init: Arc<Mutex<dyn FnMut(&[ImuMsg]) + Send + Sync>>,
-    ) -> anyhow::Result<Self> {
+        imu_pose_prediction_undistort: Option<Box<prelio::ImuPredictor>>,
+        imu_pose_prediction_init_guess: Option<Box<prelio::ImuPredictor>>,
+    ) -> anyhow::Result<(Self, tokio::sync::mpsc::Receiver<LifisTick>)> {
         let config = Arc::new(std::sync::Mutex::new(config::ConfigParse::default()));
         let ctx = r2r::Context::create()?;
         let mut node = r2r::Node::create(ctx, params.node_name, params.node_namespace)?;
@@ -505,14 +514,35 @@ impl LifisNode {
 
         let mut pool = tokio::task::JoinSet::new();
 
-        let state = State::new(config.clone());
-        let state = match state {
-            Ok(state) => Arc::new(std::sync::Mutex::new(state)),
+        let state = State::new(
+            config.clone(),
+            imu_pose_prediction_undistort,
+            imu_pose_prediction_init_guess,
+        );
+
+        let (chan, imu_frame, state) = match state {
+            Ok(state) => {
+                let (chan, imu_frame) = {
+                    let mut lifis = state.lifis.lock().unwrap();
+                    let chan = lifis.get_chan().unwrap();
+
+                    let config = state.config.lock().unwrap();
+                    let imu_frame = config.imu_frame.clone();
+                    (chan, imu_frame)
+                };
+                (chan, imu_frame, Arc::new(std::sync::Mutex::new(state)))
+            }
             Err(e) => {
                 log_error!(logger_prefix, "{:?}", e);
                 return Err(e);
             }
         };
+
+        let (tx, rx) = tokio::sync::mpsc::channel(100);
+
+        pool.spawn(async move {
+            Self::transform(tx, chan, &imu_frame).await;
+        });
 
         // first option None = override not set.
         let imu_tf_frame: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
@@ -525,16 +555,14 @@ impl LifisNode {
         pool.spawn(async move {
             cloud_subscriber
                 .for_each(|msg| async {
-                    /*let tf_listener_clone = tf_listener_clone.clone();
                     let imu_tf_frame_lidar_inner =
                         imu_tf_frame_lidar_inner.clone().lock().unwrap().clone();
-                    //let state_clone = state_clone.clone();*/
 
                     match cloud_callback(
                         state_clone.clone(),
                         tf_listener_clone.clone(),
                         msg,
-                        Some("".to_string()),
+                        imu_tf_frame_lidar_inner,
                     )
                     .await
                     {
@@ -717,139 +745,84 @@ impl LifisNode {
                 .await;
         });
 
-        Ok(Self {
-            node,
-            state,
-            tf_listener,
-            pool,
-            logger: logger_prefix.to_string(),
-        })
+        Ok((
+            Self {
+                node,
+                state,
+                tf_listener,
+                pool,
+                logger: logger_prefix.to_string(),
+            },
+            rx,
+        ))
     }
 
-    pub async fn tick(
-        &mut self,
-        imu_pose_prediction_undistort: Option<Box<prelio::ImuPredictor>>,
-        imu_pose_prediction_init_guess: Option<Box<prelio::ImuPredictor>>,
-        timeout: &std::time::Duration,
-    ) -> anyhow::Result<Option<LifisTick>> {
-        self.node.spin_once(std::time::Duration::from_millis(100));
+    pub fn spin_once(&mut self, timeout: std::time::Duration) {
+        self.node.spin_once(timeout);
+    }
 
-        let (processed_cloud, imu_frame) = {
-            let (lifis, lifis_params) = {
-                let state = self.state.lock().unwrap();
-
-                (state.lifis.clone(), state.lifis_params.clone())
+    pub async fn transform(
+        sender: tokio::sync::mpsc::Sender<LifisTick>,
+        mut receiver: tokio::sync::mpsc::Receiver<prelio::LifisProcessedCloud>,
+        imu_frame: &String,
+    ) {
+        while let Some(synced_data) = receiver.recv().await {
+            log_warn!("pelorus-ros2", "Received synced data");
+            let pose = PoseWithCovariance {
+                pose: Pose {
+                    position: Point {
+                        x: synced_data.end_of_frame_guess.translation.vector.x,
+                        y: synced_data.end_of_frame_guess.translation.vector.y,
+                        z: synced_data.end_of_frame_guess.translation.vector.z,
+                    },
+                    orientation: Quaternion {
+                        x: synced_data.end_of_frame_guess.rotation.quaternion().i,
+                        y: synced_data.end_of_frame_guess.rotation.quaternion().j,
+                        z: synced_data.end_of_frame_guess.rotation.quaternion().k,
+                        w: synced_data.end_of_frame_guess.rotation.quaternion().w,
+                    },
+                },
+                covariance: synced_data.pose_covariance.into(),
             };
 
-            let (lidar_vendor, imu_frame) = {
-                let state = self.state.lock().unwrap();
-                let config = state.config.lock().unwrap();
-                (config.lidar_vendor.clone(), config.imu_frame.clone())
+            let twist = TwistWithCovariance {
+                twist: Twist {
+                    linear: Vector3 {
+                        x: synced_data.end_of_frame_twist.linear.x,
+                        y: synced_data.end_of_frame_twist.linear.y,
+                        z: synced_data.end_of_frame_twist.linear.z,
+                    },
+                    angular: Vector3 {
+                        x: synced_data.end_of_frame_twist.angular.x,
+                        y: synced_data.end_of_frame_twist.angular.y,
+                        z: synced_data.end_of_frame_twist.angular.z,
+                    },
+                },
+                covariance: synced_data.twist_covariance.into(),
             };
 
-            let lidar_vendor = config::LidarVendor::from_str(&lidar_vendor)?;
-            let processed_cloud = match lidar_vendor {
-                config::LidarVendor::Velodyne => {
-                    let mut lifis = lifis.lock().unwrap();
-                    let cloud = lifis
-                        .tick(
-                            &lifis_params,
-                            imu_pose_prediction_undistort,
-                            imu_pose_prediction_init_guess,
-                            timeout,
-                        )
-                        .await?;
-                    cloud
-                }
-                config::LidarVendor::Ouster => {
-                    let mut lifis = lifis.lock().unwrap();
-                    //let start_timing = std::time::Instant::now();
-                    let cloud = lifis
-                        .tick(
-                            &lifis_params,
-                            imu_pose_prediction_undistort,
-                            imu_pose_prediction_init_guess,
-                            timeout,
-                        )
-                        .await?;
-                    cloud
-                }
-                config::LidarVendor::Skip => {
-                    let mut lifis = lifis.lock().unwrap();
-                    let cloud = lifis
-                        .tick(
-                            &lifis_params,
-                            imu_pose_prediction_undistort,
-                            imu_pose_prediction_init_guess,
-                            timeout,
-                        )
-                        .await?;
-                    cloud
-                }
+            let odom = r2r::nav_msgs::msg::Odometry {
+                header: r2r::std_msgs::msg::Header {
+                    stamp: r2r::builtin_interfaces::msg::Time {
+                        sec: synced_data.end_of_frame_time.sec,
+                        nanosec: synced_data.end_of_frame_time.nanosec,
+                    },
+                    frame_id: synced_data.header.frame_id.clone(),
+                },
+                child_frame_id: imu_frame.clone(),
+                pose,
+                twist,
             };
 
-            let processed_cloud = match processed_cloud {
-                Some(processed_cloud) => processed_cloud,
-                None => {
-                    return Ok(None);
-                }
+            let res = LifisTick {
+                deskewed_cloud: synced_data.cloud,
+                cloud_header: synced_data.header,
+                imu_odom: odom,
+                //runtime_eval: synced_data.runtime_eval,
             };
-            (processed_cloud, imu_frame)
-        };
-        let cloud_header = processed_cloud.header.clone();
 
-        let pose = PoseWithCovariance {
-            pose: Pose {
-                position: Point {
-                    x: processed_cloud.end_of_frame_guess.translation.vector.x,
-                    y: processed_cloud.end_of_frame_guess.translation.vector.y,
-                    z: processed_cloud.end_of_frame_guess.translation.vector.z,
-                },
-                orientation: Quaternion {
-                    x: processed_cloud.end_of_frame_guess.rotation.quaternion().i,
-                    y: processed_cloud.end_of_frame_guess.rotation.quaternion().j,
-                    z: processed_cloud.end_of_frame_guess.rotation.quaternion().k,
-                    w: processed_cloud.end_of_frame_guess.rotation.quaternion().w,
-                },
-            },
-            covariance: processed_cloud.pose_covariance.into(),
-        };
-
-        let twist = TwistWithCovariance {
-            twist: Twist {
-                linear: Vector3 {
-                    x: processed_cloud.end_of_frame_twist.linear.x,
-                    y: processed_cloud.end_of_frame_twist.linear.y,
-                    z: processed_cloud.end_of_frame_twist.linear.z,
-                },
-                angular: Vector3 {
-                    x: processed_cloud.end_of_frame_twist.angular.x,
-                    y: processed_cloud.end_of_frame_twist.angular.y,
-                    z: processed_cloud.end_of_frame_twist.angular.z,
-                },
-            },
-            covariance: processed_cloud.twist_covariance.into(),
-        };
-
-        let odom = r2r::nav_msgs::msg::Odometry {
-            header: r2r::std_msgs::msg::Header {
-                stamp: r2r::builtin_interfaces::msg::Time {
-                    sec: processed_cloud.end_of_frame_time.sec,
-                    nanosec: processed_cloud.end_of_frame_time.nanosec,
-                },
-                frame_id: cloud_header.frame_id,
-            },
-            child_frame_id: imu_frame,
-            pose,
-            twist,
-        };
-
-        Ok(Some(LifisTick {
-            deskewed_cloud: processed_cloud.cloud,
-            cloud_header: processed_cloud.header,
-            imu_odom: odom,
-            runtime_eval: processed_cloud.runtime_eval,
-        }))
+            sender.send(res).await.expect("could not send lifis tick");
+        }
     }
 }
 

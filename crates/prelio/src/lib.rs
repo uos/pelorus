@@ -15,8 +15,7 @@ use ros_pointcloud2::prelude::*;
 
 use imu::*;
 
-pub type ImuPredictor =
-    dyn for<'a> Fn(&'a [imu::ImuMsg], f64, f64) -> ImuPosePrediction + Send + 'static;
+pub type ImuPredictor = dyn for<'a> Fn(&'a [imu::ImuMsg], f64, f64) -> ImuPosePrediction + Send;
 
 struct ImuMadgwick {
     fusion: imu_fusion::FusionAhrs,
@@ -369,7 +368,7 @@ impl FromStr for MadgwickSetting {
 pub struct Lifis {
     preproc_sender: tokio::sync::mpsc::Sender<PointCloud2Msg>,
     imu_sender: tokio::sync::mpsc::Sender<ImuMsg>,
-    synced_receiver: tokio::sync::mpsc::Receiver<LifisProcessedCloud>,
+    synced_receiver: Option<tokio::sync::mpsc::Receiver<LifisProcessedCloud>>,
     last_cloud_time: f64,
     imu_filter_fusion: ImuMadgwick,
     last_imu_time: f64,
@@ -414,21 +413,19 @@ impl Lifis {
             let mut last_lidar_frame_time = 0.0;
             let imu_process = ImuProcess::new(gravity, intrinsic_given);
 
-            async move {
-                Self::sync_lidar_imu_worker(
-                    &mut last_lidar_frame_time,
-                    gravity,
-                    filtered_cloud_rx,
-                    imu_rx,
-                    &synced_cloud_imu_tx,
-                    intrinsic_given,
-                    imu_process,
-                    &undistort_params,
-                    imu_pose_prediction_init_guess,
-                    imu_pose_prediction_undistort,
-                )
-                .await;
-            }
+            Self::sync_lidar_imu_worker(
+                &mut last_lidar_frame_time,
+                gravity,
+                filtered_cloud_rx,
+                imu_rx,
+                &synced_cloud_imu_tx,
+                intrinsic_given,
+                imu_process,
+                &undistort_params,
+                imu_pose_prediction_undistort,
+                imu_pose_prediction_init_guess,
+            )
+            .await;
         });
 
         // preprocessing worker
@@ -439,14 +436,14 @@ impl Lifis {
                     match filter_downsample::<N, P>(cloud, &params_clone).await {
                         Ok(Some(cloud_meta)) => {
                             if let Err(e) = filtered_cloud_tx.send(cloud_meta).await {
-                                println!("Error sending pointcloud: {}", e);
+                                dbg!("Error sending pointcloud: {}", e);
                             }
                         }
                         Ok(None) => {
-                            println!("Pointcloud was filtered out");
+                            dbg!("Pointcloud was filtered out");
                         }
                         Err(e) => {
-                            println!("Error processing pointcloud: {}", e);
+                            dbg!("Error processing pointcloud: {}", e);
                         }
                     }
                 }
@@ -455,7 +452,7 @@ impl Lifis {
 
         Ok(Lifis {
             imu_sender: imu_tx,
-            synced_receiver: synced_cloud_imu_rx,
+            synced_receiver: Some(synced_cloud_imu_rx),
             preproc_sender: preproc_tx,
             last_cloud_time: 0.0,
             imu_filter_fusion: ImuMadgwick::new(gravity),
@@ -466,9 +463,8 @@ impl Lifis {
         })
     }
 
-    /// Public channel to get the processed Cloud-IMU data.
-    pub async fn get_next_synced_data(&mut self) -> LifisProcessedCloud {
-        self.synced_receiver.recv().await.unwrap()
+    pub fn get_chan(&mut self) -> Option<tokio::sync::mpsc::Receiver<LifisProcessedCloud>> {
+        self.synced_receiver.take()
     }
 
     // TODO: debouncing - make sure we don't get too many clouds by buffer length and only accepting every nth cloud, then every nth+1 etc after certain buffer lengths each
@@ -493,6 +489,8 @@ impl Lifis {
         self.last_imu_time = 0.0;
         self.undistort.reset();
         to_buffer.clear();*/
+
+        dbg!("calling add_pointcloud");
 
         self.last_cloud_time = cloud_stamp;
         let sender = self.preproc_sender.clone();
@@ -575,11 +573,9 @@ impl Lifis {
         let imu_data = imu.clone();
         tokio::spawn(async move {
             match sender.send(imu_data).await {
-                Ok(_) => {
-                    dbg!("Imu sent");
-                }
+                Ok(_) => {}
                 Err(e) => {
-                    dbg!("Error sending Imu data: {}", e);
+                    dbg!(e);
                 }
             }
         });
@@ -606,18 +602,20 @@ impl Lifis {
         while let Some((cloud, lidar_begin_time, lidar_end_time, lidar_header)) =
             lidar_receiver.recv().await
         {
-            let imu_start_time = *prev_lidar_end_time;
-            let imu_end_time = lidar_end_time;
+            let lidar_time = timestamp_to_secs(&lidar_header.stamp);
+            let lidar_begin_time = lidar_begin_time + lidar_time;
+            let imu_span_start_time = *prev_lidar_end_time;
+            let imu_span_end_time = lidar_end_time + lidar_time;
 
             let mut imu_data = Vec::with_capacity(100);
             loop {
                 match imu_receiver.recv().await {
                     Some(imu) => {
                         let imu_time = timestamp_to_secs(&imu.stamp);
-                        if imu_time < imu_start_time {
+                        if imu_time < imu_span_start_time {
                             continue;
                         }
-                        if imu_time > imu_end_time {
+                        if imu_time > imu_span_end_time {
                             break;
                         }
                         imu_data.push(imu);
@@ -627,6 +625,11 @@ impl Lifis {
                         return;
                     }
                 }
+            }
+
+            if imu_data.is_empty() {
+                dbg!("No imu data in span");
+                continue;
             }
 
             // - data synced -
@@ -719,7 +722,7 @@ impl Lifis {
                 synced_sender.send(res).await.unwrap();
             };
 
-            *prev_lidar_end_time = lidar_end_time;
+            *prev_lidar_end_time = imu_span_end_time;
         }
     }
 }
