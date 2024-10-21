@@ -4,15 +4,14 @@ A simple LiDAR Odometry using IMU data as inertial estimation for GICP on Gaussi
 
 ## Setup
 
-You need to have ROS2 Humble installed on your sytem. We assume an Ubuntu installation from here on.
+You need to have ROS2 installed on your sytem. We assume an Ubuntu installation from here on.
 
 Dependencies
 ```shell
 sudo apt-get install libeigen3-dev libtbb-dev libclang-dev
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 
-cargo install cargo-ament-build
-pip install colcon-ros-cargo
+pip install --break-system-package colcon-ros-cargo cargo-ament-build
 ```
 
 
