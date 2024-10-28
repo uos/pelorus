@@ -8,7 +8,7 @@ use imu_fusion::FusionAhrs;
 use nalgebra::*;
 use timing::RuntimeEvaluator;
 
-use std::str::FromStr;
+use std::{collections::VecDeque, str::FromStr};
 
 use anyhow::Result;
 use ros_pointcloud2::prelude::*;
@@ -435,6 +435,7 @@ impl Lifis {
                 while let Some(cloud) = preproc_rx.recv().await {
                     match filter_downsample::<N, P>(cloud, &params_clone).await {
                         Ok(Some(cloud_meta)) => {
+                            //dbg!("Pointcloud was processed");
                             if let Err(e) = filtered_cloud_tx.send(cloud_meta).await {
                                 dbg!("Error sending pointcloud: {}", e);
                             }
@@ -490,14 +491,12 @@ impl Lifis {
         self.undistort.reset();
         to_buffer.clear();*/
 
-        dbg!("calling add_pointcloud");
-
         self.last_cloud_time = cloud_stamp;
         let sender = self.preproc_sender.clone();
         tokio::spawn(async move {
             match sender.send(cloud).await {
                 Ok(_) => {
-                    dbg!("Pointcloud sent");
+                    //dbg!("Pointcloud sent");
                 }
                 Err(e) => {
                     dbg!("Error sending pointcloud: {}", e);
@@ -599,6 +598,7 @@ impl Lifis {
         imu_pose_prediction_undistort: Option<Box<ImuPredictor>>,
         imu_pose_prediction_init_guess: Option<Box<ImuPredictor>>,
     ) {
+        let mut to_next: Option<ImuMsg> = None;
         while let Some((cloud, lidar_begin_time, lidar_end_time, lidar_header)) =
             lidar_receiver.recv().await
         {
@@ -608,6 +608,14 @@ impl Lifis {
             let imu_span_end_time = lidar_end_time + lidar_time;
 
             let mut imu_data = Vec::with_capacity(100);
+
+            if let Some(last_imu_extra) = to_next.take() {
+                let imu_time = timestamp_to_secs(&last_imu_extra.stamp);
+                if imu_time > imu_span_start_time && imu_time < imu_span_end_time {
+                    imu_data.push(last_imu_extra);
+                }
+            }
+
             loop {
                 match imu_receiver.recv().await {
                     Some(imu) => {
@@ -616,6 +624,7 @@ impl Lifis {
                             continue;
                         }
                         if imu_time > imu_span_end_time {
+                            to_next = Some(imu);
                             break;
                         }
                         imu_data.push(imu);
@@ -626,6 +635,8 @@ impl Lifis {
                     }
                 }
             }
+
+            //dbg!(imu_data.len());
 
             if imu_data.is_empty() {
                 dbg!("No imu data in span");
@@ -648,7 +659,7 @@ impl Lifis {
                     Some(imu_pose_prediction_init_guess) => imu_pose_prediction_init_guess(
                         &imu_data.clone(), // TODO maybe need reversed?
                         lidar_begin_time,
-                        lidar_end_time,
+                        imu_span_end_time,
                     ),
                     None => {
                         let estimated_pose = if imu_intrinsic_calibration_given {
@@ -720,7 +731,7 @@ impl Lifis {
                 };
 
                 synced_sender.send(res).await.unwrap();
-            };
+            }
 
             *prev_lidar_end_time = imu_span_end_time;
         }

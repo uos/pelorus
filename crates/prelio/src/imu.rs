@@ -408,7 +408,6 @@ impl ImuProcess {
 
         self.last_lidar_stamp = Some(meas.lidar_end_stamp);
         self.last_imu = Some(n_last_imu.clone());
-
         Some(ImuProcessedCloud {
             cloud: deskewed_cloud,
             last_covariance: imu_msg_to_cov(&n_last_imu),

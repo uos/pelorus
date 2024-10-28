@@ -12,6 +12,7 @@ pub enum NearbyType {
     Nearby26,
 }
 
+#[derive(Debug)]
 pub struct IvoxNode {
     pub points: Vec<PointXYZ>,
     pub newest_hit: usize,
@@ -207,10 +208,16 @@ impl Localmap {
     }
 
     pub fn remove_cold_voxels(&mut self, threshold: usize) {
-        for entry in self.grid_map.iter() {
+        let keys = self
+            .grid_map
+            .iter()
+            .map(|entry| *entry.key())
+            .collect::<Vec<u32>>();
+
+        keys.into_iter().for_each(|key| {
             self.grid_map
-                .remove_if(entry.key(), |_, node| node.1.newest_hit < threshold);
-        }
+                .remove_if(&key, |_, node| node.1.newest_hit > threshold);
+        });
     }
 
     pub fn clear(&mut self) {

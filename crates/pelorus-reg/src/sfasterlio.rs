@@ -214,6 +214,7 @@ impl crate::Registration for SFasterLio {
                       h_x: &mut DMatrix<f64>,
                       extrinsic_estimation| {
                     if !converged {
+                        dbg!("not converged");
                         return;
                     }
 
@@ -320,9 +321,12 @@ impl crate::Registration for SFasterLio {
         );
 
         // localmap cache
+        // TODO WAAAAAAY to sloow > 10-50ms
         self.map.remove_cold_voxels(600);
 
+        //let start_stamp = std::time::Instant::now();
         self.add_to_map(cloud, global_pose);
+        //dbg!(start_stamp.elapsed());
 
         Ok(crate::CloudRegisterResult {
             pose: global_pose,

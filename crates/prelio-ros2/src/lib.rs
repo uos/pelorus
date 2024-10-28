@@ -4,7 +4,7 @@ pub mod tf;
 pub use prelio;
 
 use anyhow::anyhow;
-use futures::StreamExt;
+use futures_lite::{future, StreamExt};
 use prelio::config::{ImuCalibrationParameters, LifisParameters};
 use prelio::imu::ImuMsg;
 use prelio::{timestamp_to_secs, MadgwickSetting};
@@ -500,7 +500,7 @@ pub struct LifisTick {
 impl LifisNode {
     pub async fn create(
         params: LifisNodeParameters,
-        imu_pose_predictor_init: Arc<Mutex<dyn FnMut(&[ImuMsg]) + Send + Sync>>,
+        imu_pose_predictor_init: Option<Arc<Mutex<dyn FnMut(&[ImuMsg]) + Send + Sync>>>,
         imu_pose_prediction_undistort: Option<Box<prelio::ImuPredictor>>,
         imu_pose_prediction_init_guess: Option<Box<prelio::ImuPredictor>>,
     ) -> anyhow::Result<(Self, tokio::sync::mpsc::Receiver<LifisTick>)> {
@@ -554,23 +554,25 @@ impl LifisNode {
         let imu_tf_frame_lidar_inner = Arc::clone(&imu_tf_frame);
         pool.spawn(async move {
             cloud_subscriber
-                .for_each(|msg| async {
-                    let imu_tf_frame_lidar_inner =
-                        imu_tf_frame_lidar_inner.clone().lock().unwrap().clone();
+                .for_each(|msg| {
+                    future::block_on(async {
+                        let imu_tf_frame_lidar_inner =
+                            imu_tf_frame_lidar_inner.clone().lock().unwrap().clone();
 
-                    match cloud_callback(
-                        state_clone.clone(),
-                        tf_listener_clone.clone(),
-                        msg,
-                        imu_tf_frame_lidar_inner,
-                    )
-                    .await
-                    {
-                        Ok(_) => {}
-                        Err(e) => {
-                            log_error!(logger_prefix, "{:?}", e);
+                        match cloud_callback(
+                            state_clone.clone(),
+                            tf_listener_clone.clone(),
+                            msg,
+                            imu_tf_frame_lidar_inner,
+                        )
+                        .await
+                        {
+                            Ok(_) => {}
+                            Err(e) => {
+                                log_error!(logger_prefix, "{:?}", e);
+                            }
                         }
-                    }
+                    })
                 })
                 .await;
         });
@@ -583,17 +585,19 @@ impl LifisNode {
         )?;
         pool.spawn(async move {
             _poly_subber
-                .for_each(|msg| async {
-                    let state_clone = state_clone.clone();
-                    let tf_listener_clone = tf_listener_clone.clone();
-                    match polygon_callback(state_clone.clone(), tf_listener_clone.clone(), msg)
-                        .await
-                    {
-                        Ok(_) => {}
-                        Err(e) => {
-                            log_error!(logger_prefix, "{:?}", e);
+                .for_each(|msg| {
+                    future::block_on(async {
+                        let state_clone = state_clone.clone();
+                        let tf_listener_clone = tf_listener_clone.clone();
+                        match polygon_callback(state_clone.clone(), tf_listener_clone.clone(), msg)
+                            .await
+                        {
+                            Ok(_) => {}
+                            Err(e) => {
+                                log_error!(logger_prefix, "{:?}", e);
+                            }
                         }
-                    }
+                    })
                 })
                 .await;
         });
@@ -617,53 +621,58 @@ impl LifisNode {
         pool.spawn(async move {
             let imu_pose_predictor_init = imu_pose_predictor_init.clone();
             _imu_subber
-                .for_each(|msg| async {
-                    let state = state_clone.lock().unwrap();
-                    imu_tf_frame_lidar_inner
-                        .clone()
-                        .lock()
-                        .unwrap()
-                        .get_or_insert(msg.header.frame_id.clone());
-                    let imu_init_time_counter = imu_init_time_counter.clone();
-                    let imu_init_buffer = imu_init_buffer.clone();
+                .for_each(|msg| {
+                    future::block_on(async {
+                        let state = state_clone.lock().unwrap();
+                        imu_tf_frame_lidar_inner
+                            .clone()
+                            .lock()
+                            .unwrap()
+                            .get_or_insert(msg.header.frame_id.clone());
+                        let imu_init_time_counter = imu_init_time_counter.clone();
+                        let imu_init_buffer = imu_init_buffer.clone();
 
-                    let imu_lifis = imu_to_lifis(msg.clone());
-                    let curr_stamp = timestamp_to_secs(&imu_lifis.stamp);
+                        let imu_lifis = imu_to_lifis(msg.clone());
+                        let curr_stamp = timestamp_to_secs(&imu_lifis.stamp);
 
-                    let mut imu_pose_predictor_init = imu_pose_predictor_init.lock().unwrap();
-                    let mut imu_init_time_counter = imu_init_time_counter.lock().unwrap();
-                    if imu_init_time_counter.is_none() {
-                        *imu_init_time_counter = Some(curr_stamp);
-                    }
-                    if let Some(init_time) = imu_init_time_counter.as_ref() {
-                        let mut imu_init_buffer = imu_init_buffer.lock().unwrap();
-                        let delta = curr_stamp - init_time;
-                        if delta < params.imu_predictor_init_time_sec {
-                            if let Some(imu_init_buffer) = imu_init_buffer.as_mut() {
-                                imu_init_buffer.push(imu_lifis);
-                                return; // skip adding to lifis if we are still in the init phase
+                        if let Some(imu_pose_predictor_init) = imu_pose_predictor_init.as_ref() {
+                            let mut imu_pose_predictor_init =
+                                imu_pose_predictor_init.lock().unwrap();
+                            let mut imu_init_time_counter = imu_init_time_counter.lock().unwrap();
+                            if imu_init_time_counter.is_none() {
+                                *imu_init_time_counter = Some(curr_stamp);
                             }
-                            // we are only here, if there was an initial buffer, but it was already consumed so skip init and continue with normal processing
-                        } else {
-                            // apply the init buffer
-                            if let Some(imu_init_buffer) = imu_init_buffer.take() {
-                                imu_pose_predictor_init(&imu_init_buffer);
+                            if let Some(init_time) = imu_init_time_counter.as_ref() {
+                                let mut imu_init_buffer = imu_init_buffer.lock().unwrap();
+                                let delta = curr_stamp - init_time;
+                                if delta < params.imu_predictor_init_time_sec {
+                                    if let Some(imu_init_buffer) = imu_init_buffer.as_mut() {
+                                        imu_init_buffer.push(imu_lifis);
+                                        return; // skip adding to lifis if we are still in the init phase
+                                    }
+                                    // we are only here, if there was an initial buffer, but it was already consumed so skip init and continue with normal processing
+                                } else {
+                                    // apply the init buffer
+                                    if let Some(imu_init_buffer) = imu_init_buffer.take() {
+                                        imu_pose_predictor_init(&imu_init_buffer);
+                                    }
+                                }
                             }
                         }
-                    }
 
-                    let filtered = state.lifis.lock().unwrap().add_imu(imu_to_lifis(msg));
-                    match (filtered, imu_filtered_publisher.as_ref()) {
-                        (Some(filtered), Some(imu_filtered_publisher)) => {
-                            imu_filtered_publisher
-                                .clone()
-                                .lock()
-                                .unwrap()
-                                .publish(&lifis_to_imu(filtered))
-                                .expect("could not publish filtered imu");
+                        let filtered = state.lifis.lock().unwrap().add_imu(imu_to_lifis(msg));
+                        match (filtered, imu_filtered_publisher.as_ref()) {
+                            (Some(filtered), Some(imu_filtered_publisher)) => {
+                                imu_filtered_publisher
+                                    .clone()
+                                    .lock()
+                                    .unwrap()
+                                    .publish(&lifis_to_imu(filtered))
+                                    .expect("could not publish filtered imu");
+                            }
+                            _ => {}
                         }
-                        _ => {}
-                    }
+                    })
                 })
                 .await;
         });
@@ -676,34 +685,36 @@ impl LifisNode {
         pool.spawn(async move {
             _service_set_fov
                 .expect("could not create service")
-                .for_each(|req| async {
-                    let state_clone = state_clone.clone();
-                    let left: f32 = req.message.left;
-                    let right: f32 = req.message.right;
-                    let enable: bool = req.message.enable;
+                .for_each(|req| {
+                    future::block_on(async {
+                        let state_clone = state_clone.clone();
+                        let left: f32 = req.message.left;
+                        let right: f32 = req.message.right;
+                        let enable: bool = req.message.enable;
 
-                    let resp = {
-                        let state = state_clone.lock().unwrap();
-                        let config = state.config.lock();
-                        let success = match config {
-                            Ok(mut config) => {
-                                config.fov_enabled = enable;
-                                config.fov_left = left;
-                                config.fov_right = right;
-                                true
-                            }
-                            Err(e) => {
-                                log_error!(
-                                    logger_prefix,
-                                    "Failed to lock state in filter for polygon service: {:?}",
-                                    e
-                                );
-                                false
-                            }
+                        let resp = {
+                            let state = state_clone.lock().unwrap();
+                            let config = state.config.lock();
+                            let success = match config {
+                                Ok(mut config) => {
+                                    config.fov_enabled = enable;
+                                    config.fov_left = left;
+                                    config.fov_right = right;
+                                    true
+                                }
+                                Err(e) => {
+                                    log_error!(
+                                        logger_prefix,
+                                        "Failed to lock state in filter for polygon service: {:?}",
+                                        e
+                                    );
+                                    false
+                                }
+                            };
+                            r2r::lifis_msgs::srv::SetFov::Response { success }
                         };
-                        r2r::lifis_msgs::srv::SetFov::Response { success }
-                    };
-                    req.respond(resp).expect("could not send response");
+                        req.respond(resp).expect("could not send response");
+                    })
                 })
                 .await;
         });
@@ -717,30 +728,32 @@ impl LifisNode {
         pool.spawn(async move {
             _service_set_distances
                 .expect("could not create service")
-                .for_each(|req| async {
-                    let min_distance: f32 = req.message.min;
-                    let max_distance: f32 = req.message.max;
-                    let invert: bool = req.message.invert;
+                .for_each(|req| {
+                    future::block_on(async {
+                        let min_distance: f32 = req.message.min;
+                        let max_distance: f32 = req.message.max;
+                        let invert: bool = req.message.invert;
 
-                    let resp = r2r::lifis_msgs::srv::SetDistances::Response {
-                        success: match state_clone.lock().unwrap().config.lock() {
-                            Ok(mut state) => {
-                                state.min_dist = min_distance;
-                                state.max_dist = max_distance;
-                                state.invert_distance = invert;
-                                true
-                            }
-                            Err(e) => {
-                                log_error!(
-                                    logger_prefix,
-                                    "Failed to lock state in filter for polygon service: {:?}",
-                                    e
-                                );
-                                false
-                            }
-                        },
-                    };
-                    req.respond(resp).expect("could not send response");
+                        let resp = r2r::lifis_msgs::srv::SetDistances::Response {
+                            success: match state_clone.lock().unwrap().config.lock() {
+                                Ok(mut state) => {
+                                    state.min_dist = min_distance;
+                                    state.max_dist = max_distance;
+                                    state.invert_distance = invert;
+                                    true
+                                }
+                                Err(e) => {
+                                    log_error!(
+                                        logger_prefix,
+                                        "Failed to lock state in filter for polygon service: {:?}",
+                                        e
+                                    );
+                                    false
+                                }
+                            },
+                        };
+                        req.respond(resp).expect("could not send response");
+                    })
                 })
                 .await;
         });
@@ -767,7 +780,6 @@ impl LifisNode {
         imu_frame: &String,
     ) {
         while let Some(synced_data) = receiver.recv().await {
-            log_warn!("pelorus-ros2", "Received synced data");
             let pose = PoseWithCovariance {
                 pose: Pose {
                     position: Point {

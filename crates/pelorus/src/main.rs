@@ -199,7 +199,7 @@ async fn lio() -> Result<(), Box<dyn std::error::Error>> {
             cloud_qos: config.lidar_qos,
             ..Default::default()
         },
-        imu_pose_predictor_init,
+        Some(imu_pose_predictor_init),
         None,
         {
             let map = map.clone();
@@ -210,18 +210,10 @@ async fn lio() -> Result<(), Box<dyn std::error::Error>> {
                       cloud_end_time| {
                     let mut map = map.lock().unwrap();
 
-                    let cloud_end_time = cloud_begin_time + cloud_end_time;
-
                     assert!(!imu_msgs.is_empty());
 
                     let mut last_time = Some(cloud_begin_time);
-                    let mean_acc = {
-                        mean_acc
-                            .lock()
-                            .unwrap()
-                            .expect("IMU not initialized before first prediction")
-                    }
-                    .norm();
+                    let mean_acc = { mean_acc.lock().unwrap().unwrap_or_default() }.norm();
 
                     let mut angvel_avr_x = 0.0;
                     let mut angvel_avr_y = 0.0;
@@ -427,6 +419,7 @@ async fn lio() -> Result<(), Box<dyn std::error::Error>> {
                     }
                 }
             };
+
             eval.stop("reg").unwrap();
 
             //avg_iterations = register_pose.avg_iterations.unwrap_or(0) as f32;

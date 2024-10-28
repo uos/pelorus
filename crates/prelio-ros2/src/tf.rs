@@ -2,7 +2,7 @@
 ///
 /// tf_r2r is written by Arjo Chakravarty <arjo129@gmail.com>, Michael Maerz <maerz@magazino.eu> and Mitsuharu Kojima <kojima@smilerobotics.com>.
 /// See this [repository](https://github.com/smilerobotics/tf_rosrust) or [crates.io](https://crates.io/crates/tf_r2r) for the original.
-use futures::StreamExt;
+use futures_lite::StreamExt;
 use nalgebra::geometry::{Isometry3, Translation3, UnitQuaternion};
 use r2r::{
     builtin_interfaces::msg::{Duration, Time},
