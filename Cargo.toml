@@ -28,8 +28,7 @@ ros_pointcloud2 = { version = "0.5.1", features = [
     "derive",
 ] }
 r2r = "0.9"
-futures = "0.3"
-tokio = { version = "1", features = ["full"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync"] }
 nalgebra = "0.33"
 #small_gicp-sys = { git = "ssh://git@github.com/stelzo/small_gicp-sys.git", branch = "main" }
 tf_r2r = { version = "0.2", features = ["ros2"] }
@@ -40,3 +39,4 @@ dashmap = { version = "6", features = ["rayon", "inline"] }
 imu-fusion = "0.2"
 imu-calib = "0.1"
 color-eyre = "0.6"
+futures-lite = "2"
