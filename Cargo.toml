@@ -4,6 +4,7 @@ members = [
     "crates/pelorus-reg",
     "crates/prelio",
     "crates/prelio-ros2",
+    "crates/spole",
 ]
 resolver = "2"
 
@@ -20,6 +21,7 @@ pelorus = { path = "crates/pelorus", version = "0.1.0" }
 pelorus-reg = { path = "crates/pelorus-reg", version = "0.1.0" }
 prelio = { path = "crates/prelio", version = "0.1.0" }
 prelio-ros2 = { path = "crates/prelio-ros2", version = "0.1.0" }
+spole = { path = "crates/spole", version = "0.1.0" }
 
 ros_pointcloud2 = { version = "0.5.1", features = [
     "r2r_msg",

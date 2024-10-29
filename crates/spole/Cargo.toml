@@ -1,0 +1,13 @@
+[package]
+name = "spole"
+edition.workspace = true
+include.workspace = true
+keywords.workspace = true
+license.workspace = true
+repository.workspace = true
+version.workspace = true
+
+[dependencies]
+dashmap.workspace = true
+ros_pointcloud2.workspace = true
+nalgebra.workspace = true
