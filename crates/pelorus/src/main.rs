@@ -148,7 +148,7 @@ async fn lio() -> Result<(), Box<dyn std::error::Error>> {
         5.0,
         false,
         Isometry3::identity(),
-        &pelorus_reg::sfasterlio::NearbyType::Nearby18,
+        &pelorus_reg::IVoxNearbyType::Nearby18,
     )));
 
     let mean_acc = Arc::new(Mutex::new(None));

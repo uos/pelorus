@@ -930,6 +930,7 @@ dependencies = [
  "rayon",
  "ros_pointcloud2",
  "sophus_lie",
+ "spole",
 ]
 
 [[package]]
@@ -1486,6 +1487,15 @@ dependencies = [
  "nalgebra 0.33.1",
  "num-traits",
  "sophus_core",
+]
+
+[[package]]
+name = "spole"
+version = "0.1.0"
+dependencies = [
+ "dashmap",
+ "nalgebra 0.33.1",
+ "ros_pointcloud2",
 ]
 
 [[package]]

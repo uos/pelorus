@@ -5,6 +5,7 @@ pub mod imu;
 mod localmap;
 pub mod sfasterlio;
 mod sophus_ekf;
+pub use spole::*;
 
 #[derive(Clone, Default, Debug, PartialEq)]
 pub struct CloudRegisterResult {

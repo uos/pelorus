@@ -4,12 +4,12 @@
 use nalgebra::*;
 use ros_pointcloud2::points::PointXYZ;
 
-pub use crate::localmap::NearbyType;
+pub use spole::IVoxNearbyType;
 
 pub struct SFasterLio {
     ekf: crate::sophus_ekf::Esekf,
     imu_processing: crate::imu::ImuProcessing,
-    map: crate::localmap::Localmap,
+    map: spole::IVoxHashMap,
     laser_point_cov: f64,
     ekf_max_iterations: i8,
     k_neighbors: usize,
@@ -29,7 +29,7 @@ impl Default for SFasterLio {
             5.0,
             false,
             Isometry3::identity(),
-            &NearbyType::default(),
+            &IVoxNearbyType::default(),
         )
     }
 }
@@ -45,9 +45,9 @@ impl SFasterLio {
         neighbor_max_range: f64,
         imu_lidar_extrinsic_calibration_optimization: bool,
         initial_extrinsic_calibration: Isometry3<f64>,
-        knn_nearby_voxel_search_range: &NearbyType,
+        knn_nearby_voxel_search_range: &IVoxNearbyType,
     ) -> Self {
-        let map = crate::localmap::Localmap::new(
+        let map = spole::IVoxHashMap::new(
             map_resolution as f32,
             100_000,
             &knn_nearby_voxel_search_range,
@@ -218,6 +218,8 @@ impl crate::Registration for SFasterLio {
                         return;
                     }
 
+                    let initial_guess = Isometry3::identity(); // TODO rm
+
                     let planes: Vec<(Vector3<f64>, [f64; 4])> = cloud
                         .into_iter()
                         .filter_map(|point| {
@@ -241,6 +243,8 @@ impl crate::Registration for SFasterLio {
                             })
                         })
                         .collect();
+
+                    dbg!(planes.len());
 
                     if planes.is_empty() {
                         *valid = false;
@@ -320,6 +324,8 @@ impl crate::Registration for SFasterLio {
             )),
         );
 
+        dbg!(global_pose);
+
         // localmap cache
         // TODO WAAAAAAY to sloow > 10-50ms
         self.map.remove_cold_voxels(600);
@@ -327,6 +333,8 @@ impl crate::Registration for SFasterLio {
         //let start_stamp = std::time::Instant::now();
         self.add_to_map(cloud, global_pose);
         //dbg!(start_stamp.elapsed());
+
+        dbg!(self.map.get_entire_map().len());
 
         Ok(crate::CloudRegisterResult {
             pose: global_pose,
