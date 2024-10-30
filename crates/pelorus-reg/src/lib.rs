@@ -11,6 +11,7 @@ pub use spole::*;
 pub struct CloudRegisterResult {
     pub pose: Isometry3<f64>,
     pub avg_iterations: Option<u32>,
+    pub registered_cloud: Option<Vec<PointXYZINormal>>,
 }
 
 #[derive(Clone, Default, Debug, PartialEq)]

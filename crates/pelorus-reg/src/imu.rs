@@ -48,6 +48,7 @@ impl Default for ImuProcessing {
     }
 }
 
+#[derive(Clone, Debug, Copy)]
 pub struct ImuParameters {
     pub cov_acc: Vector3<f64>,
     pub cov_gyr: Vector3<f64>,

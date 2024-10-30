@@ -1,14 +1,16 @@
 use nalgebra::{Isometry3, Translation3};
 use r2r::{
     builtin_interfaces::msg::Time,
-    geometry_msgs::msg::{PoseStamped, Quaternion, Transform, TransformStamped, Vector3},
+    geometry_msgs::msg::{Point, PoseStamped, Quaternion, Transform, TransformStamped, Vector3},
     log_error,
     nav_msgs::msg::{Odometry, Path},
     sensor_msgs::msg::PointCloud2,
     std_msgs::msg::Header,
+    visualization_msgs::msg::Marker,
     RosParams,
 };
 
+use rand::Rng;
 use tf_r2r::TfBroadcaster;
 
 use pelorus_reg::{sfasterlio::SFasterLio, Registration};
@@ -148,7 +150,7 @@ async fn lio() -> Result<(), Box<dyn std::error::Error>> {
         5.0,
         false,
         Isometry3::identity(),
-        &pelorus_reg::IVoxNearbyType::Nearby18,
+        pelorus_reg::IVoxNearbyType::Nearby18,
     )));
 
     let mean_acc = Arc::new(Mutex::new(None));
@@ -303,6 +305,8 @@ async fn lio() -> Result<(), Box<dyn std::error::Error>> {
     let lidar_path_publisher = node.create_publisher::<Path>("path", config.path_qos)?;
     let imu_odom_publisher = node.create_publisher::<Odometry>("imu_odom", config.imu_odom_qos)?;
     let imu_path_publisher = node.create_publisher::<Path>("imu_path", config.imu_path_qos)?;
+    let registered_visual =
+        node.create_publisher::<Marker>("registered_viz", r2r::QosProfile::default())?;
 
     let mut t_world_lidar = nalgebra::Isometry3::identity();
     let mut t_last_current = nalgebra::Isometry3::identity();
@@ -322,6 +326,7 @@ async fn lio() -> Result<(), Box<dyn std::error::Error>> {
     imu_path.header.frame_id = map_frame.clone();
 
     let mut last_scan_time = None;
+    let mut total_viz_marker = 0;
 
     //let mut avg_iterations = 0.0;
     //let mut iteration_updates = 0;
@@ -486,12 +491,109 @@ async fn lio() -> Result<(), Box<dyn std::error::Error>> {
                 }
             };
 
+            if let Some(registered_normals) = register_pose.registered_cloud {
+                let random_color = {
+                    let mut rng = rand::thread_rng();
+                    let r: f32 = rng.gen();
+                    let g: f32 = rng.gen();
+                    let b: f32 = rng.gen();
+                    let v = nalgebra::Vector3::new(r, g, b).normalize();
+                    let a: f32 = 0.7;
+                    (v.x, v.y, v.z, a)
+                };
+
+                let normal_iter = registered_normals
+                    .iter()
+                    .zip(registered_normals.iter())
+                    .map(|(reg_p, reg_n)| PointXYZINormal {
+                        x: reg_p.x,
+                        y: reg_p.y,
+                        z: reg_p.z,
+                        intensity: reg_n.intensity,
+                        normal_x: reg_n.x,
+                        normal_y: reg_n.y,
+                        normal_z: reg_n.z,
+                    });
+
+                let mut marr = Marker::default();
+                marr.header = Header {
+                    frame_id: map_frame.clone(),
+                    stamp: Time {
+                        sec: orig_time.sec,
+                        nanosec: orig_time.nanosec,
+                    },
+                };
+                marr.id = total_viz_marker;
+                total_viz_marker += 1;
+
+                // Live for ever, RIP Rviz
+                marr.lifetime.sec = 0;
+                marr.lifetime.nanosec = 0;
+
+                marr.type_ = 5; // Arrow
+                marr.action = 0; // add
+
+                marr.scale.x = 0.02; // measured distance to the plane
+                marr.scale.y = 0.02; // shaft
+                marr.scale.z = 0.02; // head
+
+                marr.color.r = random_color.0;
+                marr.color.g = random_color.1;
+                marr.color.b = random_color.2;
+                marr.color.a = random_color.3;
+
+                let draw_length = 0.25;
+
+                marr.points = normal_iter // downsample_avg(normal_iter, 0.5).iter() || normal_iter
+                    .map(|normal| {
+                        let normal_viz = nalgebra::Vector3::new(
+                            normal.normal_x as f64,
+                            normal.normal_y as f64,
+                            normal.normal_z as f64,
+                        );
+
+                        let position_viz = nalgebra::Vector3::new(
+                            normal.x as f64,
+                            normal.y as f64,
+                            normal.z as f64,
+                        );
+
+                        let end_position = position_viz + normal_viz * draw_length;
+
+                        /*let reference_axis = nalgebra::Vector3::x_axis(); // forward direction of arrow
+                        let axis_angle = reference_axis.cross(&normal_viz);
+                        let quat = nalgebra::UnitQuaternion::from_axis_angle(
+                            &nalgebra::UnitVector3::new_normalize(axis_angle),
+                            reference_axis.angle(&normal_viz),
+                        );*/
+
+                        let mut point_start = Point::default();
+                        point_start.x = position_viz.x;
+                        point_start.y = position_viz.y;
+                        point_start.z = position_viz.z;
+
+                        let mut point_end = Point::default();
+                        point_end.x = end_position.x;
+                        point_end.y = end_position.y;
+                        point_end.z = end_position.z;
+
+                        [point_start, point_end]
+                    })
+                    .flatten()
+                    .collect();
+
+                registered_visual
+                    .publish(&marr)
+                    .expect("Failed to publish registered visualization");
+            }
+
             // transform cloud inplace for publish
             let mut cloud: PointCloud2 = {
                 let mut cloud = cloud;
                 cloud.iter_mut().for_each(|p| {
-                    let p_t =
-                        t_world_lidar * nalgebra::Point3::new(p.x as f64, p.y as f64, p.z as f64);
+                    let p_t = t_world_lidar.transform_point(&nalgebra::Point3::new(
+                        p.x as f64, p.y as f64, p.z as f64,
+                    ));
                     p.x = p_t.x as f32;
                     p.y = p_t.y as f32;
                     p.z = p_t.z as f32;

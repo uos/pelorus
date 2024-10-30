@@ -18,7 +18,7 @@ def generate_launch_description():
                 #{ 'max_intensity': 255.0 },
                 { 'lidar_vendor': 'ouster' },
                 { 'map_resolution': 0.5 },
-                { 'voxel_size': 0.25 },
+                { 'voxel_size': 0.05 },
             ],
             remappings=[
                 ('cloud', 'ouster/points'),
