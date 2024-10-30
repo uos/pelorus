@@ -191,12 +191,24 @@ impl PointXYZT {
     }
 }
 
-fn hash(point: &Point3<f32>, voxel_size: f32) -> i64 {
+fn hash(point: &Point3<f32>, voxel_size: f32) -> i32 {
+    const PRIME_1: i32 = 73856093;
+    const PRIME_2: i32 = 19349663;
+    const PRIME_3: i32 = 83492791;
+    const PRIME_4: i32 = 116_881;
+
     let xyz = point * (1.0 / voxel_size);
-    let key = (xyz.x.round() as i64 * 73856093)
-        ^ (xyz.y.round() as i64 * 471943)
-        ^ (xyz.z.round() as i64 * 83492791) % 100000;
-    key as i64
+
+    let x = xyz.x.round() as i32;
+    let y = xyz.y.round() as i32;
+    let z = xyz.z.round() as i32;
+
+    let mut hash = x.wrapping_mul(PRIME_1);
+    hash = hash.wrapping_add(y.wrapping_mul(PRIME_2));
+    hash = hash.wrapping_add(z.wrapping_mul(PRIME_3));
+    hash = hash.wrapping_rem(PRIME_4);
+
+    hash
 }
 
 async fn filter_downsample<const N: usize, P: PointXYZITimestamp<N>>(

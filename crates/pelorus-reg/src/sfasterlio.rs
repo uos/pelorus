@@ -1,8 +1,10 @@
 //! An implementation of point cloud registering, tightly coupled with the IMU.
-//! The used method is a combination of the EKF from S-FAST_LIO and nearest neighbor search from FASTER-LIO using hashmaps.
+//! The used method is a combination of the EKF from S-FAST_LIO and a hashgrid-based nearest neighbor search similar to faster-lio.
+
+use std::sync::{Arc, Mutex};
 
 use nalgebra::*;
-use ros_pointcloud2::points::PointXYZ;
+use ros_pointcloud2::points::{PointXYZ, PointXYZINormal, PointXYZNormal};
 
 pub use spole::IVoxNearbyType;
 
@@ -29,7 +31,7 @@ impl Default for SFasterLio {
             5.0,
             false,
             Isometry3::identity(),
-            &IVoxNearbyType::default(),
+            IVoxNearbyType::default(),
         )
     }
 }
@@ -45,12 +47,12 @@ impl SFasterLio {
         neighbor_max_range: f64,
         imu_lidar_extrinsic_calibration_optimization: bool,
         initial_extrinsic_calibration: Isometry3<f64>,
-        knn_nearby_voxel_search_range: &IVoxNearbyType,
+        knn_nearby_voxel_search_range: IVoxNearbyType,
     ) -> Self {
         let map = spole::IVoxHashMap::new(
             map_resolution as f32,
             100_000,
-            &knn_nearby_voxel_search_range,
+            knn_nearby_voxel_search_range,
         );
         let mut cov_gyr = Matrix3::identity();
         cov_gyr[(0, 0)] = imu_params.cov_gyr.x;
@@ -89,8 +91,8 @@ impl SFasterLio {
 
     fn add_to_map(&mut self, cloud: &[PointXYZ], pose: Isometry3<f64>) {
         self.map.add(cloud.iter().map(|point| {
-            let transformed = nalgebra::Point3::new(point.x as f64, point.y as f64, point.z as f64);
-            let global = pose * transformed;
+            let p = nalgebra::Point3::new(point.x as f64, point.y as f64, point.z as f64);
+            let global = pose.transform_point(&p);
             PointXYZ {
                 x: global.x as f32,
                 y: global.y as f32,
@@ -193,16 +195,20 @@ impl SFasterLio {
 }
 
 impl crate::Registration for SFasterLio {
+    // TODO add flag to enable normal cloud output
     fn register_and_map(
         &mut self,
         cloud: &[PointXYZ],
         initial_guess: &Isometry3<f64>,
     ) -> anyhow::Result<crate::CloudRegisterResult> {
+        let normal_cloud = Arc::new(Mutex::new(None));
         if !self.map.is_empty() {
             let map = &mut self.map;
             let k = self.k_neighbors;
             let neighbor_max_range = self.neighbor_max_range;
             let extrinsic_estimation = self.imu_lidar_extrinsic_calibration_optimization;
+
+            let normal_cloud_in_ekf = normal_cloud.clone();
             self.ekf.update(
                 self.laser_point_cov,
                 self.ekf_max_iterations,
@@ -218,9 +224,10 @@ impl crate::Registration for SFasterLio {
                         return;
                     }
 
-                    let initial_guess = Isometry3::identity(); // TODO rm
+                    dbg!(cloud.len());
 
-                    let planes: Vec<(Vector3<f64>, [f64; 4])> = cloud
+                    // Nearest Neighbors to fit planes
+                    let planes = cloud
                         .into_iter()
                         .filter_map(|point| {
                             let p_t = initial_guess.transform_point(&Point3::new(
@@ -230,19 +237,26 @@ impl crate::Registration for SFasterLio {
                             ));
                             let query_point =
                                 PointXYZ::new(p_t.x as f32, p_t.y as f32, p_t.z as f32);
-                            Self::plane_from_points(&map.k_nearest_neighbor_query(
-                                &query_point,
-                                k,
-                                neighbor_max_range,
-                            ))
-                            .map(|plane| {
-                                (
-                                    Vector3::new(point.x as f64, point.y as f64, point.z as f64),
-                                    plane,
+                            let neighbors =
+                                map.k_nearest_neighbor_query(&query_point, k, neighbor_max_range);
+
+                            if neighbors.is_empty() {
+                                return None;
+                            }
+
+                            Self::plane_from_points(&neighbors).map(|plane| {
+                                PointXYZINormal::new(
+                                    point.x,
+                                    point.y,
+                                    point.z,
+                                    plane[3] as f32,
+                                    plane[0] as f32,
+                                    plane[1] as f32,
+                                    plane[2] as f32,
                                 )
                             })
                         })
-                        .collect();
+                        .collect::<Vec<_>>();
 
                     dbg!(planes.len());
 
@@ -251,16 +265,30 @@ impl crate::Registration for SFasterLio {
                         return;
                     }
 
-                    if planes.len() > h.nrows() || planes.len() > h_x.nrows() {
+                    if planes.len() > h.nrows() {
                         *h = DVector::<f64>::zeros(planes.len());
+                    }
+
+                    if planes.len() > h_x.nrows() {
                         *h_x = DMatrix::<f64>::zeros(planes.len(), 12);
                     }
 
                     planes
-                        .into_iter()
+                        .iter()
                         .zip(h_x.row_iter_mut())
                         .zip(h.row_iter_mut())
-                        .for_each(|(((point, nearest_plane), mut h_x_row), mut h_row)| {
+                        .for_each(|((normal_point, mut h_x_row), mut h_row)| {
+                            let point = Vector3::new(
+                                normal_point.x as f64,
+                                normal_point.y as f64,
+                                normal_point.z as f64,
+                            );
+                            let nearest_plane = [
+                                normal_point.normal_x as f64,
+                                normal_point.normal_y as f64,
+                                normal_point.normal_z as f64,
+                                normal_point.intensity as f64,
+                            ];
                             let v =
                                 ekf_state.offset_r_l_i.matrix() * point + ekf_state.offset_t_l_i;
 
@@ -310,6 +338,9 @@ impl crate::Registration for SFasterLio {
 
                             h_row[0] = -nearest_plane[3];
                         });
+
+                    let mut glob = normal_cloud_in_ekf.lock().unwrap();
+                    *glob = Some(planes);
                 },
             );
         };
@@ -336,9 +367,12 @@ impl crate::Registration for SFasterLio {
 
         dbg!(self.map.get_entire_map().len());
 
+        let out_cloud = normal_cloud.lock().unwrap().take();
+
         Ok(crate::CloudRegisterResult {
             pose: global_pose,
             avg_iterations: None,
+            registered_cloud: out_cloud,
         })
     }
 

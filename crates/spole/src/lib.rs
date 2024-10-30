@@ -1,4 +1,4 @@
-use std::ops::Deref;
+use std::{mem::transmute, ops::Deref};
 
 use dashmap::DashMap;
 use ros_pointcloud2::prelude::*;
@@ -32,11 +32,11 @@ use ros_pointcloud2::prelude::*;
 pub struct IVoxHashMap {
     nearby_type: IVoxNearbyType,
     inverse_resolution: f32,
-    grid_map: dashmap::DashMap<i64, ((i32, i32, i32), IvoxNode)>,
+    grid_map: dashmap::DashMap<i32, ((i32, i32, i32), IvoxNode)>,
     scan_number: usize,
 }
 
-#[derive(Debug, Default, Clone)]
+#[derive(Debug, Default, Clone, Copy)]
 pub enum IVoxNearbyType {
     Center,
     Nearby6,
@@ -73,12 +73,8 @@ impl IvoxNode {
         self.newest_hit = scan_number;
 
         self.points.sort_unstable_by(|a, b| {
-            let dist_a = ((a.x - query.x).powi(2)
-                + (a.y - query.y).powi(2)
-                + (a.z - query.z).powi(2)) as f64;
-            let dist_b = ((b.x - query.x).powi(2)
-                + (b.y - query.y).powi(2)
-                + (b.z - query.z).powi(2)) as f64;
+            let dist_a = (a.xyz() - query.xyz()).norm_squared();
+            let dist_b = (b.xyz() - query.xyz()).norm_squared();
             dist_a.partial_cmp(&dist_b).unwrap()
         });
 
@@ -86,12 +82,12 @@ impl IvoxNode {
             .iter()
             .take(k)
             .filter_map(|p| {
-                if ((p.x - query.x).powi(2) + (p.y - query.y).powi(2) + (p.z - query.z).powi(2))
-                    < max_range_sq
-                {
-                    Some(p)
-                } else {
+                let dist_p = (p.xyz() - query.xyz()).norm_squared();
+
+                if dist_p > max_range_sq {
                     None
+                } else {
+                    Some(p)
                 }
             })
             .cloned()
@@ -105,12 +101,12 @@ impl IvoxNode {
 
 impl Default for IVoxHashMap {
     fn default() -> Self {
-        Self::new(0.2, 100_000, &IVoxNearbyType::default())
+        Self::new(0.2, 100_000, IVoxNearbyType::default())
     }
 }
 
 impl IVoxHashMap {
-    pub fn new(resolution: f32, capacity: usize, nbtype: &IVoxNearbyType) -> Self {
+    pub fn new(resolution: f32, capacity: usize, nbtype: IVoxNearbyType) -> Self {
         Self {
             nearby_type: nbtype.clone(),
             inverse_resolution: 1.0 / resolution,
@@ -148,17 +144,36 @@ impl IVoxHashMap {
         k: usize,
         max_range: f64,
     ) -> Vec<PointXYZ> {
-        let mut neighbors: Vec<PointXYZ> =
-            Self::generate_nearby_grids(self.pos2grid(query), &self.nearby_type)
-                .iter()
-                .filter_map(|g| self.grid_map.get_mut(&(Self::hash(g))))
-                .map(|mut val| {
-                    val.value_mut()
-                        .1
-                        .linear_knn(query, k, max_range, self.scan_number)
-                })
-                .flatten()
-                .collect();
+        let grid = self.pos2grid(query);
+
+        let neighboring_buckets: &[(i32, i32, i32)] = match self.nearby_type {
+            IVoxNearbyType::Center => &[grid],
+            IVoxNearbyType::Nearby6 => &Self::nearby_6(grid),
+            IVoxNearbyType::Nearby18 => &Self::nearby_18(grid),
+            IVoxNearbyType::Nearby26 => &Self::nearby_26(grid),
+        };
+
+        /*let double_buckets = neighboring_buckets
+        .iter()
+        .map(|g| (Self::hash(g), g))
+        .collect::<Vec<_>>();*/
+
+        let mut neighbors = neighboring_buckets
+            .iter()
+            .filter_map(|g| self.grid_map.get_mut(&(Self::hash(g))))
+            .filter_map(|mut hash_node| {
+                let n = hash_node
+                    .value_mut()
+                    .1
+                    .linear_knn(query, k, max_range, self.scan_number);
+                if n.is_empty() {
+                    None
+                } else {
+                    Some(n)
+                }
+            })
+            .flatten()
+            .collect::<Vec<_>>();
 
         neighbors.sort_unstable_by(|a, b| {
             Self::point_distance_sq(a, query)
@@ -169,9 +184,9 @@ impl IVoxHashMap {
         neighbors.into_iter().take(k).collect()
     }
 
-    fn nearby_6(grid_key: (i32, i32, i32)) -> Vec<(i32, i32, i32)> {
+    fn nearby_6(grid_key: (i32, i32, i32)) -> [(i32, i32, i32); 7] {
         let (gx, gy, gz) = grid_key;
-        vec![
+        [
             (gx, gy, gz),
             (gx - 1, gy, gz),
             (gx + 1, gy, gz),
@@ -182,10 +197,16 @@ impl IVoxHashMap {
         ]
     }
 
-    fn nearby_18(grid_key: (i32, i32, i32)) -> Vec<(i32, i32, i32)> {
+    fn nearby_18(grid_key: (i32, i32, i32)) -> [(i32, i32, i32); 19] {
         let (gx, gy, gz) = grid_key;
-        let mut first_six = Self::nearby_6(grid_key);
-        first_six.extend(vec![
+        [
+            (gx, gy, gz),
+            (gx - 1, gy, gz),
+            (gx + 1, gy, gz),
+            (gx, gy + 1, gz),
+            (gx, gy - 1, gz),
+            (gx, gy, gz - 1),
+            (gx, gy, gz + 1),
             (gx + 1, gy + 1, gz),
             (gx - 1, gy + 1, gz),
             (gx + 1, gy - 1, gz),
@@ -198,14 +219,31 @@ impl IVoxHashMap {
             (gx, gy - 1, gz + 1),
             (gx, gy + 1, gz - 1),
             (gx, gy - 1, gz - 1),
-        ]);
-        first_six
+        ]
     }
 
-    fn nearby_26(grid_key: (i32, i32, i32)) -> Vec<(i32, i32, i32)> {
+    fn nearby_26(grid_key: (i32, i32, i32)) -> [(i32, i32, i32); 27] {
         let (gx, gy, gz) = grid_key;
-        let mut first_eighteen = Self::nearby_18(grid_key);
-        first_eighteen.extend(vec![
+        [
+            (gx, gy, gz),
+            (gx - 1, gy, gz),
+            (gx + 1, gy, gz),
+            (gx, gy + 1, gz),
+            (gx, gy - 1, gz),
+            (gx, gy, gz - 1),
+            (gx, gy, gz + 1),
+            (gx + 1, gy + 1, gz),
+            (gx - 1, gy + 1, gz),
+            (gx + 1, gy - 1, gz),
+            (gx - 1, gy - 1, gz),
+            (gx + 1, gy, gz + 1),
+            (gx - 1, gy, gz + 1),
+            (gx + 1, gy, gz - 1),
+            (gx - 1, gy, gz - 1),
+            (gx, gy + 1, gz + 1),
+            (gx, gy - 1, gz + 1),
+            (gx, gy + 1, gz - 1),
+            (gx, gy - 1, gz - 1),
             (gx + 1, gy + 1, gz + 1),
             (gx - 1, gy + 1, gz + 1),
             (gx + 1, gy - 1, gz + 1),
@@ -214,20 +252,7 @@ impl IVoxHashMap {
             (gx - 1, gy + 1, gz - 1),
             (gx + 1, gy - 1, gz - 1),
             (gx - 1, gy - 1, gz - 1),
-        ]);
-        first_eighteen
-    }
-
-    fn generate_nearby_grids(
-        grid_key: (i32, i32, i32),
-        nbtype: &IVoxNearbyType,
-    ) -> Vec<(i32, i32, i32)> {
-        match nbtype {
-            IVoxNearbyType::Center => vec![grid_key],
-            IVoxNearbyType::Nearby6 => Self::nearby_6(grid_key),
-            IVoxNearbyType::Nearby18 => Self::nearby_18(grid_key),
-            IVoxNearbyType::Nearby26 => Self::nearby_26(grid_key),
-        }
+        ]
     }
 
     fn pos2grid(&self, pos: &PointXYZ) -> (i32, i32, i32) {
@@ -237,11 +262,18 @@ impl IVoxHashMap {
         (gx, gy, gz)
     }
 
-    fn hash(grid_key: &(i32, i32, i32)) -> i64 {
-        const MOD: i64 = 100_000;
-        (grid_key.0 as i64 * 73_856_093)
-            ^ (grid_key.1 as i64 * 471_943)
-            ^ (grid_key.2 as i64 * 83_492_791) % MOD
+    fn hash(grid_key: &(i32, i32, i32)) -> i32 {
+        const PRIME_1: i32 = 73856093;
+        const PRIME_2: i32 = 19349663;
+        const PRIME_3: i32 = 83492791;
+        const PRIME_4: i32 = 116_881;
+
+        let mut hash = grid_key.0.wrapping_mul(PRIME_1);
+        hash = hash.wrapping_add(grid_key.1.wrapping_mul(PRIME_2));
+        hash = hash.wrapping_add(grid_key.2.wrapping_mul(PRIME_3));
+        hash = hash.wrapping_rem(PRIME_4);
+
+        hash
     }
 
     // TODO to list taht moves newest used data to the front and pointing from inode to the cache and back. if all points from the inode are removed, remove entire inode.
@@ -250,7 +282,7 @@ impl IVoxHashMap {
             .grid_map
             .iter()
             .map(|entry| *entry.key())
-            .collect::<Vec<i64>>();
+            .collect::<Vec<_>>();
 
         keys.into_iter().for_each(|key| {
             self.grid_map
@@ -284,7 +316,7 @@ mod tests {
             PointXYZ::new(0.49, 0.49, 0.1),
             PointXYZ::new(0.75001, 0.51, 0.51),
         ];
-        let mut map = IVoxHashMap::new(0.5, 1_000, &IVoxNearbyType::default());
+        let mut map = IVoxHashMap::new(0.5, 1_000, IVoxNearbyType::default());
         map.add(h_points);
         let entire_map = map.get_entire_map();
         assert_eq!(entire_map.len(), 4);
@@ -320,7 +352,7 @@ mod tests {
 
     #[test]
     fn basic_add_and_search() {
-        let mut map = IVoxHashMap::new(0.5, 1_000, &IVoxNearbyType::default());
+        let mut map = IVoxHashMap::new(0.5, 1_000, IVoxNearbyType::default());
         map.add([PointXYZ::new(3.3, 3.3, 3.0)]);
         let res = map.k_nearest_neighbor_query(&PointXYZ::new(3.2, 3.2, 3.0), 1, 5.0);
         assert_eq!(res.len(), 1);
@@ -334,16 +366,16 @@ mod tests {
             PointXYZ::new(0.49, 0.49, 0.1),
             PointXYZ::new(0.75001, 0.51, 0.51),
         ];
-        let mut map = IVoxHashMap::new(0.5, 1_000, &IVoxNearbyType::default());
+        let mut map = IVoxHashMap::new(0.5, 1_000, IVoxNearbyType::Nearby26);
         map.add(h_points);
 
         let query = PointXYZ::new(0.0, 0.0, 0.0);
         let result = map.k_nearest_neighbor_query(&query, 6, 5.0);
 
-        /*assert_eq!(result.len(), 3);
+        assert_eq!(result.len(), 3);
 
         assert_eq!(result[0].x, 0.2);
         assert_eq!(result[1].x, 0.4);
-        assert_eq!(result[2].y, 0.49);*/
+        assert_eq!(result[2].y, 0.49);
     }
 }
