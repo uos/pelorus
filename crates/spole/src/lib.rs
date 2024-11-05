@@ -1,5 +1,3 @@
-use std::{mem::transmute, ops::Deref};
-
 use dashmap::DashMap;
 use ros_pointcloud2::prelude::*;
 
@@ -73,8 +71,8 @@ impl IvoxNode {
         self.newest_hit = scan_number;
 
         self.points.sort_unstable_by(|a, b| {
-            let dist_a = (a.xyz() - query.xyz()).norm_squared();
-            let dist_b = (b.xyz() - query.xyz()).norm_squared();
+            let dist_a = (a.xyz_f32() - query.xyz_f32()).norm_squared();
+            let dist_b = (b.xyz_f32() - query.xyz_f32()).norm_squared();
             dist_a.partial_cmp(&dist_b).unwrap()
         });
 
@@ -82,7 +80,7 @@ impl IvoxNode {
             .iter()
             .take(k)
             .filter_map(|p| {
-                let dist_p = (p.xyz() - query.xyz()).norm_squared();
+                let dist_p = (p.xyz_f32() - query.xyz_f32()).norm_squared();
 
                 if dist_p > max_range_sq {
                     None
@@ -133,10 +131,6 @@ impl IVoxHashMap {
         });
     }
 
-    pub fn point_distance_sq(p1: &PointXYZ, p2: &PointXYZ) -> f32 {
-        (p1.x - p2.x).powi(2) + (p1.y - p2.y).powi(2) + (p1.z - p2.z).powi(2)
-    }
-
     #[must_use]
     pub fn k_nearest_neighbor_query(
         &self,
@@ -176,9 +170,9 @@ impl IVoxHashMap {
             .collect::<Vec<_>>();
 
         neighbors.sort_unstable_by(|a, b| {
-            Self::point_distance_sq(a, query)
-                .partial_cmp(&Self::point_distance_sq(b, query))
-                .unwrap()
+            let dist_a = (a.xyz_f32() - query.xyz_f32()).norm_squared();
+            let dist_b = (b.xyz_f32() - query.xyz_f32()).norm_squared();
+            dist_a.partial_cmp(&dist_b).unwrap()
         });
 
         neighbors.into_iter().take(k).collect()
@@ -377,5 +371,26 @@ mod tests {
         assert_eq!(result[0].x, 0.2);
         assert_eq!(result[1].x, 0.4);
         assert_eq!(result[2].y, 0.49);
+    }
+
+    #[test]
+    fn more_distant() {
+        let distant_points = vec![
+            PointXYZ::new(0.2, 0.2, 0.0),
+            PointXYZ::new(5.3, 10.7, 0.1),
+            PointXYZ::new(5.6, 10.4, 0.3),
+            PointXYZ::new(5.9, 10.1, 0.5),
+            PointXYZ::new(6.2, 9.8, 0.7),
+            PointXYZ::new(6.5, 9.5, 0.9),
+            PointXYZ::new(6.8, 9.2, 1.1),
+        ];
+
+        let mut map = IVoxHashMap::new(0.5, 1_000, IVoxNearbyType::Nearby18);
+        map.add(distant_points);
+
+        let query = PointXYZ::new(5.5, 10.5, 0.0);
+        let result = map.k_nearest_neighbor_query(&query, 2, 5.0);
+
+        assert_eq!(result.len(), 2);
     }
 }
