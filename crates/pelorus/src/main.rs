@@ -502,19 +502,6 @@ async fn lio() -> Result<(), Box<dyn std::error::Error>> {
                     (v.x, v.y, v.z, a)
                 };
 
-                let normal_iter = registered_normals
-                    .iter()
-                    .zip(registered_normals.iter())
-                    .map(|(reg_p, reg_n)| PointXYZINormal {
-                        x: reg_p.x,
-                        y: reg_p.y,
-                        z: reg_p.z,
-                        intensity: reg_n.intensity,
-                        normal_x: reg_n.x,
-                        normal_y: reg_n.y,
-                        normal_z: reg_n.z,
-                    });
-
                 let mut marr = Marker::default();
                 marr.header = Header {
                     frame_id: map_frame.clone(),
@@ -542,9 +529,14 @@ async fn lio() -> Result<(), Box<dyn std::error::Error>> {
                 marr.color.b = random_color.2;
                 marr.color.a = random_color.3;
 
+                marr.header.frame_id = orig_frame.clone();
+                marr.header.stamp.nanosec = orig_time.nanosec; // TODO rpcl2 from timemsg
+                marr.header.stamp.sec = orig_time.sec;
+
                 let draw_length = 0.25;
 
-                marr.points = normal_iter // downsample_avg(normal_iter, 0.5).iter() || normal_iter
+                marr.points = registered_normals
+                    .iter() // downsample_avg(normal_iter, 0.5).iter() || normal_iter
                     .map(|normal| {
                         let normal_viz = nalgebra::Vector3::new(
                             normal.normal_x as f64,
@@ -552,20 +544,9 @@ async fn lio() -> Result<(), Box<dyn std::error::Error>> {
                             normal.normal_z as f64,
                         );
 
-                        let position_viz = nalgebra::Vector3::new(
-                            normal.x as f64,
-                            normal.y as f64,
-                            normal.z as f64,
-                        );
-
-                        let end_position = position_viz + normal_viz * draw_length;
-
-                        /*let reference_axis = nalgebra::Vector3::x_axis(); // forward direction of arrow
-                        let axis_angle = reference_axis.cross(&normal_viz);
-                        let quat = nalgebra::UnitQuaternion::from_axis_angle(
-                            &nalgebra::UnitVector3::new_normalize(axis_angle),
-                            reference_axis.angle(&normal_viz),
-                        );*/
+                        let position_viz = normal.xyz_f64();
+                        let end_position =
+                            position_viz + normal_viz.normalize() * normal.intensity as f64;
 
                         let mut point_start = Point::default();
                         point_start.x = position_viz.x;
@@ -588,12 +569,10 @@ async fn lio() -> Result<(), Box<dyn std::error::Error>> {
             }
 
             // transform cloud inplace for publish
-            let mut cloud: PointCloud2 = {
+            /*let mut cloud: PointCloud2 = {
                 let mut cloud = cloud;
                 cloud.iter_mut().for_each(|p| {
-                    let p_t = t_world_lidar.transform_point(&nalgebra::Point3::new(
-                        p.x as f64, p.y as f64, p.z as f64,
-                    ));
+                    let p_t = t_world_lidar.transform_point(&p.xyz_f64());
                     p.x = p_t.x as f32;
                     p.y = p_t.y as f32;
                     p.z = p_t.z as f32;
@@ -601,9 +580,12 @@ async fn lio() -> Result<(), Box<dyn std::error::Error>> {
                 ros_pointcloud2::PointCloud2Msg::try_from_vec(cloud)
                     .unwrap()
                     .into()
-            };
+            };*/
+            let mut cloud: PointCloud2 = ros_pointcloud2::PointCloud2Msg::try_from_vec(cloud)
+                .unwrap()
+                .into();
             let map_to_lidar_transform = t_world_lidar.clone();
-            cloud.header.frame_id = map_frame.clone();
+            cloud.header.frame_id = orig_frame.clone();
 
             let tf = TransformStamped {
                 header: Header {

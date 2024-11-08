@@ -192,9 +192,9 @@ impl PointXYZT {
 }
 
 fn hash(point: &Point3<f32>, voxel_size: f32) -> i32 {
-    const PRIME_1: i32 = 73856093;
-    const PRIME_2: i32 = 19349663;
-    const PRIME_3: i32 = 83492791;
+    const PRIME_1: i32 = 73_856_093;
+    const PRIME_2: i32 = 19_349_663;
+    const PRIME_3: i32 = 83_492_791;
     const PRIME_4: i32 = 116_881;
 
     let xyz = point * (1.0 / voxel_size);

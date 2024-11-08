@@ -97,7 +97,7 @@ pub struct Esekf {
     pub cov: SMatrix<f64, 24, 24>,
 }
 
-fn box_plus(x: &StateIKFom, f: SMatrix<f64, 24, 1>) -> StateIKFom {
+fn box_plus(x: &StateIKFom, f: &SMatrix<f64, 24, 1>) -> StateIKFom {
     let mut x_r = StateIKFom::default();
     x_r.pos = x.pos + f.fixed_rows::<3>(0);
     x_r.rot = x
@@ -121,6 +121,8 @@ Sophus::SO3(x2.rot.matrix().transpose() * x1.rot.matrix()).log();
 and
 x_r.fixed_rows_mut::<3>(3).copy_from(&(SO3::log(&x2.rot.inverse().group_mul(&x1.rot))));
 do the same thing
+
+first check: should be the same
 */
 fn box_minus(x1: &StateIKFom, x2: &StateIKFom) -> SMatrix<f64, 24, 1> {
     let mut x_r = SMatrix::<f64, 24, 1>::zeros();
@@ -154,7 +156,7 @@ impl Esekf {
         let mut f_x = df_dx(&self.state, i_in);
         let f_w = df_dw(&self.state, i_in);
 
-        self.state = box_plus(&self.state, f * dt);
+        self.state = box_plus(&self.state, &(f * dt));
         f_x = SMatrix::<f64, 24, 24>::identity() + f_x * dt;
         let dt_fw = dt * f_w;
         self.cov = f_x * self.cov * f_x.transpose() + dt_fw * q * dt_fw.transpose();
@@ -212,15 +214,13 @@ impl Esekf {
                 kh
             };
             let dx_ = k * &h + (kh - SMatrix::<f64, 24, 24>::identity()) * dx_new;
-            self.state = box_plus(&self.state, dx_);
+            self.state = box_plus(&self.state, &dx_);
 
-            converge = true;
-            for j in 0..24 {
-                if dx_[j].abs() > CONVERGE_EPSILON {
-                    converge = false;
-                    break;
-                }
-            }
+            dbg!(&dx_);
+
+            converge = dx_
+                .column_iter()
+                .all(|x| x.iter().all(|y| y.abs() <= CONVERGE_EPSILON));
 
             if converge {
                 t += 1;

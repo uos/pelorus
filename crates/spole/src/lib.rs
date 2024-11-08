@@ -137,7 +137,7 @@ impl IVoxHashMap {
         query: &PointXYZ,
         k: usize,
         max_range: f64,
-    ) -> Vec<PointXYZ> {
+    ) -> Option<Vec<PointXYZ>> {
         let grid = self.pos2grid(query);
 
         let neighboring_buckets: &[(i32, i32, i32)] = match self.nearby_type {
@@ -175,7 +175,12 @@ impl IVoxHashMap {
             dist_a.partial_cmp(&dist_b).unwrap()
         });
 
-        neighbors.into_iter().take(k).collect()
+        let neighbors: Vec<PointXYZ> = neighbors.into_iter().take(k).collect();
+        if neighbors.is_empty() {
+            None
+        } else {
+            Some(neighbors)
+        }
     }
 
     fn nearby_6(grid_key: (i32, i32, i32)) -> [(i32, i32, i32); 7] {
@@ -349,6 +354,8 @@ mod tests {
         let mut map = IVoxHashMap::new(0.5, 1_000, IVoxNearbyType::default());
         map.add([PointXYZ::new(3.3, 3.3, 3.0)]);
         let res = map.k_nearest_neighbor_query(&PointXYZ::new(3.2, 3.2, 3.0), 1, 5.0);
+        assert!(res.is_some());
+        let res = res.unwrap();
         assert_eq!(res.len(), 1);
     }
 
@@ -366,6 +373,8 @@ mod tests {
         let query = PointXYZ::new(0.0, 0.0, 0.0);
         let result = map.k_nearest_neighbor_query(&query, 6, 5.0);
 
+        assert!(result.is_some());
+        let result = result.unwrap();
         assert_eq!(result.len(), 3);
 
         assert_eq!(result[0].x, 0.2);
@@ -391,6 +400,8 @@ mod tests {
         let query = PointXYZ::new(5.5, 10.5, 0.0);
         let result = map.k_nearest_neighbor_query(&query, 2, 5.0);
 
+        assert!(result.is_some());
+        let result = result.unwrap();
         assert_eq!(result.len(), 2);
     }
 }

@@ -7,12 +7,12 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-ros_pointcloud2 = { version = "0.5.1", features = [
+ros_pointcloud2 = { version = "0.5.2", features = [
     "r2r_msg",
     "nalgebra",
     "rayon",
     "derive",
-] }
+], git = "https://github.com/stelzo/ros_pointcloud2.git" }
 prelio-ros2 = { version = "0.1", path = "../prelio-ros2" }
 pelorus-reg = { version = "0.1", path = "../pelorus-reg" }
 r2r = "0.9"

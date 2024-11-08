@@ -23,12 +23,12 @@ prelio = { path = "crates/prelio", version = "0.1.0" }
 prelio-ros2 = { path = "crates/prelio-ros2", version = "0.1.0" }
 spole = { path = "crates/spole", version = "0.1.0" }
 
-ros_pointcloud2 = { version = "0.5.1", features = [
+ros_pointcloud2 = { version = "0.5.2", features = [
     "r2r_msg",
     "nalgebra",
     "rayon",
     "derive",
-] }
+], git = "https://github.com/stelzo/ros_pointcloud2.git" }
 r2r = "0.9"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync"] }
 nalgebra = "0.33"

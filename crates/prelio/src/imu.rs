@@ -387,11 +387,12 @@ impl ImuProcess {
                 );
                 (iso, sophus)
             }
-            None => self.integrate_imu_for_undistortion(
+            /*None => self.integrate_imu_for_undistortion(
                 &meas.imu_buffer,
                 meas.lidar_start_stamp,
                 Some(&config),
-            ),
+            ),*/
+            None => (Isometry3::identity(), SE3::identity()), // TODO wtf
         };
 
         let n_last_imu = meas.imu_buffer.last().unwrap().clone();

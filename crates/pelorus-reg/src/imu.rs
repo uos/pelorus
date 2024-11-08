@@ -157,7 +157,7 @@ impl ImuProcessing {
             n += 1.0;
         }
 
-        ekf.state.grav = -self.mean_acc / self.mean_acc.norm() * 9.81;
+        ekf.state.grav = -self.mean_acc / self.mean_acc.norm() * 9.81; // TODO PARAM
         ekf.state.bg = self.mean_gyr;
         ekf.state.offset_t_l_i = self.lidar_t_wrt_imu;
         ekf.state.offset_r_l_i =

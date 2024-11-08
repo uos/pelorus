@@ -117,9 +117,7 @@ impl SFasterLio {
             return None;
         }
 
-        let points_vec = points
-            .iter()
-            .map(|p| Vector3::new(p.x as f64, p.y as f64, p.z as f64));
+        let points_vec = points.iter().map(|p| p.xyz_f64().coords);
 
         let mut sum = Vector3::new(0.0, 0.0, 0.0);
         for p in points_vec.clone() {
@@ -194,6 +192,8 @@ impl SFasterLio {
     }
 }
 
+// TODO add ekf init function to here, not in pelorus
+
 impl crate::Registration for SFasterLio {
     // TODO add flag to enable normal cloud output
     fn register_and_map(
@@ -224,37 +224,43 @@ impl crate::Registration for SFasterLio {
                         return;
                     }
 
-                    dbg!(cloud.len());
+                    //dbg!(cloud.len());
 
                     // Nearest Neighbors to fit planes
                     let planes = cloud
                         .into_iter()
-                        .filter_map(|point| {
-                            let p_t = initial_guess.transform_point(&Point3::new(
-                                point.x as f64,
-                                point.y as f64,
-                                point.z as f64,
-                            ));
-                            let query_point =
-                                PointXYZ::new(p_t.x as f32, p_t.y as f32, p_t.z as f32);
+                        .filter_map(|point_local| {
+                            let point_global =
+                                initial_guess.transform_point(&point_local.xyz_f64());
+                            let query_point = PointXYZ::new(
+                                point_global.x as f32,
+                                point_global.y as f32,
+                                point_global.z as f32,
+                            ); // TODO add from<nalgebra::Point3<f64>> etc
                             let neighbors =
-                                map.k_nearest_neighbor_query(&query_point, k, neighbor_max_range);
+                                map.k_nearest_neighbor_query(&query_point, k, neighbor_max_range)?;
+                            let plane = Self::plane_from_points(&neighbors)?;
 
-                            if neighbors.is_empty() {
+                            let pd2 = plane[0] * point_global.x
+                                + plane[1] * point_global.y
+                                + plane[2] * point_global.z
+                                + plane[3];
+                            let s =
+                                1.0 - 0.9 * pd2.abs() / point_local.xyz_f64().coords.norm().sqrt();
+
+                            if s <= 0.9 {
                                 return None;
                             }
 
-                            Self::plane_from_points(&neighbors).map(|plane| {
-                                PointXYZINormal::new(
-                                    point.x,
-                                    point.y,
-                                    point.z,
-                                    plane[3] as f32,
-                                    plane[0] as f32,
-                                    plane[1] as f32,
-                                    plane[2] as f32,
-                                )
-                            })
+                            Some(PointXYZINormal::new(
+                                point_local.x,
+                                point_local.y,
+                                point_local.z,
+                                pd2 as f32,
+                                plane[0] as f32,
+                                plane[1] as f32,
+                                plane[2] as f32,
+                            ))
                         })
                         .collect::<Vec<_>>();
 
@@ -278,11 +284,7 @@ impl crate::Registration for SFasterLio {
                         .zip(h_x.row_iter_mut())
                         .zip(h.row_iter_mut())
                         .for_each(|((normal_point, mut h_x_row), mut h_row)| {
-                            let point = Vector3::new(
-                                normal_point.x as f64,
-                                normal_point.y as f64,
-                                normal_point.z as f64,
-                            );
+                            let point = normal_point.xyz_f64();
                             let nearest_plane = [
                                 normal_point.normal_x as f64,
                                 normal_point.normal_y as f64,
@@ -336,8 +338,18 @@ impl crate::Registration for SFasterLio {
                                 h_x_row[11] = 0.0;
                             }
 
-                            h_row[0] = -nearest_plane[3];
+                            /*dbg!(h_x_row[0]);
+                            dbg!(h_x_row[1]);
+                            dbg!(h_x_row[2]);
+                            dbg!(h_x_row[3]);
+                            dbg!(h_x_row[4]);
+                            dbg!(h_x_row[5]);*/
+
+                            h_row[0] = -nearest_plane[3]; // / 10.0; // TODO ist zu gross, aber warum?
+                                                          //dbg!(h_row[0]);
                         });
+
+                    //dbg!(h);
 
                     let mut glob = normal_cloud_in_ekf.lock().unwrap();
                     *glob = Some(planes);
@@ -355,17 +367,15 @@ impl crate::Registration for SFasterLio {
             )),
         );
 
-        dbg!(global_pose);
-
         // localmap cache
         // TODO WAAAAAAY to sloow > 10-50ms
-        self.map.remove_cold_voxels(600);
+        //self.map.remove_cold_voxels(600);
 
         //let start_stamp = std::time::Instant::now();
         self.add_to_map(cloud, global_pose);
         //dbg!(start_stamp.elapsed());
 
-        dbg!(self.map.get_entire_map().len());
+        //dbg!(self.map.get_entire_map().len());
 
         let out_cloud = normal_cloud.lock().unwrap().take();
 

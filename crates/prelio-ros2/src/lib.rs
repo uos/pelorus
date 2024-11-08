@@ -12,7 +12,6 @@ use r2r::geometry_msgs::msg::{
     Point, PolygonStamped, Pose, PoseWithCovariance, Quaternion, Twist, TwistWithCovariance,
     Vector3,
 };
-use r2r::log_info;
 use r2r::{
     log_error, log_warn,
     nav_msgs::msg::Odometry,
