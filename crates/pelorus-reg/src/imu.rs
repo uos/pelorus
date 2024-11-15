@@ -3,6 +3,8 @@ use nalgebra::*;
 use crate::sophus_ekf::Esekf;
 
 const MAX_INI_COUNT: usize = 10;
+const COV_IMU_RAW_DEFAULT: f64 = 0.0001;
+const COV_IMU_BIAS_DEFAULT: f64 = 0.00001;
 
 pub struct ImuProcessing {
     ekf_inited: bool,
@@ -30,8 +32,16 @@ impl Default for ImuProcessing {
             ekf_inited: false,
             imu_need_init: true,
             init_iter_num: 1,
-            cov_acc: Vector3::new(0.1, 0.1, 0.1),
-            cov_gyr: Vector3::new(0.1, 0.1, 0.1),
+            cov_acc: Vector3::new(
+                COV_IMU_RAW_DEFAULT,
+                COV_IMU_RAW_DEFAULT,
+                COV_IMU_RAW_DEFAULT,
+            ),
+            cov_gyr: Vector3::new(
+                COV_IMU_RAW_DEFAULT,
+                COV_IMU_RAW_DEFAULT,
+                COV_IMU_RAW_DEFAULT,
+            ),
             last_imu: crate::ImuMsg::default(),
             mean_acc: Vector3::zeros(),
             mean_gyr: Vector3::zeros(),
@@ -42,8 +52,16 @@ impl Default for ImuProcessing {
             ekf_cov_acc_bias: Matrix3::zeros(),
             ekf_cov_acc: Matrix3::zeros(),
             ekf_cov_gyr: Matrix3::zeros(),
-            cov_acc_bias: Vector3::new(0.1, 0.1, 0.1),
-            cov_gyr_bias: Vector3::new(0.1, 0.1, 0.1),
+            cov_acc_bias: Vector3::new(
+                COV_IMU_BIAS_DEFAULT,
+                COV_IMU_BIAS_DEFAULT,
+                COV_IMU_BIAS_DEFAULT,
+            ),
+            cov_gyr_bias: Vector3::new(
+                COV_IMU_BIAS_DEFAULT,
+                COV_IMU_BIAS_DEFAULT,
+                COV_IMU_BIAS_DEFAULT,
+            ),
         }
     }
 }
@@ -59,10 +77,26 @@ pub struct ImuParameters {
 impl Default for ImuParameters {
     fn default() -> Self {
         Self {
-            cov_acc: Vector3::new(0.1, 0.1, 0.1),
-            cov_gyr: Vector3::new(0.1, 0.1, 0.1),
-            cov_gyr_bias: Vector3::new(0.0001, 0.0001, 0.0001),
-            cov_acc_bias: Vector3::new(0.0001, 0.0001, 0.0001),
+            cov_acc: Vector3::new(
+                COV_IMU_RAW_DEFAULT,
+                COV_IMU_RAW_DEFAULT,
+                COV_IMU_RAW_DEFAULT,
+            ),
+            cov_gyr: Vector3::new(
+                COV_IMU_RAW_DEFAULT,
+                COV_IMU_RAW_DEFAULT,
+                COV_IMU_RAW_DEFAULT,
+            ),
+            cov_gyr_bias: Vector3::new(
+                COV_IMU_BIAS_DEFAULT,
+                COV_IMU_BIAS_DEFAULT,
+                COV_IMU_BIAS_DEFAULT,
+            ),
+            cov_acc_bias: Vector3::new(
+                COV_IMU_BIAS_DEFAULT,
+                COV_IMU_BIAS_DEFAULT,
+                COV_IMU_BIAS_DEFAULT,
+            ),
         }
     }
 }
@@ -218,11 +252,13 @@ impl ImuProcessing {
             q
         };
 
-        if self.ekf_inited {
-            ekf.predict(dt, &q, &inp);
-        } else {
+        dbg!(q);
+
+        if !self.ekf_inited {
             anyhow::bail!("EKF not initialized");
         }
+
+        ekf.predict(dt, &q, &inp);
 
         Ok(crate::ImuEkfPrediction {
             pose: Isometry3::from_parts(

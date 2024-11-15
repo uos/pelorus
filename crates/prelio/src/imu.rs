@@ -1,3 +1,5 @@
+use either::Either;
+use either::Either::{Left, Right};
 use rayon::iter::{IntoParallelIterator, ParallelIterator};
 use sophus_lie::traits::IsTranslationProductGroup;
 
@@ -5,7 +7,7 @@ use nalgebra::*;
 
 use crate::{config, timestamp_to_secs, MeasureGroup, PointXYZT};
 
-use ros_pointcloud2::ros::TimeMsg;
+use ros_pointcloud2::{points::PointXYZ, ros::TimeMsg};
 
 #[derive(Debug, Clone, Default)]
 pub struct ImuMsg {
@@ -363,36 +365,57 @@ impl ImuProcess {
         &mut self,
         meas: MeasureGroup,
         config: &config::UndistortParameters,
-        imu_pose_prediction: &Option<impl Fn(&[ImuMsg], f64, f64) -> crate::ImuPosePrediction>,
+        imu_pose_prediction: &Option<
+            impl Fn(
+                &[ImuMsg],
+                f64,
+                f64,
+                f64,
+            ) -> Either<crate::ImuPosePrediction, (Isometry3<f64>, Vec<PointXYZ>)>,
+        >,
     ) -> Option<ImuProcessedCloud> {
         debug_assert!(!meas.imu_buffer.is_empty());
         debug_assert!(!meas.cloud.is_empty());
 
         self.runtime_eval.start("deskew").unwrap();
 
-        let dt = meas.lidar_end_stamp - meas.lidar_start_stamp;
-
-        let estimated_pose = match imu_pose_prediction
-            .as_ref()
-            .map(|f| f(&meas.imu_buffer, meas.lidar_start_stamp, dt))
-        {
-            Some(prediction) => {
-                let rot =
-                    Rotation3::from_matrix(&prediction.pose.rotation.to_rotation_matrix().matrix());
+        // TODO add prediction for undistortion from lio since it needs the predictions to further the state
+        let (estimated_pose, deskewed_cloud) = match imu_pose_prediction.as_ref().map(|f| {
+            f(
+                &meas.imu_buffer,
+                meas.last_lidar_end_stamp,
+                meas.lidar_start_stamp,
+                meas.lidar_end_stamp,
+            )
+        }) {
+            Some(Left(pose)) => {
+                let rot = Rotation3::from_matrix(&pose.pose.rotation.to_rotation_matrix().matrix());
                 let quat = UnitQuaternion::from_rotation_matrix(&rot);
-                let iso = Isometry3::from_parts(prediction.pose.translation.into(), quat);
+                let iso = Isometry3::from_parts(pose.pose.translation.into(), quat);
                 let sophus = SE3::from_translation_and_rotation(
-                    &prediction.pose.translation.vector,
+                    &pose.pose.translation.vector,
                     &quaternion_to_so3_exp(&quat),
                 );
-                (iso, sophus)
+                let deskewed_cloud = self.undistort_cloud_livox(
+                    meas.cloud,
+                    meas.lidar_end_stamp - meas.lidar_start_stamp,
+                    sophus,
+                );
+                (iso, deskewed_cloud)
             }
+            Some(Right((pose, cloud))) => (pose, cloud),
             /*None => self.integrate_imu_for_undistortion(
                 &meas.imu_buffer,
                 meas.lidar_start_stamp,
                 Some(&config),
             ),*/
-            None => (Isometry3::identity(), SE3::identity()), // TODO wtf
+            None => (
+                Isometry3::identity(),
+                meas.cloud
+                    .iter()
+                    .map(|p| PointXYZ::new(p.x, p.y, p.z))
+                    .collect(),
+            ), // TODO wtf
         };
 
         let n_last_imu = meas.imu_buffer.last().unwrap().clone();
@@ -402,9 +425,6 @@ impl ImuProcess {
 
         //dbg!(my_integration.pose.translation);
 
-        let guess = (estimated_pose.0, time_msg_from_secs(meas.lidar_end_stamp));
-
-        let deskewed_cloud = self.undistort_cloud_livox(meas.cloud, dt, estimated_pose.1);
         self.runtime_eval.stop("deskew").unwrap();
 
         self.last_lidar_stamp = Some(meas.lidar_end_stamp);
@@ -414,8 +434,8 @@ impl ImuProcess {
             last_covariance: imu_msg_to_cov(&n_last_imu),
             last_twist: imu_msg_to_twist(&n_last_imu),
             integrated_covariance: self.gyr_int.get_kum_covariances(),
-            end_of_frame_guess: guess.0,
-            end_of_frame_guess_time: guess.1.clone(), // TODO impl copy for time?
+            end_of_frame_guess: estimated_pose,
+            end_of_frame_guess_time: time_msg_from_secs(meas.lidar_end_stamp), // TODO impl copy for time?
             runtime_eval: &self.runtime_eval,
         })
     }

@@ -4,6 +4,7 @@ mod naive_preint;
 mod naive_preint_eth;
 pub mod timing;
 
+use either::Either;
 use imu_fusion::FusionAhrs;
 use nalgebra::*;
 use timing::RuntimeEvaluator;
@@ -15,7 +16,16 @@ use ros_pointcloud2::prelude::*;
 
 use imu::*;
 
-pub type ImuPredictor = dyn for<'a> Fn(&'a [imu::ImuMsg], f64, f64) -> ImuPosePrediction + Send;
+pub type ImuPredictor =
+    dyn for<'a> Fn(&'a [imu::ImuMsg], f64, f64, f64) -> ImuPosePrediction + Send;
+
+pub type ImuPredictorUndistort = dyn for<'a> Fn(
+        &'a [imu::ImuMsg],
+        f64,
+        f64,
+        f64,
+    ) -> Either<ImuPosePrediction, (Isometry3<f64>, Vec<PointXYZ>)>
+    + Send;
 
 struct ImuMadgwick {
     fusion: imu_fusion::FusionAhrs,
@@ -144,6 +154,7 @@ pub trait PointXYZITimestamp<const N: usize>: PointConvertible<N> + Send + Sync 
 #[derive(Debug, Clone, Default)]
 pub struct MeasureGroup {
     cloud: Vec<PointXYZT>,
+    last_lidar_end_stamp: f64,
     lidar_start_stamp: f64,
     lidar_end_stamp: f64,
     imu_buffer: Vec<ImuMsg>,
@@ -395,7 +406,7 @@ impl Lifis {
         madgwick_filter: MadgwickSetting,
         imu_intrinsic_calibration_params: Option<config::ImuCalibrationParameters>,
         params: &config::LifisParameters,
-        imu_pose_prediction_undistort: Option<Box<ImuPredictor>>,
+        imu_pose_prediction_undistort: Option<Box<ImuPredictorUndistort>>,
         imu_pose_prediction_init_guess: Option<Box<ImuPredictor>>,
     ) -> anyhow::Result<Self> {
         const CLOUDS_BUFFER_SIZE: usize = 2;
@@ -607,7 +618,7 @@ impl Lifis {
         imu_intrinsic_calibration_given: bool,
         mut imu_process: ImuProcess,
         undistort_parameters: &config::UndistortParameters,
-        imu_pose_prediction_undistort: Option<Box<ImuPredictor>>,
+        imu_pose_prediction_undistort: Option<Box<ImuPredictorUndistort>>,
         imu_pose_prediction_init_guess: Option<Box<ImuPredictor>>,
     ) {
         let mut to_next: Option<ImuMsg> = None;
@@ -616,7 +627,12 @@ impl Lifis {
         {
             let lidar_time = timestamp_to_secs(&lidar_header.stamp);
             let lidar_begin_time = lidar_begin_time + lidar_time;
-            let imu_span_start_time = *prev_lidar_end_time;
+            let imu_span_start_time = if *prev_lidar_end_time > 0.0 {
+                *prev_lidar_end_time
+            } else {
+                lidar_begin_time
+            };
+
             let imu_span_end_time = lidar_end_time + lidar_time;
 
             let mut imu_data = Vec::with_capacity(100);
@@ -655,10 +671,18 @@ impl Lifis {
                 continue;
             }
 
+            // sort imu buffer with timestamp to ensure correct order
+            imu_data.sort_by(|a, b| {
+                timestamp_to_secs(&a.stamp)
+                    .partial_cmp(&timestamp_to_secs(&b.stamp))
+                    .unwrap()
+            });
+
             // - data synced -
 
             let meas = MeasureGroup {
                 cloud,
+                last_lidar_end_stamp: imu_span_start_time,
                 lidar_start_stamp: lidar_begin_time,
                 lidar_end_stamp: lidar_end_time,
                 imu_buffer: imu_data.clone(),
@@ -669,7 +693,8 @@ impl Lifis {
             {
                 let imu_int = match imu_pose_prediction_init_guess.as_ref() {
                     Some(imu_pose_prediction_init_guess) => imu_pose_prediction_init_guess(
-                        &imu_data.clone(), // TODO maybe need reversed?
+                        &imu_data.clone(),
+                        imu_span_start_time,
                         lidar_begin_time,
                         imu_span_end_time,
                     ),
