@@ -58,8 +58,8 @@ impl Default for ImuParameters {
     fn default() -> Self {
         Self {
             gravity: 9.81,
-            accel_noise: 1e-3,
-            gyro_noise: 1e-5,
+            accel_noise: 1e-4,
+            gyro_noise: 1e-4,
             accel_bias_noise: 1e-5,
             gyro_bias_noise: 1e-5,
             integration_noise: 1e-8,

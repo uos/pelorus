@@ -10,6 +10,7 @@ use r2r::{
     RosParams,
 };
 
+use either::*;
 use rand::Rng;
 use tf_r2r::TfBroadcaster;
 
@@ -121,6 +122,14 @@ impl From<LioConfigParse> for LioConfig {
     }
 }
 
+fn lerp_color(c1: (f32, f32, f32), c2: (f32, f32, f32), t: f32) -> (f32, f32, f32) {
+    (
+        c1.0 * (1.0 - t) + c2.0 * t,
+        c1.1 * (1.0 - t) + c2.1 * t,
+        c1.2 * (1.0 - t) + c2.2 * t,
+    )
+}
+
 async fn lio() -> Result<(), Box<dyn std::error::Error>> {
     let ctx = r2r::Context::create()?;
     let mut node = r2r::Node::create(ctx, "lio", "lio")?;
@@ -202,20 +211,22 @@ async fn lio() -> Result<(), Box<dyn std::error::Error>> {
             ..Default::default()
         },
         Some(imu_pose_predictor_init),
-        None,
         {
             let map = map.clone();
             let mean_acc = mean_acc.clone();
             Some(Box::new(
                 move |imu_msgs: &[prelio_ros2::prelio::imu::ImuMsg],
+                      last_cloud_end_time,
                       cloud_begin_time,
                       cloud_end_time| {
-                    let mut map = map.lock().unwrap();
-
                     assert!(!imu_msgs.is_empty());
+                    assert!(last_cloud_end_time > 0.0);
+                    assert!(cloud_begin_time > 0.0);
+                    assert!(cloud_end_time > 0.0);
 
-                    let mut last_time = Some(cloud_begin_time);
                     let mean_acc = { mean_acc.lock().unwrap().unwrap_or_default() }.norm();
+
+                    let mut last_time = Some(last_cloud_end_time);
 
                     let mut angvel_avr_x = 0.0;
                     let mut angvel_avr_y = 0.0;
@@ -227,15 +238,24 @@ async fn lio() -> Result<(), Box<dyn std::error::Error>> {
 
                     let mut current_time = 0.0;
 
+                    let mut map = map.lock().unwrap();
                     for imu_msg in imu_msgs.windows(2) {
                         let head = &imu_msg[0];
                         let tail = &imu_msg[1];
 
+                        let head_stamp = prelio_ros2::prelio::timestamp_to_secs(&head.stamp);
+                        let tail_stamp = prelio_ros2::prelio::timestamp_to_secs(&tail.stamp);
+
+                        //dbg!(head_stamp, tail_stamp);
+
+                        assert!(head_stamp <= tail_stamp);
+
                         let last_time = if let Some(inner_last_time) = last_time {
                             last_time = None;
+                            assert!(inner_last_time <= tail_stamp);
                             inner_last_time
                         } else {
-                            prelio_ros2::prelio::timestamp_to_secs(&head.stamp)
+                            head_stamp
                         };
                         current_time = prelio_ros2::prelio::timestamp_to_secs(&tail.stamp);
                         let msg_time_rel = current_time - last_time;
@@ -272,7 +292,7 @@ async fn lio() -> Result<(), Box<dyn std::error::Error>> {
                         dt_cloud_end_to_last_cloud,
                     );
 
-                    prelio_ros2::prelio::ImuPosePrediction {
+                    Left(prelio_ros2::prelio::ImuPosePrediction {
                         pose: prediction.pose,
                         linear_velocity: prediction.linear_velocity,
                         angular_velocity: nalgebra::Vector3::default(),
@@ -286,10 +306,11 @@ async fn lio() -> Result<(), Box<dyn std::error::Error>> {
                             .lidar_imu_extrinsic
                             .translation
                             .vector,
-                    }
+                    })
                 },
             ))
-        },
+        }, // TODO add undistort. Params are cloud_begin_time, dt, 0.0
+        None,
     )
     .await?;
 
@@ -410,6 +431,8 @@ async fn lio() -> Result<(), Box<dyn std::error::Error>> {
                 nalgebra::Isometry3::from_parts(initial_guess_translation, initial_guess_rotation)
             };
 
+            dbg!(init_guess);
+
             let init_guess_world = t_world_lidar * init_guess;
 
             eval.start("reg").unwrap();
@@ -448,10 +471,10 @@ async fn lio() -> Result<(), Box<dyn std::error::Error>> {
             lidar_odom.pose.pose.position.x = t_world_lidar.translation.vector.x;
             lidar_odom.pose.pose.position.y = t_world_lidar.translation.vector.y;
             lidar_odom.pose.pose.position.z = t_world_lidar.translation.vector.z;
-            lidar_odom.pose.pose.orientation.x = t_world_lidar.rotation.quaternion().i;
-            lidar_odom.pose.pose.orientation.y = t_world_lidar.rotation.quaternion().j;
-            lidar_odom.pose.pose.orientation.z = t_world_lidar.rotation.quaternion().k;
-            lidar_odom.pose.pose.orientation.w = t_world_lidar.rotation.quaternion().w;
+            lidar_odom.pose.pose.orientation.x = t_world_lidar.rotation.i;
+            lidar_odom.pose.pose.orientation.y = t_world_lidar.rotation.j;
+            lidar_odom.pose.pose.orientation.z = t_world_lidar.rotation.k;
+            lidar_odom.pose.pose.orientation.w = t_world_lidar.rotation.w;
 
             let changed_lidar_path = match lidar_path.poses.last() {
                 Some(last_pose) => {
@@ -581,6 +604,26 @@ async fn lio() -> Result<(), Box<dyn std::error::Error>> {
                     .unwrap()
                     .into()
             };*/
+
+            // color cloud from green to red based on index in the cloud
+            /*let start_color = (0.0, 1.0, 0.0);
+            let end_color = (1.0, 0.0, 0.0);
+            let cloud = cloud
+                .iter()
+                .enumerate()
+                .map(|(index, p)| {
+                    let color =
+                        lerp_color(start_color, end_color, index as f32 / cloud.len() as f32);
+                    PointXYZRGB::new(
+                        p.x,
+                        p.y,
+                        p.z,
+                        (color.0 * 255.0) as u8,
+                        (color.1 * 255.0) as u8,
+                        (color.2 * 255.0) as u8,
+                    )
+                })
+                .collect();*/
             let mut cloud: PointCloud2 = ros_pointcloud2::PointCloud2Msg::try_from_vec(cloud)
                 .unwrap()
                 .into();

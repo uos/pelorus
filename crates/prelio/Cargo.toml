@@ -17,6 +17,7 @@ sophus_lie.workspace = true
 rayon.workspace = true
 dashmap.workspace = true
 tokio.workspace = true
+either.workspace = true
 
 imu-fusion.workspace = true
 imu-calib.workspace = true

@@ -5,6 +5,7 @@ use nalgebra::*;
 type SO3 = sophus_lie::Rotation3<f64, 1>;
 
 const CONVERGE_EPSILON: f64 = 0.001;
+const GRAVITY_DEFAULT: f64 = 9.81;
 
 #[derive(Clone)]
 pub struct StateIKFom {
@@ -21,7 +22,7 @@ pub struct StateIKFom {
 impl StateIKFom {
     pub fn new(gravity: f64) -> Self {
         let mut res = StateIKFom::default();
-        res.grav = Vector3::new(0.0, 0.0, gravity);
+        res.grav = Vector3::new(0.0, 0.0, -gravity);
         res
     }
 }
@@ -36,7 +37,7 @@ impl Default for StateIKFom {
             vel: Vector3::zeros(),
             bg: Vector3::zeros(),
             ba: Vector3::zeros(),
-            grav: Vector3::new(0.0, 0.0, 9.81),
+            grav: Vector3::new(0.0, 0.0, -GRAVITY_DEFAULT),
         }
     }
 }
@@ -48,7 +49,7 @@ pub struct InputIKFom {
 
 fn get_f(s: &StateIKFom, inp: &InputIKFom) -> SMatrix<f64, 24, 1> {
     let omega = inp.gyro - s.bg;
-    let a_inertial = s.rot.matrix().fixed_view::<3, 3>(0, 0) * (inp.acc - s.ba);
+    let a_inertial = s.rot.matrix() * (inp.acc - s.ba);
 
     let mut res = SMatrix::<f64, 24, 1>::zeros();
     res.fixed_rows_mut::<3>(0).copy_from(&s.vel);
@@ -65,7 +66,7 @@ pub fn df_dx(s: &StateIKFom, inp: &InputIKFom) -> SMatrix<f64, 24, 24> {
         .copy_from(&Matrix3::identity());
     let acc = inp.acc - s.ba;
 
-    let r_neg = -s.rot.matrix().fixed_view::<3, 3>(0, 0);
+    let r_neg = s.rot.matrix() * -1.0;
     cov.fixed_view_mut::<3, 3>(12, 3)
         .copy_from(&(r_neg * SO3::hat(&acc)));
     cov.fixed_view_mut::<3, 3>(12, 18).copy_from(&r_neg);
@@ -81,7 +82,7 @@ pub fn df_dx(s: &StateIKFom, inp: &InputIKFom) -> SMatrix<f64, 24, 24> {
 pub fn df_dw(s: &StateIKFom, _inp: &InputIKFom) -> SMatrix<f64, 24, 12> {
     let mut cov = SMatrix::<f64, 24, 12>::zeros();
     cov.fixed_view_mut::<3, 3>(12, 3)
-        .copy_from(&(-s.rot.matrix().fixed_view::<3, 3>(0, 0)));
+        .copy_from(&(s.rot.matrix() * -1.0));
     cov.fixed_view_mut::<3, 3>(3, 0)
         .copy_from(&(-Matrix3::identity()));
     cov.fixed_view_mut::<3, 3>(15, 6)

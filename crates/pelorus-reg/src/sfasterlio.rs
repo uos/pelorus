@@ -8,6 +8,8 @@ use ros_pointcloud2::points::{PointXYZ, PointXYZINormal, PointXYZNormal};
 
 pub use spole::IVoxNearbyType;
 
+const PLANE_POINT_ERROR_THRESHOLD: f64 = 0.1;
+
 pub struct SFasterLio {
     ekf: crate::sophus_ekf::Esekf,
     imu_processing: crate::imu::ImuProcessing,
@@ -111,7 +113,7 @@ impl SFasterLio {
     }
 
     // https://www.ilikebigbits.com/2017_09_25_plane_from_points_2.html
-    fn plane_from_points(points: &[PointXYZ]) -> Option<[f64; 4]> {
+    fn plane_from_points(points: &[PointXYZ], error_threshold: f64) -> Option<[f64; 4]> {
         let n = points.len();
         if n < 3 {
             return None;
@@ -185,6 +187,13 @@ impl SFasterLio {
         let normal = &weighted_dir.normalize();
         if normal.iter().all(|x| x.is_finite()) {
             let d = -normal.dot(&centroid);
+            for p in points {
+                let error =
+                    normal.x * p.x as f64 + normal.y * p.y as f64 + normal.z * p.z as f64 + d;
+                if error.abs() > error_threshold {
+                    return None;
+                }
+            }
             Some([normal.x, normal.y, normal.z, d])
         } else {
             None
@@ -239,12 +248,14 @@ impl crate::Registration for SFasterLio {
                             ); // TODO add from<nalgebra::Point3<f64>> etc
                             let neighbors =
                                 map.k_nearest_neighbor_query(&query_point, k, neighbor_max_range)?;
-                            let plane = Self::plane_from_points(&neighbors)?;
+                            let plane =
+                                Self::plane_from_points(&neighbors, PLANE_POINT_ERROR_THRESHOLD)?;
 
                             let pd2 = plane[0] * point_global.x
                                 + plane[1] * point_global.y
                                 + plane[2] * point_global.z
                                 + plane[3];
+                            //dbg!(pd2);
                             let s =
                                 1.0 - 0.9 * pd2.abs() / point_local.xyz_f64().coords.norm().sqrt();
 

@@ -113,7 +113,7 @@ pub struct State {
 impl State {
     pub fn new(
         config: Arc<std::sync::Mutex<config::ConfigParse>>,
-        imu_pose_prediction_undistort: Option<Box<prelio::ImuPredictor>>,
+        imu_pose_prediction_undistort: Option<Box<prelio::ImuPredictorUndistort>>,
         imu_pose_prediction_init_guess: Option<Box<prelio::ImuPredictor>>,
     ) -> anyhow::Result<Self> {
         let (gravity, imu_calibration_params, madgwick_filter, lidar_vendor) = {
@@ -500,7 +500,7 @@ impl LifisNode {
     pub async fn create(
         params: LifisNodeParameters,
         imu_pose_predictor_init: Option<Arc<Mutex<dyn FnMut(&[ImuMsg]) + Send + Sync>>>,
-        imu_pose_prediction_undistort: Option<Box<prelio::ImuPredictor>>,
+        imu_pose_prediction_undistort: Option<Box<prelio::ImuPredictorUndistort>>,
         imu_pose_prediction_init_guess: Option<Box<prelio::ImuPredictor>>,
     ) -> anyhow::Result<(Self, tokio::sync::mpsc::Receiver<LifisTick>)> {
         let config = Arc::new(std::sync::Mutex::new(config::ConfigParse::default()));

@@ -901,6 +901,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "color-eyre",
+ "either",
  "futures",
  "nalgebra 0.33.1",
  "pelorus-reg",
@@ -994,6 +995,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "dashmap",
+ "either",
  "gtsam-sys",
  "imu-calib",
  "imu-fusion",
