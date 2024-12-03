@@ -202,8 +202,43 @@ impl SFasterLio {
 }
 
 // TODO add ekf init function to here, not in pelorus
-
 impl crate::Registration for SFasterLio {
+    fn undistort(
+        &mut self,
+        imu_msgs: &[crate::ImuMsg],
+        last_cloud_end_time: f64,
+        cloud_begin_time: f64,
+        cloud_end_time: f64,
+        cloud: &[PointXYZINormal],
+    ) -> Vec<PointXYZ> {
+        self.imu_processing.undistort(
+            &mut self.ekf,
+            imu_msgs,
+            last_cloud_end_time,
+            cloud_begin_time,
+            cloud_end_time,
+            &cloud,
+        )
+    }
+
+    fn get_state(&self) -> crate::ImuEkfPrediction {
+        crate::ImuEkfPrediction {
+            pose: Isometry3::from_parts(
+                Translation3::from(self.ekf.state.pos),
+                UnitQuaternion::from_rotation_matrix(&Rotation3::from_matrix(
+                    &self.ekf.state.rot.matrix(),
+                )),
+            ),
+            linear_velocity: self.ekf.state.vel,
+            lidar_imu_extrinsic: Isometry3::from_parts(
+                Translation3::from(self.ekf.state.offset_t_l_i),
+                UnitQuaternion::from_rotation_matrix(&Rotation3::from_matrix(
+                    &self.ekf.state.offset_r_l_i.matrix(),
+                )),
+            ),
+        }
+    }
+
     // TODO add flag to enable normal cloud output
     fn register_and_map(
         &mut self,
