@@ -1,4 +1,4 @@
-use nalgebra::{Isometry3, Translation3};
+use nalgebra::{Isometry3, Matrix3, Translation3, Vector3};
 use r2r::{
     builtin_interfaces::msg::Time,
     geometry_msgs::msg::{Point, PoseStamped, Quaternion, Transform, TransformStamped, Vector3},
@@ -130,6 +130,25 @@ fn lerp_color(c1: (f32, f32, f32), c2: (f32, f32, f32), t: f32) -> (f32, f32, f3
     )
 }
 
+/*
+template<typename T>
+auto set_pose6d(const double t, const Matrix<T, 3, 1> &a, const Matrix<T, 3, 1> &g, \
+                const Matrix<T, 3, 1> &v, const Matrix<T, 3, 1> &p, const Matrix<T, 3, 3> &R)
+{
+    Pose6D rot_kp;
+    rot_kp.offset_time = t;
+    for (int i = 0; i < 3; i++)
+    {
+        rot_kp.acc[i] = a(i);
+        rot_kp.gyr[i] = g(i);
+        rot_kp.vel[i] = v(i);
+        rot_kp.pos[i] = p(i);
+        for (int j = 0; j < 3; j++)  rot_kp.rot[i*3+j] = R(i,j);
+    }
+    return move(rot_kp);
+}
+*/
+
 async fn lio() -> Result<(), Box<dyn std::error::Error>> {
     let ctx = r2r::Context::create()?;
     let mut node = r2r::Node::create(ctx, "lio", "lio")?;
@@ -213,7 +232,7 @@ async fn lio() -> Result<(), Box<dyn std::error::Error>> {
         Some(imu_pose_predictor_init),
         {
             let map = map.clone();
-            let mean_acc = mean_acc.clone();
+
             Some(Box::new(
                 move |imu_msgs: &[prelio_ros2::prelio::imu::ImuMsg],
                       last_cloud_end_time,
@@ -224,72 +243,13 @@ async fn lio() -> Result<(), Box<dyn std::error::Error>> {
                     assert!(cloud_begin_time > 0.0);
                     assert!(cloud_end_time > 0.0);
 
-                    let mean_acc = { mean_acc.lock().unwrap().unwrap_or_default() }.norm();
-
-                    let mut last_time = Some(last_cloud_end_time);
-
-                    let mut angvel_avr_x = 0.0;
-                    let mut angvel_avr_y = 0.0;
-                    let mut angvel_avr_z = 0.0;
-
-                    let mut acc_avr_x = 0.0;
-                    let mut acc_avr_y = 0.0;
-                    let mut acc_avr_z = 0.0;
-
-                    let mut current_time = 0.0;
-
                     let mut map = map.lock().unwrap();
-                    for imu_msg in imu_msgs.windows(2) {
-                        let head = &imu_msg[0];
-                        let tail = &imu_msg[1];
-
-                        let head_stamp = prelio_ros2::prelio::timestamp_to_secs(&head.stamp);
-                        let tail_stamp = prelio_ros2::prelio::timestamp_to_secs(&tail.stamp);
-
-                        //dbg!(head_stamp, tail_stamp);
-
-                        assert!(head_stamp <= tail_stamp);
-
-                        let last_time = if let Some(inner_last_time) = last_time {
-                            last_time = None;
-                            assert!(inner_last_time <= tail_stamp);
-                            inner_last_time
-                        } else {
-                            head_stamp
-                        };
-                        current_time = prelio_ros2::prelio::timestamp_to_secs(&tail.stamp);
-                        let msg_time_rel = current_time - last_time;
-
-                        angvel_avr_x = (head.angular_velocity[0] + tail.angular_velocity[0]) * 0.5;
-                        angvel_avr_y = (head.angular_velocity[1] + tail.angular_velocity[1]) * 0.5;
-                        angvel_avr_z = (head.angular_velocity[2] + tail.angular_velocity[2]) * 0.5;
-
-                        acc_avr_x = (head.linear_acceleration[0] + tail.linear_acceleration[0])
-                            * 0.5
-                            * gravity
-                            / mean_acc;
-                        acc_avr_y = (head.linear_acceleration[1] + tail.linear_acceleration[1])
-                            * 0.5
-                            * gravity
-                            / mean_acc;
-                        acc_avr_z = (head.linear_acceleration[2] + tail.linear_acceleration[2])
-                            * 0.5
-                            * gravity
-                            / mean_acc;
-
-                        map.imu_ekf_predict(
-                            [acc_avr_x, acc_avr_y, acc_avr_z],
-                            [angvel_avr_x, angvel_avr_y, angvel_avr_z],
-                            msg_time_rel,
-                        );
-                    }
-
-                    // last prediction just extrapolates last imu interpolation to the end of the frame
-                    let dt_cloud_end_to_last_cloud = cloud_end_time - current_time;
-                    let prediction = map.imu_ekf_predict(
-                        [acc_avr_x, acc_avr_y, acc_avr_z],
-                        [angvel_avr_x, angvel_avr_y, angvel_avr_z],
-                        dt_cloud_end_to_last_cloud,
+                    map.undistort(
+                        imu_msgs,
+                        last_cloud_end_time,
+                        cloud_begin_time,
+                        cloud_end_time,
+                        cloud,
                     );
 
                     Left(prelio_ros2::prelio::ImuPosePrediction {
@@ -310,7 +270,25 @@ async fn lio() -> Result<(), Box<dyn std::error::Error>> {
                 },
             ))
         }, // TODO add undistort. Params are cloud_begin_time, dt, 0.0
-        None,
+        {
+            let map = map.clone();
+            Some(Box::new(
+                move |_imu_msgs: &[prelio_ros2::prelio::imu::ImuMsg],
+                      _last_cloud_end_time,
+                      _cloud_begin_time,
+                      _cloud_end_time| {
+                    //let pose = map.lock().unwrap().; // TODO get state in map
+                    //
+                    prelio_ros2::prelio::ImuPosePrediction {
+                        pose: Isometry3::identity(),                   // TODO
+                        linear_velocity: nalgebra::Vector3::default(), // TODO
+                        angular_velocity: nalgebra::Vector3::default(),
+                        lidar_imu_extrinsic_rotation: nalgebra::Matrix3::identity(),
+                        lidar_imu_extrinsic_translation: nalgebra::Vector3::default(),
+                    }
+                },
+            ))
+        },
     )
     .await?;
 
@@ -640,11 +618,11 @@ async fn lio() -> Result<(), Box<dyn std::error::Error>> {
                 },
                 child_frame_id: orig_frame,
                 transform: Transform {
-                    translation: Vector3 {
-                        x: map_to_lidar_transform.translation.vector.x,
-                        y: map_to_lidar_transform.translation.vector.y,
-                        z: map_to_lidar_transform.translation.vector.z,
-                    },
+                    translation: Vector3::new(
+                        map_to_lidar_transform.translation.vector.x,
+                        map_to_lidar_transform.translation.vector.y,
+                        map_to_lidar_transform.translation.vector.z,
+                    ),
                     rotation: Quaternion {
                         x: map_to_lidar_transform.rotation.quaternion().i,
                         y: map_to_lidar_transform.rotation.quaternion().j,

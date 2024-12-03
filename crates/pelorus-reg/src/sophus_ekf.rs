@@ -2,7 +2,7 @@
 //use crate::ekf_model::CustomModel;
 use nalgebra::*;
 
-type SO3 = sophus_lie::Rotation3<f64, 1>;
+pub type SO3 = sophus_lie::Rotation3<f64, 1>;
 
 const CONVERGE_EPSILON: f64 = 0.001;
 const GRAVITY_DEFAULT: f64 = 9.81;
@@ -45,6 +45,19 @@ impl Default for StateIKFom {
 pub struct InputIKFom {
     pub acc: Vector3<f64>,
     pub gyro: Vector3<f64>,
+}
+
+impl InputIKFom {
+    pub fn new(acc: Vector3<f64>, gyro: Vector3<f64>) -> Self {
+        Self { acc, gyro }
+    }
+
+    pub fn init() -> Self {
+        Self {
+            acc: Vector3::zeros(),
+            gyro: Vector3::zeros(),
+        }
+    }
 }
 
 fn get_f(s: &StateIKFom, inp: &InputIKFom) -> SMatrix<f64, 24, 1> {

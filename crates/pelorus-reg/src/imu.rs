@@ -1,6 +1,6 @@
 use nalgebra::*;
 
-use crate::sophus_ekf::Esekf;
+use crate::{sophus_ekf::Esekf, ImuMsg};
 
 const MAX_INI_COUNT: usize = 10;
 const COV_IMU_RAW_DEFAULT: f64 = 0.0001;
@@ -20,6 +20,9 @@ pub struct ImuProcessing {
     first_frame: bool,
     lidar_t_wrt_imu: Vector3<f64>,
     lidar_r_wrt_imu: Matrix3<f64>,
+    angvel_last: Vector3<f64>,
+    acc_s_last: Vector3<f64>,
+    imu_state: crate::sophus_ekf::StateIKFom,
     pub ekf_cov_gyr_bias: Matrix3<f64>,
     pub ekf_cov_acc_bias: Matrix3<f64>,
     pub ekf_cov_acc: Matrix3<f64>,
@@ -62,6 +65,9 @@ impl Default for ImuProcessing {
                 COV_IMU_BIAS_DEFAULT,
                 COV_IMU_BIAS_DEFAULT,
             ),
+            angvel_last: Vector3::zeros(),
+            acc_s_last: Vector3::zeros(),
+            imu_state: crate::sophus_ekf::StateIKFom::default(),
         }
     }
 }
@@ -97,6 +103,36 @@ impl Default for ImuParameters {
                 COV_IMU_BIAS_DEFAULT,
                 COV_IMU_BIAS_DEFAULT,
             ),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Copy)]
+struct Pose6D {
+    offset_time: f64,
+    acc: nalgebra::Vector3<f64>,
+    gyr: nalgebra::Vector3<f64>,
+    vel: nalgebra::Vector3<f64>,
+    pos: nalgebra::Vector3<f64>,
+    rot: nalgebra::Matrix3<f64>,
+}
+
+impl Pose6D {
+    pub fn new(
+        offset_time: f64,
+        acc: nalgebra::Vector3<f64>,
+        gyr: nalgebra::Vector3<f64>,
+        vel: nalgebra::Vector3<f64>,
+        pos: nalgebra::Vector3<f64>,
+        rot: nalgebra::Matrix3<f64>,
+    ) -> Self {
+        Self {
+            offset_time,
+            acc,
+            gyr,
+            vel,
+            pos,
+            rot,
         }
     }
 }
@@ -228,6 +264,146 @@ impl ImuProcessing {
         self.mean_acc
     }
 
+    pub fn undistort(
+        &mut self,
+        ekf: &mut Esekf,
+        imu_msgs: &[crate::ImuMsg],
+        last_cloud_end_time: f64,
+        cloud_begin_time: f64,
+        cloud_end_time: f64,
+        cloud: &[crate::PointXYZINormal],
+    ) -> Vec<crate::PointXYZ> {
+        assert!(!imu_msgs.is_empty());
+        assert!(last_cloud_end_time > 0.0);
+        assert!(cloud_begin_time > 0.0);
+        assert!(cloud_end_time > 0.0);
+
+        const GRAVITY: f64 = 9.81; // TODO PARAM
+
+        let mean_acc = self.mean_acc.norm();
+
+        let mut imu_poses = Vec::new();
+
+        imu_poses.push(Pose6D::new(
+            0.0,
+            self.acc_s_last,
+            self.angvel_last,
+            ekf.state.vel,
+            ekf.state.pos,
+            ekf.state.rot.matrix(),
+        ));
+
+        let mut last_time = Some(last_cloud_end_time);
+
+        let mut angvel_avr_x = 0.0;
+        let mut angvel_avr_y = 0.0;
+        let mut angvel_avr_z = 0.0;
+
+        let mut acc_avr_x = 0.0;
+        let mut acc_avr_y = 0.0;
+        let mut acc_avr_z = 0.0;
+
+        let mut imu_msgs = imu_msgs.to_vec(); // TODO is a clone
+        imu_msgs.insert(0, self.last_imu.clone());
+
+        for imu_msg in imu_msgs.windows(2) {
+            let head = &imu_msg[0];
+            let tail = &imu_msg[1];
+
+            let head_stamp = head.timestamp_sec;
+            let tail_stamp = tail.timestamp_sec;
+
+            assert!(head_stamp <= tail_stamp);
+
+            let last_time = if let Some(inner_last_time) = last_time {
+                last_time = None;
+                assert!(inner_last_time <= tail_stamp);
+                inner_last_time
+            } else {
+                head_stamp
+            };
+
+            let dt = tail.timestamp_sec - last_time;
+
+            angvel_avr_x = (head.angular_velocity[0] + tail.angular_velocity[0]) * 0.5;
+            angvel_avr_y = (head.angular_velocity[1] + tail.angular_velocity[1]) * 0.5;
+            angvel_avr_z = (head.angular_velocity[2] + tail.angular_velocity[2]) * 0.5;
+
+            acc_avr_x = (head.linear_acceleration[0] + tail.linear_acceleration[0]) * 0.5 * GRAVITY
+                / mean_acc;
+            acc_avr_y = (head.linear_acceleration[1] + tail.linear_acceleration[1]) * 0.5 * GRAVITY
+                / mean_acc;
+            acc_avr_z = (head.linear_acceleration[2] + tail.linear_acceleration[2]) * 0.5 * GRAVITY
+                / mean_acc;
+
+            let avr_x = [acc_avr_x, acc_avr_y, acc_avr_z];
+            let angvel_avr = [angvel_avr_x, angvel_avr_y, angvel_avr_z];
+            let _ = self.predict(ekf, avr_x, angvel_avr, dt);
+
+            self.angvel_last = tail.angular_velocity.xyz() - self.imu_state.bg;
+            self.acc_s_last = self.imu_state.rot.matrix()
+                * ((tail.linear_acceleration.xyz() * GRAVITY / mean_acc) - self.imu_state.ba)
+                + self.imu_state.grav;
+
+            let offs_t = tail_stamp - last_cloud_end_time; // is pcl_begin_time in s-fastlio - why?
+            imu_poses.push(Pose6D::new(
+                offs_t,
+                self.acc_s_last,
+                self.angvel_last,
+                ekf.state.vel,
+                ekf.state.pos,
+                ekf.state.rot.matrix(),
+            ));
+        }
+
+        // to end of cloud
+        self.last_imu = imu_msgs[imu_msgs.len() - 1].clone();
+        let dt = (cloud_end_time - self.last_imu.timestamp_sec).abs();
+
+        let avr_x = [acc_avr_x, acc_avr_y, acc_avr_z];
+        let angvel_avr = [angvel_avr_x, angvel_avr_y, angvel_avr_z];
+        let _ = self.predict(ekf, avr_x, angvel_avr, dt);
+
+        self.imu_state = ekf.state.clone();
+
+        let mut out_cloud = Vec::new();
+        out_cloud.resize(cloud.len(), crate::PointXYZ::default());
+
+        let mut it_pcl_rev = cloud.iter().rev().enumerate();
+
+        for imu_pose_pair in imu_poses
+            .windows(2)
+            .collect::<Vec<&[Pose6D]>>()
+            .iter()
+            .rev()
+        {
+            let head = imu_pose_pair[0];
+            let tail = imu_pose_pair[1];
+
+            while let Some((idx, it_pcl)) = it_pcl_rev.next() {
+                let idx = cloud.len() - idx - 1;
+                let dt = it_pcl.intensity as f64 - head.offset_time; // assuming already in seconds
+
+                let r_imu = head.rot * crate::sophus_ekf::SO3::exp(&(tail.gyr * dt)).matrix();
+                let t_ei = head.pos + head.vel * dt + 0.5 * tail.acc * dt * dt - self.imu_state.pos;
+
+                let p_compensate = self.imu_state.offset_r_l_i.matrix().transpose()
+                    * (self.imu_state.rot.matrix().transpose()
+                        * (r_imu
+                            * (self.imu_state.offset_r_l_i.matrix() * it_pcl.xyz_f64()
+                                + self.imu_state.offset_t_l_i)
+                            + t_ei)
+                        - self.imu_state.offset_t_l_i);
+
+                out_cloud[idx].x = p_compensate.x as f32;
+                out_cloud[idx].y = p_compensate.y as f32;
+                out_cloud[idx].z = p_compensate.z as f32;
+            }
+        }
+
+        out_cloud
+    }
+
     pub fn predict(
         &self,
         ekf: &mut Esekf,
@@ -252,7 +428,7 @@ impl ImuProcessing {
             q
         };
 
-        dbg!(q);
+        //dbg!(q);
 
         if !self.ekf_inited {
             anyhow::bail!("EKF not initialized");

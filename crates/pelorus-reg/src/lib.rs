@@ -4,7 +4,7 @@ use ros_pointcloud2::prelude::*;
 pub mod imu;
 mod localmap;
 pub mod sfasterlio;
-mod sophus_ekf;
+pub mod sophus_ekf;
 pub use spole::*;
 
 #[derive(Clone, Default, Debug, PartialEq)]
@@ -50,4 +50,13 @@ pub trait Registration {
     ) -> anyhow::Result<CloudRegisterResult>;
     fn imu_ekf_predict(&mut self, acc: [f64; 3], gyro: [f64; 3], dt: f64) -> ImuEkfPrediction;
     fn init_imu_ekf(&mut self, message_buffer: &[ImuMsg]) -> Vector3<f64>;
+    fn get_state(&self) -> ImuEkfPrediction;
+    fn undistort(
+        &mut self,
+        imu_msgs: &[ImuMsg],
+        last_cloud_end_time: f64,
+        cloud_begin_time: f64,
+        cloud_end_time: f64,
+        cloud: &[PointXYZINormal],
+    ) -> Vec<PointXYZ>;
 }
