@@ -371,6 +371,7 @@ impl ImuProcess {
                 f64,
                 f64,
                 f64,
+                &[PointXYZT],
             ) -> Either<crate::ImuPosePrediction, (Isometry3<f64>, Vec<PointXYZ>)>,
         >,
     ) -> Option<ImuProcessedCloud> {
@@ -386,6 +387,7 @@ impl ImuProcess {
                 meas.last_lidar_end_stamp,
                 meas.lidar_start_stamp,
                 meas.lidar_end_stamp,
+                &meas.cloud,
             )
         }) {
             Some(Left(pose)) => {

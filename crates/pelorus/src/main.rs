@@ -1,7 +1,7 @@
-use nalgebra::{Isometry3, Matrix3, Translation3, Vector3};
+use nalgebra::{Isometry3, Translation3};
 use r2r::{
     builtin_interfaces::msg::Time,
-    geometry_msgs::msg::{Point, PoseStamped, Quaternion, Transform, TransformStamped, Vector3},
+    geometry_msgs::msg::{Point, PoseStamped, Quaternion, Transform, TransformStamped},
     log_error,
     nav_msgs::msg::{Odometry, Path},
     sensor_msgs::msg::PointCloud2,
@@ -237,22 +237,57 @@ async fn lio() -> Result<(), Box<dyn std::error::Error>> {
                 move |imu_msgs: &[prelio_ros2::prelio::imu::ImuMsg],
                       last_cloud_end_time,
                       cloud_begin_time,
-                      cloud_end_time| {
+                      cloud_end_time,
+                      cloud| {
                     assert!(!imu_msgs.is_empty());
                     assert!(last_cloud_end_time > 0.0);
                     assert!(cloud_begin_time > 0.0);
                     assert!(cloud_end_time > 0.0);
 
+                    // TODO why even use different ImuMsg types?
+                    let imus = imu_msgs.iter().map(|m| pelorus_reg::ImuMsg {
+                        timestamp_sec: prelio_ros2::prelio::timestamp_to_secs(&m.stamp),
+                        orientation: nalgebra::UnitQuaternion::from_quaternion(
+                            nalgebra::Quaternion::new(
+                                m.orientation[0],
+                                m.orientation[1],
+                                m.orientation[2],
+                                m.orientation[3],
+                            ),
+                        ),
+                        angular_velocity: nalgebra::Vector3::new(
+                            m.angular_velocity[0],
+                            m.angular_velocity[1],
+                            m.angular_velocity[2],
+                        ),
+                        linear_acceleration: nalgebra::Vector3::new(
+                            m.linear_acceleration[0],
+                            m.linear_acceleration[1],
+                            m.linear_acceleration[2],
+                        ),
+                        orientation_covariance: m.orientation_covariance,
+                        angular_velocity_covariance: m.angular_velocity_covariance,
+                        linear_acceleration_covariance: m.linear_acceleration_covariance,
+                    });
+
+                    let imus_vec = imus.collect::<Vec<_>>();
+
                     let mut map = map.lock().unwrap();
-                    map.undistort(
-                        imu_msgs,
+                    let cloud_undistorted = map.undistort(
+                        &imus_vec,
                         last_cloud_end_time,
                         cloud_begin_time,
                         cloud_end_time,
                         cloud,
                     );
 
-                    Left(prelio_ros2::prelio::ImuPosePrediction {
+                    //dbg!(&cloud_undistorted);
+
+                    let pose = map.get_state().pose.clone();
+
+                    Right((pose, cloud_undistorted))
+
+                    /*Left(prelio_ros2::prelio::ImuPosePrediction {
                         pose: prediction.pose,
                         linear_velocity: prediction.linear_velocity,
                         angular_velocity: nalgebra::Vector3::default(),
@@ -266,7 +301,7 @@ async fn lio() -> Result<(), Box<dyn std::error::Error>> {
                             .lidar_imu_extrinsic
                             .translation
                             .vector,
-                    })
+                    })*/
                 },
             ))
         }, // TODO add undistort. Params are cloud_begin_time, dt, 0.0
@@ -277,11 +312,10 @@ async fn lio() -> Result<(), Box<dyn std::error::Error>> {
                       _last_cloud_end_time,
                       _cloud_begin_time,
                       _cloud_end_time| {
-                    //let pose = map.lock().unwrap().; // TODO get state in map
-                    //
+                    let ekfstate = map.lock().unwrap().get_state();
                     prelio_ros2::prelio::ImuPosePrediction {
-                        pose: Isometry3::identity(),                   // TODO
-                        linear_velocity: nalgebra::Vector3::default(), // TODO
+                        pose: ekfstate.pose,
+                        linear_velocity: ekfstate.linear_velocity,
                         angular_velocity: nalgebra::Vector3::default(),
                         lidar_imu_extrinsic_rotation: nalgebra::Matrix3::identity(),
                         lidar_imu_extrinsic_translation: nalgebra::Vector3::default(),
@@ -618,11 +652,11 @@ async fn lio() -> Result<(), Box<dyn std::error::Error>> {
                 },
                 child_frame_id: orig_frame,
                 transform: Transform {
-                    translation: Vector3::new(
-                        map_to_lidar_transform.translation.vector.x,
-                        map_to_lidar_transform.translation.vector.y,
-                        map_to_lidar_transform.translation.vector.z,
-                    ),
+                    translation: r2r::geometry_msgs::msg::Vector3 {
+                        x: map_to_lidar_transform.translation.vector.x,
+                        y: map_to_lidar_transform.translation.vector.y,
+                        z: map_to_lidar_transform.translation.vector.z,
+                    },
                     rotation: Quaternion {
                         x: map_to_lidar_transform.rotation.quaternion().i,
                         y: map_to_lidar_transform.rotation.quaternion().j,

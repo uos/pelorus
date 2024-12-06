@@ -57,6 +57,6 @@ pub trait Registration {
         last_cloud_end_time: f64,
         cloud_begin_time: f64,
         cloud_end_time: f64,
-        cloud: &[PointXYZINormal],
+        cloud: &[prelio::PointXYZT],
     ) -> Vec<PointXYZ>;
 }
