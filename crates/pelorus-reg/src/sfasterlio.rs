@@ -4,7 +4,7 @@
 use std::sync::{Arc, Mutex};
 
 use nalgebra::*;
-use ros_pointcloud2::points::{PointXYZ, PointXYZINormal, PointXYZNormal};
+use ros_pointcloud2::points::{PointXYZ, PointXYZINormal};
 
 pub use spole::IVoxNearbyType;
 
@@ -209,7 +209,7 @@ impl crate::Registration for SFasterLio {
         last_cloud_end_time: f64,
         cloud_begin_time: f64,
         cloud_end_time: f64,
-        cloud: &[PointXYZINormal],
+        cloud: &[prelio::PointXYZT],
     ) -> Vec<PointXYZ> {
         self.imu_processing.undistort(
             &mut self.ekf,
@@ -217,7 +217,7 @@ impl crate::Registration for SFasterLio {
             last_cloud_end_time,
             cloud_begin_time,
             cloud_end_time,
-            &cloud,
+            cloud,
         )
     }
 

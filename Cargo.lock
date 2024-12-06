@@ -920,6 +920,7 @@ dependencies = [
  "anyhow",
  "dashmap",
  "nalgebra 0.33.1",
+ "prelio",
  "rayon",
  "ros_pointcloud2",
  "sophus_lie",
@@ -1788,9 +1789,9 @@ dependencies = [
 ]
 
 [[patch.unused]]
-name = "pelorus"
+name = "small_gicp-sys"
 version = "0.1.0"
 
 [[patch.unused]]
-name = "small_gicp-sys"
+name = "pelorus"
 version = "0.1.0"

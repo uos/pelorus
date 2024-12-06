@@ -9,7 +9,7 @@ use imu_fusion::FusionAhrs;
 use nalgebra::*;
 use timing::RuntimeEvaluator;
 
-use std::{collections::VecDeque, str::FromStr};
+use std::str::FromStr;
 
 use anyhow::Result;
 use ros_pointcloud2::prelude::*;
@@ -24,6 +24,7 @@ pub type ImuPredictorUndistort = dyn for<'a> Fn(
         f64,
         f64,
         f64,
+        &[PointXYZT],
     ) -> Either<ImuPosePrediction, (Isometry3<f64>, Vec<PointXYZ>)>
     + Send;
 
@@ -185,10 +186,10 @@ impl std::ops::Add for PointXYZIT {
 
 #[derive(Debug, Clone, Default)]
 pub struct PointXYZT {
-    x: f32,
-    y: f32,
-    z: f32,
-    timestamp: f64,
+    pub x: f32,
+    pub y: f32,
+    pub z: f32,
+    pub timestamp: f64,
 }
 
 impl PointXYZT {
