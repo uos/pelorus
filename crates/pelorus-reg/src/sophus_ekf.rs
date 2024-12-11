@@ -87,7 +87,7 @@ pub fn df_dx(s: &StateIKFom, inp: &InputIKFom) -> SMatrix<f64, 24, 24> {
     cov.fixed_view_mut::<3, 3>(12, 21)
         .copy_from(&Matrix3::identity());
     cov.fixed_view_mut::<3, 3>(3, 15)
-        .copy_from(&Matrix3::identity());
+        .copy_from(&(Matrix3::identity() * -1.0));
 
     return cov;
 }
@@ -137,15 +137,16 @@ x_r.fixed_rows_mut::<3>(3).copy_from(&(SO3::log(&x2.rot.inverse().group_mul(&x1.
 do the same thing
 
 first check: should be the same
+second check: should be the same but transpose is faster to compute. Rotation matrices are orthogonal matrices, so the transpose is the inverse.
 */
 fn box_minus(x1: &StateIKFom, x2: &StateIKFom) -> SMatrix<f64, 24, 1> {
     let mut x_r = SMatrix::<f64, 24, 1>::zeros();
 
     x_r.fixed_rows_mut::<3>(0).copy_from(&(x1.pos - x2.pos));
     x_r.fixed_rows_mut::<3>(3)
-        .copy_from(&(SO3::log(&x2.rot.inverse().group_mul(&x1.rot))));
+        .copy_from(&x2.rot.inverse().group_mul(&x1.rot).log());
     x_r.fixed_rows_mut::<3>(6)
-        .copy_from(&(SO3::log(&x2.offset_r_l_i.inverse().group_mul(&x1.offset_r_l_i))));
+        .copy_from(&x2.offset_r_l_i.inverse().group_mul(&x1.offset_r_l_i).log());
 
     x_r.fixed_rows_mut::<3>(9)
         .copy_from(&(x1.offset_t_l_i - x2.offset_t_l_i));
@@ -187,7 +188,8 @@ impl Esekf {
         let mut h = DVector::<f64>::default();
         let mut h_x = DMatrix::<f64>::default();
         let mut t = 0;
-        let state_propagated = self.state.clone();
+        let state_propagated = self.state.clone(); // state x
+                                                   // P_ not found anywhere
 
         // TODO strange loop starting point, fix when everything is working
         for i in -1..max_iter {
@@ -203,7 +205,7 @@ impl Esekf {
             );
 
             if !valid {
-                break;
+                continue; // could also break here since no change is made to the state
             }
 
             let dx_new = box_minus(&self.state, &state_propagated);
