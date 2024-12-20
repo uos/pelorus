@@ -30,6 +30,7 @@ use ros_pointcloud2::prelude::*;
 pub struct IVoxHashMap {
     nearby_type: IVoxNearbyType,
     inverse_resolution: f32,
+    resolution: f64,
     grid_map: dashmap::DashMap<i32, ((i32, i32, i32), IvoxNode)>,
     scan_number: usize,
 }
@@ -110,6 +111,7 @@ impl IVoxHashMap {
             inverse_resolution: 1.0 / resolution,
             grid_map: DashMap::with_capacity(capacity),
             scan_number: 0,
+            resolution: resolution as f64,
         }
     }
 
@@ -117,12 +119,27 @@ impl IVoxHashMap {
         self.grid_map.is_empty()
     }
 
-    pub fn add(&mut self, points: impl IntoIterator<Item = PointXYZ>) {
+    pub fn add(&mut self, points: impl IntoIterator<Item = PointXYZ>, initial: bool) {
         self.scan_number += 1;
 
         points.into_iter().for_each(|p| {
             let grid = self.pos2grid(&p);
             let hashed = Self::hash(&grid);
+
+            if !initial {
+                let thresh = self.resolution / 2.0;
+                let nearest = self.k_nearest_neighbor_query(&p, 1, thresh);
+                if let Some(nearest) = nearest {
+                    if let Some(nearest) = nearest.get(0) {
+                        if (nearest.xyz_f64() - p.xyz_f64()).norm() < thresh {
+                            return; // should never happen since max_range is already checked
+                        }
+                    }
+                } else {
+                    return;
+                }
+            }
+
             let mut grid = self
                 .grid_map
                 .entry(hashed)
