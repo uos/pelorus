@@ -122,6 +122,7 @@ impl From<LioConfigParse> for LioConfig {
     }
 }
 
+#[allow(dead_code)]
 fn lerp_color(c1: (f32, f32, f32), c2: (f32, f32, f32), t: f32) -> (f32, f32, f32) {
     (
         c1.0 * (1.0 - t) + c2.0 * t,
@@ -286,25 +287,9 @@ async fn lio() -> Result<(), Box<dyn std::error::Error>> {
                     let pose = map.get_state().pose.clone();
 
                     Right((pose, cloud_undistorted))
-
-                    /*Left(prelio_ros2::prelio::ImuPosePrediction {
-                        pose: prediction.pose,
-                        linear_velocity: prediction.linear_velocity,
-                        angular_velocity: nalgebra::Vector3::default(),
-                        lidar_imu_extrinsic_rotation: prediction
-                            .lidar_imu_extrinsic
-                            .rotation
-                            .to_rotation_matrix()
-                            .matrix()
-                            .clone(),
-                        lidar_imu_extrinsic_translation: prediction
-                            .lidar_imu_extrinsic
-                            .translation
-                            .vector,
-                    })*/
                 },
             ))
-        }, // TODO add undistort. Params are cloud_begin_time, dt, 0.0
+        },
         {
             let map = map.clone();
             Some(Box::new(
@@ -568,7 +553,7 @@ async fn lio() -> Result<(), Box<dyn std::error::Error>> {
                 marr.header.stamp.nanosec = orig_time.nanosec; // TODO rpcl2 from timemsg
                 marr.header.stamp.sec = orig_time.sec;
 
-                let draw_length = 0.25;
+                //let draw_length = 0.25;
 
                 marr.points = registered_normals
                     .iter() // downsample_avg(normal_iter, 0.5).iter() || normal_iter

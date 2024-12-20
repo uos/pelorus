@@ -91,16 +91,19 @@ impl SFasterLio {
         }
     }
 
-    fn add_to_map(&mut self, cloud: &[PointXYZ], pose: Isometry3<f64>) {
-        self.map.add(cloud.iter().map(|point| {
-            let p = nalgebra::Point3::new(point.x as f64, point.y as f64, point.z as f64);
-            let global = pose.transform_point(&p);
-            PointXYZ {
-                x: global.x as f32,
-                y: global.y as f32,
-                z: global.z as f32,
-            }
-        }));
+    fn add_to_map(&mut self, cloud: &[PointXYZ], pose: Isometry3<f64>, initial: bool) {
+        self.map.add(
+            cloud.iter().map(|point| {
+                let p = nalgebra::Point3::new(point.x as f64, point.y as f64, point.z as f64);
+                let global = pose.transform_point(&p);
+                PointXYZ {
+                    x: global.x as f32,
+                    y: global.y as f32,
+                    z: global.z as f32,
+                }
+            }),
+            initial,
+        );
     }
 
     // Just for debugging! Really slow.
@@ -253,7 +256,7 @@ impl crate::Registration for SFasterLio {
             let extrinsic_estimation = self.imu_lidar_extrinsic_calibration_optimization;
 
             let normal_cloud_in_ekf = normal_cloud.clone();
-            self.ekf.update(
+            self.ekf.correct(
                 self.laser_point_cov,
                 self.ekf_max_iterations,
                 extrinsic_estimation,
@@ -269,6 +272,8 @@ impl crate::Registration for SFasterLio {
                     }
 
                     //dbg!(cloud.len());
+
+                    //let initial_guess = Isometry3::identity();
 
                     // Nearest Neighbors to fit planes
                     let planes = cloud
@@ -418,7 +423,7 @@ impl crate::Registration for SFasterLio {
         //self.map.remove_cold_voxels(600);
 
         //let start_stamp = std::time::Instant::now();
-        self.add_to_map(cloud, global_pose);
+        self.add_to_map(cloud, global_pose, self.map.is_empty());
         //dbg!(start_stamp.elapsed());
 
         //dbg!(self.map.get_entire_map().len());

@@ -60,19 +60,21 @@ impl InputIKFom {
     }
 }
 
+/// Get the state transition function f(x, u) Matrix
 fn get_f(s: &StateIKFom, inp: &InputIKFom) -> SMatrix<f64, 24, 1> {
-    let omega = inp.gyro - s.bg;
-    let a_inertial = s.rot.matrix() * (inp.acc - s.ba);
+    let angular_vel = inp.gyro - s.bg; // bg is the estimated gyro bias
+    let acc_inertial = s.rot.matrix() * (inp.acc - s.ba); // transform to world
+    let acc_grav = acc_inertial + s.grav; // acceleration added gravity
 
     let mut res = SMatrix::<f64, 24, 1>::zeros();
     res.fixed_rows_mut::<3>(0).copy_from(&s.vel);
-    res.fixed_rows_mut::<3>(3).copy_from(&omega);
-    res.fixed_rows_mut::<3>(12)
-        .copy_from(&(a_inertial + s.grav));
+    res.fixed_rows_mut::<3>(3).copy_from(&angular_vel);
+    res.fixed_rows_mut::<3>(12).copy_from(&acc_grav);
 
     res
 }
 
+/// Get the Jacobian of the state transition function f(x, u) with respect to x. x is the state
 pub fn df_dx(s: &StateIKFom, inp: &InputIKFom) -> SMatrix<f64, 24, 24> {
     let mut cov = SMatrix::<f64, 24, 24>::zeros();
     cov.fixed_view_mut::<3, 3>(0, 12)
@@ -87,15 +89,16 @@ pub fn df_dx(s: &StateIKFom, inp: &InputIKFom) -> SMatrix<f64, 24, 24> {
     cov.fixed_view_mut::<3, 3>(12, 21)
         .copy_from(&Matrix3::identity());
     cov.fixed_view_mut::<3, 3>(3, 15)
-        .copy_from(&(Matrix3::identity() * -1.0));
+        .copy_from(&(-Matrix3::identity()));
 
     return cov;
 }
 
+/// Get the Jacobian of the state transition function f(x, u) with respect to w. w is the noise
 pub fn df_dw(s: &StateIKFom, _inp: &InputIKFom) -> SMatrix<f64, 24, 12> {
     let mut cov = SMatrix::<f64, 24, 12>::zeros();
     cov.fixed_view_mut::<3, 3>(12, 3)
-        .copy_from(&(s.rot.matrix() * -1.0));
+        .copy_from(&(-s.rot.matrix()));
     cov.fixed_view_mut::<3, 3>(3, 0)
         .copy_from(&(-Matrix3::identity()));
     cov.fixed_view_mut::<3, 3>(15, 6)
@@ -111,6 +114,7 @@ pub struct Esekf {
     pub cov: SMatrix<f64, 24, 24>,
 }
 
+/// Adding the state and the perturbation, stay on the manifold
 fn box_plus(x: &StateIKFom, f: &SMatrix<f64, 24, 1>) -> StateIKFom {
     let mut x_r = StateIKFom::default();
     x_r.pos = x.pos + f.fixed_rows::<3>(0);
@@ -139,6 +143,7 @@ do the same thing
 first check: should be the same
 second check: should be the same but transpose is faster to compute. Rotation matrices are orthogonal matrices, so the transpose is the inverse.
 */
+/// Difference between two states, stay on the manifold
 fn box_minus(x1: &StateIKFom, x2: &StateIKFom) -> SMatrix<f64, 24, 1> {
     let mut x_r = SMatrix::<f64, 24, 1>::zeros();
 
@@ -171,13 +176,16 @@ impl Esekf {
         let mut f_x = df_dx(&self.state, i_in);
         let f_w = df_dw(&self.state, i_in);
 
+        // state update
         self.state = box_plus(&self.state, &(f * dt));
         f_x = SMatrix::<f64, 24, 24>::identity() + f_x * dt;
+
+        // cov update
         let dt_fw = dt * f_w;
         self.cov = f_x * self.cov * f_x.transpose() + dt_fw * q * dt_fw.transpose();
     }
 
-    pub fn update(
+    pub fn correct(
         &mut self,
         r: f64,
         max_iter: i8,
@@ -189,7 +197,6 @@ impl Esekf {
         let mut h_x = DMatrix::<f64>::default();
         let mut t = 0;
         let state_propagated = self.state.clone(); // state x
-                                                   // P_ not found anywhere
 
         // TODO strange loop starting point, fix when everything is working
         for i in -1..max_iter {
@@ -205,9 +212,10 @@ impl Esekf {
             );
 
             if !valid {
-                continue; // could also break here since no change is made to the state
+                continue; // TODO could also break here since no change is made to the state
             }
 
+            // state differences made by our model, stay on the manifold
             let dx_new = box_minus(&self.state, &state_propagated);
 
             let hessian = &h_x;
@@ -219,22 +227,23 @@ impl Esekf {
                 hth
             };
 
-            let k_front = (hth / r + self.cov.try_inverse().unwrap())
+            let kalman_gain_pre = (hth / r + self.cov.try_inverse().unwrap())
                 .try_inverse()
                 .unwrap();
-
-            let k = k_front.fixed_view::<24, 12>(0, 0) * hessian_t / r;
+            let k = kalman_gain_pre.fixed_view::<24, 12>(0, 0) * hessian_t / r;
             let kh = {
                 let mut kh = SMatrix::<f64, 24, 24>::zeros();
                 kh.fixed_view_mut::<24, 12>(0, 0).copy_from(&(&k * hessian));
                 kh
             };
-            let dx_ = k * &h + (kh - SMatrix::<f64, 24, 24>::identity()) * dx_new;
-            self.state = box_plus(&self.state, &dx_);
+            let state_update = k * &h + (kh - SMatrix::<f64, 24, 24>::identity()) * dx_new;
 
-            dbg!(&dx_);
+            // apply state update towards convergence
+            self.state = box_plus(&self.state, &state_update);
 
-            converge = dx_
+            //dbg!(&state_update);
+
+            converge = state_update
                 .column_iter()
                 .all(|x| x.iter().all(|y| y.abs() <= CONVERGE_EPSILON));
 
@@ -242,13 +251,19 @@ impl Esekf {
                 t += 1;
             }
 
-            if t == 0 && i == max_iter - 2 {
-                converge = true;
-            }
-
-            if t > 1 || i == max_iter - 1 {
-                self.cov = (SMatrix::<f64, 24, 24>::identity() - kh) * self.cov;
-                return;
+            // never converged
+            if t == 0 {
+                // if we are in the last iteration, we need to force convergence
+                if i == max_iter - 2 {
+                    converge = true;
+                }
+            } else {
+                // reduce covariance of our state after some converged iterations using the certainty of the last iteration
+                if t > 1 || i == max_iter - 1 {
+                    self.cov = (SMatrix::<f64, 24, 24>::identity() - kh) * self.cov;
+                    dbg!(&self.cov.diagonal());
+                    return;
+                }
             }
         }
     }
