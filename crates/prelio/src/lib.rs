@@ -7,6 +7,7 @@ pub mod timing;
 use either::Either;
 use imu_fusion::FusionAhrs;
 use nalgebra::*;
+use std::thread;
 use timing::RuntimeEvaluator;
 
 use std::str::FromStr;
@@ -223,7 +224,7 @@ fn hash(point: &Point3<f32>, voxel_size: f32) -> i32 {
     hash
 }
 
-async fn filter_downsample<const N: usize, P: PointXYZITimestamp<N>>(
+fn filter_downsample<const N: usize, P: PointXYZITimestamp<N>>(
     cloud: PointCloud2Msg,
     lifis_params: &config::LifisParameters,
 ) -> Result<Option<(Vec<PointXYZT>, f64, f64, HeaderMsg)>> {
@@ -390,9 +391,9 @@ impl FromStr for MadgwickSetting {
 }
 
 pub struct Lifis {
-    preproc_sender: tokio::sync::mpsc::Sender<PointCloud2Msg>,
-    imu_sender: tokio::sync::mpsc::Sender<ImuMsg>,
-    synced_receiver: Option<tokio::sync::mpsc::Receiver<LifisProcessedCloud>>,
+    preproc_sender: std::sync::mpsc::Sender<PointCloud2Msg>,
+    imu_sender: std::sync::mpsc::Sender<ImuMsg>,
+    synced_receiver: Option<std::sync::mpsc::Receiver<LifisProcessedCloud>>,
     last_cloud_time: f64,
     imu_filter_fusion: ImuMadgwick,
     last_imu_time: f64,
@@ -410,7 +411,6 @@ impl Lifis {
         imu_pose_prediction_undistort: Option<Box<ImuPredictorUndistort>>,
         imu_pose_prediction_init_guess: Option<Box<ImuPredictor>>,
     ) -> anyhow::Result<Self> {
-        const CLOUDS_BUFFER_SIZE: usize = 2;
         let imu_intrinsic_calibration = match imu_intrinsic_calibration_params {
             Some(imu_intrinsic_calibration) => {
                 let imu_calib = imu_calib::CalibrationApplication::create(
@@ -424,16 +424,15 @@ impl Lifis {
             None => None,
         };
 
-        let (preproc_tx, mut preproc_rx) = tokio::sync::mpsc::channel(CLOUDS_BUFFER_SIZE);
-        let (imu_tx, imu_rx) = tokio::sync::mpsc::channel(20 * CLOUDS_BUFFER_SIZE);
-        let (filtered_cloud_tx, filtered_cloud_rx) = tokio::sync::mpsc::channel(CLOUDS_BUFFER_SIZE);
-        let (synced_cloud_imu_tx, synced_cloud_imu_rx) =
-            tokio::sync::mpsc::channel(CLOUDS_BUFFER_SIZE);
+        let (preproc_tx, preproc_rx) = std::sync::mpsc::channel();
+        let (imu_tx, imu_rx) = std::sync::mpsc::channel();
+        let (filtered_cloud_tx, filtered_cloud_rx) = std::sync::mpsc::channel();
+        let (synced_cloud_imu_tx, synced_cloud_imu_rx) = std::sync::mpsc::channel();
 
         // sync and imu integration worker
         let intrinsic_given = imu_intrinsic_calibration.is_some();
         let undistort_params = params.undistort.clone();
-        tokio::spawn(async move {
+        thread::spawn(move || {
             let mut last_lidar_frame_time = 0.0;
             let imu_process = ImuProcess::new(gravity, intrinsic_given);
 
@@ -449,27 +448,26 @@ impl Lifis {
                 imu_pose_prediction_undistort,
                 imu_pose_prediction_init_guess,
             )
-            .await;
         });
 
         // preprocessing worker
-        tokio::spawn({
-            let params_clone = params.clone();
-            async move {
-                while let Some(cloud) = preproc_rx.recv().await {
-                    match filter_downsample::<N, P>(cloud, &params_clone).await {
-                        Ok(Some(cloud_meta)) => {
-                            //dbg!("Pointcloud was processed");
-                            if let Err(e) = filtered_cloud_tx.send(cloud_meta).await {
-                                dbg!("Error sending pointcloud: {}", e);
-                            }
+        let params_clone = params.clone();
+        thread::spawn(move || {
+            while let Ok(cloud) = preproc_rx.recv() {
+                dbg!("- received pointcloud -");
+                match filter_downsample::<N, P>(cloud, &params_clone) {
+                    Ok(Some(cloud_meta)) => {
+                        dbg!("Pointcloud was processed");
+                        if let Err(e) = filtered_cloud_tx.send(cloud_meta) {
+                            dbg!("Error sending pointcloud: {}", e);
                         }
-                        Ok(None) => {
-                            dbg!("Pointcloud was filtered out");
-                        }
-                        Err(e) => {
-                            dbg!("Error processing pointcloud: {}", e);
-                        }
+                    }
+                    Ok(None) => {
+                        // TODO logging
+                        dbg!("Pointcloud was filtered out");
+                    }
+                    Err(e) => {
+                        dbg!("Error processing pointcloud: {}", e);
                     }
                 }
             }
@@ -488,7 +486,7 @@ impl Lifis {
         })
     }
 
-    pub fn get_chan(&mut self) -> Option<tokio::sync::mpsc::Receiver<LifisProcessedCloud>> {
+    pub fn get_chan(&mut self) -> Option<std::sync::mpsc::Receiver<LifisProcessedCloud>> {
         self.synced_receiver.take()
     }
 
@@ -516,17 +514,14 @@ impl Lifis {
         to_buffer.clear();*/
 
         self.last_cloud_time = cloud_stamp;
-        let sender = self.preproc_sender.clone();
-        tokio::spawn(async move {
-            match sender.send(cloud).await {
-                Ok(_) => {
-                    //dbg!("Pointcloud sent");
-                }
-                Err(e) => {
-                    dbg!("Error sending pointcloud: {}", e);
-                }
+        match self.preproc_sender.send(cloud) {
+            Ok(_) => {
+                dbg!("Pointcloud sent");
             }
-        });
+            Err(e) => {
+                dbg!("Error sending pointcloud: {}", e);
+            }
+        };
     }
 
     /// Filter raw IMU message and add to the buffer for synchronization and integration.
@@ -592,16 +587,13 @@ impl Lifis {
         }
 
         // add to buffer
-        let sender = self.imu_sender.clone();
         let imu_data = imu.clone();
-        tokio::spawn(async move {
-            match sender.send(imu_data).await {
-                Ok(_) => {}
-                Err(e) => {
-                    dbg!(e);
-                }
+        match self.imu_sender.send(imu_data) {
+            Ok(_) => {}
+            Err(e) => {
+                dbg!(e);
             }
-        });
+        }
         self.runtime_eval.stop("imu_pre").unwrap();
         self.runtime_eval.stop("total").unwrap();
 
@@ -610,12 +602,12 @@ impl Lifis {
 
     // syncs lidar and imu data by using the timestamps from the headers and timestamps in the lidar message.
     // a lidar message is therefore mapped to multiple imu messages that happened in between the previous end stamp and end stamp of the last point in the lidar message.
-    pub async fn sync_lidar_imu_worker(
+    pub fn sync_lidar_imu_worker(
         prev_lidar_end_time: &mut f64,
         gravity: f64,
-        mut lidar_receiver: tokio::sync::mpsc::Receiver<(Vec<PointXYZT>, f64, f64, HeaderMsg)>,
-        mut imu_receiver: tokio::sync::mpsc::Receiver<ImuMsg>,
-        synced_sender: &tokio::sync::mpsc::Sender<LifisProcessedCloud>,
+        lidar_receiver: std::sync::mpsc::Receiver<(Vec<PointXYZT>, f64, f64, HeaderMsg)>,
+        imu_receiver: std::sync::mpsc::Receiver<ImuMsg>,
+        synced_sender: &std::sync::mpsc::Sender<LifisProcessedCloud>,
         imu_intrinsic_calibration_given: bool,
         mut imu_process: ImuProcess,
         undistort_parameters: &config::UndistortParameters,
@@ -623,8 +615,8 @@ impl Lifis {
         imu_pose_prediction_init_guess: Option<Box<ImuPredictor>>,
     ) {
         let mut to_next: Option<ImuMsg> = None;
-        while let Some((cloud, lidar_begin_time, lidar_end_time, lidar_header)) =
-            lidar_receiver.recv().await
+        while let Ok((cloud, lidar_begin_time, lidar_end_time, lidar_header)) =
+            lidar_receiver.recv()
         {
             let lidar_time = timestamp_to_secs(&lidar_header.stamp);
             let lidar_begin_time = lidar_begin_time + lidar_time;
@@ -646,8 +638,8 @@ impl Lifis {
             }
 
             loop {
-                match imu_receiver.recv().await {
-                    Some(imu) => {
+                match imu_receiver.recv() {
+                    Ok(imu) => {
                         let imu_time = timestamp_to_secs(&imu.stamp);
                         if imu_time < imu_span_start_time {
                             continue;
@@ -658,7 +650,7 @@ impl Lifis {
                         }
                         imu_data.push(imu);
                     }
-                    None => {
+                    _ => {
                         dbg!("Imu receiver closed"); // TODO logging
                         return;
                     }
@@ -768,7 +760,7 @@ impl Lifis {
                     runtime_eval: RuntimeEvaluator::new(), // TODO currently nothing
                 };
 
-                synced_sender.send(res).await.unwrap();
+                synced_sender.send(res).unwrap();
             }
 
             *prev_lidar_end_time = imu_span_end_time;

@@ -202,16 +202,18 @@ impl TfListener {
             .unwrap();
 
         let buff_for_dynamic_sub = buff.clone();
-        tokio::spawn(async move {
-            while Arc::strong_count(&buff_for_dynamic_sub) > 1 {
-                if let Some(tf) = dynamic_subscriber.next().await {
-                    buff_for_dynamic_sub
-                        .write()
-                        .unwrap()
-                        .handle_incoming_transforms(tf, false);
+        std::thread::spawn(move || {
+            futures_lite::future::block_on(async {
+                while Arc::strong_count(&buff_for_dynamic_sub) > 1 {
+                    if let Some(tf) = dynamic_subscriber.next().await {
+                        buff_for_dynamic_sub
+                            .write()
+                            .unwrap()
+                            .handle_incoming_transforms(tf, false);
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(100));
                 }
-                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-            }
+            });
         });
 
         let mut static_subscriber = node
@@ -219,16 +221,18 @@ impl TfListener {
             .unwrap();
 
         let buff_for_static_sub = buff.clone();
-        tokio::spawn(async move {
-            while Arc::strong_count(&buff_for_static_sub) > 1 {
-                if let Some(tf) = static_subscriber.next().await {
-                    buff_for_static_sub
-                        .write()
-                        .unwrap()
-                        .handle_incoming_transforms(tf, true);
+        std::thread::spawn(move || {
+            futures_lite::future::block_on(async {
+                while Arc::strong_count(&buff_for_static_sub) > 1 {
+                    if let Some(tf) = static_subscriber.next().await {
+                        buff_for_static_sub
+                            .write()
+                            .unwrap()
+                            .handle_incoming_transforms(tf, true);
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(100));
                 }
-                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-            }
+            });
         });
 
         TfListener { buffer: buff }

@@ -13,7 +13,6 @@ include.workspace = true
 ros_pointcloud2.workspace = true
 anyhow.workspace = true
 nalgebra.workspace = true
-tokio.workspace = true
 r2r.workspace = true
 futures-lite.workspace = true
 prelio.workspace = true
