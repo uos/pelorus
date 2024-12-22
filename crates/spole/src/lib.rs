@@ -123,9 +123,6 @@ impl IVoxHashMap {
         self.scan_number += 1;
 
         points.into_iter().for_each(|p| {
-            let grid = self.pos2grid(&p);
-            let hashed = Self::hash(&grid);
-
             if !initial {
                 let thresh = self.resolution / 2.0;
                 let nearest = self.k_nearest_neighbor_query(&p, 1, thresh);
@@ -138,7 +135,11 @@ impl IVoxHashMap {
                 } else {
                     return;
                 }
+                dbg!("not skipped");
             }
+
+            let grid = self.pos2grid(&p);
+            let hashed = Self::hash(&grid);
 
             let mut grid = self
                 .grid_map
@@ -333,7 +334,7 @@ mod tests {
             PointXYZ::new(0.75001, 0.51, 0.51),
         ];
         let mut map = IVoxHashMap::new(0.5, 1_000, IVoxNearbyType::default());
-        map.add(h_points);
+        map.add(h_points, true);
         let entire_map = map.get_entire_map();
         assert_eq!(entire_map.len(), 4);
 
@@ -369,7 +370,7 @@ mod tests {
     #[test]
     fn basic_add_and_search() {
         let mut map = IVoxHashMap::new(0.5, 1_000, IVoxNearbyType::default());
-        map.add([PointXYZ::new(3.3, 3.3, 3.0)]);
+        map.add([PointXYZ::new(3.3, 3.3, 3.0)], true);
         let res = map.k_nearest_neighbor_query(&PointXYZ::new(3.2, 3.2, 3.0), 1, 5.0);
         assert!(res.is_some());
         let res = res.unwrap();
@@ -385,7 +386,7 @@ mod tests {
             PointXYZ::new(0.75001, 0.51, 0.51),
         ];
         let mut map = IVoxHashMap::new(0.5, 1_000, IVoxNearbyType::Nearby26);
-        map.add(h_points);
+        map.add(h_points, true);
 
         let query = PointXYZ::new(0.0, 0.0, 0.0);
         let result = map.k_nearest_neighbor_query(&query, 6, 5.0);
@@ -412,7 +413,7 @@ mod tests {
         ];
 
         let mut map = IVoxHashMap::new(0.5, 1_000, IVoxNearbyType::Nearby18);
-        map.add(distant_points);
+        map.add(distant_points, true);
 
         let query = PointXYZ::new(5.5, 10.5, 0.0);
         let result = map.k_nearest_neighbor_query(&query, 2, 5.0);

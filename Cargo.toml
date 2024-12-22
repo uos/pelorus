@@ -30,10 +30,8 @@ ros_pointcloud2 = { version = "0.5.2", features = [
     "derive",
 ], git = "https://github.com/stelzo/ros_pointcloud2.git" }
 r2r = "0.9.4"
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync"] }
 nalgebra = "0.33"
 #small_gicp-sys = { git = "ssh://git@github.com/stelzo/small_gicp-sys.git", branch = "main" }
-tf_r2r = { version = "0.2", features = ["ros2"] }
 anyhow = "1"
 sophus_lie = "0.9"
 rayon = "1"

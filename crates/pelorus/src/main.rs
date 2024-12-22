@@ -11,8 +11,8 @@ use r2r::{
 };
 
 use either::*;
+use prelio_ros2::tf::TfBroadcaster;
 use rand::Rng;
-use tf_r2r::TfBroadcaster;
 
 use pelorus_reg::{sfasterlio::SFasterLio, Registration};
 use prelio_ros2::{prelio::imu::ImuMsg, LifisNode};
@@ -150,7 +150,7 @@ auto set_pose6d(const double t, const Matrix<T, 3, 1> &a, const Matrix<T, 3, 1> 
 }
 */
 
-async fn lio() -> Result<(), Box<dyn std::error::Error>> {
+fn lio() -> Result<(), Box<dyn std::error::Error>> {
     let ctx = r2r::Context::create()?;
     let mut node = r2r::Node::create(ctx, "lio", "lio")?;
     let log_prefix = "pelorus_lio";
@@ -223,7 +223,7 @@ async fn lio() -> Result<(), Box<dyn std::error::Error>> {
         }))
     };
 
-    let (mut lifis_node, mut synced_rx) = LifisNode::create(
+    let (mut lifis_node, synced_rx) = LifisNode::create(
         prelio_ros2::LifisNodeParameters {
             node_name: "lifis",
             imu_qos: config.imu_qos,
@@ -308,8 +308,7 @@ async fn lio() -> Result<(), Box<dyn std::error::Error>> {
                 },
             ))
         },
-    )
-    .await?;
+    )?;
 
     let map_frame = {
         let lnode = lifis_node.state.lock().unwrap();
@@ -362,8 +361,9 @@ async fn lio() -> Result<(), Box<dyn std::error::Error>> {
     };
     let mut last_render = std::time::Instant::now();
 
-    tokio::spawn(async move {
-        while let Some(lifis_tick) = synced_rx.recv().await {
+    std::thread::spawn(move || {
+        while let Ok(lifis_tick) = synced_rx.recv() {
+            dbg!("--- received lifis tick ---");
             eval.start("total").unwrap();
             //eval.merge(&lifis_tick.runtime_eval);
 
@@ -621,6 +621,7 @@ async fn lio() -> Result<(), Box<dyn std::error::Error>> {
                     )
                 })
                 .collect();*/
+            dbg!("REG CLOUD cloud", cloud.len());
             let mut cloud: PointCloud2 = ros_pointcloud2::PointCloud2Msg::try_from_vec(cloud)
                 .unwrap()
                 .into();
@@ -717,15 +718,13 @@ async fn lio() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 #[cfg(debug_assertions)]
-#[tokio::main]
-async fn main() -> color_eyre::eyre::Result<(), Box<dyn std::error::Error>> {
+fn main() -> color_eyre::eyre::Result<(), Box<dyn std::error::Error>> {
     color_eyre::install()?;
     r2r::log_warn!("pelorus", "Running in dev mode.");
-    lio().await
+    lio()
 }
 
 #[cfg(not(debug_assertions))]
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    lio().await
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    lio()
 }

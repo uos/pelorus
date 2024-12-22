@@ -17,10 +17,8 @@ prelio-ros2 = { version = "0.1", path = "../prelio-ros2" }
 pelorus-reg = { version = "0.1", path = "../pelorus-reg" }
 r2r = "0.9"
 futures = "0.3"
-tokio = { version = "1", features = ["full"] }
 nalgebra = "0.33"
 #small_gicp-sys = { git = "ssh://git@github.com/stelzo/small_gicp-sys.git", branch = "main" }
-tf_r2r = { version = "0.2", features = ["ros2"] }
 anyhow = "1"
 color-eyre = "0.6"
 rand = "0.8"

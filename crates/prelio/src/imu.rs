@@ -364,7 +364,7 @@ impl ImuProcess {
     pub fn process(
         &mut self,
         meas: MeasureGroup,
-        config: &config::UndistortParameters,
+        _config: &config::UndistortParameters,
         imu_pose_prediction: &Option<
             impl Fn(
                 &[ImuMsg],

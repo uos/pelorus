@@ -20,7 +20,6 @@ use r2r::{
 use ros_pointcloud2::prelude::*;
 use std::sync::Mutex;
 use std::{str::FromStr, sync::Arc};
-use tokio::task::JoinSet;
 
 #[derive(Debug, Clone, Default, PointConvertible)]
 pub struct SkipPoint {
@@ -180,7 +179,7 @@ impl State {
     }
 }
 
-async fn polygon_callback(
+fn polygon_callback(
     state: Arc<std::sync::Mutex<State>>,
     tf_listener: Arc<tf::TfListener>,
     msg: PolygonStamped,
@@ -248,7 +247,7 @@ async fn polygon_callback(
     Ok(())
 }
 
-async fn cloud_callback(
+fn cloud_callback(
     state: Arc<Mutex<State>>,
     tf_listener: Arc<tf::TfListener>,
     msg: PointCloud2,
@@ -442,7 +441,6 @@ pub struct LifisNode {
     pub node: r2r::Node,
     pub state: Arc<std::sync::Mutex<State>>,
     pub tf_listener: Arc<tf::TfListener>,
-    pub pool: JoinSet<()>,
     pub logger: String,
 }
 
@@ -497,12 +495,12 @@ pub struct LifisTick {
 }
 
 impl LifisNode {
-    pub async fn create(
+    pub fn create(
         params: LifisNodeParameters,
         imu_pose_predictor_init: Option<Arc<Mutex<dyn FnMut(&[ImuMsg]) + Send + Sync>>>,
         imu_pose_prediction_undistort: Option<Box<prelio::ImuPredictorUndistort>>,
         imu_pose_prediction_init_guess: Option<Box<prelio::ImuPredictor>>,
-    ) -> anyhow::Result<(Self, tokio::sync::mpsc::Receiver<LifisTick>)> {
+    ) -> anyhow::Result<(Self, std::sync::mpsc::Receiver<LifisTick>)> {
         let config = Arc::new(std::sync::Mutex::new(config::ConfigParse::default()));
         let ctx = r2r::Context::create()?;
         let mut node = r2r::Node::create(ctx, params.node_name, params.node_namespace)?;
@@ -510,8 +508,6 @@ impl LifisNode {
         let (_, _) = node.make_derived_parameter_handler(config.clone())?;
 
         let tf_listener = Arc::new(tf::TfListener::new(&mut node));
-
-        let mut pool = tokio::task::JoinSet::new();
 
         let state = State::new(
             config.clone(),
@@ -537,10 +533,10 @@ impl LifisNode {
             }
         };
 
-        let (tx, rx) = tokio::sync::mpsc::channel(100);
+        let (tx, rx) = std::sync::mpsc::channel();
 
-        pool.spawn(async move {
-            Self::transform(tx, chan, &imu_frame).await;
+        std::thread::spawn(move || {
+            Self::transform(tx, chan, &imu_frame);
         });
 
         // first option None = override not set.
@@ -551,10 +547,10 @@ impl LifisNode {
         let tf_listener_clone = tf_listener.clone();
         let state_clone = state.clone();
         let imu_tf_frame_lidar_inner = Arc::clone(&imu_tf_frame);
-        pool.spawn(async move {
-            cloud_subscriber
-                .for_each(|msg| {
-                    future::block_on(async {
+        std::thread::spawn(move || {
+            future::block_on(async {
+                cloud_subscriber
+                    .for_each(|msg| {
                         let imu_tf_frame_lidar_inner =
                             imu_tf_frame_lidar_inner.clone().lock().unwrap().clone();
 
@@ -563,17 +559,15 @@ impl LifisNode {
                             tf_listener_clone.clone(),
                             msg,
                             imu_tf_frame_lidar_inner,
-                        )
-                        .await
-                        {
+                        ) {
                             Ok(_) => {}
                             Err(e) => {
                                 log_error!(logger_prefix, "{:?}", e);
                             }
                         }
                     })
-                })
-                .await;
+                    .await;
+            })
         });
 
         let state_clone = state.clone();
@@ -582,14 +576,13 @@ impl LifisNode {
             params.polygon_src_topic,
             params.set_polygon_service_qos,
         )?;
-        pool.spawn(async move {
-            _poly_subber
-                .for_each(|msg| {
-                    future::block_on(async {
+        std::thread::spawn(move || {
+            future::block_on(async {
+                _poly_subber
+                    .for_each(|msg| {
                         let state_clone = state_clone.clone();
                         let tf_listener_clone = tf_listener_clone.clone();
                         match polygon_callback(state_clone.clone(), tf_listener_clone.clone(), msg)
-                            .await
                         {
                             Ok(_) => {}
                             Err(e) => {
@@ -597,8 +590,8 @@ impl LifisNode {
                             }
                         }
                     })
-                })
-                .await;
+                    .await;
+            })
         });
 
         let state_clone = state.clone();
@@ -617,11 +610,11 @@ impl LifisNode {
         let imu_init_time_counter = Arc::new(Mutex::new(None));
         let imu_init_buffer = Arc::new(Mutex::new(Some(Vec::new())));
         let imu_tf_frame_lidar_inner = Arc::clone(&imu_tf_frame);
-        pool.spawn(async move {
+        std::thread::spawn(move || {
             let imu_pose_predictor_init = imu_pose_predictor_init.clone();
-            _imu_subber
-                .for_each(|msg| {
-                    future::block_on(async {
+            future::block_on(async {
+                _imu_subber
+                    .for_each(|msg| {
                         let state = state_clone.lock().unwrap();
                         imu_tf_frame_lidar_inner
                             .clone()
@@ -672,8 +665,8 @@ impl LifisNode {
                             _ => {}
                         }
                     })
-                })
-                .await;
+                    .await;
+            })
         });
 
         let state_clone = Arc::clone(&state);
@@ -681,11 +674,11 @@ impl LifisNode {
             params.set_fov_service,
             params.set_fov_service_qos,
         );
-        pool.spawn(async move {
-            _service_set_fov
-                .expect("could not create service")
-                .for_each(|req| {
-                    future::block_on(async {
+        std::thread::spawn(move || {
+            future::block_on(async {
+                _service_set_fov
+                    .expect("could not create service")
+                    .for_each(|req| {
                         let state_clone = state_clone.clone();
                         let left: f32 = req.message.left;
                         let right: f32 = req.message.right;
@@ -714,8 +707,8 @@ impl LifisNode {
                         };
                         req.respond(resp).expect("could not send response");
                     })
-                })
-                .await;
+                    .await;
+            })
         });
 
         let state_clone = Arc::clone(&state);
@@ -724,11 +717,11 @@ impl LifisNode {
                 params.set_distances_service,
                 params.set_distances_service_qos,
             );
-        pool.spawn(async move {
-            _service_set_distances
-                .expect("could not create service")
-                .for_each(|req| {
-                    future::block_on(async {
+        std::thread::spawn(move || {
+            future::block_on(async {
+                _service_set_distances
+                    .expect("could not create service")
+                    .for_each(|req| {
                         let min_distance: f32 = req.message.min;
                         let max_distance: f32 = req.message.max;
                         let invert: bool = req.message.invert;
@@ -753,8 +746,8 @@ impl LifisNode {
                         };
                         req.respond(resp).expect("could not send response");
                     })
-                })
-                .await;
+                    .await
+            })
         });
 
         Ok((
@@ -762,7 +755,6 @@ impl LifisNode {
                 node,
                 state,
                 tf_listener,
-                pool,
                 logger: logger_prefix.to_string(),
             },
             rx,
@@ -773,12 +765,12 @@ impl LifisNode {
         self.node.spin_once(timeout);
     }
 
-    pub async fn transform(
-        sender: tokio::sync::mpsc::Sender<LifisTick>,
-        mut receiver: tokio::sync::mpsc::Receiver<prelio::LifisProcessedCloud>,
+    pub fn transform(
+        sender: std::sync::mpsc::Sender<LifisTick>,
+        receiver: std::sync::mpsc::Receiver<prelio::LifisProcessedCloud>,
         imu_frame: &String,
     ) {
-        while let Some(synced_data) = receiver.recv().await {
+        while let Ok(synced_data) = receiver.recv() {
             let pose = PoseWithCovariance {
                 pose: Pose {
                     position: Point {
@@ -832,7 +824,7 @@ impl LifisNode {
                 //runtime_eval: synced_data.runtime_eval,
             };
 
-            sender.send(res).await.expect("could not send lifis tick");
+            sender.send(res).expect("could not send lifis tick");
         }
     }
 }
