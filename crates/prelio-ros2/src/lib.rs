@@ -1,6 +1,8 @@
 mod config;
 pub mod tf;
 
+use log::info;
+
 pub use prelio;
 
 use anyhow::anyhow;
@@ -261,6 +263,8 @@ fn cloud_callback(
     if points_n == 0 {
         return Ok(());
     }
+
+    r2r::log_info!("lifis-ros", "Received pointcloud with {} points", points_n);
 
     {
         let (imu_tf, sensor_tf) = {
@@ -551,6 +555,7 @@ impl LifisNode {
             future::block_on(async {
                 cloud_subscriber
                     .for_each(|msg| {
+                        r2r::log_info!("lifis-ros", "START Cloud message");
                         let imu_tf_frame_lidar_inner =
                             imu_tf_frame_lidar_inner.clone().lock().unwrap().clone();
 
@@ -565,6 +570,7 @@ impl LifisNode {
                                 log_error!(logger_prefix, "{:?}", e);
                             }
                         }
+                        r2r::log_info!("lifis-ros", "END Cloud message");
                     })
                     .await;
             })
@@ -623,6 +629,8 @@ impl LifisNode {
                             .get_or_insert(msg.header.frame_id.clone());
                         let imu_init_time_counter = imu_init_time_counter.clone();
                         let imu_init_buffer = imu_init_buffer.clone();
+
+                        r2r::log_info!("lifis-ros", "Received IMU message");
 
                         let imu_lifis = imu_to_lifis(msg.clone());
                         let curr_stamp = timestamp_to_secs(&imu_lifis.stamp);
@@ -749,6 +757,8 @@ impl LifisNode {
                     .await
             })
         });
+
+        r2r::log_info!("prelio-ros2", "CREATED LIFIS NODE");
 
         Ok((
             Self {

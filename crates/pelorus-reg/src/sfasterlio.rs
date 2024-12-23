@@ -267,7 +267,7 @@ impl crate::Registration for SFasterLio {
                       h_x: &mut DMatrix<f64>,
                       extrinsic_estimation| {
                     if !converged {
-                        dbg!("not converged");
+                        //dbg!("not converged");
                         return;
                     }
 

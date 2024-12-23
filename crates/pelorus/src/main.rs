@@ -1,3 +1,4 @@
+use log::{error, info, warn};
 use nalgebra::{Isometry3, Translation3};
 use r2r::{
     builtin_interfaces::msg::Time,
@@ -428,7 +429,7 @@ fn lio() -> Result<(), Box<dyn std::error::Error>> {
                 nalgebra::Isometry3::from_parts(initial_guess_translation, initial_guess_rotation)
             };
 
-            dbg!(init_guess);
+            //dbg!(init_guess);
 
             let init_guess_world = t_world_lidar * init_guess;
 
@@ -621,7 +622,7 @@ fn lio() -> Result<(), Box<dyn std::error::Error>> {
                     )
                 })
                 .collect();*/
-            dbg!("REG CLOUD cloud", cloud.len());
+            //dbg!("REG CLOUD cloud", cloud.len());
             let mut cloud: PointCloud2 = ros_pointcloud2::PointCloud2Msg::try_from_vec(cloud)
                 .unwrap()
                 .into();
@@ -707,6 +708,7 @@ fn lio() -> Result<(), Box<dyn std::error::Error>> {
                 }
             }
         }
+        dbg!("--- END lifis tick ---");
     });
 
     let spin_timeout = std::time::Duration::from_millis(10);
@@ -720,11 +722,13 @@ fn lio() -> Result<(), Box<dyn std::error::Error>> {
 #[cfg(debug_assertions)]
 fn main() -> color_eyre::eyre::Result<(), Box<dyn std::error::Error>> {
     color_eyre::install()?;
-    r2r::log_warn!("pelorus", "Running in dev mode.");
+    env_logger::init();
+    warn!("Running in dev mode.");
     lio()
 }
 
 #[cfg(not(debug_assertions))]
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    env_logger::init();
     lio()
 }
