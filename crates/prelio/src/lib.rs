@@ -457,7 +457,6 @@ impl Lifis {
                 dbg!("- received pointcloud -");
                 match filter_downsample::<N, P>(cloud, &params_clone) {
                     Ok(Some(cloud_meta)) => {
-                        dbg!("Pointcloud was processed");
                         if let Err(e) = filtered_cloud_tx.send(cloud_meta) {
                             dbg!("Error sending pointcloud: {}", e);
                         }
@@ -515,9 +514,7 @@ impl Lifis {
 
         self.last_cloud_time = cloud_stamp;
         match self.preproc_sender.send(cloud) {
-            Ok(_) => {
-                dbg!("Pointcloud sent");
-            }
+            Ok(_) => {}
             Err(e) => {
                 dbg!("Error sending pointcloud: {}", e);
             }

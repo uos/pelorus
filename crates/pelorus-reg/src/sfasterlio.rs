@@ -274,6 +274,10 @@ impl crate::Registration for SFasterLio {
                     //dbg!(cloud.len());
 
                     //let initial_guess = Isometry3::identity();
+                    // todo init optional, else ekf
+                    let rot = Rotation3::from_matrix(&ekf_state.rot.matrix());
+                    let quat = UnitQuaternion::from_rotation_matrix(&rot);
+                    let initial_guess = Isometry3::from_parts(ekf_state.pos.into(), quat);
 
                     // Nearest Neighbors to fit planes
                     let planes = cloud

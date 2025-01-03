@@ -14,9 +14,9 @@ pub struct StateIKFom {
     pub offset_r_l_i: SO3,
     pub offset_t_l_i: Vector3<f64>,
     pub vel: Vector3<f64>,
-    pub bg: Vector3<f64>,
-    pub ba: Vector3<f64>,
-    pub grav: Vector3<f64>,
+    pub bg: Vector3<f64>,   // estimated gyro bias
+    pub ba: Vector3<f64>,   // accelerometer bias (TODO never set)
+    pub grav: Vector3<f64>, // gravity vector
 }
 
 impl StateIKFom {
@@ -112,6 +112,20 @@ pub fn df_dw(s: &StateIKFom, _inp: &InputIKFom) -> SMatrix<f64, 24, 12> {
 pub struct Esekf {
     pub state: StateIKFom,
     pub cov: SMatrix<f64, 24, 24>,
+}
+
+fn state_index_to_reason(index: usize) -> String {
+    match index {
+        0..3 => "pos".to_string(),
+        3..6 => "rot".to_string(),
+        6..9 => "offset_r_l_i".to_string(),
+        9..12 => "offset_t_l_i".to_string(),
+        12..15 => "vel".to_string(),
+        15..18 => "bg".to_string(),
+        18..21 => "ba".to_string(),
+        21..24 => "grav".to_string(),
+        _ => "unknown".to_string(),
+    }
 }
 
 /// Adding the state and the perturbation, stay on the manifold
@@ -212,6 +226,7 @@ impl Esekf {
             );
 
             if !valid {
+                dbg!("not valid");
                 continue; // TODO could also break here since no change is made to the state
             }
 
@@ -238,14 +253,28 @@ impl Esekf {
             };
             let state_update = k * &h + (kh - SMatrix::<f64, 24, 24>::identity()) * dx_new;
 
+            let state_before = self.state.clone();
+
             // apply state update towards convergence
             self.state = box_plus(&self.state, &state_update);
 
-            //dbg!(&state_update);
+            dbg!(&state_update, &self.state.pos, &state_before.pos);
 
-            converge = state_update
-                .column_iter()
-                .all(|x| x.iter().all(|y| y.abs() <= CONVERGE_EPSILON));
+            /*converge = state_update
+            .column_iter()
+            .all(|x| x.iter().all(|y| y.abs() <= CONVERGE_EPSILON));*/
+
+            // check if all converged, go through all and print with index which one is not converged
+            converge = true;
+            for x in state_update.column_iter() {
+                for (idx, y) in x.iter().enumerate() {
+                    if y.abs() > CONVERGE_EPSILON {
+                        dbg!(state_index_to_reason(idx));
+                        converge = false;
+                        break;
+                    }
+                }
+            }
 
             if converge {
                 t += 1;
