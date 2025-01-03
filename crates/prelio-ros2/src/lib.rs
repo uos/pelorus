@@ -264,8 +264,6 @@ fn cloud_callback(
         return Ok(());
     }
 
-    r2r::log_info!("lifis-ros", "Received pointcloud with {} points", points_n);
-
     {
         let (imu_tf, sensor_tf) = {
             let (imu_tf_override, global_zero_frame, _, sensor_tf) = {
@@ -555,7 +553,6 @@ impl LifisNode {
             future::block_on(async {
                 cloud_subscriber
                     .for_each(|msg| {
-                        r2r::log_info!("lifis-ros", "START Cloud message");
                         let imu_tf_frame_lidar_inner =
                             imu_tf_frame_lidar_inner.clone().lock().unwrap().clone();
 
@@ -629,8 +626,6 @@ impl LifisNode {
                             .get_or_insert(msg.header.frame_id.clone());
                         let imu_init_time_counter = imu_init_time_counter.clone();
                         let imu_init_buffer = imu_init_buffer.clone();
-
-                        r2r::log_info!("lifis-ros", "Received IMU message");
 
                         let imu_lifis = imu_to_lifis(msg.clone());
                         let curr_stamp = timestamp_to_secs(&imu_lifis.stamp);
