@@ -14,7 +14,7 @@ pub struct SFasterLio {
     ekf: crate::sophus_ekf::Esekf,
     imu_processing: crate::imu::ImuProcessing,
     map: spole::IVoxHashMap,
-    laser_point_cov: f64,
+    laser_point_noise_cov: f64,
     ekf_max_iterations: i8,
     k_neighbors: usize,
     neighbor_max_range: f64,
@@ -43,7 +43,7 @@ impl SFasterLio {
         map_resolution: f64,
         g: f64,
         imu_params: &crate::imu::ImuParameters,
-        laser_point_cov: f64,
+        laser_point_noise_cov: f64,
         ekf_max_iterations: i8,
         k_neighbors: usize,
         neighbor_max_range: f64,
@@ -83,7 +83,7 @@ impl SFasterLio {
                 &initial_extrinsic_calibration,
             ),
             map,
-            laser_point_cov,
+            laser_point_noise_cov,
             ekf_max_iterations,
             k_neighbors,
             neighbor_max_range,
@@ -257,7 +257,7 @@ impl crate::Registration for SFasterLio {
 
             let normal_cloud_in_ekf = normal_cloud.clone();
             self.ekf.correct(
-                self.laser_point_cov,
+                self.laser_point_noise_cov,
                 self.ekf_max_iterations,
                 extrinsic_estimation,
                 move |ekf_state: &crate::sophus_ekf::StateIKFom,
@@ -266,11 +266,6 @@ impl crate::Registration for SFasterLio {
                       h: &mut DVector<f64>,
                       h_x: &mut DMatrix<f64>,
                       extrinsic_estimation| {
-                    if !converged {
-                        //dbg!("not converged");
-                        return;
-                    }
-
                     //dbg!(cloud.len());
 
                     //let initial_guess = Isometry3::identity();
@@ -326,28 +321,31 @@ impl crate::Registration for SFasterLio {
                         return;
                     }
 
-                    if planes.len() > h.nrows() {
-                        *h = DVector::<f64>::zeros(planes.len());
-                    }
+                    // TODO reuse
+                    //if planes.len() > h.nrows() {
+                    *h = DVector::<f64>::zeros(planes.len());
+                    //}
 
-                    if planes.len() > h_x.nrows() {
-                        *h_x = DMatrix::<f64>::zeros(planes.len(), 12);
-                    }
+                    //if planes.len() > h_x.nrows() {
+                    *h_x = DMatrix::<f64>::zeros(planes.len(), 12);
+                    //}
+
+                    // TODO (AS REF) if converge, do use old planes/neighbors since it is likely to be the same
 
                     planes
                         .iter()
                         .zip(h_x.row_iter_mut())
                         .zip(h.row_iter_mut())
                         .for_each(|((normal_point, mut h_x_row), mut h_row)| {
-                            let point = normal_point.xyz_f64();
+                            let point_local = normal_point.xyz_f64();
                             let nearest_plane = [
                                 normal_point.normal_x as f64,
                                 normal_point.normal_y as f64,
                                 normal_point.normal_z as f64,
                                 normal_point.intensity as f64,
                             ];
-                            let v =
-                                ekf_state.offset_r_l_i.matrix() * point + ekf_state.offset_t_l_i;
+                            let v = ekf_state.offset_r_l_i.matrix() * point_local
+                                + ekf_state.offset_t_l_i;
 
                             let point_crossmat =
                                 Matrix3::new(0.0, -v.z, v.y, v.z, 0.0, -v.x, -v.y, v.x, 0.0);
@@ -403,8 +401,6 @@ impl crate::Registration for SFasterLio {
                             h_row[0] = -nearest_plane[3]; // / 10.0; // TODO ist zu gross, aber warum?
                                                           //dbg!(h_row[0]);
                         });
-
-                    //dbg!(h);
 
                     let mut glob = normal_cloud_in_ekf.lock().unwrap();
                     *glob = Some(planes);

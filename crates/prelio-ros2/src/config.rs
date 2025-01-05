@@ -52,6 +52,10 @@ pub enum LidarVendor {
     /// nanoseconds
     #[default]
     Ouster,
+
+    /// microseconds?
+    Robosense,
+
     // microseconds, TODO the driver currently does not publish timestamp per point in PointCloud2, only in custom messages
     //Livox,
     Skip,
@@ -81,6 +85,7 @@ impl FromStr for LidarVendor {
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s {
             "velodyne" => Ok(LidarVendor::Velodyne),
+            "robosense" => Ok(LidarVendor::Robosense),
             "ouster" => Ok(LidarVendor::Ouster),
             //"livox" => Ok(LidarVendor::Livox),
             "skip" => Ok(LidarVendor::Skip),

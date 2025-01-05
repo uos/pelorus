@@ -6,6 +6,11 @@ const MAX_INI_COUNT: usize = 10;
 const COV_IMU_RAW_DEFAULT: f64 = 0.0001;
 const COV_IMU_BIAS_DEFAULT: f64 = 0.00001;
 
+// Initial state covariance. Changes with prediction (increase) and correction (decrease)
+const COV1: f64 = 0.00001;
+const COV2: f64 = 0.0001;
+const COV3: f64 = 0.001;
+
 pub struct ImuProcessing {
     ekf_inited: bool,
     last_imu: crate::ImuMsg,
@@ -233,28 +238,37 @@ impl ImuProcessing {
         ekf.state.offset_r_l_i =
             sophus_lie::Rotation3::try_from_mat(&self.lidar_r_wrt_imu).unwrap();
 
-        const COV1: f64 = 0.00001;
-        const COV2: f64 = 0.0001;
-        const COV3: f64 = 0.001;
+        ekf.cov[(0, 0)] = 1.0; // pos, TODO was 1.0
+        ekf.cov[(1, 1)] = 1.0;
+        ekf.cov[(2, 2)] = 1.0;
 
-        ekf.cov.fill_with_identity();
-        ekf.cov[(6, 6)] = COV1;
+        ekf.cov[(3, 3)] = COV2; // rot
+        ekf.cov[(4, 4)] = COV2;
+        ekf.cov[(5, 5)] = COV2;
+
+        ekf.cov[(6, 6)] = COV1; // offset_r_l_i
         ekf.cov[(7, 7)] = COV1;
         ekf.cov[(8, 8)] = COV1;
-        ekf.cov[(9, 9)] = COV1;
+
+        ekf.cov[(9, 9)] = COV1; // offset_t_l_i
         ekf.cov[(10, 10)] = COV1;
         ekf.cov[(11, 11)] = COV1;
 
-        ekf.cov[(15, 15)] = COV2;
+        ekf.cov[(12, 12)] = 0.5; // vel, TODO was 1.0
+        ekf.cov[(13, 13)] = 0.5;
+        ekf.cov[(14, 14)] = 0.5;
+
+        ekf.cov[(15, 15)] = COV2; // bg
         ekf.cov[(16, 16)] = COV2;
         ekf.cov[(17, 17)] = COV2;
 
-        ekf.cov[(18, 18)] = COV3;
+        ekf.cov[(18, 18)] = COV3; // ba
         ekf.cov[(19, 19)] = COV3;
         ekf.cov[(20, 20)] = COV3;
 
-        ekf.cov[(21, 21)] = COV1;
+        ekf.cov[(21, 21)] = COV1; // grav
         ekf.cov[(22, 22)] = COV1;
+        ekf.cov[(23, 23)] = COV1;
 
         self.last_imu = msgs[msgs.len() - 1].clone();
 
@@ -278,7 +292,8 @@ impl ImuProcessing {
         assert!(cloud_begin_time > 0.0);
         assert!(cloud_end_time > 0.0);
 
-        cloud_end_time += cloud_begin_time;
+        // TODO robosense
+        //cloud_end_time += cloud_begin_time;
 
         const GRAVITY: f64 = 9.81; // TODO PARAM
 

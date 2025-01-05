@@ -615,15 +615,25 @@ impl Lifis {
         while let Ok((cloud, lidar_begin_time, lidar_end_time, lidar_header)) =
             lidar_receiver.recv()
         {
+            dbg!(lidar_begin_time);
             let lidar_time = timestamp_to_secs(&lidar_header.stamp);
-            let lidar_begin_time = lidar_begin_time + lidar_time;
+            // TODO ouster has relative times, robosense not //let lidar_begin_time = lidar_begin_time + lidar_time;
             let imu_span_start_time = if *prev_lidar_end_time > 0.0 {
                 *prev_lidar_end_time
             } else {
                 lidar_begin_time
             };
 
-            let imu_span_end_time = lidar_end_time + lidar_time;
+            // TODO same
+            // let imu_span_end_time = lidar_end_time + lidar_time;
+            let imu_span_end_time = lidar_end_time;
+
+            dbg!(
+                lidar_time,
+                lidar_begin_time,
+                imu_span_start_time,
+                imu_span_end_time
+            );
 
             let mut imu_data = Vec::with_capacity(100);
 

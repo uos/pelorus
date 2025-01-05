@@ -1750,5 +1750,9 @@ dependencies = [
 ]
 
 [[patch.unused]]
+name = "imu-calib-ros"
+version = "0.1.0"
+
+[[patch.unused]]
 name = "pelorus"
 version = "0.1.0"

@@ -7,7 +7,7 @@ pub type SO3 = sophus_lie::Rotation3<f64, 1>;
 const CONVERGE_EPSILON: f64 = 0.001;
 const GRAVITY_DEFAULT: f64 = 9.81;
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct StateIKFom {
     pub pos: Vector3<f64>,
     pub rot: SO3,
@@ -81,7 +81,7 @@ pub fn df_dx(s: &StateIKFom, inp: &InputIKFom) -> SMatrix<f64, 24, 24> {
         .copy_from(&Matrix3::identity());
     let acc = inp.acc - s.ba;
 
-    let r_neg = s.rot.matrix() * -1.0;
+    let r_neg = -s.rot.matrix();
     cov.fixed_view_mut::<3, 3>(12, 3)
         .copy_from(&(r_neg * SO3::hat(&acc)));
     cov.fixed_view_mut::<3, 3>(12, 18).copy_from(&r_neg);
@@ -116,15 +116,15 @@ pub struct Esekf {
 
 fn state_index_to_reason(index: usize) -> String {
     match index {
-        0..3 => "pos".to_string(),
-        3..6 => "rot".to_string(),
-        6..9 => "offset_r_l_i".to_string(),
-        9..12 => "offset_t_l_i".to_string(),
-        12..15 => "vel".to_string(),
-        15..18 => "bg".to_string(),
-        18..21 => "ba".to_string(),
-        21..24 => "grav".to_string(),
-        _ => "unknown".to_string(),
+        0..2 => "pos".to_string(),
+        3..5 => "rot".to_string(),
+        6..8 => "offset_r_l_i".to_string(),
+        9..11 => "offset_t_l_i".to_string(),
+        12..14 => "vel".to_string(),
+        15..17 => "bg".to_string(),
+        18..20 => "ba".to_string(),
+        21..23 => "grav".to_string(),
+        _ => "unknown: ".to_string() + &index.to_string(),
     }
 }
 
@@ -190,6 +190,8 @@ impl Esekf {
         let mut f_x = df_dx(&self.state, i_in);
         let f_w = df_dw(&self.state, i_in);
 
+        //dbg!(&q.diagonal());
+
         // state update
         self.state = box_plus(&self.state, &(f * dt));
         f_x = SMatrix::<f64, 24, 24>::identity() + f_x * dt;
@@ -201,7 +203,7 @@ impl Esekf {
 
     pub fn correct(
         &mut self,
-        r: f64,
+        measurement_noise_cov: f64,
         max_iter: i8,
         extrinsic_estimation: bool,
         mut model: impl FnMut(&StateIKFom, &mut bool, bool, &mut DVector<f64>, &mut DMatrix<f64>, bool),
@@ -233,64 +235,79 @@ impl Esekf {
             // state differences made by our model, stay on the manifold
             let dx_new = box_minus(&self.state, &state_propagated);
 
-            let hessian = &h_x;
-            let hessian_t = &hessian.transpose();
+            let hessian_t = &h_x.transpose();
             let hth = {
                 let mut hth = SMatrix::<f64, 24, 24>::zeros();
-                hth.fixed_view_mut::<12, 12>(0, 0)
-                    .copy_from(&(hessian_t * hessian));
+                let gramian = hessian_t * &h_x;
+                debug_assert!(gramian.nrows() == 12);
+                debug_assert!(gramian.ncols() == 12);
+                hth.fixed_view_mut::<12, 12>(0, 0).copy_from(&(gramian));
                 hth
             };
 
-            let kalman_gain_pre = (hth / r + self.cov.try_inverse().unwrap())
+            let kalman_gain_pre = (hth / measurement_noise_cov + self.cov.try_inverse().unwrap())
                 .try_inverse()
                 .unwrap();
-            let k = kalman_gain_pre.fixed_view::<24, 12>(0, 0) * hessian_t / r;
+            let k = kalman_gain_pre.fixed_view::<24, 12>(0, 0) * hessian_t / measurement_noise_cov;
             let kh = {
                 let mut kh = SMatrix::<f64, 24, 24>::zeros();
-                kh.fixed_view_mut::<24, 12>(0, 0).copy_from(&(&k * hessian));
+                let khessian = &k * &h_x;
+                debug_assert!(khessian.nrows() == 24);
+                debug_assert!(khessian.ncols() == 12);
+                kh.fixed_view_mut::<24, 12>(0, 0).copy_from(&khessian);
                 kh
             };
+            // avg of all k
+            let k_avg = k.iter().sum::<f64>() / k.len() as f64;
+            let h_avg = h.iter().sum::<f64>() / h.len() as f64;
+
+            let khh = &k * &h;
             let state_update = k * &h + (kh - SMatrix::<f64, 24, 24>::identity()) * dx_new;
 
-            let state_before = self.state.clone();
+            // khh is too big in x,y, k is really small overall
+            // maybe a specific matmul only affects x,y because rest is small
+            //
+            /*if i == -1 {
+                dbg!(&state_update, khh, h_avg, k_avg);
+            }*/
+            dbg!(khh);
 
             // apply state update towards convergence
             self.state = box_plus(&self.state, &state_update);
 
-            dbg!(&state_update, &self.state.pos, &state_before.pos);
-
-            /*converge = state_update
-            .column_iter()
-            .all(|x| x.iter().all(|y| y.abs() <= CONVERGE_EPSILON));*/
+            converge = state_update
+                .column_iter()
+                .all(|x| x.iter().all(|y| y.abs() <= CONVERGE_EPSILON));
 
             // check if all converged, go through all and print with index which one is not converged
-            converge = true;
+            /*converge = true;
             for x in state_update.column_iter() {
                 for (idx, y) in x.iter().enumerate() {
                     if y.abs() > CONVERGE_EPSILON {
-                        dbg!(state_index_to_reason(idx));
+                        dbg!(state_index_to_reason(idx), &self.cov.diagonal(), t);
                         converge = false;
                         break;
                     }
                 }
-            }
+            }*/
 
             if converge {
                 t += 1;
             }
 
+            dbg!(t, i);
+
             // never converged
             if t == 0 {
-                // if we are in the last iteration, we need to force convergence
+                // if we are in the last iteration, we give a last change for the model to converge
                 if i == max_iter - 2 {
                     converge = true;
                 }
             } else {
                 // reduce covariance of our state after some converged iterations using the certainty of the last iteration
-                if t > 1 || i == max_iter - 1 {
+                if t >= 1 || i == max_iter - 1 {
                     self.cov = (SMatrix::<f64, 24, 24>::identity() - kh) * self.cov;
-                    dbg!(&self.cov.diagonal());
+                    dbg!(&self.cov.diagonal(), i);
                     return;
                 }
             }
