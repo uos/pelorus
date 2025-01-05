@@ -53,6 +53,30 @@ impl SkipPoint {
 }
 
 #[derive(Debug, Clone, Default, PointConvertible)]
+pub struct RobosensePoint {
+    pub x: f32,
+    pub y: f32,
+    pub z: f32,
+    pub intensity: u8,
+    pub ring: u16,
+    pub timestamp: f64,
+}
+
+impl prelio::PointXYZITimestamp<6> for RobosensePoint {
+    fn intensity(&self) -> f32 {
+        self.intensity as f32 / 255.0 // TODO right?
+    }
+
+    fn timestamp(&self) -> f64 {
+        self.timestamp * 1.0
+    }
+
+    fn xyz(&self) -> nalgebra::Point3<f32> {
+        nalgebra::Point3::new(self.x, self.y, self.z)
+    }
+}
+
+#[derive(Debug, Clone, Default, PointConvertible)]
 pub struct VelodynePoint {
     pub x: f32,
     pub y: f32,
@@ -146,6 +170,16 @@ impl State {
             lifis: match lidar_vendor {
                 config::LidarVendor::Velodyne => {
                     Arc::new(Mutex::new(prelio::Lifis::create::<5, VelodynePoint>(
+                        gravity,
+                        madgwick_filter,
+                        imu_calibration_params,
+                        &lifis_params,
+                        imu_pose_prediction_undistort,
+                        imu_pose_prediction_init_guess,
+                    )?))
+                }
+                config::LidarVendor::Robosense => {
+                    Arc::new(Mutex::new(prelio::Lifis::create::<6, RobosensePoint>(
                         gravity,
                         madgwick_filter,
                         imu_calibration_params,
@@ -567,7 +601,6 @@ impl LifisNode {
                                 log_error!(logger_prefix, "{:?}", e);
                             }
                         }
-                        r2r::log_info!("lifis-ros", "END Cloud message");
                     })
                     .await;
             })

@@ -667,6 +667,8 @@ fn lio() -> Result<(), Box<dyn std::error::Error>> {
                 header: imu_odom.header.clone(),
             });
 
+            dbg!(&tf);
+
             tf_broadcaster
                 .send_transform(tf)
                 .expect("Failed to send transform");

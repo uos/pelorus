@@ -18,7 +18,7 @@ def generate_launch_description():
                 #{ 'min_intensity': 30.0 },
                 #{ 'max_intensity': 255.0 },
 
-                { 'lidar_vendor': 'ouster' },
+                { 'lidar_vendor': 'robosense' },
                 { 'imu_qos': 'system_default' }, # for ouster
                 { 'lidar_qos': 'system_default' }, # for ouster
 
@@ -26,9 +26,12 @@ def generate_launch_description():
                 { 'voxel_size': 0.05 }, # for downsampling
             ],
             remappings=[
-                ('cloud', 'ouster/points'),
-                ('imu', 'ouster/imu'),
-                ('registered', 'ouster/registered'),
+                #('cloud', 'ouster/points'),
+                #('imu', 'ouster/imu'),
+                #('registered', 'ouster/registered'),
+                ('cloud', '/rslidar_points'),
+                ('imu', 'imu/data'),
+                ('registered', '/registered'),
             ]
         ),
     ])
