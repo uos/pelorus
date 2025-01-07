@@ -932,7 +932,6 @@ dependencies = [
  "color-eyre",
  "either",
  "env_logger",
- "futures",
  "log",
  "nalgebra 0.33.2",
  "pelorus-reg",
@@ -1748,10 +1747,6 @@ dependencies = [
  "quote",
  "syn 2.0.91",
 ]
-
-[[patch.unused]]
-name = "imu-calib-ros"
-version = "0.1.0"
 
 [[patch.unused]]
 name = "pelorus"

@@ -16,7 +16,6 @@ ros_pointcloud2 = { version = "0.5.2", features = [
 prelio-ros2 = { version = "0.1", path = "../prelio-ros2" }
 pelorus-reg = { version = "0.1", path = "../pelorus-reg" }
 r2r = "0.9"
-futures = "0.3"
 nalgebra = "0.33"
 #small_gicp-sys = { git = "ssh://git@github.com/stelzo/small_gicp-sys.git", branch = "main" }
 anyhow = "1"

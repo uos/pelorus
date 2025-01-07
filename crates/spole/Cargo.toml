@@ -8,9 +8,6 @@ repository.workspace = true
 version.workspace = true
 
 [dependencies]
-#ros_pointcloud2 = { version = "0.5.2", features = [
-#    "nalgebra",
-#], git = "https://github.com/stelzo/ros_pointcloud2.git" }
 ros_pointcloud2.workspace = true
 dashmap.workspace = true
 nalgebra.workspace = true
