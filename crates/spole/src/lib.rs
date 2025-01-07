@@ -31,8 +31,11 @@ pub struct IVoxHashMap {
     nearby_type: IVoxNearbyType,
     inverse_resolution: f32,
     resolution: f64,
-    grid_map: dashmap::DashMap<i32, ((i32, i32, i32), IvoxNode)>,
+    grid_map: dashmap::DashMap<i32, ((i32, i32, i32), usize)>,
     scan_number: usize,
+    buffer: Vec<(i32, IvoxNode)>,
+    buffer_current_idx: usize,
+    buffer_init_full: bool,
 }
 
 #[derive(Debug, Default, Clone, Copy)]
@@ -46,7 +49,7 @@ pub enum IVoxNearbyType {
     Nearby26,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct IvoxNode {
     points: Vec<PointXYZ>,
     newest_hit: usize,
@@ -61,7 +64,7 @@ impl IvoxNode {
     }
 
     pub fn linear_knn(
-        &mut self,
+        &self,
         query: &PointXYZ,
         k: usize,
         max_range: f64,
@@ -69,15 +72,16 @@ impl IvoxNode {
     ) -> Vec<PointXYZ> {
         let max_range_sq = max_range.powi(2) as f32;
 
-        self.newest_hit = scan_number;
+        //self.newest_hit = scan_number;
+        let mut points = self.points.clone(); // TODO avoid clone
 
-        self.points.sort_unstable_by(|a, b| {
+        points.sort_unstable_by(|a, b| {
             let dist_a = (a.xyz_f32() - query.xyz_f32()).norm_squared();
             let dist_b = (b.xyz_f32() - query.xyz_f32()).norm_squared();
             dist_a.partial_cmp(&dist_b).unwrap()
         });
 
-        self.points
+        points
             .iter()
             .take(k)
             .filter_map(|p| {
@@ -112,6 +116,9 @@ impl IVoxHashMap {
             grid_map: DashMap::with_capacity(capacity),
             scan_number: 0,
             resolution: resolution as f64,
+            buffer: vec![(0, IvoxNode::new()); capacity],
+            buffer_current_idx: 0,
+            buffer_init_full: false,
         }
     }
 
@@ -119,11 +126,32 @@ impl IVoxHashMap {
         self.grid_map.is_empty()
     }
 
+    fn add_voxel(&mut self, hash: i32, node: IvoxNode) -> usize {
+        let mut last_hash = None;
+        if self.buffer_current_idx >= self.buffer.len() {
+            if !self.buffer_init_full {
+                self.buffer_init_full = true;
+            }
+            last_hash = Some(self.buffer[self.buffer_current_idx].0);
+            self.buffer_current_idx = 0;
+        }
+
+        if let Some(last_hash) = last_hash {
+            self.grid_map.remove(&last_hash);
+        }
+
+        let last_idx = self.buffer_current_idx;
+        self.buffer[self.buffer_current_idx] = (hash, node);
+        self.buffer_current_idx += 1;
+
+        last_idx
+    }
+
     pub fn add(&mut self, points: impl IntoIterator<Item = PointXYZ>, initial: bool) {
         self.scan_number += 1;
 
         points.into_iter().for_each(|p| {
-            if !initial {
+            /*if !initial {
                 let thresh = self.resolution / 2.0;
                 let nearest = self.k_nearest_neighbor_query(&p, 1, thresh);
                 if let Some(nearest) = nearest {
@@ -136,16 +164,23 @@ impl IVoxHashMap {
                     return;
                 }
                 dbg!("not skipped");
-            }
+            }*/
 
             let grid = self.pos2grid(&p);
             let hashed = Self::hash(&grid);
 
-            let mut grid = self
-                .grid_map
-                .entry(hashed)
-                .or_insert_with(|| (grid, IvoxNode::new()));
-            grid.1.add(std::iter::once(p));
+            if self.grid_map.contains_key(&hashed) {
+                let hashres = self.grid_map.get_mut(&hashed).unwrap();
+                let node = &mut self.buffer[hashres.1];
+                node.1.add(std::iter::once(p));
+                node.1.newest_hit = self.scan_number;
+            } else {
+                let mut node = IvoxNode::new();
+                node.add(std::iter::once(p));
+                node.newest_hit = self.scan_number;
+                let new_idx = self.add_voxel(hashed, node);
+                self.grid_map.insert(hashed, (grid, new_idx));
+            }
         });
     }
 
@@ -173,11 +208,13 @@ impl IVoxHashMap {
         let mut neighbors = neighboring_buckets
             .iter()
             .filter_map(|g| self.grid_map.get_mut(&(Self::hash(g))))
-            .filter_map(|mut hash_node| {
-                let n = hash_node
-                    .value_mut()
-                    .1
-                    .linear_knn(query, k, max_range, self.scan_number);
+            .filter_map(|hash_node| {
+                let n = self.buffer[hash_node.value().1].1.linear_knn(
+                    query,
+                    k,
+                    max_range,
+                    self.scan_number,
+                );
                 if n.is_empty() {
                     None
                 } else {
@@ -293,31 +330,31 @@ impl IVoxHashMap {
         hash
     }
 
-    // TODO to list taht moves newest used data to the front and pointing from inode to the cache and back. if all points from the inode are removed, remove entire inode.
-    pub fn remove_cold_voxels(&mut self, threshold: usize) {
-        let keys = self
-            .grid_map
-            .iter()
-            .map(|entry| *entry.key())
-            .collect::<Vec<_>>();
-
-        keys.into_iter().for_each(|key| {
-            self.grid_map
-                .remove_if(&key, |_, node| node.1.newest_hit > threshold);
-        });
-    }
-
     pub fn clear(&mut self) {
         self.grid_map.clear();
     }
 
     /// Mostly for testing purposes, is not efficient
     pub fn get_entire_map(&self) -> Vec<PointXYZ> {
-        self.grid_map
-            .iter()
-            .map(|entry| entry.value().1.points.clone())
-            .flatten()
-            .collect()
+        if self.buffer_init_full {
+            return self
+                .buffer
+                .iter()
+                .map(|node| node.1.points.clone())
+                .flatten()
+                .collect();
+        } else {
+            let mut out = Vec::with_capacity(self.buffer_current_idx);
+            for i in 0..self.buffer_current_idx {
+                let node = &self.buffer[i];
+                let points = &node.1.points;
+                if !points.is_empty() {
+                    out.extend(points.clone());
+                }
+            }
+
+            return out;
+        }
     }
 }
 

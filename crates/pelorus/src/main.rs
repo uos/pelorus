@@ -8,7 +8,7 @@ use r2r::{
     sensor_msgs::msg::PointCloud2,
     std_msgs::msg::Header,
     visualization_msgs::msg::Marker,
-    RosParams,
+    QosProfile, RosParams,
 };
 
 use either::*;
@@ -317,6 +317,7 @@ fn lio() -> Result<(), Box<dyn std::error::Error>> {
         config.map_frame.clone()
     };
 
+    let map_publisher = node.create_publisher::<PointCloud2>("map", QosProfile::default())?;
     let cloud_publisher =
         node.create_publisher::<PointCloud2>("registered", config.registered_cloud_qos)?;
     let odom_publisher = node.create_publisher::<Odometry>("odom", config.odom_qos)?;
@@ -668,6 +669,16 @@ fn lio() -> Result<(), Box<dyn std::error::Error>> {
             });
 
             dbg!(&tf);
+
+            //#[cfg(debug_assertions)]
+            {
+                let total_map = map.lock().unwrap().get_entire_map();
+                let mut total_map = PointCloud2Msg::try_from_vec(total_map).unwrap();
+                total_map.header.frame_id = map_frame.clone();
+                map_publisher
+                    .publish(&total_map.into())
+                    .expect("Failed to publish map");
+            }
 
             tf_broadcaster
                 .send_transform(tf)
