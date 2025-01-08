@@ -91,19 +91,16 @@ impl SFasterLio {
         }
     }
 
-    fn add_to_map(&mut self, cloud: &[PointXYZ], pose: Isometry3<f64>, initial: bool) {
-        self.map.add(
-            cloud.iter().map(|point| {
-                let p = nalgebra::Point3::new(point.x as f64, point.y as f64, point.z as f64);
-                let global = pose.transform_point(&p);
-                PointXYZ {
-                    x: global.x as f32,
-                    y: global.y as f32,
-                    z: global.z as f32,
-                }
-            }),
-            initial,
-        );
+    fn add_to_map(&mut self, cloud: &[PointXYZ], pose: Isometry3<f64>) {
+        self.map.add(cloud.iter().map(|point| {
+            let p = nalgebra::Point3::new(point.x as f64, point.y as f64, point.z as f64);
+            let global = pose.transform_point(&p);
+            PointXYZ {
+                x: global.x as f32,
+                y: global.y as f32,
+                z: global.z as f32,
+            }
+        }));
     }
 
     // Just for debugging! Really slow.
@@ -117,16 +114,15 @@ impl SFasterLio {
 
     // https://www.ilikebigbits.com/2017_09_25_plane_from_points_2.html
     fn plane_from_points(points: &[PointXYZ], error_threshold: f64) -> Option<[f64; 4]> {
+        let points = points.iter().map(|p| p.xyz_f64()).collect::<Vec<_>>();
         let n = points.len();
         if n < 3 {
             return None;
         }
 
-        let points_vec = points.iter().map(|p| p.xyz_f64().coords);
-
         let mut sum = Vector3::new(0.0, 0.0, 0.0);
-        for p in points_vec.clone() {
-            sum = &sum + p;
+        for p in points.iter() {
+            sum = sum + Vector3::new(p.x, p.y, p.z);
         }
         let centroid = &sum * (1.0 / (n as f64));
 
@@ -138,8 +134,8 @@ impl SFasterLio {
         let mut yz = 0.0;
         let mut zz = 0.0;
 
-        for p in points_vec {
-            let r = &p - centroid;
+        for p in points.iter() {
+            let r = p - centroid;
             xx += r.x * r.x;
             xy += r.x * r.y;
             xz += r.x * r.z;
@@ -242,13 +238,14 @@ impl crate::Registration for SFasterLio {
         }
     }
 
-    // TODO add flag to enable normal cloud output
     fn register_and_map(
         &mut self,
         cloud: &[PointXYZ],
-        initial_guess: &Isometry3<f64>,
+        _initial_guess: &Isometry3<f64>,
     ) -> anyhow::Result<crate::CloudRegisterResult> {
         let normal_cloud = Arc::new(Mutex::new(None));
+        let neighbors = Arc::new(Mutex::new(None));
+        let first_it = Arc::new(Mutex::new(true));
         if !self.map.is_empty() {
             let map = &mut self.map;
             let k = self.k_neighbors;
@@ -256,6 +253,7 @@ impl crate::Registration for SFasterLio {
             let extrinsic_estimation = self.imu_lidar_extrinsic_calibration_optimization;
 
             let normal_cloud_in_ekf = normal_cloud.clone();
+            let neighbors_cloud_in_ekf = neighbors.clone();
             self.ekf.correct(
                 self.laser_point_noise_cov,
                 self.ekf_max_iterations,
@@ -266,35 +264,62 @@ impl crate::Registration for SFasterLio {
                       h: &mut DVector<f64>,
                       h_x: &mut DMatrix<f64>,
                       extrinsic_estimation| {
-                    //dbg!(cloud.len());
-
-                    //let initial_guess = Isometry3::identity();
                     // todo init optional, else ekf
                     let rot = Rotation3::from_matrix(&ekf_state.rot.matrix());
                     let quat = UnitQuaternion::from_rotation_matrix(&rot);
                     let initial_guess = Isometry3::from_parts(ekf_state.pos.into(), quat);
 
-                    // Nearest Neighbors to fit planes
-                    let planes = cloud
+                    let first_it_local = { first_it.lock().unwrap().clone() };
+
+                    let mut neighbors = neighbors_cloud_in_ekf
+                        .lock()
+                        .unwrap()
+                        .take()
+                        .unwrap_or(vec![PointXYZ::default(); cloud.len() * k]);
+
+                    // Perf: should never be larger than k because k never changes
+                    if neighbors.len() < cloud.len() * k {
+                        neighbors = vec![PointXYZ::default(); cloud.len() * k];
+                    }
+
+                    let planes: Vec<PointXYZINormal> = cloud
                         .into_iter()
-                        .filter_map(|point_local| {
+                        .enumerate()
+                        .filter_map(|(idx, point_local)| {
                             let point_global =
                                 initial_guess.transform_point(&point_local.xyz_f64());
                             let query_point = PointXYZ::new(
                                 point_global.x as f32,
                                 point_global.y as f32,
                                 point_global.z as f32,
-                            ); // TODO add from<nalgebra::Point3<f64>> etc
-                            let neighbors =
-                                map.k_nearest_neighbor_query(&query_point, k, neighbor_max_range)?;
-                            let plane =
-                                Self::plane_from_points(&neighbors, PLANE_POINT_ERROR_THRESHOLD)?;
+                            );
+
+                            let curr_point_neighbors = &mut neighbors[idx * k..(idx + 1) * k];
+                            debug_assert!(curr_point_neighbors.len() == k);
+
+                            // Safety: converged is always true in the first iteration so the neighbors have been populated
+                            let out_size = &mut 0;
+                            if first_it_local || converged {
+                                if !map.k_nearest_neighbor_query(
+                                    &query_point,
+                                    k,
+                                    neighbor_max_range,
+                                    curr_point_neighbors,
+                                    out_size,
+                                ) {
+                                    return None;
+                                }
+                            }
+
+                            let plane = Self::plane_from_points(
+                                &curr_point_neighbors,
+                                PLANE_POINT_ERROR_THRESHOLD,
+                            )?;
 
                             let pd2 = plane[0] * point_global.x
                                 + plane[1] * point_global.y
                                 + plane[2] * point_global.z
                                 + plane[3];
-                            //dbg!(pd2);
                             let s =
                                 1.0 - 0.9 * pd2.abs() / point_local.xyz_f64().coords.norm().sqrt();
 
@@ -314,21 +339,23 @@ impl crate::Registration for SFasterLio {
                         })
                         .collect::<Vec<_>>();
 
-                    dbg!(planes.len());
+                    // put neighbors back
+                    neighbors_cloud_in_ekf.lock().unwrap().replace(neighbors);
+
+                    *first_it.lock().unwrap() = false;
 
                     if planes.is_empty() {
                         *valid = false;
                         return;
                     }
 
-                    // TODO reuse
-                    //if planes.len() > h.nrows() {
-                    *h = DVector::<f64>::zeros(planes.len());
-                    //}
+                    if planes.len() > h.nrows() {
+                        *h = DVector::<f64>::zeros(planes.len());
+                    }
 
-                    //if planes.len() > h_x.nrows() {
-                    *h_x = DMatrix::<f64>::zeros(planes.len(), 12);
-                    //}
+                    if planes.len() > h_x.nrows() {
+                        *h_x = DMatrix::<f64>::zeros(planes.len(), 12);
+                    }
 
                     // TODO (AS REF) if converge, do use old planes/neighbors since it is likely to be the same
 
@@ -391,15 +418,7 @@ impl crate::Registration for SFasterLio {
                                 h_x_row[11] = 0.0;
                             }
 
-                            /*dbg!(h_x_row[0]);
-                            dbg!(h_x_row[1]);
-                            dbg!(h_x_row[2]);
-                            dbg!(h_x_row[3]);
-                            dbg!(h_x_row[4]);
-                            dbg!(h_x_row[5]);*/
-
-                            h_row[0] = -nearest_plane[3]; // / 10.0; // TODO ist zu gross, aber warum?
-                                                          //dbg!(h_row[0]);
+                            h_row[0] = -nearest_plane[3];
                         });
 
                     let mut glob = normal_cloud_in_ekf.lock().unwrap();
@@ -418,15 +437,9 @@ impl crate::Registration for SFasterLio {
             )),
         );
 
-        // localmap cache
-        // TODO WAAAAAAY to sloow > 10-50ms
-        //self.map.remove_cold_voxels(600);
-
         //let start_stamp = std::time::Instant::now();
-        self.add_to_map(cloud, global_pose, self.map.is_empty());
+        self.add_to_map(cloud, global_pose);
         //dbg!(start_stamp.elapsed());
-
-        //dbg!(self.map.get_entire_map().len());
 
         let out_cloud = normal_cloud.lock().unwrap().take();
 

@@ -365,7 +365,6 @@ fn lio() -> Result<(), Box<dyn std::error::Error>> {
 
     std::thread::spawn(move || {
         while let Ok(lifis_tick) = synced_rx.recv() {
-            dbg!("--- received lifis tick ---");
             eval.start("total").unwrap();
             //eval.merge(&lifis_tick.runtime_eval);
 
