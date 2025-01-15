@@ -209,6 +209,7 @@ impl crate::Registration for SFasterLio {
         cloud_begin_time: f64,
         cloud_end_time: f64,
         cloud: &[prelio::PointXYZT],
+        lidar_vendor: Option<prelio::LidarVendor>,
     ) -> Vec<PointXYZ> {
         self.imu_processing.undistort(
             &mut self.ekf,
@@ -217,6 +218,7 @@ impl crate::Registration for SFasterLio {
             cloud_begin_time,
             cloud_end_time,
             cloud,
+            lidar_vendor,
         )
     }
 

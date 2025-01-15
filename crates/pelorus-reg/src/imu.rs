@@ -286,14 +286,16 @@ impl ImuProcessing {
         cloud_begin_time: f64,
         mut cloud_end_time: f64,
         cloud: &[prelio::PointXYZT],
+        lidar_vendor: Option<prelio::LidarVendor>,
     ) -> Vec<crate::PointXYZ> {
         assert!(!imu_msgs.is_empty());
         assert!(last_cloud_end_time > 0.0);
         assert!(cloud_begin_time > 0.0);
         assert!(cloud_end_time > 0.0);
 
-        // TODO robosense
-        //cloud_end_time += cloud_begin_time;
+        if !matches!(lidar_vendor, Some(prelio::LidarVendor::Robosense)) {
+            cloud_end_time += cloud_begin_time;
+        }
 
         const GRAVITY: f64 = 9.81; // TODO PARAM
 

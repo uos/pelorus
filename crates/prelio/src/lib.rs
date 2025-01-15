@@ -29,6 +29,56 @@ pub type ImuPredictorUndistort = dyn for<'a> Fn(
     ) -> Either<ImuPosePrediction, (Isometry3<f64>, Vec<PointXYZ>)>
     + Send;
 
+#[derive(Debug, Clone, Default)]
+pub enum LidarVendor {
+    /// microseconds
+    Velodyne,
+
+    /// nanoseconds
+    #[default]
+    Ouster,
+
+    /// microseconds?
+    Robosense,
+
+    // microseconds, TODO the driver currently does not publish timestamp per point in PointCloud2, only in custom messages
+    //Livox,
+    Skip,
+}
+
+#[derive(Debug, Clone)]
+pub enum LidarParseError {
+    UnknownVendor,
+}
+
+impl std::fmt::Display for LidarParseError {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        match self {
+            LidarParseError::UnknownVendor => write!(
+                f,
+                "Unknown LiDAR vendor, can not assume per point timestamp format"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for LidarParseError {}
+
+impl FromStr for LidarVendor {
+    type Err = LidarParseError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "velodyne" => Ok(LidarVendor::Velodyne),
+            "robosense" => Ok(LidarVendor::Robosense),
+            "ouster" => Ok(LidarVendor::Ouster),
+            //"livox" => Ok(LidarVendor::Livox),
+            "skip" => Ok(LidarVendor::Skip),
+            _ => Err(LidarParseError::UnknownVendor),
+        }
+    }
+}
+
 struct ImuMadgwick {
     fusion: imu_fusion::FusionAhrs,
     gravity: f64,
@@ -410,6 +460,7 @@ impl Lifis {
         params: &config::LifisParameters,
         imu_pose_prediction_undistort: Option<Box<ImuPredictorUndistort>>,
         imu_pose_prediction_init_guess: Option<Box<ImuPredictor>>,
+        lidar_vendor: Option<LidarVendor>,
     ) -> anyhow::Result<Self> {
         let imu_intrinsic_calibration = match imu_intrinsic_calibration_params {
             Some(imu_intrinsic_calibration) => {
@@ -447,6 +498,7 @@ impl Lifis {
                 &undistort_params,
                 imu_pose_prediction_undistort,
                 imu_pose_prediction_init_guess,
+                lidar_vendor.clone(),
             )
         });
 
@@ -610,30 +662,27 @@ impl Lifis {
         undistort_parameters: &config::UndistortParameters,
         imu_pose_prediction_undistort: Option<Box<ImuPredictorUndistort>>,
         imu_pose_prediction_init_guess: Option<Box<ImuPredictor>>,
+        lidar_vendor: Option<LidarVendor>,
     ) {
         let mut to_next: Option<ImuMsg> = None;
         while let Ok((cloud, lidar_begin_time, lidar_end_time, lidar_header)) =
             lidar_receiver.recv()
         {
-            dbg!(lidar_begin_time);
             let lidar_time = timestamp_to_secs(&lidar_header.stamp);
-            // TODO ouster has relative times, robosense not //let lidar_begin_time = lidar_begin_time + lidar_time;
+
+            // handle relative vs absolute timestamps
+            let (lidar_begin_time, imu_span_end_time) =
+                if matches!(lidar_vendor, Some(LidarVendor::Robosense)) {
+                    (lidar_begin_time, lidar_end_time)
+                } else {
+                    (lidar_begin_time + lidar_time, lidar_end_time + lidar_time)
+                };
+
             let imu_span_start_time = if *prev_lidar_end_time > 0.0 {
                 *prev_lidar_end_time
             } else {
                 lidar_begin_time
             };
-
-            // TODO same
-            // let imu_span_end_time = lidar_end_time + lidar_time;
-            let imu_span_end_time = lidar_end_time;
-
-            dbg!(
-                lidar_time,
-                lidar_begin_time,
-                imu_span_start_time,
-                imu_span_end_time
-            );
 
             let mut imu_data = Vec::with_capacity(100);
 

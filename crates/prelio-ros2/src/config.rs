@@ -1,9 +1,7 @@
-use std::str::FromStr;
-
 use prelio::config::LifisParameters;
 use r2r::RosParams;
 
-#[derive(RosParams, Debug)]
+#[derive(RosParams, Debug, Clone)]
 pub struct ConfigParse {
     pub verbose: bool,
     pub aabb_min_x: f32,
@@ -42,56 +40,6 @@ pub struct ConfigParse {
     pub lidar_to_imu_pose_pitch: f64,
     pub lidar_to_imu_pose_yaw: f64,
     pub madgwick_filter: String, // CreateOrientationOnly, FilterAccelerationOnly, FilterAccelerationAndCreateOrientation, Disable
-}
-
-#[derive(Debug, Clone, Default)]
-pub enum LidarVendor {
-    /// microseconds
-    Velodyne,
-
-    /// nanoseconds
-    #[default]
-    Ouster,
-
-    /// microseconds?
-    Robosense,
-
-    // microseconds, TODO the driver currently does not publish timestamp per point in PointCloud2, only in custom messages
-    //Livox,
-    Skip,
-}
-
-#[derive(Debug, Clone)]
-pub enum LidarParseError {
-    UnknownVendor,
-}
-
-impl std::fmt::Display for LidarParseError {
-    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-        match self {
-            LidarParseError::UnknownVendor => write!(
-                f,
-                "Unknown LiDAR vendor, can not assume per point timestamp format"
-            ),
-        }
-    }
-}
-
-impl std::error::Error for LidarParseError {}
-
-impl FromStr for LidarVendor {
-    type Err = LidarParseError;
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        match s {
-            "velodyne" => Ok(LidarVendor::Velodyne),
-            "robosense" => Ok(LidarVendor::Robosense),
-            "ouster" => Ok(LidarVendor::Ouster),
-            //"livox" => Ok(LidarVendor::Livox),
-            "skip" => Ok(LidarVendor::Skip),
-            _ => Err(LidarParseError::UnknownVendor),
-        }
-    }
 }
 
 impl Default for ConfigParse {
