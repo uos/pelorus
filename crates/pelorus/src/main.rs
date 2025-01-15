@@ -1,4 +1,4 @@
-use log::{error, info, warn};
+use log::warn;
 use nalgebra::{Isometry3, Translation3};
 use r2r::{
     builtin_interfaces::msg::Time,
@@ -12,14 +12,17 @@ use r2r::{
 };
 
 use either::*;
-use prelio_ros2::tf::TfBroadcaster;
+use prelio_ros2::{prelio, tf::TfBroadcaster};
 use rand::Rng;
 
 use pelorus_reg::{sfasterlio::SFasterLio, Registration};
 use prelio_ros2::{prelio::imu::ImuMsg, LifisNode};
 use ros_pointcloud2::prelude::*;
 //use small_gicp_sys::*;
-use std::sync::{Arc, Mutex};
+use std::{
+    str::FromStr,
+    sync::{Arc, Mutex},
+};
 
 pub fn timestamp_to_secs(t: &TimeMsg) -> f64 {
     t.sec as f64 + t.nanosec as f64 / 1_000_000_000.0
@@ -224,9 +227,19 @@ fn lio() -> Result<(), Box<dyn std::error::Error>> {
         }))
     };
 
-    let (mut lifis_node, synced_rx) = LifisNode::create(
+    let (mut lifis_node, prelio_config) = LifisNode::init_node("prelio", "")?;
+
+    let (lidar_vendor, map_frame) = {
+        let config = prelio_config.lock().unwrap();
+        let lidar_vendor = prelio::LidarVendor::from_str(&config.lidar_vendor)
+            .expect("validity checked in lifis_ros2");
+        (lidar_vendor, config.map_frame.clone())
+    };
+
+    let (_, synced_rx) = LifisNode::initialize(
+        &mut lifis_node,
+        prelio_config.clone(),
         prelio_ros2::LifisNodeParameters {
-            node_name: "lifis",
             imu_qos: config.imu_qos,
             cloud_qos: config.lidar_qos,
             ..Default::default()
@@ -281,9 +294,8 @@ fn lio() -> Result<(), Box<dyn std::error::Error>> {
                         cloud_begin_time,
                         cloud_end_time,
                         cloud,
+                        Some(lidar_vendor.clone()),
                     );
-
-                    //dbg!(&cloud_undistorted);
 
                     let pose = map.get_state().pose.clone();
 
@@ -310,12 +322,6 @@ fn lio() -> Result<(), Box<dyn std::error::Error>> {
             ))
         },
     )?;
-
-    let map_frame = {
-        let lnode = lifis_node.state.lock().unwrap();
-        let config = lnode.config.lock().unwrap();
-        config.map_frame.clone()
-    };
 
     let map_publisher = node.create_publisher::<PointCloud2>("map", QosProfile::default())?;
     let cloud_publisher =

@@ -1,6 +1,7 @@
 mod config;
 pub mod tf;
 
+use config::ConfigParse;
 use log::info;
 
 pub use prelio;
@@ -133,6 +134,7 @@ pub struct State {
     pub lifis: Arc<Mutex<prelio::Lifis>>,
     pub lifis_params: prelio::config::LifisParameters,
     take_nth_scan: usize,
+    pub lidar_vendor: prelio::LidarVendor,
 }
 
 impl State {
@@ -156,7 +158,7 @@ impl State {
                     }),
                 },
                 MadgwickSetting::from_str(&config.madgwick_filter)?,
-                config::LidarVendor::from_str(&config.lidar_vendor)?,
+                prelio::LidarVendor::from_str(&config.lidar_vendor)?,
             )
         };
 
@@ -168,7 +170,7 @@ impl State {
             imu_tf: None,
             config,
             lifis: match lidar_vendor {
-                config::LidarVendor::Velodyne => {
+                prelio::LidarVendor::Velodyne => {
                     Arc::new(Mutex::new(prelio::Lifis::create::<5, VelodynePoint>(
                         gravity,
                         madgwick_filter,
@@ -176,9 +178,10 @@ impl State {
                         &lifis_params,
                         imu_pose_prediction_undistort,
                         imu_pose_prediction_init_guess,
+                        Some(lidar_vendor.clone()),
                     )?))
                 }
-                config::LidarVendor::Robosense => {
+                prelio::LidarVendor::Robosense => {
                     Arc::new(Mutex::new(prelio::Lifis::create::<6, RobosensePoint>(
                         gravity,
                         madgwick_filter,
@@ -186,9 +189,10 @@ impl State {
                         &lifis_params,
                         imu_pose_prediction_undistort,
                         imu_pose_prediction_init_guess,
+                        Some(lidar_vendor.clone()),
                     )?))
                 }
-                config::LidarVendor::Ouster => {
+                prelio::LidarVendor::Ouster => {
                     Arc::new(Mutex::new(prelio::Lifis::create::<4, OusterPoint>(
                         gravity,
                         madgwick_filter,
@@ -196,9 +200,10 @@ impl State {
                         &lifis_params,
                         imu_pose_prediction_undistort,
                         imu_pose_prediction_init_guess,
+                        Some(lidar_vendor.clone()),
                     )?))
                 }
-                config::LidarVendor::Skip => {
+                prelio::LidarVendor::Skip => {
                     Arc::new(Mutex::new(prelio::Lifis::create::<3, SkipPoint>(
                         gravity,
                         madgwick_filter,
@@ -206,11 +211,13 @@ impl State {
                         &lifis_params,
                         imu_pose_prediction_undistort,
                         imu_pose_prediction_init_guess,
+                        Some(lidar_vendor.clone()),
                     )?))
                 }
             },
             lifis_params,
             take_nth_scan: N_NTH_SCAN,
+            lidar_vendor,
         })
     }
 }
@@ -474,15 +481,12 @@ fn cloud_callback(
 }
 
 pub struct LifisNode {
-    pub node: r2r::Node,
     pub state: Arc<std::sync::Mutex<State>>,
     pub tf_listener: Arc<tf::TfListener>,
     pub logger: String,
 }
 
 pub struct LifisNodeParameters {
-    pub node_name: &'static str,
-    pub node_namespace: &'static str,
     pub cloud_src_topic: &'static str,
     pub imu_src_topic: &'static str,
     pub polygon_src_topic: &'static str,
@@ -502,8 +506,6 @@ pub struct LifisNodeParameters {
 impl Default for LifisNodeParameters {
     fn default() -> Self {
         LifisNodeParameters {
-            node_name: "lifis-ros",
-            node_namespace: "",
             cloud_src_topic: "cloud",
             imu_src_topic: "imu",
             polygon_src_topic: "polygon",
@@ -531,19 +533,29 @@ pub struct LifisTick {
 }
 
 impl LifisNode {
-    pub fn create(
+    pub fn init_node(
+        node_name: &str,
+        node_namespace: &str,
+    ) -> anyhow::Result<(r2r::Node, Arc<Mutex<ConfigParse>>)> {
+        let config = Arc::new(std::sync::Mutex::new(config::ConfigParse::default()));
+        let ctx = r2r::Context::create()?;
+        let mut node = r2r::Node::create(ctx, node_name, node_namespace)?;
+        let (_, _) = node.make_derived_parameter_handler(config.clone())?;
+
+        Ok((node, config))
+    }
+
+    pub fn initialize(
+        node: &mut r2r::Node,
+        config: Arc<std::sync::Mutex<ConfigParse>>,
         params: LifisNodeParameters,
         imu_pose_predictor_init: Option<Arc<Mutex<dyn FnMut(&[ImuMsg]) + Send + Sync>>>,
         imu_pose_prediction_undistort: Option<Box<prelio::ImuPredictorUndistort>>,
         imu_pose_prediction_init_guess: Option<Box<prelio::ImuPredictor>>,
     ) -> anyhow::Result<(Self, std::sync::mpsc::Receiver<LifisTick>)> {
-        let config = Arc::new(std::sync::Mutex::new(config::ConfigParse::default()));
-        let ctx = r2r::Context::create()?;
-        let mut node = r2r::Node::create(ctx, params.node_name, params.node_namespace)?;
         let logger_prefix = params.logger_prefix;
-        let (_, _) = node.make_derived_parameter_handler(config.clone())?;
 
-        let tf_listener = Arc::new(tf::TfListener::new(&mut node));
+        let tf_listener = Arc::new(tf::TfListener::new(node));
 
         let state = State::new(
             config.clone(),
@@ -790,17 +802,12 @@ impl LifisNode {
 
         Ok((
             Self {
-                node,
                 state,
                 tf_listener,
                 logger: logger_prefix.to_string(),
             },
             rx,
         ))
-    }
-
-    pub fn spin_once(&mut self, timeout: std::time::Duration) {
-        self.node.spin_once(timeout);
     }
 
     pub fn transform(

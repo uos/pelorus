@@ -58,5 +58,6 @@ pub trait Registration {
         cloud_begin_time: f64,
         cloud_end_time: f64,
         cloud: &[prelio::PointXYZT],
+        lidar_vendor: Option<prelio::LidarVendor>,
     ) -> Vec<PointXYZ>;
 }
