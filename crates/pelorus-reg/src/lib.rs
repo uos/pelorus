@@ -5,6 +5,7 @@ pub mod imu;
 mod localmap;
 pub mod sfasterlio;
 pub mod sophus_ekf;
+use anyhow::Result;
 pub use spole::*;
 
 #[derive(Clone, Default, Debug, PartialEq)]
@@ -42,12 +43,29 @@ impl Default for ImuEkfPrediction {
     }
 }
 
+pub type CudaBuffer<T> = (std::ptr::NonNull<T>, usize);
+pub type RamBuffer<T> = Vec<T>;
+pub enum LocatedBufferView<T> {
+    Ram(RamBuffer<T>),
+    Cuda(CudaBuffer<T>),
+}
+pub type PointXYZLocatedBufferView = LocatedBufferView<PointXYZ>;
+pub enum Mode {
+    ActiveRegistration {
+        cloud: PointXYZLocatedBufferView,
+        initial_guess: Isometry3<f64>,
+    },
+    MappingOnly {
+        cloud: PointXYZLocatedBufferView,
+        relative_registered_pose: Isometry3<f64>,
+    },
+    Inactive,
+}
+
 pub trait Registration {
-    fn register_and_map(
-        &mut self,
-        cloud: &[PointXYZ],
-        initial_guess: &Isometry3<f64>,
-    ) -> anyhow::Result<CloudRegisterResult>;
+    fn register_and_map(&mut self, data: Mode) -> Result<CloudRegisterResult>;
+    fn requested_register_and_map_cloud_type(&self) -> PointXYZLocatedBufferView;
+
     fn imu_ekf_predict(&mut self, acc: [f64; 3], gyro: [f64; 3], dt: f64) -> ImuEkfPrediction;
     fn init_imu_ekf(&mut self, message_buffer: &[ImuMsg]) -> Vector3<f64>;
     fn get_state(&self) -> ImuEkfPrediction;
