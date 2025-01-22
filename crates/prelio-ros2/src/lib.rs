@@ -2,7 +2,6 @@ mod config;
 pub mod tf;
 
 use config::ConfigParse;
-use log::info;
 
 pub use prelio;
 
