@@ -4,6 +4,7 @@
 use std::sync::{Arc, Mutex};
 
 use nalgebra::*;
+use rayon::iter::Either;
 use ros_pointcloud2::points::{PointXYZ, PointXYZINormal};
 
 pub use spole::IVoxNearbyType;
@@ -222,6 +223,10 @@ impl crate::Registration for SFasterLio {
         )
     }
 
+    fn requested_register_and_map_cloud_type(&self) -> crate::PointXYZLocatedBufferView {
+        return crate::LocatedBufferView::Ram(Vec::new());
+    }
+
     fn get_state(&self) -> crate::ImuEkfPrediction {
         crate::ImuEkfPrediction {
             pose: Isometry3::from_parts(
@@ -242,9 +247,23 @@ impl crate::Registration for SFasterLio {
 
     fn register_and_map(
         &mut self,
-        cloud: &[PointXYZ],
-        _initial_guess: &Isometry3<f64>,
+        data: crate::Mode,
     ) -> anyhow::Result<crate::CloudRegisterResult> {
+        let cloud = match data {
+            crate::Mode::ActiveRegistration {
+                cloud,
+                initial_guess,
+            } => match cloud {
+                crate::LocatedBufferView::Ram(cloud) => cloud,
+                crate::LocatedBufferView::Cuda(_) => {
+                    return Err(anyhow::anyhow!("Gave GPU buffer to CPU-only function"))
+                }
+            },
+            _ => return Err(anyhow::anyhow!("Invalid mode")),
+        };
+
+        let cloud = cloud.as_slice(); // TODO use views, not copies after accuracy is done
+
         let normal_cloud = Arc::new(Mutex::new(None));
         let neighbors = Arc::new(Mutex::new(None));
         let first_it = Arc::new(Mutex::new(true));
@@ -285,7 +304,7 @@ impl crate::Registration for SFasterLio {
                     }
 
                     let planes: Vec<PointXYZINormal> = cloud
-                        .into_iter()
+                        .iter()
                         .enumerate()
                         .filter_map(|(idx, point_local)| {
                             let point_global =
@@ -440,7 +459,7 @@ impl crate::Registration for SFasterLio {
         );
 
         //let start_stamp = std::time::Instant::now();
-        self.add_to_map(cloud, global_pose);
+        self.add_to_map(&cloud, global_pose);
         //dbg!(start_stamp.elapsed());
 
         let out_cloud = normal_cloud.lock().unwrap().take();
