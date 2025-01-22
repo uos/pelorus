@@ -135,24 +135,30 @@ fn lerp_color(c1: (f32, f32, f32), c2: (f32, f32, f32), t: f32) -> (f32, f32, f3
     )
 }
 
-/*
-template<typename T>
-auto set_pose6d(const double t, const Matrix<T, 3, 1> &a, const Matrix<T, 3, 1> &g, \
-                const Matrix<T, 3, 1> &v, const Matrix<T, 3, 1> &p, const Matrix<T, 3, 3> &R)
-{
-    Pose6D rot_kp;
-    rot_kp.offset_time = t;
-    for (int i = 0; i < 3; i++)
-    {
-        rot_kp.acc[i] = a(i);
-        rot_kp.gyr[i] = g(i);
-        rot_kp.vel[i] = v(i);
-        rot_kp.pos[i] = p(i);
-        for (int j = 0; j < 3; j++)  rot_kp.rot[i*3+j] = R(i,j);
+fn imu_msg_to_pelorus_reg(m: &ImuMsg) -> pelorus_reg::ImuMsg {
+    pelorus_reg::ImuMsg {
+        timestamp_sec: prelio_ros2::prelio::timestamp_to_secs(&m.stamp),
+        orientation: nalgebra::UnitQuaternion::from_quaternion(nalgebra::Quaternion::new(
+            m.orientation[0],
+            m.orientation[1],
+            m.orientation[2],
+            m.orientation[3],
+        )),
+        angular_velocity: nalgebra::Vector3::new(
+            m.angular_velocity[0],
+            m.angular_velocity[1],
+            m.angular_velocity[2],
+        ),
+        linear_acceleration: nalgebra::Vector3::new(
+            m.linear_acceleration[0],
+            m.linear_acceleration[1],
+            m.linear_acceleration[2],
+        ),
+        orientation_covariance: m.orientation_covariance,
+        angular_velocity_covariance: m.angular_velocity_covariance,
+        linear_acceleration_covariance: m.linear_acceleration_covariance,
     }
-    return move(rot_kp);
 }
-*/
 
 fn lio() -> Result<(), Box<dyn std::error::Error>> {
     let ctx = r2r::Context::create()?;
@@ -193,36 +199,11 @@ fn lio() -> Result<(), Box<dyn std::error::Error>> {
         let map = map.clone();
         let mean_acc = mean_acc.clone();
         Arc::new(Mutex::new(move |msg: &[ImuMsg]| {
-            let msg: Vec<pelorus_reg::ImuMsg> = msg
-                .iter()
-                .map(|m| pelorus_reg::ImuMsg {
-                    timestamp_sec: prelio_ros2::prelio::timestamp_to_secs(&m.stamp),
-                    orientation: nalgebra::UnitQuaternion::from_quaternion(
-                        nalgebra::Quaternion::new(
-                            m.orientation[0],
-                            m.orientation[1],
-                            m.orientation[2],
-                            m.orientation[3],
-                        ),
-                    ),
-                    angular_velocity: nalgebra::Vector3::new(
-                        m.angular_velocity[0],
-                        m.angular_velocity[1],
-                        m.angular_velocity[2],
-                    ),
-                    linear_acceleration: nalgebra::Vector3::new(
-                        m.linear_acceleration[0],
-                        m.linear_acceleration[1],
-                        m.linear_acceleration[2],
-                    ),
-                    orientation_covariance: m.orientation_covariance,
-                    angular_velocity_covariance: m.angular_velocity_covariance,
-                    linear_acceleration_covariance: m.linear_acceleration_covariance,
-                })
-                .collect();
+            let msg: Vec<pelorus_reg::ImuMsg> =
+                msg.iter().map(|m| imu_msg_to_pelorus_reg(m)).collect();
             let mut map = map.lock().unwrap();
             let init_mean_acc = map.init_imu_ekf(&msg);
-            let mut mean_acc = mean_acc.lock().unwrap();
+            let mut mean_acc = mean_acc.lock().expect("only user");
             *mean_acc = Some(init_mean_acc);
         }))
     };
@@ -254,37 +235,13 @@ fn lio() -> Result<(), Box<dyn std::error::Error>> {
                       cloud_begin_time,
                       cloud_end_time,
                       cloud| {
-                    assert!(!imu_msgs.is_empty());
-                    assert!(last_cloud_end_time > 0.0);
-                    assert!(cloud_begin_time > 0.0);
-                    assert!(cloud_end_time > 0.0);
+                    debug_assert!(!imu_msgs.is_empty());
+                    debug_assert!(last_cloud_end_time > 0.0);
+                    debug_assert!(cloud_begin_time > 0.0);
+                    debug_assert!(cloud_end_time > 0.0);
 
                     // TODO why even use different ImuMsg types?
-                    let imus = imu_msgs.iter().map(|m| pelorus_reg::ImuMsg {
-                        timestamp_sec: prelio_ros2::prelio::timestamp_to_secs(&m.stamp),
-                        orientation: nalgebra::UnitQuaternion::from_quaternion(
-                            nalgebra::Quaternion::new(
-                                m.orientation[0],
-                                m.orientation[1],
-                                m.orientation[2],
-                                m.orientation[3],
-                            ),
-                        ),
-                        angular_velocity: nalgebra::Vector3::new(
-                            m.angular_velocity[0],
-                            m.angular_velocity[1],
-                            m.angular_velocity[2],
-                        ),
-                        linear_acceleration: nalgebra::Vector3::new(
-                            m.linear_acceleration[0],
-                            m.linear_acceleration[1],
-                            m.linear_acceleration[2],
-                        ),
-                        orientation_covariance: m.orientation_covariance,
-                        angular_velocity_covariance: m.angular_velocity_covariance,
-                        linear_acceleration_covariance: m.linear_acceleration_covariance,
-                    });
-
+                    let imus = imu_msgs.iter().map(|m| imu_msg_to_pelorus_reg(m));
                     let imus_vec = imus.collect::<Vec<_>>();
 
                     let mut map = map.lock().unwrap();
@@ -435,14 +392,16 @@ fn lio() -> Result<(), Box<dyn std::error::Error>> {
                 nalgebra::Isometry3::from_parts(initial_guess_translation, initial_guess_rotation)
             };
 
-            //dbg!(init_guess);
-
             let init_guess_world = t_world_lidar * init_guess;
 
             eval.start("reg").unwrap();
             let register_pose = {
                 let mut map = map.lock().unwrap();
-                match map.register_and_map(&cloud, &init_guess_world) {
+                let mode = pelorus_reg::Mode::ActiveRegistration {
+                    cloud: pelorus_reg::LocatedBufferView::Ram(cloud.clone()), // TODO remove clone and use view when functionality is done
+                    initial_guess: init_guess_world,
+                };
+                match map.register_and_map(mode) {
                     Ok(pose) => pose,
                     Err(err) => {
                         eval.stop("reg").unwrap();
@@ -451,7 +410,6 @@ fn lio() -> Result<(), Box<dyn std::error::Error>> {
                     }
                 }
             };
-
             eval.stop("reg").unwrap();
 
             //avg_iterations = register_pose.avg_iterations.unwrap_or(0) as f32;
