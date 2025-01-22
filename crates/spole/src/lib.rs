@@ -68,7 +68,7 @@ impl IvoxNode {
         query: &PointXYZ,
         k: usize,
         max_range: f64,
-        scan_number: usize,
+        _scan_number: usize,
     ) -> Vec<PointXYZ> {
         let max_range_sq = max_range.powi(2) as f32;
 

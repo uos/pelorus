@@ -114,20 +114,6 @@ pub struct Esekf {
     pub cov: SMatrix<f64, 24, 24>,
 }
 
-fn state_index_to_reason(index: usize) -> String {
-    match index {
-        0..2 => "pos".to_string(),
-        3..5 => "rot".to_string(),
-        6..8 => "offset_r_l_i".to_string(),
-        9..11 => "offset_t_l_i".to_string(),
-        12..14 => "vel".to_string(),
-        15..17 => "bg".to_string(),
-        18..20 => "ba".to_string(),
-        21..23 => "grav".to_string(),
-        _ => "unknown: ".to_string() + &index.to_string(),
-    }
-}
-
 /// Adding the state and the perturbation, stay on the manifold
 fn box_plus(x: &StateIKFom, f: &SMatrix<f64, 24, 1>) -> StateIKFom {
     let mut x_r = StateIKFom::default();
