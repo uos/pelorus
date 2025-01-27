@@ -6,6 +6,7 @@ before_script:
     - update-locale LC_ALL=en_US.UTF-8 LANG=en_US.UTF-8
     - export LANG=en_US.UTF-8
     - apt-get install software-properties-common rustup curl libclang-dev --assume-yes
+    - rustup default stable
     - cargo install cargo-binstall
     - pip install colcon-ros-cargo --break-system-packages
     - cargo binstall cargo-ament-build -y
