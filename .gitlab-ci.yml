@@ -20,7 +20,7 @@ before_script:
     - git clone https://github.com/stelzo/lifis_msgs.git
     - git clone https://gitlab-ci-token:${CI_JOB_TOKEN}@${CI_SERVER_HOST}/${CI_PROJECT_PATH}.git && cd lio && git checkout $CI_COMMIT_SHA
     - cd ../../
-    - colcon --packages-select lifis_msgs
+    - colcon build --packages-select lifis_msgs
     - source install/local_setup.bash
     - cd src/lio
 
