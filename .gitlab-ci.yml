@@ -1,14 +1,14 @@
 image: "ubuntu:24.04"
 
 before_script:
-    - apt-get update --assume-yes && apt-get install locales --assume-yes
+    - apt-get update --assume-yes && apt-get install locales python3-pip --assume-yes
     - locale-gen en_US en_US.UTF-8
     - update-locale LC_ALL=en_US.UTF-8 LANG=en_US.UTF-8
     - export LANG=en_US.UTF-8
     - apt-get install software-properties-common rustup curl libclang-dev build-essential --assume-yes
     - rustup default stable
     - cargo install cargo-binstall
-    - pip install colcon-ros-cargo --break-system-packages
+    - pip3 install colcon-ros-cargo --break-system-packages
     - cargo binstall cargo-ament-build -y
     - add-apt-repository universe -y
     - apt-get update --assume-yes
