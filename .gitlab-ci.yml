@@ -1,19 +1,19 @@
 image: "ubuntu:24.04"
 
 before_script:
-    - apt-get update --assume-yes && sudo apt-get install locales --assume-yes
+    - apt-get update --assume-yes && apt-get install locales --assume-yes
     - locale-gen en_US en_US.UTF-8
     - update-locale LC_ALL=en_US.UTF-8 LANG=en_US.UTF-8
     - export LANG=en_US.UTF-8
-    - sudo apt-get install software-properties-common rustup curl libclang-dev --assume-yes
+    - apt-get install software-properties-common rustup curl libclang-dev --assume-yes
     - cargo install cargo-binstall
     - pip install colcon-ros-cargo --break-system-packages
     - cargo binstall cargo-ament-build -y
     - add-apt-repository universe -y
     - apt-get update --assume-yes
     - curl -sSL https://raw.githubusercontent.com/ros/rosdistro/master/ros.key -o /usr/share/keyrings/ros-archive-keyring.gpg
-    - echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/ros-archive-keyring.gpg] http://packages.ros.org/ros2/ubuntu $(. /etc/os-release && echo $UBUNTU_CODENAME) main" | sudo tee /etc/apt/sources.list.d/ros2.list > /dev/null
-    - sudo apt-get update --assume-yes && sudo apt-get install ros-dev-tools ros-jazzy-base --assume-yes
+    - echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/ros-archive-keyring.gpg] http://packages.ros.org/ros2/ubuntu $(. /etc/os-release && echo $UBUNTU_CODENAME) main" | tee /etc/apt/sources.list.d/ros2.list > /dev/null
+    - apt-get update --assume-yes && apt-get install ros-dev-tools ros-jazzy-base --assume-yes
     - source /opt/ros/jazzy/install/setup.bash
     - mkdir -p ros2_ws/src && cd ros2_ws/src
     - git clone https://github.com/stelzo/lifis_msgs.git
