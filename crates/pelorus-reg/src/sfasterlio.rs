@@ -4,7 +4,6 @@
 use std::sync::{Arc, Mutex};
 
 use nalgebra::*;
-use rayon::iter::Either;
 use ros_pointcloud2::points::{PointXYZ, PointXYZINormal};
 
 pub use spole::IVoxNearbyType;

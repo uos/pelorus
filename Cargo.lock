@@ -557,7 +557,7 @@ checksum = "d2fabcfbdc87f4758337ca535fb41a6d701b65693ce38287d856d1674551ec9b"
 [[package]]
 name = "gtsam-sys"
 version = "0.1.0"
-source = "git+ssh://git@github.com/stelzo/gtsam-sys.git#059ebe2b4bd07efc42bff34c9e105e50af715fc5"
+source = "git+https://github.com/stelzo/gtsam-sys.git#02beb88a37e187aae461971504a129a337d9d376"
 dependencies = [
  "bindgen 0.69.5",
  "cmake",
