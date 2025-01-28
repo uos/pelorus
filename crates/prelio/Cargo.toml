@@ -21,7 +21,7 @@ either.workspace = true
 imu-fusion.workspace = true
 imu-calib.workspace = true
 
-gtsam-sys = { git = "ssh://git@github.com/stelzo/gtsam-sys.git", optional = true }
+gtsam-sys = { git = "https://github.com/stelzo/gtsam-sys.git", optional = true }
 
 [features]
 gtsam = ["dep:gtsam-sys"]
