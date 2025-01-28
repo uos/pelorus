@@ -2,9 +2,9 @@ use nalgebra::*;
 
 use crate::sophus_ekf::Esekf;
 
-const MAX_INI_COUNT: usize = 10;
-const COV_IMU_RAW_DEFAULT: f64 = 0.0001;
-const COV_IMU_BIAS_DEFAULT: f64 = 0.00001;
+const MAX_INI_COUNT: usize = 100;
+const COV_IMU_RAW_DEFAULT: f64 = 0.001;
+const COV_IMU_BIAS_DEFAULT: f64 = 0.0001;
 
 // Initial state covariance. Changes with prediction (increase) and correction (decrease)
 const COV1: f64 = 0.00001;
@@ -442,7 +442,7 @@ impl ImuProcessing {
             q
         };
 
-        //dbg!(q);
+        // dbg!(q);
 
         if !self.ekf_inited {
             anyhow::bail!("EKF not initialized");

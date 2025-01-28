@@ -1,5 +1,6 @@
+use color_eyre::owo_colors::OwoColorize;
 use log::warn;
-use nalgebra::{Isometry3, Translation3};
+use nalgebra::{Isometry3, Translation3, Vector3};
 use r2r::{
     builtin_interfaces::msg::Time,
     geometry_msgs::msg::{Point, PoseStamped, Quaternion, Transform, TransformStamped},
@@ -69,6 +70,13 @@ pub struct LioConfigParse {
     pub path_qos: String,
     pub map_resolution: f64,
     pub method: String,
+    pub imu_cov_gyr: f64,
+    pub imu_cov_acc: f64,
+    pub imu_cov_gyr_bias: f64,
+    pub imu_cov_acc_bias: f64,
+    pub imu_init_length: u32,
+    pub lidar_odom_cov: f64,
+    pub gravity: f64,
 }
 
 impl Default for LioConfigParse {
@@ -85,6 +93,13 @@ impl Default for LioConfigParse {
             lidar_qos: "sensor".to_string(),
             map_resolution: 0.15,
             method: "sfasterlio_cpu".to_string(),
+            imu_cov_gyr: 0.0001,
+            imu_cov_gyr_bias: 0.00001,
+            imu_cov_acc: 0.0001,
+            imu_cov_acc_bias: 0.00001,
+            imu_init_length: 100,
+            lidar_odom_cov: 0.001,
+            gravity: 9.81,
         }
     }
 }
@@ -100,6 +115,10 @@ pub struct LioConfig {
     pub imu_path_qos: r2r::QosProfile,
     pub path_qos: r2r::QosProfile,
     pub map_resolution: f64,
+    pub imu_params: pelorus_reg::imu::ImuParameters,
+    pub imu_init_length: u32,
+    pub lidar_odom_cov: f64,
+    pub gravity: f64,
 }
 
 fn parse_qos(qos: &str) -> r2r::QosProfile {
@@ -122,6 +141,23 @@ impl From<LioConfigParse> for LioConfig {
             imu_odom_qos: parse_qos(&parse.imu_odom_qos),
             imu_path_qos: parse_qos(&parse.imu_path_qos),
             path_qos: parse_qos(&parse.path_qos),
+            imu_params: pelorus_reg::imu::ImuParameters {
+                cov_acc: Vector3::new(parse.imu_cov_acc, parse.imu_cov_acc, parse.imu_cov_acc),
+                cov_acc_bias: Vector3::new(
+                    parse.imu_cov_acc_bias,
+                    parse.imu_cov_acc_bias,
+                    parse.imu_cov_acc_bias,
+                ),
+                cov_gyr: Vector3::new(parse.imu_cov_gyr, parse.imu_cov_gyr, parse.imu_cov_gyr),
+                cov_gyr_bias: Vector3::new(
+                    parse.imu_cov_gyr_bias,
+                    parse.imu_cov_gyr_bias,
+                    parse.imu_cov_gyr_bias,
+                ),
+            },
+            imu_init_length: parse.imu_init_length,
+            lidar_odom_cov: parse.lidar_odom_cov,
+            gravity: parse.gravity,
         }
     }
 }
@@ -174,21 +210,17 @@ fn lio() -> Result<(), Box<dyn std::error::Error>> {
 
     let tf_broadcaster = TfBroadcaster::new(&mut node);
 
-    let imu_params = pelorus_reg::imu::ImuParameters::default();
-
-    let gravity = 9.81;
-
     //let map = Arc::new(Mutex::new(Map::new(config.map_resolution)));
     let map = Arc::new(Mutex::new(SFasterLio::new(
         config.map_resolution,
-        gravity,
-        &imu_params,
-        0.001,
+        config.gravity,
+        &config.imu_params,
+        config.lidar_odom_cov,
         4,
         5,
         5.0,
         false,
-        Isometry3::identity(),
+        Isometry3::identity(), // TODO params
         pelorus_reg::IVoxNearbyType::Nearby18,
     )));
 

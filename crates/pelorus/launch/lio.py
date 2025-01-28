@@ -22,6 +22,13 @@ def generate_launch_description():
                 { 'imu_qos': 'system_default' }, # for ouster
                 { 'lidar_qos': 'system_default' }, # for ouster
 
+                { 'imu_cov_gyr': 0.0001 },
+                { 'imu_cov_gyr_bias': 0.00001 },
+                { 'imu_cov_acc': 0.0001 },
+                { 'imu_cov_acc_bias': 0.00001 },
+                { 'imu_init_length': 100 },
+
+                # TODO: point_cov constant is param but not yet used as params but still const
                 { 'map_resolution': 0.5 }, # local map resolution
                 { 'voxel_size': 0.05 }, # for downsampling
             ],
