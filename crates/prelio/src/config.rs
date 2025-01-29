@@ -1,6 +1,6 @@
 use nalgebra::*;
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct LifisParameters {
     pub undistort: UndistortParameters,
     pub imu: ImuParameters,
