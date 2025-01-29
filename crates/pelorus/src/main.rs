@@ -1,4 +1,3 @@
-use color_eyre::owo_colors::OwoColorize;
 use log::warn;
 use nalgebra::{Isometry3, Translation3, Vector3};
 use r2r::{
@@ -76,6 +75,7 @@ pub struct LioConfigParse {
     pub imu_cov_acc_bias: f64,
     pub imu_init_length: u32,
     pub lidar_odom_cov: f64,
+    pub enable_live_extrinsic_calibration: bool,
     pub gravity: f64,
 }
 
@@ -100,6 +100,7 @@ impl Default for LioConfigParse {
             imu_init_length: 100,
             lidar_odom_cov: 0.001,
             gravity: 9.81,
+            enable_live_extrinsic_calibration: false,
         }
     }
 }
@@ -118,6 +119,7 @@ pub struct LioConfig {
     pub imu_params: pelorus_reg::imu::ImuParameters,
     pub imu_init_length: u32,
     pub lidar_odom_cov: f64,
+    pub enable_live_extrinsic_calibration: bool,
     pub gravity: f64,
 }
 
@@ -158,6 +160,7 @@ impl From<LioConfigParse> for LioConfig {
             imu_init_length: parse.imu_init_length,
             lidar_odom_cov: parse.lidar_odom_cov,
             gravity: parse.gravity,
+            enable_live_extrinsic_calibration: parse.enable_live_extrinsic_calibration,
         }
     }
 }
@@ -210,7 +213,10 @@ fn lio() -> Result<(), Box<dyn std::error::Error>> {
 
     let tf_broadcaster = TfBroadcaster::new(&mut node);
 
+    dbg!(&config.enable_live_extrinsic_calibration);
+
     //let map = Arc::new(Mutex::new(Map::new(config.map_resolution)));
+    dbg!(config.map_resolution);
     let map = Arc::new(Mutex::new(SFasterLio::new(
         config.map_resolution,
         config.gravity,
@@ -219,7 +225,7 @@ fn lio() -> Result<(), Box<dyn std::error::Error>> {
         4,
         5,
         5.0,
-        false,
+        config.enable_live_extrinsic_calibration,
         Isometry3::identity(), // TODO params
         pelorus_reg::IVoxNearbyType::Nearby18,
     )));

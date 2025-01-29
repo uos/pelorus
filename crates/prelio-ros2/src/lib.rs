@@ -3,16 +3,19 @@ pub mod tf;
 
 use config::ConfigParse;
 
+use nalgebra::Vector3;
 pub use prelio;
 
 use anyhow::anyhow;
 use futures_lite::{future, StreamExt};
-use prelio::config::{ImuCalibrationParameters, LifisParameters};
+use prelio::config::{
+    DownsampleParameters, ImuCalibrationParameters, ImuParameters, LifisParameters,
+    PassthroughFilterParameters, UndistortParameters,
+};
 use prelio::imu::ImuMsg;
 use prelio::{timestamp_to_secs, MadgwickSetting};
 use r2r::geometry_msgs::msg::{
     Point, PolygonStamped, Pose, PoseWithCovariance, Quaternion, Twist, TwistWithCovariance,
-    Vector3,
 };
 use r2r::{
     log_error, log_warn,
@@ -161,7 +164,59 @@ impl State {
             )
         };
 
-        let lifis_params = LifisParameters::default(); // TODO via params
+        let lifis_params = {
+            let config = config.lock().unwrap();
+            LifisParameters {
+                undistort: UndistortParameters {
+                    lidar_to_imu: nalgebra::Isometry3::from_parts(
+                        nalgebra::Translation3::from(Vector3::new(
+                            config.lidar_to_imu_pose_x,
+                            config.lidar_to_imu_pose_y,
+                            config.lidar_to_imu_pose_z,
+                        )),
+                        nalgebra::UnitQuaternion::from_euler_angles(
+                            config.lidar_to_imu_pose_roll,
+                            config.lidar_to_imu_pose_pitch,
+                            config.lidar_to_imu_pose_yaw,
+                        ),
+                    ),
+                },
+                // mainly used by GTSAM integration
+                imu: ImuParameters {
+                    gravity: config.gravity,
+                    accel_noise: 1e-4,
+                    gyro_noise: 1e-4,
+                    accel_bias_noise: 1e-5,
+                    gyro_bias_noise: 1e-5,
+                    integration_noise: 1e-8,
+                    bias_acc: Vector3::new(0.0, 0.0, 0.0), // TODO
+                    bias_gyro: Vector3::new(0.0, 0.0, 0.0), // TODO
+                    imu_lidar_tf_override: config.imu_lidar_tf_override,
+                },
+                downsample: DownsampleParameters {
+                    voxel_size: config.voxel_size,
+                },
+                passthrough_filter: PassthroughFilterParameters {
+                    min: Vector3::new(config.aabb_min_x, config.aabb_min_y, config.aabb_min_z),
+                    max: Vector3::new(config.aabb_max_x, config.aabb_max_y, config.aabb_max_z),
+                    invert_bounding_box: config.invert_aabb,
+                    min_dist: config.min_dist,
+                    max_dist: config.max_dist,
+                    invert_distance: config.invert_distance,
+                    filter_frame_transform: nalgebra::Isometry3::identity(), // TODO
+                    fov_right: config.fov_right,
+                    fov_left: config.fov_left,
+                    forward: nalgebra::Vector2::new(1.0, 0.0), // TODO
+                    enable_horizontal_fov: config.fov_enabled,
+                    polygon: None, // TODO
+                    invert_polygon: config.invert_polygon,
+                    invert_fov: config.invert_fov,
+                    min_intensity: config.min_intensity,
+                    max_intensity: config.max_intensity,
+                    invert_intensity: config.invert_intensity,
+                },
+            }
+        };
 
         Ok(State {
             global_polygon: None,
@@ -834,12 +889,12 @@ impl LifisNode {
 
             let twist = TwistWithCovariance {
                 twist: Twist {
-                    linear: Vector3 {
+                    linear: r2r::geometry_msgs::msg::Vector3 {
                         x: synced_data.end_of_frame_twist.linear.x,
                         y: synced_data.end_of_frame_twist.linear.y,
                         z: synced_data.end_of_frame_twist.linear.z,
                     },
-                    angular: Vector3 {
+                    angular: r2r::geometry_msgs::msg::Vector3 {
                         x: synced_data.end_of_frame_twist.angular.x,
                         y: synced_data.end_of_frame_twist.angular.y,
                         z: synced_data.end_of_frame_twist.angular.z,

@@ -279,6 +279,7 @@ fn filter_downsample<const N: usize, P: PointXYZITimestamp<N>>(
     lifis_params: &config::LifisParameters,
 ) -> Result<Option<(Vec<PointXYZT>, f64, f64, HeaderMsg)>> {
     let header = cloud.header.clone();
+    dbg!(lifis_params.passthrough_filter.min_dist);
     let res = cloud.try_into_par_iter()?.filter(move |point: &P| {
         let params = &lifis_params.passthrough_filter;
         let p_t = params.filter_frame_transform * point.xyz();

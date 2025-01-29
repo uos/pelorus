@@ -244,8 +244,8 @@ impl Esekf {
                 kh
             };
             // avg of all k
-            let k_avg = k.iter().sum::<f64>() / k.len() as f64;
-            let h_avg = h.iter().sum::<f64>() / h.len() as f64;
+            //let k_avg = k.iter().sum::<f64>() / k.len() as f64;
+            //let h_avg = h.iter().sum::<f64>() / h.len() as f64;
 
             let khh = &k * &h;
             let state_update = k * &h + (kh - SMatrix::<f64, 24, 24>::identity()) * dx_new;
