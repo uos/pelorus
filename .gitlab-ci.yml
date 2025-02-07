@@ -36,10 +36,10 @@ rust-nightly:
   script:
     - rustup target add $RUST_TARGET
     - RUSTFLAGS="-C target-feature=+crt-static" cargo build --target $RUST_TARGET --features mimalloc --release
-    - mv target/$RUST_TARGET/release/pelorus pelorus-$RUST_TARGET
+    - mv target/$RUST_TARGET/release/pelorus pelorus-$TRIPLE
   artifacts:
     paths:
-      - pelorus-$RUST_TARGET
+      - pelorus-$TRIPLE
   rules:
     - if: '$CI_COMMIT_BRANCH == "dev"'
 
