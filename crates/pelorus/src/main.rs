@@ -1,3 +1,10 @@
+#[cfg(feature = "mimalloc")]
+use mimalloc::MiMalloc;
+
+#[global_allocator]
+#[cfg(feature = "mimalloc")]
+static GLOBAL: MiMalloc = MiMalloc;
+
 use futures_lite::future;
 use log::{error, info};
 use nalgebra::{Isometry3, Translation3};
@@ -148,6 +155,7 @@ fn lio() -> Result<(), Box<dyn std::error::Error>> {
     )?;
 
     // TODO add config path via CLI (clap)
+    // also make option to export default config to file
     let config = read_config("config.toml");
     let config = match config {
         Err(e) => {

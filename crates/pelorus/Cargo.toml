@@ -21,11 +21,15 @@ ros2-interfaces-jazzy.workspace = true
 serde.workspace = true
 toml.workspace = true
 futures-lite.workspace = true
+mimalloc = { version = "0.1.43", optional = true }
 
 #[build-dependencies]
 #bindgen = "0.69"
 #cc = "1"
 #pkg-config = "0.3"
+
+[features]
+mimalloc = ["dep:mimalloc"]
 
 [profile.release]
 lto = true          # Link Time Optimization
