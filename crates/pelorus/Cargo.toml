@@ -1,6 +1,6 @@
 [package]
 name = "pelorus"
-description = "LiDAR Odometry"
+description = "Lidar Inertial Odometry"
 version = "0.1.0"
 edition = "2021"
 
@@ -22,6 +22,7 @@ serde.workspace = true
 toml.workspace = true
 futures-lite.workspace = true
 mimalloc = { version = "0.1.43", optional = true }
+clap = { version = "4.5.28", features = ["derive"] }
 
 #[build-dependencies]
 #bindgen = "0.69"

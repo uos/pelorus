@@ -5,6 +5,7 @@ use mimalloc::MiMalloc;
 #[cfg(feature = "mimalloc")]
 static GLOBAL: MiMalloc = MiMalloc;
 
+use clap::{command, Parser, Subcommand};
 use futures_lite::future;
 use log::{error, info};
 use nalgebra::{Isometry3, Translation3};
@@ -142,7 +143,36 @@ where
     Ok(config)
 }
 
-fn lio() -> Result<(), Box<dyn std::error::Error>> {
+#[derive(Debug, Clone, Parser)]
+pub struct ConfigArgs {
+    #[arg(short, long, default_value = "lio.toml")]
+    pub config_path: String,
+}
+
+#[derive(Debug, Clone, Parser)]
+pub enum ConfigCommand {
+    Init(ConfigArgs),
+    Test(ConfigArgs),
+}
+
+#[derive(Debug, Clone, Subcommand)]
+#[command()]
+pub enum Command {
+    Ros(ConfigArgs),
+
+    //#[command(visible_alias = "w")]
+    #[command(subcommand)]
+    Config(ConfigCommand),
+}
+
+#[derive(Parser, Debug)]
+#[command(version, about, long_about = None)]
+struct Args {
+    #[command(subcommand)]
+    pub command: Command,
+}
+
+fn ros(config_path: &str) -> Result<(), Box<dyn std::error::Error>> {
     // TODO add logging file
     // log4rs::init_file("examples/async_listener/log4rs.yaml", Default::default()).unwrap();
 
@@ -156,7 +186,7 @@ fn lio() -> Result<(), Box<dyn std::error::Error>> {
 
     // TODO add config path via CLI (clap)
     // also make option to export default config to file
-    let config = read_config("config.toml");
+    let config = read_config(config_path);
     let config = match config {
         Err(e) => {
             if let Some(io_err) = e.downcast_ref::<std::io::Error>() {
@@ -171,8 +201,6 @@ fn lio() -> Result<(), Box<dyn std::error::Error>> {
         }
         Ok(cfg) => cfg,
     };
-
-    // TODO set prelio_ros2 params from outside from total config. don't let prelio_ros2 search for the paramters itself
 
     let tf_broadcaster = TfBroadcaster::new(&mut node);
 
@@ -764,16 +792,32 @@ fn lio() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-#[cfg(debug_assertions)]
+/*#[cfg(debug_assertions)]
 fn main() -> color_eyre::eyre::Result<(), Box<dyn std::error::Error>> {
     color_eyre::install()?;
     env_logger::init();
     log::warn!("Running in dev mode.");
     lio()
-}
+}*/
 
-#[cfg(not(debug_assertions))]
+//#[cfg(not(debug_assertions))]
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     env_logger::init();
-    lio()
+    let args = Args::parse();
+
+    match args.command {
+        Command::Ros(args) => ros(&args.config_path),
+        Command::Config(args) => match args {
+            ConfigCommand::Init(args) => {
+                let config = LioConfig::default();
+                let toml = toml::to_string(&config)?;
+                std::fs::write(&args.config_path, toml)?;
+                Ok(())
+            }
+            ConfigCommand::Test(args) => {
+                let config = read_config::<LioConfig>(&args.config_path)?;
+                Ok(())
+            }
+        },
+    }
 }

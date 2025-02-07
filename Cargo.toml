@@ -1,10 +1,10 @@
 [workspace]
 members = [
-  "crates/pelorus",
-  "crates/pelorus-reg",
-  "crates/prelio",
-  "crates/prelio-ros2",
-  "crates/spole",
+    "crates/pelorus",
+    "crates/pelorus-reg",
+    "crates/prelio",
+    "crates/prelio-ros2",
+    "crates/spole",
 ]
 resolver = "2"
 
@@ -24,21 +24,21 @@ prelio-ros2 = { path = "crates/prelio-ros2", version = "0.1.0" }
 spole = { path = "crates/spole", version = "0.1.0" }
 
 ros_pointcloud2 = { version = "0.5.3", features = [
-  "ros2-interfaces-jazzy",
-  "nalgebra",
-  "rayon",
-  "derive",
+    "ros2-interfaces-jazzy",
+    "nalgebra",
+    "rayon",
+    "derive",
 ], git = "https://github.com/stelzo/ros_pointcloud2.git" }
 nalgebra = { version = "0.33", features = ["serde-serialize"] }
 ros2-client = "0.7.6"
 ros2-interfaces-jazzy = { version = "0.0.4", features = [
-  "std_msgs",
-  "geometry_msgs",
-  "nav_msgs",
-  "sensor_msgs",
-  "visualization_msgs",
-  "tf2_msgs",
-  "builtin_interfaces",
+    "std_msgs",
+    "geometry_msgs",
+    "nav_msgs",
+    "sensor_msgs",
+    "visualization_msgs",
+    "tf2_msgs",
+    "builtin_interfaces",
 ] }
 #small_gicp-sys = { git = "ssh://git@github.com/stelzo/small_gicp-sys.git", branch = "main" }
 anyhow = "1"
