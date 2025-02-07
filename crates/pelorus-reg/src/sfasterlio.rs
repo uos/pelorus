@@ -248,10 +248,11 @@ impl crate::Registration for SFasterLio {
         &mut self,
         data: crate::Mode,
     ) -> anyhow::Result<crate::CloudRegisterResult> {
+        #[allow(unused_variables)]
         let cloud = match data {
             crate::Mode::ActiveRegistration {
                 cloud,
-                initial_guess,
+                initial_guess: _,
             } => match cloud {
                 crate::LocatedBufferView::Ram(cloud) => cloud,
                 crate::LocatedBufferView::Cuda(_) => {

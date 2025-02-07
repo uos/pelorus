@@ -18,3 +18,4 @@ sophus_lie.workspace = true
 rayon.workspace = true
 dashmap.workspace = true
 spole.workspace = true
+serde.workspace = true

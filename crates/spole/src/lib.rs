@@ -1,31 +1,7 @@
 use dashmap::DashMap;
 use ros_pointcloud2::prelude::*;
 
-/*pub trait ThreeDimensionalPoint: Sized {
-    fn x(&self) -> f64;
-    fn y(&self) -> f64;
-    fn z(&self) -> f64;
-
-    fn new(x: f64, y: f64, z: f64) -> Self;
-
-    fn distance(&self, other: &Self) -> f64 {
-        let dx = self.x() - other.x();
-        let dy = self.y() - other.y();
-        let dz = self.z() - other.z();
-        (dx * dx + dy * dy + dz * dz).sqrt()
-    }
-}*/
-
-/*pub trait HashNeighborSearch {
-    fn new(resolution: f64) -> Self;
-    fn add(&mut self, points: impl IntoIterator<Item = impl ThreeDimensionalPoint>);
-    fn query(
-        &self,
-        query: &impl ThreeDimensionalPoint,
-        k: usize,
-        max_range: f64,
-    ) -> impl IntoIterator<Item = impl ThreeDimensionalPoint>;
-}*/
+use serde::{Deserialize, Serialize};
 
 pub struct IVoxHashMap {
     nearby_type: IVoxNearbyType,
@@ -38,7 +14,7 @@ pub struct IVoxHashMap {
     buffer_init_full: bool,
 }
 
-#[derive(Debug, Default, Clone, Copy)]
+#[derive(Debug, Default, Clone, Copy, Serialize, Deserialize)]
 pub enum IVoxNearbyType {
     Center,
     Nearby6,

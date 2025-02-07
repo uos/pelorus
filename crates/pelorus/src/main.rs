@@ -1,28 +1,29 @@
-use log::warn;
-use nalgebra::{Isometry3, Translation3, Vector3};
-use r2r::{
+use futures_lite::future;
+use log::{error, info};
+use nalgebra::{Isometry3, Translation3};
+use ros2_client::{NodeName, NodeOptions};
+use ros2_interfaces_jazzy::{
     builtin_interfaces::msg::Time,
+    geometry_msgs,
     geometry_msgs::msg::{Point, PoseStamped, Quaternion, Transform, TransformStamped},
-    log_error,
-    nav_msgs::msg::{Odometry, Path},
+    nav_msgs::msg::Path,
     sensor_msgs::msg::PointCloud2,
     std_msgs::msg::Header,
     visualization_msgs::msg::Marker,
-    QosProfile, RosParams,
 };
 
+use serde::{Deserialize, Serialize};
+use std::io::Read;
+
 use either::*;
-use prelio_ros2::{prelio, tf::TfBroadcaster};
+use prelio_ros2::{prelio::config::LifisParameters, tf::TfBroadcaster, LifisNodeParameters, Qos};
 use rand::Rng;
 
 use pelorus_reg::{sfasterlio::SFasterLio, Registration};
 use prelio_ros2::{prelio::imu::ImuMsg, LifisNode};
 use ros_pointcloud2::prelude::*;
 //use small_gicp_sys::*;
-use std::{
-    str::FromStr,
-    sync::{Arc, Mutex},
-};
+use std::sync::{Arc, Mutex};
 
 pub fn timestamp_to_secs(t: &TimeMsg) -> f64 {
     t.sec as f64 + t.nanosec as f64 / 1_000_000_000.0
@@ -35,7 +36,7 @@ pub fn rpcl2_time_to_r2r_time(t: &ros_pointcloud2::ros::TimeMsg) -> TimeMsg {
     }
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub enum LioMethod {
     SmallGICPCPU,
 
@@ -45,122 +46,45 @@ pub enum LioMethod {
     JlioGPU,
 }
 
-impl From<&str> for LioMethod {
-    fn from(s: &str) -> Self {
-        match s {
-            "small_gicp_cpu" => LioMethod::SmallGICPCPU,
-            "sfasterlio_cpu" => LioMethod::SFasterLioCPU,
-            "jlio_gpu" => LioMethod::JlioGPU,
-            _ => LioMethod::SFasterLioCPU,
-        }
-    }
-}
-
-#[derive(RosParams, Debug, Clone)]
-pub struct LioConfigParse {
-    pub feedback_fps: u32,
-    pub map_frame: String,
-    pub registered_cloud_qos: String, // sensor | system_default
-    pub lidar_qos: String,
-    pub imu_qos: String,
-    pub odom_qos: String,
-    pub imu_odom_qos: String,
-    pub imu_path_qos: String,
-    pub path_qos: String,
-    pub map_resolution: f64,
-    pub method: String,
-    pub imu_cov_gyr: f64,
-    pub imu_cov_acc: f64,
-    pub imu_cov_gyr_bias: f64,
-    pub imu_cov_acc_bias: f64,
-    pub imu_init_length: u32,
-    pub lidar_odom_cov: f64,
-    pub enable_live_extrinsic_calibration: bool,
-    pub gravity: f64,
-}
-
-impl Default for LioConfigParse {
-    fn default() -> Self {
-        Self {
-            feedback_fps: 1,
-            map_frame: "map".to_string(),
-            registered_cloud_qos: "system_default".to_string(),
-            odom_qos: "system_default".to_string(),
-            imu_odom_qos: "system_default".to_string(),
-            imu_path_qos: "system_default".to_string(),
-            path_qos: "system_default".to_string(),
-            imu_qos: "sensor".to_string(),
-            lidar_qos: "sensor".to_string(),
-            map_resolution: 0.15,
-            method: "sfasterlio_cpu".to_string(),
-            imu_cov_gyr: 0.0001,
-            imu_cov_gyr_bias: 0.00001,
-            imu_cov_acc: 0.0001,
-            imu_cov_acc_bias: 0.00001,
-            imu_init_length: 100,
-            lidar_odom_cov: 0.001,
-            gravity: 9.81,
-            enable_live_extrinsic_calibration: false,
-        }
-    }
-}
-
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LioConfig {
     pub feedback_fps: u32,
-    pub registered_cloud_qos: r2r::QosProfile,
-    pub lidar_qos: r2r::QosProfile,
-    pub imu_qos: r2r::QosProfile,
-    pub odom_qos: r2r::QosProfile,
-    pub imu_odom_qos: r2r::QosProfile,
-    pub imu_path_qos: r2r::QosProfile,
-    pub path_qos: r2r::QosProfile,
+    pub registered_cloud_qos: prelio_ros2::Qos,
+    pub lidar_qos: prelio_ros2::Qos,
+    pub imu_qos: prelio_ros2::Qos,
+    pub odom_qos: prelio_ros2::Qos,
+    pub imu_odom_qos: prelio_ros2::Qos,
+    pub imu_path_qos: prelio_ros2::Qos,
+    pub path_qos: prelio_ros2::Qos,
     pub map_resolution: f64,
     pub imu_params: pelorus_reg::imu::ImuParameters,
     pub imu_init_length: u32,
     pub lidar_odom_cov: f64,
     pub enable_live_extrinsic_calibration: bool,
     pub gravity: f64,
+    pub prelio_params: LifisParameters,
+    pub prelio_node_params: LifisNodeParameters,
 }
 
-fn parse_qos(qos: &str) -> r2r::QosProfile {
-    match qos {
-        "sensor" => r2r::QosProfile::sensor_data(),
-        "system_default" => r2r::QosProfile::default(),
-        _ => r2r::QosProfile::default(),
-    }
-}
-
-impl From<LioConfigParse> for LioConfig {
-    fn from(parse: LioConfigParse) -> Self {
+impl Default for LioConfig {
+    fn default() -> Self {
         Self {
-            feedback_fps: parse.feedback_fps,
-            map_resolution: parse.map_resolution,
-            registered_cloud_qos: parse_qos(&parse.registered_cloud_qos),
-            lidar_qos: parse_qos(&parse.lidar_qos),
-            imu_qos: parse_qos(&parse.imu_qos),
-            odom_qos: parse_qos(&parse.odom_qos),
-            imu_odom_qos: parse_qos(&parse.imu_odom_qos),
-            imu_path_qos: parse_qos(&parse.imu_path_qos),
-            path_qos: parse_qos(&parse.path_qos),
-            imu_params: pelorus_reg::imu::ImuParameters {
-                cov_acc: Vector3::new(parse.imu_cov_acc, parse.imu_cov_acc, parse.imu_cov_acc),
-                cov_acc_bias: Vector3::new(
-                    parse.imu_cov_acc_bias,
-                    parse.imu_cov_acc_bias,
-                    parse.imu_cov_acc_bias,
-                ),
-                cov_gyr: Vector3::new(parse.imu_cov_gyr, parse.imu_cov_gyr, parse.imu_cov_gyr),
-                cov_gyr_bias: Vector3::new(
-                    parse.imu_cov_gyr_bias,
-                    parse.imu_cov_gyr_bias,
-                    parse.imu_cov_gyr_bias,
-                ),
-            },
-            imu_init_length: parse.imu_init_length,
-            lidar_odom_cov: parse.lidar_odom_cov,
-            gravity: parse.gravity,
-            enable_live_extrinsic_calibration: parse.enable_live_extrinsic_calibration,
+            map_resolution: 0.5,
+            lidar_odom_cov: 0.001,
+            imu_init_length: 10,
+            feedback_fps: 1,
+            gravity: 9.81,
+            enable_live_extrinsic_calibration: false,
+            registered_cloud_qos: Qos::Sensor,
+            lidar_qos: Qos::Sensor,
+            imu_qos: Qos::Sensor,
+            odom_qos: Qos::default(),
+            imu_odom_qos: Qos::default(),
+            imu_path_qos: Qos::default(),
+            path_qos: Qos::default(),
+            imu_params: pelorus_reg::imu::ImuParameters::default(),
+            prelio_params: LifisParameters::default(),
+            prelio_node_params: LifisNodeParameters::default(),
         }
     }
 }
@@ -199,17 +123,48 @@ fn imu_msg_to_pelorus_reg(m: &ImuMsg) -> pelorus_reg::ImuMsg {
     }
 }
 
+fn read_config<T>(file_path: &str) -> Result<T, Box<dyn std::error::Error>>
+where
+    T: for<'a> Deserialize<'a>,
+{
+    let mut file = std::fs::File::open(file_path)?;
+    let mut contents = String::new();
+    file.read_to_string(&mut contents)?;
+    let config: T = toml::from_str(&contents)?;
+
+    Ok(config)
+}
+
 fn lio() -> Result<(), Box<dyn std::error::Error>> {
-    let ctx = r2r::Context::create()?;
-    let mut node = r2r::Node::create(ctx, "lio", "lio")?;
-    let log_prefix = "pelorus_lio";
-    let config = std::sync::Arc::new(std::sync::Mutex::new(LioConfigParse::default()));
-    let (_, _) = node.make_derived_parameter_handler(config.clone())?;
-    let config = {
-        let config = config.lock().unwrap();
-        config.clone()
+    // TODO add logging file
+    // log4rs::init_file("examples/async_listener/log4rs.yaml", Default::default()).unwrap();
+
+    let namespace = "/lio";
+
+    let ctx = ros2_client::Context::new()?;
+    let mut node = ctx.new_node(
+        NodeName::new(namespace, "lio_node")?,
+        NodeOptions::new().enable_rosout(true),
+    )?;
+
+    // TODO add config path via CLI (clap)
+    let config = read_config("config.toml");
+    let config = match config {
+        Err(e) => {
+            if let Some(io_err) = e.downcast_ref::<std::io::Error>() {
+                if io_err.kind() == std::io::ErrorKind::NotFound {
+                    LioConfig::default()
+                } else {
+                    return Err(e);
+                }
+            } else {
+                return Err(e);
+            }
+        }
+        Ok(cfg) => cfg,
     };
-    let config = LioConfig::from(config);
+
+    // TODO set prelio_ros2 params from outside from total config. don't let prelio_ros2 search for the paramters itself
 
     let tf_broadcaster = TfBroadcaster::new(&mut node);
 
@@ -246,23 +201,12 @@ fn lio() -> Result<(), Box<dyn std::error::Error>> {
         }))
     };
 
-    let (mut lifis_node, prelio_config) = LifisNode::init_node("prelio", "")?;
+    let lidar_vendor = config.prelio_params.lidar_vendor.clone();
 
-    let (lidar_vendor, map_frame) = {
-        let config = prelio_config.lock().unwrap();
-        let lidar_vendor = prelio::LidarVendor::from_str(&config.lidar_vendor)
-            .expect("validity checked in lifis_ros2");
-        (lidar_vendor, config.map_frame.clone())
-    };
-
-    let (_, synced_rx) = LifisNode::initialize(
-        &mut lifis_node,
-        prelio_config.clone(),
-        prelio_ros2::LifisNodeParameters {
-            imu_qos: config.imu_qos,
-            cloud_qos: config.lidar_qos,
-            ..Default::default()
-        },
+    let (_lifis_node, synced_rx) = LifisNode::new(
+        &mut node,
+        &config.prelio_params,
+        &config.prelio_node_params,
         Some(imu_pose_predictor_init),
         {
             let map = map.clone();
@@ -289,7 +233,7 @@ fn lio() -> Result<(), Box<dyn std::error::Error>> {
                         cloud_begin_time,
                         cloud_end_time,
                         cloud,
-                        Some(lidar_vendor.clone()),
+                        Some(lidar_vendor),
                     );
 
                     let pose = map.get_state().pose.clone();
@@ -318,15 +262,91 @@ fn lio() -> Result<(), Box<dyn std::error::Error>> {
         },
     )?;
 
-    let map_publisher = node.create_publisher::<PointCloud2>("map", QosProfile::default())?;
-    let cloud_publisher =
-        node.create_publisher::<PointCloud2>("registered", config.registered_cloud_qos)?;
-    let odom_publisher = node.create_publisher::<Odometry>("odom", config.odom_qos)?;
-    let lidar_path_publisher = node.create_publisher::<Path>("path", config.path_qos)?;
-    let imu_odom_publisher = node.create_publisher::<Odometry>("imu_odom", config.imu_odom_qos)?;
-    let imu_path_publisher = node.create_publisher::<Path>("imu_path", config.imu_path_qos)?;
-    let registered_visual =
-        node.create_publisher::<Marker>("registered_viz", r2r::QosProfile::default())?;
+    let map_publisher = node
+        .create_publisher::<PointCloud2>(
+            &node
+                .create_topic(
+                    &ros2_client::Name::new(&namespace, "map").unwrap(),
+                    ros2_client::MessageTypeName::new("sensor_msgs", "PointCloud2"),
+                    &Qos::default().into(),
+                )
+                .unwrap(),
+            None,
+        )
+        .unwrap();
+    let cloud_publisher = node
+        .create_publisher(
+            &node
+                .create_topic(
+                    &ros2_client::Name::new(&namespace, "registered").unwrap(),
+                    ros2_client::MessageTypeName::new("sensor_msgs", "PointCloud2"),
+                    &config.registered_cloud_qos.into(),
+                )
+                .unwrap(),
+            None,
+        )
+        .unwrap();
+    let odom_publisher = node
+        .create_publisher(
+            &node
+                .create_topic(
+                    &ros2_client::Name::new(&namespace, "odom").unwrap(),
+                    ros2_client::MessageTypeName::new("nav_msgs", "Odometry"),
+                    &config.odom_qos.into(),
+                )
+                .unwrap(),
+            None,
+        )
+        .unwrap();
+    let lidar_path_publisher = node
+        .create_publisher(
+            &node
+                .create_topic(
+                    &ros2_client::Name::new(&namespace, "path").unwrap(),
+                    ros2_client::MessageTypeName::new("nav_msgs", "Path"),
+                    &config.path_qos.into(),
+                )
+                .unwrap(),
+            None,
+        )
+        .unwrap();
+    let imu_odom_publisher = node
+        .create_publisher(
+            &node
+                .create_topic(
+                    &ros2_client::Name::new(&namespace, "imu_odom").unwrap(),
+                    ros2_client::MessageTypeName::new("nav_msgs", "Odometry"),
+                    &config.imu_odom_qos.into(),
+                )
+                .unwrap(),
+            None,
+        )
+        .unwrap();
+
+    let imu_path_publisher = node
+        .create_publisher(
+            &node
+                .create_topic(
+                    &ros2_client::Name::new(&namespace, "imu_path").unwrap(),
+                    ros2_client::MessageTypeName::new("nav_msgs", "Path"),
+                    &config.imu_path_qos.into(),
+                )
+                .unwrap(),
+            None,
+        )
+        .unwrap();
+    let registered_visual_publisher = node
+        .create_publisher(
+            &node
+                .create_topic(
+                    &ros2_client::Name::new(&format!("{namespace}/viz"), "registered").unwrap(),
+                    ros2_client::MessageTypeName::new("visualization_msgs", "Marker"),
+                    &ros2_client::DEFAULT_PUBLISHER_QOS,
+                )
+                .unwrap(),
+            None,
+        )
+        .unwrap();
 
     let mut t_world_lidar = nalgebra::Isometry3::identity();
     let mut t_last_current = nalgebra::Isometry3::identity();
@@ -336,14 +356,14 @@ fn lio() -> Result<(), Box<dyn std::error::Error>> {
         poses: vec![],
     };
 
-    lidar_path.header.frame_id = map_frame.clone();
+    lidar_path.header.frame_id = config.prelio_params.map_frame.clone();
 
     let mut imu_path = Path {
         header: Default::default(),
         poses: vec![],
     };
 
-    imu_path.header.frame_id = map_frame.clone();
+    imu_path.header.frame_id = config.prelio_params.map_frame.clone();
 
     let mut last_scan_time = None;
     let mut total_viz_marker = 0;
@@ -377,7 +397,8 @@ fn lio() -> Result<(), Box<dyn std::error::Error>> {
                 if current_cloud_time < existing_last_scan_time {
                     let mut map = map.lock().unwrap();
                     map.clear_localmap();
-                    r2r::log_info!(log_prefix, "Resetting map");
+
+                    info!("Resetting map");
                     t_world_lidar = nalgebra::Isometry3::identity();
                     t_last_current = nalgebra::Isometry3::identity();
                 }
@@ -443,7 +464,7 @@ fn lio() -> Result<(), Box<dyn std::error::Error>> {
                     Ok(pose) => pose,
                     Err(err) => {
                         eval.stop("reg").unwrap();
-                        log_error!(log_prefix, "{:?}", err);
+                        error!("{err}");
                         continue;
                     }
                 }
@@ -466,7 +487,7 @@ fn lio() -> Result<(), Box<dyn std::error::Error>> {
             eval.stop("map_update").unwrap();*/
 
             let mut lidar_odom = lifis_tick.imu_odom.clone();
-            lidar_odom.header.frame_id = map_frame.clone();
+            lidar_odom.header.frame_id = config.prelio_params.map_frame.clone();
             lidar_odom.child_frame_id = orig_frame.clone();
             lidar_odom.pose.pose.position.x = t_world_lidar.translation.vector.x;
             lidar_odom.pose.pose.position.y = t_world_lidar.translation.vector.y;
@@ -527,7 +548,7 @@ fn lio() -> Result<(), Box<dyn std::error::Error>> {
 
                 let mut marr = Marker::default();
                 marr.header = Header {
-                    frame_id: map_frame.clone(),
+                    frame_id: config.prelio_params.map_frame.clone(),
                     stamp: Time {
                         sec: orig_time.sec,
                         nanosec: orig_time.nanosec,
@@ -586,7 +607,7 @@ fn lio() -> Result<(), Box<dyn std::error::Error>> {
                     .flatten()
                     .collect();
 
-                registered_visual
+                registered_visual_publisher
                     .publish(&marr)
                     .expect("Failed to publish registered visualization");
             }
@@ -633,7 +654,7 @@ fn lio() -> Result<(), Box<dyn std::error::Error>> {
 
             let tf = TransformStamped {
                 header: Header {
-                    frame_id: map_frame.to_string(),
+                    frame_id: config.prelio_params.map_frame.clone(),
                     stamp: Time {
                         sec: orig_time.sec,
                         nanosec: orig_time.nanosec,
@@ -641,7 +662,7 @@ fn lio() -> Result<(), Box<dyn std::error::Error>> {
                 },
                 child_frame_id: orig_frame,
                 transform: Transform {
-                    translation: r2r::geometry_msgs::msg::Vector3 {
+                    translation: geometry_msgs::msg::Vector3 {
                         x: map_to_lidar_transform.translation.vector.x,
                         y: map_to_lidar_transform.translation.vector.y,
                         z: map_to_lidar_transform.translation.vector.z,
@@ -675,10 +696,9 @@ fn lio() -> Result<(), Box<dyn std::error::Error>> {
             {
                 let total_map = map.lock().unwrap().get_entire_map();
                 let mut total_map = PointCloud2Msg::try_from_vec(total_map).unwrap();
-                total_map.header.frame_id = map_frame.clone();
-                map_publisher
-                    .publish(&total_map.into())
-                    .expect("Failed to publish map");
+                total_map.header.frame_id = config.prelio_params.map_frame.clone();
+                let msg: PointCloud2 = total_map.into();
+                map_publisher.publish(msg).expect("Failed to publish map");
             }
 
             tf_broadcaster
@@ -712,8 +732,7 @@ fn lio() -> Result<(), Box<dyn std::error::Error>> {
             if let Some(render_interval) = render_interval {
                 if last_render.elapsed() > render_interval {
                     last_render = std::time::Instant::now();
-                    r2r::log_info!(
-                        log_prefix,
+                    info!(
                         "{}[2J{}[1;1HAccelerated LiDAR Odometry Framework\n{}",
                         27 as char,
                         27 as char,
@@ -725,19 +744,23 @@ fn lio() -> Result<(), Box<dyn std::error::Error>> {
         dbg!("--- END lifis tick ---");
     });
 
-    let spin_timeout = std::time::Duration::from_millis(10);
+    future::block_on(async {
+        match node.spinner().unwrap().spin().await {
+            Err(e) => {
+                error!("Node did not exit succesfully {e}");
+            }
+            Ok(_) => {}
+        }
+    });
 
-    loop {
-        node.spin_once(spin_timeout.clone());
-        lifis_node.spin_once(spin_timeout.clone());
-    }
+    Ok(())
 }
 
 #[cfg(debug_assertions)]
 fn main() -> color_eyre::eyre::Result<(), Box<dyn std::error::Error>> {
     color_eyre::install()?;
     env_logger::init();
-    warn!("Running in dev mode.");
+    log::warn!("Running in dev mode.");
     lio()
 }
 
