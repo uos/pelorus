@@ -1,21 +1,65 @@
+image: rust:latest
+
+variables:
+  CARGO_INCREMENTAL: "0"
+  RUST_BACKTRACE: "full"
+
 stages:
   - build
+  - release
 
 rust-latest:
   stage: build
-  image: rust:latest
   script:
+    - rustup default stable
     - cargo build --verbose
     - cargo test --verbose
-  only:
-    - branches
 
 rust-nightly:
   stage: build
-  image: rustlang/rust:nightly
   script:
+    - rustup default nightly
     - cargo build --verbose
     - cargo test --verbose
   allow_failure: true
-  only:
-    - branches
+
+.build_template: &build_defaults
+  stage: build
+  script:
+    - rustup target list
+    - rustup default stable
+    - cargo install cross --git https://github.com/cross-rs/cross --force
+    - cross build --target $RUST_TARGET --release
+  artifacts:
+    paths:
+      - target/$RUST_TARGET/release/
+
+build:linux:x86_64:
+  <<: *build_defaults
+  variables:
+    RUST_TARGET: x86_64-unknown-linux-gnu
+
+build:linux:armv7:
+  <<: *build_defaults
+  variables:
+    RUST_TARGET: armv7-unknown-linux-gnueabihf
+
+build:linux:riscv64:
+  <<: *build_defaults
+  variables:
+    RUST_TARGET: riscv64gc-unknown-linux-gnu
+
+combine_artifacts:
+  stage: archive
+  needs:
+    - build:linux:x86_64
+    - build:linux:armv7
+    - build:linux:riscv64
+  script:
+    - mkdir -p combined_artifacts
+    - cp -r target/x86_64-unknown-linux-gnu/release/ combined_artifacts/
+    - cp -r target/armv7-unknown-linux-gnueabihf/release/ combined_artifacts/
+    - cp -r target/riscv64gc-unknown-linux-gnu/release/ combined_artifacts/
+  artifacts:
+    paths:
+      - combined_artifacts/
