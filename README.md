@@ -24,6 +24,7 @@ ros2 launch src/lio/lio/launch/lio.py
 ## Dev
 [lio] is developed against the nightly toolchain for maximum development speed. On debug builds, the following settings are optimized for compilation speed.
 
+
 ```sh
 rustup default nightly
 rusutp update
@@ -32,3 +33,14 @@ RUSTFLAGS="-Z threads=8" cargo build
 ```
 
 or export `RUSTFLAGS` to your environment.
+
+## Prod
+
+```sh
+rustup target add x86_64-unknown-linux-musl
+RUSTFLAGS="-C target-feature=+crt-static" cargo build --release --target x86_64-unknown-linux-musl
+```
+
+```sh
+sudo apt install musl-tools
+```
