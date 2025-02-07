@@ -13,11 +13,13 @@ include.workspace = true
 ros_pointcloud2.workspace = true
 anyhow.workspace = true
 nalgebra.workspace = true
-r2r.workspace = true
 futures-lite.workspace = true
 prelio.workspace = true
 log.workspace = true
 env_logger.workspace = true
+ros2-client.workspace = true
+ros2-interfaces-jazzy.workspace = true
+serde.workspace = true
 thiserror = "1.0"
 
 [features]

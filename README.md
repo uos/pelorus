@@ -20,3 +20,15 @@ git clone --recurse-submodules git://gitlab.informatik.uni-osnabrueck.de/csieh/l
 colcon build --clean-build --cargo-args --release
 ros2 launch src/lio/lio/launch/lio.py
 ```
+
+## Dev
+[lio] is developed against the nightly toolchain for maximum development speed. On debug builds, the following settings are optimized for compilation speed.
+
+```sh
+rustup default nightly
+rusutp update
+rustup component add rustc-codegen-cranelift-preview --toolchain nightly
+RUSTFLAGS="-Z threads=8" cargo build
+```
+
+or export `RUSTFLAGS` to your environment.

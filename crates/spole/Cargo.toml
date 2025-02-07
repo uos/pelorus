@@ -11,6 +11,7 @@ version.workspace = true
 ros_pointcloud2.workspace = true
 dashmap.workspace = true
 nalgebra.workspace = true
+serde.workspace = true
 
 [dev-dependencies]
 rand = "0.8"

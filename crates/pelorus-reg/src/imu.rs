@@ -1,4 +1,5 @@
 use nalgebra::*;
+use serde::{Deserialize, Serialize};
 
 use crate::sophus_ekf::Esekf;
 
@@ -77,7 +78,7 @@ impl Default for ImuProcessing {
     }
 }
 
-#[derive(Clone, Debug, Copy)]
+#[derive(Clone, Debug, Copy, Serialize, Deserialize)]
 pub struct ImuParameters {
     pub cov_acc: Vector3<f64>,
     pub cov_gyr: Vector3<f64>,

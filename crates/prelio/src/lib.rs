@@ -7,10 +7,9 @@ pub mod timing;
 use either::Either;
 use imu_fusion::FusionAhrs;
 use nalgebra::*;
+use serde::{Deserialize, Serialize};
 use std::thread;
 use timing::RuntimeEvaluator;
-
-use std::str::FromStr;
 
 use anyhow::Result;
 use ros_pointcloud2::prelude::*;
@@ -29,7 +28,7 @@ pub type ImuPredictorUndistort = dyn for<'a> Fn(
     ) -> Either<ImuPosePrediction, (Isometry3<f64>, Vec<PointXYZ>)>
     + Send;
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, Copy)]
 pub enum LidarVendor {
     /// microseconds
     Velodyne,
@@ -58,23 +57,6 @@ impl std::fmt::Display for LidarParseError {
                 f,
                 "Unknown LiDAR vendor, can not assume per point timestamp format"
             ),
-        }
-    }
-}
-
-impl std::error::Error for LidarParseError {}
-
-impl FromStr for LidarVendor {
-    type Err = LidarParseError;
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        match s {
-            "velodyne" => Ok(LidarVendor::Velodyne),
-            "robosense" => Ok(LidarVendor::Robosense),
-            "ouster" => Ok(LidarVendor::Ouster),
-            //"livox" => Ok(LidarVendor::Livox),
-            "skip" => Ok(LidarVendor::Skip),
-            _ => Err(LidarParseError::UnknownVendor),
         }
     }
 }
@@ -416,29 +398,25 @@ pub struct LifisProcessedCloud {
     pub runtime_eval: RuntimeEvaluator,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Default)]
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    Hash,
+    PartialOrd,
+    Ord,
+    Default,
+    serde::Serialize,
+    serde::Deserialize,
+)]
 pub enum MadgwickSetting {
     CreateOrientationOnly,
     FilterAccelerationOnly,
     #[default]
     FilterAccelerationAndCreateOrientation,
     Disable,
-}
-
-impl FromStr for MadgwickSetting {
-    type Err = anyhow::Error;
-
-    fn from_str(s: &str) -> Result<Self> {
-        match s {
-            "CreateOrientationOnly" => Ok(Self::CreateOrientationOnly),
-            "FilterAccelerationOnly" => Ok(Self::FilterAccelerationOnly),
-            "FilterAccelerationAndCreateOrientation" => {
-                Ok(Self::FilterAccelerationAndCreateOrientation)
-            }
-            "Disable" => Ok(Self::Disable),
-            _ => Err(anyhow::anyhow!("Invalid MadgwickSetting")),
-        }
-    }
 }
 
 pub struct Lifis {
@@ -457,18 +435,21 @@ impl Lifis {
     pub fn create<const N: usize, P: PointXYZITimestamp<N>>(
         gravity: f64,
         madgwick_filter: MadgwickSetting,
-        imu_intrinsic_calibration_params: Option<config::ImuCalibrationParameters>,
+        imu_intrinsic_calibration_params: &config::ImuCalibrationParameters,
         params: &config::LifisParameters,
         imu_pose_prediction_undistort: Option<Box<ImuPredictorUndistort>>,
         imu_pose_prediction_init_guess: Option<Box<ImuPredictor>>,
         lidar_vendor: Option<LidarVendor>,
     ) -> anyhow::Result<Self> {
-        let imu_intrinsic_calibration = match imu_intrinsic_calibration_params {
-            Some(imu_intrinsic_calibration) => {
+        let imu_intrinsic_calibration = match imu_intrinsic_calibration_params
+            .imu_intrinsics_calib_file_path
+            .as_ref()
+        {
+            Some(imu_intrinsic_calibration_path) => {
                 let imu_calib = imu_calib::CalibrationApplication::create(
-                    imu_intrinsic_calibration.imu_calibrate_gyros,
-                    imu_intrinsic_calibration.gyro_calibration_samples,
-                    imu_intrinsic_calibration.imu_intrinsics_calib_file_path,
+                    imu_intrinsic_calibration_params.imu_calibrate_gyros,
+                    imu_intrinsic_calibration_params.gyro_calibration_samples,
+                    imu_intrinsic_calibration_path.clone(),
                     gravity,
                 )?;
                 Some(imu_calib)

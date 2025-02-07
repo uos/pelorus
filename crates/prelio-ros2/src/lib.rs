@@ -1,30 +1,23 @@
-mod config;
 pub mod tf;
 
-use config::ConfigParse;
-
-use nalgebra::Vector3;
+use log::{error, warn};
 pub use prelio;
 
 use anyhow::anyhow;
-use futures_lite::{future, StreamExt};
-use prelio::config::{
-    DownsampleParameters, ImuCalibrationParameters, ImuParameters, LifisParameters,
-    PassthroughFilterParameters, UndistortParameters,
-};
+use prelio::config::LifisParameters;
 use prelio::imu::ImuMsg;
-use prelio::{timestamp_to_secs, MadgwickSetting};
-use r2r::geometry_msgs::msg::{
-    Point, PolygonStamped, Pose, PoseWithCovariance, Quaternion, Twist, TwistWithCovariance,
+use prelio::timestamp_to_secs;
+use ros2_client::ros2;
+use ros2_interfaces_jazzy::geometry_msgs::msg::{
+    Point, Pose, PoseWithCovariance, Quaternion, Twist, TwistWithCovariance,
 };
-use r2r::{
-    log_error, log_warn,
+use ros2_interfaces_jazzy::{
     nav_msgs::msg::Odometry,
     sensor_msgs::msg::{Imu, PointCloud2},
 };
 use ros_pointcloud2::prelude::*;
-use std::sync::Mutex;
-use std::{str::FromStr, sync::Arc};
+use serde::{Deserialize, Serialize};
+use std::sync::{Arc, Mutex};
 
 #[derive(Debug, Clone, Default, PointConvertible)]
 pub struct SkipPoint {
@@ -131,217 +124,73 @@ pub struct State {
     pub sensor_tf: Option<nalgebra::geometry::Isometry3<f32>>,
     pub imu_tf: Option<nalgebra::geometry::Isometry3<f64>>,
 
-    pub config: Arc<std::sync::Mutex<config::ConfigParse>>,
-
     pub lifis: Arc<Mutex<prelio::Lifis>>,
-    pub lifis_params: prelio::config::LifisParameters,
+    pub lifis_params: LifisParameters,
     take_nth_scan: usize,
     pub lidar_vendor: prelio::LidarVendor,
 }
 
 impl State {
     pub fn new(
-        config: Arc<std::sync::Mutex<config::ConfigParse>>,
+        config: &LifisParameters,
         imu_pose_prediction_undistort: Option<Box<prelio::ImuPredictorUndistort>>,
         imu_pose_prediction_init_guess: Option<Box<prelio::ImuPredictor>>,
     ) -> anyhow::Result<Self> {
-        let (gravity, imu_calibration_params, madgwick_filter, lidar_vendor) = {
-            let config = config.lock().unwrap();
-            (
-                config.gravity,
-                match config.imu_intrinsic_calibration_file.as_str() {
-                    "" => None,
-                    _ => Some(ImuCalibrationParameters {
-                        imu_calibrate_gyros: config.imu_calibrate_gyros_at_startup,
-                        imu_intrinsics_calib_file_path: config
-                            .imu_intrinsic_calibration_file
-                            .clone(),
-                        gyro_calibration_samples: config.gyro_calibration_samples as usize,
-                    }),
-                },
-                MadgwickSetting::from_str(&config.madgwick_filter)?,
-                prelio::LidarVendor::from_str(&config.lidar_vendor)?,
-            )
-        };
-
-        let lifis_params = {
-            let config = config.lock().unwrap();
-            LifisParameters {
-                undistort: UndistortParameters {
-                    lidar_to_imu: nalgebra::Isometry3::from_parts(
-                        nalgebra::Translation3::from(Vector3::new(
-                            config.lidar_to_imu_pose_x,
-                            config.lidar_to_imu_pose_y,
-                            config.lidar_to_imu_pose_z,
-                        )),
-                        nalgebra::UnitQuaternion::from_euler_angles(
-                            config.lidar_to_imu_pose_roll,
-                            config.lidar_to_imu_pose_pitch,
-                            config.lidar_to_imu_pose_yaw,
-                        ),
-                    ),
-                },
-                // mainly used by GTSAM integration
-                imu: ImuParameters {
-                    gravity: config.gravity,
-                    accel_noise: 1e-4,
-                    gyro_noise: 1e-4,
-                    accel_bias_noise: 1e-5,
-                    gyro_bias_noise: 1e-5,
-                    integration_noise: 1e-8,
-                    bias_acc: Vector3::new(0.0, 0.0, 0.0), // TODO
-                    bias_gyro: Vector3::new(0.0, 0.0, 0.0), // TODO
-                    imu_lidar_tf_override: config.imu_lidar_tf_override,
-                },
-                downsample: DownsampleParameters {
-                    voxel_size: config.voxel_size,
-                },
-                passthrough_filter: PassthroughFilterParameters {
-                    min: Vector3::new(config.aabb_min_x, config.aabb_min_y, config.aabb_min_z),
-                    max: Vector3::new(config.aabb_max_x, config.aabb_max_y, config.aabb_max_z),
-                    invert_bounding_box: config.invert_aabb,
-                    min_dist: config.min_dist,
-                    max_dist: config.max_dist,
-                    invert_distance: config.invert_distance,
-                    filter_frame_transform: nalgebra::Isometry3::identity(), // TODO
-                    fov_right: config.fov_right,
-                    fov_left: config.fov_left,
-                    forward: nalgebra::Vector2::new(1.0, 0.0), // TODO
-                    enable_horizontal_fov: config.fov_enabled,
-                    polygon: None, // TODO
-                    invert_polygon: config.invert_polygon,
-                    invert_fov: config.invert_fov,
-                    min_intensity: config.min_intensity,
-                    max_intensity: config.max_intensity,
-                    invert_intensity: config.invert_intensity,
-                },
-            }
-        };
-
         Ok(State {
             global_polygon: None,
             sensor_tf: None,
             imu_tf: None,
-            config,
-            lifis: match lidar_vendor {
+            lifis: match config.lidar_vendor {
                 prelio::LidarVendor::Velodyne => {
                     Arc::new(Mutex::new(prelio::Lifis::create::<5, VelodynePoint>(
-                        gravity,
-                        madgwick_filter,
-                        imu_calibration_params,
-                        &lifis_params,
+                        config.imu.gravity,
+                        config.imu.madgwick_setting,
+                        &config.imu.calibration,
+                        &config, // TODO more specific
                         imu_pose_prediction_undistort,
                         imu_pose_prediction_init_guess,
-                        Some(lidar_vendor.clone()),
+                        Some(config.lidar_vendor),
                     )?))
                 }
                 prelio::LidarVendor::Robosense => {
                     Arc::new(Mutex::new(prelio::Lifis::create::<6, RobosensePoint>(
-                        gravity,
-                        madgwick_filter,
-                        imu_calibration_params,
-                        &lifis_params,
+                        config.imu.gravity,
+                        config.imu.madgwick_setting,
+                        &config.imu.calibration,
+                        &config, // TODO more specific
                         imu_pose_prediction_undistort,
                         imu_pose_prediction_init_guess,
-                        Some(lidar_vendor.clone()),
+                        Some(config.lidar_vendor),
                     )?))
                 }
                 prelio::LidarVendor::Ouster => {
                     Arc::new(Mutex::new(prelio::Lifis::create::<4, OusterPoint>(
-                        gravity,
-                        madgwick_filter,
-                        imu_calibration_params,
-                        &lifis_params,
+                        config.imu.gravity,
+                        config.imu.madgwick_setting,
+                        &config.imu.calibration,
+                        &config, // TODO more specific
                         imu_pose_prediction_undistort,
                         imu_pose_prediction_init_guess,
-                        Some(lidar_vendor.clone()),
+                        Some(config.lidar_vendor),
                     )?))
                 }
                 prelio::LidarVendor::Skip => {
                     Arc::new(Mutex::new(prelio::Lifis::create::<3, SkipPoint>(
-                        gravity,
-                        madgwick_filter,
-                        imu_calibration_params,
-                        &lifis_params,
+                        config.imu.gravity,
+                        config.imu.madgwick_setting,
+                        &config.imu.calibration,
+                        &config, // TODO more specific
                         imu_pose_prediction_undistort,
                         imu_pose_prediction_init_guess,
-                        Some(lidar_vendor.clone()),
+                        Some(config.lidar_vendor),
                     )?))
                 }
             },
-            lifis_params,
+            lifis_params: config.clone(),
             take_nth_scan: N_NTH_SCAN,
-            lidar_vendor,
+            lidar_vendor: config.lidar_vendor,
         })
     }
-}
-
-fn polygon_callback(
-    state: Arc<std::sync::Mutex<State>>,
-    tf_listener: Arc<tf::TfListener>,
-    msg: PolygonStamped,
-) -> anyhow::Result<()> {
-    let map_frame = {
-        let state = state.lock().unwrap();
-        let config = state.config.lock().unwrap();
-        config.map_frame.clone()
-    };
-
-    let poly: Vec<nalgebra::Point2<f32>> = if map_frame.is_empty() {
-        msg.polygon
-            .points
-            .iter()
-            .map(|p| nalgebra::Point2::new(p.x as f32, p.y as f32))
-            .collect()
-    } else {
-        let tf = tf_listener.clone().lookup_transform(
-            &msg.header.frame_id,
-            &map_frame,
-            msg.header.stamp,
-        )?;
-        let tf = nalgebra::geometry::Isometry3::from_parts(
-            nalgebra::geometry::Translation3::new(
-                tf.transform.translation.x as f32,
-                tf.transform.translation.y as f32,
-                tf.transform.translation.z as f32,
-            ),
-            nalgebra::geometry::UnitQuaternion::from_quaternion(
-                nalgebra::geometry::Quaternion::new(
-                    tf.transform.rotation.w as f32,
-                    tf.transform.rotation.x as f32,
-                    tf.transform.rotation.y as f32,
-                    tf.transform.rotation.z as f32,
-                ),
-            ),
-        )
-        .inverse();
-
-        msg.polygon
-            .points
-            .iter()
-            .map(|p| {
-                let p = tf * nalgebra::geometry::Point3::new(p.x as f32, p.y as f32, p.z as f32);
-                nalgebra::Point2::new(p.x, p.y)
-            })
-            .collect()
-    };
-
-    {
-        let mut state = state.lock().unwrap();
-        state.global_polygon = Some(poly);
-
-        let mut config = state.config.lock().unwrap();
-        if config.disable_with_first_polygon {
-            config.fov_enabled = false;
-            config.aabb_max_x = f32::MAX;
-            config.aabb_min_x = f32::MIN;
-            config.aabb_max_y = f32::MAX;
-            config.aabb_min_y = f32::MIN;
-            config.max_dist = 9999.999;
-        }
-    }
-
-    Ok(())
 }
 
 fn cloud_callback(
@@ -372,12 +221,10 @@ fn cloud_callback(
                     state.take_nth_scan = N_NTH_SCAN;
                 }
 
-                let config = state.config.lock().unwrap();
-
                 (
-                    config.imu_lidar_tf_override,
-                    config.global_zero_frame.clone(),
-                    config.map_frame.clone(),
+                    state.lifis_params.imu_lidar_tf_override,
+                    state.lifis_params.global_zero_frame.clone(),
+                    state.lifis_params.map_frame.clone(),
                     state.sensor_tf.clone(),
                 )
             };
@@ -417,7 +264,7 @@ fn cloud_callback(
                 let imu_tf = if imu_tf_override {
                     match first_imu_tf {
                         None => {
-                            log_warn!("lifis-ros", "Waiting for first IMU Message to get frame.");
+                            warn!("Waiting for first IMU Message to get frame.");
                             return Ok(());
                         }
                         Some(first_imu_tf_frame) => {
@@ -465,15 +312,13 @@ fn cloud_callback(
         let params = {
             let (global_polygon, invert_polygon, global_zero_frame, map_frame, mut params) = {
                 let state = state.lock().unwrap();
-                let config = state.config.lock().unwrap();
-                let params = config::parse(&config)?;
 
                 (
                     state.global_polygon.clone(),
-                    config.invert_polygon,
-                    config.global_zero_frame.clone(),
-                    config.map_frame.clone(),
-                    params,
+                    state.lifis_params.passthrough_filter.invert_polygon,
+                    state.lifis_params.global_zero_frame.clone(),
+                    state.lifis_params.map_frame.clone(),
+                    state.lifis_params.clone(), // TODO overhead clone on every cloud but now params can not change anymore while runtime
                 )
             };
 
@@ -540,40 +385,81 @@ pub struct LifisNode {
     pub logger: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LifisNodeParameters {
-    pub cloud_src_topic: &'static str,
-    pub imu_src_topic: &'static str,
-    pub polygon_src_topic: &'static str,
-    pub logger_prefix: &'static str,
-    pub set_fov_service: &'static str,
-    pub set_distances_service: &'static str,
-    pub imu_filtered_topic: &'static str,
+    pub cloud_src_topic: String,
+    pub imu_src_topic: String,
+    pub logger_prefix: String,
+    pub imu_filtered_topic: String,
     pub imu_predictor_init_time_sec: f64,
-    pub cloud_qos: r2r::QosProfile,
-    pub imu_qos: r2r::QosProfile,
-    pub set_polygon_service_qos: r2r::QosProfile,
-    pub imu_filtered_qos: r2r::QosProfile,
-    pub set_fov_service_qos: r2r::QosProfile,
-    pub set_distances_service_qos: r2r::QosProfile,
+    pub cloud_qos: Qos,
+    pub imu_qos: Qos,
+    pub imu_filtered_qos: Qos,
+}
+
+#[derive(Serialize, Deserialize, Copy, Clone, Debug, Default)]
+pub enum Qos {
+    Sensor,
+    #[default]
+    SystemDefault,
+}
+
+/*
+
+Qos::SystemDefault => Ok(ros2::QosPolicyBuilder::new() QosPolicyBuilder
+                  .durability(ros2::policy::Durability::Volatile) QosPolicyBuilder
+                  .deadline(ros2::policy::Deadline(ros2::Duration::INFINITE)) QosPolicyBuilder
+                  .ownership(ros2::policy::Ownership::Shared) QosPolicyBuilder
+                  .reliability(ros2::policy::Reliability::Reliable {
+                      max_blocking_time: ros2::Duration::from_millis(100),
+                  }) QosPolicyBuilder
+                  .history(ros2::policy::History::KeepLast { depth: 1 }) QosPolicyBuilder
+                  .lifespan(ros2::policy::Lifespan {
+                      duration: ros2::Duration::INFINITE,
+                  }) QosPolicyBuilder
+                  .build()),
+            }*/
+
+impl From<crate::Qos> for ros2::QosPolicies {
+    fn from(value: crate::Qos) -> Self {
+        match value {
+            Qos::Sensor => ros2::QosPolicyBuilder::new()
+                .durability(ros2::policy::Durability::Volatile)
+                .deadline(ros2::policy::Deadline(ros2::Duration::INFINITE))
+                .ownership(ros2::policy::Ownership::Shared)
+                .reliability(ros2::policy::Reliability::BestEffort)
+                .history(ros2::policy::History::KeepLast { depth: 5 })
+                .lifespan(ros2::policy::Lifespan {
+                    duration: ros2::Duration::INFINITE,
+                })
+                .build(),
+            _ => ros2::QosPolicyBuilder::new()
+                .durability(ros2::policy::Durability::Volatile)
+                .deadline(ros2::policy::Deadline(ros2::Duration::INFINITE))
+                .ownership(ros2::policy::Ownership::Shared)
+                .reliability(ros2::policy::Reliability::Reliable {
+                    max_blocking_time: ros2::Duration::from_millis(100),
+                })
+                .history(ros2::policy::History::KeepLast { depth: 1 })
+                .lifespan(ros2::policy::Lifespan {
+                    duration: ros2::Duration::INFINITE,
+                })
+                .build(),
+        }
+    }
 }
 
 impl Default for LifisNodeParameters {
     fn default() -> Self {
         LifisNodeParameters {
-            cloud_src_topic: "cloud",
-            imu_src_topic: "imu",
-            polygon_src_topic: "polygon",
-            logger_prefix: "lifis",
-            set_fov_service: "set_fov",
-            set_distances_service: "set_distances",
-            imu_filtered_topic: "imu_filtered",
+            cloud_src_topic: "cloud".to_string(),
+            imu_src_topic: "imu".to_string(),
+            logger_prefix: "lifis".to_string(),
+            imu_filtered_topic: "imu_filtered".to_string(),
             imu_predictor_init_time_sec: 0.1,
-            cloud_qos: r2r::QosProfile::sensor_data(),
-            imu_qos: r2r::QosProfile::sensor_data(),
-            set_polygon_service_qos: r2r::QosProfile::default(),
-            imu_filtered_qos: r2r::QosProfile::sensor_data(),
-            set_fov_service_qos: r2r::QosProfile::default(),
-            set_distances_service_qos: r2r::QosProfile::default(),
+            cloud_qos: Qos::Sensor,
+            imu_qos: Qos::Sensor,
+            imu_filtered_qos: Qos::Sensor,
         }
     }
 }
@@ -587,52 +473,28 @@ pub struct LifisTick {
 }
 
 impl LifisNode {
-    pub fn init_node(
-        node_name: &str,
-        node_namespace: &str,
-    ) -> anyhow::Result<(r2r::Node, Arc<Mutex<ConfigParse>>)> {
-        let config = Arc::new(std::sync::Mutex::new(config::ConfigParse::default()));
-        let ctx = r2r::Context::create()?;
-        let mut node = r2r::Node::create(ctx, node_name, node_namespace)?;
-        let (_, _) = node.make_derived_parameter_handler(config.clone())?;
-
-        Ok((node, config))
-    }
-
-    pub fn initialize(
-        node: &mut r2r::Node,
-        config: Arc<std::sync::Mutex<ConfigParse>>,
-        params: LifisNodeParameters,
+    pub fn new(
+        node: &mut ros2_client::Node,
+        params: &LifisParameters,
+        node_params: &LifisNodeParameters,
         imu_pose_predictor_init: Option<Arc<Mutex<dyn FnMut(&[ImuMsg]) + Send + Sync>>>,
         imu_pose_prediction_undistort: Option<Box<prelio::ImuPredictorUndistort>>,
         imu_pose_prediction_init_guess: Option<Box<prelio::ImuPredictor>>,
     ) -> anyhow::Result<(Self, std::sync::mpsc::Receiver<LifisTick>)> {
-        let logger_prefix = params.logger_prefix;
-
         let tf_listener = Arc::new(tf::TfListener::new(node));
 
         let state = State::new(
-            config.clone(),
+            &params,
             imu_pose_prediction_undistort,
             imu_pose_prediction_init_guess,
-        );
+        )?;
 
-        let (chan, imu_frame, state) = match state {
-            Ok(state) => {
-                let (chan, imu_frame) = {
-                    let mut lifis = state.lifis.lock().unwrap();
-                    let chan = lifis.get_chan().unwrap();
+        let (chan, imu_frame) = {
+            let mut lifis = state.lifis.lock().unwrap();
+            let chan = lifis.get_chan().unwrap();
 
-                    let config = state.config.lock().unwrap();
-                    let imu_frame = config.imu_frame.clone();
-                    (chan, imu_frame)
-                };
-                (chan, imu_frame, Arc::new(std::sync::Mutex::new(state)))
-            }
-            Err(e) => {
-                log_error!(logger_prefix, "{:?}", e);
-                return Err(e);
-            }
+            let imu_frame = state.lifis_params.imu.imu_frame.clone();
+            (chan, imu_frame)
         };
 
         let (tx, rx) = std::sync::mpsc::channel();
@@ -644,221 +506,157 @@ impl LifisNode {
         // first option None = override not set.
         let imu_tf_frame: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
 
-        let cloud_subscriber =
-            node.subscribe::<PointCloud2>(params.cloud_src_topic, params.cloud_qos)?;
+        let cloud_subscriber = node
+            .create_subscription::<PointCloud2>(
+                &node
+                    .create_topic(
+                        &ros2_client::Name::new("/", &node_params.cloud_src_topic).unwrap(),
+                        ros2_client::MessageTypeName::new("sensor_msgs", "PointCloud2"),
+                        &node_params.cloud_qos.into(),
+                    )
+                    .unwrap(),
+                None,
+            )
+            .unwrap();
+
+        // Share with cloud callback, TODO maybe the only one who needs it, so remove mutex and arc?
+        let state = Arc::new(std::sync::Mutex::new(state));
+
         let tf_listener_clone = tf_listener.clone();
         let state_clone = state.clone();
         let imu_tf_frame_lidar_inner = Arc::clone(&imu_tf_frame);
-        std::thread::spawn(move || {
-            future::block_on(async {
-                cloud_subscriber
-                    .for_each(|msg| {
-                        let imu_tf_frame_lidar_inner =
-                            imu_tf_frame_lidar_inner.clone().lock().unwrap().clone();
+        std::thread::spawn(move || loop {
+            match cloud_subscriber.take() {
+                Err(e) => {
+                    error!("Could not read cloud: {e}");
+                }
+                Ok(Some((msg, _msg_info))) => {
+                    // TODO if config says we are system time, we can also the source timestamp of dds
+                    /*if let Some(source_timestamp) = msg_info.source_timestamp() {
+                        msg.header.stamp = source_timestamp
+                    }*/
+                    let imu_tf_frame_lidar_inner =
+                        imu_tf_frame_lidar_inner.clone().lock().unwrap().clone();
 
-                        match cloud_callback(
-                            state_clone.clone(),
-                            tf_listener_clone.clone(),
-                            msg,
-                            imu_tf_frame_lidar_inner,
-                        ) {
-                            Ok(_) => {}
-                            Err(e) => {
-                                log_error!(logger_prefix, "{:?}", e);
-                            }
+                    match cloud_callback(
+                        state_clone.clone(),
+                        tf_listener_clone.clone(),
+                        msg,
+                        imu_tf_frame_lidar_inner,
+                    ) {
+                        Ok(_) => {}
+                        Err(e) => {
+                            error!("Error in cloud callback: {e}");
                         }
-                    })
-                    .await;
-            })
+                    }
+                }
+                Ok(None) => {}
+            }
         });
 
         let state_clone = state.clone();
-        let tf_listener_clone = tf_listener.clone();
-        let _poly_subber = node.subscribe::<PolygonStamped>(
-            params.polygon_src_topic,
-            params.set_polygon_service_qos,
-        )?;
-        std::thread::spawn(move || {
-            future::block_on(async {
-                _poly_subber
-                    .for_each(|msg| {
-                        let state_clone = state_clone.clone();
-                        let tf_listener_clone = tf_listener_clone.clone();
-                        match polygon_callback(state_clone.clone(), tf_listener_clone.clone(), msg)
-                        {
-                            Ok(_) => {}
-                            Err(e) => {
-                                log_error!(logger_prefix, "{:?}", e);
-                            }
-                        }
-                    })
-                    .await;
-            })
-        });
-
-        let state_clone = state.clone();
-        let _imu_subber = node.subscribe::<Imu>(params.imu_src_topic, params.imu_qos)?;
+        let imu_subscription = node
+            .create_subscription::<Imu>(
+                &node
+                    .create_topic(
+                        &ros2_client::Name::new("/", &node_params.imu_src_topic).unwrap(),
+                        ros2_client::MessageTypeName::new("sensor_msgs", "Imu"),
+                        &node_params.imu_qos.into(),
+                    )
+                    .unwrap(),
+                None,
+            )
+            .unwrap();
 
         // do not publish filtered imu if no topic is provided
-        let imu_filtered_publisher = if params.imu_filtered_topic == "" {
+        let imu_filtered_publisher = if node_params.imu_filtered_topic == "" {
             None
         } else {
-            Some(Arc::new(Mutex::new(node.create_publisher::<Imu>(
-                params.imu_filtered_topic,
-                params.imu_filtered_qos,
-            )?)))
+            Some(Arc::new(Mutex::new(
+                node.create_publisher(
+                    &node
+                        .create_topic(
+                            &ros2_client::Name::new("/", &node_params.imu_filtered_topic).unwrap(),
+                            ros2_client::MessageTypeName::new("sensor_msgs", "Imu"),
+                            &node_params.imu_filtered_qos.into(),
+                        )
+                        .unwrap(),
+                    None,
+                )
+                .unwrap(),
+            )))
         };
 
         let imu_init_time_counter = Arc::new(Mutex::new(None));
         let imu_init_buffer = Arc::new(Mutex::new(Some(Vec::new())));
         let imu_tf_frame_lidar_inner = Arc::clone(&imu_tf_frame);
+        let init_imu_time = node_params.imu_predictor_init_time_sec;
         std::thread::spawn(move || {
             let imu_pose_predictor_init = imu_pose_predictor_init.clone();
-            future::block_on(async {
-                _imu_subber
-                    .for_each(|msg| {
-                        let state = state_clone.lock().unwrap();
-                        imu_tf_frame_lidar_inner
-                            .clone()
-                            .lock()
-                            .unwrap()
-                            .get_or_insert(msg.header.frame_id.clone());
-                        let imu_init_time_counter = imu_init_time_counter.clone();
-                        let imu_init_buffer = imu_init_buffer.clone();
 
-                        let imu_lifis = imu_to_lifis(msg.clone());
-                        let curr_stamp = timestamp_to_secs(&imu_lifis.stamp);
+            match imu_subscription.take() {
+                Err(e) => {
+                    error!("Could not read imu: {e}");
+                }
+                Ok(Some((msg, _msg_info))) => {
+                    imu_tf_frame_lidar_inner
+                        .clone()
+                        .lock()
+                        .unwrap()
+                        .get_or_insert(msg.header.frame_id.clone());
+                    let imu_init_time_counter = imu_init_time_counter.clone();
+                    let imu_init_buffer = imu_init_buffer.clone();
 
-                        if let Some(imu_pose_predictor_init) = imu_pose_predictor_init.as_ref() {
-                            let mut imu_pose_predictor_init =
-                                imu_pose_predictor_init.lock().unwrap();
-                            let mut imu_init_time_counter = imu_init_time_counter.lock().unwrap();
-                            if imu_init_time_counter.is_none() {
-                                *imu_init_time_counter = Some(curr_stamp);
-                            }
-                            if let Some(init_time) = imu_init_time_counter.as_ref() {
-                                let mut imu_init_buffer = imu_init_buffer.lock().unwrap();
-                                let delta = curr_stamp - init_time;
-                                if delta < params.imu_predictor_init_time_sec {
-                                    if let Some(imu_init_buffer) = imu_init_buffer.as_mut() {
-                                        imu_init_buffer.push(imu_lifis);
-                                        return; // skip adding to lifis if we are still in the init phase
-                                    }
-                                    // we are only here, if there was an initial buffer, but it was already consumed so skip init and continue with normal processing
-                                } else {
-                                    // apply the init buffer
-                                    if let Some(imu_init_buffer) = imu_init_buffer.take() {
-                                        imu_pose_predictor_init(&imu_init_buffer);
-                                    }
+                    let imu_lifis = imu_to_lifis(msg.clone());
+                    let curr_stamp = timestamp_to_secs(&imu_lifis.stamp);
+
+                    if let Some(imu_pose_predictor_init) = imu_pose_predictor_init.as_ref() {
+                        let mut imu_pose_predictor_init = imu_pose_predictor_init.lock().unwrap();
+                        let mut imu_init_time_counter = imu_init_time_counter.lock().unwrap();
+                        if imu_init_time_counter.is_none() {
+                            *imu_init_time_counter = Some(curr_stamp);
+                        }
+                        if let Some(init_time) = imu_init_time_counter.as_ref() {
+                            let mut imu_init_buffer = imu_init_buffer.lock().unwrap();
+                            let delta = curr_stamp - init_time;
+                            if delta < init_imu_time {
+                                if let Some(imu_init_buffer) = imu_init_buffer.as_mut() {
+                                    imu_init_buffer.push(imu_lifis);
+                                    return; // skip adding to lifis if we are still in the init phase
+                                }
+                                // we are only here, if there was an initial buffer, but it was already consumed so skip init and continue with normal processing
+                            } else {
+                                // apply the init buffer
+                                if let Some(imu_init_buffer) = imu_init_buffer.take() {
+                                    imu_pose_predictor_init(&imu_init_buffer);
                                 }
                             }
                         }
+                    }
 
-                        let filtered = state.lifis.lock().unwrap().add_imu(imu_to_lifis(msg));
-                        match (filtered, imu_filtered_publisher.as_ref()) {
-                            (Some(filtered), Some(imu_filtered_publisher)) => {
-                                imu_filtered_publisher
-                                    .clone()
-                                    .lock()
-                                    .unwrap()
-                                    .publish(&lifis_to_imu(filtered))
-                                    .expect("could not publish filtered imu");
-                            }
-                            _ => {}
+                    let state = state_clone.lock().unwrap();
+                    let filtered = state.lifis.lock().unwrap().add_imu(imu_to_lifis(msg));
+                    match (filtered, imu_filtered_publisher.as_ref()) {
+                        (Some(filtered), Some(imu_filtered_publisher)) => {
+                            imu_filtered_publisher
+                                .clone()
+                                .lock()
+                                .unwrap()
+                                .publish(&lifis_to_imu(filtered))
+                                .expect("could not publish filtered imu");
                         }
-                    })
-                    .await;
-            })
+                        _ => {}
+                    }
+                }
+                Ok(None) => {}
+            }
         });
-
-        let state_clone = Arc::clone(&state);
-        let _service_set_fov = node.create_service::<r2r::lifis_msgs::srv::SetFov::Service>(
-            params.set_fov_service,
-            params.set_fov_service_qos,
-        );
-        std::thread::spawn(move || {
-            future::block_on(async {
-                _service_set_fov
-                    .expect("could not create service")
-                    .for_each(|req| {
-                        let state_clone = state_clone.clone();
-                        let left: f32 = req.message.left;
-                        let right: f32 = req.message.right;
-                        let enable: bool = req.message.enable;
-
-                        let resp = {
-                            let state = state_clone.lock().unwrap();
-                            let config = state.config.lock();
-                            let success = match config {
-                                Ok(mut config) => {
-                                    config.fov_enabled = enable;
-                                    config.fov_left = left;
-                                    config.fov_right = right;
-                                    true
-                                }
-                                Err(e) => {
-                                    log_error!(
-                                        logger_prefix,
-                                        "Failed to lock state in filter for polygon service: {:?}",
-                                        e
-                                    );
-                                    false
-                                }
-                            };
-                            r2r::lifis_msgs::srv::SetFov::Response { success }
-                        };
-                        req.respond(resp).expect("could not send response");
-                    })
-                    .await;
-            })
-        });
-
-        let state_clone = Arc::clone(&state);
-        let _service_set_distances = node
-            .create_service::<r2r::lifis_msgs::srv::SetDistances::Service>(
-                params.set_distances_service,
-                params.set_distances_service_qos,
-            );
-        std::thread::spawn(move || {
-            future::block_on(async {
-                _service_set_distances
-                    .expect("could not create service")
-                    .for_each(|req| {
-                        let min_distance: f32 = req.message.min;
-                        let max_distance: f32 = req.message.max;
-                        let invert: bool = req.message.invert;
-
-                        let resp = r2r::lifis_msgs::srv::SetDistances::Response {
-                            success: match state_clone.lock().unwrap().config.lock() {
-                                Ok(mut state) => {
-                                    state.min_dist = min_distance;
-                                    state.max_dist = max_distance;
-                                    state.invert_distance = invert;
-                                    true
-                                }
-                                Err(e) => {
-                                    log_error!(
-                                        logger_prefix,
-                                        "Failed to lock state in filter for polygon service: {:?}",
-                                        e
-                                    );
-                                    false
-                                }
-                            },
-                        };
-                        req.respond(resp).expect("could not send response");
-                    })
-                    .await
-            })
-        });
-
-        r2r::log_info!("prelio-ros2", "CREATED LIFIS NODE");
 
         Ok((
             Self {
                 state,
                 tf_listener,
-                logger: logger_prefix.to_string(),
+                logger: "".to_string(), // TODO rm logger prefix
             },
             rx,
         ))
@@ -889,12 +687,12 @@ impl LifisNode {
 
             let twist = TwistWithCovariance {
                 twist: Twist {
-                    linear: r2r::geometry_msgs::msg::Vector3 {
+                    linear: ros2_interfaces_jazzy::geometry_msgs::msg::Vector3 {
                         x: synced_data.end_of_frame_twist.linear.x,
                         y: synced_data.end_of_frame_twist.linear.y,
                         z: synced_data.end_of_frame_twist.linear.z,
                     },
-                    angular: r2r::geometry_msgs::msg::Vector3 {
+                    angular: ros2_interfaces_jazzy::geometry_msgs::msg::Vector3 {
                         x: synced_data.end_of_frame_twist.angular.x,
                         y: synced_data.end_of_frame_twist.angular.y,
                         z: synced_data.end_of_frame_twist.angular.z,
@@ -903,9 +701,9 @@ impl LifisNode {
                 covariance: synced_data.twist_covariance.into(),
             };
 
-            let odom = r2r::nav_msgs::msg::Odometry {
-                header: r2r::std_msgs::msg::Header {
-                    stamp: r2r::builtin_interfaces::msg::Time {
+            let odom = ros2_interfaces_jazzy::nav_msgs::msg::Odometry {
+                header: ros2_interfaces_jazzy::std_msgs::msg::Header {
+                    stamp: ros2_interfaces_jazzy::builtin_interfaces::msg::Time {
                         sec: synced_data.end_of_frame_time.sec,
                         nanosec: synced_data.end_of_frame_time.nanosec,
                     },
@@ -989,20 +787,20 @@ fn imu_to_lifis(msg: Imu) -> prelio::imu::ImuMsg {
 
 fn lifis_to_imu(msg: prelio::imu::ImuMsg) -> Imu {
     Imu {
-        header: r2r::std_msgs::msg::Header {
-            stamp: r2r::builtin_interfaces::msg::Time {
+        header: ros2_interfaces_jazzy::std_msgs::msg::Header {
+            stamp: ros2_interfaces_jazzy::builtin_interfaces::msg::Time {
                 sec: msg.stamp.sec,
                 nanosec: msg.stamp.nanosec,
             },
             frame_id: msg.frame_id,
         },
-        orientation: r2r::geometry_msgs::msg::Quaternion {
+        orientation: ros2_interfaces_jazzy::geometry_msgs::msg::Quaternion {
             x: msg.orientation[1],
             y: msg.orientation[2],
             z: msg.orientation[3],
             w: msg.orientation[0],
         },
-        orientation_covariance: vec![
+        orientation_covariance: [
             msg.orientation_covariance[0],
             msg.orientation_covariance[1],
             msg.orientation_covariance[2],
@@ -1013,12 +811,12 @@ fn lifis_to_imu(msg: prelio::imu::ImuMsg) -> Imu {
             msg.orientation_covariance[7],
             msg.orientation_covariance[8],
         ],
-        angular_velocity: r2r::geometry_msgs::msg::Vector3 {
+        angular_velocity: ros2_interfaces_jazzy::geometry_msgs::msg::Vector3 {
             x: msg.angular_velocity[0],
             y: msg.angular_velocity[1],
             z: msg.angular_velocity[2],
         },
-        angular_velocity_covariance: vec![
+        angular_velocity_covariance: [
             msg.angular_velocity_covariance[0],
             msg.angular_velocity_covariance[1],
             msg.angular_velocity_covariance[2],
@@ -1029,12 +827,12 @@ fn lifis_to_imu(msg: prelio::imu::ImuMsg) -> Imu {
             msg.angular_velocity_covariance[7],
             msg.angular_velocity_covariance[8],
         ],
-        linear_acceleration: r2r::geometry_msgs::msg::Vector3 {
+        linear_acceleration: ros2_interfaces_jazzy::geometry_msgs::msg::Vector3 {
             x: msg.linear_acceleration[0],
             y: msg.linear_acceleration[1],
             z: msg.linear_acceleration[2],
         },
-        linear_acceleration_covariance: vec![
+        linear_acceleration_covariance: [
             msg.linear_acceleration_covariance[0],
             msg.linear_acceleration_covariance[1],
             msg.linear_acceleration_covariance[2],

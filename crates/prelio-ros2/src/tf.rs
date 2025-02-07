@@ -1,15 +1,13 @@
-/// Inlined tf_r2r crate as single module for R2R generated message compatibility over major versions.
+/// Inlined r2r ros tf implementation ported to ros2-client.
 ///
 /// tf_r2r is written by Arjo Chakravarty <arjo129@gmail.com>, Michael Maerz <maerz@magazino.eu> and Mitsuharu Kojima <kojima@smilerobotics.com>.
 /// See this [repository](https://github.com/smilerobotics/tf_rosrust) or [crates.io](https://crates.io/crates/tf_r2r) for the original.
-use futures_lite::StreamExt;
+use log::error;
 use nalgebra::geometry::{Isometry3, Translation3, UnitQuaternion};
-use r2r::{
+
+use ros2_interfaces_jazzy::tf2_msgs::msg::TFMessage;
+use ros2_interfaces_jazzy::{
     builtin_interfaces::msg::{Duration, Time},
-    tf2_msgs::msg::TFMessage,
-    QosProfile,
-};
-use r2r::{
     geometry_msgs::msg::{Pose, Quaternion, Transform, TransformStamped, Vector3},
     std_msgs::msg::Header,
 };
@@ -18,15 +16,26 @@ use std::sync::{Arc, RwLock};
 use thiserror::Error;
 
 pub struct TfBroadcaster {
-    publisher: r2r::Publisher<TFMessage>,
+    publisher: ros2_client::Publisher<TFMessage>,
 }
 
 impl TfBroadcaster {
     /// Create a new TfBroadcaster
     #[track_caller]
-    pub fn new(node: &mut r2r::Node) -> Self {
+    pub fn new(node: &mut ros2_client::Node) -> Self {
         Self {
-            publisher: node.create_publisher("/tf", QosProfile::default()).unwrap(),
+            publisher: node
+                .create_publisher(
+                    &node
+                        .create_topic(
+                            &ros2_client::Name::new("/", "tf").unwrap(),
+                            ros2_client::MessageTypeName::new("tf2_msgs", "TFMessage"),
+                            &ros2_client::DEFAULT_PUBLISHER_QOS,
+                        )
+                        .unwrap(),
+                    None,
+                )
+                .unwrap(),
         }
     }
 
@@ -37,7 +46,7 @@ impl TfBroadcaster {
         };
         // TODO: handle error correctly
         self.publisher
-            .publish(&tf_message)
+            .publish(tf_message)
             .map_err(|err| TfError::R2r(err.to_string()))
     }
 }
@@ -47,19 +56,19 @@ impl TfBroadcaster {
 #[non_exhaustive]
 pub enum TfError {
     /// Error due to looking up too far in the past. I.E the information is no longer available in the TF Cache.
-    #[error("tf_r2r: AttemptedLookupInPast {:?} < {:?}",.0, .1)]
+    #[error("tf: AttemptedLookupInPast {:?} < {:?}",.0, .1)]
     AttemptedLookupInPast(Time, Box<TransformStamped>),
     /// Error due to the transform not yet being available.
-    #[error("tf_r2r: AttemptedLookupInFuture {:?} < {:?}",.0, .1)]
+    #[error("tf: AttemptedLookupInFuture {:?} < {:?}",.0, .1)]
     AttemptedLookUpInFuture(Box<TransformStamped>, Time),
     /// There is no path between the from and to frame.
-    #[error("tf_r2r: CouldNotFindTransform {} -> {} ({:?})", .0, .1, .2)]
+    #[error("tf: CouldNotFindTransform {} -> {} ({:?})", .0, .1, .2)]
     CouldNotFindTransform(String, String, HashMap<String, HashSet<String>>),
     /// In the event that a write is simultaneously happening with a read of the same tf buffer
-    #[error("tf_r2r: CouldNotAcquireLock")]
+    #[error("tf: CouldNotAcquireLock")]
     CouldNotAcquireLock,
     /// Error of r2r
-    #[error("tf_r2r: r2r error {:?}", .0)]
+    #[error("tf: tf error {:?}", .0)]
     R2r(String),
 }
 
@@ -189,50 +198,77 @@ pub struct TfListener {
 impl TfListener {
     /// Create a new TfListener
     #[track_caller]
-    pub fn new(node: &mut r2r::Node) -> Self {
+    pub fn new(node: &mut ros2_client::Node) -> Self {
         Self::new_with_buffer(node, TfBuffer::new())
     }
 
     #[track_caller]
-    pub fn new_with_buffer(node: &mut r2r::Node, tf_buffer: TfBuffer) -> Self {
+    pub fn new_with_buffer(node: &mut ros2_client::Node, tf_buffer: TfBuffer) -> Self {
         let buff = Arc::new(RwLock::new(tf_buffer));
 
-        let mut dynamic_subscriber = node
-            .subscribe::<TFMessage>("/tf", QosProfile::default())
+        let dynamic_subscriber = node
+            .create_subscription(
+                &node
+                    .create_topic(
+                        &ros2_client::Name::new("/", "tf").unwrap(),
+                        ros2_client::MessageTypeName::new("tf2_msgs", "TFMessage"),
+                        &ros2_client::DEFAULT_SUBSCRIPTION_QOS,
+                    )
+                    .unwrap(),
+                None,
+            )
             .unwrap();
 
         let buff_for_dynamic_sub = buff.clone();
         std::thread::spawn(move || {
-            futures_lite::future::block_on(async {
-                while Arc::strong_count(&buff_for_dynamic_sub) > 1 {
-                    if let Some(tf) = dynamic_subscriber.next().await {
+            while Arc::strong_count(&buff_for_dynamic_sub) > 1 {
+                match dynamic_subscriber.take() {
+                    Err(e) => {
+                        error!("Read error in dynamic tf: {e}");
+                    }
+                    Ok(Some((tf, _))) => {
                         buff_for_dynamic_sub
                             .write()
                             .unwrap()
                             .handle_incoming_transforms(tf, false);
                     }
-                    std::thread::sleep(std::time::Duration::from_millis(100));
+                    _ => {}
                 }
-            });
+                // std::thread::sleep(std::time::Duration::from_millis(100)); // TODO this was here but why?
+            }
         });
 
-        let mut static_subscriber = node
-            .subscribe::<TFMessage>("/tf_static", QosProfile::default())
+        let static_subscriber = node
+            .create_subscription(
+                &node
+                    .create_topic(
+                        &ros2_client::Name::new("/", "tf_static").unwrap(),
+                        ros2_client::MessageTypeName::new("tf2_msgs", "TFMessage"),
+                        &ros2_client::DEFAULT_SUBSCRIPTION_QOS,
+                    )
+                    .unwrap(),
+                None,
+            )
             .unwrap();
 
         let buff_for_static_sub = buff.clone();
         std::thread::spawn(move || {
-            futures_lite::future::block_on(async {
-                while Arc::strong_count(&buff_for_static_sub) > 1 {
-                    if let Some(tf) = static_subscriber.next().await {
+            while Arc::strong_count(&buff_for_static_sub) > 1 {
+                match static_subscriber.take() {
+                    Err(e) => {
+                        error!("Read error in static tf: {e}");
+                    }
+                    Ok(Some((tf, _))) => {
                         buff_for_static_sub
                             .write()
                             .unwrap()
                             .handle_incoming_transforms(tf, true);
                     }
-                    std::thread::sleep(std::time::Duration::from_millis(100));
+                    _ => {}
                 }
-            });
+
+                // std::thread::sleep(std::time::Duration::from_millis(100)); // TODO same here
+            }
         });
 
         TfListener { buffer: buff }
@@ -388,7 +424,7 @@ pub(crate) fn to_transform_stamped(
     tf: Transform,
     from: std::string::String,
     to: std::string::String,
-    time: &r2r::builtin_interfaces::msg::Time,
+    time: &Time,
 ) -> TransformStamped {
     TransformStamped {
         header: Header {
@@ -657,7 +693,7 @@ impl TfBuffer {
 
 #[cfg(test)]
 mod test {
-    use r2r::{
+    use ros2_interfaces_jazzy::{
         builtin_interfaces::msg::Time,
         geometry_msgs::msg::{Quaternion, Vector3},
     };
