@@ -6,7 +6,7 @@ variables:
 
 stages:
   - build
-  - release
+  - archive
 
 rust-latest:
   stage: build
