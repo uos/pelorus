@@ -1,29 +1,13 @@
-# lio - LiDAR Inertial Odometry
+# Mayflower - LiDAR Inertial Odometry
 
-A simple LiDAR Odometry using IMU data as inertial estimation for GICP on Gaussian Voxel Grids.
-
-## Setup
-
-You need to have ROS2 installed on your sytem. We assume an Ubuntu installation from here on.
-
-Dependencies
-```shell
-sudo apt-get install libeigen3-dev libtbb-dev libclang-dev
-curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
-
-pip install --break-system-package colcon-ros-cargo cargo-ament-build
-```
-
-
-```shell
-git clone --recurse-submodules git://gitlab.informatik.uni-osnabrueck.de/csieh/lio.git src/lio
-colcon build --clean-build --cargo-args --release
-ros2 launch src/lio/lio/launch/lio.py
+## Usage
+See
+```sh
+cargo run -- --help
 ```
 
 ## Dev
-[lio] is developed against the nightly toolchain for maximum development speed. On debug builds, the following settings are optimized for compilation speed.
-
+[lio] is developed with the nightly toolchain. On debug builds, the following settings are optimized for compilation speed.
 
 ```sh
 rustup default nightly
@@ -34,13 +18,28 @@ RUSTFLAGS="-Z threads=8" cargo build
 
 or export `RUSTFLAGS` to your environment.
 
-## Prod
+Now you can set a general config for cargo to use the cranelift backend for debug builds.
 
+`~/.cargo/config`
 ```sh
-rustup target add x86_64-unknown-linux-musl
-RUSTFLAGS="-C target-feature=+crt-static" cargo build --release --target x86_64-unknown-linux-musl
+[unstable]
+codegen-backend = true
+
+[profile.dev]
+codegen-backend = "cranelift"
 ```
 
+## Prod
+
+Build a static binary for deployment.
+
+Use musl for static linking.
 ```sh
 sudo apt install musl-tools
+```
+
+Then build.
+```sh
+rustup target add x86_64-unknown-linux-musl
+RUSTFLAGS="-C target-feature=+crt-static" cargo build --release --features mimalloc --target x86_64-unknown-linux-musl
 ```
