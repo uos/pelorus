@@ -3,10 +3,17 @@ image: rust:latest
 variables:
   CARGO_INCREMENTAL: "0"
   RUST_BACKTRACE: "full"
+  CROSS_CONTAINER_ENGINE: "podman"
 
 stages:
   - build
   - archive
+
+before_script:
+  - apt-get update
+  - apt-get install -y podman
+  - cargo install cross --git https://github.com/cross-rs/cross --locked
+  - podman info
 
 rust-latest:
   stage: build
@@ -17,8 +24,8 @@ rust-latest:
 
 rust-nightly:
   stage: build
+  image: rust:nightly
   script:
-    - rustup default nightly
     - cargo build --verbose
     - cargo test --verbose
   allow_failure: true
@@ -26,10 +33,7 @@ rust-nightly:
 .build_template: &build_defaults
   stage: build
   script:
-    - rustup target list
-    - rustup default stable
-    - cargo install cross --git https://github.com/cross-rs/cross --force
-    - cross build --target $RUST_TARGET --release
+    - RUST_LOG=cross=warn cross build --target $RUST_TARGET --features mimalloc --release
   artifacts:
     paths:
       - target/$RUST_TARGET/release/
