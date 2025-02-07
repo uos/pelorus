@@ -769,7 +769,7 @@ fn ros(config_path: &str) -> Result<(), Box<dyn std::error::Error>> {
                 if last_render.elapsed() > render_interval {
                     last_render = std::time::Instant::now();
                     info!(
-                        "{}[2J{}[1;1HAccelerated LiDAR Odometry Framework\n{}",
+                        "{}[2J{}[1;Lidar Inertial Odometry\n{}",
                         27 as char,
                         27 as char,
                         eval.render()
@@ -815,7 +815,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 Ok(())
             }
             ConfigCommand::Test(args) => {
-                let config = read_config::<LioConfig>(&args.config_path)?;
+                let _config = read_config::<LioConfig>(&args.config_path)?;
                 Ok(())
             }
         },
