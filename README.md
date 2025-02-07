@@ -1,4 +1,4 @@
-# Mayflower - LiDAR Inertial Odometry
+# ½[lio] - LiDAR Inertial Odometry
 
 ## Usage
 See
@@ -27,19 +27,4 @@ codegen-backend = true
 
 [profile.dev]
 codegen-backend = "cranelift"
-```
-
-## Prod
-
-Build a static binary for deployment.
-
-Use musl for static linking.
-```sh
-sudo apt install musl-tools
-```
-
-Then build.
-```sh
-rustup target add x86_64-unknown-linux-musl
-RUSTFLAGS="-C target-feature=+crt-static" cargo build --release --features mimalloc --target x86_64-unknown-linux-musl
 ```
