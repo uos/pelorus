@@ -3,18 +3,13 @@ image: rust:latest
 variables:
   CARGO_INCREMENTAL: "0"
   RUST_BACKTRACE: "full"
-  CROSS_CONTAINER_ENGINE: "podman"
 
 stages:
   - build
-  - archive
 
 before_script:
   - apt-get update
-  - apt-get install -y podman
-  - cargo install cross --git https://github.com/cross-rs/cross --locked
-  - podman-system-migrate
-  - podman info
+  - apt-get install -y gcc-aarch64-linux-gnu gcc-riscv64-linux-gnu musl-tools libc6-dev-riscv64-cross gcc-arm-linux-gnueabihf
 
 rust-latest:
   stage: build
@@ -34,15 +29,26 @@ rust-nightly:
 .build_template: &build_defaults
   stage: build
   script:
-    - RUST_LOG=cross=warn cross build --target $RUST_TARGET --features mimalloc --release
+    - rustup target add $RUST_TARGET
+    - RUSTFLAGS="-C target-feature=+crt-static" cargo build --target $RUST_TARGET --features mimalloc --release
   artifacts:
     paths:
       - target/$RUST_TARGET/release/
 
-build:linux:x86_64:
+build:linux:x86_64-musl:
+  <<: *build_defaults
+  variables:
+    RUST_TARGET: x86_64-unknown-linux-musl
+
+build:linux:x86_64-gnu:
   <<: *build_defaults
   variables:
     RUST_TARGET: x86_64-unknown-linux-gnu
+
+build:linux:aarch64:
+  <<: *build_defaults
+  variables:
+    RUST_TARGET: aarch64-unknown-linux-gnu
 
 build:linux:armv7:
   <<: *build_defaults
@@ -54,17 +60,3 @@ build:linux:riscv64:
   variables:
     RUST_TARGET: riscv64gc-unknown-linux-gnu
 
-combine_artifacts:
-  stage: archive
-  needs:
-    - build:linux:x86_64
-    - build:linux:armv7
-    - build:linux:riscv64
-  script:
-    - mkdir -p combined_artifacts
-    - cp -r target/x86_64-unknown-linux-gnu/release/ combined_artifacts/
-    - cp -r target/armv7-unknown-linux-gnueabihf/release/ combined_artifacts/
-    - cp -r target/riscv64gc-unknown-linux-gnu/release/ combined_artifacts/
-  artifacts:
-    paths:
-      - combined_artifacts/
