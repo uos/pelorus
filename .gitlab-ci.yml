@@ -17,6 +17,8 @@ rust-latest:
     - rustup default stable
     - cargo build --verbose
     - cargo test --verbose
+  rules:
+    - if: '$CI_COMMIT_BRANCH == "dev"'
 
 rust-nightly:
   stage: build
@@ -25,37 +27,48 @@ rust-nightly:
     - cargo build --verbose
     - cargo test --verbose
   allow_failure: true
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "schedule"'
+    - if: '$CI_COMMIT_BRANCH == "dev"'
 
 .build_template: &build_defaults
   stage: build
   script:
     - rustup target add $RUST_TARGET
     - RUSTFLAGS="-C target-feature=+crt-static" cargo build --target $RUST_TARGET --features mimalloc --release
+    - mv target/$RUST_TARGET/release/pelorus pelorus-$RUST_TARGET
   artifacts:
     paths:
-      - target/$RUST_TARGET/release/pelorus
+      - pelorus-$RUST_TARGET
+  rules:
+    - if: '$CI_COMMIT_BRANCH == "dev"'
 
 build:linux:x86_64-musl:
   <<: *build_defaults
   variables:
     RUST_TARGET: x86_64-unknown-linux-musl
+    TRIPLE: x86_64-linux-musl
 
 build:linux:x86_64-gnu:
   <<: *build_defaults
   variables:
     RUST_TARGET: x86_64-unknown-linux-gnu
+    TRIPLE: x86_64-linux-gnu
 
 build:linux:aarch64:
   <<: *build_defaults
   variables:
     RUST_TARGET: aarch64-unknown-linux-gnu
+    TRIPLE: aarch64-linux-gnu
 
 build:linux:armv7:
   <<: *build_defaults
   variables:
     RUST_TARGET: armv7-unknown-linux-gnueabihf
+    TRIPLE: arm-linux-gnueabihf
 
 build:linux:riscv64:
   <<: *build_defaults
   variables:
     RUST_TARGET: riscv64gc-unknown-linux-gnu
+    TRIPLE: riscv64-linux-gnu
