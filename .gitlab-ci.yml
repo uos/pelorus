@@ -36,10 +36,10 @@ rust-nightly:
   script:
     - rustup target add $RUST_TARGET
     - RUSTFLAGS="-C target-feature=+crt-static" cargo build --target $RUST_TARGET --features mimalloc --release
-    - mv target/$RUST_TARGET/release/pelorus pelorus-$TRIPLE
+    - mv target/$RUST_TARGET/release/pelorus pelorus-$TRIPLE-nightly-$(date +%Y-%m-%d)
   artifacts:
     paths:
-      - pelorus-$TRIPLE
+      - pelorus-$TRIPLE-nightly-$(date +%Y-%m-%d)
     expire_in: 1 week
   rules:
     - if: '$CI_PIPELINE_SOURCE == "schedule"'
@@ -50,10 +50,10 @@ snapshot:linux:x86_64-musl:
   script:
     - rustup target add $RUST_TARGET
     - RUSTFLAGS="-C target-feature=+crt-static" cargo build --target $RUST_TARGET --features mimalloc --release
-    - mv target/$RUST_TARGET/release/pelorus pelorus-$TRIPLE
+    - mv target/$RUST_TARGET/release/pelorus pelorus-$TRIPLE-nightly-$(date +%Y-%m-%d)
   artifacts:
     paths:
-      - pelorus-$TRIPLE
+      - pelorus-$TRIPLE-nightly-$(date +%Y-%m-%d)
     expire_in: 1 week
   variables:
     RUST_TARGET: x86_64-unknown-linux-musl
@@ -92,10 +92,10 @@ snapshot:linux:riscv64-musl:
     - rustup target add $RUST_TARGET
     - curl -L https://musl.cc/riscv64-linux-musl-cross.tgz | tar xz
     - RUSTFLAGS="-C target-feature=+crt-static" cargo build --target $RUST_TARGET --features mimalloc --release
-    - mv target/$RUST_TARGET/release/pelorus pelorus-$TRIPLE
+    - mv target/$RUST_TARGET/release/pelorus pelorus-$TRIPLE-nightly-$(date +%Y-%m-%d)
   artifacts:
     paths:
-      - pelorus-$TRIPLE
+      - pelorus-$TRIPLE-nightly-$(date +%Y-%m-%d)
     expire_in: 1 week
   variables:
     RUST_TARGET: riscv64gc-unknown-linux-musl
