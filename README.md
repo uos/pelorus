@@ -11,7 +11,7 @@ cargo run -- --help
 
 ```sh
 rustup default nightly
-rusutp update
+rustup update
 rustup component add rustc-codegen-cranelift-preview --toolchain nightly
 RUSTFLAGS="-Z threads=8" cargo build
 ```
