@@ -1,4 +1,4 @@
-image: rust:stable
+image: ghcr.io/rust-lang/rust:stable
 
 variables:
   CARGO_INCREMENTAL: "0"
