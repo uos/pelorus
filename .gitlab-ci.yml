@@ -11,11 +11,13 @@ stages:
 before_script:
   - apt-get update
   - apt-get install -y curl gcc-aarch64-linux-gnu gcc-riscv64-linux-gnu musl-tools libc6-dev-riscv64-cross gcc-arm-linux-gnueabihf
+  - curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+  - source "$HOME/.cargo/env"
+  - rustup default stable
 
 rust-stable:
   stage: build
   script:
-    - curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
     - rustup default stable
     - cargo build --verbose
     - cargo test --verbose
@@ -25,7 +27,6 @@ rust-stable:
 rust-nightly:
   stage: build
   script:
-    - curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
     - rustup default nightly
     - cargo build --verbose
     - cargo test --verbose
@@ -38,7 +39,6 @@ rust-nightly:
   stage: snapshot
   script:
     - export DATE=$(date +%Y-%m-%d)
-    - curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
     - rustup default nightly
     - rustup target add $RUST_TARGET
     - RUSTFLAGS="-C target-feature=+crt-static" cargo build --target $RUST_TARGET --features mimalloc --release
@@ -55,7 +55,6 @@ snapshot:linux:x86_64-musl:
   stage: snapshot
   script:
     - export DATE=$(date +%Y-%m-%d)
-    - curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
     - rustup default nightly
     - rustup target add $RUST_TARGET
     - RUSTFLAGS="-C target-feature=+crt-static" cargo build --target $RUST_TARGET --features mimalloc --release
@@ -99,7 +98,6 @@ snapshot:linux:riscv64-musl:
   stage: snapshot
   script:
     - export DATE=$(date +%Y-%m-%d)
-    - curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
     - rustup default nightly
     - rustup target add $RUST_TARGET
     - curl -L https://musl.cc/riscv64-linux-musl-cross.tgz | tar xz
