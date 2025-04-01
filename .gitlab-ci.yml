@@ -16,7 +16,6 @@ before_script:
 
 rust-stable:
   stage: build
-  image: rust:latest
   script:
     - rustup default stable
     - cargo build --verbose
