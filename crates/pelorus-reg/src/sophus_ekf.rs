@@ -133,16 +133,6 @@ fn box_plus(x: &StateIKFom, f: &SMatrix<f64, 24, 1>) -> StateIKFom {
     x_r
 }
 
-/*
-TODO test if
-Sophus::SO3(x2.rot.matrix().transpose() * x1.rot.matrix()).log();
-and
-x_r.fixed_rows_mut::<3>(3).copy_from(&(SO3::log(&x2.rot.inverse().group_mul(&x1.rot))));
-do the same thing
-
-first check: should be the same
-second check: should be the same but transpose is faster to compute. Rotation matrices are orthogonal matrices, so the transpose is the inverse.
-*/
 /// Difference between two states, stay on the manifold
 fn box_minus(x1: &StateIKFom, x2: &StateIKFom) -> SMatrix<f64, 24, 1> {
     let mut x_r = SMatrix::<f64, 24, 1>::zeros();
@@ -297,6 +287,106 @@ impl Esekf {
                     return;
                 }
             }
+        }
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+
+    #[test]
+    /// Testing box_minus because the Rust SO3 API differs from C++ with Eigen.
+    /// We need to make sure that log difference yields the same result given the same input.
+    fn test_box_minus() {
+        let x1 = StateIKFom {
+            pos: Vector3::new(-0.00033805, -0.000889051, 0.00938266),
+            rot: SO3::try_from_mat(&Matrix3::new(
+                1.0,
+                -0.000811369,
+                -0.000536165,
+                0.000809094,
+                0.999991,
+                -0.00422844,
+                0.000539591,
+                0.004228,
+                0.999991,
+            ))
+            .unwrap(),
+            offset_r_l_i: SO3::try_from_mat(&Matrix3::new(
+                1.0,
+                -3.58198e-08,
+                -1.55174e-08,
+                3.58198e-08,
+                1.0,
+                -2.29495e-09,
+                1.55174e-08,
+                2.29495e-09,
+                1.0,
+            ))
+            .unwrap(),
+            offset_t_l_i: Vector3::new(-2.29524e-09, -8.60487e-09, -0.0999999),
+            vel: Vector3::new(0.00100574, -0.00287086, -0.0415167),
+            bg: Vector3::new(-0.00306821, -0.0160729, 0.0246286),
+            ba: Vector3::new(9.91917e-10, 3.81246e-09, -5.09075e-08),
+            grav: Vector3::new(-0.344021, -0.210795, -9.8017),
+        };
+
+        let x2 = StateIKFom {
+            pos: Vector3::new(-3.91725e-05, 3.46329e-05, -0.00277273),
+            rot: SO3::try_from_mat(&Matrix3::new(
+                0.999996,
+                0.0027701,
+                0.00101921,
+                -0.00276596,
+                0.999988,
+                -0.0040398,
+                -0.00103039,
+                0.00403696,
+                0.999991,
+            ))
+            .unwrap(),
+            offset_r_l_i: SO3::try_from_mat(&Matrix3::new(
+                1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0,
+            ))
+            .unwrap(),
+            offset_t_l_i: Vector3::new(0.0, 0.0, -0.1),
+            vel: Vector3::new(0.00257744, -0.00273267, -0.0427957),
+            bg: Vector3::new(-0.00306821, -0.0160729, 0.0246287),
+            ba: Vector3::new(0.0, 0.0, 0.0),
+            grav: Vector3::new(-0.344021, -0.210795, -9.8017),
+        };
+        let res = super::box_minus(&x1, &x2);
+
+        let expected = SMatrix::<f64, 24, 1>::from_vec(vec![
+            -0.000298878,
+            -0.000923684,
+            0.0121554,
+            0.000190165,
+            -0.00155519,
+            0.00358152,
+            2.29495e-09,
+            -1.55174e-08,
+            3.58198e-08,
+            -2.29524e-09,
+            -8.60487e-09,
+            1.20337e-07,
+            -0.00157169,
+            -0.00013819,
+            0.00127899,
+            -1.55543e-09,
+            1.55399e-08,
+            -3.62603e-08,
+            9.91917e-10,
+            3.81246e-09,
+            -5.09075e-08,
+            -9.85312e-12,
+            -3.8593e-11,
+            5.09022e-10,
+        ]);
+
+        for (idx, x) in res.iter().enumerate() {
+            assert!((x - expected[idx]).abs() < 1e-7);
         }
     }
 }
