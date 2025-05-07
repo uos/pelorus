@@ -9,6 +9,8 @@ use clap::{command, Parser, Subcommand};
 use futures_lite::future;
 use log::{error, info};
 use nalgebra::{Isometry3, Translation3};
+#[cfg(feature = "rerun")]
+use rerun::{demo_util::grid, external::glam};
 use ros2_client::{NodeName, NodeOptions};
 use ros2_interfaces_jazzy::{
     builtin_interfaces::msg::Time,
@@ -177,7 +179,6 @@ fn ros(config_path: &str) -> Result<(), Box<dyn std::error::Error>> {
     // log4rs::init_file("examples/async_listener/log4rs.yaml", Default::default()).unwrap();
 
     let namespace = "/lio";
-
     let ctx = ros2_client::Context::new()?;
     let mut node = ctx.new_node(
         NodeName::new(namespace, "lio_node")?,
@@ -201,6 +202,22 @@ fn ros(config_path: &str) -> Result<(), Box<dyn std::error::Error>> {
         }
         Ok(cfg) => cfg,
     };
+
+    #[cfg(feature = "rerun")]
+    {
+        let rec = rerun::RecordingStreamBuilder::new("pelorus").spawn()?;
+
+        let points = grid(glam::Vec3::splat(-10.0), glam::Vec3::splat(10.0), 10);
+        let colors = grid(glam::Vec3::ZERO, glam::Vec3::splat(255.0), 10)
+            .map(|v| rerun::Color::from_rgb(v.x as u8, v.y as u8, v.z as u8));
+
+        rec.log(
+            "my_points",
+            &rerun::Points3D::new(points)
+                .with_colors(colors)
+                .with_radii([0.5]),
+        )?;
+    }
 
     let tf_broadcaster = TfBroadcaster::new(&mut node);
 
@@ -571,81 +588,85 @@ fn ros(config_path: &str) -> Result<(), Box<dyn std::error::Error>> {
                 }
             };
 
-            if let Some(registered_normals) = register_pose.registered_cloud {
-                let random_color = {
-                    let mut rng = rand::thread_rng();
-                    let r: f32 = rng.gen();
-                    let g: f32 = rng.gen();
-                    let b: f32 = rng.gen();
-                    let v = nalgebra::Vector3::new(r, g, b).normalize();
-                    let a: f32 = 0.7;
-                    (v.x, v.y, v.z, a)
-                };
+            #[cfg(debug_assertions)]
+            {
+                // TODO use rerun
+                if let Some(registered_normals) = register_pose.registered_cloud {
+                    let random_color = {
+                        let mut rng = rand::thread_rng();
+                        let r: f32 = rng.gen();
+                        let g: f32 = rng.gen();
+                        let b: f32 = rng.gen();
+                        let v = nalgebra::Vector3::new(r, g, b).normalize();
+                        let a: f32 = 0.7;
+                        (v.x, v.y, v.z, a)
+                    };
 
-                let mut marr = Marker::default();
-                marr.header = Header {
-                    frame_id: config.prelio_params.map_frame.clone(),
-                    stamp: Time {
-                        sec: orig_time.sec,
-                        nanosec: orig_time.nanosec,
-                    },
-                };
-                marr.id = total_viz_marker;
-                total_viz_marker += 1;
+                    let mut marr = Marker::default();
+                    marr.header = Header {
+                        frame_id: config.prelio_params.map_frame.clone(),
+                        stamp: Time {
+                            sec: orig_time.sec,
+                            nanosec: orig_time.nanosec,
+                        },
+                    };
+                    marr.id = total_viz_marker;
+                    total_viz_marker += 1;
 
-                // Live for ever, RIP Rviz
-                marr.lifetime.sec = 0;
-                marr.lifetime.nanosec = 0;
+                    // Live for ever, RIP Rviz
+                    marr.lifetime.sec = 0;
+                    marr.lifetime.nanosec = 0;
 
-                marr.type_ = 5; // Arrow
-                marr.action = 0; // add
+                    marr.type_ = 5; // Arrow
+                    marr.action = 0; // add
 
-                marr.scale.x = 0.02; // measured distance to the plane
-                marr.scale.y = 0.02; // shaft
-                marr.scale.z = 0.02; // head
+                    marr.scale.x = 0.02; // measured distance to the plane
+                    marr.scale.y = 0.02; // shaft
+                    marr.scale.z = 0.02; // head
 
-                marr.color.r = random_color.0;
-                marr.color.g = random_color.1;
-                marr.color.b = random_color.2;
-                marr.color.a = random_color.3;
+                    marr.color.r = random_color.0;
+                    marr.color.g = random_color.1;
+                    marr.color.b = random_color.2;
+                    marr.color.a = random_color.3;
 
-                marr.header.frame_id = orig_frame.clone();
-                marr.header.stamp.nanosec = orig_time.nanosec; // TODO rpcl2 from timemsg
-                marr.header.stamp.sec = orig_time.sec;
+                    marr.header.frame_id = orig_frame.clone();
+                    marr.header.stamp.nanosec = orig_time.nanosec; // TODO rpcl2 from timemsg
+                    marr.header.stamp.sec = orig_time.sec;
 
-                //let draw_length = 0.25;
+                    //let draw_length = 0.25;
 
-                marr.points = registered_normals
-                    .iter() // downsample_avg(normal_iter, 0.5).iter() || normal_iter
-                    .map(|normal| {
-                        let normal_viz = nalgebra::Vector3::new(
-                            normal.normal_x as f64,
-                            normal.normal_y as f64,
-                            normal.normal_z as f64,
-                        );
+                    marr.points = registered_normals
+                        .iter() // downsample_avg(normal_iter, 0.5).iter() || normal_iter
+                        .map(|normal| {
+                            let normal_viz = nalgebra::Vector3::new(
+                                normal.normal_x as f64,
+                                normal.normal_y as f64,
+                                normal.normal_z as f64,
+                            );
 
-                        let position_viz = normal.xyz_f64();
-                        let end_position =
-                            position_viz + normal_viz.normalize() * normal.intensity as f64;
+                            let position_viz = normal.xyz_f64();
+                            let end_position =
+                                position_viz + normal_viz.normalize() * normal.intensity as f64;
 
-                        let mut point_start = Point::default();
-                        point_start.x = position_viz.x;
-                        point_start.y = position_viz.y;
-                        point_start.z = position_viz.z;
+                            let mut point_start = Point::default();
+                            point_start.x = position_viz.x;
+                            point_start.y = position_viz.y;
+                            point_start.z = position_viz.z;
 
-                        let mut point_end = Point::default();
-                        point_end.x = end_position.x;
-                        point_end.y = end_position.y;
-                        point_end.z = end_position.z;
+                            let mut point_end = Point::default();
+                            point_end.x = end_position.x;
+                            point_end.y = end_position.y;
+                            point_end.z = end_position.z;
 
-                        [point_start, point_end]
-                    })
-                    .flatten()
-                    .collect();
+                            [point_start, point_end]
+                        })
+                        .flatten()
+                        .collect();
 
-                registered_visual_publisher
-                    .publish(&marr)
-                    .expect("Failed to publish registered visualization");
+                    registered_visual_publisher
+                        .publish(&marr)
+                        .expect("Failed to publish registered visualization");
+                }
             }
 
             // transform cloud inplace for publish

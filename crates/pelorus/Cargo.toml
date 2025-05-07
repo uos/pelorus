@@ -20,6 +20,7 @@ log.workspace = true
 ros2-interfaces-jazzy.workspace = true
 serde.workspace = true
 toml.workspace = true
+rerun = { version = "0.23.1", optional = true }
 futures-lite.workspace = true
 mimalloc = { version = "0.1.43", optional = true }
 clap = { version = "4.5.28", features = ["derive"] }
@@ -30,7 +31,9 @@ clap = { version = "4.5.28", features = ["derive"] }
 #pkg-config = "0.3"
 
 [features]
+default = ["rerun"]
 mimalloc = ["dep:mimalloc"]
+rerun = ["dep:rerun"]
 
 [profile.release]
 lto = true          # Link Time Optimization
