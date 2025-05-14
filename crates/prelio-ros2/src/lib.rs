@@ -1,21 +1,40 @@
+#[cfg(feature = "ros2-client")]
 pub mod tf;
+#[cfg(feature = "r2r")]
+pub mod tf_r2r;
 
-use log::{error, warn};
+use futures_lite::{StreamExt, future};
+use log::{error, info, warn};
 pub use prelio;
 
 use anyhow::anyhow;
 use prelio::config::LifisParameters;
 use prelio::imu::ImuMsg;
 use prelio::timestamp_to_secs;
-use ros2_client::ros2;
-use ros2_interfaces_jazzy::geometry_msgs::msg::{
-    Point, Pose, PoseWithCovariance, Quaternion, Twist, TwistWithCovariance,
-};
-use ros2_interfaces_jazzy::{
+#[cfg(feature = "r2r")]
+use r2r::{
+    QosProfile,
+    builtin_interfaces::msg::Time,
+    geometry_msgs::msg::{
+        Point, Pose, PoseWithCovariance, Quaternion, Twist, TwistWithCovariance, Vector3,
+    },
     nav_msgs::msg::Odometry,
     sensor_msgs::msg::{Imu, PointCloud2},
+    std_msgs::msg::Header,
 };
 use ros_pointcloud2::prelude::*;
+#[cfg(feature = "ros2-client")]
+use ros2_client::ros2;
+#[cfg(feature = "ros2-client")]
+use ros2_interfaces_jazzy::{
+    builtin_interfaces::msg::Time,
+    geometry_msgs::msg::{
+        Point, Pose, PoseWithCovariance, Quaternion, Twist, TwistWithCovariance, Vector3,
+    },
+    nav_msgs::msg::Odometry,
+    sensor_msgs::msg::{Imu, PointCloud2},
+    std_msgs::msg::Header,
+};
 use serde::{Deserialize, Serialize};
 use std::sync::{Arc, Mutex};
 
@@ -195,8 +214,10 @@ impl State {
 
 fn cloud_callback(
     state: Arc<Mutex<State>>,
-    tf_listener: Arc<tf::TfListener>,
-    msg: PointCloud2,
+    #[cfg(feature = "ros2-client")] tf_listener: Arc<tf::TfListener>,
+    #[cfg(feature = "r2r")] tf_listener: Arc<tf_r2r::TfListener>,
+    #[cfg(feature = "ros2-client")] msg: PointCloud2,
+    #[cfg(feature = "r2r")] msg: r2r::sensor_msgs::msg::PointCloud2,
     first_imu_tf: Option<String>,
 ) -> anyhow::Result<()> {
     let orig_header = msg.header.clone();
@@ -332,7 +353,9 @@ fn cloud_callback(
                         in_stamp,
                     )?;
                     if map_frame.is_empty() {
-                        return Err(anyhow!("global_zero_frame is given but map_frame is not. Can not update polygon."));
+                        return Err(anyhow!(
+                            "global_zero_frame is given but map_frame is not. Can not update polygon."
+                        ));
                     }
                     nalgebra::geometry::Isometry3::from_parts(
                         nalgebra::geometry::Translation3::new(
@@ -381,15 +404,21 @@ fn cloud_callback(
 
 pub struct LifisNode {
     pub state: Arc<std::sync::Mutex<State>>,
+    #[cfg(feature = "ros2-client")]
     pub tf_listener: Arc<tf::TfListener>,
+    #[cfg(feature = "r2r")]
+    pub tf_listener: Arc<tf_r2r::TfListener>,
     pub logger: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LifisNodeParameters {
+    pub cloud_src_namespace: String,
     pub cloud_src_topic: String,
+    pub imu_src_namespace: String,
     pub imu_src_topic: String,
     pub logger_prefix: String,
+    pub imu_filtered_namespace: String,
     pub imu_filtered_topic: String,
     pub imu_predictor_init_time_sec: f64,
     pub cloud_qos: Qos,
@@ -420,6 +449,7 @@ Qos::SystemDefault => Ok(ros2::QosPolicyBuilder::new() QosPolicyBuilder
                   .build()),
             }*/
 
+#[cfg(feature = "ros2-client")]
 impl From<crate::Qos> for ros2::QosPolicies {
     fn from(value: crate::Qos) -> Self {
         match value {
@@ -448,11 +478,34 @@ impl From<crate::Qos> for ros2::QosPolicies {
         }
     }
 }
+#[cfg(feature = "r2r")]
+impl From<crate::Qos> for QosProfile {
+    fn from(value: crate::Qos) -> Self {
+        match value {
+            Qos::Sensor => QosProfile::parameters()
+                .durability(r2r::qos::DurabilityPolicy::Volatile)
+                .deadline(std::time::Duration::MAX)
+                .reliability(r2r::qos::ReliabilityPolicy::BestEffort)
+                .history(r2r::qos::HistoryPolicy::KeepLast)
+                .keep_last(5)
+                .lifespan(std::time::Duration::MAX),
+            _ => QosProfile::parameters()
+                .durability(r2r::qos::DurabilityPolicy::Volatile)
+                .deadline(std::time::Duration::MAX)
+                .reliability(r2r::qos::ReliabilityPolicy::Reliable)
+                .history(r2r::qos::HistoryPolicy::KeepLast)
+                .keep_last(1)
+                .lifespan(std::time::Duration::MAX),
+        }
+    }
+}
 
 impl Default for LifisNodeParameters {
     fn default() -> Self {
         LifisNodeParameters {
+            cloud_src_namespace: "/".to_owned(),
             cloud_src_topic: "cloud".to_string(),
+            imu_src_namespace: "/".to_owned(),
             imu_src_topic: "imu".to_string(),
             logger_prefix: "lifis".to_string(),
             imu_filtered_topic: "imu_filtered".to_string(),
@@ -460,6 +513,7 @@ impl Default for LifisNodeParameters {
             cloud_qos: Qos::Sensor,
             imu_qos: Qos::Sensor,
             imu_filtered_qos: Qos::Sensor,
+            imu_filtered_namespace: "/".to_owned(),
         }
     }
 }
@@ -474,14 +528,19 @@ pub struct LifisTick {
 
 impl LifisNode {
     pub fn new(
-        node: &mut ros2_client::Node,
+        #[cfg(feature = "ros2-client")] node: &mut ros2_client::Node,
+        #[cfg(feature = "r2r")] node: &mut r2r::Node,
         params: &LifisParameters,
         node_params: &LifisNodeParameters,
         imu_pose_predictor_init: Option<Arc<Mutex<dyn FnMut(&[ImuMsg]) + Send + Sync>>>,
         imu_pose_prediction_undistort: Option<Box<prelio::ImuPredictorUndistort>>,
         imu_pose_prediction_init_guess: Option<Box<prelio::ImuPredictor>>,
     ) -> anyhow::Result<(Self, std::sync::mpsc::Receiver<LifisTick>)> {
+        #[cfg(feature = "ros2-client")]
         let tf_listener = Arc::new(tf::TfListener::new(node));
+
+        #[cfg(feature = "r2r")]
+        let tf_listener = Arc::new(tf_r2r::TfListener::new(node));
 
         let state = State::new(
             &params,
@@ -506,18 +565,33 @@ impl LifisNode {
         // first option None = override not set.
         let imu_tf_frame: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
 
+        #[cfg(feature = "ros2-client")]
         let cloud_subscriber = node
             .create_subscription::<PointCloud2>(
                 &node
                     .create_topic(
-                        &ros2_client::Name::new("/", &node_params.cloud_src_topic).unwrap(),
+                        &ros2_client::Name::new(
+                            &node_params.cloud_src_namespace,
+                            &node_params.cloud_src_topic,
+                        )
+                        .unwrap(),
                         ros2_client::MessageTypeName::new("sensor_msgs", "PointCloud2"),
                         &node_params.cloud_qos.into(),
                     )
                     .unwrap(),
-                None,
+                Some(node_params.cloud_qos.into()),
             )
             .unwrap();
+
+        #[cfg(feature = "r2r")]
+        let cloud_subscriber = node.subscribe::<PointCloud2>(
+            &format!(
+                "{}/{}",
+                &node_params.cloud_src_namespace.trim_start_matches("/"),
+                &node_params.cloud_src_topic
+            ),
+            node_params.cloud_qos.into(),
+        )?;
 
         // Share with cloud callback, TODO maybe the only one who needs it, so remove mutex and arc?
         let state = Arc::new(std::sync::Mutex::new(state));
@@ -525,41 +599,74 @@ impl LifisNode {
         let tf_listener_clone = tf_listener.clone();
         let state_clone = state.clone();
         let imu_tf_frame_lidar_inner = Arc::clone(&imu_tf_frame);
-        std::thread::spawn(move || loop {
-            match cloud_subscriber.take() {
-                Err(e) => {
-                    error!("Could not read cloud: {e}");
-                }
-                Ok(Some((msg, _msg_info))) => {
-                    // TODO if config says we are system time, we can also the source timestamp of dds
-                    /*if let Some(source_timestamp) = msg_info.source_timestamp() {
-                        msg.header.stamp = source_timestamp
-                    }*/
-                    let imu_tf_frame_lidar_inner =
-                        imu_tf_frame_lidar_inner.clone().lock().unwrap().clone();
+        #[cfg(feature = "ros2-client")]
+        std::thread::spawn(move || {
+            loop {
+                match cloud_subscriber.take() {
+                    Err(e) => {
+                        error!("Could not read cloud: {e}");
+                    }
+                    Ok(Some((msg, _msg_info))) => {
+                        info!("received cloud message");
+                        // TODO if config says we are system time, we can also the source timestamp of dds
+                        /*if let Some(source_timestamp) = msg_info.source_timestamp() {
+                            msg.header.stamp = source_timestamp
+                        }*/
+                        let imu_tf_frame_lidar_inner =
+                            imu_tf_frame_lidar_inner.clone().lock().unwrap().clone();
 
-                    match cloud_callback(
-                        state_clone.clone(),
-                        tf_listener_clone.clone(),
-                        msg,
-                        imu_tf_frame_lidar_inner,
-                    ) {
-                        Ok(_) => {}
-                        Err(e) => {
-                            error!("Error in cloud callback: {e}");
+                        match cloud_callback(
+                            state_clone.clone(),
+                            tf_listener_clone.clone(),
+                            msg,
+                            imu_tf_frame_lidar_inner,
+                        ) {
+                            Ok(_) => {}
+                            Err(e) => {
+                                error!("Error in cloud callback: {e}");
+                            }
                         }
                     }
+                    Ok(None) => {}
                 }
-                Ok(None) => {}
             }
+        });
+        #[cfg(feature = "r2r")]
+        std::thread::spawn(move || {
+            future::block_on(async {
+                cloud_subscriber
+                    .for_each(|msg| {
+                        info!("RECEIVED CLOUD");
+                        let imu_tf_frame_lidar_inner =
+                            imu_tf_frame_lidar_inner.clone().lock().unwrap().clone();
+
+                        match cloud_callback(
+                            state_clone.clone(),
+                            tf_listener_clone.clone(),
+                            msg,
+                            imu_tf_frame_lidar_inner,
+                        ) {
+                            Ok(_) => {}
+                            Err(e) => {
+                                error!("{:?}", e);
+                            }
+                        }
+                    })
+                    .await;
+            })
         });
 
         let state_clone = state.clone();
+        #[cfg(feature = "ros2-client")]
         let imu_subscription = node
             .create_subscription::<Imu>(
                 &node
                     .create_topic(
-                        &ros2_client::Name::new("/", &node_params.imu_src_topic).unwrap(),
+                        &ros2_client::Name::new(
+                            &node_params.imu_src_namespace,
+                            &node_params.imu_src_topic,
+                        )
+                        .unwrap(),
                         ros2_client::MessageTypeName::new("sensor_msgs", "Imu"),
                         &node_params.imu_qos.into(),
                     )
@@ -568,7 +675,18 @@ impl LifisNode {
             )
             .unwrap();
 
+        #[cfg(feature = "r2r")]
+        let imu_subscription = node.subscribe::<Imu>(
+            &format!(
+                "{}/{}",
+                &node_params.imu_src_namespace.trim_start_matches("/"),
+                &node_params.imu_src_topic
+            ),
+            node_params.imu_qos.into(),
+        )?;
+
         // do not publish filtered imu if no topic is provided
+        #[cfg(feature = "ros2-client")]
         let imu_filtered_publisher = if node_params.imu_filtered_topic == "" {
             None
         } else {
@@ -586,11 +704,25 @@ impl LifisNode {
                 .unwrap(),
             )))
         };
+        #[cfg(feature = "r2r")]
+        let imu_filtered_publisher = if node_params.imu_filtered_topic == "" {
+            None
+        } else {
+            Some(Arc::new(Mutex::new(node.create_publisher::<Imu>(
+                &format!(
+                    "{}/{}",
+                    &node_params.imu_filtered_namespace.trim_start_matches("/"),
+                    &node_params.imu_filtered_topic
+                ),
+                node_params.imu_filtered_qos.into(),
+            )?)))
+        };
 
         let imu_init_time_counter = Arc::new(Mutex::new(None));
         let imu_init_buffer = Arc::new(Mutex::new(Some(Vec::new())));
         let imu_tf_frame_lidar_inner = Arc::clone(&imu_tf_frame);
         let init_imu_time = node_params.imu_predictor_init_time_sec;
+        #[cfg(feature = "ros2-client")]
         std::thread::spawn(move || {
             let imu_pose_predictor_init = imu_pose_predictor_init.clone();
 
@@ -599,6 +731,7 @@ impl LifisNode {
                     error!("Could not read imu: {e}");
                 }
                 Ok(Some((msg, _msg_info))) => {
+                    error!("received imu message");
                     imu_tf_frame_lidar_inner
                         .clone()
                         .lock()
@@ -651,6 +784,66 @@ impl LifisNode {
                 Ok(None) => {}
             }
         });
+        // TODO inline with upper because logic is same but conditionals around block on and err handling
+        #[cfg(feature = "r2r")]
+        std::thread::spawn(move || {
+            let imu_pose_predictor_init = imu_pose_predictor_init.clone();
+            future::block_on(async {
+                imu_subscription
+                    .for_each(|msg| {
+                        let state = state_clone.lock().unwrap();
+                        imu_tf_frame_lidar_inner
+                            .clone()
+                            .lock()
+                            .unwrap()
+                            .get_or_insert(msg.header.frame_id.clone());
+                        let imu_init_time_counter = imu_init_time_counter.clone();
+                        let imu_init_buffer = imu_init_buffer.clone();
+
+                        let imu_lifis = imu_to_lifis(msg.clone());
+                        let curr_stamp = timestamp_to_secs(&imu_lifis.stamp);
+
+                        if let Some(imu_pose_predictor_init) = imu_pose_predictor_init.as_ref() {
+                            let mut imu_pose_predictor_init =
+                                imu_pose_predictor_init.lock().unwrap();
+                            let mut imu_init_time_counter = imu_init_time_counter.lock().unwrap();
+                            if imu_init_time_counter.is_none() {
+                                *imu_init_time_counter = Some(curr_stamp);
+                            }
+                            if let Some(init_time) = imu_init_time_counter.as_ref() {
+                                let mut imu_init_buffer = imu_init_buffer.lock().unwrap();
+                                let delta = curr_stamp - init_time;
+                                if delta < init_imu_time {
+                                    if let Some(imu_init_buffer) = imu_init_buffer.as_mut() {
+                                        imu_init_buffer.push(imu_lifis);
+                                        return; // skip adding to lifis if we are still in the init phase
+                                    }
+                                    // we are only here, if there was an initial buffer, but it was already consumed so skip init and continue with normal processing
+                                } else {
+                                    // apply the init buffer
+                                    if let Some(imu_init_buffer) = imu_init_buffer.take() {
+                                        imu_pose_predictor_init(&imu_init_buffer);
+                                    }
+                                }
+                            }
+                        }
+
+                        let filtered = state.lifis.lock().unwrap().add_imu(imu_to_lifis(msg));
+                        match (filtered, imu_filtered_publisher.as_ref()) {
+                            (Some(filtered), Some(imu_filtered_publisher)) => {
+                                imu_filtered_publisher
+                                    .clone()
+                                    .lock()
+                                    .unwrap()
+                                    .publish(&lifis_to_imu(filtered))
+                                    .expect("could not publish filtered imu");
+                            }
+                            _ => {}
+                        }
+                    })
+                    .await;
+            })
+        });
 
         Ok((
             Self {
@@ -687,12 +880,12 @@ impl LifisNode {
 
             let twist = TwistWithCovariance {
                 twist: Twist {
-                    linear: ros2_interfaces_jazzy::geometry_msgs::msg::Vector3 {
+                    linear: Vector3 {
                         x: synced_data.end_of_frame_twist.linear.x,
                         y: synced_data.end_of_frame_twist.linear.y,
                         z: synced_data.end_of_frame_twist.linear.z,
                     },
-                    angular: ros2_interfaces_jazzy::geometry_msgs::msg::Vector3 {
+                    angular: Vector3 {
                         x: synced_data.end_of_frame_twist.angular.x,
                         y: synced_data.end_of_frame_twist.angular.y,
                         z: synced_data.end_of_frame_twist.angular.z,
@@ -701,9 +894,9 @@ impl LifisNode {
                 covariance: synced_data.twist_covariance.into(),
             };
 
-            let odom = ros2_interfaces_jazzy::nav_msgs::msg::Odometry {
-                header: ros2_interfaces_jazzy::std_msgs::msg::Header {
-                    stamp: ros2_interfaces_jazzy::builtin_interfaces::msg::Time {
+            let odom = Odometry {
+                header: Header {
+                    stamp: Time {
                         sec: synced_data.end_of_frame_time.sec,
                         nanosec: synced_data.end_of_frame_time.nanosec,
                     },
@@ -787,19 +980,20 @@ fn imu_to_lifis(msg: Imu) -> prelio::imu::ImuMsg {
 
 fn lifis_to_imu(msg: prelio::imu::ImuMsg) -> Imu {
     Imu {
-        header: ros2_interfaces_jazzy::std_msgs::msg::Header {
-            stamp: ros2_interfaces_jazzy::builtin_interfaces::msg::Time {
+        header: Header {
+            stamp: Time {
                 sec: msg.stamp.sec,
                 nanosec: msg.stamp.nanosec,
             },
             frame_id: msg.frame_id,
         },
-        orientation: ros2_interfaces_jazzy::geometry_msgs::msg::Quaternion {
+        orientation: Quaternion {
             x: msg.orientation[1],
             y: msg.orientation[2],
             z: msg.orientation[3],
             w: msg.orientation[0],
         },
+        #[cfg(feature = "ros2-client")]
         orientation_covariance: [
             msg.orientation_covariance[0],
             msg.orientation_covariance[1],
@@ -811,11 +1005,25 @@ fn lifis_to_imu(msg: prelio::imu::ImuMsg) -> Imu {
             msg.orientation_covariance[7],
             msg.orientation_covariance[8],
         ],
-        angular_velocity: ros2_interfaces_jazzy::geometry_msgs::msg::Vector3 {
+        #[cfg(feature = "r2r")]
+        orientation_covariance: [
+            msg.orientation_covariance[0],
+            msg.orientation_covariance[1],
+            msg.orientation_covariance[2],
+            msg.orientation_covariance[3],
+            msg.orientation_covariance[4],
+            msg.orientation_covariance[5],
+            msg.orientation_covariance[6],
+            msg.orientation_covariance[7],
+            msg.orientation_covariance[8],
+        ]
+        .to_vec(),
+        angular_velocity: Vector3 {
             x: msg.angular_velocity[0],
             y: msg.angular_velocity[1],
             z: msg.angular_velocity[2],
         },
+        #[cfg(feature = "ros2-client")]
         angular_velocity_covariance: [
             msg.angular_velocity_covariance[0],
             msg.angular_velocity_covariance[1],
@@ -827,11 +1035,25 @@ fn lifis_to_imu(msg: prelio::imu::ImuMsg) -> Imu {
             msg.angular_velocity_covariance[7],
             msg.angular_velocity_covariance[8],
         ],
-        linear_acceleration: ros2_interfaces_jazzy::geometry_msgs::msg::Vector3 {
+        #[cfg(feature = "r2r")]
+        angular_velocity_covariance: [
+            msg.angular_velocity_covariance[0],
+            msg.angular_velocity_covariance[1],
+            msg.angular_velocity_covariance[2],
+            msg.angular_velocity_covariance[3],
+            msg.angular_velocity_covariance[4],
+            msg.angular_velocity_covariance[5],
+            msg.angular_velocity_covariance[6],
+            msg.angular_velocity_covariance[7],
+            msg.angular_velocity_covariance[8],
+        ]
+        .to_vec(),
+        linear_acceleration: Vector3 {
             x: msg.linear_acceleration[0],
             y: msg.linear_acceleration[1],
             z: msg.linear_acceleration[2],
         },
+        #[cfg(feature = "ros2-client")]
         linear_acceleration_covariance: [
             msg.linear_acceleration_covariance[0],
             msg.linear_acceleration_covariance[1],
@@ -843,5 +1065,18 @@ fn lifis_to_imu(msg: prelio::imu::ImuMsg) -> Imu {
             msg.linear_acceleration_covariance[7],
             msg.linear_acceleration_covariance[8],
         ],
+        #[cfg(feature = "r2r")]
+        linear_acceleration_covariance: [
+            msg.linear_acceleration_covariance[0],
+            msg.linear_acceleration_covariance[1],
+            msg.linear_acceleration_covariance[2],
+            msg.linear_acceleration_covariance[3],
+            msg.linear_acceleration_covariance[4],
+            msg.linear_acceleration_covariance[5],
+            msg.linear_acceleration_covariance[6],
+            msg.linear_acceleration_covariance[7],
+            msg.linear_acceleration_covariance[8],
+        ]
+        .to_vec(),
     }
 }

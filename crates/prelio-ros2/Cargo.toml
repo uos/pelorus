@@ -17,11 +17,18 @@ futures-lite.workspace = true
 prelio.workspace = true
 log.workspace = true
 env_logger.workspace = true
-ros2-client.workspace = true
-ros2-interfaces-jazzy.workspace = true
+ros2-client = { workspace = true, optional = true }
+ros2-interfaces-jazzy = { workspace = true, optional = true }
 serde.workspace = true
 thiserror = "1.0"
+r2r = { workspace = true, optional = true }
 
 [features]
-default = []
+# default = ["r2r"]
 gtsam = ["prelio/gtsam"]
+ros2-client = [
+  "dep:ros2-client",
+  "dep:ros2-interfaces-jazzy",
+  "ros_pointcloud2/ros2-interfaces-jazzy",
+]
+r2r = ["dep:r2r", "ros_pointcloud2/r2r_msg"]

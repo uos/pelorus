@@ -8,7 +8,7 @@ edition = "2021"
 ros_pointcloud2.workspace = true
 prelio-ros2.workspace = true
 pelorus-reg.workspace = true
-ros2-client.workspace = true
+ros2-client = { workspace = true, optional = true }
 nalgebra.workspace = true
 #small_gicp-sys = { git = "ssh://git@github.com/stelzo/small_gicp-sys.git", branch = "main" }
 anyhow.workspace = true
@@ -17,13 +17,14 @@ rand.workspace = true
 either.workspace = true
 env_logger.workspace = true
 log.workspace = true
-ros2-interfaces-jazzy.workspace = true
+ros2-interfaces-jazzy = { workspace = true, optional = true }
 serde.workspace = true
 toml.workspace = true
 rerun = { version = "0.23.1", optional = true }
 futures-lite.workspace = true
 mimalloc = { version = "0.1.43", optional = true }
 clap = { version = "4.5.28", features = ["derive"] }
+r2r = { workspace = true, optional = true }
 
 #[build-dependencies]
 #bindgen = "0.69"
@@ -31,9 +32,17 @@ clap = { version = "4.5.28", features = ["derive"] }
 #pkg-config = "0.3"
 
 [features]
-default = ["rerun"]
+default = ["rerun", "r2r"]
 mimalloc = ["dep:mimalloc"]
 rerun = ["dep:rerun"]
+ros2-client = [
+  "dep:ros2-client",
+  "dep:ros2-interfaces-jazzy",
+  "ros_pointcloud2/ros2-interfaces-jazzy",
+  "prelio-ros2/ros2-client",
+]
+r2r = ["dep:r2r", "ros_pointcloud2/r2r_msg", "prelio-ros2/r2r"]
+
 
 [profile.release]
 lto = true          # Link Time Optimization
