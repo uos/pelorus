@@ -1,3 +1,4 @@
+use anyhow::Error;
 #[cfg(feature = "mimalloc")]
 use mimalloc::MiMalloc;
 
@@ -9,13 +10,24 @@ use clap::{command, Parser, Subcommand};
 use futures_lite::future;
 use log::{error, info};
 use nalgebra::{Isometry3, Translation3};
+#[cfg(feature = "r2r")]
+use r2r::{
+    builtin_interfaces::msg::Time,
+    geometry_msgs::msg::{PoseStamped, Quaternion, Transform, TransformStamped, Vector3},
+    nav_msgs::msg::{Odometry, Path},
+    sensor_msgs::msg::PointCloud2,
+    std_msgs::msg::Header,
+    visualization_msgs::msg::Marker,
+    QosProfile,
+};
 #[cfg(feature = "rerun")]
-use rerun::{demo_util::grid, external::glam};
+use rerun::{demo_util::grid, external::glam, Archetype};
+#[cfg(feature = "ros2-client")]
 use ros2_client::{NodeName, NodeOptions};
+#[cfg(feature = "ros2-client")]
 use ros2_interfaces_jazzy::{
     builtin_interfaces::msg::Time,
-    geometry_msgs,
-    geometry_msgs::msg::{Point, PoseStamped, Quaternion, Transform, TransformStamped},
+    geometry_msgs::msg::{Point, PoseStamped, Quaternion, Transform, TransformStamped, Vector3},
     nav_msgs::msg::Path,
     sensor_msgs::msg::PointCloud2,
     std_msgs::msg::Header,
@@ -26,7 +38,11 @@ use serde::{Deserialize, Serialize};
 use std::io::Read;
 
 use either::*;
-use prelio_ros2::{prelio::config::LifisParameters, tf::TfBroadcaster, LifisNodeParameters, Qos};
+#[cfg(feature = "ros2-client")]
+use prelio_ros2::tf::TfBroadcaster;
+#[cfg(feature = "r2r")]
+use prelio_ros2::tf_r2r::TfBroadcaster;
+use prelio_ros2::{prelio::config::LifisParameters, LifisNodeParameters, Qos};
 use rand::Rng;
 
 use pelorus_reg::{sfasterlio::SFasterLio, Registration};
@@ -179,11 +195,17 @@ fn ros(config_path: &str) -> Result<(), Box<dyn std::error::Error>> {
     // log4rs::init_file("examples/async_listener/log4rs.yaml", Default::default()).unwrap();
 
     let namespace = "/lio";
+    #[cfg(feature = "ros2-client")]
     let ctx = ros2_client::Context::new()?;
+    #[cfg(feature = "ros2-client")]
     let mut node = ctx.new_node(
         NodeName::new(namespace, "lio_node")?,
         NodeOptions::new().enable_rosout(true),
     )?;
+    #[cfg(feature = "r2r")]
+    let ctx = r2r::Context::create()?;
+    #[cfg(feature = "r2r")]
+    let mut node = r2r::Node::create(ctx, "lio", "lio")?;
 
     // TODO add config path via CLI (clap)
     // also make option to export default config to file
@@ -202,22 +224,6 @@ fn ros(config_path: &str) -> Result<(), Box<dyn std::error::Error>> {
         }
         Ok(cfg) => cfg,
     };
-
-    #[cfg(feature = "rerun")]
-    {
-        let rec = rerun::RecordingStreamBuilder::new("pelorus").spawn()?;
-
-        let points = grid(glam::Vec3::splat(-10.0), glam::Vec3::splat(10.0), 10);
-        let colors = grid(glam::Vec3::ZERO, glam::Vec3::splat(255.0), 10)
-            .map(|v| rerun::Color::from_rgb(v.x as u8, v.y as u8, v.z as u8));
-
-        rec.log(
-            "my_points",
-            &rerun::Points3D::new(points)
-                .with_colors(colors)
-                .with_radii([0.5]),
-        )?;
-    }
 
     let tf_broadcaster = TfBroadcaster::new(&mut node);
 
@@ -315,6 +321,10 @@ fn ros(config_path: &str) -> Result<(), Box<dyn std::error::Error>> {
         },
     )?;
 
+    #[cfg(feature = "rerun")]
+    let rec = rerun::RecordingStreamBuilder::new("pelorus").spawn()?;
+
+    #[cfg(feature = "ros2-client")]
     let map_publisher = node
         .create_publisher::<PointCloud2>(
             &node
@@ -327,6 +337,7 @@ fn ros(config_path: &str) -> Result<(), Box<dyn std::error::Error>> {
             None,
         )
         .unwrap();
+    #[cfg(feature = "ros2-client")]
     let cloud_publisher = node
         .create_publisher(
             &node
@@ -339,6 +350,7 @@ fn ros(config_path: &str) -> Result<(), Box<dyn std::error::Error>> {
             None,
         )
         .unwrap();
+    #[cfg(feature = "ros2-client")]
     let odom_publisher = node
         .create_publisher(
             &node
@@ -351,6 +363,7 @@ fn ros(config_path: &str) -> Result<(), Box<dyn std::error::Error>> {
             None,
         )
         .unwrap();
+    #[cfg(feature = "ros2-client")]
     let lidar_path_publisher = node
         .create_publisher(
             &node
@@ -363,6 +376,7 @@ fn ros(config_path: &str) -> Result<(), Box<dyn std::error::Error>> {
             None,
         )
         .unwrap();
+    #[cfg(feature = "ros2-client")]
     let imu_odom_publisher = node
         .create_publisher(
             &node
@@ -376,6 +390,7 @@ fn ros(config_path: &str) -> Result<(), Box<dyn std::error::Error>> {
         )
         .unwrap();
 
+    #[cfg(feature = "ros2-client")]
     let imu_path_publisher = node
         .create_publisher(
             &node
@@ -388,6 +403,7 @@ fn ros(config_path: &str) -> Result<(), Box<dyn std::error::Error>> {
             None,
         )
         .unwrap();
+    #[cfg(all(feature = "ros2-client", not(feature = "rerun")))]
     let registered_visual_publisher = node
         .create_publisher(
             &node
@@ -400,6 +416,25 @@ fn ros(config_path: &str) -> Result<(), Box<dyn std::error::Error>> {
             None,
         )
         .unwrap();
+
+    #[cfg(feature = "r2r")]
+    let map_publisher = node.create_publisher::<PointCloud2>("map", QosProfile::default())?;
+    #[cfg(feature = "r2r")]
+    let cloud_publisher =
+        node.create_publisher::<PointCloud2>("registered", config.registered_cloud_qos.into())?;
+    #[cfg(feature = "r2r")]
+    let odom_publisher = node.create_publisher::<Odometry>("odom", config.odom_qos.into())?;
+    #[cfg(feature = "r2r")]
+    let lidar_path_publisher = node.create_publisher::<Path>("path", config.path_qos.into())?;
+    #[cfg(feature = "r2r")]
+    let imu_odom_publisher =
+        node.create_publisher::<Odometry>("imu_odom", config.imu_odom_qos.into())?;
+    #[cfg(feature = "r2r")]
+    let imu_path_publisher =
+        node.create_publisher::<Path>("imu_path", config.imu_path_qos.into())?;
+    #[cfg(all(feature = "r2r", not(feature = "rerun")))]
+    let registered_visual_publisher =
+        node.create_publisher::<Marker>("registered_viz", r2r::QosProfile::default())?;
 
     let mut t_world_lidar = nalgebra::Isometry3::identity();
     let mut t_last_current = nalgebra::Isometry3::identity();
@@ -602,70 +637,87 @@ fn ros(config_path: &str) -> Result<(), Box<dyn std::error::Error>> {
                         (v.x, v.y, v.z, a)
                     };
 
-                    let mut marr = Marker::default();
-                    marr.header = Header {
-                        frame_id: config.prelio_params.map_frame.clone(),
-                        stamp: Time {
-                            sec: orig_time.sec,
-                            nanosec: orig_time.nanosec,
-                        },
-                    };
-                    marr.id = total_viz_marker;
-                    total_viz_marker += 1;
+                    // #[cfg(feature = "rerun")]
+                    // {
+                    //     let planes = registered_normals
+                    //         .iter()
+                    //         .map(|v| rerun::components::Plane3D::new(glam::Vec3::new(v.x as f32, v.y as f32, v.z as f32), v.n));
 
-                    // Live for ever, RIP Rviz
-                    marr.lifetime.sec = 0;
-                    marr.lifetime.nanosec = 0;
+                    //     let planes = rerun::components::Plane3D::new(normal, distance)
+                    //     if let Err(err) = rec.log(
+                    //         "reg_normals",
+                    //         &rerun::Points3D::new(points).with_colors(colors), // .with_radii([0.1]),
+                    //     ) {
+                    //         error!("Error sending to rerun {err}");
+                    //     }
+                    // }
+                    #[cfg(not(feature = "rerun"))]
+                    {
+                        let mut marr = Marker::default();
+                        marr.header = Header {
+                            frame_id: config.prelio_params.map_frame.clone(),
+                            stamp: Time {
+                                sec: orig_time.sec,
+                                nanosec: orig_time.nanosec,
+                            },
+                        };
+                        marr.id = total_viz_marker;
+                        total_viz_marker += 1;
 
-                    marr.type_ = 5; // Arrow
-                    marr.action = 0; // add
+                        // Live for ever, RIP Rviz
+                        marr.lifetime.sec = 0;
+                        marr.lifetime.nanosec = 0;
 
-                    marr.scale.x = 0.02; // measured distance to the plane
-                    marr.scale.y = 0.02; // shaft
-                    marr.scale.z = 0.02; // head
+                        marr.type_ = 5; // Arrow
+                        marr.action = 0; // add
 
-                    marr.color.r = random_color.0;
-                    marr.color.g = random_color.1;
-                    marr.color.b = random_color.2;
-                    marr.color.a = random_color.3;
+                        marr.scale.x = 0.02; // measured distance to the plane
+                        marr.scale.y = 0.02; // shaft
+                        marr.scale.z = 0.02; // head
 
-                    marr.header.frame_id = orig_frame.clone();
-                    marr.header.stamp.nanosec = orig_time.nanosec; // TODO rpcl2 from timemsg
-                    marr.header.stamp.sec = orig_time.sec;
+                        marr.color.r = random_color.0;
+                        marr.color.g = random_color.1;
+                        marr.color.b = random_color.2;
+                        marr.color.a = random_color.3;
 
-                    //let draw_length = 0.25;
+                        marr.header.frame_id = orig_frame.clone();
+                        marr.header.stamp.nanosec = orig_time.nanosec; // TODO rpcl2 from timemsg
+                        marr.header.stamp.sec = orig_time.sec;
 
-                    marr.points = registered_normals
-                        .iter() // downsample_avg(normal_iter, 0.5).iter() || normal_iter
-                        .map(|normal| {
-                            let normal_viz = nalgebra::Vector3::new(
-                                normal.normal_x as f64,
-                                normal.normal_y as f64,
-                                normal.normal_z as f64,
-                            );
+                        //let draw_length = 0.25;
 
-                            let position_viz = normal.xyz_f64();
-                            let end_position =
-                                position_viz + normal_viz.normalize() * normal.intensity as f64;
+                        marr.points = registered_normals
+                            .iter() // downsample_avg(normal_iter, 0.5).iter() || normal_iter
+                            .map(|normal| {
+                                let normal_viz = nalgebra::Vector3::new(
+                                    normal.normal_x as f64,
+                                    normal.normal_y as f64,
+                                    normal.normal_z as f64,
+                                );
 
-                            let mut point_start = Point::default();
-                            point_start.x = position_viz.x;
-                            point_start.y = position_viz.y;
-                            point_start.z = position_viz.z;
+                                let position_viz = normal.xyz_f64();
+                                let end_position =
+                                    position_viz + normal_viz.normalize() * normal.intensity as f64;
 
-                            let mut point_end = Point::default();
-                            point_end.x = end_position.x;
-                            point_end.y = end_position.y;
-                            point_end.z = end_position.z;
+                                let mut point_start = Point::default();
+                                point_start.x = position_viz.x;
+                                point_start.y = position_viz.y;
+                                point_start.z = position_viz.z;
 
-                            [point_start, point_end]
-                        })
-                        .flatten()
-                        .collect();
+                                let mut point_end = Point::default();
+                                point_end.x = end_position.x;
+                                point_end.y = end_position.y;
+                                point_end.z = end_position.z;
 
-                    registered_visual_publisher
-                        .publish(&marr)
-                        .expect("Failed to publish registered visualization");
+                                [point_start, point_end]
+                            })
+                            .flatten()
+                            .collect();
+
+                        registered_visual_publisher
+                            .publish(&marr)
+                            .expect("Failed to publish registered visualization");
+                    }
                 }
             }
 
@@ -709,6 +761,51 @@ fn ros(config_path: &str) -> Result<(), Box<dyn std::error::Error>> {
             let map_to_lidar_transform = t_world_lidar.clone();
             cloud.header.frame_id = orig_frame.clone();
 
+            #[cfg(debug_assertions)]
+            {
+                let total_map = map.lock().unwrap().get_entire_map();
+                #[cfg(feature = "rerun")]
+                {
+                    let points = total_map.iter().map(|v| glam::Vec3::new(v.x, v.y, v.z));
+                    let colors = grid(glam::Vec3::ZERO, glam::Vec3::splat(255.0), 10)
+                        .map(|v| rerun::Color::from_rgb(v.x as u8, v.y as u8, v.z as u8));
+
+                    if let Err(err) = rec.log(
+                        "map",
+                        &rerun::Points3D::new(points).with_colors(colors), // .with_radii([0.1]),
+                    ) {
+                        error!("Error sending to rerun {err}");
+                    }
+                }
+                #[cfg(not(feature = "rerun"))]
+                {
+                    let mut total_map = PointCloud2Msg::try_from_vec(total_map).unwrap();
+                    total_map.header.frame_id = config.prelio_params.map_frame.clone();
+                    let msg: PointCloud2 = total_map.into();
+                    map_publisher.publish(msg).expect("Failed to publish map");
+                }
+            }
+
+            // -- TF --
+            #[cfg(feature = "rerun")]
+            {
+                let pose = rerun::Transform3D::from_translation(glam::Vec3::new(
+                    map_to_lidar_transform.translation.x as f32,
+                    map_to_lidar_transform.translation.y as f32,
+                    map_to_lidar_transform.translation.z as f32,
+                ))
+                .with_quaternion(glam::Quat::from_xyzw(
+                    map_to_lidar_transform.rotation.quaternion().i as f32,
+                    map_to_lidar_transform.rotation.quaternion().j as f32,
+                    map_to_lidar_transform.rotation.quaternion().k as f32,
+                    map_to_lidar_transform.rotation.quaternion().w as f32,
+                ));
+
+                if let Err(err) = rec.log("lidar_pose", &pose) {
+                    error!("Error sending to rerun {err}");
+                }
+            }
+
             let tf = TransformStamped {
                 header: Header {
                     frame_id: config.prelio_params.map_frame.clone(),
@@ -719,7 +816,7 @@ fn ros(config_path: &str) -> Result<(), Box<dyn std::error::Error>> {
                 },
                 child_frame_id: orig_frame,
                 transform: Transform {
-                    translation: geometry_msgs::msg::Vector3 {
+                    translation: Vector3 {
                         x: map_to_lidar_transform.translation.vector.x,
                         y: map_to_lidar_transform.translation.vector.y,
                         z: map_to_lidar_transform.translation.vector.z,
@@ -732,6 +829,10 @@ fn ros(config_path: &str) -> Result<(), Box<dyn std::error::Error>> {
                     },
                 },
             };
+            tf_broadcaster
+                .send_transform(tf)
+                .expect("Failed to send transform");
+            // -- --
 
             let mut imu_odom = lidar_odom.clone();
             imu_odom.pose.pose.position.x = init_guess_world.translation.vector.x;
@@ -747,21 +848,6 @@ fn ros(config_path: &str) -> Result<(), Box<dyn std::error::Error>> {
                 header: imu_odom.header.clone(),
             });
 
-            dbg!(&tf);
-
-            //#[cfg(debug_assertions)]
-            {
-                let total_map = map.lock().unwrap().get_entire_map();
-                let mut total_map = PointCloud2Msg::try_from_vec(total_map).unwrap();
-                total_map.header.frame_id = config.prelio_params.map_frame.clone();
-                let msg: PointCloud2 = total_map.into();
-                map_publisher.publish(msg).expect("Failed to publish map");
-            }
-
-            tf_broadcaster
-                .send_transform(tf)
-                .expect("Failed to send transform");
-
             cloud_publisher
                 .publish(&cloud)
                 .expect("Failed to publish cloud");
@@ -771,6 +857,21 @@ fn ros(config_path: &str) -> Result<(), Box<dyn std::error::Error>> {
                 .expect("Failed to publish odom");
 
             if changed_lidar_path {
+                #[cfg(feature = "rerun")]
+                {
+                    let lidar_path =
+                        rerun::LineStrip3D::from_iter(lidar_path.poses.iter().map(|p| {
+                            glam::Vec3::new(
+                                p.pose.position.x as f32,
+                                p.pose.position.y as f32,
+                                p.pose.position.z as f32,
+                            )
+                        }));
+                    let lidar_path_strips = rerun::LineStrips3D::new(std::iter::once(lidar_path));
+                    if let Err(err) = rec.log("lidar_path", &lidar_path_strips) {
+                        error!("Error sending to rerun {err}");
+                    }
+                }
                 lidar_path_publisher
                     .publish(&lidar_path)
                     .expect("Failed to publish path");
@@ -783,6 +884,20 @@ fn ros(config_path: &str) -> Result<(), Box<dyn std::error::Error>> {
             imu_path_publisher
                 .publish(&imu_path)
                 .expect("Failed to publish imu path"); // TODO this will spam a lot, maybe also throttle like lidar_path
+            #[cfg(feature = "rerun")]
+            {
+                let imu_path = rerun::LineStrip3D::from_iter(imu_path.poses.iter().map(|p| {
+                    glam::Vec3::new(
+                        p.pose.position.x as f32,
+                        p.pose.position.y as f32,
+                        p.pose.position.z as f32,
+                    )
+                }));
+                let imu_path_strips = rerun::LineStrips3D::new(std::iter::once(imu_path));
+                if let Err(err) = rec.log("imu_path", &imu_path_strips) {
+                    error!("Error sending to rerun {err}");
+                }
+            }
 
             eval.stop("total").unwrap();
 
@@ -801,6 +916,7 @@ fn ros(config_path: &str) -> Result<(), Box<dyn std::error::Error>> {
         dbg!("--- END lifis tick ---");
     });
 
+    #[cfg(feature = "ros2-client")]
     future::block_on(async {
         match node.spinner().unwrap().spin().await {
             Err(e) => {
@@ -809,7 +925,15 @@ fn ros(config_path: &str) -> Result<(), Box<dyn std::error::Error>> {
             Ok(_) => {}
         }
     });
+    #[cfg(feature = "r2r")]
+    {
+        let spin_timeout = std::time::Duration::from_millis(10);
+        loop {
+            node.spin_once(spin_timeout.clone());
+        }
+    }
 
+    #[cfg(feature = "ros2-client")]
     Ok(())
 }
 

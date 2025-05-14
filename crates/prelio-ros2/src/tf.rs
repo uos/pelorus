@@ -11,7 +11,7 @@ use ros2_interfaces_jazzy::{
     geometry_msgs::msg::{Pose, Quaternion, Transform, TransformStamped, Vector3},
     std_msgs::msg::Header,
 };
-use std::collections::{hash_map::Entry, HashMap, HashSet, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque, hash_map::Entry};
 use std::sync::{Arc, RwLock};
 use thiserror::Error;
 
@@ -617,7 +617,7 @@ impl TfBuffer {
                         from,
                         to,
                         self.child_transform_index.clone(),
-                    ))
+                    ));
                 }
             }
         }
