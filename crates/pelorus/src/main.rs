@@ -1,3 +1,4 @@
+#[allow(unused_imports)]
 use anyhow::Error;
 #[cfg(feature = "mimalloc")]
 use mimalloc::MiMalloc;
@@ -20,12 +21,24 @@ use r2r::{
     visualization_msgs::msg::Marker,
     QosProfile,
 };
+#[cfg(feature = "lh")]
+use ratpubsub::Node;
 #[cfg(feature = "rerun")]
 use rerun::{demo_util::grid, external::glam, Archetype};
 #[cfg(feature = "ros2-client")]
 use ros2_client::{NodeName, NodeOptions};
 #[cfg(feature = "ros2-client")]
 use ros2_interfaces_jazzy::{
+    builtin_interfaces::msg::Time,
+    geometry_msgs::msg::{Point, PoseStamped, Quaternion, Transform, TransformStamped, Vector3},
+    nav_msgs::msg::Path,
+    sensor_msgs::msg::PointCloud2,
+    std_msgs::msg::Header,
+    visualization_msgs::msg::Marker,
+};
+#[cfg(feature = "lh")]
+#[allow(unused_imports)]
+use ros2_interfaces_jazzy_rkyv::{
     builtin_interfaces::msg::Time,
     geometry_msgs::msg::{Point, PoseStamped, Quaternion, Transform, TransformStamped, Vector3},
     nav_msgs::msg::Path,
@@ -40,6 +53,8 @@ use std::io::Read;
 use either::*;
 #[cfg(feature = "ros2-client")]
 use prelio_ros2::tf::TfBroadcaster;
+#[cfg(feature = "lh")]
+use prelio_ros2::tf_lh::TfBroadcaster;
 #[cfg(feature = "r2r")]
 use prelio_ros2::tf_r2r::TfBroadcaster;
 use prelio_ros2::{prelio::config::LifisParameters, LifisNodeParameters, Qos};
@@ -194,6 +209,8 @@ fn ros(config_path: &str) -> Result<(), Box<dyn std::error::Error>> {
     // TODO add logging file
     // log4rs::init_file("examples/async_listener/log4rs.yaml", Default::default()).unwrap();
 
+    #[cfg(not(feature = "lh"))]
+    #[allow(unused_variables)]
     let namespace = "/lio";
     #[cfg(feature = "ros2-client")]
     let ctx = ros2_client::Context::new()?;
@@ -202,6 +219,10 @@ fn ros(config_path: &str) -> Result<(), Box<dyn std::error::Error>> {
         NodeName::new(namespace, "lio_node")?,
         NodeOptions::new().enable_rosout(true),
     )?;
+    #[cfg(feature = "lh")]
+    let node = Arc::new(future::block_on(async {
+        Node::create("pelorus").await.unwrap()
+    }));
     #[cfg(feature = "r2r")]
     let ctx = r2r::Context::create()?;
     #[cfg(feature = "r2r")]
@@ -225,7 +246,10 @@ fn ros(config_path: &str) -> Result<(), Box<dyn std::error::Error>> {
         Ok(cfg) => cfg,
     };
 
+    #[cfg(not(feature = "lh"))]
     let tf_broadcaster = TfBroadcaster::new(&mut node);
+    #[cfg(feature = "lh")]
+    let tf_broadcaster = Arc::new(TfBroadcaster::new(&node));
 
     dbg!(&config.enable_live_extrinsic_calibration);
 
@@ -263,7 +287,10 @@ fn ros(config_path: &str) -> Result<(), Box<dyn std::error::Error>> {
     let lidar_vendor = config.prelio_params.lidar_vendor.clone();
 
     let (_lifis_node, synced_rx) = LifisNode::new(
+        #[cfg(not(feature = "lh"))]
         &mut node,
+        #[cfg(feature = "lh")]
+        &node,
         &config.prelio_params,
         &config.prelio_node_params,
         Some(imu_pose_predictor_init),
@@ -585,7 +612,8 @@ fn ros(config_path: &str) -> Result<(), Box<dyn std::error::Error>> {
             lidar_odom.pose.pose.orientation.z = t_world_lidar.rotation.k;
             lidar_odom.pose.pose.orientation.w = t_world_lidar.rotation.w;
 
-            let changed_lidar_path = match lidar_path.poses.last() {
+            let lp_pose = &lidar_path.poses;
+            let changed_lidar_path = match lp_pose.last() {
                 Some(last_pose) => {
                     let last_pose = last_pose.pose.clone();
                     let last_pose_position = last_pose.position;
@@ -829,6 +857,19 @@ fn ros(config_path: &str) -> Result<(), Box<dyn std::error::Error>> {
                     },
                 },
             };
+            #[cfg(feature = "lh")]
+            {
+                let inner_tf_broad = Arc::clone(&tf_broadcaster);
+                std::thread::spawn(move || {
+                    future::block_on(async move {
+                        inner_tf_broad
+                            .send_transform(tf)
+                            .await
+                            .expect("Failed to send transform");
+                    });
+                });
+            }
+            #[cfg(not(feature = "lh"))]
             tf_broadcaster
                 .send_transform(tf)
                 .expect("Failed to send transform");
@@ -848,13 +889,32 @@ fn ros(config_path: &str) -> Result<(), Box<dyn std::error::Error>> {
                 header: imu_odom.header.clone(),
             });
 
-            cloud_publisher
-                .publish(&cloud)
-                .expect("Failed to publish cloud");
+            #[cfg(feature = "lh")]
+            let spawn_node = Arc::clone(&node);
+            #[cfg(feature = "lh")]
+            std::thread::spawn(move || {
+                future::block_on(async move {
+                    spawn_node
+                        .publish("/lio/registered", &cloud)
+                        .await
+                        .expect("Failed to publish cloud");
 
-            odom_publisher
-                .publish(&lidar_odom)
-                .expect("Failed to publish odom");
+                    spawn_node
+                        .publish("/lio/odom", &lidar_odom)
+                        .await
+                        .expect("Failed to publish odom");
+                });
+            });
+            #[cfg(not(feature = "lh"))]
+            {
+                cloud_publisher
+                    .publish(&cloud)
+                    .expect("Failed to publish cloud");
+
+                odom_publisher
+                    .publish(&lidar_odom)
+                    .expect("Failed to publish odom");
+            }
 
             if changed_lidar_path {
                 #[cfg(feature = "rerun")]
@@ -872,18 +932,47 @@ fn ros(config_path: &str) -> Result<(), Box<dyn std::error::Error>> {
                         error!("Error sending to rerun {err}");
                     }
                 }
+                #[cfg(not(feature = "lh"))]
                 lidar_path_publisher
                     .publish(&lidar_path)
                     .expect("Failed to publish path");
             }
 
+            #[cfg(not(feature = "lh"))]
             imu_odom_publisher
                 .publish(&imu_odom)
                 .expect("Failed to publish imu odom");
 
+            #[cfg(not(feature = "lh"))]
             imu_path_publisher
                 .publish(&imu_path)
                 .expect("Failed to publish imu path"); // TODO this will spam a lot, maybe also throttle like lidar_path
+
+            #[cfg(feature = "lh")]
+            let spawn_node = Arc::clone(&node);
+            #[cfg(feature = "lh")]
+            let pub_lidar_path = lidar_path.clone();
+            #[cfg(feature = "lh")]
+            let pub_imu_path = imu_path.clone();
+            #[cfg(feature = "lh")]
+            std::thread::spawn(|| {
+                future::block_on(async move {
+                    spawn_node
+                        .publish("/lio/lidar_path", &pub_lidar_path)
+                        .await
+                        .expect("Failed to publish path");
+
+                    spawn_node
+                        .publish("/lio/odom_imu", &imu_odom)
+                        .await
+                        .expect("Failed to publish imu odom");
+
+                    spawn_node
+                        .publish("/lio/imu_path", &pub_imu_path)
+                        .await
+                        .expect("Failed to publish imu path"); // TODO this will spam a lot, maybe also throttle like lidar_path
+                });
+            });
             #[cfg(feature = "rerun")]
             {
                 let imu_path = rerun::LineStrip3D::from_iter(imu_path.poses.iter().map(|p| {
@@ -915,6 +1004,12 @@ fn ros(config_path: &str) -> Result<(), Box<dyn std::error::Error>> {
         }
         dbg!("--- END lifis tick ---");
     });
+
+    #[cfg(feature = "lh")]
+    {
+        std::thread::park();
+        Ok(())
+    }
 
     #[cfg(feature = "ros2-client")]
     future::block_on(async {

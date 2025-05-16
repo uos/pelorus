@@ -27,7 +27,7 @@ ros_pointcloud2 = { version = "0.5.3", features = [
   "nalgebra",
   "rayon",
   "derive",
-], git = "https://github.com/stelzo/ros_pointcloud2.git" }
+], git = "https://github.com/stelzo/ros_pointcloud2.git", branch = "rkyv" }
 nalgebra = { version = "0.33", features = ["serde-serialize"] }
 r2r = { version = "0.9.5" }
 ros2-client = { version = "0.7.6" }
@@ -40,6 +40,16 @@ ros2-interfaces-jazzy = { version = "0.0.4", features = [
   "tf2_msgs",
   "builtin_interfaces",
 ] }
+ros2-interfaces-jazzy-rkyv = { version = "0.0.4", features = [
+  "std_msgs",
+  "geometry_msgs",
+  "nav_msgs",
+  "sensor_msgs",
+  "visualization_msgs",
+  "tf2_msgs",
+  "builtin_interfaces",
+], git = "https://github.com/stelzo/ros2-interfaces-jazzy-rkyv.git", branch = "main" }
+ratpubsub = { git = "ssh://git@gitlabti.informatik.uni-osnabrueck.de/chsieh/lighthouse.git", branch = "main" }
 #small_gicp-sys = { git = "ssh://git@github.com/stelzo/small_gicp-sys.git", branch = "main" }
 anyhow = "1"
 sophus_lie = "0.9"

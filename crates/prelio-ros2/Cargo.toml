@@ -22,9 +22,12 @@ ros2-interfaces-jazzy = { workspace = true, optional = true }
 serde.workspace = true
 thiserror = "1.0"
 r2r = { workspace = true, optional = true }
+ratpubsub = { workspace = true, optional = true }
+ros2-interfaces-jazzy-rkyv = { workspace = true, optional = true }
 
 [features]
-# default = ["r2r"]
+# default = ["lh"]
+lh = ["dep:ratpubsub", "dep:ros2-interfaces-jazzy-rkyv", "ros_pointcloud2/lh"]
 gtsam = ["prelio/gtsam"]
 ros2-client = [
   "dep:ros2-client",

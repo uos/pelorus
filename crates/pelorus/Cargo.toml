@@ -25,6 +25,8 @@ futures-lite.workspace = true
 mimalloc = { version = "0.1.43", optional = true }
 clap = { version = "4.5.28", features = ["derive"] }
 r2r = { workspace = true, optional = true }
+ratpubsub = { workspace = true, optional = true }
+ros2-interfaces-jazzy-rkyv = { workspace = true, optional = true }
 
 #[build-dependencies]
 #bindgen = "0.69"
@@ -32,9 +34,15 @@ r2r = { workspace = true, optional = true }
 #pkg-config = "0.3"
 
 [features]
-default = ["rerun", "r2r"]
+default = ["rerun", "lh"]
 mimalloc = ["dep:mimalloc"]
 rerun = ["dep:rerun"]
+lh = [
+  "dep:ratpubsub",
+  "dep:ros2-interfaces-jazzy-rkyv",
+  "ros_pointcloud2/lh",
+  "prelio-ros2/lh",
+]
 ros2-client = [
   "dep:ros2-client",
   "dep:ros2-interfaces-jazzy",
