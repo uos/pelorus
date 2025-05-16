@@ -1,5 +1,7 @@
 #[cfg(feature = "ros2-client")]
 pub mod tf;
+#[cfg(feature = "lh")]
+pub mod tf_lh;
 #[cfg(feature = "r2r")]
 pub mod tf_r2r;
 
@@ -22,11 +24,23 @@ use r2r::{
     sensor_msgs::msg::{Imu, PointCloud2},
     std_msgs::msg::Header,
 };
+#[cfg(feature = "lh")]
+use ratpubsub::Node;
 use ros_pointcloud2::prelude::*;
 #[cfg(feature = "ros2-client")]
 use ros2_client::ros2;
 #[cfg(feature = "ros2-client")]
 use ros2_interfaces_jazzy::{
+    builtin_interfaces::msg::Time,
+    geometry_msgs::msg::{
+        Point, Pose, PoseWithCovariance, Quaternion, Twist, TwistWithCovariance, Vector3,
+    },
+    nav_msgs::msg::Odometry,
+    sensor_msgs::msg::{Imu, PointCloud2},
+    std_msgs::msg::Header,
+};
+#[cfg(feature = "lh")]
+use ros2_interfaces_jazzy_rkyv::{
     builtin_interfaces::msg::Time,
     geometry_msgs::msg::{
         Point, Pose, PoseWithCovariance, Quaternion, Twist, TwistWithCovariance, Vector3,
@@ -216,7 +230,9 @@ fn cloud_callback(
     state: Arc<Mutex<State>>,
     #[cfg(feature = "ros2-client")] tf_listener: Arc<tf::TfListener>,
     #[cfg(feature = "r2r")] tf_listener: Arc<tf_r2r::TfListener>,
+    #[cfg(feature = "lh")] tf_listener: Arc<tf_lh::TfListener>,
     #[cfg(feature = "ros2-client")] msg: PointCloud2,
+    #[cfg(feature = "lh")] msg: PointCloud2,
     #[cfg(feature = "r2r")] msg: r2r::sensor_msgs::msg::PointCloud2,
     first_imu_tf: Option<String>,
 ) -> anyhow::Result<()> {
@@ -406,6 +422,8 @@ pub struct LifisNode {
     pub state: Arc<std::sync::Mutex<State>>,
     #[cfg(feature = "ros2-client")]
     pub tf_listener: Arc<tf::TfListener>,
+    #[cfg(feature = "lh")]
+    pub tf_listener: Arc<tf_lh::TfListener>,
     #[cfg(feature = "r2r")]
     pub tf_listener: Arc<tf_r2r::TfListener>,
     pub logger: String,
@@ -530,6 +548,7 @@ impl LifisNode {
     pub fn new(
         #[cfg(feature = "ros2-client")] node: &mut ros2_client::Node,
         #[cfg(feature = "r2r")] node: &mut r2r::Node,
+        #[cfg(feature = "lh")] node: &Node,
         params: &LifisParameters,
         node_params: &LifisNodeParameters,
         imu_pose_predictor_init: Option<Arc<Mutex<dyn FnMut(&[ImuMsg]) + Send + Sync>>>,
@@ -541,6 +560,9 @@ impl LifisNode {
 
         #[cfg(feature = "r2r")]
         let tf_listener = Arc::new(tf_r2r::TfListener::new(node));
+
+        #[cfg(feature = "lh")]
+        let tf_listener = Arc::new(tf_lh::TfListener::new(node));
 
         let state = State::new(
             &params,
@@ -596,8 +618,11 @@ impl LifisNode {
         // Share with cloud callback, TODO maybe the only one who needs it, so remove mutex and arc?
         let state = Arc::new(std::sync::Mutex::new(state));
 
+        #[cfg(feature = "ros2-client")]
         let tf_listener_clone = tf_listener.clone();
+        #[cfg(feature = "ros2-client")]
         let state_clone = state.clone();
+        #[cfg(feature = "ros2-client")]
         let imu_tf_frame_lidar_inner = Arc::clone(&imu_tf_frame);
         #[cfg(feature = "ros2-client")]
         std::thread::spawn(move || {
@@ -672,6 +697,17 @@ impl LifisNode {
                     )
                     .unwrap(),
                 None,
+            )
+            .unwrap();
+
+        #[cfg(feature = "lh")]
+        let mut imu_subscription = node
+            .subscribe::<Imu>(
+                &format!(
+                    "{}/{}",
+                    &node_params.imu_src_namespace, &node_params.imu_src_topic
+                ),
+                100,
             )
             .unwrap();
 
@@ -783,6 +819,86 @@ impl LifisNode {
                 }
                 Ok(None) => {}
             }
+        });
+        // #[cfg(feature = "lh")]
+        // let node_arc = Arc::new(node);
+        // #[cfg(feature = "lh")]
+        // let node_inner = Arc::clone(&node_arc);
+
+        // #[cfg(feature = "lh")]
+        // let wants_to_pub_imu_filtered = !node_params.imu_filtered_topic.is_empty();
+        // #[cfg(feature = "lh")]
+        // let imu_filtered_topic = format!(
+        //     "{}/{}",
+        //     &node_params.imu_filtered_namespace, &node_params.imu_filtered_topic
+        // );
+
+        #[cfg(feature = "lh")]
+        std::thread::spawn(move || {
+            let imu_pose_predictor_init = imu_pose_predictor_init.clone();
+            future::block_on(async move {
+                match imu_subscription.recv().await {
+                    Some(msg) => {
+                        error!("received imu message");
+                        {
+                            imu_tf_frame_lidar_inner
+                                .clone()
+                                .lock()
+                                .unwrap()
+                                .get_or_insert(msg.header.frame_id.clone());
+                        }
+                        let imu_init_time_counter = imu_init_time_counter.clone();
+                        let imu_init_buffer = imu_init_buffer.clone();
+
+                        let imu_lifis = imu_to_lifis(msg.clone());
+                        let curr_stamp = timestamp_to_secs(&imu_lifis.stamp);
+
+                        if let Some(imu_pose_predictor_init) = imu_pose_predictor_init.as_ref() {
+                            let mut imu_pose_predictor_init =
+                                imu_pose_predictor_init.lock().unwrap();
+                            let mut imu_init_time_counter = imu_init_time_counter.lock().unwrap();
+                            if imu_init_time_counter.is_none() {
+                                *imu_init_time_counter = Some(curr_stamp);
+                            }
+                            if let Some(init_time) = imu_init_time_counter.as_ref() {
+                                let mut imu_init_buffer = imu_init_buffer.lock().unwrap();
+                                let delta = curr_stamp - init_time;
+                                if delta < init_imu_time {
+                                    if let Some(imu_init_buffer) = imu_init_buffer.as_mut() {
+                                        imu_init_buffer.push(imu_lifis);
+                                        return; // skip adding to lifis if we are still in the init phase
+                                    }
+                                    // we are only here, if there was an initial buffer, but it was already consumed so skip init and continue with normal processing
+                                } else {
+                                    // apply the init buffer
+                                    if let Some(imu_init_buffer) = imu_init_buffer.take() {
+                                        imu_pose_predictor_init(&imu_init_buffer);
+                                    }
+                                }
+                            }
+                        }
+
+                        let filtered = {
+                            let state = state_clone.lock().unwrap();
+                            let mut lifis = state.lifis.lock().unwrap();
+                            lifis.add_imu(imu_to_lifis(msg))
+                        };
+
+                        // TODO can not pub filtered because imu_init_fn escapes its lifetime
+                        // match (filtered, wants_to_pub_imu_filtered) {
+                        //     (Some(filtered), true) => {
+                        //         // node.publish(&imu_filtered_topic, &lifis_to_imu(filtered))
+                        //         //     .await
+                        //         //     .expect("could not publish filtered imu");
+                        //     }
+                        //     _ => {}
+                        // }
+                    }
+                    None => {
+                        return; // stop task
+                    }
+                }
+            });
         });
         // TODO inline with upper because logic is same but conditionals around block on and err handling
         #[cfg(feature = "r2r")]
@@ -1005,6 +1121,18 @@ fn lifis_to_imu(msg: prelio::imu::ImuMsg) -> Imu {
             msg.orientation_covariance[7],
             msg.orientation_covariance[8],
         ],
+        #[cfg(feature = "lh")]
+        orientation_covariance: [
+            msg.orientation_covariance[0],
+            msg.orientation_covariance[1],
+            msg.orientation_covariance[2],
+            msg.orientation_covariance[3],
+            msg.orientation_covariance[4],
+            msg.orientation_covariance[5],
+            msg.orientation_covariance[6],
+            msg.orientation_covariance[7],
+            msg.orientation_covariance[8],
+        ],
         #[cfg(feature = "r2r")]
         orientation_covariance: [
             msg.orientation_covariance[0],
@@ -1035,6 +1163,18 @@ fn lifis_to_imu(msg: prelio::imu::ImuMsg) -> Imu {
             msg.angular_velocity_covariance[7],
             msg.angular_velocity_covariance[8],
         ],
+        #[cfg(feature = "lh")]
+        angular_velocity_covariance: [
+            msg.angular_velocity_covariance[0],
+            msg.angular_velocity_covariance[1],
+            msg.angular_velocity_covariance[2],
+            msg.angular_velocity_covariance[3],
+            msg.angular_velocity_covariance[4],
+            msg.angular_velocity_covariance[5],
+            msg.angular_velocity_covariance[6],
+            msg.angular_velocity_covariance[7],
+            msg.angular_velocity_covariance[8],
+        ],
         #[cfg(feature = "r2r")]
         angular_velocity_covariance: [
             msg.angular_velocity_covariance[0],
@@ -1054,6 +1194,18 @@ fn lifis_to_imu(msg: prelio::imu::ImuMsg) -> Imu {
             z: msg.linear_acceleration[2],
         },
         #[cfg(feature = "ros2-client")]
+        linear_acceleration_covariance: [
+            msg.linear_acceleration_covariance[0],
+            msg.linear_acceleration_covariance[1],
+            msg.linear_acceleration_covariance[2],
+            msg.linear_acceleration_covariance[3],
+            msg.linear_acceleration_covariance[4],
+            msg.linear_acceleration_covariance[5],
+            msg.linear_acceleration_covariance[6],
+            msg.linear_acceleration_covariance[7],
+            msg.linear_acceleration_covariance[8],
+        ],
+        #[cfg(feature = "lh")]
         linear_acceleration_covariance: [
             msg.linear_acceleration_covariance[0],
             msg.linear_acceleration_covariance[1],
