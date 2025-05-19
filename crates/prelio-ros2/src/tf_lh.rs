@@ -3,7 +3,7 @@
 /// tf_r2r is written by Arjo Chakravarty <arjo129@gmail.com>, Michael Maerz <maerz@magazino.eu> and Mitsuharu Kojima <kojima@smilerobotics.com>.
 /// See this [repository](https://github.com/smilerobotics/tf_rosrust) or [crates.io](https://crates.io/crates/tf_r2r) for the original.
 use nalgebra::geometry::{Isometry3, Translation3, UnitQuaternion};
-use ratpubsub::Node;
+use ratpub::{Node, Publisher};
 use ros2_interfaces_jazzy_rkyv::{
     builtin_interfaces::msg::{Duration, Time},
     tf2_msgs::msg::TFMessage,
@@ -17,19 +17,21 @@ use std::sync::{Arc, RwLock};
 use thiserror::Error;
 
 pub struct TfBroadcaster {
-    node: Arc<Node>,
+    publisher: Option<Publisher<TFMessage>>,
 }
-
 const TF_STATIC_TOPIC: &'static str = "/tf_static";
 const TF_TOPIC: &'static str = "/tf";
 
 impl TfBroadcaster {
     /// Create a new TfBroadcaster
+    // TODO broadcasting is mute atm because a publisher can not reach the subscriber on the same node. They share the socket :)
     #[track_caller]
-    pub fn new(node: &Arc<Node>) -> Self {
-        Self {
-            node: Arc::clone(&node),
-        }
+    pub fn new(node: &Arc<Node>, rt: Arc<tokio::runtime::Runtime>) -> Self {
+        // Self {
+        //     publisher: rt
+        //         .block_on(async { node.create_publisher(TF_TOPIC.to_owned()).await.unwrap() }),
+        // }
+        Self { publisher: None }
     }
 
     /// Broadcast transform
@@ -38,10 +40,12 @@ impl TfBroadcaster {
             transforms: vec![tf],
         };
         // TODO: handle error correctly
-        self.node
-            .publish(&TF_TOPIC, &tf_message)
-            .await
-            .map_err(|err| TfError::R2r(err.to_string()))
+        if let Some(p) = self.publisher.as_ref() {
+            p.publish(&tf_message)
+                .await
+                .map_err(|err| TfError::R2r(err.to_string()))?
+        }
+        Ok(())
     }
 }
 
@@ -192,21 +196,29 @@ pub struct TfListener {
 impl TfListener {
     /// Create a new TfListener
     #[track_caller]
-    pub fn new(node: &Node) -> Self {
-        Self::new_with_buffer(node, TfBuffer::new())
+    pub fn new(node: &Node, rt: Arc<tokio::runtime::Runtime>) -> Self {
+        Self::new_with_buffer(node, TfBuffer::new(), rt)
     }
 
     #[track_caller]
-    pub fn new_with_buffer(node: &Node, tf_buffer: TfBuffer) -> Self {
+    pub fn new_with_buffer(
+        node: &Node,
+        tf_buffer: TfBuffer,
+        rt: Arc<tokio::runtime::Runtime>,
+    ) -> Self {
         let buff = Arc::new(RwLock::new(tf_buffer));
 
-        let mut dynamic_subscriber = node.subscribe::<TFMessage>(&TF_TOPIC, 100).unwrap();
+        let mut dynamic_subscriber = rt.block_on(async {
+            node.create_subscriber::<TFMessage>(TF_TOPIC.to_owned(), 100)
+                .await
+                .unwrap()
+        });
 
         let buff_for_dynamic_sub = buff.clone();
         std::thread::spawn(move || {
             futures_lite::future::block_on(async {
                 while Arc::strong_count(&buff_for_dynamic_sub) > 1 {
-                    if let Some(tf) = dynamic_subscriber.recv().await {
+                    if let Some(tf) = dynamic_subscriber.next().await {
                         buff_for_dynamic_sub
                             .write()
                             .unwrap()
@@ -217,13 +229,17 @@ impl TfListener {
             });
         });
 
-        let mut static_subscriber = node.subscribe::<TFMessage>(&TF_STATIC_TOPIC, 100).unwrap();
+        let mut static_subscriber = rt.block_on(async {
+            node.create_subscriber::<TFMessage>(TF_STATIC_TOPIC.to_owned(), 100)
+                .await
+                .unwrap()
+        });
 
         let buff_for_static_sub = buff.clone();
         std::thread::spawn(move || {
             futures_lite::future::block_on(async {
                 while Arc::strong_count(&buff_for_static_sub) > 1 {
-                    if let Some(tf) = static_subscriber.recv().await {
+                    if let Some(tf) = static_subscriber.next().await {
                         buff_for_static_sub
                             .write()
                             .unwrap()

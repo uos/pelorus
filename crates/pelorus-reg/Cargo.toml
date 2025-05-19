@@ -19,3 +19,6 @@ rayon.workspace = true
 dashmap.workspace = true
 spole.workspace = true
 serde.workspace = true
+
+[features]
+nn_kdt = ["spole/nn_kdt"]
