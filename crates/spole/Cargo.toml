@@ -15,7 +15,7 @@ serde.workspace = true
 kdtree = { version = "0.7.0", optional = true }
 
 [features]
-default = ["nn_kdt"]
+# default = ["nn_kdt"]
 nn_kdt = ["dep:kdtree"]
 
 [dev-dependencies]

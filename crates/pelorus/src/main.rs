@@ -22,7 +22,7 @@ use r2r::{
     QosProfile,
 };
 #[cfg(feature = "lh")]
-use ratpubsub::Node;
+use ratpub::Node;
 #[cfg(feature = "rerun")]
 use rerun::{demo_util::grid, external::glam, Archetype};
 #[cfg(feature = "ros2-client")]
@@ -41,7 +41,7 @@ use ros2_interfaces_jazzy::{
 use ros2_interfaces_jazzy_rkyv::{
     builtin_interfaces::msg::Time,
     geometry_msgs::msg::{Point, PoseStamped, Quaternion, Transform, TransformStamped, Vector3},
-    nav_msgs::msg::Path,
+    nav_msgs::msg::{Odometry, Path},
     sensor_msgs::msg::PointCloud2,
     std_msgs::msg::Header,
     visualization_msgs::msg::Marker,
@@ -208,6 +208,13 @@ struct Args {
 fn ros(config_path: &str) -> Result<(), Box<dyn std::error::Error>> {
     // TODO add logging file
     // log4rs::init_file("examples/async_listener/log4rs.yaml", Default::default()).unwrap();
+    #[cfg(feature = "lh")]
+    let rt = Arc::new(
+        tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()
+            .unwrap(),
+    );
 
     #[cfg(not(feature = "lh"))]
     #[allow(unused_variables)]
@@ -220,9 +227,7 @@ fn ros(config_path: &str) -> Result<(), Box<dyn std::error::Error>> {
         NodeOptions::new().enable_rosout(true),
     )?;
     #[cfg(feature = "lh")]
-    let node = Arc::new(future::block_on(async {
-        Node::create("pelorus").await.unwrap()
-    }));
+    let node = Arc::new(rt.block_on(async { Node::create("pelorus".to_owned()).await.unwrap() }));
     #[cfg(feature = "r2r")]
     let ctx = r2r::Context::create()?;
     #[cfg(feature = "r2r")]
@@ -249,7 +254,7 @@ fn ros(config_path: &str) -> Result<(), Box<dyn std::error::Error>> {
     #[cfg(not(feature = "lh"))]
     let tf_broadcaster = TfBroadcaster::new(&mut node);
     #[cfg(feature = "lh")]
-    let tf_broadcaster = Arc::new(TfBroadcaster::new(&node));
+    let tf_broadcaster = Arc::new(TfBroadcaster::new(&node, rt.clone()));
 
     dbg!(&config.enable_live_extrinsic_calibration);
 
@@ -291,6 +296,7 @@ fn ros(config_path: &str) -> Result<(), Box<dyn std::error::Error>> {
         &mut node,
         #[cfg(feature = "lh")]
         &node,
+        rt.clone(),
         &config.prelio_params,
         &config.prelio_node_params,
         Some(imu_pose_predictor_init),
@@ -446,19 +452,55 @@ fn ros(config_path: &str) -> Result<(), Box<dyn std::error::Error>> {
 
     #[cfg(feature = "r2r")]
     let map_publisher = node.create_publisher::<PointCloud2>("map", QosProfile::default())?;
+    #[cfg(feature = "lh")]
+    let map_publisher = rt.block_on(async {
+        node.create_publisher::<PointCloud2>("map".to_owned())
+            .await
+            .unwrap()
+    });
     #[cfg(feature = "r2r")]
     let cloud_publisher =
         node.create_publisher::<PointCloud2>("registered", config.registered_cloud_qos.into())?;
+    #[cfg(feature = "lh")]
+    let cloud_publisher = rt.block_on(async {
+        node.create_publisher::<PointCloud2>("registered".to_owned())
+            .await
+            .unwrap()
+    });
     #[cfg(feature = "r2r")]
     let odom_publisher = node.create_publisher::<Odometry>("odom", config.odom_qos.into())?;
+    #[cfg(feature = "lh")]
+    let odom_publisher = rt.block_on(async {
+        node.create_publisher::<Odometry>("odom".to_owned())
+            .await
+            .unwrap()
+    });
     #[cfg(feature = "r2r")]
     let lidar_path_publisher = node.create_publisher::<Path>("path", config.path_qos.into())?;
+    #[cfg(feature = "lh")]
+    let lidar_path_publisher = rt.block_on(async {
+        node.create_publisher::<Path>("path".to_owned())
+            .await
+            .unwrap()
+    });
     #[cfg(feature = "r2r")]
     let imu_odom_publisher =
         node.create_publisher::<Odometry>("imu_odom", config.imu_odom_qos.into())?;
+    #[cfg(feature = "lh")]
+    let imu_odom_publisher = rt.block_on(async {
+        node.create_publisher::<Odometry>("imu_odom".to_owned())
+            .await
+            .unwrap()
+    });
     #[cfg(feature = "r2r")]
     let imu_path_publisher =
         node.create_publisher::<Path>("imu_path", config.imu_path_qos.into())?;
+    #[cfg(feature = "lh")]
+    let imu_path_publisher = rt.block_on(async {
+        node.create_publisher::<Path>("imu_path".to_owned())
+            .await
+            .unwrap()
+    });
     #[cfg(all(feature = "r2r", not(feature = "rerun")))]
     let registered_visual_publisher =
         node.create_publisher::<Marker>("registered_viz", r2r::QosProfile::default())?;
@@ -890,20 +932,16 @@ fn ros(config_path: &str) -> Result<(), Box<dyn std::error::Error>> {
             });
 
             #[cfg(feature = "lh")]
-            let spawn_node = Arc::clone(&node);
-            #[cfg(feature = "lh")]
-            std::thread::spawn(move || {
-                future::block_on(async move {
-                    spawn_node
-                        .publish("/lio/registered", &cloud)
-                        .await
-                        .expect("Failed to publish cloud");
+            rt.block_on(async {
+                cloud_publisher
+                    .publish(&cloud)
+                    .await
+                    .expect("Failed to publish cloud");
 
-                    spawn_node
-                        .publish("/lio/odom", &lidar_odom)
-                        .await
-                        .expect("Failed to publish odom");
-                });
+                odom_publisher
+                    .publish(&lidar_odom)
+                    .await
+                    .expect("Failed to publish odom");
             });
             #[cfg(not(feature = "lh"))]
             {
@@ -949,29 +987,25 @@ fn ros(config_path: &str) -> Result<(), Box<dyn std::error::Error>> {
                 .expect("Failed to publish imu path"); // TODO this will spam a lot, maybe also throttle like lidar_path
 
             #[cfg(feature = "lh")]
-            let spawn_node = Arc::clone(&node);
-            #[cfg(feature = "lh")]
             let pub_lidar_path = lidar_path.clone();
             #[cfg(feature = "lh")]
             let pub_imu_path = imu_path.clone();
             #[cfg(feature = "lh")]
-            std::thread::spawn(|| {
-                future::block_on(async move {
-                    spawn_node
-                        .publish("/lio/lidar_path", &pub_lidar_path)
-                        .await
-                        .expect("Failed to publish path");
+            rt.block_on(async {
+                lidar_path_publisher
+                    .publish(&pub_lidar_path)
+                    .await
+                    .expect("Failed to publish path");
 
-                    spawn_node
-                        .publish("/lio/odom_imu", &imu_odom)
-                        .await
-                        .expect("Failed to publish imu odom");
+                imu_odom_publisher
+                    .publish(&imu_odom)
+                    .await
+                    .expect("Failed to publish imu odom");
 
-                    spawn_node
-                        .publish("/lio/imu_path", &pub_imu_path)
-                        .await
-                        .expect("Failed to publish imu path"); // TODO this will spam a lot, maybe also throttle like lidar_path
-                });
+                imu_path_publisher
+                    .publish(&pub_imu_path)
+                    .await
+                    .expect("Failed to publish imu path"); // TODO this will spam a lot, maybe also throttle like lidar_path
             });
             #[cfg(feature = "rerun")]
             {

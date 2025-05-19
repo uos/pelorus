@@ -6,7 +6,7 @@ edition = "2021"
 
 [dependencies]
 ros_pointcloud2.workspace = true
-prelio-ros2.workspace = true
+prelio-ros2 = { workspace = true, default-features = false }
 pelorus-reg.workspace = true
 ros2-client = { workspace = true, optional = true }
 nalgebra.workspace = true
@@ -25,8 +25,9 @@ futures-lite.workspace = true
 mimalloc = { version = "0.1.43", optional = true }
 clap = { version = "4.5.28", features = ["derive"] }
 r2r = { workspace = true, optional = true }
-ratpubsub = { workspace = true, optional = true }
+ratpub = { workspace = true, optional = true }
 ros2-interfaces-jazzy-rkyv = { workspace = true, optional = true }
+tokio = { workspace = true, optional = true }
 
 #[build-dependencies]
 #bindgen = "0.69"
@@ -34,11 +35,13 @@ ros2-interfaces-jazzy-rkyv = { workspace = true, optional = true }
 #pkg-config = "0.3"
 
 [features]
-default = ["rerun", "lh"]
+default = ["dev"]
+dev = ["rerun", "lh", "pelorus-reg/nn_kdt"]
 mimalloc = ["dep:mimalloc"]
 rerun = ["dep:rerun"]
 lh = [
-  "dep:ratpubsub",
+  "dep:ratpub",
+  "dep:tokio",
   "dep:ros2-interfaces-jazzy-rkyv",
   "ros_pointcloud2/lh",
   "prelio-ros2/lh",

@@ -559,6 +559,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "async-compat"
+version = "0.2.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7bab94bde396a3f7b4962e396fdad640e241ed797d4d8d77fc8c237d14c58fc0"
+dependencies = [
+ "futures-core",
+ "futures-io",
+ "once_cell",
+ "pin-project-lite",
+ "tokio",
+]
+
+[[package]]
 name = "async-executor"
 version = "1.13.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -887,7 +900,7 @@ dependencies = [
 [[package]]
 name = "bagread"
 version = "0.1.0"
-source = "git+ssh://git@gitlabti.informatik.uni-osnabrueck.de/chsieh/lighthouse.git?branch=main#6836707fe00229060c21018b880e23358dbedecb"
+source = "git+ssh://git@gitlabti.informatik.uni-osnabrueck.de/chsieh/lighthouse.git?branch=main#3497f3a8728df78d07e51485386cf0f58640b940"
 dependencies = [
  "anyhow",
  "byteorder",
@@ -5312,13 +5325,14 @@ dependencies = [
  "prelio-ros2",
  "r2r",
  "rand 0.8.5",
- "ratpubsub",
+ "ratpub",
  "rerun",
  "ros2-client 0.7.6",
  "ros2-interfaces-jazzy",
  "ros2-interfaces-jazzy-rkyv 0.0.4 (git+https://github.com/stelzo/ros2-interfaces-jazzy-rkyv.git?branch=main)",
  "ros_pointcloud2 0.5.3 (git+https://github.com/stelzo/ros_pointcloud2.git?branch=rkyv)",
  "serde 1.0.219",
+ "tokio",
  "toml",
 ]
 
@@ -5652,19 +5666,21 @@ name = "prelio-ros2"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "async-compat",
  "env_logger",
  "futures-lite",
  "log",
  "nalgebra 0.33.2",
  "prelio",
  "r2r",
- "ratpubsub",
+ "ratpub",
  "ros2-client 0.7.6",
  "ros2-interfaces-jazzy",
  "ros2-interfaces-jazzy-rkyv 0.0.4 (git+https://github.com/stelzo/ros2-interfaces-jazzy-rkyv.git?branch=main)",
  "ros_pointcloud2 0.5.3 (git+https://github.com/stelzo/ros_pointcloud2.git?branch=rkyv)",
  "serde 1.0.219",
  "thiserror 1.0.69",
+ "tokio",
 ]
 
 [[package]]
@@ -6089,9 +6105,9 @@ dependencies = [
 ]
 
 [[package]]
-name = "ratpubsub"
+name = "ratpub"
 version = "0.1.0"
-source = "git+ssh://git@gitlabti.informatik.uni-osnabrueck.de/chsieh/lighthouse.git?branch=main#6836707fe00229060c21018b880e23358dbedecb"
+source = "git+ssh://git@gitlabti.informatik.uni-osnabrueck.de/chsieh/lighthouse.git?branch=main#3497f3a8728df78d07e51485386cf0f58640b940"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -8088,7 +8104,7 @@ dependencies = [
 [[package]]
 name = "rlc"
 version = "0.1.0"
-source = "git+ssh://git@gitlabti.informatik.uni-osnabrueck.de/chsieh/lighthouse.git?branch=main#6836707fe00229060c21018b880e23358dbedecb"
+source = "git+ssh://git@gitlabti.informatik.uni-osnabrueck.de/chsieh/lighthouse.git?branch=main#3497f3a8728df78d07e51485386cf0f58640b940"
 dependencies = [
  "anyhow",
  "ariadne",
@@ -8481,7 +8497,7 @@ dependencies = [
 [[package]]
 name = "sea"
 version = "0.1.0"
-source = "git+ssh://git@gitlabti.informatik.uni-osnabrueck.de/chsieh/lighthouse.git?branch=main#6836707fe00229060c21018b880e23358dbedecb"
+source = "git+ssh://git@gitlabti.informatik.uni-osnabrueck.de/chsieh/lighthouse.git?branch=main#3497f3a8728df78d07e51485386cf0f58640b940"
 dependencies = [
  "anyhow",
  "async-trait",
