@@ -3,3 +3,4 @@
 **/__pycache__/
 lio/icp/build
 **/lio.toml
+**/.DS_Store

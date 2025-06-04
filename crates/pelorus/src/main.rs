@@ -60,7 +60,7 @@ use prelio_ros2::tf_r2r::TfBroadcaster;
 use prelio_ros2::{prelio::config::LifisParameters, LifisNodeParameters, Qos};
 use rand::Rng;
 
-use pelorus_reg::{sfasterlio::SFasterLio, Registration};
+use pelorus_reg::{sfasterlio::SFasterLio, CloudRegisterResult, Registration};
 use prelio_ros2::{prelio::imu::ImuMsg, LifisNode};
 use ros_pointcloud2::prelude::*;
 //use small_gicp_sys::*;
@@ -259,7 +259,9 @@ fn lio(config_path: &str) -> Result<(), Box<dyn std::error::Error>> {
     #[cfg(feature = "lh")]
     let tf_broadcaster = Arc::new(TfBroadcaster::new(&node, rt.clone()));
 
-    //let map = Arc::new(Mutex::new(Map::new(config.map_resolution)));
+    #[cfg(feature = "gicp")]
+    let map = Arc::new(Mutex::new(small_gicp_sys::Map::new(config.map_resolution)));
+    #[cfg(not(feature = "gicp"))]
     let map = Arc::new(Mutex::new(SFasterLio::new(
         config.map_resolution,
         config.gravity,
@@ -275,20 +277,6 @@ fn lio(config_path: &str) -> Result<(), Box<dyn std::error::Error>> {
 
     let mean_acc = Arc::new(Mutex::new(None));
 
-    // Initialize the EKF with the first IMU messages
-    let imu_pose_predictor_init = {
-        let map = map.clone();
-        let mean_acc = mean_acc.clone();
-        Arc::new(Mutex::new(move |msg: &[ImuMsg]| {
-            let msg: Vec<pelorus_reg::ImuMsg> =
-                msg.iter().map(|m| imu_msg_to_pelorus_reg(m)).collect();
-            let mut map = map.lock().unwrap();
-            let init_mean_acc = map.init_imu_ekf(&msg);
-            let mut mean_acc = mean_acc.lock().expect("only user");
-            *mean_acc = Some(init_mean_acc);
-        }))
-    };
-
     #[cfg(feature = "rerun")]
     let rec = Arc::new(rerun::RecordingStreamBuilder::new("pelorus").spawn()?);
 
@@ -302,7 +290,22 @@ fn lio(config_path: &str) -> Result<(), Box<dyn std::error::Error>> {
         rt.clone(),
         &config.prelio_params,
         &config.prelio_node_params,
-        Some(imu_pose_predictor_init),
+        #[cfg(not(feature = "gicp"))]
+        Some({
+            let map = map.clone();
+            let mean_acc = mean_acc.clone();
+            Arc::new(Mutex::new(move |msg: &[ImuMsg]| {
+                let msg: Vec<pelorus_reg::ImuMsg> =
+                    msg.iter().map(|m| imu_msg_to_pelorus_reg(m)).collect();
+                let mut map = map.lock().unwrap();
+                let init_mean_acc = map.init_imu_ekf(&msg);
+                let mut mean_acc = mean_acc.lock().expect("only user");
+                *mean_acc = Some(init_mean_acc);
+            }))
+        }),
+        #[cfg(feature = "gicp")]
+        None,
+        #[cfg(not(feature = "gicp"))]
         {
             let map = map.clone();
 
@@ -337,6 +340,9 @@ fn lio(config_path: &str) -> Result<(), Box<dyn std::error::Error>> {
                 },
             ))
         },
+        #[cfg(feature = "gicp")]
+        None,
+        #[cfg(not(feature = "gicp"))]
         {
             let map = map.clone();
             Some(Box::new(
@@ -355,6 +361,8 @@ fn lio(config_path: &str) -> Result<(), Box<dyn std::error::Error>> {
                 },
             ))
         },
+        #[cfg(feature = "gicp")]
+        None,
         Arc::clone(&rec),
     )?;
 
@@ -543,6 +551,7 @@ fn lio(config_path: &str) -> Result<(), Box<dyn std::error::Error>> {
     let mut last_render = std::time::Instant::now();
 
     std::thread::spawn(move || {
+        let mut first_scan = true;
         while let Ok(lifis_tick) = synced_rx.recv() {
             eval.start("total").unwrap();
             //eval.merge(&lifis_tick.runtime_eval);
@@ -554,7 +563,10 @@ fn lio(config_path: &str) -> Result<(), Box<dyn std::error::Error>> {
             if let Some(existing_last_scan_time) = last_scan_time {
                 if current_cloud_time < existing_last_scan_time {
                     let mut map = map.lock().unwrap();
+                    #[cfg(not(feature = "gicp"))]
                     map.clear_localmap();
+                    #[cfg(feature = "gicp")]
+                    map.reset(config.map_resolution);
 
                     info!("Resetting map");
                     t_world_lidar = nalgebra::Isometry3::identity();
@@ -618,12 +630,34 @@ fn lio(config_path: &str) -> Result<(), Box<dyn std::error::Error>> {
                     cloud: pelorus_reg::LocatedBufferView::Ram(cloud.clone()), // TODO remove clone and use view when functionality is done
                     initial_guess: init_guess_world,
                 };
+                #[cfg(not(feature = "gicp"))]
                 match map.register_and_map(mode) {
                     Ok(pose) => pose,
                     Err(err) => {
                         eval.stop("reg").unwrap();
                         error!("{err}");
                         continue;
+                    }
+                }
+                #[cfg(feature = "gicp")]
+                {
+                    let in_cloud = PointCloud2Msg::try_from_vec(cloud).unwrap();
+                    if first_scan {
+                        map.add(&in_cloud, None);
+                        first_scan = false;
+
+                        CloudRegisterResult {
+                            pose: Isometry3::identity(),
+                            avg_iterations: None,
+                            registered_cloud: None,
+                        }
+                    } else {
+                        let res = map.register(&in_cloud, &init_guess_world);
+                        CloudRegisterResult {
+                            pose: res.transform_target_to_source,
+                            avg_iterations: Some(res.num_iterations as u32),
+                            registered_cloud: None,
+                        }
                     }
                 }
             };
@@ -834,7 +868,7 @@ fn lio(config_path: &str) -> Result<(), Box<dyn std::error::Error>> {
             let map_to_lidar_transform = t_world_lidar.clone();
             cloud.header.frame_id = orig_frame.clone();
 
-            #[cfg(debug_assertions)]
+            #[cfg(all(debug_assertions, not(feature = "gicp")))]
             {
                 let total_map = map.lock().unwrap().get_entire_map();
                 #[cfg(feature = "rerun")]
