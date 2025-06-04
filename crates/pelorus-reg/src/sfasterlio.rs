@@ -256,7 +256,7 @@ impl crate::Registration for SFasterLio {
             } => match cloud {
                 crate::LocatedBufferView::Ram(cloud) => cloud,
                 crate::LocatedBufferView::Cuda(_) => {
-                    return Err(anyhow::anyhow!("Gave GPU buffer to CPU-only function"))
+                    return Err(anyhow::anyhow!("Gave GPU buffer to CPU-only function"));
                 }
             },
             _ => return Err(anyhow::anyhow!("Invalid mode")),

@@ -70,6 +70,9 @@ rand = "0.8"
 serde = { version = "1", features = ["derive"] }
 toml = "0.8.20"
 
+# [patch."ssh://git@github.com/stelzo/small_gicp-sys.git"]
+# small_gicp-sys = { path = "../small_gicp-rs" }
+
 # [patch."ssh://git@gitlabti.informatik.uni-osnabrueck.de/chsieh/minot.git"]
 # ratpub = { path = "../minot/ratpub" }
 # rat = { path = "../minot/rat" }

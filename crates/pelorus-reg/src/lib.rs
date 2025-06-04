@@ -1,6 +1,7 @@
 use nalgebra::*;
 use ros_pointcloud2::prelude::*;
 
+pub mod gicp;
 pub mod imu;
 mod localmap;
 pub mod sfasterlio;

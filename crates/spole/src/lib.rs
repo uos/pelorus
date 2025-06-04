@@ -95,6 +95,7 @@ impl IVoxHashMap {
             buffer: vec![(0, IvoxNode::new()); capacity],
             buffer_current_idx: 0,
             buffer_init_full: false,
+            #[cfg(feature = "nn_kdt")]
             kd_map: Vec::with_capacity(capacity),
         }
     }
