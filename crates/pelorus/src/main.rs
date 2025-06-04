@@ -191,7 +191,7 @@ pub enum ConfigCommand {
 #[derive(Debug, Clone, Subcommand)]
 #[command()]
 pub enum Command {
-    Ros(ConfigArgs),
+    Run(ConfigArgs),
 
     //#[command(visible_alias = "w")]
     #[command(subcommand)]
@@ -205,7 +205,7 @@ struct Args {
     pub command: Command,
 }
 
-fn ros(config_path: &str) -> Result<(), Box<dyn std::error::Error>> {
+fn lio(config_path: &str) -> Result<(), Box<dyn std::error::Error>> {
     // TODO add logging file
     // log4rs::init_file("examples/async_listener/log4rs.yaml", Default::default()).unwrap();
     #[cfg(feature = "lh")]
@@ -215,6 +215,9 @@ fn ros(config_path: &str) -> Result<(), Box<dyn std::error::Error>> {
             .build()
             .unwrap(),
     );
+
+    #[cfg(feature = "rat")]
+    rat::init("pelorus-lio", None, Some(Arc::clone(&rt))).unwrap();
 
     #[cfg(not(feature = "lh"))]
     #[allow(unused_variables)]
@@ -256,10 +259,7 @@ fn ros(config_path: &str) -> Result<(), Box<dyn std::error::Error>> {
     #[cfg(feature = "lh")]
     let tf_broadcaster = Arc::new(TfBroadcaster::new(&node, rt.clone()));
 
-    dbg!(&config.enable_live_extrinsic_calibration);
-
     //let map = Arc::new(Mutex::new(Map::new(config.map_resolution)));
-    dbg!(config.map_resolution);
     let map = Arc::new(Mutex::new(SFasterLio::new(
         config.map_resolution,
         config.gravity,
@@ -288,6 +288,9 @@ fn ros(config_path: &str) -> Result<(), Box<dyn std::error::Error>> {
             *mean_acc = Some(init_mean_acc);
         }))
     };
+
+    #[cfg(feature = "rerun")]
+    let rec = Arc::new(rerun::RecordingStreamBuilder::new("pelorus").spawn()?);
 
     let lidar_vendor = config.prelio_params.lidar_vendor.clone();
 
@@ -352,10 +355,8 @@ fn ros(config_path: &str) -> Result<(), Box<dyn std::error::Error>> {
                 },
             ))
         },
+        Arc::clone(&rec),
     )?;
-
-    #[cfg(feature = "rerun")]
-    let rec = rerun::RecordingStreamBuilder::new("pelorus").spawn()?;
 
     #[cfg(feature = "ros2-client")]
     let map_publisher = node
@@ -628,6 +629,8 @@ fn ros(config_path: &str) -> Result<(), Box<dyn std::error::Error>> {
             };
             eval.stop("reg").unwrap();
 
+            log::debug!("got a new registration");
+
             //avg_iterations = register_pose.avg_iterations.unwrap_or(0) as f32;
             /* (avg_iterations * iteration_updates as f64
             + register_pose.num_iterations as f64)
@@ -837,13 +840,8 @@ fn ros(config_path: &str) -> Result<(), Box<dyn std::error::Error>> {
                 #[cfg(feature = "rerun")]
                 {
                     let points = total_map.iter().map(|v| glam::Vec3::new(v.x, v.y, v.z));
-                    let colors = grid(glam::Vec3::ZERO, glam::Vec3::splat(255.0), 10)
-                        .map(|v| rerun::Color::from_rgb(v.x as u8, v.y as u8, v.z as u8));
 
-                    if let Err(err) = rec.log(
-                        "map",
-                        &rerun::Points3D::new(points).with_colors(colors), // .with_radii([0.1]),
-                    ) {
+                    if let Err(err) = rec.log("map", &rerun::Points3D::new(points)) {
                         error!("Error sending to rerun {err}");
                     }
                 }
@@ -1035,8 +1033,17 @@ fn ros(config_path: &str) -> Result<(), Box<dyn std::error::Error>> {
                     );
                 }
             }
+
+            // mark to send new data
+            #[cfg(feature = "rat")]
+            rat::bacon(
+                "tick_end",
+                &mut "".to_string(),
+                rat::VariableType::StaticOnly,
+            )
+            .unwrap();
         }
-        dbg!("--- END lifis tick ---");
+        info!("--- END lifis tick ---");
     });
 
     #[cfg(feature = "lh")]
@@ -1080,7 +1087,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = Args::parse();
 
     match args.command {
-        Command::Ros(args) => ros(&args.config_path),
+        Command::Run(args) => lio(&args.config_path),
         Command::Config(args) => match args {
             ConfigCommand::Init(args) => {
                 let config = LioConfig::default();

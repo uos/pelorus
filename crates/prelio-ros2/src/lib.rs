@@ -5,9 +5,8 @@ pub mod tf_lh;
 #[cfg(feature = "r2r")]
 pub mod tf_r2r;
 
-use async_compat::CompatExt;
 use futures_lite::{StreamExt, future};
-use log::{error, info, warn};
+use log::{debug, error, info, warn};
 pub use prelio;
 
 use anyhow::anyhow;
@@ -27,6 +26,8 @@ use r2r::{
 };
 #[cfg(feature = "lh")]
 use ratpub::Node;
+#[cfg(feature = "rerun")]
+use rerun::external::glam;
 use ros_pointcloud2::prelude::*;
 #[cfg(feature = "ros2-client")]
 use ros2_client::ros2;
@@ -50,7 +51,7 @@ use ros2_interfaces_jazzy_rkyv::{
     sensor_msgs::msg::{Imu, PointCloud2},
     std_msgs::msg::Header,
 };
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Serialize, ser::Error};
 use std::sync::{Arc, Mutex};
 
 #[derive(Debug, Clone, Default, PointConvertible)]
@@ -162,6 +163,8 @@ pub struct State {
     pub lifis_params: LifisParameters,
     take_nth_scan: usize,
     pub lidar_vendor: prelio::LidarVendor,
+    #[cfg(feature = "rerun")]
+    pub rec: Arc<rerun::RecordingStream>,
 }
 
 impl State {
@@ -169,8 +172,11 @@ impl State {
         config: &LifisParameters,
         imu_pose_prediction_undistort: Option<Box<prelio::ImuPredictorUndistort>>,
         imu_pose_prediction_init_guess: Option<Box<prelio::ImuPredictor>>,
+        #[cfg(feature = "rerun")] rec: Arc<rerun::RecordingStream>,
     ) -> anyhow::Result<Self> {
         Ok(State {
+            #[cfg(feature = "rerun")]
+            rec,
             global_polygon: None,
             sensor_tf: None,
             imu_tf: None,
@@ -244,6 +250,23 @@ fn cloud_callback(
     let points_n = (in_msg.dimensions.width * in_msg.dimensions.height) as usize;
     if points_n == 0 {
         return Ok(());
+    }
+    #[cfg(feature = "rerun")]
+    let rec = { state.lock().unwrap().rec.clone() };
+    #[cfg(debug_assertions)]
+    {
+        #[cfg(feature = "rerun")]
+        {
+            let points = in_msg.clone();
+            let points = points
+                .try_into_iter()
+                .unwrap()
+                .map(|p: PointXYZ| glam::Vec3::new(p.x, p.y, p.z));
+
+            if let Err(err) = rec.log("input", &rerun::Points3D::new(points)) {
+                error!("Error sending to rerun {err}");
+            }
+        }
     }
 
     {
@@ -556,6 +579,7 @@ impl LifisNode {
         imu_pose_predictor_init: Option<Arc<Mutex<dyn FnMut(&[ImuMsg]) + Send + Sync>>>,
         imu_pose_prediction_undistort: Option<Box<prelio::ImuPredictorUndistort>>,
         imu_pose_prediction_init_guess: Option<Box<prelio::ImuPredictor>>,
+        #[cfg(feature = "rerun")] rec: Arc<rerun::RecordingStream>,
     ) -> anyhow::Result<(Self, std::sync::mpsc::Receiver<LifisTick>)> {
         #[cfg(feature = "ros2-client")]
         let tf_listener = Arc::new(tf::TfListener::new(node));
@@ -570,6 +594,8 @@ impl LifisNode {
             &params,
             imu_pose_prediction_undistort,
             imu_pose_prediction_init_guess,
+            #[cfg(feature = "rerun")]
+            Arc::clone(&rec),
         )?;
 
         let (chan, imu_frame) = {
@@ -676,7 +702,7 @@ impl LifisNode {
             future::block_on(async {
                 cloud_subscriber
                     .for_each(|msg| {
-                        info!("RECEIVED CLOUD");
+                        debug!("received cloud");
                         let imu_tf_frame_lidar_inner =
                             imu_tf_frame_lidar_inner.clone().lock().unwrap().clone();
 
@@ -696,27 +722,30 @@ impl LifisNode {
             })
         });
         #[cfg(feature = "lh")]
-        std::thread::spawn(move || {
-            future::block_on(async {
-                while let Some(msg) = cloud_subscriber.next().await {
-                    info!("RECEIVED CLOUD");
-                    let imu_tf_frame_lidar_inner =
-                        imu_tf_frame_lidar_inner.clone().lock().unwrap().clone();
+        {
+            let cloud_sub_rt = Arc::clone(&rt);
+            std::thread::spawn(move || {
+                cloud_sub_rt.block_on(async {
+                    while let Some(msg) = cloud_subscriber.next().await {
+                        debug!("received cloud");
+                        let imu_tf_frame_lidar_inner =
+                            imu_tf_frame_lidar_inner.clone().lock().unwrap().clone();
 
-                    match cloud_callback(
-                        state_clone.clone(),
-                        tf_listener_clone.clone(),
-                        msg,
-                        imu_tf_frame_lidar_inner,
-                    ) {
-                        Ok(_) => {}
-                        Err(e) => {
-                            error!("{:?}", e);
+                        match cloud_callback(
+                            state_clone.clone(),
+                            tf_listener_clone.clone(),
+                            msg,
+                            imu_tf_frame_lidar_inner,
+                        ) {
+                            Ok(_) => {}
+                            Err(e) => {
+                                error!("{:?}", e);
+                            }
                         }
                     }
-                }
-            })
-        });
+                })
+            });
+        }
         let state_clone = state.clone();
         #[cfg(feature = "ros2-client")]
         let imu_subscription = node
@@ -785,64 +814,67 @@ impl LifisNode {
         let init_imu_time = node_params.imu_predictor_init_time_sec;
         #[cfg(feature = "ros2-client")]
         std::thread::spawn(move || {
+            // TODO use while let
             let imu_pose_predictor_init = imu_pose_predictor_init.clone();
+            loop {
+                match imu_subscription.take() {
+                    Err(e) => {
+                        error!("Could not read imu: {e}");
+                    }
+                    Ok(Some((msg, _msg_info))) => {
+                        debug!("received imu message");
+                        imu_tf_frame_lidar_inner
+                            .clone()
+                            .lock()
+                            .unwrap()
+                            .get_or_insert(msg.header.frame_id.clone());
+                        let imu_init_time_counter = imu_init_time_counter.clone();
+                        let imu_init_buffer = imu_init_buffer.clone();
 
-            match imu_subscription.take() {
-                Err(e) => {
-                    error!("Could not read imu: {e}");
-                }
-                Ok(Some((msg, _msg_info))) => {
-                    error!("received imu message");
-                    imu_tf_frame_lidar_inner
-                        .clone()
-                        .lock()
-                        .unwrap()
-                        .get_or_insert(msg.header.frame_id.clone());
-                    let imu_init_time_counter = imu_init_time_counter.clone();
-                    let imu_init_buffer = imu_init_buffer.clone();
+                        let imu_lifis = imu_to_lifis(msg.clone());
+                        let curr_stamp = timestamp_to_secs(&imu_lifis.stamp);
 
-                    let imu_lifis = imu_to_lifis(msg.clone());
-                    let curr_stamp = timestamp_to_secs(&imu_lifis.stamp);
-
-                    if let Some(imu_pose_predictor_init) = imu_pose_predictor_init.as_ref() {
-                        let mut imu_pose_predictor_init = imu_pose_predictor_init.lock().unwrap();
-                        let mut imu_init_time_counter = imu_init_time_counter.lock().unwrap();
-                        if imu_init_time_counter.is_none() {
-                            *imu_init_time_counter = Some(curr_stamp);
-                        }
-                        if let Some(init_time) = imu_init_time_counter.as_ref() {
-                            let mut imu_init_buffer = imu_init_buffer.lock().unwrap();
-                            let delta = curr_stamp - init_time;
-                            if delta < init_imu_time {
-                                if let Some(imu_init_buffer) = imu_init_buffer.as_mut() {
-                                    imu_init_buffer.push(imu_lifis);
-                                    return; // skip adding to lifis if we are still in the init phase
-                                }
-                                // we are only here, if there was an initial buffer, but it was already consumed so skip init and continue with normal processing
-                            } else {
-                                // apply the init buffer
-                                if let Some(imu_init_buffer) = imu_init_buffer.take() {
-                                    imu_pose_predictor_init(&imu_init_buffer);
+                        if let Some(imu_pose_predictor_init) = imu_pose_predictor_init.as_ref() {
+                            let mut imu_pose_predictor_init =
+                                imu_pose_predictor_init.lock().unwrap();
+                            let mut imu_init_time_counter = imu_init_time_counter.lock().unwrap();
+                            if imu_init_time_counter.is_none() {
+                                *imu_init_time_counter = Some(curr_stamp);
+                            }
+                            if let Some(init_time) = imu_init_time_counter.as_ref() {
+                                let mut imu_init_buffer = imu_init_buffer.lock().unwrap();
+                                let delta = curr_stamp - init_time;
+                                if delta < init_imu_time {
+                                    if let Some(imu_init_buffer) = imu_init_buffer.as_mut() {
+                                        imu_init_buffer.push(imu_lifis);
+                                        continue; // skip adding to lifis if we are still in the init phase
+                                    }
+                                    // we are only here, if there was an initial buffer, but it was already consumed so skip init and continue with normal processing
+                                } else {
+                                    // apply the init buffer
+                                    if let Some(imu_init_buffer) = imu_init_buffer.take() {
+                                        imu_pose_predictor_init(&imu_init_buffer);
+                                    }
                                 }
                             }
                         }
-                    }
 
-                    let state = state_clone.lock().unwrap();
-                    let filtered = state.lifis.lock().unwrap().add_imu(imu_to_lifis(msg));
-                    match (filtered, imu_filtered_publisher.as_ref()) {
-                        (Some(filtered), Some(imu_filtered_publisher)) => {
-                            imu_filtered_publisher
-                                .clone()
-                                .lock()
-                                .unwrap()
-                                .publish(&lifis_to_imu(filtered))
-                                .expect("could not publish filtered imu");
+                        let state = state_clone.lock().unwrap();
+                        let filtered = state.lifis.lock().unwrap().add_imu(imu_to_lifis(msg));
+                        match (filtered, imu_filtered_publisher.as_ref()) {
+                            (Some(filtered), Some(imu_filtered_publisher)) => {
+                                imu_filtered_publisher
+                                    .clone()
+                                    .lock()
+                                    .unwrap()
+                                    .publish(&lifis_to_imu(filtered))
+                                    .expect("could not publish filtered imu");
+                            }
+                            _ => {}
                         }
-                        _ => {}
                     }
+                    Ok(None) => {}
                 }
-                Ok(None) => {}
             }
         });
 
@@ -857,7 +889,6 @@ impl LifisNode {
                     ),
                     100,
                 )
-                .compat() // tokio to smol
                 .await
                 .unwrap()
             });
@@ -865,68 +896,65 @@ impl LifisNode {
             std::thread::spawn(move || {
                 let imu_pose_predictor_init = imu_pose_predictor_init.clone();
                 imu_sub_rt.block_on(async {
-                    match imu_sub.next().await {
-                        Some(msg) => {
-                            error!("received imu message");
-                            {
-                                imu_tf_frame_lidar_inner
-                                    .clone()
-                                    .lock()
-                                    .unwrap()
-                                    .get_or_insert(msg.header.frame_id.clone());
+                    while let Some(msg) = imu_sub.next().await {
+                        let state = state_clone.lock().unwrap();
+                        debug!("received imu message");
+                        {
+                            imu_tf_frame_lidar_inner
+                                .clone()
+                                .lock()
+                                .unwrap()
+                                .get_or_insert(msg.header.frame_id.clone());
+                        }
+                        let imu_init_time_counter = imu_init_time_counter.clone();
+                        let imu_init_buffer = imu_init_buffer.clone();
+
+                        let imu_lifis = imu_to_lifis(msg.clone());
+                        let curr_stamp = timestamp_to_secs(&imu_lifis.stamp);
+
+                        if let Some(imu_pose_predictor_init) = imu_pose_predictor_init.as_ref() {
+                            let mut imu_pose_predictor_init =
+                                imu_pose_predictor_init.lock().unwrap();
+                            let mut imu_init_time_counter = imu_init_time_counter.lock().unwrap();
+                            if imu_init_time_counter.is_none() {
+                                *imu_init_time_counter = Some(curr_stamp);
                             }
-                            let imu_init_time_counter = imu_init_time_counter.clone();
-                            let imu_init_buffer = imu_init_buffer.clone();
-
-                            let imu_lifis = imu_to_lifis(msg.clone());
-                            let curr_stamp = timestamp_to_secs(&imu_lifis.stamp);
-
-                            if let Some(imu_pose_predictor_init) = imu_pose_predictor_init.as_ref()
-                            {
-                                let mut imu_pose_predictor_init =
-                                    imu_pose_predictor_init.lock().unwrap();
-                                let mut imu_init_time_counter =
-                                    imu_init_time_counter.lock().unwrap();
-                                if imu_init_time_counter.is_none() {
-                                    *imu_init_time_counter = Some(curr_stamp);
-                                }
-                                if let Some(init_time) = imu_init_time_counter.as_ref() {
-                                    let mut imu_init_buffer = imu_init_buffer.lock().unwrap();
-                                    let delta = curr_stamp - init_time;
-                                    if delta < init_imu_time {
-                                        if let Some(imu_init_buffer) = imu_init_buffer.as_mut() {
-                                            imu_init_buffer.push(imu_lifis);
-                                            return; // skip adding to lifis if we are still in the init phase
-                                        }
-                                        // we are only here, if there was an initial buffer, but it was already consumed so skip init and continue with normal processing
-                                    } else {
-                                        // apply the init buffer
-                                        if let Some(imu_init_buffer) = imu_init_buffer.take() {
-                                            imu_pose_predictor_init(&imu_init_buffer);
-                                        }
+                            if let Some(init_time) = imu_init_time_counter.as_ref() {
+                                let mut imu_init_buffer = imu_init_buffer.lock().unwrap();
+                                let delta = curr_stamp - init_time;
+                                if delta < init_imu_time {
+                                    if let Some(imu_init_buffer) = imu_init_buffer.as_mut() {
+                                        imu_init_buffer.push(imu_lifis);
+                                        continue; // skip adding to lifis if we are still in the init phase
+                                    }
+                                    // we are only here, if there was an initial buffer, but it was already consumed so skip init and continue with normal processing
+                                } else {
+                                    // apply the init buffer
+                                    if let Some(imu_init_buffer) = imu_init_buffer.take() {
+                                        imu_pose_predictor_init(&imu_init_buffer);
                                     }
                                 }
                             }
-
-                            // let filtered = {
-                            //     let state = state_clone.lock().unwrap();
-                            //     let mut lifis = state.lifis.lock().unwrap();
-                            //     lifis.add_imu(imu_to_lifis(msg))
-                            // };
-
-                            // TODO can not pub filtered because imu_init_fn escapes its lifetime
-                            // match (filtered, wants_to_pub_imu_filtered) {
-                            //     (Some(filtered), true) => {
-                            //         // node.publish(&imu_filtered_topic, &lifis_to_imu(filtered))
-                            //         //     .await
-                            //         //     .expect("could not publish filtered imu");
-                            //     }
-                            //     _ => {}
-                            // }
                         }
-                        None => {
-                            return; // stop task
-                        }
+
+                        // outputs filtered imu msg to pub again but we can not right now
+                        let _ = state.lifis.lock().unwrap().add_imu(imu_to_lifis(msg));
+
+                        // let filtered = {
+                        //     let state = state_clone.lock().unwrap();
+                        //     let mut lifis = state.lifis.lock().unwrap();
+                        //     lifis.add_imu(imu_to_lifis(msg))
+                        // };
+
+                        // TODO can not pub filtered because imu_init_fn escapes its lifetime
+                        // match (filtered, wants_to_pub_imu_filtered) {
+                        //     (Some(filtered), true) => {
+                        //         // node.publish(&imu_filtered_topic, &lifis_to_imu(filtered))
+                        //         //     .await
+                        //         //     .expect("could not publish filtered imu");
+                        //     }
+                        //     _ => {}
+                        // }
                     }
                 });
             });
@@ -964,7 +992,7 @@ impl LifisNode {
                                 if delta < init_imu_time {
                                     if let Some(imu_init_buffer) = imu_init_buffer.as_mut() {
                                         imu_init_buffer.push(imu_lifis);
-                                        return; // skip adding to lifis if we are still in the init phase
+                                        continue; // skip adding to lifis if we are still in the init phase
                                     }
                                     // we are only here, if there was an initial buffer, but it was already consumed so skip init and continue with normal processing
                                 } else {

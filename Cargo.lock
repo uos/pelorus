@@ -559,19 +559,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "async-compat"
-version = "0.2.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7bab94bde396a3f7b4962e396fdad640e241ed797d4d8d77fc8c237d14c58fc0"
-dependencies = [
- "futures-core",
- "futures-io",
- "once_cell",
- "pin-project-lite",
- "tokio",
-]
-
-[[package]]
 name = "async-executor"
 version = "1.13.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -899,14 +886,15 @@ dependencies = [
 
 [[package]]
 name = "bagread"
-version = "0.1.0"
-source = "git+ssh://git@gitlabti.informatik.uni-osnabrueck.de/chsieh/lighthouse.git?branch=main#3497f3a8728df78d07e51485386cf0f58640b940"
+version = "0.1.0-rc.1"
+source = "git+https://github.com/uos/minot?branch=main#4c8ab6aea5af8b037b0244578ac6b514af5f09e5"
 dependencies = [
  "anyhow",
  "byteorder",
  "camino",
  "cdr",
  "cdr-encoding",
+ "log",
  "mcap",
  "memmap2 0.9.5",
  "nalgebra 0.33.2",
@@ -919,6 +907,7 @@ dependencies = [
  "serde 1.0.219",
  "serde_yml",
  "tempfile",
+ "tokio",
 ]
 
 [[package]]
@@ -3348,7 +3337,7 @@ dependencies = [
  "js-sys",
  "log",
  "wasm-bindgen",
- "windows-core 0.61.1",
+ "windows-core 0.58.0",
 ]
 
 [[package]]
@@ -5325,6 +5314,7 @@ dependencies = [
  "prelio-ros2",
  "r2r",
  "rand 0.8.5",
+ "rat",
  "ratpub",
  "rerun",
  "ros2-client 0.7.6",
@@ -5654,6 +5644,7 @@ dependencies = [
  "gtsam-sys",
  "imu-calib",
  "imu-fusion",
+ "log",
  "nalgebra 0.33.2",
  "rayon",
  "ros_pointcloud2 0.5.3 (git+https://github.com/stelzo/ros_pointcloud2.git?branch=rkyv)",
@@ -5666,7 +5657,6 @@ name = "prelio-ros2"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "async-compat",
  "env_logger",
  "futures-lite",
  "log",
@@ -5674,6 +5664,7 @@ dependencies = [
  "prelio",
  "r2r",
  "ratpub",
+ "rerun",
  "ros2-client 0.7.6",
  "ros2-interfaces-jazzy",
  "ros2-interfaces-jazzy-rkyv 0.0.4 (git+https://github.com/stelzo/ros2-interfaces-jazzy-rkyv.git?branch=main)",
@@ -5748,7 +5739,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8a56d757972c98b346a9b766e3f02746cde6dd1cd1d1d563472929fdd74bec4d"
 dependencies = [
  "anyhow",
- "itertools 0.14.0",
+ "itertools 0.10.5",
  "proc-macro2",
  "quote",
  "syn 2.0.101",
@@ -6105,9 +6096,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "rat"
+version = "0.1.0-rc.1"
+source = "git+https://github.com/uos/minot?branch=main#4c8ab6aea5af8b037b0244578ac6b514af5f09e5"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "bincode 0.6.1",
+ "env_logger",
+ "log",
+ "nalgebra 0.33.2",
+ "rand 0.8.5",
+ "rkyv",
+ "sea",
+ "tokio",
+]
+
+[[package]]
 name = "ratpub"
-version = "0.1.0"
-source = "git+ssh://git@gitlabti.informatik.uni-osnabrueck.de/chsieh/lighthouse.git?branch=main#3497f3a8728df78d07e51485386cf0f58640b940"
+version = "0.1.0-rc.1"
+source = "git+https://github.com/uos/minot?branch=main#4c8ab6aea5af8b037b0244578ac6b514af5f09e5"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -8103,8 +8111,8 @@ dependencies = [
 
 [[package]]
 name = "rlc"
-version = "0.1.0"
-source = "git+ssh://git@gitlabti.informatik.uni-osnabrueck.de/chsieh/lighthouse.git?branch=main#3497f3a8728df78d07e51485386cf0f58640b940"
+version = "0.1.0-rc.1"
+source = "git+https://github.com/uos/minot?branch=main#4c8ab6aea5af8b037b0244578ac6b514af5f09e5"
 dependencies = [
  "anyhow",
  "ariadne",
@@ -8496,8 +8504,8 @@ dependencies = [
 
 [[package]]
 name = "sea"
-version = "0.1.0"
-source = "git+ssh://git@gitlabti.informatik.uni-osnabrueck.de/chsieh/lighthouse.git?branch=main#3497f3a8728df78d07e51485386cf0f58640b940"
+version = "0.1.0-rc.1"
+source = "git+https://github.com/uos/minot?branch=main#4c8ab6aea5af8b037b0244578ac6b514af5f09e5"
 dependencies = [
  "anyhow",
  "async-trait",

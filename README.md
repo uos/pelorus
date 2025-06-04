@@ -1,4 +1,6 @@
-# ½[lio] - LiDAR Inertial Odometry
+# Pelorus
+
+Lidar inertial odometry from scratch.
 
 ## Usage
 See
@@ -6,25 +8,23 @@ See
 cargo run -- --help
 ```
 
+
 ## Dev
-[lio] is developed with the nightly toolchain. On debug builds, the following settings are optimized for compilation speed.
 
+We use mask to save some time typing out usual commands.
 ```sh
-rustup default nightly
-rustup update
-rustup component add rustc-codegen-cranelift-preview --toolchain nightly
-RUSTFLAGS="-Z threads=8" cargo build
+cargo install mask
 ```
 
-or export `RUSTFLAGS` to your environment.
-
-Now you can set a general config for cargo to use the cranelift backend for debug builds.
-
-`~/.cargo/config`
+In the project directory, where the `./maskfile.md` lives:
 ```sh
-[unstable]
-codegen-backend = true
-
-[profile.dev]
-codegen-backend = "cranelift"
+mask --help
 ```
+
+Dev uses rerun for proper visualisations. Run it in background.
+```sh
+tmux new -s rerun
+rerun # then detach
+```
+
+

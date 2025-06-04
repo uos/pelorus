@@ -10,6 +10,7 @@ keywords.workspace = true
 include.workspace = true
 
 [dependencies]
+log.workspace = true
 ros_pointcloud2.workspace = true
 anyhow.workspace = true
 nalgebra.workspace = true

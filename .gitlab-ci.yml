@@ -23,6 +23,8 @@ rust-stable:
     - cargo test --verbose
   rules:
     - if: '$CI_COMMIT_BRANCH == "dev"'
+    - if: '$CI_PIPELINE_SOURCE == "schedule"'
+      when: never
 
 rust-nightly:
   stage: build
@@ -38,37 +40,35 @@ rust-nightly:
 .build_template: &build_defaults
   stage: snapshot
   script:
-    - export DATE=$(date +%Y-%m-%d)
-    - rustup default nightly
+    - rustup default stable
     - rustup target add $RUST_TARGET
-    - RUSTFLAGS="-C target-feature=+crt-static" cargo build --target $RUST_TARGET --features mimalloc --release
-    - mv target/$RUST_TARGET/release/pelorus pelorus-$TRIPLE-$DATE-nightly
+    - RUSTFLAGS="-C target-feature=+crt-static" cargo build --no-default-features --target $RUST_TARGET --features ros2-client,mimalloc --release
+    - mv target/$RUST_TARGET/release/pelorus pelorus-$TRIPLE
   artifacts:
     paths:
-      - pelorus-$TRIPLE-*-nightly
+      - pelorus-$TRIPLE
     expire_in: 1 week
   rules:
     - if: '$CI_PIPELINE_SOURCE == "schedule"'
-      when: always
+      when: never
 
 snapshot:linux:x86_64-musl:
   stage: snapshot
   script:
-    - export DATE=$(date +%Y-%m-%d)
-    - rustup default nightly
+    - rustup default stable
     - rustup target add $RUST_TARGET
-    - RUSTFLAGS="-C target-feature=+crt-static" cargo build --target $RUST_TARGET --features mimalloc --release
-    - mv target/$RUST_TARGET/release/pelorus pelorus-$TRIPLE-$DATE-nightly
+    - RUSTFLAGS="-C target-feature=+crt-static" cargo build --no-default-features --target $RUST_TARGET --features ros2-client,mimalloc --release
+    - mv target/$RUST_TARGET/release/pelorus pelorus-$TRIPLE
   artifacts:
     paths:
-      - pelorus-$TRIPLE-*-nightly
+      - pelorus-$TRIPLE
     expire_in: 1 week
   variables:
     RUST_TARGET: x86_64-unknown-linux-musl
     TRIPLE: x86_64-linux-musl
   rules:
     - if: '$CI_PIPELINE_SOURCE == "schedule"'
-      when: always
+      when: never
 
 snapshot:linux:x86_64-gnu:
   <<: *build_defaults
@@ -97,19 +97,18 @@ snapshot:linux:riscv64:
 snapshot:linux:riscv64-musl:
   stage: snapshot
   script:
-    - export DATE=$(date +%Y-%m-%d)
-    - rustup default nightly
+    - rustup default stable
     - rustup target add $RUST_TARGET
     - curl -L https://musl.cc/riscv64-linux-musl-cross.tgz | tar xz
-    - RUSTFLAGS="-C target-feature=+crt-static" cargo build --target $RUST_TARGET --features mimalloc --release
-    - mv target/$RUST_TARGET/release/pelorus pelorus-$TRIPLE-$DATE-nightly
+    - RUSTFLAGS="-C target-feature=+crt-static" cargo build --no-default-features --target $RUST_TARGET --features ros2-client,mimalloc --release
+    - mv target/$RUST_TARGET/release/pelorus pelorus-$TRIPLE
   artifacts:
     paths:
-      - pelorus-$TRIPLE-*-nightly
+      - pelorus-$TRIPLE
     expire_in: 1 week
   variables:
     RUST_TARGET: riscv64gc-unknown-linux-musl
     TRIPLE: riscv64gc-linux-musl
   rules:
     - if: '$CI_PIPELINE_SOURCE == "schedule"'
-      when: always
+      when: never

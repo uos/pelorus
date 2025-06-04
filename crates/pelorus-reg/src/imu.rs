@@ -443,8 +443,6 @@ impl ImuProcessing {
             q
         };
 
-        // dbg!(q);
-
         if !self.ekf_inited {
             anyhow::bail!("EKF not initialized");
         }
