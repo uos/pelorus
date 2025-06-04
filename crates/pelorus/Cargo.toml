@@ -30,24 +30,20 @@ tokio = { workspace = true, optional = true }
 rat = { workspace = true, optional = true }
 small_gicp-sys = { workspace = true, optional = true }
 
-#[build-dependencies]
-#bindgen = "0.69"
-#cc = "1"
-#pkg-config = "0.3"
-
 [features]
-default = ["dev", "gicp"]
+#           MODE     COMM          EXTRAS
+default = ["gicp", "r2r", "pelorus-reg/nn_kdt"]
 gicp = ["dep:small_gicp-sys"]
-dev = ["rerun", "lh", "pelorus-reg/nn_kdt", "rat"]
+dev = ["rerun", "ratpub", "pelorus-reg/nn_kdt", "rat"]
 rat = ["dep:rat"]
 mimalloc = ["dep:mimalloc"]
 rerun = ["dep:rerun", "prelio-ros2/rerun"]
-lh = [
+ratpub = [
   "dep:ratpub",
   "dep:tokio",
   "dep:ros2-interfaces-jazzy-rkyv",
   "ros_pointcloud2/lh",
-  "prelio-ros2/lh",
+  "prelio-ros2/ratpub",
 ]
 ros2-client = [
   "dep:ros2-client",

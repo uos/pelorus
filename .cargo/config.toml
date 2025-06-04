@@ -12,3 +12,6 @@ linker = "arm-linux-gnueabihf-gcc"
 
 [target.riscv64gc-unknown-linux-musl]
 linker = "riscv64-linux-musl-cross/bin/riscv64-linux-musl-gcc" # added via curl in CI
+
+[env]
+IDL_PACKAGE_FILTER = { value = "std_msgs;sensor_msgs;lifis_msgs;visualization_msgs;geometry_msgs;nav_msgs;tf2_msgs" }
