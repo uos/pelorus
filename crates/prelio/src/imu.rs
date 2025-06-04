@@ -5,7 +5,7 @@ use sophus_lie::traits::IsTranslationProductGroup;
 
 use nalgebra::*;
 
-use crate::{config, timestamp_to_secs, MeasureGroup, PointXYZT};
+use crate::{MeasureGroup, PointXYZT, config, timestamp_to_secs};
 
 use ros_pointcloud2::{points::PointXYZ, ros::TimeMsg};
 
@@ -424,8 +424,6 @@ impl ImuProcess {
 
         /*let my_integration =
         naive_preint::integrate_imu_up_to(sensor_data, &config.imu_preint_options);*/
-
-        //dbg!(my_integration.pose.translation);
 
         self.runtime_eval.stop("deskew").unwrap();
 

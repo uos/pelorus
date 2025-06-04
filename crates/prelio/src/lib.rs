@@ -6,6 +6,7 @@ pub mod timing;
 
 use either::Either;
 use imu_fusion::FusionAhrs;
+use log::{error, info, warn};
 use nalgebra::*;
 use serde::{Deserialize, Serialize};
 use std::thread;
@@ -261,7 +262,6 @@ fn filter_downsample<const N: usize, P: PointXYZITimestamp<N>>(
     lifis_params: &config::LifisParameters,
 ) -> Result<Option<(Vec<PointXYZT>, f64, f64, HeaderMsg)>> {
     let header = cloud.header.clone();
-    dbg!(lifis_params.passthrough_filter.min_dist);
     let res = cloud.try_into_par_iter()?.filter(move |point: &P| {
         let params = &lifis_params.passthrough_filter;
         let p_t = params.filter_frame_transform * point.xyz();
@@ -488,19 +488,17 @@ impl Lifis {
         let params_clone = params.clone();
         thread::spawn(move || {
             while let Ok(cloud) = preproc_rx.recv() {
-                dbg!("- received pointcloud -");
                 match filter_downsample::<N, P>(cloud, &params_clone) {
                     Ok(Some(cloud_meta)) => {
                         if let Err(e) = filtered_cloud_tx.send(cloud_meta) {
-                            dbg!("Error sending pointcloud: {}", e);
+                            error!("Error sending pointcloud: {}", e);
                         }
                     }
                     Ok(None) => {
-                        // TODO logging
-                        dbg!("Pointcloud was filtered out");
+                        info!("Pointcloud was filtered out");
                     }
                     Err(e) => {
-                        dbg!("Error processing pointcloud: {}", e);
+                        error!("Error processing pointcloud: {}", e);
                     }
                 }
             }
@@ -550,7 +548,7 @@ impl Lifis {
         match self.preproc_sender.send(cloud) {
             Ok(_) => {}
             Err(e) => {
-                dbg!("Error sending pointcloud: {}", e);
+                error!("Error sending pointcloud: {}", e);
             }
         };
     }
@@ -622,7 +620,7 @@ impl Lifis {
         match self.imu_sender.send(imu_data) {
             Ok(_) => {}
             Err(e) => {
-                dbg!(e);
+                log::error!("Error while sending imu message to sync worker: {e}");
             }
         }
         self.runtime_eval.stop("imu_pre").unwrap();
@@ -651,7 +649,6 @@ impl Lifis {
             lidar_receiver.recv()
         {
             let lidar_time = timestamp_to_secs(&lidar_header.stamp);
-
             // handle relative vs absolute timestamps
             let (lidar_begin_time, imu_span_end_time) =
                 if matches!(lidar_vendor, Some(LidarVendor::Robosense)) {
@@ -689,16 +686,14 @@ impl Lifis {
                         imu_data.push(imu);
                     }
                     _ => {
-                        dbg!("Imu receiver closed"); // TODO logging
+                        warn!("Imu receiver closed");
                         return;
                     }
                 }
             }
 
-            //dbg!(imu_data.len());
-
             if imu_data.is_empty() {
-                dbg!("No imu data in span");
+                warn!("No imu data in span");
                 continue;
             }
 

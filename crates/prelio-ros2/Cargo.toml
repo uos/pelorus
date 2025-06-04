@@ -22,17 +22,17 @@ ros2-interfaces-jazzy = { workspace = true, optional = true }
 serde.workspace = true
 thiserror = "1.0"
 r2r = { workspace = true, optional = true }
+rerun= { workspace = true, optional = true }
 ratpub = { workspace = true, optional = true }
 tokio = { workspace = true, optional = true }
-async-compat = { workspace = true, optional = true }
 ros2-interfaces-jazzy-rkyv = { workspace = true, optional = true }
 
 [features]
 default = ["lh"]
+rerun = ["dep:rerun"]
 lh = [
   "dep:ratpub",
   "dep:tokio",
-  "dep:async-compat",
   "dep:ros2-interfaces-jazzy-rkyv",
   "ros_pointcloud2/lh",
 ]
