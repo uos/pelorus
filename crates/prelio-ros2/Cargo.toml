@@ -22,15 +22,16 @@ ros2-interfaces-jazzy = { workspace = true, optional = true }
 serde.workspace = true
 thiserror = "1.0"
 r2r = { workspace = true, optional = true }
-rerun= { workspace = true, optional = true }
+rerun = { workspace = true, optional = true }
 ratpub = { workspace = true, optional = true }
 tokio = { workspace = true, optional = true }
 ros2-interfaces-jazzy-rkyv = { workspace = true, optional = true }
 
 [features]
-default = ["lh"]
+# default = ["ratpub"]
+# default = ["r2r"]
 rerun = ["dep:rerun"]
-lh = [
+ratpub = [
   "dep:ratpub",
   "dep:tokio",
   "dep:ros2-interfaces-jazzy-rkyv",

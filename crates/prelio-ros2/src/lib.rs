@@ -1,6 +1,6 @@
 #[cfg(feature = "ros2-client")]
 pub mod tf;
-#[cfg(feature = "lh")]
+#[cfg(feature = "ratpub")]
 pub mod tf_lh;
 #[cfg(feature = "r2r")]
 pub mod tf_r2r;
@@ -24,7 +24,7 @@ use r2r::{
     sensor_msgs::msg::{Imu, PointCloud2},
     std_msgs::msg::Header,
 };
-#[cfg(feature = "lh")]
+#[cfg(feature = "ratpub")]
 use ratpub::Node;
 #[cfg(feature = "rerun")]
 use rerun::external::glam;
@@ -41,7 +41,7 @@ use ros2_interfaces_jazzy::{
     sensor_msgs::msg::{Imu, PointCloud2},
     std_msgs::msg::Header,
 };
-#[cfg(feature = "lh")]
+#[cfg(feature = "ratpub")]
 use ros2_interfaces_jazzy_rkyv::{
     builtin_interfaces::msg::Time,
     geometry_msgs::msg::{
@@ -237,9 +237,9 @@ fn cloud_callback(
     state: Arc<Mutex<State>>,
     #[cfg(feature = "ros2-client")] tf_listener: Arc<tf::TfListener>,
     #[cfg(feature = "r2r")] tf_listener: Arc<tf_r2r::TfListener>,
-    #[cfg(feature = "lh")] tf_listener: Arc<tf_lh::TfListener>,
+    #[cfg(feature = "ratpub")] tf_listener: Arc<tf_lh::TfListener>,
     #[cfg(feature = "ros2-client")] msg: PointCloud2,
-    #[cfg(feature = "lh")] msg: PointCloud2,
+    #[cfg(feature = "ratpub")] msg: PointCloud2,
     #[cfg(feature = "r2r")] msg: r2r::sensor_msgs::msg::PointCloud2,
     first_imu_tf: Option<String>,
 ) -> anyhow::Result<()> {
@@ -446,7 +446,7 @@ pub struct LifisNode {
     pub state: Arc<std::sync::Mutex<State>>,
     #[cfg(feature = "ros2-client")]
     pub tf_listener: Arc<tf::TfListener>,
-    #[cfg(feature = "lh")]
+    #[cfg(feature = "ratpub")]
     pub tf_listener: Arc<tf_lh::TfListener>,
     #[cfg(feature = "r2r")]
     pub tf_listener: Arc<tf_r2r::TfListener>,
@@ -572,8 +572,8 @@ impl LifisNode {
     pub fn new(
         #[cfg(feature = "ros2-client")] node: &mut ros2_client::Node,
         #[cfg(feature = "r2r")] node: &mut r2r::Node,
-        #[cfg(feature = "lh")] node: &Node,
-        #[cfg(feature = "lh")] rt: Arc<tokio::runtime::Runtime>,
+        #[cfg(feature = "ratpub")] node: &Node,
+        #[cfg(feature = "ratpub")] rt: Arc<tokio::runtime::Runtime>,
         params: &LifisParameters,
         node_params: &LifisNodeParameters,
         imu_pose_predictor_init: Option<Arc<Mutex<dyn FnMut(&[ImuMsg]) + Send + Sync>>>,
@@ -587,7 +587,7 @@ impl LifisNode {
         #[cfg(feature = "r2r")]
         let tf_listener = Arc::new(tf_r2r::TfListener::new(node));
 
-        #[cfg(feature = "lh")]
+        #[cfg(feature = "ratpub")]
         let tf_listener = Arc::new(tf_lh::TfListener::new(node, rt.clone()));
 
         let state = State::new(
@@ -643,7 +643,7 @@ impl LifisNode {
             node_params.cloud_qos.into(),
         )?;
 
-        #[cfg(feature = "lh")]
+        #[cfg(feature = "ratpub")]
         let mut cloud_subscriber = rt.block_on(async {
             node.create_subscriber::<PointCloud2>(
                 format!(
@@ -659,11 +659,11 @@ impl LifisNode {
         // Share with cloud callback, TODO maybe the only one who needs it, so remove mutex and arc?
         let state = Arc::new(std::sync::Mutex::new(state));
 
-        #[cfg(any(feature = "ros2-client", feature = "lh"))]
+        #[cfg(any(feature = "ros2-client", feature = "ratpub", feature = "r2r"))]
         let tf_listener_clone = tf_listener.clone();
-        #[cfg(any(feature = "ros2-client", feature = "lh"))]
+        #[cfg(any(feature = "ros2-client", feature = "ratpub", feature = "r2r"))]
         let state_clone = state.clone();
-        #[cfg(any(feature = "ros2-client", feature = "lh"))]
+        #[cfg(any(feature = "ros2-client", feature = "ratpub", feature = "r2r"))]
         let imu_tf_frame_lidar_inner = Arc::clone(&imu_tf_frame);
         #[cfg(feature = "ros2-client")]
         std::thread::spawn(move || {
@@ -721,7 +721,7 @@ impl LifisNode {
                     .await;
             })
         });
-        #[cfg(feature = "lh")]
+        #[cfg(feature = "ratpub")]
         {
             let cloud_sub_rt = Arc::clone(&rt);
             std::thread::spawn(move || {
@@ -878,7 +878,7 @@ impl LifisNode {
             }
         });
 
-        #[cfg(feature = "lh")]
+        #[cfg(feature = "ratpub")]
         {
             let imu_sub_rt = Arc::clone(&rt);
             let mut imu_sub = imu_sub_rt.block_on(async {
@@ -992,7 +992,7 @@ impl LifisNode {
                                 if delta < init_imu_time {
                                     if let Some(imu_init_buffer) = imu_init_buffer.as_mut() {
                                         imu_init_buffer.push(imu_lifis);
-                                        continue; // skip adding to lifis if we are still in the init phase
+                                        return; // skip adding to lifis if we are still in the init phase
                                     }
                                     // we are only here, if there was an initial buffer, but it was already consumed so skip init and continue with normal processing
                                 } else {
@@ -1181,7 +1181,7 @@ fn lifis_to_imu(msg: prelio::imu::ImuMsg) -> Imu {
             msg.orientation_covariance[7],
             msg.orientation_covariance[8],
         ],
-        #[cfg(feature = "lh")]
+        #[cfg(feature = "ratpub")]
         orientation_covariance: [
             msg.orientation_covariance[0],
             msg.orientation_covariance[1],
@@ -1223,7 +1223,7 @@ fn lifis_to_imu(msg: prelio::imu::ImuMsg) -> Imu {
             msg.angular_velocity_covariance[7],
             msg.angular_velocity_covariance[8],
         ],
-        #[cfg(feature = "lh")]
+        #[cfg(feature = "ratpub")]
         angular_velocity_covariance: [
             msg.angular_velocity_covariance[0],
             msg.angular_velocity_covariance[1],
@@ -1265,7 +1265,7 @@ fn lifis_to_imu(msg: prelio::imu::ImuMsg) -> Imu {
             msg.linear_acceleration_covariance[7],
             msg.linear_acceleration_covariance[8],
         ],
-        #[cfg(feature = "lh")]
+        #[cfg(feature = "ratpub")]
         linear_acceleration_covariance: [
             msg.linear_acceleration_covariance[0],
             msg.linear_acceleration_covariance[1],
