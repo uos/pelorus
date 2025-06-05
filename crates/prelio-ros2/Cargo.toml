@@ -30,6 +30,7 @@ ros2-interfaces-jazzy-rkyv = { workspace = true, optional = true }
 [features]
 # default = ["ratpub"]
 # default = ["r2r"]
+imu-sync = ["prelio/imu-sync"]
 rerun = ["dep:rerun"]
 ratpub = [
   "dep:ratpub",

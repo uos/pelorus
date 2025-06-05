@@ -637,8 +637,7 @@ impl LifisNode {
         let cloud_subscriber = node.subscribe::<PointCloud2>(
             &format!(
                 "{}/{}",
-                &node_params.cloud_src_namespace.trim_start_matches("/"),
-                &node_params.cloud_src_topic
+                &node_params.cloud_src_namespace, &node_params.cloud_src_topic
             ),
             node_params.cloud_qos.into(),
         )?;
@@ -702,7 +701,7 @@ impl LifisNode {
             future::block_on(async {
                 cloud_subscriber
                     .for_each(|msg| {
-                        debug!("received cloud");
+                        error!("received cloud");
                         let imu_tf_frame_lidar_inner =
                             imu_tf_frame_lidar_inner.clone().lock().unwrap().clone();
 

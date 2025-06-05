@@ -27,4 +27,5 @@ gtsam-sys = { git = "https://github.com/stelzo/gtsam-sys.git", optional = true }
 
 [features]
 gtsam = ["dep:gtsam-sys"]
+imu-sync = []
 default = []

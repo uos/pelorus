@@ -469,6 +469,12 @@ impl Lifis {
             let mut last_lidar_frame_time = 0.0;
             let imu_process = ImuProcess::new(gravity, intrinsic_given);
 
+            #[cfg(feature = "imu-sync")]
+            let imu_rx = None;
+
+            #[cfg(not(feature = "imu-sync"))]
+            let imu_rx = Some(imu_rx);
+
             Self::sync_lidar_imu_worker(
                 &mut last_lidar_frame_time,
                 gravity,
@@ -635,7 +641,7 @@ impl Lifis {
         prev_lidar_end_time: &mut f64,
         gravity: f64,
         lidar_receiver: std::sync::mpsc::Receiver<(Vec<PointXYZT>, f64, f64, HeaderMsg)>,
-        imu_receiver: std::sync::mpsc::Receiver<ImuMsg>,
+        imu_receiver: Option<std::sync::mpsc::Receiver<ImuMsg>>,
         synced_sender: &std::sync::mpsc::Sender<LifisProcessedCloud>,
         imu_intrinsic_calibration_given: bool,
         mut imu_process: ImuProcess,
@@ -672,29 +678,31 @@ impl Lifis {
                 }
             }
 
-            loop {
-                match imu_receiver.recv() {
-                    Ok(imu) => {
-                        let imu_time = timestamp_to_secs(&imu.stamp);
-                        if imu_time < imu_span_start_time {
-                            continue;
+            if let Some(imu_receiver) = imu_receiver.as_ref() {
+                loop {
+                    match imu_receiver.recv() {
+                        Ok(imu) => {
+                            let imu_time = timestamp_to_secs(&imu.stamp);
+                            if imu_time < imu_span_start_time {
+                                continue;
+                            }
+                            if imu_time > imu_span_end_time {
+                                to_next = Some(imu);
+                                break;
+                            }
+                            imu_data.push(imu);
                         }
-                        if imu_time > imu_span_end_time {
-                            to_next = Some(imu);
-                            break;
+                        _ => {
+                            warn!("Imu receiver closed");
+                            return;
                         }
-                        imu_data.push(imu);
-                    }
-                    _ => {
-                        warn!("Imu receiver closed");
-                        return;
                     }
                 }
-            }
 
-            if imu_data.is_empty() {
-                warn!("No imu data in span");
-                continue;
+                if imu_data.is_empty() {
+                    warn!("No imu data in span");
+                    continue;
+                }
             }
 
             // sort imu buffer with timestamp to ensure correct order
@@ -714,67 +722,11 @@ impl Lifis {
                 imu_buffer: imu_data.clone(),
             };
 
-            if let Some(imu_cloud) =
-                imu_process.process(meas, undistort_parameters, &imu_pose_prediction_undistort)
-            {
-                let imu_int = match imu_pose_prediction_init_guess.as_ref() {
-                    Some(imu_pose_prediction_init_guess) => imu_pose_prediction_init_guess(
-                        &imu_data.clone(),
-                        imu_span_start_time,
-                        lidar_begin_time,
-                        imu_span_end_time,
-                    ),
-                    None => {
-                        let estimated_pose = if imu_intrinsic_calibration_given {
-                            // given a calibration, we trust the IMU data and use it for the pose
-                            #[cfg(feature = "gtsam")]
-                            {
-                                ImuProcess::integrate_imu_gtsam(
-                                    &imu_data,
-                                    *prev_lidar_end_time,
-                                    Some(&params.undistort),
-                                    params.imu.clone(), // TODO maybe not clone but changes inside the function?
-                                )
-                            }
-
-                            #[cfg(not(feature = "gtsam"))]
-                            {
-                                naive_preint_eth::integrate_imu(
-                                    &imu_data,
-                                    *prev_lidar_end_time,
-                                    Some(undistort_parameters),
-                                    false, // TODO check ahrs orientation via config or if enabled
-                                    gravity,
-                                )
-                            }
-                        } else {
-                            // no calibration, gyro is used for rotation but nothing else
-                            Isometry3::from_parts(
-                                Translation::identity(),
-                                imu_cloud.end_of_frame_guess.rotation,
-                            )
-                        };
-
-                        ImuPosePrediction {
-                            pose: estimated_pose,
-                            linear_velocity: Vector3::zeros(),
-                            angular_velocity: Vector3::new(
-                                imu_cloud.last_twist[3],
-                                imu_cloud.last_twist[4],
-                                imu_cloud.last_twist[5],
-                            ),
-                            lidar_imu_extrinsic_rotation: Matrix3::identity(), // TODO never used?
-                            lidar_imu_extrinsic_translation: Vector3::zeros(), // TODO never used?
-                        }
-                    }
-                };
-
-                //let mut out_runtime = self.runtime_eval.clone();
-                //out_runtime.merge(&imu_cloud.runtime_eval); // TODO avoid clone, do new object with both evaluations
+            if meas.cloud.is_empty() {
                 let res = LifisProcessedCloud {
-                    cloud: imu_cloud.cloud,
+                    cloud: meas.cloud,
                     header: lidar_header,
-                    end_of_frame_guess: imu_int.pose,
+                    end_of_frame_guess: Isometry3::identity(),
                     end_of_frame_time: imu_data.last().unwrap().stamp.clone(),
                     pose_covariance: imu_cloud.integrated_covariance,
                     twist_covariance: imu_cloud.last_covariance,
@@ -794,6 +746,88 @@ impl Lifis {
                 };
 
                 synced_sender.send(res).unwrap();
+            } else {
+                if let Some(imu_cloud) =
+                    imu_process.process(meas, undistort_parameters, &imu_pose_prediction_undistort)
+                {
+                    let imu_int = match imu_pose_prediction_init_guess.as_ref() {
+                        Some(imu_pose_prediction_init_guess) => imu_pose_prediction_init_guess(
+                            &imu_data.clone(),
+                            imu_span_start_time,
+                            lidar_begin_time,
+                            imu_span_end_time,
+                        ),
+                        None => {
+                            let estimated_pose = if imu_intrinsic_calibration_given {
+                                // given a calibration, we trust the IMU data and use it for the pose
+                                #[cfg(feature = "gtsam")]
+                                {
+                                    ImuProcess::integrate_imu_gtsam(
+                                        &imu_data,
+                                        *prev_lidar_end_time,
+                                        Some(&params.undistort),
+                                        params.imu.clone(), // TODO maybe not clone but changes inside the function?
+                                    )
+                                }
+
+                                #[cfg(not(feature = "gtsam"))]
+                                {
+                                    naive_preint_eth::integrate_imu(
+                                        &imu_data,
+                                        *prev_lidar_end_time,
+                                        Some(undistort_parameters),
+                                        false, // TODO check ahrs orientation via config or if enabled
+                                        gravity,
+                                    )
+                                }
+                            } else {
+                                // no calibration, gyro is used for rotation but nothing else
+                                Isometry3::from_parts(
+                                    Translation::identity(),
+                                    imu_cloud.end_of_frame_guess.rotation,
+                                )
+                            };
+
+                            ImuPosePrediction {
+                                pose: estimated_pose,
+                                linear_velocity: Vector3::zeros(),
+                                angular_velocity: Vector3::new(
+                                    imu_cloud.last_twist[3],
+                                    imu_cloud.last_twist[4],
+                                    imu_cloud.last_twist[5],
+                                ),
+                                lidar_imu_extrinsic_rotation: Matrix3::identity(), // TODO never used?
+                                lidar_imu_extrinsic_translation: Vector3::zeros(), // TODO never used?
+                            }
+                        }
+                    };
+
+                    //let mut out_runtime = self.runtime_eval.clone();
+                    //out_runtime.merge(&imu_cloud.runtime_eval); // TODO avoid clone, do new object with both evaluations
+                    let res = LifisProcessedCloud {
+                        cloud: imu_cloud.cloud,
+                        header: lidar_header,
+                        end_of_frame_guess: imu_int.pose,
+                        end_of_frame_time: imu_data.last().unwrap().stamp.clone(),
+                        pose_covariance: imu_cloud.integrated_covariance,
+                        twist_covariance: imu_cloud.last_covariance,
+                        end_of_frame_twist: Twist {
+                            linear: Vector3::new(
+                                imu_cloud.last_twist[0],
+                                imu_cloud.last_twist[1],
+                                imu_cloud.last_twist[2],
+                            ),
+                            angular: Vector3::new(
+                                imu_cloud.last_twist[3],
+                                imu_cloud.last_twist[4],
+                                imu_cloud.last_twist[5],
+                            ),
+                        },
+                        runtime_eval: RuntimeEvaluator::new(), // TODO currently nothing
+                    };
+
+                    synced_sender.send(res).unwrap();
+                }
             }
 
             *prev_lidar_end_time = imu_span_end_time;
