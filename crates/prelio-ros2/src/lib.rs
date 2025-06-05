@@ -527,7 +527,7 @@ impl From<crate::Qos> for QosProfile {
             Qos::Sensor => QosProfile::parameters()
                 .durability(r2r::qos::DurabilityPolicy::Volatile)
                 .deadline(std::time::Duration::MAX)
-                .reliability(r2r::qos::ReliabilityPolicy::BestEffort)
+                .reliability(r2r::qos::ReliabilityPolicy::Reliable)
                 .history(r2r::qos::HistoryPolicy::KeepLast)
                 .keep_last(5)
                 .lifespan(std::time::Duration::MAX),
@@ -701,7 +701,6 @@ impl LifisNode {
             future::block_on(async {
                 cloud_subscriber
                     .for_each(|msg| {
-                        error!("received cloud");
                         let imu_tf_frame_lidar_inner =
                             imu_tf_frame_lidar_inner.clone().lock().unwrap().clone();
 

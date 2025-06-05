@@ -549,7 +549,6 @@ impl Lifis {
         self.last_imu_time = 0.0;
         self.undistort.reset();
         to_buffer.clear();*/
-
         self.last_cloud_time = cloud_stamp;
         match self.preproc_sender.send(cloud) {
             Ok(_) => {}
@@ -722,25 +721,24 @@ impl Lifis {
                 imu_buffer: imu_data.clone(),
             };
 
-            if meas.cloud.is_empty() {
+            if meas.imu_buffer.is_empty() {
+                // Passthrough
+                let cloud = meas
+                    .cloud
+                    .into_iter()
+                    .map(|p| PointXYZ::new(p.x, p.y, p.z))
+                    .collect(); // TODO use iter as type in processed cloud
+
                 let res = LifisProcessedCloud {
-                    cloud: meas.cloud,
+                    cloud,
                     header: lidar_header,
                     end_of_frame_guess: Isometry3::identity(),
-                    end_of_frame_time: imu_data.last().unwrap().stamp.clone(),
-                    pose_covariance: imu_cloud.integrated_covariance,
-                    twist_covariance: imu_cloud.last_covariance,
+                    end_of_frame_time: secs_to_timestamp(meas.lidar_end_stamp),
+                    pose_covariance: [0.0; 36],
+                    twist_covariance: [0.0; 36],
                     end_of_frame_twist: Twist {
-                        linear: Vector3::new(
-                            imu_cloud.last_twist[0],
-                            imu_cloud.last_twist[1],
-                            imu_cloud.last_twist[2],
-                        ),
-                        angular: Vector3::new(
-                            imu_cloud.last_twist[3],
-                            imu_cloud.last_twist[4],
-                            imu_cloud.last_twist[5],
-                        ),
+                        linear: Vector3::new(0., 0., 0.),
+                        angular: Vector3::new(0., 0., 0.),
                     },
                     runtime_eval: RuntimeEvaluator::new(), // TODO currently nothing
                 };
