@@ -1,114 +1,114 @@
-image: ubuntu:latest
+# image: ubuntu:latest
 
-variables:
-  CARGO_INCREMENTAL: "0"
-  RUST_BACKTRACE: "full"
+# variables:
+#   CARGO_INCREMENTAL: "0"
+#   RUST_BACKTRACE: "full"
 
-stages:
-  - build
-  - snapshot
+# stages:
+#   - build
+#   - snapshot
 
-before_script:
-  - apt-get update
-  - apt-get install -y curl git clang gcc-aarch64-linux-gnu gcc-riscv64-linux-gnu musl-tools libc6-dev-riscv64-cross gcc-arm-linux-gnueabihf
-  - curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
-  - source "$HOME/.cargo/env"
-  - rustup default stable
+# before_script:
+#   - apt-get update
+#   - apt-get install -y curl git clang gcc-aarch64-linux-gnu gcc-riscv64-linux-gnu musl-tools libc6-dev-riscv64-cross gcc-arm-linux-gnueabihf
+#   - curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+#   - source "$HOME/.cargo/env"
+#   - rustup default stable
 
-rust-stable:
-  stage: build
-  script:
-    - rustup default stable
-    - cargo build --verbose
-    - cargo test --verbose
-  rules:
-    - if: '$CI_COMMIT_BRANCH == "dev"'
-    - if: '$CI_PIPELINE_SOURCE == "schedule"'
-      when: never
+# rust-stable:
+#   stage: build
+#   script:
+#     - rustup default stable
+#     - cargo build --verbose
+#     - cargo test --verbose
+#   rules:
+#     - if: '$CI_COMMIT_BRANCH == "dev"'
+#     - if: '$CI_PIPELINE_SOURCE == "schedule"'
+#       when: never
 
-rust-nightly:
-  stage: build
-  script:
-    - rustup default nightly
-    - cargo build --verbose
-    - cargo test --verbose
-  allow_failure: true
-  rules:
-    - if: '$CI_PIPELINE_SOURCE == "schedule"'
-    - if: '$CI_COMMIT_BRANCH == "dev"'
+# rust-nightly:
+#   stage: build
+#   script:
+#     - rustup default nightly
+#     - cargo build --verbose
+#     - cargo test --verbose
+#   allow_failure: true
+#   rules:
+#     - if: '$CI_PIPELINE_SOURCE == "schedule"'
+#     - if: '$CI_COMMIT_BRANCH == "dev"'
 
-.build_template: &build_defaults
-  stage: snapshot
-  script:
-    - rustup default stable
-    - rustup target add $RUST_TARGET
-    - RUSTFLAGS="-C target-feature=+crt-static" cargo build --no-default-features --target $RUST_TARGET --features ros2-client,mimalloc --release
-    - mv target/$RUST_TARGET/release/pelorus pelorus-$TRIPLE
-  artifacts:
-    paths:
-      - pelorus-$TRIPLE
-    expire_in: 1 week
-  rules:
-    - if: '$CI_PIPELINE_SOURCE == "schedule"'
-      when: never
+# .build_template: &build_defaults
+#   stage: snapshot
+#   script:
+#     - rustup default stable
+#     - rustup target add $RUST_TARGET
+#     - RUSTFLAGS="-C target-feature=+crt-static" cargo build --no-default-features --target $RUST_TARGET --features ros2-client,mimalloc --release
+#     - mv target/$RUST_TARGET/release/pelorus pelorus-$TRIPLE
+#   artifacts:
+#     paths:
+#       - pelorus-$TRIPLE
+#     expire_in: 1 week
+#   rules:
+#     - if: '$CI_PIPELINE_SOURCE == "schedule"'
+#       when: never
 
-snapshot:linux:x86_64-musl:
-  stage: snapshot
-  script:
-    - rustup default stable
-    - rustup target add $RUST_TARGET
-    - RUSTFLAGS="-C target-feature=+crt-static" cargo build --no-default-features --target $RUST_TARGET --features ros2-client,mimalloc --release
-    - mv target/$RUST_TARGET/release/pelorus pelorus-$TRIPLE
-  artifacts:
-    paths:
-      - pelorus-$TRIPLE
-    expire_in: 1 week
-  variables:
-    RUST_TARGET: x86_64-unknown-linux-musl
-    TRIPLE: x86_64-linux-musl
-  rules:
-    - if: '$CI_PIPELINE_SOURCE == "schedule"'
-      when: never
+# snapshot:linux:x86_64-musl:
+#   stage: snapshot
+#   script:
+#     - rustup default stable
+#     - rustup target add $RUST_TARGET
+#     - RUSTFLAGS="-C target-feature=+crt-static" cargo build --no-default-features --target $RUST_TARGET --features ros2-client,mimalloc --release
+#     - mv target/$RUST_TARGET/release/pelorus pelorus-$TRIPLE
+#   artifacts:
+#     paths:
+#       - pelorus-$TRIPLE
+#     expire_in: 1 week
+#   variables:
+#     RUST_TARGET: x86_64-unknown-linux-musl
+#     TRIPLE: x86_64-linux-musl
+#   rules:
+#     - if: '$CI_PIPELINE_SOURCE == "schedule"'
+#       when: never
 
-snapshot:linux:x86_64-gnu:
-  <<: *build_defaults
-  variables:
-    RUST_TARGET: x86_64-unknown-linux-gnu
-    TRIPLE: x86_64-linux-gnu
+# snapshot:linux:x86_64-gnu:
+#   <<: *build_defaults
+#   variables:
+#     RUST_TARGET: x86_64-unknown-linux-gnu
+#     TRIPLE: x86_64-linux-gnu
 
-snapshot:linux:aarch64:
-  <<: *build_defaults
-  variables:
-    RUST_TARGET: aarch64-unknown-linux-gnu
-    TRIPLE: aarch64-linux-gnu
+# snapshot:linux:aarch64:
+#   <<: *build_defaults
+#   variables:
+#     RUST_TARGET: aarch64-unknown-linux-gnu
+#     TRIPLE: aarch64-linux-gnu
 
-snapshot:linux:armv7:
-  <<: *build_defaults
-  variables:
-    RUST_TARGET: armv7-unknown-linux-gnueabihf
-    TRIPLE: armv7-linux-gnueabihf
+# snapshot:linux:armv7:
+#   <<: *build_defaults
+#   variables:
+#     RUST_TARGET: armv7-unknown-linux-gnueabihf
+#     TRIPLE: armv7-linux-gnueabihf
 
-snapshot:linux:riscv64:
-  <<: *build_defaults
-  variables:
-    RUST_TARGET: riscv64gc-unknown-linux-gnu
-    TRIPLE: riscv64gc-linux-gnu
+# snapshot:linux:riscv64:
+#   <<: *build_defaults
+#   variables:
+#     RUST_TARGET: riscv64gc-unknown-linux-gnu
+#     TRIPLE: riscv64gc-linux-gnu
 
-snapshot:linux:riscv64-musl:
-  stage: snapshot
-  script:
-    - rustup default stable
-    - rustup target add $RUST_TARGET
-    - curl -L https://musl.cc/riscv64-linux-musl-cross.tgz | tar xz
-    - RUSTFLAGS="-C target-feature=+crt-static" cargo build --no-default-features --target $RUST_TARGET --features ros2-client,mimalloc --release
-    - mv target/$RUST_TARGET/release/pelorus pelorus-$TRIPLE
-  artifacts:
-    paths:
-      - pelorus-$TRIPLE
-    expire_in: 1 week
-  variables:
-    RUST_TARGET: riscv64gc-unknown-linux-musl
-    TRIPLE: riscv64gc-linux-musl
-  rules:
-    - if: '$CI_PIPELINE_SOURCE == "schedule"'
-      when: never
+# snapshot:linux:riscv64-musl:
+#   stage: snapshot
+#   script:
+#     - rustup default stable
+#     - rustup target add $RUST_TARGET
+#     - curl -L https://musl.cc/riscv64-linux-musl-cross.tgz | tar xz
+#     - RUSTFLAGS="-C target-feature=+crt-static" cargo build --no-default-features --target $RUST_TARGET --features ros2-client,mimalloc --release
+#     - mv target/$RUST_TARGET/release/pelorus pelorus-$TRIPLE
+#   artifacts:
+#     paths:
+#       - pelorus-$TRIPLE
+#     expire_in: 1 week
+#   variables:
+#     RUST_TARGET: riscv64gc-unknown-linux-musl
+#     TRIPLE: riscv64gc-linux-musl
+#   rules:
+#     - if: '$CI_PIPELINE_SOURCE == "schedule"'
+#       when: never

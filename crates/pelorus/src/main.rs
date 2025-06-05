@@ -1060,13 +1060,19 @@ fn lio(config_path: &str) -> Result<(), Box<dyn std::error::Error>> {
 
             eval.stop("total").unwrap();
 
+            #[cfg(feature = "gicp")]
+            let name = "Lidar Odometry (GICP)";
+            #[cfg(not(feature = "gicp"))]
+            let name = "Lidar Inertial Odometry";
+
             if let Some(render_interval) = render_interval {
                 if last_render.elapsed() > render_interval {
                     last_render = std::time::Instant::now();
-                    info!(
-                        "{}[2J{}[1;Lidar Inertial Odometry\n{}",
+                    println!(
+                        "{}[2J{}[1;L{}\n{}",
                         27 as char,
                         27 as char,
+                        &name,
                         eval.render()
                     );
                 }
