@@ -8880,7 +8880,7 @@ dependencies = [
 [[package]]
 name = "small_gicp-sys"
 version = "0.1.0"
-source = "git+ssh://git@github.com/stelzo/small_gicp-sys.git?rev=30da271#30da27174dfa513239371a5d372619acd5101410"
+source = "git+https://github.com/stelzo/small_gicp-sys?rev=30da271#30da27174dfa513239371a5d372619acd5101410"
 dependencies = [
  "bindgen 0.69.5",
  "cc",

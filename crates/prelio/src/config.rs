@@ -23,7 +23,7 @@ impl Default for LifisParameters {
             passthrough_filter: PassthroughFilterParameters::default(),
             lidar_vendor: crate::LidarVendor::default(),
             imu_lidar_tf_override: false,
-            global_zero_frame: "global_zero".to_string(),
+            global_zero_frame: "".to_string(),
             map_frame: "map".to_string(),
         }
     }
