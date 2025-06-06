@@ -30,7 +30,7 @@ use ratpub::Node;
 use rerun::external::glam;
 use ros_pointcloud2::prelude::*;
 #[cfg(feature = "ros2-client")]
-use ros2_client::ros2;
+use ros2_client::{ros2, ros2::Duration};
 #[cfg(feature = "ros2-client")]
 use ros2_interfaces_jazzy::{
     builtin_interfaces::msg::Time,
@@ -466,27 +466,18 @@ pub struct LifisNodeParameters {
 }
 
 #[derive(Serialize, Deserialize, Copy, Clone, Debug, Default)]
+pub enum Reliability {
+    Reliable,
+    #[default]
+    BestEffort,
+}
+
+#[derive(Serialize, Deserialize, Copy, Clone, Debug, Default)]
 pub enum Qos {
-    Sensor,
+    Sensor(Reliability),
     #[default]
     SystemDefault,
 }
-
-/*
-
-Qos::SystemDefault => Ok(ros2::QosPolicyBuilder::new() QosPolicyBuilder
-                  .durability(ros2::policy::Durability::Volatile) QosPolicyBuilder
-                  .deadline(ros2::policy::Deadline(ros2::Duration::INFINITE)) QosPolicyBuilder
-                  .ownership(ros2::policy::Ownership::Shared) QosPolicyBuilder
-                  .reliability(ros2::policy::Reliability::Reliable {
-                      max_blocking_time: ros2::Duration::from_millis(100),
-                  }) QosPolicyBuilder
-                  .history(ros2::policy::History::KeepLast { depth: 1 }) QosPolicyBuilder
-                  .lifespan(ros2::policy::Lifespan {
-                      duration: ros2::Duration::INFINITE,
-                  }) QosPolicyBuilder
-                  .build()),
-            }*/
 
 #[cfg(feature = "ros2-client")]
 impl From<crate::Qos> for ros2::QosPolicies {
@@ -521,10 +512,13 @@ impl From<crate::Qos> for ros2::QosPolicies {
 impl From<crate::Qos> for QosProfile {
     fn from(value: crate::Qos) -> Self {
         match value {
-            Qos::Sensor => QosProfile::parameters()
+            Qos::Sensor(reliability) => QosProfile::parameters()
                 .durability(r2r::qos::DurabilityPolicy::Volatile)
                 .deadline(std::time::Duration::MAX)
-                .reliability(r2r::qos::ReliabilityPolicy::Reliable)
+                .reliability(match reliability {
+                    Reliability::Reliable => r2r::qos::ReliabilityPolicy::Reliable,
+                    Reliability::BestEffort => r2r::qos::ReliabilityPolicy::BestEffort,
+                })
                 .history(r2r::qos::HistoryPolicy::KeepLast)
                 .keep_last(5)
                 .lifespan(std::time::Duration::MAX),
@@ -542,14 +536,17 @@ impl From<crate::Qos> for QosProfile {
 impl Default for LifisNodeParameters {
     fn default() -> Self {
         LifisNodeParameters {
-            cloud_src_topic: "/ouster/cloud".to_string(),
+            cloud_src_topic: "/ouster/points".to_string(),
+            #[cfg(not(feature = "no-imu-sync"))]
             imu_src_topic: "/ouster/imu".to_string(),
+            #[cfg(feature = "no-imu-sync")]
+            imu_src_topic: "".to_string(),
             logger_prefix: "lifis".to_string(),
             imu_filtered_topic: "/imu_filtered".to_string(),
             imu_predictor_init_time_sec: 0.1,
-            cloud_qos: Qos::Sensor,
-            imu_qos: Qos::Sensor,
-            imu_filtered_qos: Qos::Sensor,
+            cloud_qos: Qos::Sensor(Reliability::BestEffort),
+            imu_qos: Qos::Sensor(Reliability::BestEffort),
+            imu_filtered_qos: Qos::Sensor(Reliability::Reliable),
         }
     }
 }
@@ -560,6 +557,30 @@ pub struct LifisTick {
     pub cloud_header: HeaderMsg,
     pub imu_odom: Odometry,
     //pub runtime_eval: prelio::timing::RuntimeEvaluator,
+}
+
+#[cfg(feature = "ros2-client")]
+fn split_namespace_topic(input: &str) -> (String, String) {
+    let parts: Vec<&str> = input.split('/').collect();
+
+    if parts.is_empty() {
+        // Handle empty string case
+        (String::from(""), String::from(""))
+    } else {
+        let last_part = parts.last().unwrap(); // Safe because we checked is_empty()
+        let mut namespace = String::new();
+
+        for (i, &part) in parts.iter().enumerate() {
+            if i < parts.len() - 1 {
+                if !namespace.is_empty() {
+                    namespace.push('/');
+                }
+                namespace.push_str(part);
+            }
+        }
+
+        (namespace, "/".to_string() + last_part) // Add the leading slash to the topic
+    }
 }
 
 impl LifisNode {
@@ -615,8 +636,10 @@ impl LifisNode {
                 &node
                     .create_topic(
                         &ros2_client::Name::new(
-                            &node_params.cloud_src_namespace,
-                            &node_params.cloud_src_topic,
+                            &split_namespace_topic(&node_params.cloud_src_topic).0,
+                            &split_namespace_topic(&node_params.cloud_src_topic)
+                                .1
+                                .trim_start_matches("/"),
                         )
                         .unwrap(),
                         ros2_client::MessageTypeName::new("sensor_msgs", "PointCloud2"),
@@ -661,7 +684,7 @@ impl LifisNode {
                         error!("Could not read cloud: {e}");
                     }
                     Ok(Some((msg, _msg_info))) => {
-                        info!("received cloud message");
+                        error!("received cloud message");
                         // TODO if config says we are system time, we can also the source timestamp of dds
                         /*if let Some(source_timestamp) = msg_info.source_timestamp() {
                             msg.header.stamp = source_timestamp
@@ -740,8 +763,10 @@ impl LifisNode {
                 &node
                     .create_topic(
                         &ros2_client::Name::new(
-                            &node_params.imu_src_namespace,
-                            &node_params.imu_src_topic,
+                            &split_namespace_topic(&node_params.imu_src_topic).0,
+                            &split_namespace_topic(&node_params.imu_src_topic)
+                                .1
+                                .trim_start_matches("/"),
                         )
                         .unwrap(),
                         ros2_client::MessageTypeName::new("sensor_msgs", "Imu"),
@@ -752,7 +777,7 @@ impl LifisNode {
             )
             .unwrap();
 
-        #[cfg(feature = "r2r")]
+        #[cfg(all(feature = "r2r", not(feature = "no-imu-sync")))]
         let imu_subscription =
             node.subscribe::<Imu>(&node_params.imu_src_topic, node_params.imu_qos.into())?;
 
@@ -765,7 +790,13 @@ impl LifisNode {
                 node.create_publisher(
                     &node
                         .create_topic(
-                            &ros2_client::Name::new("/", &node_params.imu_filtered_topic).unwrap(),
+                            &ros2_client::Name::new(
+                                &split_namespace_topic(&node_params.imu_filtered_topic).0,
+                                &split_namespace_topic(&node_params.imu_filtered_topic)
+                                    .1
+                                    .trim_start_matches("/"),
+                            )
+                            .unwrap(),
                             ros2_client::MessageTypeName::new("sensor_msgs", "Imu"),
                             &node_params.imu_filtered_qos.into(),
                         )
@@ -785,7 +816,9 @@ impl LifisNode {
             )?)))
         };
 
+        #[cfg(not(feature = "no-imu-sync"))]
         let imu_init_time_counter = Arc::new(Mutex::new(None));
+        #[cfg(not(feature = "no-imu-sync"))]
         let imu_init_buffer = Arc::new(Mutex::new(Some(Vec::new())));
         let imu_tf_frame_lidar_inner = Arc::clone(&imu_tf_frame);
         let init_imu_time = node_params.imu_predictor_init_time_sec;
@@ -938,7 +971,7 @@ impl LifisNode {
         }
 
         // TODO inline with upper because logic is same but conditionals around block on and err handling
-        #[cfg(feature = "r2r")]
+        #[cfg(all(feature = "r2r", not(feature = "no-imu-sync")))]
         std::thread::spawn(move || {
             let imu_pose_predictor_init = imu_pose_predictor_init.clone();
             future::block_on(async {
