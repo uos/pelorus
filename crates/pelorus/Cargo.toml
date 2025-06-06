@@ -32,7 +32,7 @@ small_gicp-sys = { workspace = true, optional = true }
 
 [features]
 #           MODE     COMM          EXTRAS
-default = ["r2r", "pelorus-reg/nn_kdt"]
+default = ["gicp", "r2r", "pelorus-reg/nn_kdt", "rerun"]
 gicp = ["dep:small_gicp-sys", "prelio-ros2/no-imu-sync"]
 dev = ["rerun", "ratpub", "pelorus-reg/nn_kdt", "rat"]
 rat = ["dep:rat"]
