@@ -469,10 +469,10 @@ impl Lifis {
             let mut last_lidar_frame_time = 0.0;
             let imu_process = ImuProcess::new(gravity, intrinsic_given);
 
-            #[cfg(feature = "imu-sync")]
+            #[cfg(feature = "no-imu-sync")]
             let imu_rx = None;
 
-            #[cfg(not(feature = "imu-sync"))]
+            #[cfg(not(feature = "no-imu-sync"))]
             let imu_rx = Some(imu_rx);
 
             Self::sync_lidar_imu_worker(

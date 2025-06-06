@@ -57,7 +57,7 @@ use prelio_ros2::tf::TfBroadcaster;
 use prelio_ros2::tf_lh::TfBroadcaster;
 #[cfg(feature = "r2r")]
 use prelio_ros2::tf_r2r::TfBroadcaster;
-use prelio_ros2::{prelio::config::LifisParameters, LifisNodeParameters, Qos};
+use prelio_ros2::{prelio::config::LifisParameters, LifisNodeParameters, Qos, Reliability};
 use rand::Rng;
 
 use pelorus_reg::{sfasterlio::SFasterLio, CloudRegisterResult, Registration};
@@ -91,8 +91,6 @@ pub enum LioMethod {
 pub struct LioConfig {
     pub feedback_fps: u32,
     pub registered_cloud_qos: prelio_ros2::Qos,
-    pub lidar_qos: prelio_ros2::Qos,
-    pub imu_qos: prelio_ros2::Qos,
     pub odom_qos: prelio_ros2::Qos,
     pub imu_odom_qos: prelio_ros2::Qos,
     pub imu_path_qos: prelio_ros2::Qos,
@@ -116,9 +114,7 @@ impl Default for LioConfig {
             feedback_fps: 1,
             gravity: 9.81,
             enable_live_extrinsic_calibration: false,
-            registered_cloud_qos: Qos::Sensor,
-            lidar_qos: Qos::Sensor,
-            imu_qos: Qos::Sensor,
+            registered_cloud_qos: Qos::Sensor(Reliability::Reliable),
             odom_qos: Qos::default(),
             imu_odom_qos: Qos::default(),
             imu_path_qos: Qos::default(),

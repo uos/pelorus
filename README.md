@@ -4,20 +4,19 @@ Lidar (Inertial) Odometry.
 
 ## Usage
 
-
 Install [Rust](https://www.rust-lang.org/tools/install) first if not done already.
 
 ```sh 
-# with sourced ROS2
+# with sourced ROS2 and ssh key setup for github
 cargo install \
-  --git ssh://git@gitlabti.informatik.uni-osnabrueck.de/chsieh/pelorus.git pelorus \
+  --git ssh://git@github.com:stelzo/pelorus.git pelorus \
   --locked \
   --no-default-features \
   --features gicp,r2r,pelorus-reg/nn_kdt
 
 # then you can create a default config
 pelorus config init
-# creates ./lio.toml. change the parameters as you like
+# creates ./lio.toml. change the parameters as you like. most importantly, change lidar_vendor and cloud_src_topic
 
 pelorus run
 ```
