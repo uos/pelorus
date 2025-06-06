@@ -11,6 +11,7 @@ use clap::{command, Parser, Subcommand};
 use futures_lite::future;
 use log::{error, info};
 use nalgebra::{Isometry3, Translation3};
+use r2r::geometry_msgs::msg::Point;
 #[cfg(feature = "r2r")]
 use r2r::{
     builtin_interfaces::msg::Time,
@@ -806,12 +807,12 @@ fn lio(config_path: &str) -> Result<(), Box<dyn std::error::Error>> {
                                 let end_position =
                                     position_viz + normal_viz.normalize() * normal.intensity as f64;
 
-                                let mut point_start = nalgebra::Point::default();
+                                let mut point_start = Point::default();
                                 point_start.x = position_viz.x;
                                 point_start.y = position_viz.y;
                                 point_start.z = position_viz.z;
 
-                                let mut point_end = nalgebra::Point::default();
+                                let mut point_end = Point::default();
                                 point_end.x = end_position.x;
                                 point_end.y = end_position.y;
                                 point_end.z = end_position.z;
@@ -884,7 +885,7 @@ fn lio(config_path: &str) -> Result<(), Box<dyn std::error::Error>> {
                     let mut total_map = PointCloud2Msg::try_from_vec(total_map).unwrap();
                     total_map.header.frame_id = config.prelio_params.map_frame.clone();
                     let msg: PointCloud2 = total_map.into();
-                    map_publisher.publish(msg).expect("Failed to publish map");
+                    map_publisher.publish(&msg).expect("Failed to publish map");
                 }
             }
 
