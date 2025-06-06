@@ -863,6 +863,15 @@ fn lio(config_path: &str) -> Result<(), Box<dyn std::error::Error>> {
                 })
                 .collect();*/
             //dbg!("REG CLOUD cloud", cloud.len());
+            #[cfg(feature = "rerun")]
+            {
+                let points = cloud.iter().map(|v| glam::Vec3::new(v.x, v.y, v.z));
+
+                if let Err(err) = rec.log("/world/lidar/undistorted", &rerun::Points3D::new(points))
+                {
+                    error!("Error sending to rerun {err}");
+                }
+            }
             let mut cloud: PointCloud2 = ros_pointcloud2::PointCloud2Msg::try_from_vec(cloud)
                 .unwrap()
                 .into();
@@ -904,7 +913,7 @@ fn lio(config_path: &str) -> Result<(), Box<dyn std::error::Error>> {
                     map_to_lidar_transform.rotation.quaternion().w as f32,
                 ));
 
-                if let Err(err) = rec.log("lidar_pose", &pose) {
+                if let Err(err) = rec.log("world/lidar", &pose) {
                     error!("Error sending to rerun {err}");
                 }
             }
@@ -999,7 +1008,7 @@ fn lio(config_path: &str) -> Result<(), Box<dyn std::error::Error>> {
                             )
                         }));
                     let lidar_path_strips = rerun::LineStrips3D::new(std::iter::once(lidar_path));
-                    if let Err(err) = rec.log("lidar_path", &lidar_path_strips) {
+                    if let Err(err) = rec.log("world", &lidar_path_strips) {
                         error!("Error sending to rerun {err}");
                     }
                 }
