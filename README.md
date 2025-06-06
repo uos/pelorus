@@ -1,6 +1,6 @@
 # Pelorus
 
-Lidar Inertial Odometry from scratch.
+Lidar (Inertial) Odometry.
 
 ## Usage
 

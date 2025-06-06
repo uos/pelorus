@@ -455,12 +455,9 @@ pub struct LifisNode {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LifisNodeParameters {
-    pub cloud_src_namespace: String,
     pub cloud_src_topic: String,
-    pub imu_src_namespace: String,
     pub imu_src_topic: String,
     pub logger_prefix: String,
-    pub imu_filtered_namespace: String,
     pub imu_filtered_topic: String,
     pub imu_predictor_init_time_sec: f64,
     pub cloud_qos: Qos,
@@ -545,17 +542,14 @@ impl From<crate::Qos> for QosProfile {
 impl Default for LifisNodeParameters {
     fn default() -> Self {
         LifisNodeParameters {
-            cloud_src_namespace: "/".to_owned(),
-            cloud_src_topic: "cloud".to_string(),
-            imu_src_namespace: "/".to_owned(),
-            imu_src_topic: "imu".to_string(),
+            cloud_src_topic: "/ouster/cloud".to_string(),
+            imu_src_topic: "/ouster/imu".to_string(),
             logger_prefix: "lifis".to_string(),
-            imu_filtered_topic: "imu_filtered".to_string(),
+            imu_filtered_topic: "/imu_filtered".to_string(),
             imu_predictor_init_time_sec: 0.1,
             cloud_qos: Qos::Sensor,
             imu_qos: Qos::Sensor,
             imu_filtered_qos: Qos::Sensor,
-            imu_filtered_namespace: "/".to_owned(),
         }
     }
 }
@@ -634,13 +628,8 @@ impl LifisNode {
             .unwrap();
 
         #[cfg(feature = "r2r")]
-        let cloud_subscriber = node.subscribe::<PointCloud2>(
-            &format!(
-                "{}/{}",
-                &node_params.cloud_src_namespace, &node_params.cloud_src_topic
-            ),
-            node_params.cloud_qos.into(),
-        )?;
+        let cloud_subscriber = node
+            .subscribe::<PointCloud2>(&node_params.cloud_src_topic, node_params.cloud_qos.into())?;
 
         #[cfg(feature = "ratpub")]
         let mut cloud_subscriber = rt.block_on(async {
@@ -764,14 +753,8 @@ impl LifisNode {
             .unwrap();
 
         #[cfg(feature = "r2r")]
-        let imu_subscription = node.subscribe::<Imu>(
-            &format!(
-                "{}/{}",
-                &node_params.imu_src_namespace.trim_start_matches("/"),
-                &node_params.imu_src_topic
-            ),
-            node_params.imu_qos.into(),
-        )?;
+        let imu_subscription =
+            node.subscribe::<Imu>(&node_params.imu_src_topic, node_params.imu_qos.into())?;
 
         // do not publish filtered imu if no topic is provided
         #[cfg(feature = "ros2-client")]
@@ -797,11 +780,7 @@ impl LifisNode {
             None
         } else {
             Some(Arc::new(Mutex::new(node.create_publisher::<Imu>(
-                &format!(
-                    "{}/{}",
-                    &node_params.imu_filtered_namespace.trim_start_matches("/"),
-                    &node_params.imu_filtered_topic
-                ),
+                &node_params.imu_filtered_topic,
                 node_params.imu_filtered_qos.into(),
             )?)))
         };
