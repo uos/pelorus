@@ -263,7 +263,7 @@ fn cloud_callback(
                 .unwrap()
                 .map(|p: PointXYZ| glam::Vec3::new(p.x, p.y, p.z));
 
-            if let Err(err) = rec.log("input", &rerun::Points3D::new(points)) {
+            if let Err(err) = rec.log("world/lidar/input", &rerun::Points3D::new(points)) {
                 error!("Error sending to rerun {err}");
             }
         }
@@ -656,15 +656,9 @@ impl LifisNode {
 
         #[cfg(feature = "ratpub")]
         let mut cloud_subscriber = rt.block_on(async {
-            node.create_subscriber::<PointCloud2>(
-                format!(
-                    "{}/{}",
-                    &node_params.cloud_src_namespace, &node_params.cloud_src_topic
-                ),
-                10,
-            )
-            .await
-            .unwrap()
+            node.create_subscriber::<PointCloud2>(node_params.cloud_src_topic.clone(), 10)
+                .await
+                .unwrap()
         });
 
         // Share with cloud callback, TODO maybe the only one who needs it, so remove mutex and arc?
@@ -892,15 +886,9 @@ impl LifisNode {
         {
             let imu_sub_rt = Arc::clone(&rt);
             let mut imu_sub = imu_sub_rt.block_on(async {
-                node.create_subscriber::<Imu>(
-                    format!(
-                        "{}/{}",
-                        &node_params.imu_src_namespace, &node_params.imu_src_topic
-                    ),
-                    100,
-                )
-                .await
-                .unwrap()
+                node.create_subscriber::<Imu>(node_params.imu_src_topic.clone(), 100)
+                    .await
+                    .unwrap()
             });
 
             std::thread::spawn(move || {
