@@ -18,6 +18,7 @@ sophus_lie.workspace = true
 rayon.workspace = true
 dashmap.workspace = true
 spole.workspace = true
+log.workspace = true
 serde.workspace = true
 # small_gicp-sys = { workspace = true, optional = true }
 

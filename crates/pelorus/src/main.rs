@@ -11,11 +11,10 @@ use clap::{command, Parser, Subcommand};
 use futures_lite::future;
 use log::{error, info};
 use nalgebra::{Isometry3, Translation3};
-use r2r::geometry_msgs::msg::Point;
 #[cfg(feature = "r2r")]
 use r2r::{
     builtin_interfaces::msg::Time,
-    geometry_msgs::msg::{PoseStamped, Quaternion, Transform, TransformStamped, Vector3},
+    geometry_msgs::msg::{Point, PoseStamped, Quaternion, Transform, TransformStamped, Vector3},
     nav_msgs::msg::{Odometry, Path},
     sensor_msgs::msg::PointCloud2,
     std_msgs::msg::Header,
