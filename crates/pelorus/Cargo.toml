@@ -35,7 +35,7 @@ small_gicp-sys = { workspace = true, optional = true }
 default = ["ratpub", "pelorus-reg/nn_kdt", "rerun"]
 gicp = ["dep:small_gicp-sys", "prelio-ros2/no-imu-sync"]
 dev = ["rerun", "ratpub", "pelorus-reg/nn_kdt", "rat"]
-rat = ["dep:rat"]
+rat = ["dep:rat", "dep:tokio"]
 mimalloc = ["dep:mimalloc"]
 rerun = ["dep:rerun", "prelio-ros2/rerun"]
 ratpub = [

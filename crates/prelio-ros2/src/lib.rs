@@ -263,7 +263,7 @@ fn cloud_callback(
                 .unwrap()
                 .map(|p: PointXYZ| glam::Vec3::new(p.x, p.y, p.z));
 
-            if let Err(err) = rec.log("input", &rerun::Points3D::new(points)) {
+            if let Err(err) = rec.log("world/lidar/input", &rerun::Points3D::new(points)) {
                 error!("Error sending to rerun {err}");
             }
         }
