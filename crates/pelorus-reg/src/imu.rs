@@ -1,3 +1,4 @@
+use log::warn;
 use nalgebra::*;
 use serde::{Deserialize, Serialize};
 
@@ -15,15 +16,12 @@ const COV3: f64 = 0.001;
 pub struct ImuProcessing {
     ekf_inited: bool,
     last_imu: crate::ImuMsg,
-    init_iter_num: usize,
     cov_acc: Vector3<f64>,
     cov_acc_bias: Vector3<f64>,
     cov_gyr: Vector3<f64>,
     cov_gyr_bias: Vector3<f64>,
-    imu_need_init: bool,
     mean_acc: Vector3<f64>,
     mean_gyr: Vector3<f64>,
-    first_frame: bool,
     lidar_t_wrt_imu: Vector3<f64>,
     lidar_r_wrt_imu: Matrix3<f64>,
     angvel_last: Vector3<f64>,
@@ -39,8 +37,6 @@ impl Default for ImuProcessing {
     fn default() -> Self {
         Self {
             ekf_inited: false,
-            imu_need_init: true,
-            init_iter_num: 1,
             cov_acc: Vector3::new(
                 COV_IMU_RAW_DEFAULT,
                 COV_IMU_RAW_DEFAULT,
@@ -54,7 +50,6 @@ impl Default for ImuProcessing {
             last_imu: crate::ImuMsg::default(),
             mean_acc: Vector3::zeros(),
             mean_gyr: Vector3::zeros(),
-            first_frame: true,
             lidar_t_wrt_imu: Vector3::zeros(),
             lidar_r_wrt_imu: Matrix3::identity(),
             ekf_cov_gyr_bias: Matrix3::zeros(),
@@ -174,14 +169,6 @@ impl ImuProcessing {
         s
     }
 
-    pub fn reset(&mut self) {
-        self.mean_acc = Vector3::new(0.0, 0.0, -1.0);
-        self.mean_gyr = Vector3::zeros();
-        self.imu_need_init = true;
-        self.init_iter_num = 1;
-        self.last_imu = crate::ImuMsg::default();
-    }
-
     /*pub fn set_extrinsic(&mut self, t: &SMatrix<f64, 4, 4>) {
         self.lidar_t_wrt_imu = Vector3::new(t[(0, 3)], t[(1, 3)], t[(2, 3)]);
         self.lidar_r_wrt_imu = Matrix3::new(
@@ -202,19 +189,10 @@ impl ImuProcessing {
         msgs: &[crate::ImuMsg],
         ekf: &mut crate::sophus_ekf::Esekf,
     ) -> Vector3<f64> {
-        if !self.imu_need_init {
-            self.ekf_inited = true; // TODO maybe remove, since imu_need_init already does the same thing
-            return self.mean_acc;
-        }
-
-        let mut n = 0.0;
-        if self.first_frame {
-            self.reset();
-            n = 1.0;
-            self.first_frame = false;
-            self.mean_acc = msgs[0].linear_acceleration;
-            self.mean_gyr = msgs[0].angular_velocity;
-        }
+        let mut n = 1.0;
+        self.last_imu = crate::ImuMsg::default();
+        self.mean_acc = msgs[0].linear_acceleration;
+        self.mean_gyr = msgs[0].angular_velocity;
 
         for msg in msgs {
             let cur_acc = msg.linear_acceleration;
@@ -239,7 +217,7 @@ impl ImuProcessing {
         ekf.state.offset_r_l_i =
             sophus_lie::Rotation3::try_from_mat(&self.lidar_r_wrt_imu).unwrap();
 
-        ekf.cov[(0, 0)] = 1.0; // pos, TODO was 1.0
+        ekf.cov[(0, 0)] = 1.0; // pos
         ekf.cov[(1, 1)] = 1.0;
         ekf.cov[(2, 2)] = 1.0;
 
@@ -255,9 +233,9 @@ impl ImuProcessing {
         ekf.cov[(10, 10)] = COV1;
         ekf.cov[(11, 11)] = COV1;
 
-        ekf.cov[(12, 12)] = 0.5; // vel, TODO was 1.0
-        ekf.cov[(13, 13)] = 0.5;
-        ekf.cov[(14, 14)] = 0.5;
+        ekf.cov[(12, 12)] = 1.0; // vel
+        ekf.cov[(13, 13)] = 1.0;
+        ekf.cov[(14, 14)] = 1.0;
 
         ekf.cov[(15, 15)] = COV2; // bg
         ekf.cov[(16, 16)] = COV2;
@@ -273,7 +251,6 @@ impl ImuProcessing {
 
         self.last_imu = msgs[msgs.len() - 1].clone();
 
-        self.imu_need_init = self.init_iter_num <= MAX_INI_COUNT;
         self.ekf_inited = true;
 
         self.mean_acc
@@ -321,17 +298,25 @@ impl ImuProcessing {
         let mut acc_avr_y = 0.0;
         let mut acc_avr_z = 0.0;
 
-        let mut imu_msgs = imu_msgs.to_vec(); // TODO is a clone
-        imu_msgs.insert(0, self.last_imu.clone());
+        let mut all_imus = std::iter::once(&self.last_imu).chain(imu_msgs.iter());
 
-        for i in 0..(imu_msgs.len() - 1) {
-            let head = &imu_msgs[i];
-            let tail = &imu_msgs[i + 1];
+        // Handle the (unlikely) case of an empty iterator gracefully.
+        let Some(mut head) = all_imus.next() else {
+            // This will not be reached due to the assert! above, but is robust code.
+            return vec![];
+        };
 
+        while let Some(tail) = all_imus.next() {
             let head_stamp = head.timestamp_sec;
             let tail_stamp = tail.timestamp_sec;
 
-            assert!(head_stamp <= tail_stamp);
+            if head_stamp == tail_stamp {
+                warn!("Found the same stamps from IMU, skipping a msg");
+                head = tail;
+                continue;
+            }
+
+            assert!(head_stamp < tail_stamp);
 
             angvel_avr_x = (head.angular_velocity[0] + tail.angular_velocity[0]) * 0.5;
             angvel_avr_y = (head.angular_velocity[1] + tail.angular_velocity[1]) * 0.5;
@@ -345,12 +330,15 @@ impl ImuProcessing {
                 / mean_acc;
 
             let dt = if head_stamp < last_cloud_end_time {
+                dbg!(tail_stamp, last_cloud_end_time);
+
                 tail_stamp - last_cloud_end_time
             } else {
+                dbg!(tail_stamp, head_stamp);
                 tail_stamp - head_stamp
             };
 
-            assert!(dt > 0.0);
+            assert!(dt > 0.0); // TODO does this need > only? predict 0 ok? first ever dt is 0
 
             let avr_x = [acc_avr_x, acc_avr_y, acc_avr_z];
             let angvel_avr = [angvel_avr_x, angvel_avr_y, angvel_avr_z];
@@ -361,7 +349,6 @@ impl ImuProcessing {
             self.acc_s_last = self.imu_state.rot.matrix()
                 * ((tail.linear_acceleration.xyz() * GRAVITY / mean_acc) - self.imu_state.ba)
                 + self.imu_state.grav;
-
             let offs_t = tail_stamp - cloud_begin_time;
             imu_poses.push(Pose6D::new(
                 offs_t,
@@ -371,6 +358,8 @@ impl ImuProcessing {
                 self.imu_state.pos,
                 self.imu_state.rot.matrix(),
             ));
+
+            head = tail;
         }
 
         // to end of cloud
@@ -391,15 +380,27 @@ impl ImuProcessing {
             let head = &imu_poses[i - 1];
             let tail = &imu_poses[i];
 
-            let r_imu = head.rot * crate::sophus_ekf::SO3::exp(&(tail.gyr * dt)).matrix();
-            let t_ei = head.pos + head.vel * dt + 0.5 * tail.acc * dt * dt - self.imu_state.pos;
-
             while it_pcl > 0 && cloud[it_pcl - 1].timestamp > head.offset_time {
                 it_pcl -= 1;
                 let pcl_point = &cloud[it_pcl];
+
+                let mut dt = pcl_point.timestamp - head.offset_time;
+                if dt < 0.0 {
+                    // This can happen due to floating point inaccuracies if the point is very close
+                    // to the head time. We can treat it as having zero offset.
+                    warn!(
+                        "Point timestamp slightly before IMU head offset_time, clamping dt to 0."
+                    );
+                    dt = 0.0;
+                }
+
+                // Interpolate rotation and translation to the point's specific time.
+                let r_i = head.rot * crate::sophus_ekf::SO3::exp(&(tail.gyr * dt)).matrix();
+                let t_ei = head.pos + head.vel * dt + 0.5 * tail.acc * dt * dt - self.imu_state.pos;
+
                 let p_compensate = self.imu_state.offset_r_l_i.matrix().transpose()
                     * (self.imu_state.rot.matrix().transpose()
-                        * (r_imu
+                        * (r_i
                             * (self.imu_state.offset_r_l_i.matrix()
                                 * Vector3::new(
                                     pcl_point.x as f64,

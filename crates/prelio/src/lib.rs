@@ -6,7 +6,7 @@ pub mod timing;
 
 use either::Either;
 use imu_fusion::FusionAhrs;
-use log::{error, info, warn};
+use log::{debug, error, info, warn};
 use nalgebra::*;
 use serde::{Deserialize, Serialize};
 use std::thread;
@@ -662,6 +662,8 @@ impl Lifis {
                     (lidar_begin_time + lidar_time, lidar_end_time + lidar_time)
                 };
 
+            debug!("Lidar received");
+
             let imu_span_start_time = if *prev_lidar_end_time > 0.0 {
                 *prev_lidar_end_time
             } else {
@@ -679,6 +681,7 @@ impl Lifis {
 
             if let Some(imu_receiver) = imu_receiver.as_ref() {
                 loop {
+                    // info!("waiting for more imu");
                     match imu_receiver.recv() {
                         Ok(imu) => {
                             let imu_time = timestamp_to_secs(&imu.stamp);
@@ -691,15 +694,15 @@ impl Lifis {
                             }
                             imu_data.push(imu);
                         }
-                        _ => {
-                            warn!("Imu receiver closed");
+                        Err(e) => {
+                            error!("Imu receiver closed: {e}");
                             return;
                         }
                     }
                 }
 
                 if imu_data.is_empty() {
-                    warn!("No imu data in span");
+                    // warn!("No imu data in span");
                     continue;
                 }
             }
@@ -712,6 +715,7 @@ impl Lifis {
             });
 
             // - data synced -
+            debug!("data synced");
 
             let meas = MeasureGroup {
                 cloud,

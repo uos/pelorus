@@ -656,15 +656,9 @@ impl LifisNode {
 
         #[cfg(feature = "ratpub")]
         let mut cloud_subscriber = rt.block_on(async {
-            node.create_subscriber::<PointCloud2>(
-                format!(
-                    "{}/{}",
-                    &node_params.cloud_src_namespace, &node_params.cloud_src_topic
-                ),
-                10,
-            )
-            .await
-            .unwrap()
+            node.create_subscriber::<PointCloud2>(node_params.cloud_src_topic.clone(), 10)
+                .await
+                .unwrap()
         });
 
         // Share with cloud callback, TODO maybe the only one who needs it, so remove mutex and arc?
@@ -713,6 +707,7 @@ impl LifisNode {
             future::block_on(async {
                 cloud_subscriber
                     .for_each(|msg| {
+                        dbg!("received cloud!");
                         let imu_tf_frame_lidar_inner =
                             imu_tf_frame_lidar_inner.clone().lock().unwrap().clone();
 
@@ -892,15 +887,9 @@ impl LifisNode {
         {
             let imu_sub_rt = Arc::clone(&rt);
             let mut imu_sub = imu_sub_rt.block_on(async {
-                node.create_subscriber::<Imu>(
-                    format!(
-                        "{}/{}",
-                        &node_params.imu_src_namespace, &node_params.imu_src_topic
-                    ),
-                    100,
-                )
-                .await
-                .unwrap()
+                node.create_subscriber::<Imu>(node_params.imu_src_topic.clone(), 100)
+                    .await
+                    .unwrap()
             });
 
             std::thread::spawn(move || {
@@ -908,7 +897,6 @@ impl LifisNode {
                 imu_sub_rt.block_on(async {
                     while let Some(msg) = imu_sub.next().await {
                         let state = state_clone.lock().unwrap();
-                        debug!("received imu message");
                         {
                             imu_tf_frame_lidar_inner
                                 .clone()
@@ -942,6 +930,7 @@ impl LifisNode {
                                     // apply the init buffer
                                     if let Some(imu_init_buffer) = imu_init_buffer.take() {
                                         imu_pose_predictor_init(&imu_init_buffer);
+                                        debug!("EKF: Imu initialized");
                                     }
                                 }
                             }
@@ -1002,6 +991,8 @@ impl LifisNode {
                                 if delta < init_imu_time {
                                     if let Some(imu_init_buffer) = imu_init_buffer.as_mut() {
                                         imu_init_buffer.push(imu_lifis);
+                                        dbg!(imu_init_buffer.len());
+
                                         return; // skip adding to lifis if we are still in the init phase
                                     }
                                     // we are only here, if there was an initial buffer, but it was already consumed so skip init and continue with normal processing
