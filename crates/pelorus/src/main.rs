@@ -204,7 +204,7 @@ struct Args {
 fn lio(config_path: &str) -> Result<(), Box<dyn std::error::Error>> {
     // TODO add logging file
     // log4rs::init_file("examples/async_listener/log4rs.yaml", Default::default()).unwrap();
-    #[cfg(feature = "ratpub")]
+    #[cfg(any(feature = "ratpub", feature = "rat"))]
     let rt = Arc::new(
         tokio::runtime::Builder::new_multi_thread()
             .enable_all()
@@ -213,7 +213,7 @@ fn lio(config_path: &str) -> Result<(), Box<dyn std::error::Error>> {
     );
 
     #[cfg(feature = "rat")]
-    rat::init("pelorus-lio", None, Some(Arc::clone(&rt))).unwrap();
+    rat::init("pelorus", None, Some(Arc::clone(&rt))).unwrap();
 
     #[cfg(not(feature = "ratpub"))]
     #[allow(unused_variables)]
@@ -552,6 +552,9 @@ fn lio(config_path: &str) -> Result<(), Box<dyn std::error::Error>> {
     std::thread::spawn(move || {
         let mut first_scan = true;
         while let Ok(lifis_tick) = synced_rx.recv() {
+            #[cfg(feature = "rat")]
+            rat::bacon::<u8>("synced", &mut 0, rat::VariableType::U8).unwrap();
+
             eval.start("total").unwrap();
             //eval.merge(&lifis_tick.runtime_eval);
 
@@ -866,7 +869,7 @@ fn lio(config_path: &str) -> Result<(), Box<dyn std::error::Error>> {
             {
                 let points = cloud.iter().map(|v| glam::Vec3::new(v.x, v.y, v.z));
 
-                if let Err(err) = rec.log("/world/lidar/undistorted", &rerun::Points3D::new(points))
+                if let Err(err) = rec.log("world/lidar/undistorted", &rerun::Points3D::new(points))
                 {
                     error!("Error sending to rerun {err}");
                 }
@@ -884,7 +887,7 @@ fn lio(config_path: &str) -> Result<(), Box<dyn std::error::Error>> {
                 {
                     let points = total_map.iter().map(|v| glam::Vec3::new(v.x, v.y, v.z));
 
-                    if let Err(err) = rec.log("map", &rerun::Points3D::new(points)) {
+                    if let Err(err) = rec.log("world/map", &rerun::Points3D::new(points)) {
                         error!("Error sending to rerun {err}");
                     }
                 }
