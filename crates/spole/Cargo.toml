@@ -12,11 +12,12 @@ ros_pointcloud2.workspace = true
 dashmap.workspace = true
 nalgebra.workspace = true
 serde.workspace = true
-kdtree = { version = "0.7.0", optional = true }
+# kdtree = { version = "0.7.0", optional = true }
+kiddo = { version = "5.0.3", optional = true }
 
 [features]
 # default = ["nn_kdt"]
-nn_kdt = ["dep:kdtree"]
+nn_kdt = ["dep:kiddo"]
 
 [dev-dependencies]
 rand = "0.8"

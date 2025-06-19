@@ -1,6 +1,13 @@
+use std::{
+    collections::{HashMap, VecDeque},
+    num::{NonZeroI8, NonZeroI16, NonZeroUsize},
+    rc::Rc,
+    sync::Arc,
+};
+
 use dashmap::DashMap;
 #[cfg(feature = "nn_kdt")]
-use kdtree::{KdTree, distance::squared_euclidean};
+use kiddo::SquaredEuclidean;
 use ros_pointcloud2::prelude::*;
 
 use serde::{Deserialize, Serialize};
@@ -11,11 +18,16 @@ pub struct IVoxHashMap {
     resolution: f64,
     grid_map: dashmap::DashMap<i32, ((i32, i32, i32), usize)>,
     scan_number: usize,
+    pt_id: u64,
     buffer: Vec<(i32, IvoxNode)>,
     buffer_current_idx: usize,
     buffer_init_full: bool,
     #[cfg(feature = "nn_kdt")]
-    kd_map: Vec<PointXYZ>,
+    kd_map: kiddo::float::kdtree::KdTree<f32, u64, 3, 64, u32>,
+    #[cfg(feature = "nn_kdt")]
+    kd_points: VecDeque<Arc<(u64, PointXYZ)>>,
+    #[cfg(feature = "nn_kdt")]
+    kd_points_lookup: HashMap<u64, Arc<(u64, PointXYZ)>>,
 }
 
 #[derive(Debug, Default, Clone, Copy, Serialize, Deserialize)]
@@ -91,18 +103,21 @@ impl IVoxHashMap {
             inverse_resolution: 1.0 / resolution,
             grid_map: DashMap::with_capacity(capacity),
             scan_number: 0,
+            pt_id: 0,
             resolution: resolution as f64,
             buffer: vec![(0, IvoxNode::new()); capacity],
             buffer_current_idx: 0,
             buffer_init_full: false,
             #[cfg(feature = "nn_kdt")]
-            kd_map: Vec::with_capacity(capacity),
+            kd_map: kiddo::float::kdtree::KdTree::<f32, u64, 3, 64, u32>::with_capacity(capacity),
+            kd_points: VecDeque::with_capacity(capacity),
+            kd_points_lookup: HashMap::new(),
         }
     }
 
     pub fn is_empty(&self) -> bool {
         #[cfg(feature = "nn_kdt")]
-        return self.kd_map.is_empty();
+        return self.kd_map.size() == 0;
 
         #[cfg(not(feature = "nn_kdt"))]
         return self.grid_map.is_empty();
@@ -134,61 +149,41 @@ impl IVoxHashMap {
 
         #[cfg(feature = "nn_kdt")]
         {
-            let hashes = dashmap::DashMap::new(); // TODO try out ahash
-            self.kd_map.par_iter().for_each(|point| {
-                let hash = Self::hash(&point.xyz_f32(), 0.50); // TODO hardcoded here, but feat only used for debugging so its ok
-                if !hashes.contains_key(&hash) {
-                    hashes.insert(hash, Vec::with_capacity(10));
-                }
-                hashes
-                    .get_mut(&hash)
-                    .expect("entry created the line before")
-                    .push(*point);
-            });
+            // check if any point is closer than 25cm, if not, add to tree
+            let f = points
+                .into_iter() // TODO as par iter
+                .filter(|point| {
+                    let closest = self.kd_map.nearest_n_within::<SquaredEuclidean>(
+                        &[point.x, point.y, point.z],
+                        self.resolution as f32,
+                        std::num::NonZero::new(1).unwrap(),
+                        false,
+                    );
 
-            points.into_iter().for_each(|point| {
-                let hash = Self::hash(&point.xyz_f32(), 0.50); // TODO and here
-                if !hashes.contains_key(&hash) {
-                    hashes.insert(hash, Vec::with_capacity(10));
-                }
-                hashes
-                    .get_mut(&hash)
-                    .expect("entry created the line before")
-                    .push(point);
-            });
-
-            let out = hashes
-                .par_iter()
-                .map(|bucket_ref| {
-                    let voxel_average = bucket_ref
-                        .iter()
-                        .fold(nalgebra::Vector3::default(), |acc, point| {
-                            point.xyz_f32().coords + acc
-                        });
-
-                    /*let voxel_average = bucket_ref
-                    .par_iter()
-                    .map(|point| point.xyz().coords)
-                    .reduce(Vector3::default, |acc, coords| acc + coords);*/
-
-                    let avg = voxel_average * (1.0 / bucket_ref.len() as f32);
-
-                    let mut min_dist = f32::MAX;
-                    let mut closest_point = PointXYZ::default();
-                    for point in bucket_ref.iter() {
-                        let dist = (point.xyz_f32().coords - avg).norm_squared();
-                        if dist < min_dist {
-                            min_dist = dist;
-                            closest_point = (*point).clone();
-                        }
-                    }
-
-                    closest_point
+                    closest.is_empty()
                 })
-                .collect::<Vec<PointXYZ>>();
+                .collect::<Vec<_>>();
 
-            self.kd_map.clear();
-            self.kd_map.extend(out);
+            const max_map_size: usize = 500_000;
+            let cur_len = self.kd_points.len();
+            let new_len = cur_len + f.len();
+            let target_len = max_map_size - f.len();
+            if new_len > max_map_size {
+                while self.kd_points.len() >= target_len {
+                    if let Some(rc) = self.kd_points.pop_back() {
+                        self.kd_map.remove(&[rc.1.x, rc.1.y, rc.1.z], rc.0);
+                        self.kd_points_lookup.remove(&rc.0);
+                    }
+                }
+            }
+
+            f.into_iter().for_each(|point| {
+                self.pt_id += 1;
+                self.kd_map.add(&[point.x, point.y, point.z], self.pt_id);
+                let p = Arc::new((self.pt_id, point));
+                self.kd_points.push_front(p.clone());
+                self.kd_points_lookup.insert(self.pt_id, p.clone());
+            });
         }
 
         #[cfg(not(feature = "nn_kdt"))]
@@ -260,7 +255,7 @@ impl IVoxHashMap {
         result: &mut [PointXYZ],
         out_size: &mut usize,
     ) -> bool {
-        #[cfg(feature = "nn_kdt")]
+        #[cfg(not(feature = "nn_kdt"))]
         {
             let grid = self.pos2grid(query);
 
@@ -311,26 +306,18 @@ impl IVoxHashMap {
 
             return true;
         }
-        #[cfg(not(feature = "nn_kdt"))]
+        #[cfg(feature = "nn_kdt")]
         {
-            let mut map_kd_tree = KdTree::new(3);
-            self.map.iter().for_each(|p| {
-                map_kd_tree.add([p.x, p.y, p.z], *p).unwrap();
-            });
-
-            if self.map.is_empty() {
+            if self.kd_map.size() == 0 {
                 return false;
             }
 
-            let mut neighbors = map_kd_tree
-                .nearest(&[query.x, query.y, query.z], k, &squared_euclidean)
-                .unwrap();
-
-            neighbors.sort_unstable_by(|a, b| {
-                let dist_a = (a.1.xyz_f32() - query.xyz_f32()).norm_squared();
-                let dist_b = (b.1.xyz_f32() - query.xyz_f32()).norm_squared();
-                dist_a.partial_cmp(&dist_b).unwrap()
-            });
+            let mut neighbors = self.kd_map.nearest_n_within::<SquaredEuclidean>(
+                &[query.x, query.y, query.z],
+                max_range as f32,
+                std::num::NonZeroUsize::new(k).unwrap(),
+                true,
+            );
 
             if neighbors.is_empty() {
                 return false;
@@ -340,17 +327,8 @@ impl IVoxHashMap {
 
             neighbors
                 .into_iter()
-                .filter_map(|n| {
-                    let dist = (n.1.xyz_f32() - query.xyz_f32()).norm_squared();
-                    if dist < max_range as f32 {
-                        Some(n.1)
-                    } else {
-                        None
-                    }
-                })
-                .take(k)
                 .zip(result.iter_mut())
-                .for_each(|(neigh, res)| *res = neigh.clone());
+                .for_each(|(neigh, res)| *res = self.kd_points_lookup[&neigh.item].1);
 
             return true;
         }
@@ -476,7 +454,7 @@ impl IVoxHashMap {
     pub fn get_entire_map(&self) -> Vec<PointXYZ> {
         #[cfg(feature = "nn_kdt")]
         {
-            return self.kd_map.clone();
+            return self.kd_points.iter().map(|rc| rc.1).collect();
         }
 
         #[cfg(not(feature = "nn_kdt"))]

@@ -226,7 +226,8 @@ fn lio(config_path: &str) -> Result<(), Box<dyn std::error::Error>> {
         NodeOptions::new().enable_rosout(true),
     )?;
     #[cfg(feature = "ratpub")]
-    let node = Arc::new(rt.block_on(async { Node::create("pelorus".to_owned()).await.unwrap() }));
+    let node =
+        Arc::new(rt.block_on(async { Node::create("pelorus_node".to_owned()).await.unwrap() }));
     #[cfg(feature = "r2r")]
     let ctx = r2r::Context::create()?;
     #[cfg(feature = "r2r")]
@@ -865,22 +866,13 @@ fn lio(config_path: &str) -> Result<(), Box<dyn std::error::Error>> {
                 })
                 .collect();*/
             //dbg!("REG CLOUD cloud", cloud.len());
-            #[cfg(feature = "rerun")]
-            {
-                let points = cloud.iter().map(|v| glam::Vec3::new(v.x, v.y, v.z));
-
-                if let Err(err) = rec.log("world/lidar/undistorted", &rerun::Points3D::new(points))
-                {
-                    error!("Error sending to rerun {err}");
-                }
-            }
             let mut cloud: PointCloud2 = ros_pointcloud2::PointCloud2Msg::try_from_vec(cloud)
                 .unwrap()
                 .into();
             let map_to_lidar_transform = t_world_lidar.clone();
             cloud.header.frame_id = orig_frame.clone();
 
-            #[cfg(all(debug_assertions, not(feature = "gicp")))]
+            #[cfg(all(not(feature = "gicp")))]
             {
                 let total_map = map.lock().unwrap().get_entire_map();
                 #[cfg(feature = "rerun")]
@@ -917,6 +909,20 @@ fn lio(config_path: &str) -> Result<(), Box<dyn std::error::Error>> {
 
                 if let Err(err) = rec.log("world/lidar", &pose) {
                     error!("Error sending to rerun {err}");
+                }
+
+                {
+                    let ps: ros_pointcloud2::PointCloud2Msg = cloud.clone().into();
+                    let points = ps
+                        .try_into_iter()
+                        .unwrap()
+                        .map(|v: PointXYZ| glam::Vec3::new(v.x, v.y, v.z));
+
+                    if let Err(err) =
+                        rec.log("world/lidar/undistorted", &rerun::Points3D::new(points))
+                    {
+                        error!("Error sending to rerun {err}");
+                    }
                 }
             }
 

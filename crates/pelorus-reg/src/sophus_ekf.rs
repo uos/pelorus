@@ -234,8 +234,8 @@ impl Esekf {
                 kh
             };
             // avg of all k
-            //let k_avg = k.iter().sum::<f64>() / k.len() as f64;
-            //let h_avg = h.iter().sum::<f64>() / h.len() as f64;
+            // let k_avg = k.iter().sum::<f64>() / k.len() as f64;
+            // let h_avg = h.iter().sum::<f64>() / h.len() as f64;
 
             let khh = &k * &h;
             let state_update = k * &h + (kh - SMatrix::<f64, 24, 24>::identity()) * dx_new;
@@ -243,9 +243,9 @@ impl Esekf {
             // khh is too big in x,y, k is really small overall
             // maybe a specific matmul only affects x,y because rest is small
             //
-            /*if i == -1 {
-                dbg!(&state_update, khh, h_avg, k_avg);
-            }*/
+            // if i == -1 {
+            //     dbg!(&state_update, khh, h_avg, k_avg);
+            // }
             dbg!(khh);
 
             // apply state update towards convergence
@@ -256,16 +256,16 @@ impl Esekf {
                 .all(|x| x.iter().all(|y| y.abs() <= CONVERGE_EPSILON));
 
             // check if all converged, go through all and print with index which one is not converged
-            /*converge = true;
-            for x in state_update.column_iter() {
-                for (idx, y) in x.iter().enumerate() {
-                    if y.abs() > CONVERGE_EPSILON {
-                        dbg!(state_index_to_reason(idx), &self.cov.diagonal(), t);
-                        converge = false;
-                        break;
-                    }
-                }
-            }*/
+            // converge = true;
+            // for x in state_update.column_iter() {
+            //     for (idx, y) in x.iter().enumerate() {
+            //         if y.abs() > CONVERGE_EPSILON {
+            //             dbg!(state_index_to_reason(idx), &self.cov.diagonal(), t);
+            //             converge = false;
+            //             break;
+            //         }
+            //     }
+            // }
 
             if converge {
                 t += 1;
