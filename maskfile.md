@@ -7,7 +7,7 @@ Quick commands usually needed for developing Pelorus.
 > Start with development flags and debug info
 
 ~~~sh
-RUST_LOG=debug,lighthouse=off,sea=off,h2=off,hyper_util=off,re_sdk=off,re_chunk=off,tower=off,ratpub=off cargo run -- run
+RUST_LOG=debug,lighthouse=off,sea=off,h2=off,hyper_util=off,re_sdk=off,re_chunk=off,tower=off,ratpub=off,tonic=off,tonic_web=off cargo run --release -- run
 ~~~
 <!-- RUST_LOG=debug,lighthouse=off,sea=off,h2=off,hyper_util=off,re_sdk=off,re_chunk=off,tower=off,ratpub=off cargo run --no-default-features --features dev -- run -->
 

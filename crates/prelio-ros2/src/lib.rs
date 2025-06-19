@@ -253,21 +253,21 @@ fn cloud_callback(
     }
     #[cfg(feature = "rerun")]
     let rec = { state.lock().unwrap().rec.clone() };
-    #[cfg(debug_assertions)]
-    {
-        #[cfg(feature = "rerun")]
-        {
-            let points = in_msg.clone();
-            let points = points
-                .try_into_iter()
-                .unwrap()
-                .map(|p: PointXYZ| glam::Vec3::new(p.x, p.y, p.z));
+    // #[cfg(debug_assertions)]
+    // {
+    //     #[cfg(feature = "rerun")]
+    //     {
+    //         let points = in_msg.clone();
+    //         let points = points
+    //             .try_into_iter()
+    //             .unwrap()
+    //             .map(|p: PointXYZ| glam::Vec3::new(p.x, p.y, p.z));
 
-            if let Err(err) = rec.log("world/lidar/input", &rerun::Points3D::new(points)) {
-                error!("Error sending to rerun {err}");
-            }
-        }
-    }
+    //         if let Err(err) = rec.log("world/lidar/input", &rerun::Points3D::new(points)) {
+    //             error!("Error sending to rerun {err}");
+    //         }
+    //     }
+    // }
 
     {
         let (imu_tf, sensor_tf) = {
@@ -664,12 +664,19 @@ impl LifisNode {
         // Share with cloud callback, TODO maybe the only one who needs it, so remove mutex and arc?
         let state = Arc::new(std::sync::Mutex::new(state));
 
+        #[cfg(not(feature = "no-imu-sync"))]
+        let imu_init_time_counter = Arc::new(Mutex::new(None));
+        #[cfg(not(feature = "no-imu-sync"))]
+        let imu_init_buffer = Arc::new(Mutex::new(Some(Vec::new())));
+
         #[cfg(any(feature = "ros2-client", feature = "ratpub", feature = "r2r"))]
         let tf_listener_clone = tf_listener.clone();
         #[cfg(any(feature = "ros2-client", feature = "ratpub", feature = "r2r"))]
         let state_clone = state.clone();
         #[cfg(any(feature = "ros2-client", feature = "ratpub", feature = "r2r"))]
         let imu_tf_frame_lidar_inner = Arc::clone(&imu_tf_frame);
+        #[cfg(not(feature = "no-imu-sync"))]
+        let lidar_imu_init_buffer = imu_init_buffer.clone();
         #[cfg(feature = "ros2-client")]
         std::thread::spawn(move || {
             loop {
@@ -732,6 +739,13 @@ impl LifisNode {
             std::thread::spawn(move || {
                 cloud_sub_rt.block_on(async {
                     while let Some(msg) = cloud_subscriber.next().await {
+                        #[cfg(not(feature = "no-imu-sync"))]
+                        {
+                            let b = lidar_imu_init_buffer.lock().unwrap();
+                            if b.is_some() {
+                                continue;
+                            }
+                        }
                         debug!("received cloud");
                         let imu_tf_frame_lidar_inner =
                             imu_tf_frame_lidar_inner.clone().lock().unwrap().clone();
@@ -811,10 +825,6 @@ impl LifisNode {
             )?)))
         };
 
-        #[cfg(not(feature = "no-imu-sync"))]
-        let imu_init_time_counter = Arc::new(Mutex::new(None));
-        #[cfg(not(feature = "no-imu-sync"))]
-        let imu_init_buffer = Arc::new(Mutex::new(Some(Vec::new())));
         let imu_tf_frame_lidar_inner = Arc::clone(&imu_tf_frame);
         let init_imu_time = node_params.imu_predictor_init_time_sec;
         #[cfg(feature = "ros2-client")]
@@ -892,6 +902,7 @@ impl LifisNode {
                     .unwrap()
             });
 
+            let imu_imu_init_buffer = imu_init_buffer.clone();
             std::thread::spawn(move || {
                 let imu_pose_predictor_init = imu_pose_predictor_init.clone();
                 imu_sub_rt.block_on(async {
@@ -905,7 +916,7 @@ impl LifisNode {
                                 .get_or_insert(msg.header.frame_id.clone());
                         }
                         let imu_init_time_counter = imu_init_time_counter.clone();
-                        let imu_init_buffer = imu_init_buffer.clone();
+                        let imu_init_buffer = imu_imu_init_buffer.clone();
 
                         let imu_lifis = imu_to_lifis(msg.clone());
                         let curr_stamp = timestamp_to_secs(&imu_lifis.stamp);

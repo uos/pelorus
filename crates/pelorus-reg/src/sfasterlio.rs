@@ -303,6 +303,8 @@ impl crate::Registration for SFasterLio {
                         neighbors = vec![PointXYZ::default(); cloud.len() * k];
                     }
 
+                    let start = std::time::Instant::now();
+
                     let planes: Vec<PointXYZINormal> = cloud
                         .iter()
                         .enumerate()
@@ -359,6 +361,8 @@ impl crate::Registration for SFasterLio {
                             ))
                         })
                         .collect::<Vec<_>>();
+
+                    println!("neihgbor fitting: {:?}", start.elapsed());
 
                     // put neighbors back
                     neighbors_cloud_in_ekf.lock().unwrap().replace(neighbors);

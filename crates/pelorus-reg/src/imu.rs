@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::sophus_ekf::Esekf;
 
-const MAX_INI_COUNT: usize = 100;
+// const MAX_INI_COUNT: usize = 100; # unused, using time instead
 const COV_IMU_RAW_DEFAULT: f64 = 0.001;
 const COV_IMU_BIAS_DEFAULT: f64 = 0.0001;
 
@@ -221,9 +221,9 @@ impl ImuProcessing {
         ekf.cov[(1, 1)] = 1.0;
         ekf.cov[(2, 2)] = 1.0;
 
-        ekf.cov[(3, 3)] = COV2; // rot
-        ekf.cov[(4, 4)] = COV2;
-        ekf.cov[(5, 5)] = COV2;
+        ekf.cov[(3, 3)] = 1.0; // rot
+        ekf.cov[(4, 4)] = 1.0;
+        ekf.cov[(5, 5)] = 1.0;
 
         ekf.cov[(6, 6)] = COV1; // offset_r_l_i
         ekf.cov[(7, 7)] = COV1;
@@ -330,11 +330,8 @@ impl ImuProcessing {
                 / mean_acc;
 
             let dt = if head_stamp < last_cloud_end_time {
-                dbg!(tail_stamp, last_cloud_end_time);
-
                 tail_stamp - last_cloud_end_time
             } else {
-                dbg!(tail_stamp, head_stamp);
                 tail_stamp - head_stamp
             };
 
@@ -371,6 +368,7 @@ impl ImuProcessing {
         let angvel_avr = [angvel_avr_x, angvel_avr_y, angvel_avr_z];
         let _ = self.predict(ekf, avr_x, angvel_avr, dt);
         self.imu_state = ekf.state.clone();
+        // dbg!(&self.imu_state.vel);
 
         let mut out_cloud = vec![crate::PointXYZ::default(); cloud.len()];
 
