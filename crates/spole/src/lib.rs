@@ -24,6 +24,8 @@ pub struct IVoxHashMap {
     buffer_init_full: bool,
     #[cfg(feature = "nn_kdt")]
     kd_map: kiddo::float::kdtree::KdTree<f32, u64, 3, 64, u32>,
+    #[cfg(not(feature = "nn_kdt"))]
+    points: Vec<PointXYZ>,
     #[cfg(feature = "nn_kdt")]
     kd_points: VecDeque<Arc<(u64, PointXYZ)>>,
     #[cfg(feature = "nn_kdt")]
@@ -110,8 +112,12 @@ impl IVoxHashMap {
             buffer_init_full: false,
             #[cfg(feature = "nn_kdt")]
             kd_map: kiddo::float::kdtree::KdTree::<f32, u64, 3, 64, u32>::with_capacity(capacity),
+            #[cfg(feature = "nn_kdt")]
             kd_points: VecDeque::with_capacity(capacity),
+            #[cfg(feature = "nn_kdt")]
             kd_points_lookup: HashMap::new(),
+            #[cfg(not(feature = "nn_kdt"))]
+            points: Vec::with_capacity(capacity),
         }
     }
 
@@ -210,8 +216,8 @@ impl IVoxHashMap {
         #[cfg(not(feature = "nn_kdt"))]
         {
             let hashes = dashmap::DashMap::new(); // TODO try out ahash
-            self.map.par_iter().for_each(|point| {
-                let hash = hash(&point.xyz_f32(), 0.50);
+            self.points.par_iter().for_each(|point| {
+                let hash = Self::hash(&point.xyz_f32(), 0.50);
                 if !hashes.contains_key(&hash) {
                     hashes.insert(hash, Vec::with_capacity(10));
                 }
@@ -222,7 +228,7 @@ impl IVoxHashMap {
             });
 
             points.into_iter().for_each(|point| {
-                let hash = hash(&point.xyz_f32(), 0.50);
+                let hash = Self::hash(&point.xyz_f32(), 0.50);
                 if !hashes.contains_key(&hash) {
                     hashes.insert(hash, Vec::with_capacity(10));
                 }
@@ -262,8 +268,8 @@ impl IVoxHashMap {
                 })
                 .collect::<Vec<PointXYZ>>();
 
-            self.map.clear();
-            self.map.extend(out);
+            self.points.clear();
+            self.points.extend(out);
         }
     }
 

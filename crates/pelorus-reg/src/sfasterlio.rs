@@ -407,12 +407,17 @@ impl crate::Registration for SFasterLio {
                             let norm =
                                 Vector3::new(nearest_plane[0], nearest_plane[1], nearest_plane[2]);
 
-                            let c = ekf_state.rot.matrix().conjugate() * norm;
+                            // Jacobian w.r.t extrinsic translation
+                            let c = ekf_state.rot.matrix().transpose() * norm;
+
+                            // Jacobian w.r.t IMU rotation
                             let a = point_crossmat * c;
 
                             if extrinsic_estimation {
-                                let b = point_crossmat * (ekf_state.rot.matrix().conjugate() * c);
+                                // Jacobian w.r.t extrinsic rotation
+                                let b = point_crossmat * (ekf_state.rot.matrix().transpose() * c);
 
+                                // Position Jacobian
                                 h_x_row[0] = norm.x;
                                 h_x_row[1] = norm.y;
                                 h_x_row[2] = norm.z;
@@ -429,6 +434,7 @@ impl crate::Registration for SFasterLio {
                                 h_x_row[10] = c.y;
                                 h_x_row[11] = c.z;
                             } else {
+                                // Position Jacobian
                                 h_x_row[0] = norm.x;
                                 h_x_row[1] = norm.y;
                                 h_x_row[2] = norm.z;
