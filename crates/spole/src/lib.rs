@@ -149,41 +149,62 @@ impl IVoxHashMap {
 
         #[cfg(feature = "nn_kdt")]
         {
-            // check if any point is closer than 25cm, if not, add to tree
-            let f = points
-                .into_iter() // TODO as par iter
-                .filter(|point| {
-                    let closest = self.kd_map.nearest_n_within::<SquaredEuclidean>(
-                        &[point.x, point.y, point.z],
-                        self.resolution as f32,
-                        std::num::NonZero::new(1).unwrap(),
-                        false,
-                    );
+            if self.scan_number == 1 {
+                points.into_iter().for_each(|point| {
+                    if self
+                        .kd_map
+                        .nearest_n_within::<SquaredEuclidean>(
+                            &[point.x, point.y, point.z],
+                            (self.resolution * self.resolution) as f32,
+                            std::num::NonZero::new(1).unwrap(),
+                            false,
+                        )
+                        .is_empty()
+                    {
+                        self.pt_id += 1;
+                        self.kd_map.add(&[point.x, point.y, point.z], self.pt_id);
+                        let p = Arc::new((self.pt_id, point));
+                        self.kd_points.push_front(p.clone());
+                        self.kd_points_lookup.insert(self.pt_id, p.clone());
+                    }
+                });
+            } else {
+                // check if any point is closer than 25cm, if not, add to tree
+                let f = points
+                    .into_iter() // TODO as par iter
+                    .filter(|point| {
+                        self.kd_map
+                            .nearest_n_within::<SquaredEuclidean>(
+                                &[point.x, point.y, point.z],
+                                (self.resolution * self.resolution) as f32,
+                                std::num::NonZero::new(1).unwrap(),
+                                false,
+                            )
+                            .is_empty()
+                    })
+                    .collect::<Vec<_>>();
 
-                    closest.is_empty()
-                })
-                .collect::<Vec<_>>();
-
-            const max_map_size: usize = 500_000;
-            let cur_len = self.kd_points.len();
-            let new_len = cur_len + f.len();
-            let target_len = max_map_size - f.len();
-            if new_len > max_map_size {
-                while self.kd_points.len() >= target_len {
-                    if let Some(rc) = self.kd_points.pop_back() {
-                        self.kd_map.remove(&[rc.1.x, rc.1.y, rc.1.z], rc.0);
-                        self.kd_points_lookup.remove(&rc.0);
+                const max_map_size: usize = 500_000;
+                let cur_len = self.kd_points.len();
+                let new_len = cur_len + f.len();
+                let target_len = max_map_size - f.len();
+                if new_len > max_map_size {
+                    while self.kd_points.len() >= target_len {
+                        if let Some(rc) = self.kd_points.pop_back() {
+                            self.kd_map.remove(&[rc.1.x, rc.1.y, rc.1.z], rc.0);
+                            self.kd_points_lookup.remove(&rc.0);
+                        }
                     }
                 }
-            }
 
-            f.into_iter().for_each(|point| {
-                self.pt_id += 1;
-                self.kd_map.add(&[point.x, point.y, point.z], self.pt_id);
-                let p = Arc::new((self.pt_id, point));
-                self.kd_points.push_front(p.clone());
-                self.kd_points_lookup.insert(self.pt_id, p.clone());
-            });
+                f.into_iter().for_each(|point| {
+                    self.pt_id += 1;
+                    self.kd_map.add(&[point.x, point.y, point.z], self.pt_id);
+                    let p = Arc::new((self.pt_id, point));
+                    self.kd_points.push_front(p.clone());
+                    self.kd_points_lookup.insert(self.pt_id, p.clone());
+                });
+            }
         }
 
         #[cfg(not(feature = "nn_kdt"))]
@@ -312,9 +333,9 @@ impl IVoxHashMap {
                 return false;
             }
 
-            let mut neighbors = self.kd_map.nearest_n_within::<SquaredEuclidean>(
+            let neighbors = self.kd_map.nearest_n_within::<SquaredEuclidean>(
                 &[query.x, query.y, query.z],
-                max_range as f32,
+                (max_range * max_range) as f32,
                 std::num::NonZeroUsize::new(k).unwrap(),
                 true,
             );

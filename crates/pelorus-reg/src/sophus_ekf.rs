@@ -166,8 +166,6 @@ impl Esekf {
         let mut f_x = df_dx(&self.state, i_in);
         let f_w = df_dw(&self.state, i_in);
 
-        //dbg!(&q.diagonal());
-
         // state update
         self.state = box_plus(&self.state, &(f * dt));
         f_x = SMatrix::<f64, 24, 24>::identity() + f_x * dt;

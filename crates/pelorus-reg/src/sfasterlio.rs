@@ -211,6 +211,7 @@ impl crate::Registration for SFasterLio {
         cloud: &[prelio::PointXYZT],
         lidar_vendor: Option<prelio::LidarVendor>,
     ) -> Vec<PointXYZ> {
+        // cloud.iter().map(|p| PointXYZ::new(p.x, p.y, p.z)).collect() // bypass
         self.imu_processing.undistort(
             &mut self.ekf,
             imu_msgs,
@@ -286,6 +287,7 @@ impl crate::Registration for SFasterLio {
                       h_x: &mut DMatrix<f64>,
                       extrinsic_estimation| {
                     // todo init optional, else ekf
+                    // Initial guess from ekf state from last prediciton in undistort
                     let rot = Rotation3::from_matrix(&ekf_state.rot.matrix());
                     let quat = UnitQuaternion::from_rotation_matrix(&rot);
                     let initial_guess = Isometry3::from_parts(ekf_state.pos.into(), quat);
