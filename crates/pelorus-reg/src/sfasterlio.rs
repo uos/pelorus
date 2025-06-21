@@ -248,6 +248,7 @@ impl crate::Registration for SFasterLio {
     fn register_and_map(
         &mut self,
         data: crate::Mode,
+        ready_for_next: Option<&std::sync::mpsc::Sender<()>>,
     ) -> anyhow::Result<crate::CloudRegisterResult> {
         #[allow(unused_variables)]
         let cloud = match data {
@@ -286,7 +287,6 @@ impl crate::Registration for SFasterLio {
                       h: &mut DVector<f64>,
                       h_x: &mut DMatrix<f64>,
                       extrinsic_estimation| {
-                    // todo init optional, else ekf
                     // Initial guess from ekf state from last prediciton in undistort
                     let rot = Rotation3::from_matrix(&ekf_state.rot.matrix());
                     let quat = UnitQuaternion::from_rotation_matrix(&rot);
@@ -304,8 +304,6 @@ impl crate::Registration for SFasterLio {
                     if neighbors.len() < cloud.len() * k {
                         neighbors = vec![PointXYZ::default(); cloud.len() * k];
                     }
-
-                    let start = std::time::Instant::now();
 
                     let planes: Vec<PointXYZINormal> = cloud
                         .iter()
@@ -363,8 +361,6 @@ impl crate::Registration for SFasterLio {
                             ))
                         })
                         .collect::<Vec<_>>();
-
-                    println!("neihgbor fitting: {:?}", start.elapsed());
 
                     // put neighbors back
                     neighbors_cloud_in_ekf.lock().unwrap().replace(neighbors);
@@ -469,6 +465,12 @@ impl crate::Registration for SFasterLio {
                 &self.ekf.state.rot.matrix(),
             )),
         );
+
+        // Signal Prelio it can use the ekf again
+        ready_for_next
+            .expect("we need ready_for_next!")
+            .send(())
+            .unwrap();
 
         //let start_stamp = std::time::Instant::now();
         self.add_to_map(&cloud, global_pose);

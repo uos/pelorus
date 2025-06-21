@@ -61,7 +61,7 @@ use prelio_ros2::{prelio::config::LifisParameters, LifisNodeParameters, Qos, Rel
 use rand::Rng;
 
 use pelorus_reg::{sfasterlio::SFasterLio, CloudRegisterResult, Registration};
-use prelio_ros2::{prelio::imu::ImuMsg, LifisNode};
+use prelio_ros2::{prelio::imu::ImuMsg, PrelioNode};
 use ros_pointcloud2::prelude::*;
 //use small_gicp_sys::*;
 use std::sync::{Arc, Mutex};
@@ -280,7 +280,8 @@ fn lio(config_path: &str) -> Result<(), Box<dyn std::error::Error>> {
 
     let lidar_vendor = config.prelio_params.lidar_vendor.clone();
 
-    let (_lifis_node, synced_rx) = LifisNode::new(
+    let (ready_for_next_tx, ready_for_next_rx) = std::sync::mpsc::channel();
+    let (_lifis_node, synced_rx) = PrelioNode::new(
         #[cfg(not(feature = "ratpub"))]
         &mut node,
         #[cfg(feature = "ratpub")]
@@ -364,6 +365,10 @@ fn lio(config_path: &str) -> Result<(), Box<dyn std::error::Error>> {
         None,
         #[cfg(feature = "rerun")]
         Arc::clone(&rec),
+        #[cfg(feature = "gicp")]
+        None,
+        #[cfg(not(feature = "gicp"))]
+        Some(ready_for_next_rx),
     )?;
 
     #[cfg(feature = "ros2-client")]
@@ -532,7 +537,7 @@ fn lio(config_path: &str) -> Result<(), Box<dyn std::error::Error>> {
     imu_path.header.frame_id = config.prelio_params.map_frame.clone();
 
     let mut last_scan_time = None;
-    let mut total_viz_marker = 0;
+    // let mut total_viz_marker = 0;
 
     //let mut avg_iterations = 0.0;
     //let mut iteration_updates = 0;
@@ -552,6 +557,10 @@ fn lio(config_path: &str) -> Result<(), Box<dyn std::error::Error>> {
 
     std::thread::spawn(move || {
         let mut first_scan = true;
+
+        // Initialize Prelio prediction
+        ready_for_next_tx.send(()).unwrap();
+
         while let Ok(lifis_tick) = synced_rx.recv() {
             #[cfg(feature = "rat")]
             rat::bacon::<u8>("synced", &mut 0, rat::VariableType::U8).unwrap();
@@ -634,7 +643,7 @@ fn lio(config_path: &str) -> Result<(), Box<dyn std::error::Error>> {
                     initial_guess: init_guess_world,
                 };
                 #[cfg(not(feature = "gicp"))]
-                match map.register_and_map(mode) {
+                match map.register_and_map(mode, Some(&ready_for_next_tx)) {
                     Ok(pose) => pose,
                     Err(err) => {
                         eval.stop("reg").unwrap();

@@ -257,6 +257,7 @@ fn hash(point: &Point3<f32>, voxel_size: f32) -> i32 {
     hash
 }
 
+// TODO faster with sorting
 fn filter_downsample<const N: usize, P: PointXYZITimestamp<N>>(
     cloud: PointCloud2Msg,
     lifis_params: &config::LifisParameters,
@@ -419,7 +420,7 @@ pub enum MadgwickSetting {
     Disable,
 }
 
-pub struct Lifis {
+pub struct Prelio {
     preproc_sender: std::sync::mpsc::Sender<PointCloud2Msg>,
     imu_sender: std::sync::mpsc::Sender<ImuMsg>,
     synced_receiver: Option<std::sync::mpsc::Receiver<LifisProcessedCloud>>,
@@ -431,7 +432,7 @@ pub struct Lifis {
     madgwick_filter: MadgwickSetting,
 }
 
-impl Lifis {
+impl Prelio {
     pub fn create<const N: usize, P: PointXYZITimestamp<N>>(
         gravity: f64,
         madgwick_filter: MadgwickSetting,
@@ -440,6 +441,7 @@ impl Lifis {
         imu_pose_prediction_undistort: Option<Box<ImuPredictorUndistort>>,
         imu_pose_prediction_init_guess: Option<Box<ImuPredictor>>,
         lidar_vendor: Option<LidarVendor>,
+        ready_for_next: Option<std::sync::mpsc::Receiver<()>>,
     ) -> anyhow::Result<Self> {
         let imu_intrinsic_calibration = match imu_intrinsic_calibration_params
             .imu_intrinsics_calib_file_path
@@ -463,6 +465,7 @@ impl Lifis {
         let (synced_cloud_imu_tx, synced_cloud_imu_rx) = std::sync::mpsc::channel();
 
         // sync and imu integration worker
+        // TODO move to main processing, since else predict and correct is async
         let intrinsic_given = imu_intrinsic_calibration.is_some();
         let undistort_params = params.undistort.clone();
         thread::spawn(move || {
@@ -487,6 +490,7 @@ impl Lifis {
                 imu_pose_prediction_undistort,
                 imu_pose_prediction_init_guess,
                 lidar_vendor.clone(),
+                ready_for_next,
             )
         });
 
@@ -510,7 +514,7 @@ impl Lifis {
             }
         });
 
-        Ok(Lifis {
+        Ok(Prelio {
             imu_sender: imu_tx,
             synced_receiver: Some(synced_cloud_imu_rx),
             preproc_sender: preproc_tx,
@@ -591,7 +595,7 @@ impl Lifis {
             gyro = calibrated.angular_velocity.clone();
         }
 
-        // madgwick filter for global orientation
+        // Madgwick filter for global orientation
         match self.madgwick_filter {
             MadgwickSetting::CreateOrientationOnly => {
                 self.imu_filter_fusion
@@ -612,7 +616,7 @@ impl Lifis {
                 let filtered_acc = self.imu_filter_fusion.get_linear_acceleration_ros();
                 imu.orientation = self.imu_filter_fusion.get_quaternion();
 
-                // update imu message
+                // Update imu message
                 imu.linear_acceleration[0] = filtered_acc[0];
                 imu.linear_acceleration[1] = filtered_acc[1];
                 imu.linear_acceleration[2] = filtered_acc[2];
@@ -620,7 +624,7 @@ impl Lifis {
             MadgwickSetting::Disable => {}
         }
 
-        // add to buffer
+        // Add to buffer
         let imu_data = imu.clone();
         match self.imu_sender.send(imu_data) {
             Ok(_) => {}
@@ -634,8 +638,8 @@ impl Lifis {
         Some(imu)
     }
 
-    // syncs lidar and imu data by using the timestamps from the headers and timestamps in the lidar message.
-    // a lidar message is therefore mapped to multiple imu messages that happened in between the previous end stamp and end stamp of the last point in the lidar message.
+    /// Syncs lidar and imu data by using the timestamps from the headers and timestamps in the lidar message.
+    /// A lidar message is therefore mapped to multiple imu messages that happened in between the previous end stamp and end stamp of the last point in the lidar message.
     pub fn sync_lidar_imu_worker(
         prev_lidar_end_time: &mut f64,
         gravity: f64,
@@ -648,13 +652,15 @@ impl Lifis {
         imu_pose_prediction_undistort: Option<Box<ImuPredictorUndistort>>,
         imu_pose_prediction_init_guess: Option<Box<ImuPredictor>>,
         lidar_vendor: Option<LidarVendor>,
+        ready_for_next: Option<std::sync::mpsc::Receiver<()>>,
     ) {
         let mut to_next: Option<ImuMsg> = None;
         while let Ok((cloud, lidar_begin_time, lidar_end_time, lidar_header)) =
             lidar_receiver.recv()
         {
             let lidar_time = timestamp_to_secs(&lidar_header.stamp);
-            // handle relative vs absolute timestamps
+
+            // Handle relative vs absolute timestamps
             let (lidar_begin_time, imu_span_end_time) =
                 if matches!(lidar_vendor, Some(LidarVendor::Robosense)) {
                     (lidar_begin_time, lidar_end_time)
@@ -664,6 +670,7 @@ impl Lifis {
 
             debug!("Lidar received");
 
+            // Use 0 as start if there was no last lidar frame which we can use as start for our time range
             let imu_span_start_time = if *prev_lidar_end_time > 0.0 {
                 *prev_lidar_end_time
             } else {
@@ -672,6 +679,7 @@ impl Lifis {
 
             let mut imu_data = Vec::with_capacity(100);
 
+            // Get last IMU message that was destructively taken
             if let Some(last_imu_extra) = to_next.take() {
                 let imu_time = timestamp_to_secs(&last_imu_extra.stamp);
                 if imu_time > imu_span_start_time && imu_time < imu_span_end_time {
@@ -679,19 +687,25 @@ impl Lifis {
                 }
             }
 
+            // Populate IMU with buffered
             if let Some(imu_receiver) = imu_receiver.as_ref() {
                 loop {
-                    // info!("waiting for more imu");
                     match imu_receiver.recv() {
                         Ok(imu) => {
                             let imu_time = timestamp_to_secs(&imu.stamp);
+
+                            // Too early
                             if imu_time < imu_span_start_time {
+                                warn!("IMU msg skipped");
                                 continue;
                             }
+
+                            // Too late
                             if imu_time > imu_span_end_time {
                                 to_next = Some(imu);
                                 break;
                             }
+
                             imu_data.push(imu);
                         }
                         Err(e) => {
@@ -702,12 +716,12 @@ impl Lifis {
                 }
 
                 if imu_data.is_empty() {
-                    // warn!("No imu data in span");
+                    warn!("No imu data in span");
                     continue;
                 }
             }
 
-            // sort imu buffer with timestamp to ensure correct order
+            // Sort IMU buffer with timestamp to ensure correct order (handles out-of-order publishing from ROS)
             imu_data.sort_by(|a, b| {
                 timestamp_to_secs(&a.stamp)
                     .partial_cmp(&timestamp_to_secs(&b.stamp))
@@ -726,7 +740,7 @@ impl Lifis {
             };
 
             if meas.imu_buffer.is_empty() {
-                // Passthrough
+                // Passthrough when lidar only
                 let cloud = meas
                     .cloud
                     .into_iter()
@@ -749,6 +763,12 @@ impl Lifis {
 
                 synced_sender.send(res).unwrap();
             } else {
+                // Waiting for sync signal. Needed for cases where undistortion uses an EKF state that predicts forward and the correction must be made first before predicting further.
+                if let Some(wait_for_next) = ready_for_next.as_ref() {
+                    let _ = wait_for_next.recv().unwrap();
+                }
+
+                // Deskewing cloud with synced data
                 if let Some(imu_cloud) =
                     imu_process.process(meas, undistort_parameters, &imu_pose_prediction_undistort)
                 {

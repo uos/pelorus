@@ -166,11 +166,11 @@ impl Esekf {
         let mut f_x = df_dx(&self.state, i_in);
         let f_w = df_dw(&self.state, i_in);
 
-        // state update
+        // State update
         self.state = box_plus(&self.state, &(f * dt));
         f_x = SMatrix::<f64, 24, 24>::identity() + f_x * dt;
 
-        // cov update
+        // Cov update (we get less secure about our state after prediction without correction)
         let dt_fw = dt * f_w;
         self.cov = f_x * self.cov * f_x.transpose() + dt_fw * q * dt_fw.transpose();
     }
@@ -202,7 +202,7 @@ impl Esekf {
             );
 
             if !valid {
-                dbg!("not valid");
+                // dbg!("not valid");
                 continue; // TODO could also break here since no change is made to the state
             }
 
@@ -244,7 +244,7 @@ impl Esekf {
             // if i == -1 {
             //     dbg!(&state_update, khh, h_avg, k_avg);
             // }
-            dbg!(khh);
+            // dbg!(khh);
 
             // apply state update towards convergence
             self.state = box_plus(&self.state, &state_update);
@@ -269,7 +269,7 @@ impl Esekf {
                 t += 1;
             }
 
-            dbg!(t, i);
+            // dbg!(t, i);
 
             // never converged
             if t == 0 {
@@ -281,7 +281,7 @@ impl Esekf {
                 // reduce covariance of our state after some converged iterations using the certainty of the last iteration
                 if t >= 1 || i == max_iter - 1 {
                     self.cov = (SMatrix::<f64, 24, 24>::identity() - kh) * self.cov;
-                    dbg!(&self.cov.diagonal(), i);
+                    // dbg!(&self.cov.diagonal(), i);
                     return;
                 }
             }

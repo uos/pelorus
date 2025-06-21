@@ -159,7 +159,7 @@ pub struct State {
     pub sensor_tf: Option<nalgebra::geometry::Isometry3<f32>>,
     pub imu_tf: Option<nalgebra::geometry::Isometry3<f64>>,
 
-    pub lifis: Arc<Mutex<prelio::Lifis>>,
+    pub lifis: Arc<Mutex<prelio::Prelio>>,
     pub lifis_params: LifisParameters,
     take_nth_scan: usize,
     pub lidar_vendor: prelio::LidarVendor,
@@ -173,6 +173,7 @@ impl State {
         imu_pose_prediction_undistort: Option<Box<prelio::ImuPredictorUndistort>>,
         imu_pose_prediction_init_guess: Option<Box<prelio::ImuPredictor>>,
         #[cfg(feature = "rerun")] rec: Arc<rerun::RecordingStream>,
+        ready_for_next: Option<std::sync::mpsc::Receiver<()>>,
     ) -> anyhow::Result<Self> {
         Ok(State {
             #[cfg(feature = "rerun")]
@@ -182,7 +183,7 @@ impl State {
             imu_tf: None,
             lifis: match config.lidar_vendor {
                 prelio::LidarVendor::Velodyne => {
-                    Arc::new(Mutex::new(prelio::Lifis::create::<5, VelodynePoint>(
+                    Arc::new(Mutex::new(prelio::Prelio::create::<5, VelodynePoint>(
                         config.imu.gravity,
                         config.imu.madgwick_setting,
                         &config.imu.calibration,
@@ -190,10 +191,11 @@ impl State {
                         imu_pose_prediction_undistort,
                         imu_pose_prediction_init_guess,
                         Some(config.lidar_vendor),
+                        ready_for_next,
                     )?))
                 }
                 prelio::LidarVendor::Robosense => {
-                    Arc::new(Mutex::new(prelio::Lifis::create::<6, RobosensePoint>(
+                    Arc::new(Mutex::new(prelio::Prelio::create::<6, RobosensePoint>(
                         config.imu.gravity,
                         config.imu.madgwick_setting,
                         &config.imu.calibration,
@@ -201,10 +203,11 @@ impl State {
                         imu_pose_prediction_undistort,
                         imu_pose_prediction_init_guess,
                         Some(config.lidar_vendor),
+                        ready_for_next,
                     )?))
                 }
                 prelio::LidarVendor::Ouster => {
-                    Arc::new(Mutex::new(prelio::Lifis::create::<4, OusterPoint>(
+                    Arc::new(Mutex::new(prelio::Prelio::create::<4, OusterPoint>(
                         config.imu.gravity,
                         config.imu.madgwick_setting,
                         &config.imu.calibration,
@@ -212,10 +215,11 @@ impl State {
                         imu_pose_prediction_undistort,
                         imu_pose_prediction_init_guess,
                         Some(config.lidar_vendor),
+                        ready_for_next,
                     )?))
                 }
                 prelio::LidarVendor::Skip => {
-                    Arc::new(Mutex::new(prelio::Lifis::create::<3, SkipPoint>(
+                    Arc::new(Mutex::new(prelio::Prelio::create::<3, SkipPoint>(
                         config.imu.gravity,
                         config.imu.madgwick_setting,
                         &config.imu.calibration,
@@ -223,6 +227,7 @@ impl State {
                         imu_pose_prediction_undistort,
                         imu_pose_prediction_init_guess,
                         Some(config.lidar_vendor),
+                        ready_for_next,
                     )?))
                 }
             },
@@ -442,7 +447,7 @@ fn cloud_callback(
     Ok(())
 }
 
-pub struct LifisNode {
+pub struct PrelioNode {
     pub state: Arc<std::sync::Mutex<State>>,
     #[cfg(feature = "ros2-client")]
     pub tf_listener: Arc<tf::TfListener>,
@@ -552,7 +557,7 @@ impl Default for LifisNodeParameters {
 }
 
 #[derive(Debug)]
-pub struct LifisTick {
+pub struct Tick {
     pub deskewed_cloud: Vec<PointXYZ>,
     pub cloud_header: HeaderMsg,
     pub imu_odom: Odometry,
@@ -583,7 +588,7 @@ fn split_namespace_topic(input: &str) -> (String, String) {
     }
 }
 
-impl LifisNode {
+impl PrelioNode {
     pub fn new(
         #[cfg(feature = "ros2-client")] node: &mut ros2_client::Node,
         #[cfg(feature = "r2r")] node: &mut r2r::Node,
@@ -595,7 +600,8 @@ impl LifisNode {
         imu_pose_prediction_undistort: Option<Box<prelio::ImuPredictorUndistort>>,
         imu_pose_prediction_init_guess: Option<Box<prelio::ImuPredictor>>,
         #[cfg(feature = "rerun")] rec: Arc<rerun::RecordingStream>,
-    ) -> anyhow::Result<(Self, std::sync::mpsc::Receiver<LifisTick>)> {
+        ready_for_next: Option<std::sync::mpsc::Receiver<()>>,
+    ) -> anyhow::Result<(Self, std::sync::mpsc::Receiver<Tick>)> {
         #[cfg(feature = "ros2-client")]
         let tf_listener = Arc::new(tf::TfListener::new(node));
 
@@ -611,6 +617,7 @@ impl LifisNode {
             imu_pose_prediction_init_guess,
             #[cfg(feature = "rerun")]
             Arc::clone(&rec),
+            ready_for_next,
         )?;
 
         let (chan, imu_frame) = {
@@ -624,7 +631,7 @@ impl LifisNode {
         let (tx, rx) = std::sync::mpsc::channel();
 
         std::thread::spawn(move || {
-            Self::transform(tx, chan, &imu_frame);
+            Self::transform_types(tx, chan, &imu_frame);
         });
 
         // first option None = override not set.
@@ -1043,8 +1050,9 @@ impl LifisNode {
         ))
     }
 
-    pub fn transform(
-        sender: std::sync::mpsc::Sender<LifisTick>,
+    /// Translates ROS types to Prelio Types
+    pub fn transform_types(
+        sender: std::sync::mpsc::Sender<Tick>,
         receiver: std::sync::mpsc::Receiver<prelio::LifisProcessedCloud>,
         imu_frame: &String,
     ) {
@@ -1095,7 +1103,7 @@ impl LifisNode {
                 twist,
             };
 
-            let res = LifisTick {
+            let res = Tick {
                 deskewed_cloud: synced_data.cloud,
                 cloud_header: synced_data.header,
                 imu_odom: odom,
