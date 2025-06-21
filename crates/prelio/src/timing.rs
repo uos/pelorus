@@ -28,13 +28,13 @@ where
 
         self.buffer.push_back(new_value);
 
-        // fill the buffer (init)
+        // Fill the buffer (init)
         if self.buffer.len() <= self.window_size as usize {
             self.mean += new_value / self.window_size;
             return new_value;
         }
 
-        // calc mean and throw away head of queue
+        // Calc mean and throw away head of queue
         self.mean +=
             (*self.buffer.back().unwrap() - *self.buffer.front().unwrap()) / self.window_size;
         self.buffer.pop_front();
@@ -130,9 +130,9 @@ impl RuntimeEvaluator {
             if e.name == name {
                 found = true;
                 // since we are async most of the time, this can happen but it is not important enough to throw an error
-                /*if e.active {
-                    return Err(anyhow::anyhow!("Evaluation already active"));
-                }*/
+                // if e.active {
+                //     return Err(anyhow::anyhow!("Evaluation already active"));
+                // }
                 e.active = true;
                 e.accumulated_time = Duration::from_secs(0);
             }
@@ -157,10 +157,8 @@ impl RuntimeEvaluator {
         Err(anyhow::anyhow!("Evaluation not found"))
     }
 
-    /**
-     * Pauses the time measurements. The time that has past since the last resume is accumulated for every currently measured task.
-     * This method is called at the beginning of every public method.
-     */
+    /// Pauses the time measurements. The time that has past since the last resume is accumulated for every currently measured task.
+    /// This method is called at the beginning of every public method.
     fn pause(&mut self) {
         let stop = std::time::Instant::now();
         let duration = stop - self.start_time;
@@ -170,10 +168,8 @@ impl RuntimeEvaluator {
         }
     }
 
-    /**
-     * Resumes the time measurements by simply storing the current time so that it can be used at the next pause.
-     * This method is called at the end of every public method.
-     */
+    /// Resumes the time measurements by simply storing the current time so that it can be used at the next pause.
+    /// This method is called at the end of every public method.
     fn resume(&mut self) {
         self.start_time = std::time::Instant::now();
     }
@@ -184,9 +180,9 @@ impl RuntimeEvaluator {
         for e in self.evaluations.iter_mut() {
             if e.name == name {
                 // since we are async most of the time, this can happen but it is not important enough to throw an error
-                /*if !e.active {
-                    return Err(anyhow::anyhow!("Evaluation not active"));
-                }*/
+                // if !e.active {
+                //     return Err(anyhow::anyhow!("Evaluation not active"));
+                // }
 
                 let acc_time = e.accumulated_time;
                 e.active = false;

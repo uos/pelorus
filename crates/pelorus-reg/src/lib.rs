@@ -64,7 +64,11 @@ pub enum Mode {
 }
 
 pub trait Registration {
-    fn register_and_map(&mut self, data: Mode) -> Result<CloudRegisterResult>;
+    fn register_and_map(
+        &mut self,
+        data: Mode,
+        ready_for_next: Option<&std::sync::mpsc::Sender<()>>,
+    ) -> Result<CloudRegisterResult>;
     fn requested_register_and_map_cloud_type(&self) -> PointXYZLocatedBufferView;
 
     fn imu_ekf_predict(&mut self, acc: [f64; 3], gyro: [f64; 3], dt: f64) -> ImuEkfPrediction;
