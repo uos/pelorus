@@ -54,7 +54,7 @@ use ros2_interfaces_jazzy_rkyv::{
 use serde::{Deserialize, Serialize, ser::Error};
 use std::sync::{Arc, Mutex};
 
-#[derive(Debug, Clone, Default, PointConvertible)]
+#[derive(Debug, Clone, Default, PointConvertible, Copy)]
 pub struct SkipPoint {
     pub x: f32,
     pub y: f32,
@@ -83,7 +83,7 @@ impl SkipPoint {
     }
 }
 
-#[derive(Debug, Clone, Default, PointConvertible)]
+#[derive(Debug, Clone, Default, PointConvertible, Copy)]
 pub struct RobosensePoint {
     pub x: f32,
     pub y: f32,
@@ -107,7 +107,7 @@ impl prelio::PointXYZITimestamp<6> for RobosensePoint {
     }
 }
 
-#[derive(Debug, Clone, Default, PointConvertible)]
+#[derive(Debug, Clone, Default, PointConvertible, Copy)]
 pub struct VelodynePoint {
     pub x: f32,
     pub y: f32,
@@ -130,7 +130,7 @@ impl prelio::PointXYZITimestamp<5> for VelodynePoint {
     }
 }
 
-#[derive(Debug, Clone, Default, PointConvertible)]
+#[derive(Debug, Clone, Default, PointConvertible, Copy)]
 pub struct OusterPoint {
     pub x: f32,
     pub y: f32,
@@ -256,24 +256,6 @@ fn cloud_callback(
     if points_n == 0 {
         return Ok(());
     }
-    #[cfg(feature = "rerun")]
-    let rec = { state.lock().unwrap().rec.clone() };
-    // #[cfg(debug_assertions)]
-    // {
-    //     #[cfg(feature = "rerun")]
-    //     {
-    //         let points = in_msg.clone();
-    //         let points = points
-    //             .try_into_iter()
-    //             .unwrap()
-    //             .map(|p: PointXYZ| glam::Vec3::new(p.x, p.y, p.z));
-
-    //         if let Err(err) = rec.log("world/lidar/input", &rerun::Points3D::new(points)) {
-    //             error!("Error sending to rerun {err}");
-    //         }
-    //     }
-    // }
-
     {
         let (imu_tf, sensor_tf) = {
             let (imu_tf_override, global_zero_frame, _, sensor_tf) = {
@@ -561,7 +543,7 @@ pub struct Tick {
     pub deskewed_cloud: Vec<PointXYZ>,
     pub cloud_header: HeaderMsg,
     pub imu_odom: Odometry,
-    //pub runtime_eval: prelio::timing::RuntimeEvaluator,
+    pub runtime_eval: prelio::timing::RuntimeEvaluator,
 }
 
 #[cfg(feature = "ros2-client")]
@@ -1053,7 +1035,7 @@ impl PrelioNode {
     /// Translates ROS types to Prelio Types
     pub fn transform_types(
         sender: std::sync::mpsc::Sender<Tick>,
-        receiver: std::sync::mpsc::Receiver<prelio::LifisProcessedCloud>,
+        receiver: std::sync::mpsc::Receiver<prelio::PrelioProcessedCloud>,
         imu_frame: &String,
     ) {
         while let Ok(synced_data) = receiver.recv() {
@@ -1107,7 +1089,7 @@ impl PrelioNode {
                 deskewed_cloud: synced_data.cloud,
                 cloud_header: synced_data.header,
                 imu_odom: odom,
-                //runtime_eval: synced_data.runtime_eval,
+                runtime_eval: synced_data.runtime_eval,
             };
 
             sender.send(res).expect("could not send lifis tick");

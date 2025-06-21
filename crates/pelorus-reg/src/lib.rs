@@ -1,4 +1,5 @@
 use nalgebra::*;
+use prelio::timing::RuntimeEvaluator;
 use ros_pointcloud2::prelude::*;
 
 pub mod gicp;
@@ -9,7 +10,7 @@ pub mod sophus_ekf;
 use anyhow::Result;
 pub use spole::*;
 
-#[derive(Clone, Default, Debug, PartialEq)]
+#[derive(Clone, Default, Debug)]
 pub struct CloudRegisterResult {
     pub pose: Isometry3<f64>,
     pub avg_iterations: Option<u32>,
@@ -68,6 +69,7 @@ pub trait Registration {
         &mut self,
         data: Mode,
         ready_for_next: Option<&std::sync::mpsc::Sender<()>>,
+        eval: &mut RuntimeEvaluator,
     ) -> Result<CloudRegisterResult>;
     fn requested_register_and_map_cloud_type(&self) -> PointXYZLocatedBufferView;
 

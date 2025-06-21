@@ -24,7 +24,7 @@ use r2r::{
 #[cfg(feature = "ratpub")]
 use ratpub::Node;
 #[cfg(feature = "rerun")]
-use rerun::{demo_util::grid, external::glam, Archetype};
+use rerun::external::glam;
 #[cfg(feature = "ros2-client")]
 use ros2_client::{NodeName, NodeOptions};
 #[cfg(feature = "ros2-client")]
@@ -58,9 +58,8 @@ use prelio_ros2::tf_lh::TfBroadcaster;
 #[cfg(feature = "r2r")]
 use prelio_ros2::tf_r2r::TfBroadcaster;
 use prelio_ros2::{prelio::config::LifisParameters, LifisNodeParameters, Qos, Reliability};
-use rand::Rng;
 
-use pelorus_reg::{sfasterlio::SFasterLio, CloudRegisterResult, Registration};
+use pelorus_reg::{sfasterlio::SFasterLio, Registration};
 use prelio_ros2::{prelio::imu::ImuMsg, PrelioNode};
 use ros_pointcloud2::prelude::*;
 //use small_gicp_sys::*;
@@ -466,12 +465,12 @@ fn lio(config_path: &str) -> Result<(), Box<dyn std::error::Error>> {
 
     #[cfg(feature = "r2r")]
     let map_publisher = node.create_publisher::<PointCloud2>("map", QosProfile::default())?;
-    #[cfg(feature = "ratpub")]
-    let map_publisher = rt.block_on(async {
-        node.create_publisher::<PointCloud2>("map".to_owned())
-            .await
-            .unwrap()
-    });
+    // #[cfg(feature = "ratpub")]
+    // let map_publisher = rt.block_on(async {
+    //     node.create_publisher::<PointCloud2>("map".to_owned())
+    //         .await
+    //         .unwrap()
+    // });
     #[cfg(feature = "r2r")]
     let cloud_publisher =
         node.create_publisher::<PointCloud2>("registered", config.registered_cloud_qos.into())?;
@@ -556,6 +555,7 @@ fn lio(config_path: &str) -> Result<(), Box<dyn std::error::Error>> {
     let mut last_render = std::time::Instant::now();
 
     std::thread::spawn(move || {
+        #[cfg(feature = "gicp")]
         let mut first_scan = true;
 
         // Initialize Prelio prediction
@@ -565,8 +565,7 @@ fn lio(config_path: &str) -> Result<(), Box<dyn std::error::Error>> {
             #[cfg(feature = "rat")]
             rat::bacon::<u8>("synced", &mut 0, rat::VariableType::U8).unwrap();
 
-            eval.start("total").unwrap();
-            //eval.merge(&lifis_tick.runtime_eval);
+            eval.merge(&lifis_tick.runtime_eval);
 
             let cloud = lifis_tick.deskewed_cloud;
             let orig_frame = lifis_tick.cloud_header.frame_id.clone();
@@ -635,7 +634,6 @@ fn lio(config_path: &str) -> Result<(), Box<dyn std::error::Error>> {
 
             let init_guess_world = t_world_lidar * init_guess;
 
-            eval.start("reg").unwrap();
             let register_pose = {
                 let mut map = map.lock().unwrap();
                 let mode = pelorus_reg::Mode::ActiveRegistration {
@@ -643,10 +641,9 @@ fn lio(config_path: &str) -> Result<(), Box<dyn std::error::Error>> {
                     initial_guess: init_guess_world,
                 };
                 #[cfg(not(feature = "gicp"))]
-                match map.register_and_map(mode, Some(&ready_for_next_tx)) {
+                match map.register_and_map(mode, Some(&ready_for_next_tx), &mut eval) {
                     Ok(pose) => pose,
                     Err(err) => {
-                        eval.stop("reg").unwrap();
                         error!("{err}");
                         continue;
                     }
@@ -654,7 +651,9 @@ fn lio(config_path: &str) -> Result<(), Box<dyn std::error::Error>> {
                 #[cfg(feature = "gicp")]
                 {
                     if first_scan {
+                        eval.start("map update").unwrap();
                         map.add(&cloud, None);
+                        eval.stop("map update").unwrap();
                         first_scan = false;
 
                         CloudRegisterResult {
@@ -663,8 +662,12 @@ fn lio(config_path: &str) -> Result<(), Box<dyn std::error::Error>> {
                             registered_cloud: None,
                         }
                     } else {
+                        eval.start("reg").unwrap();
                         let res = map.register(&cloud, &init_guess_world);
+                        eval.stop("reg").unwrap();
+                        eval.start("map update").unwrap();
                         map.add(&cloud, Some(res.transform_target_to_source));
+                        eval.stop("map update").unwrap();
 
                         CloudRegisterResult {
                             pose: res.transform_target_to_source,
@@ -674,24 +677,12 @@ fn lio(config_path: &str) -> Result<(), Box<dyn std::error::Error>> {
                     }
                 }
             };
-            eval.stop("reg").unwrap();
 
             log::debug!("got a new registration");
-
-            //avg_iterations = register_pose.avg_iterations.unwrap_or(0) as f32;
-            /* (avg_iterations * iteration_updates as f64
-            + register_pose.num_iterations as f64)
-            / (iteration_updates as f64 + 1.0); */
-
-            //iteration_updates += 1;
 
             // Transformation from the last pose to the current pose in the local frame.
             t_last_current = t_world_lidar.inverse() * register_pose.pose;
             t_world_lidar = register_pose.pose;
-
-            /*eval.start("map_update").unwrap();
-            map.add(&cloud, Some(register_pose.pose));
-            eval.stop("map_update").unwrap();*/
 
             let mut lidar_odom = lifis_tick.imu_odom.clone();
             lidar_odom.header.frame_id = config.prelio_params.map_frame.clone();
@@ -744,8 +735,8 @@ fn lio(config_path: &str) -> Result<(), Box<dyn std::error::Error>> {
             };
 
             #[cfg(debug_assertions)]
+            #[cfg(all(not(feature = "gicp"), not(feature = "rerun")))]
             {
-                // TODO use rerun
                 if let Some(registered_normals) = register_pose.registered_cloud {
                     let random_color = {
                         let mut rng = rand::thread_rng();
@@ -757,21 +748,6 @@ fn lio(config_path: &str) -> Result<(), Box<dyn std::error::Error>> {
                         (v.x, v.y, v.z, a)
                     };
 
-                    // #[cfg(feature = "rerun")]
-                    // {
-                    //     let planes = registered_normals
-                    //         .iter()
-                    //         .map(|v| rerun::components::Plane3D::new(glam::Vec3::new(v.x as f32, v.y as f32, v.z as f32), v.n));
-
-                    //     let planes = rerun::components::Plane3D::new(normal, distance)
-                    //     if let Err(err) = rec.log(
-                    //         "reg_normals",
-                    //         &rerun::Points3D::new(points).with_colors(colors), // .with_radii([0.1]),
-                    //     ) {
-                    //         error!("Error sending to rerun {err}");
-                    //     }
-                    // }
-                    #[cfg(all(not(feature = "gicp"), not(feature = "rerun")))]
                     {
                         let mut marr = Marker::default();
                         marr.header = Header {
@@ -1080,8 +1056,6 @@ fn lio(config_path: &str) -> Result<(), Box<dyn std::error::Error>> {
                     error!("Error sending to rerun {err}");
                 }
             }
-
-            eval.stop("total").unwrap();
 
             #[cfg(feature = "gicp")]
             let name = "Lidar Odometry (GICP)";
