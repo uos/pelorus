@@ -4,6 +4,8 @@
 use std::sync::{Arc, Mutex};
 
 use nalgebra::*;
+use prelio::timing::RuntimeEvaluator;
+// use rayon::prelude::*;
 use ros_pointcloud2::points::{PointXYZ, PointXYZINormal};
 
 pub use spole::IVoxNearbyType;
@@ -249,6 +251,7 @@ impl crate::Registration for SFasterLio {
         &mut self,
         data: crate::Mode,
         ready_for_next: Option<&std::sync::mpsc::Sender<()>>,
+        eval: &mut RuntimeEvaluator,
     ) -> anyhow::Result<crate::CloudRegisterResult> {
         #[allow(unused_variables)]
         let cloud = match data {
@@ -269,6 +272,7 @@ impl crate::Registration for SFasterLio {
         let normal_cloud = Arc::new(Mutex::new(None));
         let neighbors = Arc::new(Mutex::new(None));
         let first_it = Arc::new(Mutex::new(true));
+        let eval_outer = std::sync::Arc::new(std::sync::RwLock::new(eval));
         if !self.map.is_empty() {
             let map = &mut self.map;
             let k = self.k_neighbors;
@@ -277,6 +281,11 @@ impl crate::Registration for SFasterLio {
 
             let normal_cloud_in_ekf = normal_cloud.clone();
             let neighbors_cloud_in_ekf = neighbors.clone();
+            let cloud_len = cloud.len();
+            {
+                eval_outer.write().unwrap().start("ekf correct").unwrap();
+            }
+            let eval_cb = eval_outer.clone();
             self.ekf.correct(
                 self.laser_point_noise_cov,
                 self.ekf_max_iterations,
@@ -298,69 +307,76 @@ impl crate::Registration for SFasterLio {
                         .lock()
                         .unwrap()
                         .take()
-                        .unwrap_or(vec![PointXYZ::default(); cloud.len() * k]);
+                        .unwrap_or(vec![PointXYZ::default(); cloud_len * k]);
 
                     // Perf: should never be larger than k because k never changes
                     if neighbors.len() < cloud.len() * k {
                         neighbors = vec![PointXYZ::default(); cloud.len() * k];
                     }
 
-                    let planes: Vec<PointXYZINormal> = cloud
-                        .iter()
-                        .enumerate()
-                        .filter_map(|(idx, point_local)| {
-                            let point_global =
-                                initial_guess.transform_point(&point_local.xyz_f64());
-                            let query_point = PointXYZ::new(
-                                point_global.x as f32,
-                                point_global.y as f32,
-                                point_global.z as f32,
-                            );
+                    let mut eval = eval_cb.write().unwrap();
 
-                            let curr_point_neighbors = &mut neighbors[idx * k..(idx + 1) * k];
-                            debug_assert!(curr_point_neighbors.len() == k);
+                    let planes = {
+                        eval.start("planes").unwrap();
+                        let planes: Vec<PointXYZINormal> = cloud
+                            .iter()
+                            .enumerate()
+                            .filter_map(|(idx, point_local)| {
+                                let point_global =
+                                    initial_guess.transform_point(&point_local.xyz_f64());
+                                let query_point = PointXYZ::new(
+                                    point_global.x as f32,
+                                    point_global.y as f32,
+                                    point_global.z as f32,
+                                );
 
-                            // Safety: converged is always true in the first iteration so the neighbors have been populated
-                            let out_size = &mut 0;
-                            if first_it_local || converged {
-                                if !map.k_nearest_neighbor_query(
-                                    &query_point,
-                                    k,
-                                    neighbor_max_range,
-                                    curr_point_neighbors,
-                                    out_size,
-                                ) {
+                                let curr_point_neighbors = &mut neighbors[idx * k..(idx + 1) * k];
+                                debug_assert!(curr_point_neighbors.len() == k);
+
+                                // Safety: converged is always true in the first iteration so the neighbors have been populated
+                                let out_size = &mut 0;
+                                if first_it_local || converged {
+                                    if !map.k_nearest_neighbor_query(
+                                        &query_point,
+                                        k,
+                                        neighbor_max_range,
+                                        curr_point_neighbors,
+                                        out_size,
+                                    ) {
+                                        return None;
+                                    }
+                                }
+
+                                let plane = Self::plane_from_points(
+                                    &curr_point_neighbors,
+                                    PLANE_POINT_ERROR_THRESHOLD,
+                                )?;
+
+                                let pd2 = plane[0] * point_global.x
+                                    + plane[1] * point_global.y
+                                    + plane[2] * point_global.z
+                                    + plane[3];
+                                let s = 1.0
+                                    - 0.9 * pd2.abs() / point_local.xyz_f64().coords.norm().sqrt();
+
+                                if s <= 0.9 {
                                     return None;
                                 }
-                            }
 
-                            let plane = Self::plane_from_points(
-                                &curr_point_neighbors,
-                                PLANE_POINT_ERROR_THRESHOLD,
-                            )?;
-
-                            let pd2 = plane[0] * point_global.x
-                                + plane[1] * point_global.y
-                                + plane[2] * point_global.z
-                                + plane[3];
-                            let s =
-                                1.0 - 0.9 * pd2.abs() / point_local.xyz_f64().coords.norm().sqrt();
-
-                            if s <= 0.9 {
-                                return None;
-                            }
-
-                            Some(PointXYZINormal::new(
-                                point_local.x,
-                                point_local.y,
-                                point_local.z,
-                                pd2 as f32,
-                                plane[0] as f32,
-                                plane[1] as f32,
-                                plane[2] as f32,
-                            ))
-                        })
-                        .collect::<Vec<_>>();
+                                Some(PointXYZINormal::new(
+                                    point_local.x,
+                                    point_local.y,
+                                    point_local.z,
+                                    pd2 as f32,
+                                    plane[0] as f32,
+                                    plane[1] as f32,
+                                    plane[2] as f32,
+                                ))
+                            })
+                            .collect::<Vec<_>>();
+                        eval.stop("planes").unwrap();
+                        planes
+                    };
 
                     // put neighbors back
                     neighbors_cloud_in_ekf.lock().unwrap().replace(neighbors);
@@ -382,6 +398,8 @@ impl crate::Registration for SFasterLio {
 
                     // TODO (AS REF) if converge, do use old planes/neighbors since it is likely to be the same
 
+                    eval.start("jacobian").unwrap();
+                    // TODO use raw access for par iter
                     planes
                         .iter()
                         .zip(h_x.row_iter_mut())
@@ -449,11 +467,13 @@ impl crate::Registration for SFasterLio {
 
                             h_row[0] = -nearest_plane[3];
                         });
+                    eval.stop("jacobian").unwrap();
 
                     let mut glob = normal_cloud_in_ekf.lock().unwrap();
                     *glob = Some(planes);
                 },
             );
+            eval_outer.write().unwrap().stop("ekf correct").unwrap();
         };
 
         let pos_lidar =
@@ -472,9 +492,13 @@ impl crate::Registration for SFasterLio {
             .send(())
             .unwrap();
 
-        //let start_stamp = std::time::Instant::now();
+        {
+            eval_outer.write().unwrap().start("map update").unwrap();
+        }
         self.add_to_map(&cloud, global_pose);
-        //dbg!(start_stamp.elapsed());
+        {
+            eval_outer.write().unwrap().stop("map update").unwrap();
+        }
 
         let out_cloud = normal_cloud.lock().unwrap().take();
 

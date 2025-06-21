@@ -2,7 +2,7 @@ use std::{collections::VecDeque, time::Duration};
 
 use std::ops::{AddAssign, Div, Sub};
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Default)]
 pub struct SlidingWindowFilter<T: Default> {
     window_size: f64,
     buffer: VecDeque<T>,
@@ -42,7 +42,7 @@ where
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct EvaluationFormular {
     name: String,
     active: bool,
@@ -73,11 +73,21 @@ impl EvaluationFormular {
 
 const MAX_HISTOGRAM_SIZE: u64 = 10;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, PartialEq, Clone)]
 pub struct RuntimeEvaluator {
     evaluations: Vec<EvaluationFormular>,
     histogram: Vec<u64>,
     start_time: std::time::Instant,
+}
+
+impl Default for RuntimeEvaluator {
+    fn default() -> Self {
+        Self {
+            evaluations: Vec::new(),
+            histogram: Vec::new(),
+            start_time: std::time::Instant::now(),
+        }
+    }
 }
 
 impl RuntimeEvaluator {
@@ -143,6 +153,8 @@ impl RuntimeEvaluator {
         }
 
         self.resume();
+
+        // self.start("total")?;
         Ok(())
     }
 
@@ -207,6 +219,7 @@ impl RuntimeEvaluator {
                 }
 
                 self.resume();
+                // self.stop("total")?;
                 return Ok(());
             }
         }

@@ -7,10 +7,11 @@ pub mod timing;
 use either::Either;
 use imu_fusion::FusionAhrs;
 use log::{debug, error, info, warn};
+use morton_encoding::morton_encode;
 use nalgebra::*;
 use serde::{Deserialize, Serialize};
 use std::thread;
-use timing::RuntimeEvaluator;
+use timing::{EvaluationFormular, RuntimeEvaluator};
 
 use anyhow::Result;
 use ros_pointcloud2::prelude::*;
@@ -180,7 +181,9 @@ pub fn secs_to_timestamp(secs: f64) -> TimeMsg {
     TimeMsg { sec, nanosec }
 }
 
-pub trait PointXYZITimestamp<const N: usize>: PointConvertible<N> + Send + Sync + Sized {
+pub trait PointXYZITimestamp<const N: usize>:
+    PointConvertible<N> + Send + Sync + Sized + Copy
+{
     fn xyz(&self) -> Point3<f32>;
     fn intensity(&self) -> f32;
     fn timestamp(&self) -> f64; // in seconds
@@ -218,7 +221,7 @@ impl std::ops::Add for PointXYZIT {
     }
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, Copy)]
 pub struct PointXYZT {
     pub x: f32,
     pub y: f32,
@@ -257,7 +260,41 @@ fn hash(point: &Point3<f32>, voxel_size: f32) -> i32 {
     hash
 }
 
-// TODO faster with sorting
+/// Helper function to find the medoid within a slice of points.
+fn find_medoid_in_slice(points: &[(u128, PointXYZT)]) -> PointXYZT {
+    if points.len() == 1 {
+        return points[0].1;
+    }
+
+    let mut sum_x = 0.0;
+    let mut sum_y = 0.0;
+    let mut sum_z = 0.0;
+    for (_, p) in points {
+        sum_x += p.x;
+        sum_y += p.y;
+        sum_z += p.z;
+    }
+    let centroid = Point3::new(
+        sum_x / points.len() as f32,
+        sum_y / points.len() as f32,
+        sum_z / points.len() as f32,
+    );
+
+    *points
+        .iter()
+        .map(|(_, p)| p)
+        .min_by(|a, b| {
+            let dist_a = (a.x - centroid.x).powi(2)
+                + (a.y - centroid.y).powi(2)
+                + (a.z - centroid.z).powi(2);
+            let dist_b = (b.x - centroid.x).powi(2)
+                + (b.y - centroid.y).powi(2)
+                + (b.z - centroid.z).powi(2);
+            dist_a.partial_cmp(&dist_b).unwrap()
+        })
+        .unwrap()
+}
+
 fn filter_downsample<const N: usize, P: PointXYZITimestamp<N>>(
     cloud: PointCloud2Msg,
     lifis_params: &config::LifisParameters,
@@ -315,48 +352,48 @@ fn filter_downsample<const N: usize, P: PointXYZITimestamp<N>>(
             && is_within_polygon
     });
 
-    // Downsample
-    let hashes = dashmap::DashMap::new(); // TODO try out ahash
-    res.for_each(|point: P| {
-        let hash = hash(&point.xyz(), lifis_params.downsample.voxel_size);
-        if !hashes.contains_key(&hash) {
-            hashes.insert(hash, Vec::with_capacity(10));
-        }
-        hashes
-            .get_mut(&hash)
-            .expect("entry created the line before")
-            .push(point);
-    });
+    let voxel_size_inv = 1.0 / lifis_params.downsample.voxel_size;
+    let offset = 2i32.pow(20); // A large offset to handle negative coordinates
 
-    let mut out = hashes
-        .par_iter()
-        .map(|bucket_ref| {
-            let voxel_average = bucket_ref
-                .iter()
-                .fold(Vector3::default(), |acc, point| point.xyz().coords + acc);
+    let mut keyed_points: Vec<(u128, PointXYZT)> = res
+        .map(|point| {
+            let point_raw = point.xyz();
+            let ix = (point_raw.x * voxel_size_inv).floor() as i32 + offset;
+            let iy = (point_raw.y * voxel_size_inv).floor() as i32 + offset;
+            let iz = (point_raw.z * voxel_size_inv).floor() as i32 + offset;
 
-            /*let voxel_average = bucket_ref
-            .par_iter()
-            .map(|point| point.xyz().coords)
-            .reduce(Vector3::default, |acc, coords| acc + coords);*/
-
-            let avg = voxel_average * (1.0 / bucket_ref.len() as f32);
-
-            let mut min_dist = f32::MAX;
-            let mut closest_point = PointXYZT::default();
-            for point in bucket_ref.iter() {
-                let dist = (point.xyz().coords - avg).norm_squared();
-                if dist < min_dist {
-                    min_dist = dist;
-                    closest_point = PointXYZT::from_p(point.xyz(), point.timestamp());
-                }
-            }
-
-            closest_point
+            // Encode the 3D voxel index into a single 64-bit Morton key.
+            let key = morton_encode([ix as u32, iy as u32, iz as u32]);
+            (key, PointXYZT::from_p(point_raw, point.timestamp()))
         })
-        .collect::<Vec<PointXYZT>>();
+        .collect();
 
-    out.par_sort_by(|a, b| {
+    // After this, all points in the same voxel are adjacent
+    keyed_points.par_sort_unstable_by_key(|(key, _)| *key);
+
+    let mut downsampled_cloud = Vec::new();
+    if keyed_points.is_empty() {
+        return Ok(None);
+    }
+
+    let mut group_start_index = 0;
+    for i in 1..keyed_points.len() {
+        // Check if the key has changed. If so, the previous group has ended.
+        if keyed_points[i].0 != keyed_points[group_start_index].0 {
+            // Process the slice for the completed group.
+            let group_slice = &keyed_points[group_start_index..i];
+            let medoid = find_medoid_in_slice(&group_slice);
+            downsampled_cloud.push(medoid);
+
+            // Start a new group
+            group_start_index = i;
+        }
+    }
+    // The last group
+    let last_group_slice = &keyed_points[group_start_index..];
+    downsampled_cloud.push(find_medoid_in_slice(&last_group_slice));
+
+    downsampled_cloud.par_sort_by(|a, b| {
         if (a.timestamp - b.timestamp).abs() < 1e-6 {
             a.z.partial_cmp(&b.z).unwrap()
         } else {
@@ -364,12 +401,12 @@ fn filter_downsample<const N: usize, P: PointXYZITimestamp<N>>(
         }
     });
 
-    let (first, last) = match (&out.first(), &out.last()) {
+    let (first, last) = match (&downsampled_cloud.first(), &downsampled_cloud.last()) {
         (Some(first), Some(last)) => (first.timestamp, last.timestamp),
         _ => return Ok(None),
     };
 
-    Ok(Some((out, first, last, header)))
+    Ok(Some((downsampled_cloud, first, last, header)))
 }
 
 #[derive(Debug)]
@@ -388,7 +425,7 @@ pub struct ImuPosePrediction {
 }
 
 #[derive(Debug)]
-pub struct LifisProcessedCloud {
+pub struct PrelioProcessedCloud {
     pub cloud: Vec<PointXYZ>,
     pub header: HeaderMsg,
     pub end_of_frame_guess: Isometry3<f64>,
@@ -423,7 +460,7 @@ pub enum MadgwickSetting {
 pub struct Prelio {
     preproc_sender: std::sync::mpsc::Sender<PointCloud2Msg>,
     imu_sender: std::sync::mpsc::Sender<ImuMsg>,
-    synced_receiver: Option<std::sync::mpsc::Receiver<LifisProcessedCloud>>,
+    synced_receiver: Option<std::sync::mpsc::Receiver<PrelioProcessedCloud>>,
     last_cloud_time: f64,
     imu_filter_fusion: ImuMadgwick,
     last_imu_time: f64,
@@ -497,17 +534,22 @@ impl Prelio {
         // preprocessing worker
         let params_clone = params.clone();
         thread::spawn(move || {
+            let mut eval = RuntimeEvaluator::new();
             while let Ok(cloud) = preproc_rx.recv() {
+                eval.start("downsample").unwrap();
                 match filter_downsample::<N, P>(cloud, &params_clone) {
                     Ok(Some(cloud_meta)) => {
-                        if let Err(e) = filtered_cloud_tx.send(cloud_meta) {
+                        eval.stop("downsample").unwrap();
+                        if let Err(e) = filtered_cloud_tx.send((cloud_meta, eval.clone())) {
                             error!("Error sending pointcloud: {}", e);
                         }
                     }
                     Ok(None) => {
+                        eval.stop("downsample").unwrap();
                         info!("Pointcloud was filtered out");
                     }
                     Err(e) => {
+                        eval.stop("downsample").unwrap();
                         error!("Error processing pointcloud: {}", e);
                     }
                 }
@@ -527,7 +569,7 @@ impl Prelio {
         })
     }
 
-    pub fn get_chan(&mut self) -> Option<std::sync::mpsc::Receiver<LifisProcessedCloud>> {
+    pub fn get_chan(&mut self) -> Option<std::sync::mpsc::Receiver<PrelioProcessedCloud>> {
         self.synced_receiver.take()
     }
 
@@ -570,7 +612,6 @@ impl Prelio {
             return None; // wrapping time (mostly bag file restarts), wait for lidar wrap to reset
         }
 
-        self.runtime_eval.start("total").unwrap();
         self.runtime_eval.start("imu_pre").unwrap();
 
         let dt = imu_time - self.last_imu_time;
@@ -633,7 +674,6 @@ impl Prelio {
             }
         }
         self.runtime_eval.stop("imu_pre").unwrap();
-        self.runtime_eval.stop("total").unwrap();
 
         Some(imu)
     }
@@ -643,9 +683,12 @@ impl Prelio {
     pub fn sync_lidar_imu_worker(
         prev_lidar_end_time: &mut f64,
         gravity: f64,
-        lidar_receiver: std::sync::mpsc::Receiver<(Vec<PointXYZT>, f64, f64, HeaderMsg)>,
+        lidar_receiver: std::sync::mpsc::Receiver<(
+            (Vec<PointXYZT>, f64, f64, HeaderMsg),
+            RuntimeEvaluator,
+        )>,
         imu_receiver: Option<std::sync::mpsc::Receiver<ImuMsg>>,
-        synced_sender: &std::sync::mpsc::Sender<LifisProcessedCloud>,
+        synced_sender: &std::sync::mpsc::Sender<PrelioProcessedCloud>,
         imu_intrinsic_calibration_given: bool,
         mut imu_process: ImuProcess,
         undistort_parameters: &config::UndistortParameters,
@@ -654,10 +697,12 @@ impl Prelio {
         lidar_vendor: Option<LidarVendor>,
         ready_for_next: Option<std::sync::mpsc::Receiver<()>>,
     ) {
+        let mut eval = RuntimeEvaluator::new();
         let mut to_next: Option<ImuMsg> = None;
-        while let Ok((cloud, lidar_begin_time, lidar_end_time, lidar_header)) =
+        while let Ok(((cloud, lidar_begin_time, lidar_end_time, lidar_header), prelio_eval)) =
             lidar_receiver.recv()
         {
+            eval.merge(&prelio_eval);
             let lidar_time = timestamp_to_secs(&lidar_header.stamp);
 
             // Handle relative vs absolute timestamps
@@ -747,7 +792,7 @@ impl Prelio {
                     .map(|p| PointXYZ::new(p.x, p.y, p.z))
                     .collect(); // TODO use iter as type in processed cloud
 
-                let res = LifisProcessedCloud {
+                let res = PrelioProcessedCloud {
                     cloud,
                     header: lidar_header,
                     end_of_frame_guess: Isometry3::identity(),
@@ -758,7 +803,7 @@ impl Prelio {
                         linear: Vector3::new(0., 0., 0.),
                         angular: Vector3::new(0., 0., 0.),
                     },
-                    runtime_eval: RuntimeEvaluator::new(), // TODO currently nothing
+                    runtime_eval: eval.clone(),
                 };
 
                 synced_sender.send(res).unwrap();
@@ -769,9 +814,11 @@ impl Prelio {
                 }
 
                 // Deskewing cloud with synced data
-                if let Some(imu_cloud) =
-                    imu_process.process(meas, undistort_parameters, &imu_pose_prediction_undistort)
-                {
+                let deskew =
+                    imu_process.process(meas, undistort_parameters, &imu_pose_prediction_undistort);
+
+                if let Some(imu_cloud) = deskew {
+                    eval.merge(imu_cloud.runtime_eval);
                     let imu_int = match imu_pose_prediction_init_guess.as_ref() {
                         Some(imu_pose_prediction_init_guess) => imu_pose_prediction_init_guess(
                             &imu_data.clone(),
@@ -781,6 +828,7 @@ impl Prelio {
                         ),
                         None => {
                             let estimated_pose = if imu_intrinsic_calibration_given {
+                                eval.start("preint imu").unwrap();
                                 // given a calibration, we trust the IMU data and use it for the pose
                                 #[cfg(feature = "gtsam")]
                                 {
@@ -810,6 +858,10 @@ impl Prelio {
                                 )
                             };
 
+                            if imu_intrinsic_calibration_given {
+                                eval.stop("preint imu").unwrap();
+                            }
+
                             ImuPosePrediction {
                                 pose: estimated_pose,
                                 linear_velocity: Vector3::zeros(),
@@ -824,9 +876,7 @@ impl Prelio {
                         }
                     };
 
-                    //let mut out_runtime = self.runtime_eval.clone();
-                    //out_runtime.merge(&imu_cloud.runtime_eval); // TODO avoid clone, do new object with both evaluations
-                    let res = LifisProcessedCloud {
+                    let res = PrelioProcessedCloud {
                         cloud: imu_cloud.cloud,
                         header: lidar_header,
                         end_of_frame_guess: imu_int.pose,
@@ -845,7 +895,7 @@ impl Prelio {
                                 imu_cloud.last_twist[5],
                             ),
                         },
-                        runtime_eval: RuntimeEvaluator::new(), // TODO currently nothing
+                        runtime_eval: eval.clone(),
                     };
 
                     synced_sender.send(res).unwrap();
