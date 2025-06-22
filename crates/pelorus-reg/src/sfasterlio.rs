@@ -5,7 +5,7 @@ use std::sync::{Arc, Mutex};
 
 use nalgebra::*;
 use prelio::timing::RuntimeEvaluator;
-// use rayon::prelude::*;
+use rayon::prelude::*;
 use ros_pointcloud2::points::{PointXYZ, PointXYZINormal};
 
 pub use spole::IVoxNearbyType;
@@ -269,8 +269,8 @@ impl crate::Registration for SFasterLio {
 
         let cloud = cloud.as_slice(); // TODO use views, not copies after accuracy is done
 
-        let normal_cloud = Arc::new(Mutex::new(None));
         let neighbors = Arc::new(Mutex::new(None));
+        let neighbor_sizes = Arc::new(Mutex::new(None));
         let first_it = Arc::new(Mutex::new(true));
         let eval_outer = std::sync::Arc::new(std::sync::RwLock::new(eval));
         if !self.map.is_empty() {
@@ -279,8 +279,8 @@ impl crate::Registration for SFasterLio {
             let neighbor_max_range = self.neighbor_max_range;
             let extrinsic_estimation = self.imu_lidar_extrinsic_calibration_optimization;
 
-            let normal_cloud_in_ekf = normal_cloud.clone();
             let neighbors_cloud_in_ekf = neighbors.clone();
+            let neighbor_sizes_in_ekf = neighbor_sizes.clone();
             let cloud_len = cloud.len();
             {
                 eval_outer.write().unwrap().start("ekf correct").unwrap();
@@ -308,20 +308,29 @@ impl crate::Registration for SFasterLio {
                         .unwrap()
                         .take()
                         .unwrap_or(vec![PointXYZ::default(); cloud_len * k]);
+                    let mut neighbor_sizes = neighbor_sizes_in_ekf
+                        .lock()
+                        .unwrap()
+                        .take()
+                        .unwrap_or(vec![0usize; cloud_len]);
 
                     // Perf: should never be larger than k because k never changes
                     if neighbors.len() < cloud.len() * k {
                         neighbors = vec![PointXYZ::default(); cloud.len() * k];
                     }
 
+                    // Safety: Hacky way to actively opt-in to possible race conditions on *mut Ptr<T>
+                    let neighbors_raw = neighbors.as_mut_ptr() as usize;
+
                     let mut eval = eval_cb.write().unwrap();
 
                     let planes = {
                         eval.start("planes").unwrap();
                         let planes: Vec<PointXYZINormal> = cloud
-                            .iter()
+                            .par_iter()
+                            .zip(neighbor_sizes.par_iter_mut())
                             .enumerate()
-                            .filter_map(|(idx, point_local)| {
+                            .filter_map(|(idx, (point_local, neighbor_size))| {
                                 let point_global =
                                     initial_guess.transform_point(&point_local.xyz_f64());
                                 let query_point = PointXYZ::new(
@@ -330,25 +339,30 @@ impl crate::Registration for SFasterLio {
                                     point_global.z as f32,
                                 );
 
-                                let curr_point_neighbors = &mut neighbors[idx * k..(idx + 1) * k];
-                                debug_assert!(curr_point_neighbors.len() == k);
-
+                                // (Un-)Safety: Reconstruct slice from pointer adress with a usize indicating the size at the end of k+1
+                                let offset_start = idx * k;
+                                let neighbors_raw_ptr = neighbors_raw as *mut PointXYZ;
+                                let pn = unsafe { neighbors_raw_ptr.offset(offset_start as isize) };
+                                let curr_point_neighbors =
+                                    unsafe { std::slice::from_raw_parts_mut(pn, k) };
+                                // let neighbor_size =
+                                // unsafe { (pn.add(k) as *mut usize).as_mut().expect("at end") };
                                 // Safety: converged is always true in the first iteration so the neighbors have been populated
-                                let out_size = &mut 0;
                                 if first_it_local || converged {
                                     if !map.k_nearest_neighbor_query(
                                         &query_point,
                                         k,
                                         neighbor_max_range,
                                         curr_point_neighbors,
-                                        out_size,
+                                        neighbor_size,
                                     ) {
                                         return None;
                                     }
                                 }
 
+                                // TODO out_size as range here completely destroys the registration.. why?
                                 let plane = Self::plane_from_points(
-                                    &curr_point_neighbors,
+                                    &curr_point_neighbors[..*neighbor_size],
                                     PLANE_POINT_ERROR_THRESHOLD,
                                 )?;
 
@@ -379,7 +393,13 @@ impl crate::Registration for SFasterLio {
                     };
 
                     // put neighbors back
-                    neighbors_cloud_in_ekf.lock().unwrap().replace(neighbors);
+                    {
+                        neighbors_cloud_in_ekf.lock().unwrap().replace(neighbors);
+                        neighbor_sizes_in_ekf
+                            .lock()
+                            .unwrap()
+                            .replace(neighbor_sizes);
+                    }
 
                     *first_it.lock().unwrap() = false;
 
@@ -468,9 +488,6 @@ impl crate::Registration for SFasterLio {
                             h_row[0] = -nearest_plane[3];
                         });
                     eval.stop("jacobian").unwrap();
-
-                    let mut glob = normal_cloud_in_ekf.lock().unwrap();
-                    *glob = Some(planes);
                 },
             );
             eval_outer.write().unwrap().stop("ekf correct").unwrap();
@@ -500,12 +517,9 @@ impl crate::Registration for SFasterLio {
             eval_outer.write().unwrap().stop("map update").unwrap();
         }
 
-        let out_cloud = normal_cloud.lock().unwrap().take();
-
         Ok(crate::CloudRegisterResult {
             pose: global_pose,
             avg_iterations: None,
-            registered_cloud: out_cloud,
         })
     }
 

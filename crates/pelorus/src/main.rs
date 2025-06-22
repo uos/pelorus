@@ -99,7 +99,6 @@ pub struct LioConfig {
     pub imu_init_length: u32,
     pub lidar_odom_cov: f64,
     pub enable_live_extrinsic_calibration: bool,
-    pub gravity: f64,
     pub prelio_params: LifisParameters,
     pub prelio_node_params: LifisNodeParameters,
 }
@@ -111,7 +110,6 @@ impl Default for LioConfig {
             lidar_odom_cov: 0.001,
             imu_init_length: 10,
             feedback_fps: 1,
-            gravity: 9.81,
             enable_live_extrinsic_calibration: false,
             registered_cloud_qos: Qos::Sensor(Reliability::Reliable),
             odom_qos: Qos::default(),
@@ -260,7 +258,7 @@ fn lio(config_path: &str) -> Result<(), Box<dyn std::error::Error>> {
     #[cfg(not(feature = "gicp"))]
     let map = Arc::new(Mutex::new(SFasterLio::new(
         config.map_resolution,
-        config.gravity,
+        config.prelio_params.imu.gravity,
         &config.imu_params,
         config.lidar_odom_cov,
         4,

@@ -278,6 +278,7 @@ impl Esekf {
                     converge = true;
                 }
             } else {
+                // TODO still testing if t >= 1 or t > 1 better. t > 1 seems to be way slower with same results
                 // reduce covariance of our state after some converged iterations using the certainty of the last iteration
                 if t >= 1 || i == max_iter - 1 {
                     self.cov = (SMatrix::<f64, 24, 24>::identity() - kh) * self.cov;
