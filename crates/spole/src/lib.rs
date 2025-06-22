@@ -14,6 +14,7 @@ pub struct IVoxHashMap {
     nearby_type: IVoxNearbyType,
     inverse_resolution: f32,
     resolution: f64,
+    max_map_size: usize,
     grid_map: dashmap::DashMap<i32, ((i32, i32, i32), usize)>,
     scan_number: usize,
     pt_id: u64,
@@ -102,6 +103,7 @@ impl IVoxHashMap {
             nearby_type: nbtype.clone(),
             inverse_resolution: 1.0 / resolution,
             grid_map: DashMap::with_capacity(capacity),
+            max_map_size: capacity,
             scan_number: 0,
             pt_id: 0,
             resolution: resolution as f64,
@@ -188,11 +190,10 @@ impl IVoxHashMap {
                     })
                     .collect::<Vec<_>>();
 
-                const max_map_size: usize = 500_000;
                 let cur_len = self.kd_points.len();
                 let new_len = cur_len + f.len();
-                let target_len = max_map_size - f.len();
-                if new_len > max_map_size {
+                let target_len = self.max_map_size - f.len();
+                if new_len > self.max_map_size {
                     while self.kd_points.len() >= target_len {
                         if let Some(rc) = self.kd_points.pop_back() {
                             self.kd_map.remove(&[rc.1.x, rc.1.y, rc.1.z], rc.0);
