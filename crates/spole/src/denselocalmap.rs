@@ -1,13 +1,12 @@
-use nalgebra::{Isometry3, Point3, Vector3};
-use rayon::prelude::*; // Import Rayon's parallel iterators
+use nalgebra::{Isometry3, Point3};
+use rayon::prelude::*;
 
-pub const FLOATS_PER_POINT: usize = 4; // x, y, z, w
+pub const FLOATS_PER_POINT: usize = 4;
 
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, bytemuck::Pod, bytemuck::Zeroable)]
 #[repr(C)]
 pub struct Point(pub [f32; 4]);
 
-/// `Localmap` manages a ring buffer of point clouds to maintain a local map of the environment.
 pub struct Localmap {
     // A single, large buffer holding all point clouds in the ring buffer sequentially.
     point_clouds: Vec<f32>,
@@ -17,9 +16,6 @@ pub struct Localmap {
 
     // Transformation for each point cloud slice in the ring buffer.
     transforms: Vec<Isometry3<f32>>,
-
-    // A flag buffer used during filtering operations.
-    flags: Vec<u32>,
 
     // Index of the next slot in the ring buffer to be written to.
     next_inactive_idx: usize,
@@ -48,7 +44,6 @@ impl Localmap {
                 ((max_points_per_scan * FLOATS_PER_POINT) - 1) * ringbuffer_size
             ],
             transforms: vec![Isometry3::identity(); ringbuffer_size],
-            flags: vec![0; max_points_per_scan],
             next_inactive_idx: 0,
             current_pcl_idx: 0,
             was_full: false,
@@ -68,9 +63,10 @@ impl Localmap {
         self.was_full = false;
     }
 
-    pub fn as_merged_cloud(&self) -> &[f32] {
+    pub fn as_merged_cloud(&self) -> &[Point] {
         let dense_floats = self.total_dense_point_count * FLOATS_PER_POINT;
-        &self.dense_buffer[0..dense_floats]
+        let float_slice = &self.dense_buffer[0..dense_floats];
+        bytemuck::cast_slice(float_slice)
     }
 
     /// Prepares and returns a mutable slice for the next point cloud to be registered.
@@ -215,17 +211,12 @@ mod tests {
         let merged_cloud1 = localmap.as_merged_cloud();
         assert_eq!(
             merged_cloud1.len(),
-            points1_count * FLOATS_PER_POINT,
+            points1_count,
             "Dense buffer size should be 10 points * 4 floats"
         );
 
         // Check the first point of the transformed cloud
-        let first_point_cloud1 = Point([
-            merged_cloud1[0],
-            merged_cloud1[1],
-            merged_cloud1[2],
-            merged_cloud1[3],
-        ]);
+        let first_point_cloud1 = merged_cloud1[0];
         // Original was (1, 2, 3), transform was (+10, 0, 0) -> expected (11, 2, 3)
         assert_eq!(
             first_point_cloud1,
@@ -254,17 +245,12 @@ mod tests {
         let merged_cloud2 = localmap.as_merged_cloud();
         assert_eq!(
             merged_cloud2.len(),
-            total_expected_points * FLOATS_PER_POINT,
+            total_expected_points,
             "Dense buffer size should be 30 points * 4 floats"
         );
 
         // Check the first point of the first cloud (should still be the same)
-        let first_point_cloud1_again = Point([
-            merged_cloud2[0],
-            merged_cloud2[1],
-            merged_cloud2[2],
-            merged_cloud2[3],
-        ]);
+        let first_point_cloud1_again = merged_cloud2[0];
         assert_eq!(
             first_point_cloud1_again,
             Point([11.0, 2.0, 3.0, 1.0]),
@@ -272,13 +258,7 @@ mod tests {
         );
 
         // Check the first point of the second cloud. It starts after all the points of the first cloud.
-        let first_point_cloud2_index = points1_count * FLOATS_PER_POINT;
-        let first_point_cloud2 = Point([
-            merged_cloud2[first_point_cloud2_index],
-            merged_cloud2[first_point_cloud2_index + 1],
-            merged_cloud2[first_point_cloud2_index + 2],
-            merged_cloud2[first_point_cloud2_index + 3],
-        ]);
+        let first_point_cloud2 = merged_cloud2[points1_count];
         // Original was (5, 6, 7), transform was (0, -20, 0) -> expected (5, -14, 7)
         assert_eq!(
             first_point_cloud2,
