@@ -683,6 +683,10 @@ fn lio(config_path: &str) -> Result<(), Box<dyn std::error::Error>> {
             t_world_lidar = register_pose.pose;
 
             let mut lidar_odom = lifis_tick.imu_odom.clone();
+            lidar_odom.header.stamp = Time {
+                sec: orig_time.sec,
+                nanosec: orig_time.nanosec,
+            };
             lidar_odom.header.frame_id = config.prelio_params.map_frame.clone();
             lidar_odom.child_frame_id = orig_frame.clone();
             lidar_odom.pose.pose.position.x = t_world_lidar.translation.vector.x;

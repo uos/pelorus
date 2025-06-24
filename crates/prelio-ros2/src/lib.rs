@@ -703,7 +703,6 @@ impl PrelioNode {
             future::block_on(async {
                 cloud_subscriber
                     .for_each(|msg| {
-                        dbg!("received cloud!");
                         let imu_tf_frame_lidar_inner =
                             imu_tf_frame_lidar_inner.clone().lock().unwrap().clone();
 
@@ -991,8 +990,6 @@ impl PrelioNode {
                                 if delta < init_imu_time {
                                     if let Some(imu_init_buffer) = imu_init_buffer.as_mut() {
                                         imu_init_buffer.push(imu_lifis);
-                                        dbg!(imu_init_buffer.len());
-
                                         return; // skip adding to lifis if we are still in the init phase
                                     }
                                     // we are only here, if there was an initial buffer, but it was already consumed so skip init and continue with normal processing
