@@ -8,6 +8,8 @@ use dashmap::DashMap;
 use kiddo::SquaredEuclidean;
 use ros_pointcloud2::prelude::*;
 
+pub mod denselocalmap;
+
 use serde::{Deserialize, Serialize};
 
 pub struct IVoxHashMap {
