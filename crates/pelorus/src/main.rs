@@ -654,10 +654,9 @@ fn lio(config_path: &str) -> Result<(), Box<dyn std::error::Error>> {
                         eval.stop("map update").unwrap();
                         first_scan = false;
 
-                        CloudRegisterResult {
+                        pelorus_reg::CloudRegisterResult {
                             pose: Isometry3::identity(),
                             avg_iterations: None,
-                            registered_cloud: None,
                         }
                     } else {
                         eval.start("reg").unwrap();
@@ -667,10 +666,9 @@ fn lio(config_path: &str) -> Result<(), Box<dyn std::error::Error>> {
                         map.add(&cloud, Some(res.transform_target_to_source));
                         eval.stop("map update").unwrap();
 
-                        CloudRegisterResult {
+                        pelorus_reg::CloudRegisterResult {
                             pose: res.transform_target_to_source,
                             avg_iterations: Some(res.num_iterations as u32),
-                            registered_cloud: None,
                         }
                     }
                 }
