@@ -4,11 +4,16 @@ use std::{
 };
 
 use dashmap::DashMap;
+use denselocalmap::{Localmap, VoxelDistribution};
 #[cfg(feature = "nn_kdt")]
 use kiddo::SquaredEuclidean;
 use ros_pointcloud2::prelude::*;
 
 pub mod denselocalmap;
+use rand_distr::{Distribution, Normal};
+
+use nalgebra::{Cholesky, Isometry3, Matrix3, Point3, SymmetricEigen, Vector3};
+use rand::Rng; // Import the Rng trait
 
 use serde::{Deserialize, Serialize};
 
@@ -17,10 +22,9 @@ pub struct IVoxHashMap {
     inverse_resolution: f32,
     resolution: f64,
     max_map_size: usize,
-    grid_map: dashmap::DashMap<i32, ((i32, i32, i32), usize)>,
+    pub grid_map: Localmap,
     scan_number: usize,
     pt_id: u64,
-    buffer: Vec<(i32, IvoxNode)>,
     buffer_current_idx: usize,
     buffer_init_full: bool,
     #[cfg(feature = "nn_kdt")]
@@ -47,14 +51,12 @@ pub enum IVoxNearbyType {
 #[derive(Debug, Clone)]
 pub struct IvoxNode {
     points: Vec<PointXYZ>,
-    newest_hit: usize,
 }
 
 impl IvoxNode {
     pub fn new() -> Self {
         IvoxNode {
             points: Vec::with_capacity(100),
-            newest_hit: 0,
         }
     }
 
@@ -104,12 +106,11 @@ impl IVoxHashMap {
         Self {
             nearby_type: nbtype.clone(),
             inverse_resolution: 1.0 / resolution,
-            grid_map: DashMap::with_capacity(capacity),
+            grid_map: Localmap::new(128 * 512, 10, resolution),
             max_map_size: capacity,
             scan_number: 0,
             pt_id: 0,
             resolution: resolution as f64,
-            buffer: vec![(0, IvoxNode::new()); capacity],
             buffer_current_idx: 0,
             buffer_init_full: false,
             #[cfg(feature = "nn_kdt")]
@@ -128,29 +129,29 @@ impl IVoxHashMap {
         return self.kd_map.size() == 0;
 
         #[cfg(not(feature = "nn_kdt"))]
-        return self.grid_map.is_empty();
+        return self.grid_map.map.is_empty();
     }
 
-    fn add_voxel(&mut self, hash: i32, node: IvoxNode) -> usize {
-        let mut last_hash = None;
-        if self.buffer_current_idx >= self.buffer.len() {
-            if !self.buffer_init_full {
-                self.buffer_init_full = true;
-            }
-            last_hash = Some(self.buffer[self.buffer_current_idx].0);
-            self.buffer_current_idx = 0;
-        }
+    // fn add_voxel(&mut self, hash: i32, node: IvoxNode) -> usize {
+    //     let mut last_hash = None;
+    //     if self.buffer_current_idx >= self.buffer.len() {
+    //         if !self.buffer_init_full {
+    //             self.buffer_init_full = true;
+    //         }
+    //         last_hash = Some(self.buffer[self.buffer_current_idx].0);
+    //         self.buffer_current_idx = 0;
+    //     }
 
-        if let Some(last_hash) = last_hash {
-            self.grid_map.remove(&last_hash);
-        }
+    //     if let Some(last_hash) = last_hash {
+    //         self.grid_map.remove(&last_hash);
+    //     }
 
-        let last_idx = self.buffer_current_idx;
-        self.buffer[self.buffer_current_idx] = (hash, node);
-        self.buffer_current_idx += 1;
+    //     let last_idx = self.buffer_current_idx;
+    //     self.buffer[self.buffer_current_idx] = (hash, node);
+    //     self.buffer_current_idx += 1;
 
-        last_idx
-    }
+    //     last_idx
+    // }
 
     pub fn add(&mut self, points: impl IntoIterator<Item = PointXYZ>) {
         self.scan_number += 1;
@@ -274,6 +275,40 @@ impl IVoxHashMap {
         }
     }
 
+    /// Samples a specified number of 3D points from a voxel distribution.
+    ///
+    /// # Arguments
+    ///
+    /// * `distribution` - The VoxelDistribution to sample from.
+    /// * `num_samples` - The number of points to generate.
+    /// * `rng` - A mutable reference to a random number generator.
+    ///
+    /// # Returns
+    ///
+    /// * A `Vec<Point3<f64>>` containing the sampled points.
+    pub fn sample_from_distribution<R: Rng + ?Sized>(
+        distribution: &VoxelDistribution,
+        num_samples: usize,
+        rng: &mut R,
+    ) -> Vec<Point3<f32>> {
+        // let p = distribution.mean;
+        // vec![p]
+        let standard_normal = Normal::new(0.0, 1.0).unwrap();
+        let mut samples = Vec::with_capacity(num_samples);
+
+        for _ in 0..num_samples {
+            let rand_vec = Vector3::new(
+                standard_normal.sample(rng),
+                standard_normal.sample(rng),
+                standard_normal.sample(rng),
+            );
+            let transformed_vec = distribution.cholesky * rand_vec;
+            samples.push(distribution.mean + transformed_vec);
+        }
+
+        samples
+    }
+
     #[must_use]
     pub fn k_nearest_neighbor_query(
         &self,
@@ -285,7 +320,9 @@ impl IVoxHashMap {
     ) -> bool {
         #[cfg(not(feature = "nn_kdt"))]
         {
+            let mut rng = rand::rng();
             let grid = self.pos2grid(query);
+            let query_p = nalgebra::Point3::new(query.x, query.y, query.z);
 
             let neighboring_buckets: &[(i32, i32, i32)] = match self.nearby_type {
                 IVoxNearbyType::Center => &[grid],
@@ -294,33 +331,36 @@ impl IVoxHashMap {
                 IVoxNearbyType::Nearby26 => &Self::nearby_26(grid),
             };
 
-            /*let double_buckets = neighboring_buckets
-            .iter()
-            .map(|g| (Self::hash(g), g))
-            .collect::<Vec<_>>();*/
+            let mut neighbors = Vec::with_capacity(k);
 
-            let mut neighbors = neighboring_buckets
+            let mut neighbors_iter = neighboring_buckets
                 .iter()
-                .filter_map(|g| self.grid_map.get_mut(&Self::hash_grid(g)))
-                .filter_map(|hash_node| {
-                    let n = self.buffer[hash_node.value().1].1.linear_knn(
-                        query,
-                        k,
-                        max_range,
-                        self.scan_number,
-                    );
-                    if n.is_empty() { None } else { Some(n) }
-                })
-                .flatten()
-                .collect::<Vec<_>>();
+                .filter_map(|g| self.grid_map.map.get_key_value(&Self::hash_grid(g)));
 
-            neighbors.sort_unstable_by(|a, b| {
-                let dist_a = (a.xyz_f32() - query.xyz_f32()).norm_squared();
-                let dist_b = (b.xyz_f32() - query.xyz_f32()).norm_squared();
-                dist_a.partial_cmp(&dist_b).unwrap()
-            });
+            while neighbors.len() < k {
+                match neighbors_iter.next() {
+                    Some((_, (key, dist))) => {
+                        let sample_count = if matches!(self.nearby_type, IVoxNearbyType::Center) {
+                            k
+                        } else {
+                            3
+                        };
+                        let s = Self::sample_from_distribution(dist, sample_count, &mut rng);
+                        for p in s {
+                            if (query_p - p).norm_squared() < (max_range * max_range) as f32 {
+                                neighbors.push(p);
+                                if neighbors.len() >= k {
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                    None => break,
+                };
+            }
 
             if neighbors.is_empty() {
+                // dbg!("is false");
                 return false;
             }
 
@@ -328,12 +368,12 @@ impl IVoxHashMap {
 
             neighbors
                 .into_iter()
-                .take(k)
                 .zip(result.iter_mut())
-                .for_each(|(neigh, res)| *res = neigh);
+                .for_each(|(neigh, res)| *res = PointXYZ::new(neigh.x, neigh.y, neigh.z));
 
             return true;
         }
+
         #[cfg(feature = "nn_kdt")]
         {
             if self.kd_map.size() == 0 {
@@ -433,32 +473,33 @@ impl IVoxHashMap {
         ]
     }
 
-    fn pos2grid(&self, pos: &PointXYZ) -> (i32, i32, i32) {
+    pub fn pos2grid(&self, pos: &PointXYZ) -> (i32, i32, i32) {
         let gx = (pos.x * self.inverse_resolution).round() as i32;
         let gy = (pos.y * self.inverse_resolution).round() as i32;
         let gz = (pos.z * self.inverse_resolution).round() as i32;
         (gx, gy, gz)
     }
 
-    fn hash_grid(grid_key: &(i32, i32, i32)) -> i32 {
+    pub fn hash_grid(grid_key: &(i32, i32, i32)) -> i32 {
         const PRIME_1: i32 = 73856093;
         const PRIME_2: i32 = 19349663;
         const PRIME_3: i32 = 83492791;
-        const PRIME_4: i32 = 116_881;
+        // PRIME_4 is no longer needed
 
         let mut hash = grid_key.0.wrapping_mul(PRIME_1);
         hash = hash.wrapping_add(grid_key.1.wrapping_mul(PRIME_2));
         hash = hash.wrapping_add(grid_key.2.wrapping_mul(PRIME_3));
-        hash = hash.wrapping_rem(PRIME_4);
+
+        // The wrapping_rem line is removed.
 
         hash
     }
 
-    fn hash(point: &nalgebra::Point3<f32>, voxel_size: f32) -> i32 {
+    pub fn hash(point: &nalgebra::Point3<f32>, voxel_size: f32) -> i32 {
         const PRIME_1: i32 = 73_856_093;
         const PRIME_2: i32 = 19_349_663;
         const PRIME_3: i32 = 83_492_791;
-        const PRIME_4: i32 = 116_881;
+        // const PRIME_4: i32 = 116_881;
 
         let xyz = point * (1.0 / voxel_size);
 
@@ -469,7 +510,7 @@ impl IVoxHashMap {
         let mut hash = x.wrapping_mul(PRIME_1);
         hash = hash.wrapping_add(y.wrapping_mul(PRIME_2));
         hash = hash.wrapping_add(z.wrapping_mul(PRIME_3));
-        hash = hash.wrapping_rem(PRIME_4);
+        // hash = hash.wrapping_rem(PRIME_4);
 
         hash
     }
@@ -487,25 +528,11 @@ impl IVoxHashMap {
 
         #[cfg(not(feature = "nn_kdt"))]
         {
-            if self.buffer_init_full {
-                return self
-                    .buffer
-                    .iter()
-                    .map(|node| node.1.points.clone())
-                    .flatten()
-                    .collect();
-            } else {
-                let mut out = Vec::with_capacity(self.buffer_current_idx);
-                for i in 0..self.buffer_current_idx {
-                    let node = &self.buffer[i];
-                    let points = &node.1.points;
-                    if !points.is_empty() {
-                        out.extend(points.clone());
-                    }
-                }
-
-                return out;
-            }
+            self.grid_map
+                .map
+                .values()
+                .map(|(_, p)| PointXYZ::new(p.mean.x, p.mean.y, p.mean.z))
+                .collect()
         }
     }
 }

@@ -15,7 +15,7 @@ const PLANE_POINT_ERROR_THRESHOLD: f64 = 0.1;
 pub struct SFasterLio {
     ekf: crate::sophus_ekf::Esekf,
     imu_processing: crate::imu::ImuProcessing,
-    map: spole::IVoxHashMap,
+    pub map: spole::IVoxHashMap,
     laser_point_noise_cov: f64,
     ekf_max_iterations: i8,
     k_neighbors: usize,
@@ -94,6 +94,7 @@ impl SFasterLio {
     }
 
     fn add_to_map(&mut self, cloud: &[PointXYZ], pose: Isometry3<f64>) {
+        #[cfg(feature = "nn_kdt")]
         self.map.add(cloud.iter().map(|point| {
             let p = nalgebra::Point3::new(point.x as f64, point.y as f64, point.z as f64);
             let global = pose.transform_point(&p);
@@ -103,6 +104,12 @@ impl SFasterLio {
                 z: global.z as f32,
             }
         }));
+
+        #[cfg(not(feature = "nn_kdt"))]
+        {
+            self.map.grid_map.copy_to_next_buffer_xyz(cloud);
+            self.map.grid_map.commit_and_merge(pose);
+        }
     }
 
     // Just for debugging! Really slow.
@@ -320,75 +327,78 @@ impl crate::Registration for SFasterLio {
                     }
 
                     // Safety: Hacky way to actively opt-in to possible race conditions on *mut Ptr<T>
-                    let neighbors_raw = neighbors.as_mut_ptr() as usize;
+                    // let neighbors_raw = neighbors.as_mut_ptr() as usize;
 
                     let mut eval = eval_cb.write().unwrap();
+
+                    let mut nplanes = 0;
+                    let mut nneighbors = 0;
 
                     let planes = {
                         eval.start("planes").unwrap();
                         let planes: Vec<PointXYZINormal> = cloud
-                            .par_iter()
-                            .zip(neighbor_sizes.par_iter_mut())
+                            .iter()
+                            .zip(neighbor_sizes.iter_mut())
+                            .zip(neighbors.chunks_exact_mut(k))
                             .enumerate()
-                            .filter_map(|(idx, (point_local, neighbor_size))| {
-                                let point_global =
-                                    initial_guess.transform_point(&point_local.xyz_f64());
-                                let query_point = PointXYZ::new(
-                                    point_global.x as f32,
-                                    point_global.y as f32,
-                                    point_global.z as f32,
-                                );
+                            .filter_map(
+                                |(idx, ((point_local, neighbor_size), curr_point_neighbors))| {
+                                    let point_global =
+                                        initial_guess.transform_point(&point_local.xyz_f64());
+                                    // let query_point = PointXYZ::new(
+                                    //     point_global.x as f32,
+                                    //     point_global.y as f32,
+                                    //     point_global.z as f32,
+                                    // );
 
-                                // (Un-)Safety: Reconstruct slice from pointer adress with a usize indicating the size at the end of k+1
-                                let offset_start = idx * k;
-                                let neighbors_raw_ptr = neighbors_raw as *mut PointXYZ;
-                                let pn = unsafe { neighbors_raw_ptr.offset(offset_start as isize) };
-                                let curr_point_neighbors =
-                                    unsafe { std::slice::from_raw_parts_mut(pn, k) };
-                                // let neighbor_size =
-                                // unsafe { (pn.add(k) as *mut usize).as_mut().expect("at end") };
-                                // Safety: converged is always true in the first iteration so the neighbors have been populated
-                                if first_it_local || converged {
-                                    if !map.k_nearest_neighbor_query(
-                                        &query_point,
-                                        k,
-                                        neighbor_max_range,
-                                        curr_point_neighbors,
-                                        neighbor_size,
-                                    ) {
+                                    if first_it_local || converged {
+                                        if !map.k_nearest_neighbor_query(
+                                            point_local,
+                                            k,
+                                            neighbor_max_range,
+                                            curr_point_neighbors,
+                                            neighbor_size,
+                                        ) {
+                                            return None;
+                                        }
+                                    }
+
+                                    nneighbors += 1;
+
+                                    // TODO the entire step becomes useless if neighbors exists. we can save the result instead
+                                    let plane = Self::plane_from_points(
+                                        &curr_point_neighbors[..*neighbor_size],
+                                        PLANE_POINT_ERROR_THRESHOLD,
+                                    )?;
+
+                                    nplanes += 1;
+
+                                    let pd2 = plane[0] * point_global.x
+                                        + plane[1] * point_global.y
+                                        + plane[2] * point_global.z
+                                        + plane[3];
+                                    let s = 1.0
+                                        - 0.9 * pd2.abs()
+                                            / point_local.xyz_f64().coords.norm().sqrt();
+
+                                    if s <= 0.9 {
                                         return None;
                                     }
-                                }
 
-                                // TODO out_size as range here completely destroys the registration.. why?
-                                let plane = Self::plane_from_points(
-                                    &curr_point_neighbors[..*neighbor_size],
-                                    PLANE_POINT_ERROR_THRESHOLD,
-                                )?;
-
-                                let pd2 = plane[0] * point_global.x
-                                    + plane[1] * point_global.y
-                                    + plane[2] * point_global.z
-                                    + plane[3];
-                                let s = 1.0
-                                    - 0.9 * pd2.abs() / point_local.xyz_f64().coords.norm().sqrt();
-
-                                if s <= 0.9 {
-                                    return None;
-                                }
-
-                                Some(PointXYZINormal::new(
-                                    point_local.x,
-                                    point_local.y,
-                                    point_local.z,
-                                    pd2 as f32,
-                                    plane[0] as f32,
-                                    plane[1] as f32,
-                                    plane[2] as f32,
-                                ))
-                            })
+                                    Some(PointXYZINormal::new(
+                                        point_local.x,
+                                        point_local.y,
+                                        point_local.z,
+                                        pd2 as f32,
+                                        plane[0] as f32,
+                                        plane[1] as f32,
+                                        plane[2] as f32,
+                                    ))
+                                },
+                            )
                             .collect::<Vec<_>>();
                         eval.stop("planes").unwrap();
+                        dbg!(&planes.len(), nplanes, nneighbors, cloud_len);
                         planes
                     };
 
