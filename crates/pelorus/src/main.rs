@@ -101,6 +101,9 @@ pub struct LioConfig {
     pub enable_live_extrinsic_calibration: bool,
     pub prelio_params: LifisParameters,
     pub prelio_node_params: LifisNodeParameters,
+    pub k_neighbors: usize,
+    pub neighbor_max_range: f64,
+    pub ekf_max_iterations: i8,
 }
 
 impl Default for LioConfig {
@@ -119,6 +122,9 @@ impl Default for LioConfig {
             imu_params: pelorus_reg::imu::ImuParameters::default(),
             prelio_params: LifisParameters::default(),
             prelio_node_params: LifisNodeParameters::default(),
+            k_neighbors: 5,
+            neighbor_max_range: 5.0,
+            ekf_max_iterations: 4,
         }
     }
 }
@@ -261,12 +267,12 @@ fn lio(config_path: &str) -> Result<(), Box<dyn std::error::Error>> {
         config.prelio_params.imu.gravity,
         &config.imu_params,
         config.lidar_odom_cov,
-        4,
-        5,
-        5.0,
+        config.ekf_max_iterations,
+        config.k_neighbors,
+        config.neighbor_max_range,
         config.enable_live_extrinsic_calibration,
         Isometry3::identity(), // TODO params
-        pelorus_reg::IVoxNearbyType::Nearby18,
+        pelorus_reg::IVoxNearbyType::Nearby26,
     )));
 
     #[cfg(not(feature = "gicp"))]

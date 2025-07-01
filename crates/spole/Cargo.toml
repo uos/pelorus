@@ -16,10 +16,13 @@ serde.workspace = true
 kiddo = { version = "5.1.0", optional = true }
 rayon.workspace = true
 bytemuck = "1.23.1"
+morton-encoding.workspace = true
+rand.workspace = true
+rand_distr.workspace = true
 
 [features]
 # default = ["nn_kdt"]
 nn_kdt = ["dep:kiddo"]
 
-[dev-dependencies]
-rand = "0.8"
+# [dev-dependencies]
+# rand = "0.8"
