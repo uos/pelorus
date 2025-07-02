@@ -95,25 +95,18 @@ impl SFasterLio {
 
     fn add_to_map(&mut self, cloud: &[PointXYZ], pose: Isometry3<f64>) {
         #[cfg(feature = "nn_kdt")]
-        self.map.add(cloud.iter().map(|point| {
-            let p = nalgebra::Point3::new(point.x as f64, point.y as f64, point.z as f64);
-            let global = pose.transform_point(&p);
-            PointXYZ {
-                x: global.x as f32,
-                y: global.y as f32,
-                z: global.z as f32,
-            }
-        }));
+        {
+            self.map.add(cloud, &pose);
+        }
 
         #[cfg(not(feature = "nn_kdt"))]
         {
-            self.map.grid_map.copy_to_next_buffer_xyz(cloud);
-            self.map.grid_map.commit_and_merge(pose);
+            self.map.add(cloud, pose);
         }
     }
 
     // Just for debugging! Really slow.
-    pub fn get_entire_map(&self) -> Vec<PointXYZ> {
+    pub fn get_entire_map(&self) -> Vec<nalgebra::Point3<f32>> {
         self.map.get_entire_map()
     }
 
