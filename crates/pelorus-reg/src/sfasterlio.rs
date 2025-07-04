@@ -36,6 +36,7 @@ impl Default for SFasterLio {
             false,
             Isometry3::identity(),
             IVoxNearbyType::default(),
+            3.0,
         )
     }
 }
@@ -52,11 +53,13 @@ impl SFasterLio {
         imu_lidar_extrinsic_calibration_optimization: bool,
         initial_extrinsic_calibration: Isometry3<f64>,
         knn_nearby_voxel_search_range: IVoxNearbyType,
+        update_cov_sensitivity: f32,
     ) -> Self {
         let map = spole::IVoxHashMap::new(
             map_resolution as f32,
             100_000,
             knn_nearby_voxel_search_range,
+            update_cov_sensitivity,
         );
         let mut cov_gyr = Matrix3::identity();
         cov_gyr[(0, 0)] = imu_params.cov_gyr.x;
@@ -101,7 +104,7 @@ impl SFasterLio {
 
         #[cfg(not(feature = "nn_kdt"))]
         {
-            self.map.add(cloud, pose);
+            self.map.add(cloud, &pose);
         }
     }
 
@@ -324,29 +327,29 @@ impl crate::Registration for SFasterLio {
 
                     let mut eval = eval_cb.write().unwrap();
 
-                    let mut nplanes = 0;
-                    let mut nneighbors = 0;
+                    // let mut nplanes = 0;
+                    // let mut nneighbors = 0;
 
                     let planes = {
                         eval.start("planes").unwrap();
                         let planes: Vec<PointXYZINormal> = cloud
-                            .iter()
-                            .zip(neighbor_sizes.iter_mut())
-                            .zip(neighbors.chunks_exact_mut(k))
+                            .par_iter()
+                            .zip(neighbor_sizes.par_iter_mut())
+                            .zip(neighbors.par_chunks_exact_mut(k))
                             .enumerate()
                             .filter_map(
                                 |(idx, ((point_local, neighbor_size), curr_point_neighbors))| {
                                     let point_global =
                                         initial_guess.transform_point(&point_local.xyz_f64());
-                                    // let query_point = PointXYZ::new(
-                                    //     point_global.x as f32,
-                                    //     point_global.y as f32,
-                                    //     point_global.z as f32,
-                                    // );
+                                    let query_point = PointXYZ::new(
+                                        point_global.x as f32,
+                                        point_global.y as f32,
+                                        point_global.z as f32,
+                                    );
 
                                     if first_it_local || converged {
                                         if !map.k_nearest_neighbor_query(
-                                            point_local,
+                                            &query_point,
                                             k,
                                             neighbor_max_range,
                                             curr_point_neighbors,
@@ -356,7 +359,7 @@ impl crate::Registration for SFasterLio {
                                         }
                                     }
 
-                                    nneighbors += 1;
+                                    // nneighbors += 1;
 
                                     // TODO the entire step becomes useless if neighbors exists. we can save the result instead
                                     let plane = Self::plane_from_points(
@@ -364,7 +367,7 @@ impl crate::Registration for SFasterLio {
                                         PLANE_POINT_ERROR_THRESHOLD,
                                     )?;
 
-                                    nplanes += 1;
+                                    // nplanes += 1;
 
                                     let pd2 = plane[0] * point_global.x
                                         + plane[1] * point_global.y
@@ -391,7 +394,7 @@ impl crate::Registration for SFasterLio {
                             )
                             .collect::<Vec<_>>();
                         eval.stop("planes").unwrap();
-                        dbg!(&planes.len(), nplanes, nneighbors, cloud_len);
+                        // dbg!(&planes.len(), nplanes, nneighbors, cloud_len);
                         planes
                     };
 

@@ -104,6 +104,7 @@ pub struct LioConfig {
     pub k_neighbors: usize,
     pub neighbor_max_range: f64,
     pub ekf_max_iterations: i8,
+    pub dist_update_sensitivity: f32,
 }
 
 impl Default for LioConfig {
@@ -125,6 +126,7 @@ impl Default for LioConfig {
             k_neighbors: 5,
             neighbor_max_range: 5.0,
             ekf_max_iterations: 4,
+            dist_update_sensitivity: 0.3,
         }
     }
 }
@@ -273,6 +275,7 @@ fn lio(config_path: &str) -> Result<(), Box<dyn std::error::Error>> {
         config.enable_live_extrinsic_calibration,
         Isometry3::identity(), // TODO params
         pelorus_reg::IVoxNearbyType::Nearby26,
+        config.dist_update_sensitivity,
     )));
 
     #[cfg(not(feature = "gicp"))]

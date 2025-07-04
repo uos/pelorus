@@ -20,7 +20,8 @@ use serde::{Deserialize, Serialize};
 pub struct IVoxHashMap {
     nearby_type: IVoxNearbyType,
     inverse_resolution: f32,
-    resolution: f64,
+    resolution: f32,
+    sensitivity: f32,
     max_map_size: usize,
     pub grid_map: Localmap,
     scan_number: usize,
@@ -50,12 +51,12 @@ pub enum IVoxNearbyType {
 
 impl Default for IVoxHashMap {
     fn default() -> Self {
-        Self::new(0.2, 100_000, IVoxNearbyType::default())
+        Self::new(0.2, 100_000, IVoxNearbyType::default(), 3.0)
     }
 }
 
 impl IVoxHashMap {
-    pub fn new(resolution: f32, capacity: usize, nbtype: IVoxNearbyType) -> Self {
+    pub fn new(resolution: f32, capacity: usize, nbtype: IVoxNearbyType, sensitivity: f32) -> Self {
         Self {
             nearby_type: nbtype.clone(),
             inverse_resolution: 1.0 / resolution,
@@ -63,7 +64,8 @@ impl IVoxHashMap {
             max_map_size: capacity,
             scan_number: 0,
             pt_id: 0,
-            resolution: resolution as f64,
+            resolution,
+            sensitivity,
             buffer_current_idx: 0,
             buffer_init_full: false,
             #[cfg(feature = "nn_kdt")]
@@ -213,13 +215,17 @@ impl IVoxHashMap {
                 //     .or_insert_with(|| VoxelDistribution::new(&global_p.cast()));
                 let entry = self.grid_map.map.get_mut(&voxel_key);
                 if let Some(entry) = entry {
-                    entry.update(&global_p.cast(), 100.0, self.resolution as f32 / 4.0);
+                    entry.update(
+                        &global_p.cast(),
+                        self.sensitivity,
+                        self.resolution as f32 / 4.0,
+                    );
                 } else {
-                    if self.scan_number < 2 {
-                        self.grid_map
-                            .map
-                            .insert(voxel_key, VoxelDistribution::new(&global_p.cast()));
-                    }
+                    // if self.scan_number < 2 {
+                    self.grid_map
+                        .map
+                        .insert(voxel_key, VoxelDistribution::new(&global_p.cast()));
+                    // }
                 }
             });
             // TODO removal after simple works
@@ -274,63 +280,6 @@ impl IVoxHashMap {
         result: &mut [PointXYZ],
         out_size: &mut usize,
     ) -> bool {
-        #[cfg(not(feature = "nn_kdt"))]
-        {
-            let mut rng = rand::rng();
-            let grid = self.pos2grid(query);
-            let query_p = nalgebra::Point3::new(query.x, query.y, query.z);
-
-            let neighboring_buckets: &[(i32, i32, i32)] = match self.nearby_type {
-                IVoxNearbyType::Center => &[grid],
-                IVoxNearbyType::Nearby6 => &Self::nearby_6(grid),
-                IVoxNearbyType::Nearby18 => &Self::nearby_18(grid),
-                IVoxNearbyType::Nearby26 => &Self::nearby_26(grid),
-            };
-
-            let mut neighbors = Vec::with_capacity(k);
-
-            let mut neighbors_iter = neighboring_buckets
-                .iter()
-                .filter_map(|g| self.grid_map.map.get_key_value(&Self::hash_grid(g)));
-
-            while neighbors.len() < k {
-                match neighbors_iter.next() {
-                    Some((_, dist)) => {
-                        let sample_count = if matches!(self.nearby_type, IVoxNearbyType::Center) {
-                            k
-                        } else {
-                            // TODO change to density based
-                            3
-                        };
-                        let s = Self::sample_from_distribution(dist, sample_count, &mut rng);
-                        for p in s {
-                            if (query_p - p).norm_squared() < (max_range * max_range) as f32 {
-                                neighbors.push(p);
-                                if neighbors.len() >= k {
-                                    break;
-                                }
-                            }
-                        }
-                    }
-                    None => break,
-                };
-            }
-
-            if neighbors.is_empty() {
-                // dbg!("is false");
-                return false;
-            }
-
-            *out_size = neighbors.len();
-
-            neighbors
-                .into_iter()
-                .zip(result.iter_mut())
-                .for_each(|(neigh, res)| *res = PointXYZ::new(neigh.x, neigh.y, neigh.z));
-
-            return true;
-        }
-
         #[cfg(feature = "nn_kdt")]
         {
             if self.kd_map.size() == 0 {
@@ -361,6 +310,89 @@ impl IVoxHashMap {
                 });
 
             return true;
+        }
+
+        #[cfg(not(feature = "nn_kdt"))]
+        {
+            if k == 0 || result.is_empty() {
+                *out_size = 0;
+                return false;
+            }
+
+            let query_p = nalgebra::Point3::new(query.x, query.y, query.z);
+            let mut rng = rand::rng();
+
+            // --- Gather Neighbors and Total Density ---
+
+            const MAX_NEIGHBORS: usize = 27;
+            let mut cached_neighbors: [Option<&VoxelDistribution>; MAX_NEIGHBORS] =
+                [None; MAX_NEIGHBORS];
+            let mut num_cached = 0;
+            let mut total_density = 0u64;
+
+            let mut cache_and_sum_density = |grids: &[(i32, i32, i32)]| {
+                for g in grids {
+                    if let Some(dist) = self.grid_map.map.get(&Self::hash_grid(g)) {
+                        if dist.point_count > 0 && num_cached < MAX_NEIGHBORS {
+                            cached_neighbors[num_cached] = Some(dist);
+                            total_density += dist.point_count;
+                            num_cached += 1;
+                        }
+                    }
+                }
+            };
+
+            let grid = self.pos2grid(query);
+            match self.nearby_type {
+                IVoxNearbyType::Center => cache_and_sum_density(&[grid]),
+                IVoxNearbyType::Nearby6 => cache_and_sum_density(&Self::nearby_6(grid)),
+                IVoxNearbyType::Nearby18 => cache_and_sum_density(&Self::nearby_18(grid)),
+                IVoxNearbyType::Nearby26 => cache_and_sum_density(&Self::nearby_26(grid)),
+            };
+
+            if total_density == 0 {
+                *out_size = 0;
+                return false;
+            }
+
+            // --- Proportional Sampling ---
+
+            let mut current_found_count = 0;
+
+            // Iterate through the valid entries in our cached array.
+            for i in 0..num_cached {
+                if current_found_count >= k {
+                    break;
+                }
+
+                if let Some(dist) = cached_neighbors[i] {
+                    let relative_density = dist.point_count as f64 / total_density as f64;
+                    let mut sample_count = (relative_density * k as f64).round() as usize;
+
+                    let samples_needed = k - current_found_count;
+                    sample_count = sample_count.min(samples_needed);
+
+                    if sample_count == 0 {
+                        continue;
+                    }
+
+                    let s = Self::sample_from_distribution(dist, sample_count, &mut rng);
+
+                    for p in s {
+                        if (query_p - p).norm_squared() < (max_range * max_range) as f32 {
+                            result[current_found_count] = PointXYZ::new(p.x, p.y, p.z);
+                            current_found_count += 1;
+
+                            if current_found_count >= k {
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+
+            *out_size = current_found_count;
+            *out_size > 0
         }
     }
 
@@ -493,7 +525,7 @@ impl IVoxHashMap {
             self.grid_map
                 .map
                 .values()
-                .map(|p| PointXYZ::new(p.mean.x, p.mean.y, p.mean.z))
+                .map(|p| nalgebra::Point3::new(p.mean.x, p.mean.y, p.mean.z))
                 .collect()
         }
     }
@@ -512,15 +544,15 @@ mod tests {
             PointXYZ::new(0.49, 0.49, 0.1),
             PointXYZ::new(0.75001, 0.51, 0.51),
         ];
-        let mut map = IVoxHashMap::new(0.5, 1_000, IVoxNearbyType::default());
-        map.add(&h_points, Isometry3::identity());
+        let mut map = IVoxHashMap::new(0.5, 1_000, IVoxNearbyType::default(), 0.3);
+        map.add(&h_points, &Isometry3::identity());
         let entire_map = map.get_entire_map();
         assert_eq!(entire_map.len(), 4);
 
         {
             let mut found = false;
             for point in entire_map {
-                if point == PointXYZ::new(0.2, 0.2, 0.0) {
+                if point.x == 0.2 && point.y == 0.2 && point.z == 0.2 {
                     found = true;
                     break;
                 }
@@ -532,8 +564,8 @@ mod tests {
     #[test]
     #[cfg(not(feature = "nn_kdt"))]
     fn basic_add_and_search() {
-        let mut map = IVoxHashMap::new(0.5, 1_000, IVoxNearbyType::default());
-        map.add(&[PointXYZ::new(3.3, 3.3, 3.0)], Isometry3::identity());
+        let mut map = IVoxHashMap::new(0.5, 1_000, IVoxNearbyType::default(), 0.3);
+        map.add(&[PointXYZ::new(3.3, 3.3, 3.0)], &Isometry3::identity());
         let mut result = vec![PointXYZ::default(); 1];
         let out_size = &mut 0;
         let res = map.k_nearest_neighbor_query(
@@ -556,8 +588,8 @@ mod tests {
             PointXYZ::new(0.49, 0.49, 0.1),
             PointXYZ::new(0.75001, 0.51, 0.51),
         ];
-        let mut map = IVoxHashMap::new(0.5, 1_000, IVoxNearbyType::Nearby26);
-        map.add(&h_points, Isometry3::identity());
+        let mut map = IVoxHashMap::new(0.5, 1_000, IVoxNearbyType::Nearby26, 0.3);
+        map.add(&h_points, &Isometry3::identity());
 
         let query = PointXYZ::new(0.0, 0.0, 0.0);
         let mut result = vec![PointXYZ::default(); 6];
@@ -585,8 +617,8 @@ mod tests {
             PointXYZ::new(6.8, 9.2, 1.1),
         ];
 
-        let mut map = IVoxHashMap::new(0.5, 1_000, IVoxNearbyType::Nearby18);
-        map.add(&distant_points, Isometry3::identity());
+        let mut map = IVoxHashMap::new(0.5, 1_000, IVoxNearbyType::Nearby18, 0.3);
+        map.add(&distant_points, &Isometry3::identity());
 
         let query = PointXYZ::new(5.5, 10.5, 0.0);
         let mut result = vec![PointXYZ::default(); 2];
