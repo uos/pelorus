@@ -4,7 +4,6 @@ use ros_pointcloud2::prelude::*;
 
 pub mod gicp;
 pub mod imu;
-mod localmap;
 pub mod sfasterlio;
 pub mod sophus_ekf;
 use anyhow::Result;

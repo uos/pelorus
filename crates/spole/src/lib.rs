@@ -7,9 +7,11 @@ use dashmap::DashMap;
 use denselocalmap::{Localmap, Point, VoxelDistribution};
 #[cfg(feature = "nn_kdt")]
 use kiddo::SquaredEuclidean;
+use localmap::Livodish;
 use ros_pointcloud2::prelude::*;
 
 pub mod denselocalmap;
+pub mod localmap;
 use rand_distr::{Distribution, Normal};
 
 use nalgebra::{Cholesky, Isometry3, Matrix3, Point3, SymmetricEigen, Vector3};
@@ -23,19 +25,21 @@ pub struct IVoxHashMap {
     resolution: f32,
     sensitivity: f32,
     max_map_size: usize,
-    pub grid_map: Localmap,
+    // pub grid_map: Localmap,
     scan_number: usize,
     pt_id: u64,
     buffer_current_idx: usize,
     buffer_init_full: bool,
     #[cfg(feature = "nn_kdt")]
     kd_map: kiddo::float::kdtree::KdTree<f32, u64, 3, 64, u32>,
-    #[cfg(not(feature = "nn_kdt"))]
-    points: Vec<PointXYZ>,
+    // #[cfg(not(feature = "nn_kdt"))]
+    // points: Vec<PointXYZ>,
     #[cfg(feature = "nn_kdt")]
     kd_points: VecDeque<Arc<(u64, nalgebra::Point3<f32>)>>,
     #[cfg(feature = "nn_kdt")]
     kd_points_lookup: HashMap<u64, Arc<(u64, nalgebra::Point3<f32>)>>,
+
+    livodish: localmap::Livodish,
 }
 
 #[derive(Debug, Default, Clone, Copy, Serialize, Deserialize)]
@@ -60,7 +64,7 @@ impl IVoxHashMap {
         Self {
             nearby_type: nbtype.clone(),
             inverse_resolution: 1.0 / resolution,
-            grid_map: Localmap::new(128 * 512, 10, resolution),
+            // grid_map: Localmap::new(128 * 512, 10, resolution),
             max_map_size: capacity,
             scan_number: 0,
             pt_id: 0,
@@ -74,8 +78,9 @@ impl IVoxHashMap {
             kd_points: VecDeque::with_capacity(capacity),
             #[cfg(feature = "nn_kdt")]
             kd_points_lookup: HashMap::new(),
-            #[cfg(not(feature = "nn_kdt"))]
-            points: Vec::with_capacity(capacity),
+            // #[cfg(not(feature = "nn_kdt"))]
+            // points: Vec::with_capacity(capacity),
+            livodish: Livodish::new(capacity, sensitivity, resolution / 4.0),
         }
     }
 
@@ -84,7 +89,7 @@ impl IVoxHashMap {
         return self.kd_map.size() == 0;
 
         #[cfg(not(feature = "nn_kdt"))]
-        return self.grid_map.map.is_empty();
+        return self.livodish.is_empty();
     }
 
     // fn add_voxel(&mut self, hash: i32, node: IvoxNode) -> usize {
@@ -206,29 +211,9 @@ impl IVoxHashMap {
                     z: global_p.z as f32,
                 });
                 let voxel_key = Self::hash_grid(&grid);
-                // self.grid_map
-                //     .map
-                //     .entry(voxel_key)
-                //     .and_modify(|dist| {
-                //         dist.update(&global_p.cast(), 100.0, self.resolution as f32 / 4.0)
-                //     })
-                //     .or_insert_with(|| VoxelDistribution::new(&global_p.cast()));
-                let entry = self.grid_map.map.get_mut(&voxel_key);
-                if let Some(entry) = entry {
-                    entry.update(
-                        &global_p.cast(),
-                        self.sensitivity,
-                        self.resolution as f32 / 4.0,
-                    );
-                } else {
-                    // if self.scan_number < 2 {
-                    self.grid_map
-                        .map
-                        .insert(voxel_key, VoxelDistribution::new(&global_p.cast()));
-                    // }
-                }
+                self.livodish.add(&global_p.cast(), voxel_key);
             });
-            // TODO removal after simple works
+            self.livodish.build();
         }
     }
 
@@ -332,7 +317,8 @@ impl IVoxHashMap {
 
             let mut cache_and_sum_density = |grids: &[(i32, i32, i32)]| {
                 for g in grids {
-                    if let Some(dist) = self.grid_map.map.get(&Self::hash_grid(g)) {
+                    let k = Self::hash_grid(g);
+                    if let Some(dist) = self.livodish.find(&k) {
                         if dist.point_count > 0 && num_cached < MAX_NEIGHBORS {
                             cached_neighbors[num_cached] = Some(dist);
                             total_density += dist.point_count;
@@ -510,7 +496,7 @@ impl IVoxHashMap {
     }
 
     pub fn clear(&mut self) {
-        self.grid_map.clear();
+        self.livodish.clear();
     }
 
     /// Mostly for testing purposes, is not efficient
@@ -522,11 +508,7 @@ impl IVoxHashMap {
 
         #[cfg(not(feature = "nn_kdt"))]
         {
-            self.grid_map
-                .map
-                .values()
-                .map(|p| nalgebra::Point3::new(p.mean.x, p.mean.y, p.mean.z))
-                .collect()
+            self.livodish.get_map()
         }
     }
 }

@@ -12,6 +12,7 @@ use rand::Rng; // Import the Rng trait
 use rand::thread_rng;
 use ros_pointcloud2::points::PointXYZ; // Import the thread_rng function to get an RNG instance
 
+#[derive(Clone)]
 pub struct VoxelDistribution {
     pub point_count: u64,
     pub mean: Point3<f32>,
