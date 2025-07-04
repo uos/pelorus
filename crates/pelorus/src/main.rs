@@ -95,6 +95,7 @@ pub struct LioConfig {
     pub imu_path_qos: prelio_ros2::Qos,
     pub path_qos: prelio_ros2::Qos,
     pub map_resolution: f64,
+    pub map_capacity: usize,
     pub imu_params: pelorus_reg::imu::ImuParameters,
     pub imu_init_length: u32,
     pub lidar_odom_cov: f64,
@@ -127,6 +128,7 @@ impl Default for LioConfig {
             neighbor_max_range: 5.0,
             ekf_max_iterations: 4,
             dist_update_sensitivity: 0.3,
+            map_capacity: 10_000,
         }
     }
 }
@@ -266,6 +268,7 @@ fn lio(config_path: &str) -> Result<(), Box<dyn std::error::Error>> {
     #[cfg(not(feature = "gicp"))]
     let map = Arc::new(Mutex::new(SFasterLio::new(
         config.map_resolution,
+        config.map_capacity,
         config.prelio_params.imu.gravity,
         &config.imu_params,
         config.lidar_odom_cov,

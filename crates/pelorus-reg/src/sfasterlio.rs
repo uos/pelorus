@@ -27,6 +27,7 @@ impl Default for SFasterLio {
     fn default() -> Self {
         Self::new(
             0.2,
+            10_000,
             9.81,
             &crate::imu::ImuParameters::default(),
             0.001,
@@ -44,6 +45,7 @@ impl Default for SFasterLio {
 impl SFasterLio {
     pub fn new(
         map_resolution: f64,
+        map_capacity: usize,
         g: f64,
         imu_params: &crate::imu::ImuParameters,
         laser_point_noise_cov: f64,
@@ -57,7 +59,7 @@ impl SFasterLio {
     ) -> Self {
         let map = spole::IVoxHashMap::new(
             map_resolution as f32,
-            100_000,
+            map_capacity,
             knn_nearby_voxel_search_range,
             update_cov_sensitivity,
         );
