@@ -469,26 +469,34 @@ impl ImuProcess {
     ) -> Vec<ros_pointcloud2::points::PointXYZ> {
         let tbe = pose_end_of_frame.translation();
         let rso3_be = pose_end_of_frame.rotation().log();
-        cloud_in_out
-            .into_par_iter()
-            .map(|p| {
-                let ring = p.timestamp.floor() as i64;
-                let dt_bi = p.timestamp - ring as f64;
-                let ratio_bi = dt_bi / delta_time;
-                let ratio_ie = 1.0 - ratio_bi;
+        let iter = {
+            #[cfg(feature = "parallel")]
+            {
+                cloud_in_out.into_par_iter()
+            }
+            #[cfg(not(feature = "parallel"))]
+            {
+                cloud_in_out.into_iter()
+            }
+        };
+        iter.map(|p| {
+            let ring = p.timestamp.floor() as i64;
+            let dt_bi = p.timestamp - ring as f64;
+            let ratio_bi = dt_bi / delta_time;
+            let ratio_ie = 1.0 - ratio_bi;
 
-                let rso3_ie = ratio_ie * rso3_be;
-                let rie = SO3::exp(&rso3_ie);
+            let rso3_ie = ratio_ie * rso3_be;
+            let rie = SO3::exp(&rso3_ie);
 
-                let tie = ratio_ie * tbe;
-                let v_pt_i = Vector3::new(p.x as f64, p.y as f64, p.z as f64);
-                let v_pt_comp_e = rie.inverse().matrix() * (v_pt_i - tie);
-                ros_pointcloud2::points::PointXYZ::new(
-                    v_pt_comp_e.x as f32,
-                    v_pt_comp_e.y as f32,
-                    v_pt_comp_e.z as f32,
-                )
-            })
-            .collect()
+            let tie = ratio_ie * tbe;
+            let v_pt_i = Vector3::new(p.x as f64, p.y as f64, p.z as f64);
+            let v_pt_comp_e = rie.inverse().matrix() * (v_pt_i - tie);
+            ros_pointcloud2::points::PointXYZ::new(
+                v_pt_comp_e.x as f32,
+                v_pt_comp_e.y as f32,
+                v_pt_comp_e.z as f32,
+            )
+        })
+        .collect()
     }
 }

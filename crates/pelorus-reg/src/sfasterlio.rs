@@ -5,6 +5,7 @@ use std::sync::{Arc, Mutex};
 
 use nalgebra::*;
 use prelio::timing::RuntimeEvaluator;
+#[cfg(feature = "parallel")]
 use rayon::prelude::*;
 use ros_pointcloud2::points::{PointXYZ, PointXYZINormal};
 
@@ -254,26 +255,10 @@ impl crate::Registration for SFasterLio {
 
     fn register_and_map(
         &mut self,
-        data: crate::Mode,
+        cloud: &[PointXYZ],
         ready_for_next: Option<&std::sync::mpsc::Sender<()>>,
         eval: &mut RuntimeEvaluator,
     ) -> anyhow::Result<crate::CloudRegisterResult> {
-        #[allow(unused_variables)]
-        let cloud = match data {
-            crate::Mode::ActiveRegistration {
-                cloud,
-                initial_guess: _,
-            } => match cloud {
-                crate::LocatedBufferView::Ram(cloud) => cloud,
-                crate::LocatedBufferView::Cuda(_) => {
-                    return Err(anyhow::anyhow!("Gave GPU buffer to CPU-only function"));
-                }
-            },
-            _ => return Err(anyhow::anyhow!("Invalid mode")),
-        };
-
-        let cloud = cloud.as_slice(); // TODO use views, not copies after accuracy is done
-
         let neighbors = Arc::new(Mutex::new(None));
         let neighbor_sizes = Arc::new(Mutex::new(None));
         let first_it = Arc::new(Mutex::new(true));
@@ -281,12 +266,12 @@ impl crate::Registration for SFasterLio {
         if !self.map.is_empty() {
             let map = &mut self.map;
             let k = self.k_neighbors;
-            let neighbor_max_range = self.neighbor_max_range;
+            let neighbor_max_range = self.neighbor_max_range as f32;
             let extrinsic_estimation = self.imu_lidar_extrinsic_calibration_optimization;
 
             let neighbors_cloud_in_ekf = neighbors.clone();
             let neighbor_sizes_in_ekf = neighbor_sizes.clone();
-            let cloud_len = cloud.len();
+            let cloud_len_alloc = (1.2 * cloud.len() as f32).ceil() as usize;
             {
                 eval_outer.write().unwrap().start("ekf correct").unwrap();
             }
@@ -312,88 +297,87 @@ impl crate::Registration for SFasterLio {
                         .lock()
                         .unwrap()
                         .take()
-                        .unwrap_or(vec![PointXYZ::default(); cloud_len * k]);
+                        .unwrap_or(vec![PointXYZ::default(); cloud_len_alloc * k]);
                     let mut neighbor_sizes = neighbor_sizes_in_ekf
                         .lock()
                         .unwrap()
                         .take()
-                        .unwrap_or(vec![0usize; cloud_len]);
+                        .unwrap_or(vec![0usize; cloud_len_alloc]);
 
-                    // Perf: should never be larger than k because k never changes
+                    // Perf: should never be larger than k because k never changes. add 20% extra room to avoid triggering with small upward changes.
                     if neighbors.len() < cloud.len() * k {
-                        neighbors = vec![PointXYZ::default(); cloud.len() * k];
+                        neighbors = vec![PointXYZ::default(); cloud_len_alloc * k];
                     }
-
-                    // Safety: Hacky way to actively opt-in to possible race conditions on *mut Ptr<T>
-                    // let neighbors_raw = neighbors.as_mut_ptr() as usize;
 
                     let mut eval = eval_cb.write().unwrap();
 
-                    // let mut nplanes = 0;
-                    // let mut nneighbors = 0;
+                    let iter = {
+                        #[cfg(feature = "parallel")]
+                        {
+                            cloud
+                                .par_iter()
+                                .zip(neighbor_sizes.par_iter_mut())
+                                .zip(neighbors.par_chunks_exact_mut(k))
+                        }
+                        #[cfg(not(feature = "parallel"))]
+                        {
+                            cloud
+                                .iter()
+                                .zip(neighbor_sizes.iter_mut())
+                                .zip(neighbors.chunks_exact_mut(k))
+                        }
+                    };
 
                     let planes = {
                         eval.start("planes").unwrap();
-                        let planes: Vec<PointXYZINormal> = cloud
-                            .par_iter()
-                            .zip(neighbor_sizes.par_iter_mut())
-                            .zip(neighbors.par_chunks_exact_mut(k))
-                            .enumerate()
-                            .filter_map(
-                                |(idx, ((point_local, neighbor_size), curr_point_neighbors))| {
-                                    let point_global =
-                                        initial_guess.transform_point(&point_local.xyz_f64());
-                                    let query_point = PointXYZ::new(
-                                        point_global.x as f32,
-                                        point_global.y as f32,
-                                        point_global.z as f32,
-                                    );
+                        let planes: Vec<PointXYZINormal> = iter
+                            .filter_map(|((point_local, neighbor_size), curr_point_neighbors)| {
+                                let point_global =
+                                    initial_guess.transform_point(&point_local.xyz_f64());
+                                let query_point = PointXYZ::new(
+                                    point_global.x as f32,
+                                    point_global.y as f32,
+                                    point_global.z as f32,
+                                );
 
-                                    if first_it_local || converged {
-                                        if !map.k_nearest_neighbor_query(
-                                            &query_point,
-                                            k,
-                                            neighbor_max_range,
-                                            curr_point_neighbors,
-                                            neighbor_size,
-                                        ) {
-                                            return None;
-                                        }
-                                    }
-
-                                    // nneighbors += 1;
-
-                                    // TODO the entire step becomes useless if neighbors exists. we can save the result instead
-                                    let plane = Self::plane_from_points(
-                                        &curr_point_neighbors[..*neighbor_size],
-                                        PLANE_POINT_ERROR_THRESHOLD,
-                                    )?;
-
-                                    // nplanes += 1;
-
-                                    let pd2 = plane[0] * point_global.x
-                                        + plane[1] * point_global.y
-                                        + plane[2] * point_global.z
-                                        + plane[3];
-                                    let s = 1.0
-                                        - 0.9 * pd2.abs()
-                                            / point_local.xyz_f64().coords.norm().sqrt();
-
-                                    if s <= 0.9 {
+                                if first_it_local || converged {
+                                    if !map.k_nearest_neighbor_query(
+                                        &query_point,
+                                        k,
+                                        neighbor_max_range,
+                                        curr_point_neighbors,
+                                        neighbor_size,
+                                    ) {
                                         return None;
                                     }
+                                }
 
-                                    Some(PointXYZINormal::new(
-                                        point_local.x,
-                                        point_local.y,
-                                        point_local.z,
-                                        pd2 as f32,
-                                        plane[0] as f32,
-                                        plane[1] as f32,
-                                        plane[2] as f32,
-                                    ))
-                                },
-                            )
+                                let plane = Self::plane_from_points(
+                                    &curr_point_neighbors[..*neighbor_size],
+                                    PLANE_POINT_ERROR_THRESHOLD,
+                                )?;
+
+                                let pd2 = plane[0] * point_global.x
+                                    + plane[1] * point_global.y
+                                    + plane[2] * point_global.z
+                                    + plane[3];
+                                let s = 1.0
+                                    - 0.9 * pd2.abs() / point_local.xyz_f64().coords.norm().sqrt();
+
+                                if s <= 0.9 {
+                                    return None;
+                                }
+
+                                Some(PointXYZINormal::new(
+                                    point_local.x,
+                                    point_local.y,
+                                    point_local.z,
+                                    pd2 as f32,
+                                    plane[0] as f32,
+                                    plane[1] as f32,
+                                    plane[2] as f32,
+                                ))
+                            })
                             .collect::<Vec<_>>();
                         eval.stop("planes").unwrap();
                         // dbg!(&planes.len(), nplanes, nneighbors, cloud_len);

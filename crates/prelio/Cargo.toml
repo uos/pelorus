@@ -19,6 +19,7 @@ rayon.workspace = true
 dashmap.workspace = true
 either.workspace = true
 serde.workspace = true
+rand.workspace = true
 
 imu-fusion.workspace = true
 imu-calib.workspace = true
@@ -27,6 +28,8 @@ morton-encoding.workspace = true
 gtsam-sys = { git = "https://github.com/stelzo/gtsam-sys.git", optional = true }
 
 [features]
+# TODO rayon optional
+parallel = []
 gtsam = ["dep:gtsam-sys"]
 no-imu-sync = []
 default = []

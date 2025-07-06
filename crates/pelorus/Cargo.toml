@@ -32,13 +32,30 @@ small_gicp-sys = { workspace = true, optional = true }
 
 [features]
 #           MODE     COMM          EXTRAS
-default = ["ratpub", "rerun", "rat"]
-# default = ["gicp", "r2r", "pelorus-reg/nn_kdt"]
+default = ["ratpub", "rerun", "rat", "mimalloc"]
+
+# Uses threadpool workstealing whenever large buffers are processed.
+parallel = ["prelio-ros2/parallel", "pelorus-reg/parallel"]
+
+# Skips publishing any visualizations that take compute resources
+no-viz = []
+
+# Use Lidar Odom with small_gicp
 gicp = ["dep:small_gicp-sys", "prelio-ros2/no-imu-sync"]
+
+# Toggle tooling
 dev = ["rerun", "ratpub", "pelorus-reg/nn_kdt", "rat"]
+
+# Use variable syncing for triggers
 rat = ["dep:rat", "dep:tokio"]
+
+# Use Mimalloc as allocator. General speedup when using dynamic memory.
 mimalloc = ["dep:mimalloc"]
+
+# Visualize data with rerun
 rerun = ["dep:rerun", "prelio-ros2/rerun"]
+
+# Use ratpub as pub/sub system
 ratpub = [
   "dep:ratpub",
   "dep:tokio",
@@ -46,12 +63,16 @@ ratpub = [
   "ros_pointcloud2/lh",
   "prelio-ros2/ratpub",
 ]
+
+# Use native ROS2 as pub/sub system
 ros2-client = [
   "dep:ros2-client",
   "dep:ros2-interfaces-jazzy",
   "ros_pointcloud2/ros2-interfaces-jazzy",
   "prelio-ros2/ros2-client",
 ]
+
+# Use rclc bindings as pub/sub system
 r2r = ["dep:r2r", "ros_pointcloud2/r2r_msg", "prelio-ros2/r2r"]
 
 
@@ -59,6 +80,8 @@ r2r = ["dep:r2r", "ros_pointcloud2/r2r_msg", "prelio-ros2/r2r"]
 lto = true          # Link Time Optimization
 codegen-units = 1   # Slower compile times but compiler sees all generated code and can optimize over everything across modules. Also decreases binary size.
 strip = "debuginfo" # Significantly reduce binary size
+opt-level = 3
+panic = "abort"
 
 [profile.dev.package.backtrace]
 opt-level = 3

@@ -5823,6 +5823,7 @@ dependencies = [
  "log",
  "morton-encoding",
  "nalgebra 0.33.2",
+ "rand 0.9.1",
  "rayon",
  "ros_pointcloud2 0.5.3 (git+https://github.com/stelzo/ros_pointcloud2.git?branch=rkyv)",
  "serde 1.0.219",
@@ -6280,6 +6281,15 @@ checksum = "6a8615d50dcf34fa31f7ab52692afec947c4dd0ab803cc87cb3b0b4570ff7463"
 dependencies = [
  "num-traits 0.2.19",
  "rand 0.9.1",
+]
+
+[[package]]
+name = "rand_pcg"
+version = "0.9.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b48ac3f7ffaab7fac4d2376632268aa5f89abdb55f7ebf8f4d11fffccb2320f7"
+dependencies = [
+ "rand_core 0.9.3",
 ]
 
 [[package]]
@@ -9258,10 +9268,13 @@ dependencies = [
  "kiddo",
  "morton-encoding",
  "nalgebra 0.33.2",
+ "nohash-hasher",
  "rand 0.9.1",
  "rand_distr 0.5.1",
+ "rand_pcg",
  "rayon",
  "ros_pointcloud2 0.5.3 (git+https://github.com/stelzo/ros_pointcloud2.git?branch=rkyv)",
+ "rustc-hash 2.1.1",
  "serde 1.0.219",
 ]
 
