@@ -127,8 +127,8 @@ impl Default for LioConfig {
             k_neighbors: 5,
             neighbor_max_range: 5.0,
             ekf_max_iterations: 4,
-            dist_update_sensitivity: 0.3,
-            map_capacity: 10_000,
+            dist_update_sensitivity: 60.0,
+            map_capacity: 30_000,
         }
     }
 }
@@ -380,7 +380,7 @@ fn lio(config_path: &str) -> Result<(), Box<dyn std::error::Error>> {
         Some(ready_for_next_rx),
     )?;
 
-    #[cfg(feature = "ros2-client")]
+    #[cfg(all(not(feature = "no-viz"), feature = "ros2-client"))]
     let map_publisher = node
         .create_publisher::<PointCloud2>(
             &node
@@ -393,7 +393,7 @@ fn lio(config_path: &str) -> Result<(), Box<dyn std::error::Error>> {
             None,
         )
         .unwrap();
-    #[cfg(feature = "ros2-client")]
+    #[cfg(all(not(feature = "no-viz"), feature = "ros2-client"))]
     let cloud_publisher = node
         .create_publisher(
             &node
@@ -419,7 +419,7 @@ fn lio(config_path: &str) -> Result<(), Box<dyn std::error::Error>> {
             None,
         )
         .unwrap();
-    #[cfg(feature = "ros2-client")]
+    #[cfg(all(not(feature = "no-viz"), feature = "ros2-client"))]
     let lidar_path_publisher = node
         .create_publisher(
             &node
@@ -432,7 +432,7 @@ fn lio(config_path: &str) -> Result<(), Box<dyn std::error::Error>> {
             None,
         )
         .unwrap();
-    #[cfg(feature = "ros2-client")]
+    #[cfg(all(not(feature = "no-viz"), feature = "ros2-client"))]
     let imu_odom_publisher = node
         .create_publisher(
             &node
@@ -446,7 +446,7 @@ fn lio(config_path: &str) -> Result<(), Box<dyn std::error::Error>> {
         )
         .unwrap();
 
-    #[cfg(feature = "ros2-client")]
+    #[cfg(all(not(feature = "no-viz"), feature = "ros2-client"))]
     let imu_path_publisher = node
         .create_publisher(
             &node
@@ -459,7 +459,11 @@ fn lio(config_path: &str) -> Result<(), Box<dyn std::error::Error>> {
             None,
         )
         .unwrap();
-    #[cfg(all(feature = "ros2-client", not(feature = "rerun")))]
+    #[cfg(all(
+        not(feature = "no-viz"),
+        feature = "ros2-client",
+        not(feature = "rerun")
+    ))]
     let registered_visual_publisher = node
         .create_publisher::<Marker>(
             &node
@@ -473,7 +477,7 @@ fn lio(config_path: &str) -> Result<(), Box<dyn std::error::Error>> {
         )
         .unwrap();
 
-    #[cfg(feature = "r2r")]
+    #[cfg(all(not(feature = "no-viz"), feature = "r2r"))]
     let map_publisher = node.create_publisher::<PointCloud2>("map", QosProfile::default())?;
     // #[cfg(feature = "ratpub")]
     // let map_publisher = rt.block_on(async {
@@ -481,7 +485,7 @@ fn lio(config_path: &str) -> Result<(), Box<dyn std::error::Error>> {
     //         .await
     //         .unwrap()
     // });
-    #[cfg(feature = "r2r")]
+    #[cfg(all(not(feature = "no-viz"), feature = "r2r"))]
     let cloud_publisher =
         node.create_publisher::<PointCloud2>("registered", config.registered_cloud_qos.into())?;
     #[cfg(feature = "ratpub")]
@@ -490,41 +494,41 @@ fn lio(config_path: &str) -> Result<(), Box<dyn std::error::Error>> {
             .await
             .unwrap()
     });
-    #[cfg(feature = "r2r")]
+    #[cfg(all(not(feature = "no-viz"), feature = "r2r"))]
     let odom_publisher = node.create_publisher::<Odometry>("odom", config.odom_qos.into())?;
-    #[cfg(feature = "ratpub")]
+    #[cfg(all(not(feature = "no-viz"), feature = "ratpub"))]
     let odom_publisher = rt.block_on(async {
         node.create_publisher::<Odometry>("odom".to_owned())
             .await
             .unwrap()
     });
-    #[cfg(feature = "r2r")]
+    #[cfg(all(not(feature = "no-viz"), feature = "r2r"))]
     let lidar_path_publisher = node.create_publisher::<Path>("path", config.path_qos.into())?;
-    #[cfg(feature = "ratpub")]
+    #[cfg(all(not(feature = "no-viz"), feature = "ratpub"))]
     let lidar_path_publisher = rt.block_on(async {
         node.create_publisher::<Path>("path".to_owned())
             .await
             .unwrap()
     });
-    #[cfg(feature = "r2r")]
+    #[cfg(all(not(feature = "no-viz"), feature = "r2r"))]
     let imu_odom_publisher =
         node.create_publisher::<Odometry>("imu_odom", config.imu_odom_qos.into())?;
-    #[cfg(feature = "ratpub")]
+    #[cfg(all(not(feature = "no-viz"), feature = "ratpub"))]
     let imu_odom_publisher = rt.block_on(async {
         node.create_publisher::<Odometry>("imu_odom".to_owned())
             .await
             .unwrap()
     });
-    #[cfg(feature = "r2r")]
+    #[cfg(all(not(feature = "no-viz"), feature = "r2r"))]
     let imu_path_publisher =
         node.create_publisher::<Path>("imu_path", config.imu_path_qos.into())?;
-    #[cfg(feature = "ratpub")]
+    #[cfg(all(not(feature = "no-viz"), feature = "ratpub"))]
     let imu_path_publisher = rt.block_on(async {
         node.create_publisher::<Path>("imu_path".to_owned())
             .await
             .unwrap()
     });
-    #[cfg(all(feature = "r2r", not(feature = "rerun")))]
+    #[cfg(all(not(feature = "no-viz"), feature = "r2r", not(feature = "rerun")))]
     let registered_visual_publisher =
         node.create_publisher::<Marker>("registered_viz", r2r::QosProfile::default())?;
 
@@ -572,9 +576,6 @@ fn lio(config_path: &str) -> Result<(), Box<dyn std::error::Error>> {
         ready_for_next_tx.send(()).unwrap();
 
         while let Ok(lifis_tick) = synced_rx.recv() {
-            #[cfg(feature = "rat")]
-            rat::bacon::<u8>("synced", &mut 0, rat::VariableType::U8).unwrap();
-
             eval.merge(&lifis_tick.runtime_eval);
 
             let cloud = lifis_tick.deskewed_cloud;
@@ -646,12 +647,8 @@ fn lio(config_path: &str) -> Result<(), Box<dyn std::error::Error>> {
 
             let register_pose = {
                 let mut map = map.lock().unwrap();
-                let mode = pelorus_reg::Mode::ActiveRegistration {
-                    cloud: pelorus_reg::LocatedBufferView::Ram(cloud.clone()), // TODO remove clone and use view when functionality is done
-                    initial_guess: init_guess_world,
-                };
                 #[cfg(not(feature = "gicp"))]
-                match map.register_and_map(mode, Some(&ready_for_next_tx), &mut eval) {
+                match map.register_and_map(&cloud, Some(&ready_for_next_tx), &mut eval) {
                     Ok(pose) => pose,
                     Err(err) => {
                         error!("{err}");
@@ -749,11 +746,11 @@ fn lio(config_path: &str) -> Result<(), Box<dyn std::error::Error>> {
             };
 
             #[cfg(debug_assertions)]
-            #[cfg(all(not(feature = "gicp"), not(feature = "rerun")))]
+            #[cfg(all(not(feature = "no-viz"), not(feature = "gicp"), not(feature = "rerun")))]
             {
                 if let Some(registered_normals) = register_pose.registered_cloud {
                     let random_color = {
-                        let mut rng = rand::thread_rng();
+                        let mut rng = rand::rng();
                         let r: f32 = rng.gen();
                         let g: f32 = rng.gen();
                         let b: f32 = rng.gen();
@@ -882,7 +879,7 @@ fn lio(config_path: &str) -> Result<(), Box<dyn std::error::Error>> {
                         error!("Error sending to rerun {err}");
                     }
                 }
-                #[cfg(not(feature = "rerun"))]
+                #[cfg(all(not(feature = "no-viz"), not(feature = "rerun")))]
                 {
                     let mut total_map = PointCloud2Msg::try_from_vec(total_map).unwrap();
                     total_map.header.frame_id = config.prelio_params.map_frame.clone();
@@ -980,7 +977,7 @@ fn lio(config_path: &str) -> Result<(), Box<dyn std::error::Error>> {
                 header: imu_odom.header.clone(),
             });
 
-            #[cfg(feature = "ratpub")]
+            #[cfg(all(not(feature = "no-viz"), feature = "ratpub"))]
             rt.block_on(async {
                 cloud_publisher
                     .publish(&cloud)
@@ -1004,7 +1001,7 @@ fn lio(config_path: &str) -> Result<(), Box<dyn std::error::Error>> {
             }
 
             if changed_lidar_path {
-                #[cfg(feature = "rerun")]
+                #[cfg(all(not(feature = "no-viz"), feature = "rerun"))]
                 {
                     let lidar_path =
                         rerun::LineStrip3D::from_iter(lidar_path.poses.iter().map(|p| {
@@ -1019,27 +1016,27 @@ fn lio(config_path: &str) -> Result<(), Box<dyn std::error::Error>> {
                         error!("Error sending to rerun {err}");
                     }
                 }
-                #[cfg(not(feature = "ratpub"))]
+                #[cfg(all(not(feature = "no-viz"), not(feature = "ratpub")))]
                 lidar_path_publisher
                     .publish(&lidar_path)
                     .expect("Failed to publish path");
             }
 
-            #[cfg(not(feature = "ratpub"))]
+            #[cfg(all(not(feature = "no-viz"), not(feature = "ratpub")))]
             imu_odom_publisher
                 .publish(&imu_odom)
                 .expect("Failed to publish imu odom");
 
-            #[cfg(not(feature = "ratpub"))]
+            #[cfg(all(not(feature = "no-viz"), not(feature = "ratpub")))]
             imu_path_publisher
                 .publish(&imu_path)
                 .expect("Failed to publish imu path"); // TODO this will spam a lot, maybe also throttle like lidar_path
 
-            #[cfg(feature = "ratpub")]
+            #[cfg(all(not(feature = "no-viz"), feature = "ratpub"))]
             let pub_lidar_path = lidar_path.clone();
-            #[cfg(feature = "ratpub")]
+            #[cfg(all(not(feature = "no-viz"), feature = "ratpub"))]
             let pub_imu_path = imu_path.clone();
-            #[cfg(feature = "ratpub")]
+            #[cfg(all(not(feature = "no-viz"), feature = "ratpub"))]
             rt.block_on(async {
                 lidar_path_publisher
                     .publish(&pub_lidar_path)

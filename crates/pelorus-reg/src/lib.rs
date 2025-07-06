@@ -2,7 +2,6 @@ use nalgebra::*;
 use prelio::timing::RuntimeEvaluator;
 use ros_pointcloud2::prelude::*;
 
-pub mod gicp;
 pub mod imu;
 pub mod sfasterlio;
 pub mod sophus_ekf;
@@ -66,7 +65,7 @@ pub enum Mode {
 pub trait Registration {
     fn register_and_map(
         &mut self,
-        data: Mode,
+        cloud: &[PointXYZ],
         ready_for_next: Option<&std::sync::mpsc::Sender<()>>,
         eval: &mut RuntimeEvaluator,
     ) -> Result<CloudRegisterResult>;

@@ -1,8 +1,8 @@
-use std::{collections::HashMap, sync::atomic::AtomicUsize};
-
-use crate::denselocalmap::VoxelDistribution;
 use nalgebra::Point3;
+#[cfg(feature = "parallel")]
 use rayon::slice::ParallelSliceMut;
+
+use crate::VoxelDistribution;
 
 // Saving the hash to know what to delete
 #[derive(Clone)]
@@ -19,7 +19,7 @@ pub struct Livodish {
     lru_mapping: Vec<Option<usize>>,
     lru_cursor: usize,
     // lookup for hash to voxel idx in buffer
-    lookup: HashMap<i32, usize>,
+    lookup: rustc_hash::FxHashMap<i32, usize>,
     capacity: usize,
     sensitivity: f32,
     min_dist: f32,
@@ -31,7 +31,7 @@ impl Livodish {
             buffer: vec![None; capacity],
             lru_mapping: vec![None; capacity],
             add_cursor: 0,
-            lookup: HashMap::with_capacity(capacity),
+            lookup: rustc_hash::FxHashMap::with_capacity_and_hasher(capacity, Default::default()),
             lru_cursor: 0,
             capacity,
             sensitivity,
@@ -124,37 +124,40 @@ impl Livodish {
 
     pub fn find(&self, key: &i32) -> Option<&VoxelDistribution> {
         let idx = self.lookup.get(&key)?;
-        self.buffer
-            .get(*idx)
-            .expect("unresolved ref")
-            .as_ref()
-            .map(|v| &v.0.1)
+        unsafe { self.buffer.get_unchecked(*idx).as_ref() }.map(|v| &v.0.1)
     }
 
     /// Re-arranges the map to be ready for new inserts.
     pub fn build(&mut self) {
         if self.add_cursor >= self.capacity {
             self.lru_cursor = 0;
-            self.lru_mapping
-                .par_sort_unstable_by(|lh, rh| match (lh, rh) {
-                    (None, None) => std::cmp::Ordering::Equal,
-                    (None, Some(_)) => std::cmp::Ordering::Less,
-                    (Some(_), None) => std::cmp::Ordering::Greater,
-                    (Some(l), Some(r)) => self.buffer[*l]
-                        .as_ref()
-                        .expect("unresolved ref")
-                        .0
-                        .1
-                        .point_count
-                        .cmp(
-                            &self.buffer[*r]
-                                .as_ref()
-                                .expect("unresolved ref")
-                                .0
-                                .1
-                                .point_count,
-                        ),
-                });
+            let cmp = |lh: &Option<usize>, rh: &Option<usize>| match (lh, rh) {
+                (None, None) => std::cmp::Ordering::Equal,
+                (None, Some(_)) => std::cmp::Ordering::Less,
+                (Some(_), None) => std::cmp::Ordering::Greater,
+                (Some(l), Some(r)) => self.buffer[*l]
+                    .as_ref()
+                    .expect("unresolved ref")
+                    .0
+                    .1
+                    .point_count
+                    .cmp(
+                        &self.buffer[*r]
+                            .as_ref()
+                            .expect("unresolved ref")
+                            .0
+                            .1
+                            .point_count,
+                    ),
+            };
+            #[cfg(feature = "parallel")]
+            {
+                self.lru_mapping.par_sort_unstable_by(cmp);
+            }
+            #[cfg(not(feature = "parallel"))]
+            {
+                self.lru_mapping.sort_unstable_by(cmp);
+            }
         }
     }
 }

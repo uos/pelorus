@@ -24,5 +24,6 @@ serde.workspace = true
 
 [features]
 # default = ["gicp"]
+parallel = ["spole/parallel"]
 nn_kdt = ["spole/nn_kdt"]
 # gicp = ["dep:small_gicp-sys"]

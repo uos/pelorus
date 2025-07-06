@@ -19,9 +19,13 @@ bytemuck = "1.23.1"
 morton-encoding.workspace = true
 rand.workspace = true
 rand_distr.workspace = true
+rand_pcg.workspace = true
+rustc-hash.workspace = true
+nohash-hasher.workspace = true
 
 [features]
 # default = ["nn_kdt"]
+parallel = []
 nn_kdt = ["dep:kiddo"]
 
 # [dev-dependencies]
