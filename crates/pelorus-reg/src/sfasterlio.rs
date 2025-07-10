@@ -64,25 +64,6 @@ impl SFasterLio {
             knn_nearby_voxel_search_range,
             update_cov_sensitivity,
         );
-        let mut cov_gyr = Matrix3::identity();
-        cov_gyr[(0, 0)] = imu_params.cov_gyr.x;
-        cov_gyr[(1, 1)] = imu_params.cov_gyr.y;
-        cov_gyr[(2, 2)] = imu_params.cov_gyr.z;
-
-        let mut cov_acc = Matrix3::identity();
-        cov_acc[(0, 0)] = imu_params.cov_acc.x;
-        cov_acc[(1, 1)] = imu_params.cov_acc.y;
-        cov_acc[(2, 2)] = imu_params.cov_acc.z;
-
-        let mut cov_acc_bias = Matrix3::identity();
-        cov_acc_bias[(0, 0)] = imu_params.cov_acc_bias.x;
-        cov_acc_bias[(1, 1)] = imu_params.cov_acc_bias.y;
-        cov_acc_bias[(2, 2)] = imu_params.cov_acc_bias.z;
-
-        let mut cov_gyr_bias = Matrix3::identity();
-        cov_gyr_bias[(0, 0)] = imu_params.cov_gyr_bias.x;
-        cov_gyr_bias[(1, 1)] = imu_params.cov_gyr_bias.y;
-        cov_gyr_bias[(2, 2)] = imu_params.cov_gyr_bias.z;
 
         Self {
             ekf: crate::sophus_ekf::Esekf::new(g),

@@ -61,8 +61,8 @@ use prelio_ros2::{prelio::config::LifisParameters, LifisNodeParameters, Qos, Rel
 
 use pelorus_reg::{sfasterlio::SFasterLio, Registration};
 use prelio_ros2::{prelio::imu::ImuMsg, PrelioNode};
-use ros_pointcloud2::prelude::*;
 //use small_gicp_sys::*;
+use ros_pointcloud2::prelude::*;
 use std::sync::{Arc, Mutex};
 
 pub fn timestamp_to_secs(t: &TimeMsg) -> f64 {
@@ -97,7 +97,6 @@ pub struct LioConfig {
     pub map_resolution: f64,
     pub map_capacity: usize,
     pub imu_params: pelorus_reg::imu::ImuParameters,
-    pub imu_init_length: u32,
     pub lidar_odom_cov: f64,
     pub enable_live_extrinsic_calibration: bool,
     pub prelio_params: LifisParameters,
@@ -113,7 +112,6 @@ impl Default for LioConfig {
         Self {
             map_resolution: 0.5,
             lidar_odom_cov: 0.001,
-            imu_init_length: 10,
             feedback_fps: 1,
             enable_live_extrinsic_calibration: false,
             registered_cloud_qos: Qos::Sensor(Reliability::Reliable),
@@ -406,7 +404,7 @@ fn lio(config_path: &str) -> Result<(), Box<dyn std::error::Error>> {
             None,
         )
         .unwrap();
-    #[cfg(feature = "ros2-client")]
+    #[cfg(any(feature = "ros2-client"))]
     let odom_publisher = node
         .create_publisher(
             &node
@@ -745,88 +743,88 @@ fn lio(config_path: &str) -> Result<(), Box<dyn std::error::Error>> {
                 }
             };
 
-            #[cfg(debug_assertions)]
-            #[cfg(all(not(feature = "no-viz"), not(feature = "gicp"), not(feature = "rerun")))]
-            {
-                if let Some(registered_normals) = register_pose.registered_cloud {
-                    let random_color = {
-                        let mut rng = rand::rng();
-                        let r: f32 = rng.gen();
-                        let g: f32 = rng.gen();
-                        let b: f32 = rng.gen();
-                        let v = nalgebra::Vector3::new(r, g, b).normalize();
-                        let a: f32 = 0.7;
-                        (v.x, v.y, v.z, a)
-                    };
+            // #[cfg(debug_assertions)]
+            // #[cfg(all(not(feature = "no-viz"), not(feature = "gicp"), not(feature = "rerun")))]
+            // {
+            //     if let Some(registered_normals) = register_pose.registered_cloud {
+            //         let random_color = {
+            //             let mut rng = rand::rng();
+            //             let r: f32 = rng.gen();
+            //             let g: f32 = rng.gen();
+            //             let b: f32 = rng.gen();
+            //             let v = nalgebra::Vector3::new(r, g, b).normalize();
+            //             let a: f32 = 0.7;
+            //             (v.x, v.y, v.z, a)
+            //         };
 
-                    {
-                        let mut marr = Marker::default();
-                        marr.header = Header {
-                            frame_id: config.prelio_params.map_frame.clone(),
-                            stamp: Time {
-                                sec: orig_time.sec,
-                                nanosec: orig_time.nanosec,
-                            },
-                        };
-                        marr.id = total_viz_marker;
-                        total_viz_marker += 1;
+            //         {
+            //             let mut marr = Marker::default();
+            //             marr.header = Header {
+            //                 frame_id: config.prelio_params.map_frame.clone(),
+            //                 stamp: Time {
+            //                     sec: orig_time.sec,
+            //                     nanosec: orig_time.nanosec,
+            //                 },
+            //             };
+            //             marr.id = total_viz_marker;
+            //             total_viz_marker += 1;
 
-                        // Live for ever, RIP Rviz
-                        marr.lifetime.sec = 0;
-                        marr.lifetime.nanosec = 0;
+            //             // Live for ever, RIP Rviz
+            //             marr.lifetime.sec = 0;
+            //             marr.lifetime.nanosec = 0;
 
-                        marr.type_ = 5; // Arrow
-                        marr.action = 0; // add
+            //             marr.type_ = 5; // Arrow
+            //             marr.action = 0; // add
 
-                        marr.scale.x = 0.02; // measured distance to the plane
-                        marr.scale.y = 0.02; // shaft
-                        marr.scale.z = 0.02; // head
+            //             marr.scale.x = 0.02; // measured distance to the plane
+            //             marr.scale.y = 0.02; // shaft
+            //             marr.scale.z = 0.02; // head
 
-                        marr.color.r = random_color.0;
-                        marr.color.g = random_color.1;
-                        marr.color.b = random_color.2;
-                        marr.color.a = random_color.3;
+            //             marr.color.r = random_color.0;
+            //             marr.color.g = random_color.1;
+            //             marr.color.b = random_color.2;
+            //             marr.color.a = random_color.3;
 
-                        marr.header.frame_id = orig_frame.clone();
-                        marr.header.stamp.nanosec = orig_time.nanosec; // TODO rpcl2 from timemsg
-                        marr.header.stamp.sec = orig_time.sec;
+            //             marr.header.frame_id = orig_frame.clone();
+            //             marr.header.stamp.nanosec = orig_time.nanosec; // TODO rpcl2 from timemsg
+            //             marr.header.stamp.sec = orig_time.sec;
 
-                        //let draw_length = 0.25;
+            //             //let draw_length = 0.25;
 
-                        marr.points = registered_normals
-                            .iter() // downsample_avg(normal_iter, 0.5).iter() || normal_iter
-                            .map(|normal| {
-                                let normal_viz = nalgebra::Vector3::new(
-                                    normal.normal_x as f64,
-                                    normal.normal_y as f64,
-                                    normal.normal_z as f64,
-                                );
+            //             marr.points = registered_normals
+            //                 .iter() // downsample_avg(normal_iter, 0.5).iter() || normal_iter
+            //                 .map(|normal| {
+            //                     let normal_viz = nalgebra::Vector3::new(
+            //                         normal.normal_x as f64,
+            //                         normal.normal_y as f64,
+            //                         normal.normal_z as f64,
+            //                     );
 
-                                let position_viz = normal.xyz_f64();
-                                let end_position =
-                                    position_viz + normal_viz.normalize() * normal.intensity as f64;
+            //                     let position_viz = normal.xyz_f64();
+            //                     let end_position =
+            //                         position_viz + normal_viz.normalize() * normal.intensity as f64;
 
-                                let mut point_start = Point::default();
-                                point_start.x = position_viz.x;
-                                point_start.y = position_viz.y;
-                                point_start.z = position_viz.z;
+            //                     let mut point_start = Point::default();
+            //                     point_start.x = position_viz.x;
+            //                     point_start.y = position_viz.y;
+            //                     point_start.z = position_viz.z;
 
-                                let mut point_end = Point::default();
-                                point_end.x = end_position.x;
-                                point_end.y = end_position.y;
-                                point_end.z = end_position.z;
+            //                     let mut point_end = Point::default();
+            //                     point_end.x = end_position.x;
+            //                     point_end.y = end_position.y;
+            //                     point_end.z = end_position.z;
 
-                                [point_start, point_end]
-                            })
-                            .flatten()
-                            .collect();
+            //                     [point_start, point_end]
+            //                 })
+            //                 .flatten()
+            //                 .collect();
 
-                        registered_visual_publisher
-                            .publish(&marr)
-                            .expect("Failed to publish registered visualization");
-                    }
-                }
-            }
+            //             registered_visual_publisher
+            //                 .publish(&marr)
+            //                 .expect("Failed to publish registered visualization");
+            //         }
+            //     }
+            // }
 
             // transform cloud inplace for publish
             /*let mut cloud: PointCloud2 = {
@@ -868,7 +866,7 @@ fn lio(config_path: &str) -> Result<(), Box<dyn std::error::Error>> {
             let map_to_lidar_transform = t_world_lidar.clone();
             cloud.header.frame_id = orig_frame.clone();
 
-            #[cfg(all(not(feature = "gicp")))]
+            #[cfg(all(not(feature = "gicp"), feature = "map"))]
             {
                 let total_map = map.lock().unwrap().get_entire_map();
                 #[cfg(feature = "rerun")]
@@ -881,7 +879,13 @@ fn lio(config_path: &str) -> Result<(), Box<dyn std::error::Error>> {
                 }
                 #[cfg(all(not(feature = "no-viz"), not(feature = "rerun")))]
                 {
-                    let mut total_map = PointCloud2Msg::try_from_vec(total_map).unwrap();
+                    let mut total_map = PointCloud2Msg::try_from_vec(
+                        total_map
+                            .iter()
+                            .map(|p| PointXYZ::new(p.x, p.y, p.z))
+                            .collect(),
+                    )
+                    .unwrap();
                     total_map.header.frame_id = config.prelio_params.map_frame.clone();
                     let msg: PointCloud2 = total_map.into();
                     map_publisher.publish(&msg).expect("Failed to publish map");

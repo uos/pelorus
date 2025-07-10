@@ -375,9 +375,14 @@ fn filter_downsample<const N: usize, P: PointXYZITimestamp<N>>(
                 return None;
             }
 
+            let ts = point.timestamp();
+            if ts.is_nan() {
+                return None;
+            }
+
             let point_raw = point.xyz();
             let key = hash(&point_raw, voxel_size);
-            Some((key, PointXYZT::from_p(point_raw, point.timestamp())))
+            Some((key, PointXYZT::from_p(point_raw, ts)))
         })
         .collect::<Vec<_>>();
 
@@ -426,11 +431,11 @@ fn filter_downsample<const N: usize, P: PointXYZITimestamp<N>>(
 
     // needed for undistort
     let cmp = |a: &PointXYZT, b: &PointXYZT| {
-        if (a.timestamp - b.timestamp).abs() < 1e-6 {
-            a.z.partial_cmp(&b.z).unwrap()
-        } else {
-            a.timestamp.partial_cmp(&b.timestamp).unwrap()
-        }
+        // if (a.timestamp - b.timestamp).abs() < 1e-6 {
+        //     a.z.partial_cmp(&b.z).unwrap()
+        // } else {
+        a.timestamp.partial_cmp(&b.timestamp).unwrap()
+        // }
     };
     #[cfg(feature = "parallel")]
     {
@@ -939,6 +944,12 @@ impl Prelio {
                 }
             }
 
+            // dbg!(
+            //     imu_span_start_time,
+            //     imu_span_end_time,
+            //     lidar_begin_time,
+            //     lidar_end_time
+            // );
             // Populate IMU with buffered
             if let Some(imu_receiver) = imu_receiver.as_ref() {
                 loop {
@@ -946,7 +957,8 @@ impl Prelio {
                         Ok(imu) => {
                             let imu_time = timestamp_to_secs(&imu.stamp);
 
-                            // Too early
+                            // Imu too early
+                            // dbg!(imu_time);
                             if imu_time < imu_span_start_time {
                                 warn!("IMU msg skipped");
                                 continue;
