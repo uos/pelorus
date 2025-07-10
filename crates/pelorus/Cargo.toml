@@ -32,7 +32,9 @@ small_gicp-sys = { workspace = true, optional = true }
 
 [features]
 #           MODE     COMM          EXTRAS
-default = ["ratpub", "rerun", "rat", "mimalloc"]
+default = ["mimalloc", "map"]
+
+map = []
 
 # Uses threadpool workstealing whenever large buffers are processed.
 parallel = ["prelio-ros2/parallel", "pelorus-reg/parallel"]
@@ -44,7 +46,7 @@ no-viz = []
 gicp = ["dep:small_gicp-sys", "prelio-ros2/no-imu-sync"]
 
 # Toggle tooling
-dev = ["rerun", "ratpub", "pelorus-reg/nn_kdt", "rat"]
+dev = ["rerun", "ratpub", "rat", "map"]
 
 # Use variable syncing for triggers
 rat = ["dep:rat", "dep:tokio"]
