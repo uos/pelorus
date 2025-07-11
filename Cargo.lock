@@ -9266,6 +9266,7 @@ dependencies = [
  "bytemuck",
  "dashmap",
  "kiddo",
+ "log",
  "morton-encoding",
  "nalgebra 0.33.2",
  "nohash-hasher",

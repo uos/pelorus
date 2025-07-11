@@ -32,7 +32,8 @@ small_gicp-sys = { workspace = true, optional = true }
 
 [features]
 #           MODE     COMM          EXTRAS
-default = ["mimalloc", "map"]
+default = ["r2r", "mimalloc", "map"]
+# default = ["dev"]
 
 map = []
 
@@ -46,7 +47,7 @@ no-viz = []
 gicp = ["dep:small_gicp-sys", "prelio-ros2/no-imu-sync"]
 
 # Toggle tooling
-dev = ["rerun", "ratpub", "rat", "map"]
+dev = ["rerun", "ratpub", "rat", "map", "mimalloc"]
 
 # Use variable syncing for triggers
 rat = ["dep:rat", "dep:tokio"]

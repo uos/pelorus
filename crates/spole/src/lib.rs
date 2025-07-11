@@ -34,6 +34,7 @@ pub struct VoxelDistribution {
     pub point_count: u64,
     pub mean: Point3<f32>,
     pub covariance: Matrix3<f32>,
+    pub last_updated_at_scan: usize,
 }
 
 impl VoxelDistribution {
@@ -43,9 +44,18 @@ impl VoxelDistribution {
             mean: *first_point,
             covariance: Matrix3::zeros(),
             transform: Matrix3::identity(),
+            last_updated_at_scan: 0,
         }
     }
-    pub fn update(&mut self, new_point: &Point3<f32>, sensitivity: f32, min_dist: f32) {
+    pub fn update(
+        &mut self,
+        new_point: &Point3<f32>,
+        sensitivity: f32,
+        min_dist: f32,
+        current_scan_number: usize,
+    ) {
+        self.last_updated_at_scan = current_scan_number;
+
         // --- Initial Bootstrap (Welford's Algorithm) ---
         if self.point_count < 2 {
             if self.point_count == 1 {
@@ -254,9 +264,10 @@ impl IVoxHashMap {
                     z: global_p.z as f32,
                 });
                 let voxel_key = Self::hash_grid(&grid);
-                self.livodish.add(&global_p.cast(), voxel_key);
+                self.livodish
+                    .add(&global_p.cast(), voxel_key, self.scan_number);
             });
-            self.livodish.build();
+            self.livodish.build(self.scan_number);
         }
     }
 
