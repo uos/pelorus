@@ -469,8 +469,8 @@ pub struct ImuPosePrediction {
     pub pose: Isometry3<f64>,
     pub linear_velocity: nalgebra::Vector3<f64>,
     pub angular_velocity: nalgebra::Vector3<f64>,
-    pub lidar_imu_extrinsic_rotation: nalgebra::Matrix3<f64>,
-    pub lidar_imu_extrinsic_translation: nalgebra::Vector3<f64>,
+    // pub lidar_imu_extrinsic_rotation: nalgebra::Matrix3<f64>,
+    // pub lidar_imu_extrinsic_translation: nalgebra::Vector3<f64>,
 }
 
 #[derive(Debug)]
@@ -1089,8 +1089,8 @@ impl Prelio {
                                     imu_cloud.last_twist[4],
                                     imu_cloud.last_twist[5],
                                 ),
-                                lidar_imu_extrinsic_rotation: Matrix3::identity(), // TODO never used?
-                                lidar_imu_extrinsic_translation: Vector3::zeros(), // TODO never used?
+                                // lidar_imu_extrinsic_rotation: Matrix3::identity(), // TODO never used?
+                                // lidar_imu_extrinsic_translation: Vector3::zeros(), // TODO never used?
                             }
                         }
                     };

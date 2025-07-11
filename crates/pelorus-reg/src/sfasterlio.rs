@@ -268,9 +268,12 @@ impl crate::Registration for SFasterLio {
                       h_x: &mut DMatrix<f64>,
                       extrinsic_estimation| {
                     // Initial guess from ekf state from last prediciton in undistort
-                    let rot = Rotation3::from_matrix(&ekf_state.rot.matrix());
-                    let quat = UnitQuaternion::from_rotation_matrix(&rot);
-                    let initial_guess = Isometry3::from_parts(ekf_state.pos.into(), quat);
+                    // let initial_guess = Isometry3::from_parts(
+                    //     ekf_state.pos.into(),
+                    //     UnitQuaternion::from_rotation_matrix(&Rotation3::from_matrix(
+                    //         &ekf_state.rot.matrix(),
+                    //     )),
+                    // );
 
                     let first_it_local = { first_it.lock().unwrap().clone() };
 
@@ -313,8 +316,12 @@ impl crate::Registration for SFasterLio {
                         eval.start("planes").unwrap();
                         let planes: Vec<PointXYZINormal> = iter
                             .filter_map(|((point_local, neighbor_size), curr_point_neighbors)| {
-                                let point_global =
-                                    initial_guess.transform_point(&point_local.xyz_f64());
+                                // Global in IMU frame
+                                let point_global = ekf_state.rot.matrix()
+                                    * (ekf_state.offset_r_l_i.matrix() * point_local.xyz_f64()
+                                        + ekf_state.offset_t_l_i)
+                                    + ekf_state.pos;
+
                                 let query_point = PointXYZ::new(
                                     point_global.x as f32,
                                     point_global.y as f32,
@@ -361,7 +368,6 @@ impl crate::Registration for SFasterLio {
                             })
                             .collect::<Vec<_>>();
                         eval.stop("planes").unwrap();
-                        // dbg!(&planes.len(), nplanes, nneighbors, cloud_len);
                         planes
                     };
 
@@ -392,7 +398,6 @@ impl crate::Registration for SFasterLio {
                     // TODO (AS REF) if converge, do use old planes/neighbors since it is likely to be the same
 
                     eval.start("jacobian").unwrap();
-                    // TODO use raw access for par iter
                     planes
                         .iter()
                         .zip(h_x.row_iter_mut())
@@ -466,15 +471,20 @@ impl crate::Registration for SFasterLio {
             eval_outer.write().unwrap().stop("ekf correct").unwrap();
         };
 
-        let pos_lidar =
-            self.ekf.state.pos + self.ekf.state.rot.matrix() * self.ekf.state.offset_t_l_i;
-
+        let imu_t = Isometry3::from_parts(
+            Translation3::from(self.ekf.state.offset_t_l_i),
+            UnitQuaternion::from_rotation_matrix(&Rotation3::from_matrix(
+                &self.ekf.state.offset_r_l_i.matrix(),
+            )),
+        );
         let global_pose = Isometry3::from_parts(
-            Translation3::from(pos_lidar),
+            Translation3::from(self.ekf.state.pos),
             UnitQuaternion::from_rotation_matrix(&Rotation3::from_matrix(
                 &self.ekf.state.rot.matrix(),
             )),
         );
+
+        let global_pose = global_pose * imu_t;
 
         // Signal Prelio it can use the ekf again
         ready_for_next

@@ -56,7 +56,7 @@ impl Livodish {
     }
 
     /// Insert at the beginning, since the ones in the beginning are the ones least used
-    pub fn add(&mut self, point: &Point3<f32>, hash: i32) {
+    pub fn add(&mut self, point: &Point3<f32>, hash: i32, scan_number: usize) {
         let entry = self.lookup.get_mut(&hash);
 
         match entry {
@@ -69,15 +69,24 @@ impl Livodish {
                         .expect("unresolved ref")
                 };
 
-                entry.0.1.update(&point, self.sensitivity, self.min_dist);
+                entry
+                    .0
+                    .1
+                    .update(&point, self.sensitivity, self.min_dist, scan_number);
             }
             None => {
                 let value = Value((hash, VoxelDistribution::new(&point)));
-                if self.add_cursor >= self.capacity {
+                if self.add_cursor > self.capacity {
                     // full but new, make space
+                    if self.lru_cursor > self.capacity {
+                        log::warn!(
+                            "Replacing too many points inside LRU Cache. Increase the map capacity!"
+                        );
+                        return;
+                    }
                     let lru_never_run = self.lru_mapping.first().is_none();
                     if lru_never_run {
-                        self.build();
+                        self.build(scan_number);
                     }
                     let must_be_deleted = unsafe {
                         self.lru_mapping
@@ -128,27 +137,31 @@ impl Livodish {
     }
 
     /// Re-arranges the map to be ready for new inserts.
-    pub fn build(&mut self) {
+    pub fn build(&mut self, scan_number: usize) {
         if self.add_cursor >= self.capacity {
             self.lru_cursor = 0;
             let cmp = |lh: &Option<usize>, rh: &Option<usize>| match (lh, rh) {
                 (None, None) => std::cmp::Ordering::Equal,
                 (None, Some(_)) => std::cmp::Ordering::Less,
                 (Some(_), None) => std::cmp::Ordering::Greater,
-                (Some(l), Some(r)) => self.buffer[*l]
-                    .as_ref()
-                    .expect("unresolved ref")
-                    .0
-                    .1
-                    .point_count
-                    .cmp(
-                        &self.buffer[*r]
-                            .as_ref()
-                            .expect("unresolved ref")
-                            .0
-                            .1
-                            .point_count,
-                    ),
+                (Some(l), Some(r)) => {
+                    let l = &self.buffer[*l].as_ref().expect("unresolved ref").0.1;
+                    let r = &self.buffer[*r].as_ref().expect("unresolved ref").0.1;
+
+                    let calculate_score = |last_updated_at_scan: usize, point_count: u64| -> f64 {
+                        if point_count == 0 {
+                            return f64::INFINITY;
+                        }
+                        let temporal_dist = scan_number.saturating_sub(last_updated_at_scan);
+                        (temporal_dist as f64) / (point_count as f64)
+                    };
+
+                    let score_l = calculate_score(l.last_updated_at_scan, l.point_count);
+                    let score_r = calculate_score(r.last_updated_at_scan, r.point_count);
+                    score_r
+                        .partial_cmp(&score_l)
+                        .unwrap_or(std::cmp::Ordering::Equal)
+                }
             };
             #[cfg(feature = "parallel")]
             {
