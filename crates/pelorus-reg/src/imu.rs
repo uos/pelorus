@@ -79,6 +79,8 @@ pub struct ImuParameters {
     pub cov_gyr: Vector3<f64>,
     pub cov_gyr_bias: Vector3<f64>,
     pub cov_acc_bias: Vector3<f64>,
+    pub initial_translation_lidar_to_imu: Vector3<f64>,
+    pub initial_rotation_lidar_to_imu: Matrix3<f64>,
 }
 
 impl Default for ImuParameters {
@@ -104,6 +106,8 @@ impl Default for ImuParameters {
                 COV_IMU_BIAS_DEFAULT,
                 COV_IMU_BIAS_DEFAULT,
             ),
+            initial_translation_lidar_to_imu: Vector3::default(),
+            initial_rotation_lidar_to_imu: Matrix3::identity(),
         }
     }
 }
@@ -275,6 +279,7 @@ impl ImuProcessing {
             cloud_end_time += cloud_begin_time;
         }
 
+        // dbg!(self.lidar_t_wrt_imu, self.lidar_r_wrt_imu);
         const GRAVITY: f64 = 9.81; // TODO PARAM
 
         let mean_acc = self.mean_acc.norm();
@@ -368,7 +373,6 @@ impl ImuProcessing {
         let angvel_avr = [angvel_avr_x, angvel_avr_y, angvel_avr_z];
         let _ = self.predict(ekf, avr_x, angvel_avr, dt);
         self.imu_state = ekf.state.clone();
-        // dbg!(&self.imu_state.vel);
 
         let mut out_cloud = vec![crate::PointXYZ::default(); cloud.len()];
 

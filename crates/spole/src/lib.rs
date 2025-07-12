@@ -1,36 +1,127 @@
-use std::{
-    collections::{HashMap, VecDeque},
-    sync::Arc,
-};
-
-use dashmap::DashMap;
 #[cfg(feature = "nn_kdt")]
 use kiddo::SquaredEuclidean;
-use ros_pointcloud2::prelude::*;
+use localmap::Livodish;
 
-pub mod denselocalmap;
+pub mod localmap;
+use rand_distr::{Distribution, Normal};
+
+use nalgebra::{Point3, Vector3};
+use rand::{Rng, SeedableRng};
+
+use nalgebra::{Cholesky, Matrix3};
+use ros_pointcloud2::points::PointXYZ;
 
 use serde::{Deserialize, Serialize};
 
 pub struct IVoxHashMap {
     nearby_type: IVoxNearbyType,
     inverse_resolution: f32,
-    resolution: f64,
-    max_map_size: usize,
-    grid_map: dashmap::DashMap<i32, ((i32, i32, i32), usize)>,
     scan_number: usize,
-    pt_id: u64,
-    buffer: Vec<(i32, IvoxNode)>,
-    buffer_current_idx: usize,
-    buffer_init_full: bool,
     #[cfg(feature = "nn_kdt")]
     kd_map: kiddo::float::kdtree::KdTree<f32, u64, 3, 64, u32>,
-    #[cfg(not(feature = "nn_kdt"))]
-    points: Vec<PointXYZ>,
     #[cfg(feature = "nn_kdt")]
-    kd_points: VecDeque<Arc<(u64, PointXYZ)>>,
+    kd_points: VecDeque<Arc<(u64, nalgebra::Point3<f32>)>>,
     #[cfg(feature = "nn_kdt")]
-    kd_points_lookup: HashMap<u64, Arc<(u64, PointXYZ)>>,
+    kd_points_lookup: HashMap<u64, Arc<(u64, nalgebra::Point3<f32>)>>,
+
+    livodish: localmap::Livodish,
+    rng: rand_pcg::Pcg64Mcg,
+}
+
+#[derive(Clone)]
+pub struct VoxelDistribution {
+    pub transform: Matrix3<f32>,
+    pub point_count: u64,
+    pub mean: Point3<f32>,
+    pub covariance: Matrix3<f32>,
+    pub last_updated_at_scan: usize,
+}
+
+impl VoxelDistribution {
+    pub fn new(first_point: &Point3<f32>) -> Self {
+        VoxelDistribution {
+            point_count: 1,
+            mean: *first_point,
+            covariance: Matrix3::zeros(),
+            transform: Matrix3::identity(),
+            last_updated_at_scan: 0,
+        }
+    }
+    pub fn update(
+        &mut self,
+        new_point: &Point3<f32>,
+        sensitivity: f32,
+        min_dist: f32,
+        current_scan_number: usize,
+    ) {
+        self.last_updated_at_scan = current_scan_number;
+
+        // --- Initial Bootstrap (Welford's Algorithm) ---
+        if self.point_count < 2 {
+            if self.point_count == 1 {
+                let new_point_dist_to_mean_sq = (self.mean - new_point).norm_squared();
+                if new_point_dist_to_mean_sq > min_dist * min_dist {
+                    return;
+                }
+            }
+
+            self.point_count += 1;
+            let n = self.point_count as f32;
+            let old_mean = self.mean;
+            let diff_from_old_mean = *new_point - old_mean;
+            self.mean = old_mean + diff_from_old_mean / n;
+
+            if self.point_count > 1 {
+                let diff_from_new_mean = *new_point - self.mean;
+                let scatter_matrix_update = diff_from_old_mean * diff_from_new_mean.transpose();
+                self.covariance = ((n - 2.0) / (n - 1.0)) * self.covariance
+                    + (1.0 / (n - 1.0)) * scatter_matrix_update;
+            }
+            self.transform = match Cholesky::new(self.covariance) {
+                Some(chol) => chol.l(),
+                None => {
+                    let eigen = nalgebra::SymmetricEigen::new(self.covariance);
+                    Matrix3::from_diagonal(&eigen.eigenvalues.map(|e| e.max(0.0).sqrt()))
+                }
+            };
+            return;
+        }
+
+        // --- Weighted Update with Maturity ---
+
+        // As point_count grows, the log term increases, making the distribution
+        // less sensitive (more "skeptical") to new points.
+        // We use `(point_count - 1)` because the EMA regime starts after 2 points.
+        // `max(1.0)` ensures we don't increase sensitivity for low point counts.
+        let maturity_decay = (self.point_count as f32 - 1.0).ln().max(1.0);
+        let effective_sensitivity = sensitivity / maturity_decay;
+
+        let diff_from_old_mean = new_point - self.mean;
+
+        let regularization_factor = 1e-6;
+        let regularized_cov = self.covariance + Matrix3::identity() * regularization_factor;
+
+        let distance_sq = if let Some(chol) = Cholesky::new(regularized_cov) {
+            self.transform = chol.l();
+            chol.solve(&diff_from_old_mean).dot(&diff_from_old_mean)
+        } else {
+            let eigen = nalgebra::SymmetricEigen::new(self.covariance);
+            self.transform = Matrix3::from_diagonal(&eigen.eigenvalues.map(|e| e.max(0.0).sqrt()));
+            diff_from_old_mean.norm_squared()
+        };
+
+        // The weight `alpha` is now calculated using the decayed `effective_sensitivity`.
+        let alpha = (-distance_sq / (2.0 * effective_sensitivity)).exp();
+
+        let new_mean = ((1.0 - alpha) * self.mean.coords + alpha * new_point.coords).into();
+
+        let new_cov_sample = (1.0 - alpha) * &diff_from_old_mean;
+        self.covariance =
+            (1.0 - alpha) * self.covariance + alpha * (new_cov_sample * new_cov_sample.transpose());
+        self.mean = new_mean;
+
+        self.point_count += 1;
+    }
 }
 
 #[derive(Debug, Default, Clone, Copy, Serialize, Deserialize)]
@@ -44,82 +135,26 @@ pub enum IVoxNearbyType {
     Nearby26,
 }
 
-#[derive(Debug, Clone)]
-pub struct IvoxNode {
-    points: Vec<PointXYZ>,
-    newest_hit: usize,
-}
-
-impl IvoxNode {
-    pub fn new() -> Self {
-        IvoxNode {
-            points: Vec::with_capacity(100),
-            newest_hit: 0,
-        }
-    }
-
-    pub fn linear_knn(
-        &self,
-        query: &PointXYZ,
-        k: usize,
-        max_range: f64,
-        _scan_number: usize,
-    ) -> Vec<PointXYZ> {
-        let max_range_sq = max_range.powi(2) as f32;
-
-        //self.newest_hit = scan_number;
-        let mut points = self.points.clone(); // TODO avoid clone
-
-        points.sort_unstable_by(|a, b| {
-            let dist_a = (a.xyz_f32() - query.xyz_f32()).norm_squared();
-            let dist_b = (b.xyz_f32() - query.xyz_f32()).norm_squared();
-            dist_a.partial_cmp(&dist_b).unwrap()
-        });
-
-        points
-            .iter()
-            .take(k)
-            .filter_map(|p| {
-                let dist_p = (p.xyz_f32() - query.xyz_f32()).norm_squared();
-
-                if dist_p > max_range_sq { None } else { Some(p) }
-            })
-            .cloned()
-            .collect()
-    }
-
-    fn add(&mut self, points: impl IntoIterator<Item = PointXYZ>) {
-        self.points.extend(points);
-    }
-}
-
 impl Default for IVoxHashMap {
     fn default() -> Self {
-        Self::new(0.2, 100_000, IVoxNearbyType::default())
+        Self::new(0.2, 100_000, IVoxNearbyType::default(), 3.0)
     }
 }
 
 impl IVoxHashMap {
-    pub fn new(resolution: f32, capacity: usize, nbtype: IVoxNearbyType) -> Self {
+    pub fn new(resolution: f32, capacity: usize, nbtype: IVoxNearbyType, sensitivity: f32) -> Self {
         Self {
             nearby_type: nbtype.clone(),
             inverse_resolution: 1.0 / resolution,
-            grid_map: DashMap::with_capacity(capacity),
-            max_map_size: capacity,
             scan_number: 0,
-            pt_id: 0,
-            resolution: resolution as f64,
-            buffer: vec![(0, IvoxNode::new()); capacity],
-            buffer_current_idx: 0,
-            buffer_init_full: false,
             #[cfg(feature = "nn_kdt")]
             kd_map: kiddo::float::kdtree::KdTree::<f32, u64, 3, 64, u32>::with_capacity(capacity),
             #[cfg(feature = "nn_kdt")]
             kd_points: VecDeque::with_capacity(capacity),
             #[cfg(feature = "nn_kdt")]
             kd_points_lookup: HashMap::new(),
-            #[cfg(not(feature = "nn_kdt"))]
-            points: Vec::with_capacity(capacity),
+            livodish: Livodish::new(capacity, sensitivity, resolution / 4.0),
+            rng: rand_pcg::Pcg64Mcg::from_os_rng(),
         }
     }
 
@@ -128,41 +163,25 @@ impl IVoxHashMap {
         return self.kd_map.size() == 0;
 
         #[cfg(not(feature = "nn_kdt"))]
-        return self.grid_map.is_empty();
+        return self.livodish.is_empty();
     }
 
-    fn add_voxel(&mut self, hash: i32, node: IvoxNode) -> usize {
-        let mut last_hash = None;
-        if self.buffer_current_idx >= self.buffer.len() {
-            if !self.buffer_init_full {
-                self.buffer_init_full = true;
-            }
-            last_hash = Some(self.buffer[self.buffer_current_idx].0);
-            self.buffer_current_idx = 0;
-        }
-
-        if let Some(last_hash) = last_hash {
-            self.grid_map.remove(&last_hash);
-        }
-
-        let last_idx = self.buffer_current_idx;
-        self.buffer[self.buffer_current_idx] = (hash, node);
-        self.buffer_current_idx += 1;
-
-        last_idx
-    }
-
-    pub fn add(&mut self, points: impl IntoIterator<Item = PointXYZ>) {
+    pub fn add(&mut self, points: &[PointXYZ], transform: &nalgebra::Isometry3<f64>) {
         self.scan_number += 1;
 
         #[cfg(feature = "nn_kdt")]
         {
             if self.scan_number == 1 {
                 points.into_iter().for_each(|point| {
+                    let point_global = transform.transform_point(&point.xyz_f64());
                     if self
                         .kd_map
                         .nearest_n_within::<SquaredEuclidean>(
-                            &[point.x, point.y, point.z],
+                            &[
+                                point_global.x as f32,
+                                point_global.y as f32,
+                                point_global.z as f32,
+                            ],
                             (self.resolution * self.resolution) as f32,
                             std::num::NonZero::new(1).unwrap(),
                             false,
@@ -170,8 +189,15 @@ impl IVoxHashMap {
                         .is_empty()
                     {
                         self.pt_id += 1;
-                        self.kd_map.add(&[point.x, point.y, point.z], self.pt_id);
-                        let p = Arc::new((self.pt_id, point));
+                        self.kd_map.add(
+                            &[
+                                point_global.x as f32,
+                                point_global.y as f32,
+                                point_global.z as f32,
+                            ],
+                            self.pt_id,
+                        );
+                        let p = Arc::new((self.pt_id, point_global.cast()));
                         self.kd_points.push_front(p.clone());
                         self.kd_points_lookup.insert(self.pt_id, p.clone());
                     }
@@ -181,9 +207,14 @@ impl IVoxHashMap {
                 let f = points
                     .into_iter() // TODO as par iter
                     .filter(|point| {
+                        let point_global = transform.transform_point(&point.xyz_f64());
                         self.kd_map
                             .nearest_n_within::<SquaredEuclidean>(
-                                &[point.x, point.y, point.z],
+                                &[
+                                    point_global.x as f32,
+                                    point_global.y as f32,
+                                    point_global.z as f32,
+                                ],
                                 (self.resolution * self.resolution) as f32,
                                 std::num::NonZero::new(1).unwrap(),
                                 false,
@@ -205,9 +236,17 @@ impl IVoxHashMap {
                 }
 
                 f.into_iter().for_each(|point| {
+                    let point_global = transform.transform_point(&point.xyz_f64());
                     self.pt_id += 1;
-                    self.kd_map.add(&[point.x, point.y, point.z], self.pt_id);
-                    let p = Arc::new((self.pt_id, point));
+                    self.kd_map.add(
+                        &[
+                            point_global.x as f32,
+                            point_global.y as f32,
+                            point_global.z as f32,
+                        ],
+                        self.pt_id,
+                    );
+                    let p = Arc::new((self.pt_id, point_global.cast()));
                     self.kd_points.push_front(p.clone());
                     self.kd_points_lookup.insert(self.pt_id, p.clone());
                 });
@@ -216,124 +255,53 @@ impl IVoxHashMap {
 
         #[cfg(not(feature = "nn_kdt"))]
         {
-            let hashes = dashmap::DashMap::new(); // TODO try out ahash
-            self.points.par_iter().for_each(|point| {
-                let hash = Self::hash(&point.xyz_f32(), 0.50);
-                if !hashes.contains_key(&hash) {
-                    hashes.insert(hash, Vec::with_capacity(10));
-                }
-                hashes
-                    .get_mut(&hash)
-                    .expect("entry created the line before")
-                    .push(*point);
+            points.iter().for_each(|point| {
+                let global_p = transform.transform_point(&point.xyz_f64());
+
+                let grid = self.pos2grid(&PointXYZ {
+                    x: global_p.x as f32,
+                    y: global_p.y as f32,
+                    z: global_p.z as f32,
+                });
+                let voxel_key = Self::hash_grid(&grid);
+                self.livodish
+                    .add(&global_p.cast(), voxel_key, self.scan_number);
             });
-
-            points.into_iter().for_each(|point| {
-                let hash = Self::hash(&point.xyz_f32(), 0.50);
-                if !hashes.contains_key(&hash) {
-                    hashes.insert(hash, Vec::with_capacity(10));
-                }
-                hashes
-                    .get_mut(&hash)
-                    .expect("entry created the line before")
-                    .push(point);
-            });
-
-            let out = hashes
-                .par_iter()
-                .map(|bucket_ref| {
-                    let voxel_average = bucket_ref
-                        .iter()
-                        .fold(nalgebra::Vector3::default(), |acc, point| {
-                            point.xyz_f32().coords + acc
-                        });
-
-                    /*let voxel_average = bucket_ref
-                    .par_iter()
-                    .map(|point| point.xyz().coords)
-                    .reduce(Vector3::default, |acc, coords| acc + coords);*/
-
-                    let avg = voxel_average * (1.0 / bucket_ref.len() as f32);
-
-                    let mut min_dist = f32::MAX;
-                    let mut closest_point = PointXYZ::default();
-                    for point in bucket_ref.iter() {
-                        let dist = (point.xyz_f32().coords - avg).norm_squared();
-                        if dist < min_dist {
-                            min_dist = dist;
-                            closest_point = (*point).clone();
-                        }
-                    }
-
-                    closest_point
-                })
-                .collect::<Vec<PointXYZ>>();
-
-            self.points.clear();
-            self.points.extend(out);
+            self.livodish.build(self.scan_number);
         }
     }
 
+    #[inline(always)]
+    pub fn sample_from_distribution<R: Rng + ?Sized>(
+        distribution: &VoxelDistribution,
+        num_samples: usize,
+        rng: &mut R,
+        result: &mut [nalgebra::Point3<f32>],
+    ) {
+        let standard_normal = Normal::new(0.0, 1.0).unwrap();
+        let mut samples_iter = standard_normal.sample_iter(rng);
+
+        for res in result.iter_mut().take(num_samples) {
+            let rand_vec = Vector3::new(
+                samples_iter.next().unwrap(),
+                samples_iter.next().unwrap(),
+                samples_iter.next().unwrap(),
+            );
+            *res = distribution.mean + distribution.transform * rand_vec;
+        }
+    }
+
+    #[inline(always)]
     #[must_use]
     pub fn k_nearest_neighbor_query(
         &self,
         query: &PointXYZ,
         k: usize,
-        max_range: f64,
+        max_range: f32,
         result: &mut [PointXYZ],
         out_size: &mut usize,
     ) -> bool {
-        #[cfg(not(feature = "nn_kdt"))]
-        {
-            let grid = self.pos2grid(query);
-
-            let neighboring_buckets: &[(i32, i32, i32)] = match self.nearby_type {
-                IVoxNearbyType::Center => &[grid],
-                IVoxNearbyType::Nearby6 => &Self::nearby_6(grid),
-                IVoxNearbyType::Nearby18 => &Self::nearby_18(grid),
-                IVoxNearbyType::Nearby26 => &Self::nearby_26(grid),
-            };
-
-            /*let double_buckets = neighboring_buckets
-            .iter()
-            .map(|g| (Self::hash(g), g))
-            .collect::<Vec<_>>();*/
-
-            let mut neighbors = neighboring_buckets
-                .iter()
-                .filter_map(|g| self.grid_map.get_mut(&Self::hash_grid(g)))
-                .filter_map(|hash_node| {
-                    let n = self.buffer[hash_node.value().1].1.linear_knn(
-                        query,
-                        k,
-                        max_range,
-                        self.scan_number,
-                    );
-                    if n.is_empty() { None } else { Some(n) }
-                })
-                .flatten()
-                .collect::<Vec<_>>();
-
-            neighbors.sort_unstable_by(|a, b| {
-                let dist_a = (a.xyz_f32() - query.xyz_f32()).norm_squared();
-                let dist_b = (b.xyz_f32() - query.xyz_f32()).norm_squared();
-                dist_a.partial_cmp(&dist_b).unwrap()
-            });
-
-            if neighbors.is_empty() {
-                return false;
-            }
-
-            *out_size = neighbors.len();
-
-            neighbors
-                .into_iter()
-                .take(k)
-                .zip(result.iter_mut())
-                .for_each(|(neigh, res)| *res = neigh);
-
-            return true;
-        }
+        let sq_max_range = max_range * max_range;
         #[cfg(feature = "nn_kdt")]
         {
             if self.kd_map.size() == 0 {
@@ -342,7 +310,7 @@ impl IVoxHashMap {
 
             let neighbors = self.kd_map.nearest_n_within::<SquaredEuclidean>(
                 &[query.x, query.y, query.z],
-                (max_range * max_range) as f32,
+                sq_max_range,
                 std::num::NonZeroUsize::new(k).unwrap(),
                 true,
             );
@@ -356,12 +324,102 @@ impl IVoxHashMap {
             neighbors
                 .into_iter()
                 .zip(result.iter_mut())
-                .for_each(|(neigh, res)| *res = self.kd_points_lookup[&neigh.item].1);
+                .for_each(|(neigh, res)| {
+                    let p = self.kd_points_lookup[&neigh.item].1;
+                    res.x = p.x;
+                    res.y = p.y;
+                    res.z = p.z;
+                });
 
             return true;
         }
+
+        #[cfg(not(feature = "nn_kdt"))]
+        {
+            if k == 0 || result.is_empty() {
+                *out_size = 0;
+                return false;
+            }
+
+            let mut rng = self.rng.clone();
+            let query_p = nalgebra::Point3::new(query.x, query.y, query.z);
+
+            // --- Gather Neighbors and Total Density ---
+            const MAX_NEIGHBORS: usize = 27;
+            let mut cached_neighbors: [Option<&VoxelDistribution>; MAX_NEIGHBORS] =
+                [None; MAX_NEIGHBORS];
+            let mut num_cached = 0;
+            let mut total_density = 0u64;
+
+            let mut cache_and_sum_density = |grids: &[(i32, i32, i32)]| {
+                for g in grids {
+                    let k = Self::hash_grid(g);
+                    if let Some(dist) = self.livodish.find(&k) {
+                        if dist.point_count > 0 && num_cached < MAX_NEIGHBORS {
+                            cached_neighbors[num_cached] = Some(dist);
+                            total_density += dist.point_count;
+                            num_cached += 1;
+                        }
+                    }
+                }
+            };
+
+            let grid = self.pos2grid(query);
+            match self.nearby_type {
+                IVoxNearbyType::Center => cache_and_sum_density(&[grid]),
+                IVoxNearbyType::Nearby6 => cache_and_sum_density(&Self::nearby_6(grid)),
+                IVoxNearbyType::Nearby18 => cache_and_sum_density(&Self::nearby_18(grid)),
+                IVoxNearbyType::Nearby26 => cache_and_sum_density(&Self::nearby_26(grid)),
+            };
+
+            if total_density == 0 {
+                *out_size = 0;
+                return false;
+            }
+
+            // --- Proportional Sampling ---
+
+            let mut current_found_count = 0;
+
+            let mut sampled_out = [Point3::default(); MAX_NEIGHBORS];
+            for i in 0..num_cached {
+                if current_found_count >= k {
+                    break;
+                }
+
+                if let Some(dist) = cached_neighbors[i] {
+                    let relative_density = dist.point_count as f64 / total_density as f64;
+                    let mut sample_count = (relative_density * k as f64).round() as usize;
+
+                    let samples_needed = k - current_found_count;
+                    sample_count = sample_count.min(samples_needed);
+
+                    if sample_count == 0 {
+                        continue;
+                    }
+
+                    Self::sample_from_distribution(dist, sample_count, &mut rng, &mut sampled_out);
+
+                    for i in 0..sample_count {
+                        let p = unsafe { sampled_out.get_unchecked(i) };
+                        if (query_p - p).norm_squared() < sq_max_range {
+                            result[current_found_count] = PointXYZ::new(p.x, p.y, p.z);
+                            current_found_count += 1;
+
+                            if current_found_count >= k {
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+
+            *out_size = current_found_count;
+            *out_size > 0
+        }
     }
 
+    #[inline(always)]
     fn nearby_6(grid_key: (i32, i32, i32)) -> [(i32, i32, i32); 7] {
         let (gx, gy, gz) = grid_key;
         [
@@ -375,6 +433,7 @@ impl IVoxHashMap {
         ]
     }
 
+    #[inline(always)]
     fn nearby_18(grid_key: (i32, i32, i32)) -> [(i32, i32, i32); 19] {
         let (gx, gy, gz) = grid_key;
         [
@@ -400,6 +459,7 @@ impl IVoxHashMap {
         ]
     }
 
+    #[inline(always)]
     fn nearby_26(grid_key: (i32, i32, i32)) -> [(i32, i32, i32); 27] {
         let (gx, gy, gz) = grid_key;
         [
@@ -433,32 +493,32 @@ impl IVoxHashMap {
         ]
     }
 
-    fn pos2grid(&self, pos: &PointXYZ) -> (i32, i32, i32) {
+    #[inline(always)]
+    pub fn pos2grid(&self, pos: &PointXYZ) -> (i32, i32, i32) {
         let gx = (pos.x * self.inverse_resolution).round() as i32;
         let gy = (pos.y * self.inverse_resolution).round() as i32;
         let gz = (pos.z * self.inverse_resolution).round() as i32;
         (gx, gy, gz)
     }
 
-    fn hash_grid(grid_key: &(i32, i32, i32)) -> i32 {
+    #[inline(always)]
+    pub fn hash_grid(grid_key: &(i32, i32, i32)) -> i32 {
         const PRIME_1: i32 = 73856093;
         const PRIME_2: i32 = 19349663;
         const PRIME_3: i32 = 83492791;
-        const PRIME_4: i32 = 116_881;
 
         let mut hash = grid_key.0.wrapping_mul(PRIME_1);
         hash = hash.wrapping_add(grid_key.1.wrapping_mul(PRIME_2));
         hash = hash.wrapping_add(grid_key.2.wrapping_mul(PRIME_3));
-        hash = hash.wrapping_rem(PRIME_4);
 
         hash
     }
 
-    fn hash(point: &nalgebra::Point3<f32>, voxel_size: f32) -> i32 {
+    #[inline(always)]
+    pub fn hash(point: &nalgebra::Point3<f32>, voxel_size: f32) -> i32 {
         const PRIME_1: i32 = 73_856_093;
         const PRIME_2: i32 = 19_349_663;
         const PRIME_3: i32 = 83_492_791;
-        const PRIME_4: i32 = 116_881;
 
         let xyz = point * (1.0 / voxel_size);
 
@@ -469,17 +529,16 @@ impl IVoxHashMap {
         let mut hash = x.wrapping_mul(PRIME_1);
         hash = hash.wrapping_add(y.wrapping_mul(PRIME_2));
         hash = hash.wrapping_add(z.wrapping_mul(PRIME_3));
-        hash = hash.wrapping_rem(PRIME_4);
 
         hash
     }
 
     pub fn clear(&mut self) {
-        self.grid_map.clear();
+        self.livodish.clear();
     }
 
     /// Mostly for testing purposes, is not efficient
-    pub fn get_entire_map(&self) -> Vec<PointXYZ> {
+    pub fn get_entire_map(&self) -> Vec<nalgebra::Point3<f32>> {
         #[cfg(feature = "nn_kdt")]
         {
             return self.kd_points.iter().map(|rc| rc.1).collect();
@@ -487,25 +546,7 @@ impl IVoxHashMap {
 
         #[cfg(not(feature = "nn_kdt"))]
         {
-            if self.buffer_init_full {
-                return self
-                    .buffer
-                    .iter()
-                    .map(|node| node.1.points.clone())
-                    .flatten()
-                    .collect();
-            } else {
-                let mut out = Vec::with_capacity(self.buffer_current_idx);
-                for i in 0..self.buffer_current_idx {
-                    let node = &self.buffer[i];
-                    let points = &node.1.points;
-                    if !points.is_empty() {
-                        out.extend(points.clone());
-                    }
-                }
-
-                return out;
-            }
+            self.livodish.get_map()
         }
     }
 }
@@ -513,25 +554,28 @@ impl IVoxHashMap {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use nalgebra::Isometry3;
 
     #[test]
     #[cfg(not(feature = "nn_kdt"))]
     fn basic_insert() {
+        use nalgebra::Isometry3;
+
         let h_points = vec![
             PointXYZ::new(0.2, 0.2, 0.0),
             PointXYZ::new(0.4, 0.4, 0.1),
             PointXYZ::new(0.49, 0.49, 0.1),
             PointXYZ::new(0.75001, 0.51, 0.51),
         ];
-        let mut map = IVoxHashMap::new(0.5, 1_000, IVoxNearbyType::default());
-        map.add(h_points);
+        let mut map = IVoxHashMap::new(0.5, 1_000, IVoxNearbyType::default(), 0.3);
+        map.add(&h_points, &Isometry3::identity());
         let entire_map = map.get_entire_map();
         assert_eq!(entire_map.len(), 4);
 
         {
             let mut found = false;
             for point in entire_map {
-                if point == PointXYZ::new(0.2, 0.2, 0.0) {
+                if point.x == 0.2 && point.y == 0.2 && point.z == 0.2 {
                     found = true;
                     break;
                 }
@@ -542,27 +586,9 @@ mod tests {
 
     #[test]
     #[cfg(not(feature = "nn_kdt"))]
-    fn inode_linear() {
-        let mut inode = IvoxNode::new();
-        inode.add([
-            PointXYZ::new(0.2, 0.2, 0.0),
-            PointXYZ::new(0.4, 0.4, 0.1),
-            PointXYZ::new(0.49, 0.49, 0.1),
-        ]);
-
-        assert_eq!(inode.points.len(), 3);
-        let res = inode.linear_knn(&PointXYZ::new(0.4, 0.4, 0.1), 1, 5.0, 1);
-        assert_eq!(res.len(), 1);
-        assert_eq!(res[0].x, 0.4);
-        assert_eq!(res[0].y, 0.4);
-        assert_eq!(res[0].z, 0.1);
-    }
-
-    #[test]
-    #[cfg(not(feature = "nn_kdt"))]
     fn basic_add_and_search() {
-        let mut map = IVoxHashMap::new(0.5, 1_000, IVoxNearbyType::default());
-        map.add([PointXYZ::new(3.3, 3.3, 3.0)]);
+        let mut map = IVoxHashMap::new(0.5, 1_000, IVoxNearbyType::default(), 0.3);
+        map.add(&[PointXYZ::new(3.3, 3.3, 3.0)], &Isometry3::identity());
         let mut result = vec![PointXYZ::default(); 1];
         let out_size = &mut 0;
         let res = map.k_nearest_neighbor_query(
@@ -585,8 +611,8 @@ mod tests {
             PointXYZ::new(0.49, 0.49, 0.1),
             PointXYZ::new(0.75001, 0.51, 0.51),
         ];
-        let mut map = IVoxHashMap::new(0.5, 1_000, IVoxNearbyType::Nearby26);
-        map.add(h_points);
+        let mut map = IVoxHashMap::new(0.5, 1_000, IVoxNearbyType::Nearby26, 0.3);
+        map.add(&h_points, &Isometry3::identity());
 
         let query = PointXYZ::new(0.0, 0.0, 0.0);
         let mut result = vec![PointXYZ::default(); 6];
@@ -614,8 +640,8 @@ mod tests {
             PointXYZ::new(6.8, 9.2, 1.1),
         ];
 
-        let mut map = IVoxHashMap::new(0.5, 1_000, IVoxNearbyType::Nearby18);
-        map.add(distant_points);
+        let mut map = IVoxHashMap::new(0.5, 1_000, IVoxNearbyType::Nearby18, 0.3);
+        map.add(&distant_points, &Isometry3::identity());
 
         let query = PointXYZ::new(5.5, 10.5, 0.0);
         let mut result = vec![PointXYZ::default(); 2];

@@ -113,16 +113,17 @@ pub struct VelodynePoint {
     pub y: f32,
     pub z: f32,
     pub intensity: f32,
+    pub ring: u16,
     pub time: f32,
 }
 
-impl prelio::PointXYZITimestamp<5> for VelodynePoint {
+impl prelio::PointXYZITimestamp<6> for VelodynePoint {
     fn intensity(&self) -> f32 {
         self.intensity
     }
 
     fn timestamp(&self) -> f64 {
-        self.time as f64 * 1e-6
+        self.time as f64 * 1.0 // TODO wtf?
     }
 
     fn xyz(&self) -> nalgebra::Point3<f32> {
@@ -183,7 +184,7 @@ impl State {
             imu_tf: None,
             lifis: match config.lidar_vendor {
                 prelio::LidarVendor::Velodyne => {
-                    Arc::new(Mutex::new(prelio::Prelio::create::<5, VelodynePoint>(
+                    Arc::new(Mutex::new(prelio::Prelio::create::<6, VelodynePoint>(
                         config.imu.gravity,
                         config.imu.madgwick_setting,
                         &config.imu.calibration,
@@ -347,6 +348,7 @@ fn cloud_callback(
                         .unwrap_or(nalgebra::geometry::Isometry3::identity())
                 };
 
+                // dbg!(imu_tf);
                 (imu_tf, sensor_tf)
             }
         };
@@ -929,7 +931,7 @@ impl PrelioNode {
                                     // apply the init buffer
                                     if let Some(imu_init_buffer) = imu_init_buffer.take() {
                                         imu_pose_predictor_init(&imu_init_buffer);
-                                        debug!("EKF: Imu initialized");
+                                        info!("EKF: Imu initialized");
                                     }
                                 }
                             }
