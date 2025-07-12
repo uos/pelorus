@@ -7,11 +7,11 @@ pub mod timing;
 use either::Either;
 use imu_fusion::FusionAhrs;
 use log::{debug, error, info, warn};
-use morton_encoding::morton_encode;
 use nalgebra::*;
+// use rand::Rng;
 use serde::{Deserialize, Serialize};
 use std::thread;
-use timing::{EvaluationFormular, RuntimeEvaluator};
+use timing::RuntimeEvaluator;
 
 use anyhow::Result;
 use ros_pointcloud2::prelude::*;
@@ -261,7 +261,7 @@ fn hash(point: &Point3<f32>, voxel_size: f32) -> i32 {
 }
 
 /// Helper function to find the medoid within a slice of points.
-fn find_medoid_in_slice(points: &[(u128, PointXYZT)]) -> PointXYZT {
+fn find_medoid_in_slice(points: &[(i32, PointXYZT)]) -> PointXYZT {
     if points.len() == 1 {
         return points[0].1;
     }
@@ -300,106 +300,155 @@ fn filter_downsample<const N: usize, P: PointXYZITimestamp<N>>(
     lifis_params: &config::LifisParameters,
 ) -> Result<Option<(Vec<PointXYZT>, f64, f64, HeaderMsg)>> {
     let header = cloud.header.clone();
-    let res = cloud.try_into_par_iter()?.filter(move |point: &P| {
-        let params = &lifis_params.passthrough_filter;
-        let p_t = params.filter_frame_transform * point.xyz();
+    let voxel_size = lifis_params.downsample.voxel_size;
+    const PAR_SORT_BOUNDARY: usize = 1; // When tested on an M3, par sort was always faster, no matter the size. TODO test on other platforms
+    // let offset = 2i32.pow(20); // A large offset to handle negative coordinates)
+    let iter = {
+        #[cfg(feature = "parallel")]
+        {
+            cloud.try_into_par_iter()?
+        }
+        #[cfg(not(feature = "parallel"))]
+        {
+            cloud.try_into_iter()?
+        }
+    };
+    let mut keyed_points: Vec<(i32, PointXYZT)> = iter
+        .filter_map(|point: P| {
+            let params = &lifis_params.passthrough_filter;
+            let p_t = params.filter_frame_transform * point.xyz();
 
-        let dist = p_t.coords.norm();
-        let is_within_range = if params.invert_distance {
-            dist < params.min_dist || dist > params.max_dist
-        } else {
-            dist >= params.min_dist && dist <= params.max_dist
-        };
-
-        let is_within_intensity = if params.invert_intensity {
-            point.intensity() < params.min_intensity || point.intensity() > params.max_intensity
-        } else {
-            point.intensity() >= params.min_intensity && point.intensity() <= params.max_intensity
-        };
-
-        let is_within_box = if params.invert_bounding_box {
-            !inside_box(p_t, params.min, params.max)
-        } else {
-            inside_box(p_t, params.min, params.max)
-        };
-
-        let is_within_fov = if params.enable_horizontal_fov {
-            if params.invert_fov {
-                !inside_horizontal_fov(p_t, params.fov_right, params.fov_left, params.forward)
+            let dist = p_t.coords.norm_squared();
+            let is_within_range = if params.invert_distance {
+                dist < params.min_dist.powi(2) || dist > params.max_dist.powi(2)
             } else {
-                inside_horizontal_fov(p_t, params.fov_right, params.fov_left, params.forward)
+                dist >= params.min_dist.powi(2) && dist <= params.max_dist.powi(2)
+            };
+            if !is_within_range {
+                return None;
             }
-        } else {
-            true
-        };
 
-        let is_within_polygon = match &params.polygon {
-            None => true,
-            Some(polygon) => {
-                let is_within_polygon = if params.invert_polygon {
-                    !point_inside_polygon_winding_number(p_t, polygon, polygon.len())
+            let is_within_intensity = if params.invert_intensity {
+                point.intensity() < params.min_intensity || point.intensity() > params.max_intensity
+            } else {
+                point.intensity() >= params.min_intensity
+                    && point.intensity() <= params.max_intensity
+            };
+            if !is_within_intensity {
+                return None;
+            }
+
+            let is_within_box = if params.invert_bounding_box {
+                !inside_box(p_t, params.min, params.max)
+            } else {
+                inside_box(p_t, params.min, params.max)
+            };
+            if !is_within_box {
+                return None;
+            }
+
+            let is_within_fov = if params.enable_horizontal_fov {
+                if params.invert_fov {
+                    !inside_horizontal_fov(p_t, params.fov_right, params.fov_left, params.forward)
                 } else {
-                    point_inside_polygon_winding_number(p_t, polygon, polygon.len())
-                };
-                polygon.len() != 0 && is_within_polygon
+                    inside_horizontal_fov(p_t, params.fov_right, params.fov_left, params.forward)
+                }
+            } else {
+                true
+            };
+            if !is_within_fov {
+                return None;
             }
-        };
 
-        is_within_range
-            && is_within_intensity
-            && is_within_box
-            && is_within_fov
-            && is_within_polygon
-    });
+            let is_within_polygon = match &params.polygon {
+                None => true,
+                Some(polygon) => {
+                    let is_within_polygon = if params.invert_polygon {
+                        !point_inside_polygon_winding_number(p_t, polygon, polygon.len())
+                    } else {
+                        point_inside_polygon_winding_number(p_t, polygon, polygon.len())
+                    };
+                    polygon.len() != 0 && is_within_polygon
+                }
+            };
+            if !is_within_polygon {
+                return None;
+            }
 
-    let voxel_size_inv = 1.0 / lifis_params.downsample.voxel_size;
-    let offset = 2i32.pow(20); // A large offset to handle negative coordinates
+            let ts = point.timestamp();
+            if ts.is_nan() {
+                return None;
+            }
 
-    let mut keyed_points: Vec<(u128, PointXYZT)> = res
-        .map(|point| {
             let point_raw = point.xyz();
-            let ix = (point_raw.x * voxel_size_inv).floor() as i32 + offset;
-            let iy = (point_raw.y * voxel_size_inv).floor() as i32 + offset;
-            let iz = (point_raw.z * voxel_size_inv).floor() as i32 + offset;
-
-            // Encode the 3D voxel index into a single 64-bit Morton key.
-            let key = morton_encode([ix as u32, iy as u32, iz as u32]);
-            (key, PointXYZT::from_p(point_raw, point.timestamp()))
+            let key = hash(&point_raw, voxel_size);
+            Some((key, PointXYZT::from_p(point_raw, ts)))
         })
-        .collect();
+        .collect::<Vec<_>>();
 
     // After this, all points in the same voxel are adjacent
-    keyed_points.par_sort_unstable_by_key(|(key, _)| *key);
+    #[cfg(feature = "parallel")]
+    {
+        if keyed_points.len() > PAR_SORT_BOUNDARY {
+            keyed_points.par_sort_unstable_by_key(|(key, _)| *key);
+        } else {
+            keyed_points.sort_unstable_by_key(|(key, _)| *key);
+        }
+    }
+    #[cfg(not(feature = "parallel"))]
+    {
+        keyed_points.sort_unstable_by_key(|(key, _)| *key);
+    }
 
-    let mut downsampled_cloud = Vec::new();
     if keyed_points.is_empty() {
         return Ok(None);
     }
 
-    let mut group_start_index = 0;
-    for i in 1..keyed_points.len() {
-        // Check if the key has changed. If so, the previous group has ended.
-        if keyed_points[i].0 != keyed_points[group_start_index].0 {
-            // Process the slice for the completed group.
-            let group_slice = &keyed_points[group_start_index..i];
-            let medoid = find_medoid_in_slice(&group_slice);
-            downsampled_cloud.push(medoid);
+    let mut downsampled_cloud: Vec<PointXYZT> = {
+        // TODO chunk by seems extremely fast on M3 Pro
+        // #[cfg(feature = "parallel")]
+        // {
+        //     if keyed_points.len() > PAR_SORT_BOUNDARY {
+        //         keyed_points
+        //             .par_chunk_by(|a, b| a.0 == b.0)
+        //             .map(|group_slice| find_medoid_in_slice(group_slice))
+        //             .collect()
+        //     } else {
+        //         keyed_points
+        //             .chunk_by(|a, b| a.0 == b.0)
+        //             .map(|group_slice| find_medoid_in_slice(group_slice))
+        //             .collect()
+        //     }
+        // }
+        // #[cfg(not(feature = "parallel"))]
+        // {
+        keyed_points
+            .chunk_by(|a, b| a.0 == b.0)
+            .map(|group_slice| find_medoid_in_slice(group_slice))
+            .collect()
+        // }
+    };
 
-            // Start a new group
-            group_start_index = i;
+    // needed for undistort
+    let cmp = |a: &PointXYZT, b: &PointXYZT| {
+        // if (a.timestamp - b.timestamp).abs() < 1e-6 {
+        //     a.z.partial_cmp(&b.z).unwrap()
+        // } else {
+        a.timestamp.partial_cmp(&b.timestamp).unwrap()
+        // }
+    };
+    #[cfg(feature = "parallel")]
+    {
+        if downsampled_cloud.len() > PAR_SORT_BOUNDARY {
+            downsampled_cloud.par_sort_unstable_by(cmp);
+        } else {
+            downsampled_cloud.sort_unstable_by(cmp);
         }
     }
-    // The last group
-    let last_group_slice = &keyed_points[group_start_index..];
-    downsampled_cloud.push(find_medoid_in_slice(&last_group_slice));
-
-    downsampled_cloud.par_sort_by(|a, b| {
-        if (a.timestamp - b.timestamp).abs() < 1e-6 {
-            a.z.partial_cmp(&b.z).unwrap()
-        } else {
-            a.timestamp.partial_cmp(&b.timestamp).unwrap()
-        }
-    });
+    #[cfg(not(feature = "parallel"))]
+    {
+        downsampled_cloud.sort_unstable_by(cmp);
+    }
 
     let (first, last) = match (&downsampled_cloud.first(), &downsampled_cloud.last()) {
         (Some(first), Some(last)) => (first.timestamp, last.timestamp),
@@ -420,8 +469,8 @@ pub struct ImuPosePrediction {
     pub pose: Isometry3<f64>,
     pub linear_velocity: nalgebra::Vector3<f64>,
     pub angular_velocity: nalgebra::Vector3<f64>,
-    pub lidar_imu_extrinsic_rotation: nalgebra::Matrix3<f64>,
-    pub lidar_imu_extrinsic_translation: nalgebra::Vector3<f64>,
+    // pub lidar_imu_extrinsic_rotation: nalgebra::Matrix3<f64>,
+    // pub lidar_imu_extrinsic_translation: nalgebra::Vector3<f64>,
 }
 
 #[derive(Debug)]
@@ -469,6 +518,162 @@ pub struct Prelio {
     madgwick_filter: MadgwickSetting,
 }
 
+// fn find_sort_boundaries() {
+//     let sizes = [
+//         10_000, 20_000, 40_000, 60_000, 80_000, 100_000, 120_000, 150_000, 170_000, 200_000,
+//         500_000,
+//     ];
+//     let max_size = *sizes.iter().max().unwrap_or(&1_000_000);
+
+//     println!(
+//         "{:<12} | {:<20} | {:<20} | {}",
+//         "Vec Size", "Sequential Sort", "Parallel Sort", "Winner"
+//     );
+//     println!("{:-<13}|{:-<22}|{:-<22}|{:-<10}", "", "", "", "");
+
+//     let mut rng = rand::rng();
+//     let master_points: Vec<nalgebra::Point3<f32>> = (0..max_size)
+//         .map(|_| {
+//             nalgebra::Point3::new(
+//                 rng.random_range(-1.0..1.0),
+//                 rng.random_range(-1.0..1.0),
+//                 rng.random_range(-1.0..1.0),
+//             )
+//         })
+//         .collect();
+
+//     for &size in &sizes {
+//         let points = master_points[..size].to_vec();
+
+//         let mut seq_points = points.clone();
+//         let start_seq = std::time::Instant::now();
+//         seq_points.sort_unstable_by(|a, b| {
+//             a.coords
+//                 .norm_squared()
+//                 .partial_cmp(&b.coords.norm_squared())
+//                 .unwrap()
+//         });
+//         let seq_duration = start_seq.elapsed();
+
+//         let mut par_points = points.clone();
+//         let start_par = std::time::Instant::now();
+//         par_points.par_sort_unstable_by(|a, b| {
+//             a.coords
+//                 .norm_squared()
+//                 .partial_cmp(&b.coords.norm_squared())
+//                 .unwrap()
+//         });
+//         let par_duration = start_par.elapsed();
+
+//         // --- 4. Report Results ---
+//         let winner = if par_duration < seq_duration {
+//             "Parallel"
+//         } else {
+//             "Sequential"
+//         };
+//         println!(
+//             "{:<12} | {:<20.2?} | {:<20.2?} | {}",
+//             size, seq_duration, par_duration, winner
+//         );
+//     }
+// }
+
+// /// Runs the benchmark to compare sequential vs parallel chunk iteration.
+// fn find_chunking_boundaries() {
+//     // The total vector sizes we want to test.
+//     let sizes = [
+//         1_000, 10_000, 20_000, 40_000, 60_000, 80_000, 100_000, 200_000, 500_000, 1_000_000,
+//         5_000_000,
+//     ];
+//     let max_size = *sizes.iter().max().unwrap_or(&1_000_000);
+
+//     // The size of each chunk we will process.
+//     let chunk_size = 24;
+
+//     println!(
+//         "This benchmark compares iterating over data with `chunks_exact` vs. `par_chunks_exact`."
+//     );
+//     println!("We will process the data by summing the squared distances of all points.");
+//     println!("Chunk Size for all tests: {}", chunk_size);
+//     println!();
+//     println!(
+//         "{:<12} | {:<25} | {:<25} | {}",
+//         "Vec Size", "Sequential Chunks (sum)", "Parallel Chunks (sum)", "Winner"
+//     );
+//     println!("{:-<13}|{:-<27}|{:-<27}|{:-<10}", "", "", "", "");
+
+//     // --- 1. Data Generation ---
+//     println!(
+//         "Generating {} master points for consistent benchmarking...",
+//         max_size
+//     );
+//     let mut rng = rand::rng();
+//     let master_points: Vec<nalgebra::Point3<f32>> = (0..max_size)
+//         .map(|_| {
+//             nalgebra::Point3::new(
+//                 rng.random_range(-1.0..1.0),
+//                 rng.random_range(-1.0..1.0),
+//                 rng.random_range(-1.0..1.0),
+//             )
+//         })
+//         .collect();
+//     println!("Generation complete. Starting benchmarks.\n");
+
+//     for &size in &sizes {
+//         if size < chunk_size {
+//             continue; // Skip sizes smaller than one chunk.
+//         }
+//         let points = &master_points[..size];
+
+//         // --- 2. Sequential Chunking Benchmark ---
+//         let start_seq = std::time::Instant::now();
+//         // Iterate over chunks sequentially, map each chunk to its sum, and sum the results.
+//         let mut seq_total: f32 = points
+//             .chunks_exact(chunk_size)
+//             .map(|chunk| chunk.iter().map(|p| p.coords.norm_squared()).sum::<f32>())
+//             .sum();
+//         // Don't forget to process the remainder!
+//         seq_total += points
+//             .chunks_exact(chunk_size)
+//             .remainder()
+//             .iter()
+//             .map(|p| p.coords.norm_squared())
+//             .sum::<f32>();
+//         let seq_duration = start_seq.elapsed();
+
+//         // --- 3. Parallel Chunking Benchmark ---
+//         let start_par = std::time::Instant::now();
+//         // Iterate over chunks in parallel, map each chunk to its sum in parallel, and sum the results.
+//         let mut par_total: f32 = points
+//             .par_chunks_exact(chunk_size)
+//             .map(|chunk| chunk.iter().map(|p| p.coords.norm_squared()).sum::<f32>())
+//             .sum();
+//         // Process the remainder in parallel as well.
+//         par_total += points
+//             .par_chunks_exact(chunk_size)
+//             .remainder()
+//             .par_iter()
+//             .map(|p| p.coords.norm_squared())
+//             .sum::<f32>();
+//         let par_duration = start_par.elapsed();
+
+//         // --- 4. Report Results ---
+//         // We can assert that the results are the same (within a small float tolerance)
+//         // to ensure both methods are doing the same work.
+//         // assert!((seq_total - par_total).abs() < 1e-6);
+
+//         let winner = if par_duration < seq_duration {
+//             "Parallel"
+//         } else {
+//             "Sequential"
+//         };
+//         println!(
+//             "{:<12} | {:<25.2?} | {:<25.2?} | {}",
+//             size, seq_duration, par_duration, winner
+//         );
+//     }
+// }
+
 impl Prelio {
     pub fn create<const N: usize, P: PointXYZITimestamp<N>>(
         gravity: f64,
@@ -500,6 +705,13 @@ impl Prelio {
         let (imu_tx, imu_rx) = std::sync::mpsc::channel();
         let (filtered_cloud_tx, filtered_cloud_rx) = std::sync::mpsc::channel();
         let (synced_cloud_imu_tx, synced_cloud_imu_rx) = std::sync::mpsc::channel();
+
+        // test parallel boundaries
+        // #[cfg(feature = "parallel")]
+        // {
+        // find_sort_boundaries();
+        // find_chunking_boundaries();
+        // }
 
         // sync and imu integration worker
         // TODO move to main processing, since else predict and correct is async
@@ -579,22 +791,22 @@ impl Prelio {
     pub fn add_pointcloud(&mut self, cloud: PointCloud2Msg) {
         let cloud_stamp = timestamp_to_secs(&cloud.header.stamp);
 
-        // TODO handle time jumps in the past
-        /*let buff_cloud = if cloud_stamp < self.last_cloud_time {
-            None
-        } else {
-            Some(cloud)
-        };*/
+        // TODO handle time jumps in the past?
+        // let buff_cloud = if cloud_stamp < self.last_cloud_time {
+        //    None
+        // } else {
+        //     Some(cloud)
+        // };
 
-        /*self.imu_buffer.clear();
-        {
-            let mut pointcloud_buffer = self.preproc_sender.
-            pointcloud_buffer.clear();
-        }
-        self.last_cloud_time = 0.0;
-        self.last_imu_time = 0.0;
-        self.undistort.reset();
-        to_buffer.clear();*/
+        // self.imu_buffer.clear();
+        // {
+        //     let mut pointcloud_buffer = self.preproc_sender.
+        //     pointcloud_buffer.clear();
+        // }
+        // self.last_cloud_time = 0.0;
+        // self.last_imu_time = 0.0;
+        // self.undistort.reset();
+        // to_buffer.clear();
         self.last_cloud_time = cloud_stamp;
         match self.preproc_sender.send(cloud) {
             Ok(_) => {}
@@ -732,6 +944,12 @@ impl Prelio {
                 }
             }
 
+            // dbg!(
+            //     imu_span_start_time,
+            //     imu_span_end_time,
+            //     lidar_begin_time,
+            //     lidar_end_time
+            // );
             // Populate IMU with buffered
             if let Some(imu_receiver) = imu_receiver.as_ref() {
                 loop {
@@ -739,7 +957,8 @@ impl Prelio {
                         Ok(imu) => {
                             let imu_time = timestamp_to_secs(&imu.stamp);
 
-                            // Too early
+                            // Imu too early
+                            // dbg!(imu_time);
                             if imu_time < imu_span_start_time {
                                 warn!("IMU msg skipped");
                                 continue;
@@ -870,8 +1089,8 @@ impl Prelio {
                                     imu_cloud.last_twist[4],
                                     imu_cloud.last_twist[5],
                                 ),
-                                lidar_imu_extrinsic_rotation: Matrix3::identity(), // TODO never used?
-                                lidar_imu_extrinsic_translation: Vector3::zeros(), // TODO never used?
+                                // lidar_imu_extrinsic_rotation: Matrix3::identity(), // TODO never used?
+                                // lidar_imu_extrinsic_translation: Vector3::zeros(), // TODO never used?
                             }
                         }
                     };

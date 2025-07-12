@@ -10,7 +10,7 @@ static GLOBAL: MiMalloc = MiMalloc;
 use clap::{command, Parser, Subcommand};
 use futures_lite::future;
 use log::{error, info};
-use nalgebra::{Isometry3, Translation3};
+use nalgebra::{Isometry3, Translation3, UnitQuaternion};
 #[cfg(feature = "r2r")]
 use r2r::{
     builtin_interfaces::msg::Time,
@@ -61,8 +61,8 @@ use prelio_ros2::{prelio::config::LifisParameters, LifisNodeParameters, Qos, Rel
 
 use pelorus_reg::{sfasterlio::SFasterLio, Registration};
 use prelio_ros2::{prelio::imu::ImuMsg, PrelioNode};
-use ros_pointcloud2::prelude::*;
 //use small_gicp_sys::*;
+use ros_pointcloud2::prelude::*;
 use std::sync::{Arc, Mutex};
 
 pub fn timestamp_to_secs(t: &TimeMsg) -> f64 {
@@ -95,12 +95,17 @@ pub struct LioConfig {
     pub imu_path_qos: prelio_ros2::Qos,
     pub path_qos: prelio_ros2::Qos,
     pub map_resolution: f64,
+    pub map_capacity: usize,
     pub imu_params: pelorus_reg::imu::ImuParameters,
-    pub imu_init_length: u32,
     pub lidar_odom_cov: f64,
     pub enable_live_extrinsic_calibration: bool,
     pub prelio_params: LifisParameters,
     pub prelio_node_params: LifisNodeParameters,
+    pub k_neighbors: usize,
+    pub neighbor_max_range: f64,
+    pub ekf_max_iterations: i8,
+    pub dist_update_sensitivity: f32,
+    pub lidar_as_map_tf: bool, // Transforms all points and paths back to the lidar TF before publishing. All calculations are done in the IMU frame.
 }
 
 impl Default for LioConfig {
@@ -108,7 +113,6 @@ impl Default for LioConfig {
         Self {
             map_resolution: 0.5,
             lidar_odom_cov: 0.001,
-            imu_init_length: 10,
             feedback_fps: 1,
             enable_live_extrinsic_calibration: false,
             registered_cloud_qos: Qos::Sensor(Reliability::Reliable),
@@ -119,6 +123,12 @@ impl Default for LioConfig {
             imu_params: pelorus_reg::imu::ImuParameters::default(),
             prelio_params: LifisParameters::default(),
             prelio_node_params: LifisNodeParameters::default(),
+            k_neighbors: 5,
+            neighbor_max_range: 5.0,
+            ekf_max_iterations: 4,
+            dist_update_sensitivity: 60.0,
+            map_capacity: 80_000,
+            lidar_as_map_tf: true,
         }
     }
 }
@@ -253,20 +263,31 @@ fn lio(config_path: &str) -> Result<(), Box<dyn std::error::Error>> {
     #[cfg(feature = "ratpub")]
     let tf_broadcaster = Arc::new(TfBroadcaster::new(&node, rt.clone()));
 
+    let ext = Isometry3::from_parts(
+        nalgebra::Translation3::new(
+            config.imu_params.initial_translation_lidar_to_imu.x,
+            config.imu_params.initial_translation_lidar_to_imu.y,
+            config.imu_params.initial_translation_lidar_to_imu.z,
+        ),
+        UnitQuaternion::from_matrix(&config.imu_params.initial_rotation_lidar_to_imu),
+    );
+
     #[cfg(feature = "gicp")]
     let map = Arc::new(Mutex::new(small_gicp_sys::Map::new(config.map_resolution)));
     #[cfg(not(feature = "gicp"))]
     let map = Arc::new(Mutex::new(SFasterLio::new(
         config.map_resolution,
+        config.map_capacity,
         config.prelio_params.imu.gravity,
         &config.imu_params,
         config.lidar_odom_cov,
-        4,
-        5,
-        5.0,
+        config.ekf_max_iterations,
+        config.k_neighbors,
+        config.neighbor_max_range,
         config.enable_live_extrinsic_calibration,
-        Isometry3::identity(), // TODO params
-        pelorus_reg::IVoxNearbyType::Nearby18,
+        ext,
+        pelorus_reg::IVoxNearbyType::Nearby26,
+        config.dist_update_sensitivity,
     )));
 
     #[cfg(not(feature = "gicp"))]
@@ -352,8 +373,8 @@ fn lio(config_path: &str) -> Result<(), Box<dyn std::error::Error>> {
                         pose: ekfstate.pose,
                         linear_velocity: ekfstate.linear_velocity,
                         angular_velocity: nalgebra::Vector3::default(),
-                        lidar_imu_extrinsic_rotation: nalgebra::Matrix3::identity(),
-                        lidar_imu_extrinsic_translation: nalgebra::Vector3::default(),
+                        // lidar_imu_extrinsic_rotation: nalgebra::Matrix3::identity(),
+                        // lidar_imu_extrinsic_translation: nalgebra::Vector3::default(),
                     }
                 },
             ))
@@ -368,7 +389,7 @@ fn lio(config_path: &str) -> Result<(), Box<dyn std::error::Error>> {
         Some(ready_for_next_rx),
     )?;
 
-    #[cfg(feature = "ros2-client")]
+    #[cfg(all(not(feature = "no-viz"), feature = "ros2-client"))]
     let map_publisher = node
         .create_publisher::<PointCloud2>(
             &node
@@ -381,7 +402,7 @@ fn lio(config_path: &str) -> Result<(), Box<dyn std::error::Error>> {
             None,
         )
         .unwrap();
-    #[cfg(feature = "ros2-client")]
+    #[cfg(all(not(feature = "no-viz"), feature = "ros2-client"))]
     let cloud_publisher = node
         .create_publisher(
             &node
@@ -394,7 +415,7 @@ fn lio(config_path: &str) -> Result<(), Box<dyn std::error::Error>> {
             None,
         )
         .unwrap();
-    #[cfg(feature = "ros2-client")]
+    #[cfg(any(feature = "ros2-client"))]
     let odom_publisher = node
         .create_publisher(
             &node
@@ -407,7 +428,7 @@ fn lio(config_path: &str) -> Result<(), Box<dyn std::error::Error>> {
             None,
         )
         .unwrap();
-    #[cfg(feature = "ros2-client")]
+    #[cfg(all(not(feature = "no-viz"), feature = "ros2-client"))]
     let lidar_path_publisher = node
         .create_publisher(
             &node
@@ -420,7 +441,7 @@ fn lio(config_path: &str) -> Result<(), Box<dyn std::error::Error>> {
             None,
         )
         .unwrap();
-    #[cfg(feature = "ros2-client")]
+    #[cfg(all(not(feature = "no-viz"), feature = "ros2-client"))]
     let imu_odom_publisher = node
         .create_publisher(
             &node
@@ -434,7 +455,7 @@ fn lio(config_path: &str) -> Result<(), Box<dyn std::error::Error>> {
         )
         .unwrap();
 
-    #[cfg(feature = "ros2-client")]
+    #[cfg(all(not(feature = "no-viz"), feature = "ros2-client"))]
     let imu_path_publisher = node
         .create_publisher(
             &node
@@ -447,7 +468,11 @@ fn lio(config_path: &str) -> Result<(), Box<dyn std::error::Error>> {
             None,
         )
         .unwrap();
-    #[cfg(all(feature = "ros2-client", not(feature = "rerun")))]
+    #[cfg(all(
+        not(feature = "no-viz"),
+        feature = "ros2-client",
+        not(feature = "rerun")
+    ))]
     let registered_visual_publisher = node
         .create_publisher::<Marker>(
             &node
@@ -461,7 +486,7 @@ fn lio(config_path: &str) -> Result<(), Box<dyn std::error::Error>> {
         )
         .unwrap();
 
-    #[cfg(feature = "r2r")]
+    #[cfg(all(not(feature = "no-viz"), feature = "r2r"))]
     let map_publisher = node.create_publisher::<PointCloud2>("map", QosProfile::default())?;
     // #[cfg(feature = "ratpub")]
     // let map_publisher = rt.block_on(async {
@@ -469,7 +494,7 @@ fn lio(config_path: &str) -> Result<(), Box<dyn std::error::Error>> {
     //         .await
     //         .unwrap()
     // });
-    #[cfg(feature = "r2r")]
+    #[cfg(all(not(feature = "no-viz"), feature = "r2r"))]
     let cloud_publisher =
         node.create_publisher::<PointCloud2>("registered", config.registered_cloud_qos.into())?;
     #[cfg(feature = "ratpub")]
@@ -478,41 +503,41 @@ fn lio(config_path: &str) -> Result<(), Box<dyn std::error::Error>> {
             .await
             .unwrap()
     });
-    #[cfg(feature = "r2r")]
+    #[cfg(all(not(feature = "no-viz"), feature = "r2r"))]
     let odom_publisher = node.create_publisher::<Odometry>("odom", config.odom_qos.into())?;
-    #[cfg(feature = "ratpub")]
+    #[cfg(all(not(feature = "no-viz"), feature = "ratpub"))]
     let odom_publisher = rt.block_on(async {
         node.create_publisher::<Odometry>("odom".to_owned())
             .await
             .unwrap()
     });
-    #[cfg(feature = "r2r")]
+    #[cfg(all(not(feature = "no-viz"), feature = "r2r"))]
     let lidar_path_publisher = node.create_publisher::<Path>("path", config.path_qos.into())?;
-    #[cfg(feature = "ratpub")]
+    #[cfg(all(not(feature = "no-viz"), feature = "ratpub"))]
     let lidar_path_publisher = rt.block_on(async {
         node.create_publisher::<Path>("path".to_owned())
             .await
             .unwrap()
     });
-    #[cfg(feature = "r2r")]
+    #[cfg(all(not(feature = "no-viz"), feature = "r2r"))]
     let imu_odom_publisher =
         node.create_publisher::<Odometry>("imu_odom", config.imu_odom_qos.into())?;
-    #[cfg(feature = "ratpub")]
+    #[cfg(all(not(feature = "no-viz"), feature = "ratpub"))]
     let imu_odom_publisher = rt.block_on(async {
         node.create_publisher::<Odometry>("imu_odom".to_owned())
             .await
             .unwrap()
     });
-    #[cfg(feature = "r2r")]
+    #[cfg(all(not(feature = "no-viz"), feature = "r2r"))]
     let imu_path_publisher =
         node.create_publisher::<Path>("imu_path", config.imu_path_qos.into())?;
-    #[cfg(feature = "ratpub")]
+    #[cfg(all(not(feature = "no-viz"), feature = "ratpub"))]
     let imu_path_publisher = rt.block_on(async {
         node.create_publisher::<Path>("imu_path".to_owned())
             .await
             .unwrap()
     });
-    #[cfg(all(feature = "r2r", not(feature = "rerun")))]
+    #[cfg(all(not(feature = "no-viz"), feature = "r2r", not(feature = "rerun")))]
     let registered_visual_publisher =
         node.create_publisher::<Marker>("registered_viz", r2r::QosProfile::default())?;
 
@@ -560,9 +585,6 @@ fn lio(config_path: &str) -> Result<(), Box<dyn std::error::Error>> {
         ready_for_next_tx.send(()).unwrap();
 
         while let Ok(lifis_tick) = synced_rx.recv() {
-            #[cfg(feature = "rat")]
-            rat::bacon::<u8>("synced", &mut 0, rat::VariableType::U8).unwrap();
-
             eval.merge(&lifis_tick.runtime_eval);
 
             let cloud = lifis_tick.deskewed_cloud;
@@ -632,15 +654,11 @@ fn lio(config_path: &str) -> Result<(), Box<dyn std::error::Error>> {
 
             let init_guess_world = t_world_lidar * init_guess;
 
-            let register_pose = {
+            let (register_pose, ekf_state) = {
                 let mut map = map.lock().unwrap();
-                let mode = pelorus_reg::Mode::ActiveRegistration {
-                    cloud: pelorus_reg::LocatedBufferView::Ram(cloud.clone()), // TODO remove clone and use view when functionality is done
-                    initial_guess: init_guess_world,
-                };
                 #[cfg(not(feature = "gicp"))]
-                match map.register_and_map(mode, Some(&ready_for_next_tx), &mut eval) {
-                    Ok(pose) => pose,
+                match map.register_and_map(&cloud, Some(&ready_for_next_tx), &mut eval) {
+                    Ok(pose) => (pose, map.get_state()),
                     Err(err) => {
                         error!("{err}");
                         continue;
@@ -674,11 +692,17 @@ fn lio(config_path: &str) -> Result<(), Box<dyn std::error::Error>> {
                 }
             };
 
-            log::debug!("got a new registration");
+            log::debug!("Got a new registration");
+
+            let rev_imu_tf = if config.lidar_as_map_tf {
+                ekf_state.lidar_imu_extrinsic.inverse().cast()
+            } else {
+                Isometry3::identity()
+            };
 
             // Transformation from the last pose to the current pose in the local frame.
             t_last_current = t_world_lidar.inverse() * register_pose.pose;
-            t_world_lidar = register_pose.pose;
+            t_world_lidar = rev_imu_tf.cast() * register_pose.pose;
 
             let mut lidar_odom = lifis_tick.imu_odom.clone();
             lidar_odom.header.stamp = Time {
@@ -734,143 +758,38 @@ fn lio(config_path: &str) -> Result<(), Box<dyn std::error::Error>> {
                 }
             };
 
-            #[cfg(debug_assertions)]
-            #[cfg(all(not(feature = "gicp"), not(feature = "rerun")))]
-            {
-                if let Some(registered_normals) = register_pose.registered_cloud {
-                    let random_color = {
-                        let mut rng = rand::thread_rng();
-                        let r: f32 = rng.gen();
-                        let g: f32 = rng.gen();
-                        let b: f32 = rng.gen();
-                        let v = nalgebra::Vector3::new(r, g, b).normalize();
-                        let a: f32 = 0.7;
-                        (v.x, v.y, v.z, a)
-                    };
-
-                    {
-                        let mut marr = Marker::default();
-                        marr.header = Header {
-                            frame_id: config.prelio_params.map_frame.clone(),
-                            stamp: Time {
-                                sec: orig_time.sec,
-                                nanosec: orig_time.nanosec,
-                            },
-                        };
-                        marr.id = total_viz_marker;
-                        total_viz_marker += 1;
-
-                        // Live for ever, RIP Rviz
-                        marr.lifetime.sec = 0;
-                        marr.lifetime.nanosec = 0;
-
-                        marr.type_ = 5; // Arrow
-                        marr.action = 0; // add
-
-                        marr.scale.x = 0.02; // measured distance to the plane
-                        marr.scale.y = 0.02; // shaft
-                        marr.scale.z = 0.02; // head
-
-                        marr.color.r = random_color.0;
-                        marr.color.g = random_color.1;
-                        marr.color.b = random_color.2;
-                        marr.color.a = random_color.3;
-
-                        marr.header.frame_id = orig_frame.clone();
-                        marr.header.stamp.nanosec = orig_time.nanosec; // TODO rpcl2 from timemsg
-                        marr.header.stamp.sec = orig_time.sec;
-
-                        //let draw_length = 0.25;
-
-                        marr.points = registered_normals
-                            .iter() // downsample_avg(normal_iter, 0.5).iter() || normal_iter
-                            .map(|normal| {
-                                let normal_viz = nalgebra::Vector3::new(
-                                    normal.normal_x as f64,
-                                    normal.normal_y as f64,
-                                    normal.normal_z as f64,
-                                );
-
-                                let position_viz = normal.xyz_f64();
-                                let end_position =
-                                    position_viz + normal_viz.normalize() * normal.intensity as f64;
-
-                                let mut point_start = Point::default();
-                                point_start.x = position_viz.x;
-                                point_start.y = position_viz.y;
-                                point_start.z = position_viz.z;
-
-                                let mut point_end = Point::default();
-                                point_end.x = end_position.x;
-                                point_end.y = end_position.y;
-                                point_end.z = end_position.z;
-
-                                [point_start, point_end]
-                            })
-                            .flatten()
-                            .collect();
-
-                        registered_visual_publisher
-                            .publish(&marr)
-                            .expect("Failed to publish registered visualization");
-                    }
-                }
-            }
-
-            // transform cloud inplace for publish
-            /*let mut cloud: PointCloud2 = {
-                let mut cloud = cloud;
-                cloud.iter_mut().for_each(|p| {
-                    let p_t = t_world_lidar.transform_point(&p.xyz_f64());
-                    p.x = p_t.x as f32;
-                    p.y = p_t.y as f32;
-                    p.z = p_t.z as f32;
-                });
-                ros_pointcloud2::PointCloud2Msg::try_from_vec(cloud)
-                    .unwrap()
-                    .into()
-            };*/
-
-            // color cloud from green to red based on index in the cloud
-            /*let start_color = (0.0, 1.0, 0.0);
-            let end_color = (1.0, 0.0, 0.0);
-            let cloud = cloud
-                .iter()
-                .enumerate()
-                .map(|(index, p)| {
-                    let color =
-                        lerp_color(start_color, end_color, index as f32 / cloud.len() as f32);
-                    PointXYZRGB::new(
-                        p.x,
-                        p.y,
-                        p.z,
-                        (color.0 * 255.0) as u8,
-                        (color.1 * 255.0) as u8,
-                        (color.2 * 255.0) as u8,
-                    )
-                })
-                .collect();*/
-            //dbg!("REG CLOUD cloud", cloud.len());
             let mut cloud: PointCloud2 = ros_pointcloud2::PointCloud2Msg::try_from_vec(cloud)
                 .unwrap()
                 .into();
-            let map_to_lidar_transform = t_world_lidar.clone();
+            let map_to_lidar_transform = t_world_lidar.clone().cast();
             cloud.header.frame_id = orig_frame.clone();
 
-            #[cfg(all(not(feature = "gicp")))]
+            #[cfg(all(not(feature = "gicp"), feature = "map"))]
             {
                 let total_map = map.lock().unwrap().get_entire_map();
                 #[cfg(feature = "rerun")]
                 {
-                    let points = total_map.iter().map(|v| glam::Vec3::new(v.x, v.y, v.z));
+                    let points = total_map.iter().map(|v| {
+                        let v = rev_imu_tf.transform_point(&v);
+                        glam::Vec3::new(v.x, v.y, v.z)
+                    });
 
                     if let Err(err) = rec.log("world/map", &rerun::Points3D::new(points)) {
                         error!("Error sending to rerun {err}");
                     }
                 }
-                #[cfg(not(feature = "rerun"))]
+                #[cfg(all(not(feature = "no-viz"), not(feature = "rerun")))]
                 {
-                    let mut total_map = PointCloud2Msg::try_from_vec(total_map).unwrap();
+                    let mut total_map = PointCloud2Msg::try_from_vec(
+                        total_map
+                            .iter()
+                            .map(|p| {
+                                let p = rev_imu_tf.transform_point(&p);
+                                PointXYZ::new(p.x, p.y, p.z)
+                            })
+                            .collect(),
+                    )
+                    .unwrap();
                     total_map.header.frame_id = config.prelio_params.map_frame.clone();
                     let msg: PointCloud2 = total_map.into();
                     map_publisher.publish(&msg).expect("Failed to publish map");
@@ -881,15 +800,15 @@ fn lio(config_path: &str) -> Result<(), Box<dyn std::error::Error>> {
             #[cfg(feature = "rerun")]
             {
                 let pose = rerun::Transform3D::from_translation(glam::Vec3::new(
-                    map_to_lidar_transform.translation.x as f32,
-                    map_to_lidar_transform.translation.y as f32,
-                    map_to_lidar_transform.translation.z as f32,
+                    map_to_lidar_transform.translation.x,
+                    map_to_lidar_transform.translation.y,
+                    map_to_lidar_transform.translation.z,
                 ))
                 .with_quaternion(glam::Quat::from_xyzw(
-                    map_to_lidar_transform.rotation.quaternion().i as f32,
-                    map_to_lidar_transform.rotation.quaternion().j as f32,
-                    map_to_lidar_transform.rotation.quaternion().k as f32,
-                    map_to_lidar_transform.rotation.quaternion().w as f32,
+                    map_to_lidar_transform.rotation.quaternion().i,
+                    map_to_lidar_transform.rotation.quaternion().j,
+                    map_to_lidar_transform.rotation.quaternion().k,
+                    map_to_lidar_transform.rotation.quaternion().w,
                 ));
 
                 if let Err(err) = rec.log("world/lidar", &pose) {
@@ -898,10 +817,10 @@ fn lio(config_path: &str) -> Result<(), Box<dyn std::error::Error>> {
 
                 {
                     let ps: ros_pointcloud2::PointCloud2Msg = cloud.clone().into();
-                    let points = ps
-                        .try_into_iter()
-                        .unwrap()
-                        .map(|v: PointXYZ| glam::Vec3::new(v.x, v.y, v.z));
+                    let points = ps.try_into_iter().unwrap().map(|v: PointXYZ| {
+                        // NOTE: No need for imu_rev transformation since this cloud stays in lidar coordinate space
+                        glam::Vec3::new(v.x, v.y, v.z)
+                    });
 
                     if let Err(err) =
                         rec.log("world/lidar/undistorted", &rerun::Points3D::new(points))
@@ -922,15 +841,15 @@ fn lio(config_path: &str) -> Result<(), Box<dyn std::error::Error>> {
                 child_frame_id: orig_frame,
                 transform: Transform {
                     translation: Vector3 {
-                        x: map_to_lidar_transform.translation.vector.x,
-                        y: map_to_lidar_transform.translation.vector.y,
-                        z: map_to_lidar_transform.translation.vector.z,
+                        x: map_to_lidar_transform.translation.vector.x as f64,
+                        y: map_to_lidar_transform.translation.vector.y as f64,
+                        z: map_to_lidar_transform.translation.vector.z as f64,
                     },
                     rotation: Quaternion {
-                        x: map_to_lidar_transform.rotation.quaternion().i,
-                        y: map_to_lidar_transform.rotation.quaternion().j,
-                        z: map_to_lidar_transform.rotation.quaternion().k,
-                        w: map_to_lidar_transform.rotation.quaternion().w,
+                        x: map_to_lidar_transform.rotation.quaternion().i as f64,
+                        y: map_to_lidar_transform.rotation.quaternion().j as f64,
+                        z: map_to_lidar_transform.rotation.quaternion().k as f64,
+                        w: map_to_lidar_transform.rotation.quaternion().w as f64,
                     },
                 },
             };
@@ -966,7 +885,7 @@ fn lio(config_path: &str) -> Result<(), Box<dyn std::error::Error>> {
                 header: imu_odom.header.clone(),
             });
 
-            #[cfg(feature = "ratpub")]
+            #[cfg(all(not(feature = "no-viz"), feature = "ratpub"))]
             rt.block_on(async {
                 cloud_publisher
                     .publish(&cloud)
@@ -990,7 +909,7 @@ fn lio(config_path: &str) -> Result<(), Box<dyn std::error::Error>> {
             }
 
             if changed_lidar_path {
-                #[cfg(feature = "rerun")]
+                #[cfg(all(not(feature = "no-viz"), feature = "rerun"))]
                 {
                     let lidar_path =
                         rerun::LineStrip3D::from_iter(lidar_path.poses.iter().map(|p| {
@@ -1005,27 +924,27 @@ fn lio(config_path: &str) -> Result<(), Box<dyn std::error::Error>> {
                         error!("Error sending to rerun {err}");
                     }
                 }
-                #[cfg(not(feature = "ratpub"))]
+                #[cfg(all(not(feature = "no-viz"), not(feature = "ratpub")))]
                 lidar_path_publisher
                     .publish(&lidar_path)
                     .expect("Failed to publish path");
             }
 
-            #[cfg(not(feature = "ratpub"))]
+            #[cfg(all(not(feature = "no-viz"), not(feature = "ratpub")))]
             imu_odom_publisher
                 .publish(&imu_odom)
                 .expect("Failed to publish imu odom");
 
-            #[cfg(not(feature = "ratpub"))]
+            #[cfg(all(not(feature = "no-viz"), not(feature = "ratpub")))]
             imu_path_publisher
                 .publish(&imu_path)
                 .expect("Failed to publish imu path"); // TODO this will spam a lot, maybe also throttle like lidar_path
 
-            #[cfg(feature = "ratpub")]
+            #[cfg(all(not(feature = "no-viz"), feature = "ratpub"))]
             let pub_lidar_path = lidar_path.clone();
-            #[cfg(feature = "ratpub")]
+            #[cfg(all(not(feature = "no-viz"), feature = "ratpub"))]
             let pub_imu_path = imu_path.clone();
-            #[cfg(feature = "ratpub")]
+            #[cfg(all(not(feature = "no-viz"), feature = "ratpub"))]
             rt.block_on(async {
                 lidar_path_publisher
                     .publish(&pub_lidar_path)

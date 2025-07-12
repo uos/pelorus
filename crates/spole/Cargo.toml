@@ -14,11 +14,20 @@ nalgebra.workspace = true
 serde.workspace = true
 # kdtree = { version = "0.7.0", optional = true }
 kiddo = { version = "5.1.0", optional = true }
+log.workspace = true
 rayon.workspace = true
+bytemuck = "1.23.1"
+morton-encoding.workspace = true
+rand.workspace = true
+rand_distr.workspace = true
+rand_pcg.workspace = true
+rustc-hash.workspace = true
+nohash-hasher.workspace = true
 
 [features]
 # default = ["nn_kdt"]
+parallel = []
 nn_kdt = ["dep:kiddo"]
 
-[dev-dependencies]
-rand = "0.8"
+# [dev-dependencies]
+# rand = "0.8"

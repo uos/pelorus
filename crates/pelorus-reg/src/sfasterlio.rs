@@ -5,6 +5,7 @@ use std::sync::{Arc, Mutex};
 
 use nalgebra::*;
 use prelio::timing::RuntimeEvaluator;
+#[cfg(feature = "parallel")]
 use rayon::prelude::*;
 use ros_pointcloud2::points::{PointXYZ, PointXYZINormal};
 
@@ -15,7 +16,7 @@ const PLANE_POINT_ERROR_THRESHOLD: f64 = 0.1;
 pub struct SFasterLio {
     ekf: crate::sophus_ekf::Esekf,
     imu_processing: crate::imu::ImuProcessing,
-    map: spole::IVoxHashMap,
+    pub map: spole::IVoxHashMap,
     laser_point_noise_cov: f64,
     ekf_max_iterations: i8,
     k_neighbors: usize,
@@ -27,6 +28,7 @@ impl Default for SFasterLio {
     fn default() -> Self {
         Self::new(
             0.2,
+            10_000,
             9.81,
             &crate::imu::ImuParameters::default(),
             0.001,
@@ -36,6 +38,7 @@ impl Default for SFasterLio {
             false,
             Isometry3::identity(),
             IVoxNearbyType::default(),
+            3.0,
         )
     }
 }
@@ -43,6 +46,7 @@ impl Default for SFasterLio {
 impl SFasterLio {
     pub fn new(
         map_resolution: f64,
+        map_capacity: usize,
         g: f64,
         imu_params: &crate::imu::ImuParameters,
         laser_point_noise_cov: f64,
@@ -52,31 +56,14 @@ impl SFasterLio {
         imu_lidar_extrinsic_calibration_optimization: bool,
         initial_extrinsic_calibration: Isometry3<f64>,
         knn_nearby_voxel_search_range: IVoxNearbyType,
+        update_cov_sensitivity: f32,
     ) -> Self {
         let map = spole::IVoxHashMap::new(
             map_resolution as f32,
-            100_000,
+            map_capacity,
             knn_nearby_voxel_search_range,
+            update_cov_sensitivity,
         );
-        let mut cov_gyr = Matrix3::identity();
-        cov_gyr[(0, 0)] = imu_params.cov_gyr.x;
-        cov_gyr[(1, 1)] = imu_params.cov_gyr.y;
-        cov_gyr[(2, 2)] = imu_params.cov_gyr.z;
-
-        let mut cov_acc = Matrix3::identity();
-        cov_acc[(0, 0)] = imu_params.cov_acc.x;
-        cov_acc[(1, 1)] = imu_params.cov_acc.y;
-        cov_acc[(2, 2)] = imu_params.cov_acc.z;
-
-        let mut cov_acc_bias = Matrix3::identity();
-        cov_acc_bias[(0, 0)] = imu_params.cov_acc_bias.x;
-        cov_acc_bias[(1, 1)] = imu_params.cov_acc_bias.y;
-        cov_acc_bias[(2, 2)] = imu_params.cov_acc_bias.z;
-
-        let mut cov_gyr_bias = Matrix3::identity();
-        cov_gyr_bias[(0, 0)] = imu_params.cov_gyr_bias.x;
-        cov_gyr_bias[(1, 1)] = imu_params.cov_gyr_bias.y;
-        cov_gyr_bias[(2, 2)] = imu_params.cov_gyr_bias.z;
 
         Self {
             ekf: crate::sophus_ekf::Esekf::new(g),
@@ -94,19 +81,19 @@ impl SFasterLio {
     }
 
     fn add_to_map(&mut self, cloud: &[PointXYZ], pose: Isometry3<f64>) {
-        self.map.add(cloud.iter().map(|point| {
-            let p = nalgebra::Point3::new(point.x as f64, point.y as f64, point.z as f64);
-            let global = pose.transform_point(&p);
-            PointXYZ {
-                x: global.x as f32,
-                y: global.y as f32,
-                z: global.z as f32,
-            }
-        }));
+        #[cfg(feature = "nn_kdt")]
+        {
+            self.map.add(cloud, &pose);
+        }
+
+        #[cfg(not(feature = "nn_kdt"))]
+        {
+            self.map.add(cloud, &pose);
+        }
     }
 
     // Just for debugging! Really slow.
-    pub fn get_entire_map(&self) -> Vec<PointXYZ> {
+    pub fn get_entire_map(&self) -> Vec<nalgebra::Point3<f32>> {
         self.map.get_entire_map()
     }
 
@@ -249,26 +236,10 @@ impl crate::Registration for SFasterLio {
 
     fn register_and_map(
         &mut self,
-        data: crate::Mode,
+        cloud: &[PointXYZ],
         ready_for_next: Option<&std::sync::mpsc::Sender<()>>,
         eval: &mut RuntimeEvaluator,
     ) -> anyhow::Result<crate::CloudRegisterResult> {
-        #[allow(unused_variables)]
-        let cloud = match data {
-            crate::Mode::ActiveRegistration {
-                cloud,
-                initial_guess: _,
-            } => match cloud {
-                crate::LocatedBufferView::Ram(cloud) => cloud,
-                crate::LocatedBufferView::Cuda(_) => {
-                    return Err(anyhow::anyhow!("Gave GPU buffer to CPU-only function"));
-                }
-            },
-            _ => return Err(anyhow::anyhow!("Invalid mode")),
-        };
-
-        let cloud = cloud.as_slice(); // TODO use views, not copies after accuracy is done
-
         let neighbors = Arc::new(Mutex::new(None));
         let neighbor_sizes = Arc::new(Mutex::new(None));
         let first_it = Arc::new(Mutex::new(true));
@@ -276,12 +247,12 @@ impl crate::Registration for SFasterLio {
         if !self.map.is_empty() {
             let map = &mut self.map;
             let k = self.k_neighbors;
-            let neighbor_max_range = self.neighbor_max_range;
+            let neighbor_max_range = self.neighbor_max_range as f32;
             let extrinsic_estimation = self.imu_lidar_extrinsic_calibration_optimization;
 
             let neighbors_cloud_in_ekf = neighbors.clone();
             let neighbor_sizes_in_ekf = neighbor_sizes.clone();
-            let cloud_len = cloud.len();
+            let cloud_len_alloc = (1.2 * cloud.len() as f32).ceil() as usize;
             {
                 eval_outer.write().unwrap().start("ekf correct").unwrap();
             }
@@ -297,9 +268,12 @@ impl crate::Registration for SFasterLio {
                       h_x: &mut DMatrix<f64>,
                       extrinsic_estimation| {
                     // Initial guess from ekf state from last prediciton in undistort
-                    let rot = Rotation3::from_matrix(&ekf_state.rot.matrix());
-                    let quat = UnitQuaternion::from_rotation_matrix(&rot);
-                    let initial_guess = Isometry3::from_parts(ekf_state.pos.into(), quat);
+                    // let initial_guess = Isometry3::from_parts(
+                    //     ekf_state.pos.into(),
+                    //     UnitQuaternion::from_rotation_matrix(&Rotation3::from_matrix(
+                    //         &ekf_state.rot.matrix(),
+                    //     )),
+                    // );
 
                     let first_it_local = { first_it.lock().unwrap().clone() };
 
@@ -307,47 +281,53 @@ impl crate::Registration for SFasterLio {
                         .lock()
                         .unwrap()
                         .take()
-                        .unwrap_or(vec![PointXYZ::default(); cloud_len * k]);
+                        .unwrap_or(vec![PointXYZ::default(); cloud_len_alloc * k]);
                     let mut neighbor_sizes = neighbor_sizes_in_ekf
                         .lock()
                         .unwrap()
                         .take()
-                        .unwrap_or(vec![0usize; cloud_len]);
+                        .unwrap_or(vec![0usize; cloud_len_alloc]);
 
-                    // Perf: should never be larger than k because k never changes
+                    // Perf: should never be larger than k because k never changes. add 20% extra room to avoid triggering with small upward changes.
                     if neighbors.len() < cloud.len() * k {
-                        neighbors = vec![PointXYZ::default(); cloud.len() * k];
+                        neighbors = vec![PointXYZ::default(); cloud_len_alloc * k];
                     }
-
-                    // Safety: Hacky way to actively opt-in to possible race conditions on *mut Ptr<T>
-                    let neighbors_raw = neighbors.as_mut_ptr() as usize;
 
                     let mut eval = eval_cb.write().unwrap();
 
+                    let iter = {
+                        #[cfg(feature = "parallel")]
+                        {
+                            cloud
+                                .par_iter()
+                                .zip(neighbor_sizes.par_iter_mut())
+                                .zip(neighbors.par_chunks_exact_mut(k))
+                        }
+                        #[cfg(not(feature = "parallel"))]
+                        {
+                            cloud
+                                .iter()
+                                .zip(neighbor_sizes.iter_mut())
+                                .zip(neighbors.chunks_exact_mut(k))
+                        }
+                    };
+
                     let planes = {
                         eval.start("planes").unwrap();
-                        let planes: Vec<PointXYZINormal> = cloud
-                            .par_iter()
-                            .zip(neighbor_sizes.par_iter_mut())
-                            .enumerate()
-                            .filter_map(|(idx, (point_local, neighbor_size))| {
-                                let point_global =
-                                    initial_guess.transform_point(&point_local.xyz_f64());
+                        let planes: Vec<PointXYZINormal> = iter
+                            .filter_map(|((point_local, neighbor_size), curr_point_neighbors)| {
+                                // Global in IMU frame
+                                let point_global = ekf_state.rot.matrix()
+                                    * (ekf_state.offset_r_l_i.matrix() * point_local.xyz_f64()
+                                        + ekf_state.offset_t_l_i)
+                                    + ekf_state.pos;
+
                                 let query_point = PointXYZ::new(
                                     point_global.x as f32,
                                     point_global.y as f32,
                                     point_global.z as f32,
                                 );
 
-                                // (Un-)Safety: Reconstruct slice from pointer adress with a usize indicating the size at the end of k+1
-                                let offset_start = idx * k;
-                                let neighbors_raw_ptr = neighbors_raw as *mut PointXYZ;
-                                let pn = unsafe { neighbors_raw_ptr.offset(offset_start as isize) };
-                                let curr_point_neighbors =
-                                    unsafe { std::slice::from_raw_parts_mut(pn, k) };
-                                // let neighbor_size =
-                                // unsafe { (pn.add(k) as *mut usize).as_mut().expect("at end") };
-                                // Safety: converged is always true in the first iteration so the neighbors have been populated
                                 if first_it_local || converged {
                                     if !map.k_nearest_neighbor_query(
                                         &query_point,
@@ -360,7 +340,6 @@ impl crate::Registration for SFasterLio {
                                     }
                                 }
 
-                                // TODO out_size as range here completely destroys the registration.. why?
                                 let plane = Self::plane_from_points(
                                     &curr_point_neighbors[..*neighbor_size],
                                     PLANE_POINT_ERROR_THRESHOLD,
@@ -419,7 +398,6 @@ impl crate::Registration for SFasterLio {
                     // TODO (AS REF) if converge, do use old planes/neighbors since it is likely to be the same
 
                     eval.start("jacobian").unwrap();
-                    // TODO use raw access for par iter
                     planes
                         .iter()
                         .zip(h_x.row_iter_mut())
@@ -493,15 +471,20 @@ impl crate::Registration for SFasterLio {
             eval_outer.write().unwrap().stop("ekf correct").unwrap();
         };
 
-        let pos_lidar =
-            self.ekf.state.pos + self.ekf.state.rot.matrix() * self.ekf.state.offset_t_l_i;
-
+        let imu_t = Isometry3::from_parts(
+            Translation3::from(self.ekf.state.offset_t_l_i),
+            UnitQuaternion::from_rotation_matrix(&Rotation3::from_matrix(
+                &self.ekf.state.offset_r_l_i.matrix(),
+            )),
+        );
         let global_pose = Isometry3::from_parts(
-            Translation3::from(pos_lidar),
+            Translation3::from(self.ekf.state.pos),
             UnitQuaternion::from_rotation_matrix(&Rotation3::from_matrix(
                 &self.ekf.state.rot.matrix(),
             )),
         );
+
+        let global_pose = global_pose * imu_t;
 
         // Signal Prelio it can use the ekf again
         ready_for_next
