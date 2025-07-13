@@ -1,5 +1,5 @@
 use nalgebra::*;
-use prelio::timing::RuntimeEvaluator;
+use prelio::{LocatedBufferView, timing::RuntimeEvaluator};
 use ros_pointcloud2::prelude::*;
 
 pub mod imu;
@@ -43,33 +43,14 @@ impl Default for ImuEkfPrediction {
     }
 }
 
-pub type CudaBuffer<T> = (std::ptr::NonNull<T>, usize);
-pub type RamBuffer<T> = Vec<T>;
-pub enum LocatedBufferView<T> {
-    Ram(RamBuffer<T>),
-    Cuda(CudaBuffer<T>),
-}
-pub type PointXYZLocatedBufferView = LocatedBufferView<PointXYZ>;
-pub enum Mode {
-    ActiveRegistration {
-        cloud: PointXYZLocatedBufferView,
-        initial_guess: Isometry3<f64>,
-    },
-    MappingOnly {
-        cloud: PointXYZLocatedBufferView,
-        relative_registered_pose: Isometry3<f64>,
-    },
-    Inactive,
-}
-
 pub trait Registration {
     fn register_and_map(
         &mut self,
-        cloud: &[PointXYZ],
+        cloud: &LocatedBufferView<PointXYZ>,
         ready_for_next: Option<&std::sync::mpsc::Sender<()>>,
         eval: &mut RuntimeEvaluator,
     ) -> Result<CloudRegisterResult>;
-    fn requested_register_and_map_cloud_type(&self) -> PointXYZLocatedBufferView;
+    fn requested_register_and_map_cloud_type(&self) -> LocatedBufferView<PointXYZ>;
 
     fn imu_ekf_predict(&mut self, acc: [f64; 3], gyro: [f64; 3], dt: f64) -> ImuEkfPrediction;
     fn init_imu_ekf(&mut self, message_buffer: &[ImuMsg]) -> Vector3<f64>;

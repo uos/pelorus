@@ -4,11 +4,12 @@
 use std::sync::{Arc, Mutex};
 
 use nalgebra::*;
-use prelio::timing::RuntimeEvaluator;
+use prelio::{LocatedBufferView, timing::RuntimeEvaluator};
 #[cfg(feature = "parallel")]
 use rayon::prelude::*;
 use ros_pointcloud2::points::{PointXYZ, PointXYZINormal};
 
+use sophus_lie::traits::IsTranslationProductGroup;
 pub use spole::IVoxNearbyType;
 
 const PLANE_POINT_ERROR_THRESHOLD: f64 = 0.1;
@@ -212,16 +213,16 @@ impl crate::Registration for SFasterLio {
         )
     }
 
-    fn requested_register_and_map_cloud_type(&self) -> crate::PointXYZLocatedBufferView {
+    fn requested_register_and_map_cloud_type(&self) -> LocatedBufferView<PointXYZ> {
         return crate::LocatedBufferView::Ram(Vec::new());
     }
 
     fn get_state(&self) -> crate::ImuEkfPrediction {
         crate::ImuEkfPrediction {
             pose: Isometry3::from_parts(
-                Translation3::from(self.ekf.state.pos),
+                Translation3::from(self.ekf.state.pose.translation()),
                 UnitQuaternion::from_rotation_matrix(&Rotation3::from_matrix(
-                    &self.ekf.state.rot.matrix(),
+                    &self.ekf.state.pose.rotation().matrix(),
                 )),
             ),
             linear_velocity: self.ekf.state.vel,
@@ -236,10 +237,14 @@ impl crate::Registration for SFasterLio {
 
     fn register_and_map(
         &mut self,
-        cloud: &[PointXYZ],
+        cloud: &LocatedBufferView<PointXYZ>,
         ready_for_next: Option<&std::sync::mpsc::Sender<()>>,
         eval: &mut RuntimeEvaluator,
     ) -> anyhow::Result<crate::CloudRegisterResult> {
+        let cloud = match cloud {
+            LocatedBufferView::Ram(items) => items,
+            LocatedBufferView::Cuda(_) => todo!(),
+        };
         let neighbors = Arc::new(Mutex::new(None));
         let neighbor_sizes = Arc::new(Mutex::new(None));
         let first_it = Arc::new(Mutex::new(true));
@@ -317,10 +322,10 @@ impl crate::Registration for SFasterLio {
                         let planes: Vec<PointXYZINormal> = iter
                             .filter_map(|((point_local, neighbor_size), curr_point_neighbors)| {
                                 // Global in IMU frame
-                                let point_global = ekf_state.rot.matrix()
-                                    * (ekf_state.offset_r_l_i.matrix() * point_local.xyz_f64()
-                                        + ekf_state.offset_t_l_i)
-                                    + ekf_state.pos;
+                                let point_imu = ekf_state.offset_r_l_i.matrix()
+                                    * point_local.xyz_f64()
+                                    + ekf_state.offset_t_l_i;
+                                let point_global = ekf_state.pose.transform(&point_imu.coords);
 
                                 let query_point = PointXYZ::new(
                                     point_global.x as f32,
@@ -420,14 +425,15 @@ impl crate::Registration for SFasterLio {
                                 Vector3::new(nearest_plane[0], nearest_plane[1], nearest_plane[2]);
 
                             // Jacobian w.r.t extrinsic translation
-                            let c = ekf_state.rot.matrix().transpose() * norm;
+                            let c = ekf_state.pose.rotation().matrix().transpose() * norm;
 
                             // Jacobian w.r.t IMU rotation
                             let a = point_crossmat * c;
 
                             if extrinsic_estimation {
                                 // Jacobian w.r.t extrinsic rotation
-                                let b = point_crossmat * (ekf_state.rot.matrix().transpose() * c);
+                                let b = point_crossmat
+                                    * (ekf_state.pose.rotation().matrix().transpose() * c);
 
                                 // Position Jacobian
                                 h_x_row[0] = norm.x;
@@ -478,9 +484,9 @@ impl crate::Registration for SFasterLio {
             )),
         );
         let global_pose = Isometry3::from_parts(
-            Translation3::from(self.ekf.state.pos),
+            Translation3::from(self.ekf.state.pose.translation()),
             UnitQuaternion::from_rotation_matrix(&Rotation3::from_matrix(
-                &self.ekf.state.rot.matrix(),
+                &self.ekf.state.pose.rotation().matrix(),
             )),
         );
 

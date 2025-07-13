@@ -57,7 +57,10 @@ use prelio_ros2::tf::TfBroadcaster;
 use prelio_ros2::tf_lh::TfBroadcaster;
 #[cfg(feature = "r2r")]
 use prelio_ros2::tf_r2r::TfBroadcaster;
-use prelio_ros2::{prelio::config::LifisParameters, LifisNodeParameters, Qos, Reliability};
+use prelio_ros2::{
+    prelio::{config::LifisParameters, LocatedBufferView},
+    LifisNodeParameters, Qos, Reliability,
+};
 
 use pelorus_reg::{sfasterlio::SFasterLio, Registration};
 use prelio_ros2::{prelio::imu::ImuMsg, PrelioNode};
@@ -587,7 +590,8 @@ fn lio(config_path: &str) -> Result<(), Box<dyn std::error::Error>> {
         while let Ok(lifis_tick) = synced_rx.recv() {
             eval.merge(&lifis_tick.runtime_eval);
 
-            let cloud = lifis_tick.deskewed_cloud;
+            let cloud = LocatedBufferView::Ram(lifis_tick.deskewed_cloud);
+
             let orig_frame = lifis_tick.cloud_header.frame_id.clone();
             let orig_time = lifis_tick.cloud_header.stamp.clone();
             let current_cloud_time = timestamp_to_secs(&orig_time);
@@ -758,9 +762,16 @@ fn lio(config_path: &str) -> Result<(), Box<dyn std::error::Error>> {
                 }
             };
 
-            let mut cloud: PointCloud2 = ros_pointcloud2::PointCloud2Msg::try_from_vec(cloud)
-                .unwrap()
-                .into();
+            let mut cloud: PointCloud2 = {
+                match cloud {
+                    LocatedBufferView::Ram(items) => {
+                        ros_pointcloud2::PointCloud2Msg::try_from_vec(items)
+                            .unwrap()
+                            .into()
+                    }
+                    LocatedBufferView::Cuda(_) => todo!(),
+                }
+            };
             let map_to_lidar_transform = t_world_lidar.clone().cast();
             cloud.header.frame_id = orig_frame.clone();
 

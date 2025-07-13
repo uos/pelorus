@@ -240,6 +240,20 @@ impl PointXYZT {
     }
 }
 
+pub type CudaBuffer<T> = (std::ptr::NonNull<T>, usize);
+pub type RamBuffer<T> = Vec<T>;
+pub enum LocatedBufferView<T> {
+    Ram(RamBuffer<T>),
+    Cuda(CudaBuffer<T>),
+}
+pub type PointXYZLocatedBufferView = LocatedBufferView<PointXYZ>;
+
+// impl<T> LocatedBufferView<T> {
+//     pub fn new() -> Self {
+
+//     }
+// }
+
 fn hash(point: &Point3<f32>, voxel_size: f32) -> i32 {
     const PRIME_1: i32 = 73_856_093;
     const PRIME_2: i32 = 19_349_663;
