@@ -1,8 +1,15 @@
+use std::vec;
+
 use log::warn;
 use nalgebra::*;
+use prelio::LocatedBufferView;
+use ros_pointcloud2::points::PointXYZ;
 use serde::{Deserialize, Serialize};
+use sophus_lie::traits::IsTranslationProductGroup;
 
 use crate::sophus_ekf::Esekf;
+
+pub type SE3 = sophus_lie::Isometry3<f64, 1>;
 
 // const MAX_INI_COUNT: usize = 100; # unused, using time instead
 const COV_IMU_RAW_DEFAULT: f64 = 0.001;
@@ -118,8 +125,7 @@ struct Pose6D {
     acc: nalgebra::Vector3<f64>,
     gyr: nalgebra::Vector3<f64>,
     vel: nalgebra::Vector3<f64>,
-    pos: nalgebra::Vector3<f64>,
-    rot: nalgebra::Matrix3<f64>,
+    pose: SE3,
 }
 
 impl Pose6D {
@@ -128,16 +134,14 @@ impl Pose6D {
         acc: nalgebra::Vector3<f64>,
         gyr: nalgebra::Vector3<f64>,
         vel: nalgebra::Vector3<f64>,
-        pos: nalgebra::Vector3<f64>,
-        rot: nalgebra::Matrix3<f64>,
+        pose: SE3,
     ) -> Self {
         Self {
             offset_time,
             acc,
             gyr,
             vel,
-            pos,
-            rot,
+            pose,
         }
     }
 }
@@ -269,7 +273,7 @@ impl ImuProcessing {
         mut cloud_end_time: f64,
         cloud: &[prelio::PointXYZT],
         lidar_vendor: Option<prelio::LidarVendor>,
-    ) -> Vec<crate::PointXYZ> {
+    ) -> Vec<PointXYZ> {
         assert!(!imu_msgs.is_empty());
         assert!(last_cloud_end_time > 0.0);
         assert!(cloud_begin_time > 0.0);
@@ -291,8 +295,7 @@ impl ImuProcessing {
             self.acc_s_last,
             self.angvel_last,
             ekf.state.vel,
-            ekf.state.pos,
-            ekf.state.rot.matrix(),
+            ekf.state.pose.clone(),
         )];
 
         let mut angvel_avr_x = 0.0;
@@ -348,7 +351,7 @@ impl ImuProcessing {
             self.imu_state = ekf.state.clone();
 
             self.angvel_last = tail.angular_velocity.xyz() - self.imu_state.bg;
-            self.acc_s_last = self.imu_state.rot.matrix()
+            self.acc_s_last = self.imu_state.pose.rotation().matrix()
                 * ((tail.linear_acceleration.xyz() * GRAVITY / mean_acc) - self.imu_state.ba)
                 + self.imu_state.grav;
             let offs_t = tail_stamp - cloud_begin_time;
@@ -357,14 +360,13 @@ impl ImuProcessing {
                 self.acc_s_last,
                 self.angvel_last,
                 self.imu_state.vel,
-                self.imu_state.pos,
-                self.imu_state.rot.matrix(),
+                self.imu_state.pose.clone(),
             ));
 
             head = tail;
         }
 
-        // to end of cloud
+        // Integrate to end of cloud
         self.last_imu = imu_msgs[imu_msgs.len() - 1].clone();
         let dt = cloud_end_time - self.last_imu.timestamp_sec;
         assert!(dt > 0.0);
@@ -374,7 +376,7 @@ impl ImuProcessing {
         let _ = self.predict(ekf, avr_x, angvel_avr, dt);
         self.imu_state = ekf.state.clone();
 
-        let mut out_cloud = vec![crate::PointXYZ::default(); cloud.len()];
+        let mut out_cloud = vec![PointXYZ::default(); cloud.len()];
 
         let mut it_pcl = cloud.len();
 
@@ -396,21 +398,20 @@ impl ImuProcessing {
                     dt = 0.0;
                 }
 
-                // Interpolate rotation and translation to the point's specific time.
-                let r_i = head.rot * crate::sophus_ekf::SO3::exp(&(tail.gyr * dt)).matrix();
-                let t_ei = head.pos + head.vel * dt + 0.5 * tail.acc * dt * dt - self.imu_state.pos;
+                let r_i = head
+                    .pose
+                    .rotation()
+                    .group_mul(&crate::sophus_ekf::SO3::exp(&(tail.gyr * dt)))
+                    .matrix();
+                let t_ei = head.pose.translation() + head.vel * dt + 0.5 * tail.acc * dt * dt
+                    - self.imu_state.pose.translation();
 
+                let p_imu_frame = self.imu_state.offset_r_l_i.matrix()
+                    * Vector3::new(pcl_point.x as f64, pcl_point.y as f64, pcl_point.z as f64)
+                    + self.imu_state.offset_t_l_i;
                 let p_compensate = self.imu_state.offset_r_l_i.matrix().transpose()
-                    * (self.imu_state.rot.matrix().transpose()
-                        * (r_i
-                            * (self.imu_state.offset_r_l_i.matrix()
-                                * Vector3::new(
-                                    pcl_point.x as f64,
-                                    pcl_point.y as f64,
-                                    pcl_point.z as f64,
-                                )
-                                + self.imu_state.offset_t_l_i)
-                            + t_ei)
+                    * (self.imu_state.pose.rotation().matrix().transpose()
+                        * (r_i * p_imu_frame + t_ei)
                         - self.imu_state.offset_t_l_i);
 
                 out_cloud[it_pcl].x = p_compensate.x as f32;
@@ -454,9 +455,9 @@ impl ImuProcessing {
 
         Ok(crate::ImuEkfPrediction {
             pose: Isometry3::from_parts(
-                Translation3::from(ekf.state.pos),
+                Translation3::from(ekf.state.pose.translation()),
                 UnitQuaternion::from_rotation_matrix(&Rotation3::from_matrix(
-                    &ekf.state.rot.matrix(),
+                    &ekf.state.pose.rotation().matrix(),
                 )),
             ),
             linear_velocity: ekf.state.vel,

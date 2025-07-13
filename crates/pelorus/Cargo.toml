@@ -32,8 +32,8 @@ small_gicp-sys = { workspace = true, optional = true }
 
 [features]
 #           MODE     COMM          EXTRAS
-default = ["r2r", "mimalloc", "map"]
-# default = ["dev"]
+# default = ["r2r", "mimalloc", "map"]
+default = ["dev"]
 
 map = []
 
