@@ -1,5 +1,6 @@
 #[allow(unused_imports)]
 use anyhow::Error;
+use color_eyre::owo_colors::OwoColorize;
 #[cfg(feature = "mimalloc")]
 use mimalloc::MiMalloc;
 
@@ -23,6 +24,7 @@ use r2r::{
 };
 #[cfg(feature = "ratpub")]
 use ratpub::Node;
+use rerun::external::crossbeam::epoch::Pointable;
 #[cfg(feature = "rerun")]
 use rerun::external::glam;
 #[cfg(feature = "ros2-client")]
@@ -697,6 +699,9 @@ fn lio(config_path: &str) -> Result<(), Box<dyn std::error::Error>> {
             };
 
             log::debug!("Got a new registration");
+
+            #[cfg(feature = "rerun")]
+            rec.set_timestamp_secs_since_epoch("sensor", current_cloud_time);
 
             let rev_imu_tf = if config.lidar_as_map_tf {
                 ekf_state.lidar_imu_extrinsic.inverse().cast()
