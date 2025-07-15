@@ -1,0 +1,9 @@
+CompileFlags:
+  Add:
+    - --language=cuda
+    - -x
+    - cuda
+    - --cuda-gpu-arch=sm_75
+    - --cuda-path=/usr/local/cuda
+    - -I/usr/local/cuda/include
+    - -Isrc/include
