@@ -1,6 +1,5 @@
 #[allow(unused_imports)]
 use anyhow::Error;
-use color_eyre::owo_colors::OwoColorize;
 #[cfg(feature = "mimalloc")]
 use mimalloc::MiMalloc;
 
@@ -24,7 +23,6 @@ use r2r::{
 };
 #[cfg(feature = "ratpub")]
 use ratpub::Node;
-use rerun::external::crossbeam::epoch::Pointable;
 #[cfg(feature = "rerun")]
 use rerun::external::glam;
 #[cfg(feature = "ros2-client")]

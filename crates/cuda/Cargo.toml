@@ -1,0 +1,22 @@
+[package]
+name = "cuda"
+edition.workspace = true
+include.workspace = true
+keywords.workspace = true
+license.workspace = true
+repository.workspace = true
+version.workspace = true
+
+[dependencies]
+nalgebra = { version = "0.32", optional = true }
+
+ros_pointcloud2 = "0.5.0"
+
+
+[build-dependencies]
+bindgen = "0.72"
+
+[features]
+nalgebra = ["dep:nalgebra"]
+
+default = ["nalgebra"]

@@ -1,5 +1,6 @@
 [workspace]
 members = [
+  "crates/cuda",
   "crates/pelorus",
   "crates/pelorus-reg",
   "crates/prelio",

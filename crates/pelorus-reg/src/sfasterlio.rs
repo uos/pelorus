@@ -282,11 +282,13 @@ impl crate::Registration for SFasterLio {
 
                     let first_it_local = { first_it.lock().unwrap().clone() };
 
+                    // TODO CUDA
                     let mut neighbors = neighbors_cloud_in_ekf
                         .lock()
                         .unwrap()
                         .take()
                         .unwrap_or(vec![PointXYZ::default(); cloud_len_alloc * k]);
+                    // TODO CUDA
                     let mut neighbor_sizes = neighbor_sizes_in_ekf
                         .lock()
                         .unwrap()
@@ -294,6 +296,7 @@ impl crate::Registration for SFasterLio {
                         .unwrap_or(vec![0usize; cloud_len_alloc]);
 
                     // Perf: should never be larger than k because k never changes. add 20% extra room to avoid triggering with small upward changes.
+                    // TODO CUDA
                     if neighbors.len() < cloud.len() * k {
                         neighbors = vec![PointXYZ::default(); cloud_len_alloc * k];
                     }
@@ -317,6 +320,7 @@ impl crate::Registration for SFasterLio {
                         }
                     };
 
+                    // TODO CUDA
                     let planes = {
                         eval.start("planes").unwrap();
                         let planes: Vec<PointXYZINormal> = iter
@@ -376,6 +380,7 @@ impl crate::Registration for SFasterLio {
                         planes
                     };
 
+                    // TODO CUDA
                     // put neighbors back
                     {
                         neighbors_cloud_in_ekf.lock().unwrap().replace(neighbors);
@@ -402,6 +407,7 @@ impl crate::Registration for SFasterLio {
 
                     // TODO (AS REF) if converge, do use old planes/neighbors since it is likely to be the same
 
+                    // NOTE CUDA? Fast enough due to SIMD
                     eval.start("jacobian").unwrap();
                     planes
                         .iter()
