@@ -23,6 +23,7 @@ pelorus-reg = { path = "crates/pelorus-reg", version = "0.1.0" }
 prelio = { path = "crates/prelio", version = "0.1.0" }
 prelio-ros2 = { path = "crates/prelio-ros2", version = "0.1.0" }
 spole = { path = "crates/spole", version = "0.1.0" }
+cuda = { path = "crates/cuda", version = "0.1.0" }
 
 ros_pointcloud2 = { version = "0.5.3", features = [
   "nalgebra",

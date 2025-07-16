@@ -1,3 +1,7 @@
+use core::slice;
+
+use ros_pointcloud2::points::{PointXYZ, PointXYZINormal};
+
 pub mod ffi;
 
 pub struct Stream {
@@ -78,6 +82,43 @@ impl UnifiedBuffer {
         }
     }
 
+    pub fn from_cloud(stream: &Stream, vec: &[PointXYZ]) -> Self {
+        let element_size = size_of::<f32>() * 4;
+        let gpu_ptr = unsafe {
+            ffi::cupcl_create_buffer(
+                stream.stream,
+                vec.as_ptr() as *mut ::std::os::raw::c_void,
+                element_size as u32,
+                vec.len() as u32,
+            )
+        };
+        Self {
+            gpu_ptr,
+            element_size,
+            n: vec.len(),
+        }
+    }
+
+    pub fn as_cloud(&self, stream: &Stream) -> &[PointXYZ] {
+        stream.sync();
+        unsafe { slice::from_raw_parts(self.as_ptr::<PointXYZ>(), self.n) }
+    }
+
+    pub fn as_slice<T>(&self, stream: &Stream) -> &[T] {
+        stream.sync();
+        unsafe { slice::from_raw_parts(self.as_ptr::<T>(), self.n) }
+    }
+
+    pub fn as_mut_slice<T>(&self, stream: &Stream) -> &mut [T] {
+        stream.sync();
+        unsafe { slice::from_raw_parts_mut(self.as_ptr::<T>(), self.n) }
+    }
+
+    pub fn as_cloud_mut(&self, stream: &Stream) -> &[PointXYZ] {
+        stream.sync();
+        unsafe { slice::from_raw_parts_mut(self.as_ptr::<PointXYZ>(), self.n) }
+    }
+
     pub fn read_value<T: Copy>(&self) -> &T {
         debug_assert_eq!(self.element_size * self.n, std::mem::size_of::<T>());
         unsafe { &*(self.gpu_ptr as *mut T) }
@@ -88,14 +129,32 @@ impl UnifiedBuffer {
     }
 }
 
+pub fn planes_cuda(
+    stream: &Stream,
+    neighbors: &mut UnifiedBuffer,
+    neighbor_sizes: &mut UnifiedBuffer,
+    cloud: &UnifiedBuffer,
+) -> Vec<PointXYZINormal> {
+    // TODO
+    todo!()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn it_works() {
+    fn cloud_gpu_roundtrip() {
         let stream = Stream::new();
-        let buffer = UnifiedBuffer::new(&stream, size_of::<f32>(), 1_000);
-        println!("Allocated Buffer {}", buffer.n);
+        let cloud = vec![
+            PointXYZ::new(1.0, 0.0, 1.5),
+            PointXYZ::new(2.0, 0.0, 1.5),
+            PointXYZ::new(3.0, 0.0, 1.5),
+        ];
+        let gpu = UnifiedBuffer::from_cloud(&stream, &cloud);
+        let cpu = gpu.as_cloud(&stream);
+        for i in 0..cloud.len() {
+            assert_eq!(cpu[i], cloud[i]);
+        }
     }
 }

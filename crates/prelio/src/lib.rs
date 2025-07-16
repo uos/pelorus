@@ -4,6 +4,7 @@ mod naive_preint;
 mod naive_preint_eth;
 pub mod timing;
 
+use cuda::UnifiedBuffer;
 use either::Either;
 use imu_fusion::FusionAhrs;
 use log::{debug, error, info, warn};
@@ -240,19 +241,40 @@ impl PointXYZT {
     }
 }
 
-pub type CudaBuffer<T> = (std::ptr::NonNull<T>, usize);
-pub type RamBuffer<T> = Vec<T>;
 pub enum LocatedBufferView<T> {
-    Ram(RamBuffer<T>),
-    Cuda(CudaBuffer<T>),
+    Ram(Vec<T>),
+    #[cfg(feature = "cuda")]
+    Cuda {
+        buffer: cuda::UnifiedBuffer,
+    },
 }
-pub type PointXYZLocatedBufferView = LocatedBufferView<PointXYZ>;
 
-// impl<T> LocatedBufferView<T> {
-//     pub fn new() -> Self {
-
-//     }
-// }
+impl<T> LocatedBufferView<T> {
+    pub fn alloc_points_cuda(stream: &cuda::Stream, len: usize) -> Self {
+        Self::Cuda {
+            buffer: UnifiedBuffer::new(stream, 4 * size_of::<f32>(), len),
+        }
+    }
+    pub fn alloc_neighbors_cuda(stream: &cuda::Stream, len: usize) -> Self {
+        Self::Cuda {
+            buffer: UnifiedBuffer::new(stream, size_of::<usize>(), len),
+        }
+    }
+    pub fn from_vec_cpu(src: Vec<T>) -> Self {
+        Self::Ram(src)
+    }
+    pub fn copy_from_slice_cuda(stream: &cuda::Stream, src: &[PointXYZ]) -> Self {
+        Self::Cuda {
+            buffer: UnifiedBuffer::from_cloud(&stream, src),
+        }
+    }
+    pub fn len(&self) -> usize {
+        match self {
+            LocatedBufferView::Ram(point_xyzs) => point_xyzs.len(),
+            LocatedBufferView::Cuda { buffer: cloud } => cloud.n,
+        }
+    }
+}
 
 fn hash(point: &Point3<f32>, voxel_size: f32) -> i32 {
     const PRIME_1: i32 = 73_856_093;

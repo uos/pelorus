@@ -21,9 +21,11 @@ spole.workspace = true
 log.workspace = true
 serde.workspace = true
 # small_gicp-sys = { workspace = true, optional = true }
+cuda = { workspace = true, optional = true }
 
 [features]
-# default = ["gicp"]
+default = ["cuda"]                 # TODO optional with flags
 parallel = ["spole/parallel"]
 nn_kdt = ["spole/nn_kdt"]
+cuda = ["dep:cuda", "prelio/cuda"]
 # gicp = ["dep:small_gicp-sys"]

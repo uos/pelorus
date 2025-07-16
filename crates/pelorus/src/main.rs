@@ -587,9 +587,16 @@ fn lio(config_path: &str) -> Result<(), Box<dyn std::error::Error>> {
         // Initialize Prelio prediction
         ready_for_next_tx.send(()).unwrap();
 
+        #[cfg(feature = "cuda")]
+        let cuda_stream = cuda::Stream::new();
+
         while let Ok(lifis_tick) = synced_rx.recv() {
             eval.merge(&lifis_tick.runtime_eval);
 
+            #[cfg(feature = "cuda")]
+            let cloud =
+                LocatedBufferView::copy_from_slice_cuda(&cuda_stream, &lifis_tick.deskewed_cloud);
+            #[cfg(not(feature = "cuda"))]
             let cloud = LocatedBufferView::Ram(lifis_tick.deskewed_cloud);
 
             let orig_frame = lifis_tick.cloud_header.frame_id.clone();
@@ -661,7 +668,13 @@ fn lio(config_path: &str) -> Result<(), Box<dyn std::error::Error>> {
             let (register_pose, ekf_state) = {
                 let mut map = map.lock().unwrap();
                 #[cfg(not(feature = "gicp"))]
-                match map.register_and_map(&cloud, Some(&ready_for_next_tx), &mut eval) {
+                match map.register_and_map(
+                    &cloud,
+                    Some(&ready_for_next_tx),
+                    &mut eval,
+                    true,
+                    &cuda_stream,
+                ) {
                     Ok(pose) => (pose, map.get_state()),
                     Err(err) => {
                         error!("{err}");
@@ -772,7 +785,13 @@ fn lio(config_path: &str) -> Result<(), Box<dyn std::error::Error>> {
                             .unwrap()
                             .into()
                     }
-                    LocatedBufferView::Cuda(_) => todo!(),
+                    LocatedBufferView::Cuda { buffer: cloud } => {
+                        ros_pointcloud2::PointCloud2Msg::try_from_iter(
+                            cloud.as_cloud(&cuda_stream).iter().cloned(),
+                        )
+                        .unwrap()
+                        .into()
+                    }
                 }
             };
             let map_to_lidar_transform = t_world_lidar.clone().cast();

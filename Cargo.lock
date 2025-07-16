@@ -1913,8 +1913,9 @@ name = "cuda"
 version = "0.1.0"
 dependencies = [
  "bindgen 0.72.0",
- "nalgebra 0.32.6",
- "ros_pointcloud2 0.5.2",
+ "nalgebra 0.33.2",
+ "ros_pointcloud2 0.5.3 (git+https://github.com/stelzo/ros_pointcloud2.git?branch=rkyv)",
+ "walkdir",
 ]
 
 [[package]]
@@ -4554,8 +4555,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7b5c17de023a86f59ed79891b2e5d5a94c705dbe904a5b5c9c952ea6221b03e4"
 dependencies = [
  "approx",
- "matrixmultiply",
- "nalgebra-macros",
  "num-complex 0.4.6",
  "num-rational 0.4.2",
  "num-traits 0.2.19",
@@ -5509,6 +5508,7 @@ dependencies = [
  "anyhow",
  "clap",
  "color-eyre",
+ "cuda",
  "either",
  "env_logger",
  "futures-lite",
@@ -5537,6 +5537,7 @@ name = "pelorus-reg"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "cuda",
  "dashmap",
  "log",
  "nalgebra 0.33.2",
@@ -5846,6 +5847,7 @@ name = "prelio"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "cuda",
  "dashmap",
  "either",
  "gtsam-sys",
@@ -8486,15 +8488,6 @@ dependencies = [
 
 [[package]]
 name = "ros_pointcloud2"
-version = "0.5.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "33b8b022afc744abea2774b030cab86590080cf4e61a95a6316605e98ab93950"
-dependencies = [
- "nalgebra 0.33.2",
-]
-
-[[package]]
-name = "ros_pointcloud2"
 version = "0.5.3"
 source = "git+https://github.com/stelzo/ros_pointcloud2.git?branch=rkyv#af04877edc3ccfe5a23b85544cd03d8023f1c3e3"
 dependencies = [
@@ -9033,7 +9026,6 @@ dependencies = [
  "num-complex 0.4.6",
  "num-traits 0.2.19",
  "paste",
- "wide",
 ]
 
 [[package]]

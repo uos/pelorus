@@ -71,18 +71,6 @@ typedef struct {
                                        // translate the point to the IMU frame.
 } ImuEkfPrediction;
 
-/**
- * @brief A simple CUDA function to demonstrate memory allocation.
- *
- * This function allocates a block of memory on the GPU, but does not
- * perform any operations on it. It's intended to show the basic
- * interaction between Rust and a CUDA kernel.
- *
- * @param size The number of integers to allocate space for.
- * @return 0 on success, or a non-zero error code on failure.
- */
-int allocate_memory_on_gpu(int size);
-
 void *cupcl_create_stream();
 float *cupcl_create_pointcloud(void *stream, float *point_buffer_cpu,
                                unsigned int n_points);
