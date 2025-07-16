@@ -1,6 +1,6 @@
 #pragma once
 
-#include <core/math/math.h>
+#include <math/math.h>
 
 RMAGINE_INLINE_FUNCTION
 rmagine::Vector3d calc_centroid(const rmagine::Vector3d *cluster, size_t cluster_size)
