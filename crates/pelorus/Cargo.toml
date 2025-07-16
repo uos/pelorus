@@ -29,11 +29,14 @@ ros2-interfaces-jazzy-rkyv = { workspace = true, optional = true }
 tokio = { workspace = true, optional = true }
 rat = { workspace = true, optional = true }
 small_gicp-sys = { workspace = true, optional = true }
+cuda = { optional = true, workspace = true }
 
 [features]
 #           MODE     COMM          EXTRAS
 # default = ["r2r", "mimalloc", "map"]
 default = ["dev"]
+
+cuda = ["prelio-ros2/cuda", "dep:cuda"]
 
 map = []
 
@@ -47,7 +50,7 @@ no-viz = []
 gicp = ["dep:small_gicp-sys", "prelio-ros2/no-imu-sync"]
 
 # Toggle tooling
-dev = ["rerun", "ratpub", "rat", "map", "mimalloc"]
+dev = ["rerun", "ratpub", "rat", "map", "mimalloc", "cuda"]
 
 # Use variable syncing for triggers
 rat = ["dep:rat", "dep:tokio"]

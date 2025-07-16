@@ -30,6 +30,7 @@ ros2-interfaces-jazzy-rkyv = { workspace = true, optional = true }
 [features]
 # default = ["ratpub"]
 # default = ["ros2-client"]
+cuda = ["prelio/cuda"]
 parallel = ["prelio/parallel"]
 no-imu-sync = ["prelio/no-imu-sync"]
 rerun = ["dep:rerun"]

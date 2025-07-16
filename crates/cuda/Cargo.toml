@@ -8,16 +8,9 @@ repository.workspace = true
 version.workspace = true
 
 [dependencies]
-nalgebra = { version = "0.32", optional = true }
-
-ros_pointcloud2 = "0.5.0"
-
+nalgebra.workspace = true
+ros_pointcloud2.workspace = true
 
 [build-dependencies]
 bindgen = "0.72"
 walkdir = "2"
-
-[features]
-nalgebra = ["dep:nalgebra"]
-
-default = ["nalgebra"]

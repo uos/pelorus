@@ -194,6 +194,7 @@ impl Esekf {
         measurement_noise_cov: f64,
         max_iter: i8,
         extrinsic_estimation: bool,
+        // TODO check change to FN
         mut model: impl FnMut(&StateIKFom, &mut bool, bool, &mut DVector<f64>, &mut DMatrix<f64>, bool),
     ) {
         let mut converge = true;
