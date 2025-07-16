@@ -2,20 +2,27 @@ use std::env;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+use walkdir::WalkDir;
+
 fn main() {
     let out_dir = PathBuf::from(env::var("OUT_DIR").unwrap());
 
     if let Ok(cuda_path) = env::var("CUDA_HOME") {
         println!("cargo:rustc-cfg=cuda_available");
 
-        let source_files = vec!["src/lib.cu"];
+        let source_files = vec![
+            "src/src/lib.cu",
+            "src/src/common.cu",
+            "src/src/cuda_context.cu",
+            "src/src/cuda_debug.cu",
+            "src/src/memory_cuda.cu",
+            "src/src/exceptions.cu",
+            "src/src/cuda_stream.cu",
+        ];
         let include_paths = vec!["src/include"];
 
         let arch = env::var("CUDA_ARCH").unwrap_or_else(|_| "sm_75".to_string());
         let compute = format!("compute_{}", arch.strip_prefix("sm_").unwrap_or("75"));
-
-        println!("cargo:rerun-if-changed=src/lib.cu");
-        println!("cargo:rerun-if-changed=src/lib.h");
 
         // CUDA Toolkit directory, TODO check jetson specific folders
         let cuda_lib_path = PathBuf::from(&cuda_path).join("lib64");
@@ -28,16 +35,21 @@ fn main() {
 
         let gencode = format!("arch={},code={}", compute, arch);
 
-        let mut nvcc_compile_cmd = Command::new("nvcc");
-        let profile = env::var("PROFILE").unwrap();
-        if profile == "release" {
-            nvcc_compile_cmd.arg("-O3");
-        } else {
-            nvcc_compile_cmd.arg("-G").arg("-g");
+        for path in source_files.iter() {
+            println!("cargo:rerun-if-changed={}", path);
         }
 
+        let header_extensions = ["h", "hh", "hpp", "cuh"];
         for path in &include_paths {
-            println!("cargo:rerun-if-changed={}", path);
+            for entry in WalkDir::new(path).into_iter().filter_map(|e| e.ok()) {
+                if entry.file_type().is_file() {
+                    if let Some(extension) = entry.path().extension().and_then(|s| s.to_str()) {
+                        if header_extensions.contains(&extension) {
+                            println!("cargo:rerun-if-changed={}", entry.path().display());
+                        }
+                    }
+                }
+            }
         }
 
         // Compile each .cu file into its own object file
@@ -48,6 +60,13 @@ fn main() {
             let filename = path.file_stem().unwrap().to_str().unwrap();
             let obj_path = out_dir.join(format!("{}.o", filename));
 
+            let mut nvcc_compile_cmd = Command::new("nvcc");
+            let profile = env::var("PROFILE").unwrap();
+            if profile == "release" {
+                nvcc_compile_cmd.arg("-O3");
+            } else {
+                nvcc_compile_cmd.arg("-G").arg("-g");
+            }
             for path in &include_paths {
                 nvcc_compile_cmd.arg(format!("-I{}", path));
             }
@@ -109,10 +128,11 @@ fn main() {
         println!("cargo:rustc-link-lib=static=kernel");
         println!("cargo:rustc-link-lib=cudart");
         println!("cargo:rustc-link-lib=stdc++");
+        println!("cargo:rustc-link-lib=cuda");
 
         // Generate bindings using bindgen.
         bindgen::Builder::default()
-            .header("src/lib.h")
+            .header("src/include/lib.h")
             .parse_callbacks(Box::new(bindgen::CargoCallbacks::new()))
             .generate()
             .expect("Unable to generate bindings")
