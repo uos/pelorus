@@ -117,7 +117,10 @@ u_int32_t planes(void *stream, Point *neighbor_cache,
                  double plane_point_error_threshold, bool first_it_local,
                  PointNormal *out_buff);
 
-void add_to_map(void *stream, Point *points, Pose registered_pose);
+void add_to_map(void *stream, Point *points, u_int32_t size,
+                Pose registered_pose);
+
+void init_map(void *stream, u_int32_t map_capacity, float map_resolution);
 
 #ifdef __cplusplus
 }
