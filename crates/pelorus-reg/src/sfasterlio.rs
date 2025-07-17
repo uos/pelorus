@@ -621,7 +621,13 @@ impl crate::Registration for SFasterLio {
                 LocatedBufferView::Cuda { buffer } => buffer,
             };
 
-            cuda::add_to_map(&stream, cloud);
+            let rotmat = global_pose.rotation.to_rotation_matrix().matrix().clone();
+            cuda::add_to_map(
+                &stream,
+                cloud,
+                &global_pose.translation.vector.into(),
+                &rotmat.into(),
+            );
         }
         {
             eval_outer.write().unwrap().stop("map update").unwrap();

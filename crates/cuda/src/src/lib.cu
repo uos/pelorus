@@ -94,7 +94,15 @@ void cupcl_destroy_stream(void *stream) {
   }
 }
 
-void add_to_map(void *stream, Point *points, Pose registered_pose) {
+// TODO static state with params
+
+// TODO sync stream before doing stuff on memory
+void add_to_map(void *stream, Point *points, u_int32_t size,
+                Pose registered_pose) {
+  // TODO
+}
+
+void init_map(void *stream, u_int32_t map_capacity, float map_resolution) {
   // TODO
 }
 

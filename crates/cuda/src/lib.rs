@@ -178,13 +178,23 @@ impl CudaBuffer {
 }
 
 pub fn init_map(stream: &Stream, capacity: usize, voxel_size: f32) {
-    // TODO
-    todo!()
+    unsafe { ffi::init_map(stream.stream, capacity as u32, voxel_size) }
 }
 
-pub fn add_to_map(stream: &Stream, cloud: &CudaBuffer) {
-    // TODO
-    todo!()
+pub fn add_to_map(stream: &Stream, cloud: &CudaBuffer, ekf_pose_t: &Vector3, ekf_pose_r: &Matrix3) {
+    let pose_r = nalgebra::UnitQuaternion::from_matrix(&(*ekf_pose_r).into());
+    let pose = Pose {
+        position: *ekf_pose_t,
+        orientation: Quaternion::new(pose_r.i, pose_r.j, pose_r.k, pose_r.w),
+    };
+    unsafe {
+        ffi::add_to_map(
+            stream.stream,
+            cloud.gpu_ptr as *mut ffi::Point,
+            cloud.n as u32,
+            pose,
+        )
+    }
 }
 
 pub fn planes_cuda(
@@ -203,10 +213,6 @@ pub fn planes_cuda(
     out_buff: &mut Vec<PointXYZINormal>,
 ) {
     assert!(out_buff.len() >= cloud.n);
-
-    // Wait for all scheduled operations on the gpu stream to finish so that the memory is valid
-    stream.sync();
-    // TODO
 
     let ext_r_quat = nalgebra::UnitQuaternion::from_matrix(&(*ekf_imu_offset_r).into());
     let lidar_to_imu = Pose {
