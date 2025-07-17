@@ -1,8 +1,10 @@
 #ifndef PELORUS_CUDA_H
 #define PELORUS_CUDA_H
 
+#include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
+#include <sys/types.h>
 
 // Use extern "C" to prevent C++ name mangling, which ensures
 // that the function name in the compiled library matches what
@@ -12,6 +14,25 @@ extern "C" {
 #endif
 
 // ------------------- Types -------------------
+
+// TODO CHECK ALIGN 16
+typedef struct {
+  float x;
+  float y;
+  float z;
+  float w;
+} Point;
+
+// TODO CHECK ALIGN 16
+typedef struct {
+  float x;
+  float y;
+  float z;
+  float intensity;
+  float normal_x;
+  float normal_y;
+  float normal_z;
+} PointNormal;
 
 typedef struct {       // TODO add more parameters if needed. prefer parameter.h
   double imu_acc_cov;  // default 0.01
@@ -85,10 +106,18 @@ float *cupcl_create_empty_pointcloud(void *stream, unsigned int n_points);
 void cupcl_free_pointcloud(float *cloud);
 void cupcl_sync_stream(void *stream);
 void cupcl_destroy_stream(void *stream);
+void cupcl_download_buffer(void *stream, void *cpu_buffer, void *gpu_buffer,
+                           unsigned int element_size, unsigned int n);
+void cupcl_copy_buffer(void *stream, void *src, void *target,
+                       unsigned int element_size, unsigned int n);
 
-typedef struct {
-  void *data;
-} CuMem;
+u_int32_t planes(void *stream, Point *neighbor_cache,
+                 u_int32_t *neighbor_size_cache, Pose ekf_lidar_to_imu,
+                 Pose ekf_pose, u_int32_t k, float neighbor_max_range,
+                 double plane_point_error_threshold, bool first_it_local,
+                 PointNormal *out_buff);
+
+void add_to_map(void *stream, Point *points, Pose registered_pose);
 
 #ifdef __cplusplus
 }

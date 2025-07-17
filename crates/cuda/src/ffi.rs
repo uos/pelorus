@@ -208,8 +208,28 @@ impl From<nalgebra::Vector3<f64>> for Vector3 {
     }
 }
 
+impl From<&nalgebra::Vector3<f64>> for Vector3 {
+    fn from(vec: &nalgebra::Vector3<f64>) -> Self {
+        Self {
+            x: vec.x,
+            y: vec.y,
+            z: vec.z,
+        }
+    }
+}
+
 impl From<nalgebra::Translation3<f64>> for Vector3 {
     fn from(vec: nalgebra::Translation3<f64>) -> Self {
+        Self {
+            x: vec.vector.x,
+            y: vec.vector.y,
+            z: vec.vector.z,
+        }
+    }
+}
+
+impl From<&nalgebra::Translation3<f64>> for Vector3 {
+    fn from(vec: &nalgebra::Translation3<f64>) -> Self {
         Self {
             x: vec.vector.x,
             y: vec.vector.y,

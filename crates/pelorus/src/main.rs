@@ -567,7 +567,7 @@ fn lio(config_path: &str) -> Result<(), Box<dyn std::error::Error>> {
     //let mut avg_iterations = 0.0;
     //let mut iteration_updates = 0;
 
-    let path_update_translate_threshold = 0.0; // default 0.15 meters - TODO config
+    let path_update_translate_threshold = 0.15; // default 0.15 meters - TODO config
 
     let mut eval = prelio_ros2::prelio::timing::RuntimeEvaluator::new();
 
@@ -589,6 +589,14 @@ fn lio(config_path: &str) -> Result<(), Box<dyn std::error::Error>> {
 
         #[cfg(feature = "cuda")]
         let cuda_stream = cuda::Stream::new();
+
+        // TODO avoid casting f32, maybe res needs f64?
+        #[cfg(feature = "cuda")]
+        cuda::init_map(
+            &cuda_stream,
+            config.map_capacity,
+            config.map_resolution as f32,
+        );
 
         while let Ok(lifis_tick) = synced_rx.recv() {
             eval.merge(&lifis_tick.runtime_eval);
@@ -786,11 +794,10 @@ fn lio(config_path: &str) -> Result<(), Box<dyn std::error::Error>> {
                             .into()
                     }
                     LocatedBufferView::Cuda { buffer: cloud } => {
-                        ros_pointcloud2::PointCloud2Msg::try_from_iter(
-                            cloud.as_cloud(&cuda_stream).iter().cloned(),
-                        )
-                        .unwrap()
-                        .into()
+                        let buff = cloud.into_cloud(&cuda_stream);
+                        ros_pointcloud2::PointCloud2Msg::try_from_vec(buff)
+                            .unwrap()
+                            .into()
                     }
                 }
             };

@@ -4,7 +4,7 @@ mod naive_preint;
 mod naive_preint_eth;
 pub mod timing;
 
-use cuda::UnifiedBuffer;
+use cuda::CudaBuffer;
 use either::Either;
 use imu_fusion::FusionAhrs;
 use log::{debug, error, info, warn};
@@ -245,19 +245,19 @@ pub enum LocatedBufferView<T> {
     Ram(Vec<T>),
     #[cfg(feature = "cuda")]
     Cuda {
-        buffer: cuda::UnifiedBuffer,
+        buffer: cuda::CudaBuffer,
     },
 }
 
 impl<T> LocatedBufferView<T> {
     pub fn alloc_points_cuda(stream: &cuda::Stream, len: usize) -> Self {
         Self::Cuda {
-            buffer: UnifiedBuffer::new(stream, 4 * size_of::<f32>(), len),
+            buffer: CudaBuffer::new(stream, 4 * size_of::<f32>(), len),
         }
     }
     pub fn alloc_neighbors_cuda(stream: &cuda::Stream, len: usize) -> Self {
         Self::Cuda {
-            buffer: UnifiedBuffer::new(stream, size_of::<usize>(), len),
+            buffer: CudaBuffer::new(stream, size_of::<usize>(), len),
         }
     }
     pub fn from_vec_cpu(src: Vec<T>) -> Self {
@@ -265,7 +265,7 @@ impl<T> LocatedBufferView<T> {
     }
     pub fn copy_from_slice_cuda(stream: &cuda::Stream, src: &[PointXYZ]) -> Self {
         Self::Cuda {
-            buffer: UnifiedBuffer::from_cloud(&stream, src),
+            buffer: CudaBuffer::from_cloud(&stream, src),
         }
     }
     pub fn len(&self) -> usize {
