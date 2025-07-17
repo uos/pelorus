@@ -5,6 +5,8 @@
 #include <core/cuda_debug.h>
 #include <core/cuda_stream.h>
 #include <core/memory_cuda.h>
+#include <math/iso3.h>
+#include <sys/types.h>
 
 extern "C" {
 
@@ -12,8 +14,7 @@ void *cupcl_create_empty_buffer(void *stream, unsigned int element_size,
                                 unsigned int n) {
   cudaStream_t stream_ = (cudaStream_t)stream;
   void *buff = NULL;
-  RM_CUDA_CHECK(cudaMallocManaged(&buff, element_size * n, cudaMemAttachHost));
-  RM_CUDA_CHECK(cudaStreamAttachMemAsync(stream_, buff));
+  RM_CUDA_CHECK(cudaMallocAsync(&buff, element_size * n, stream_));
   RM_CUDA_CHECK(cudaMemsetAsync(buff, 0, element_size * n, stream_));
   // RM_CUDA_CHECK(cudaStreamSynchronize(stream_));
   return buff;
@@ -27,12 +28,28 @@ void cupcl_upload_buffer(void *stream, void *gpu_buffer, void *cpu_buffer,
   // RM_CUDA_CHECK(cudaStreamSynchronize(stream_));
 }
 
+void cupcl_download_buffer(void *stream, void *cpu_buffer, void *gpu_buffer,
+                           unsigned int element_size, unsigned int n) {
+  cudaStream_t stream_ = (cudaStream_t)stream;
+  RM_CUDA_CHECK(cudaMemcpyAsync(cpu_buffer, gpu_buffer, element_size * n,
+                                cudaMemcpyDeviceToHost, stream_));
+  // RM_CUDA_CHECK(cudaStreamSynchronize(stream_));
+}
+
+void cupcl_copy_buffer(void *stream, void *src, void *target,
+                       unsigned int element_size, unsigned int n) {
+  cudaStream_t stream_ = (cudaStream_t)stream;
+  RM_CUDA_CHECK(cudaMemcpyAsync(target, src, element_size * n,
+                                cudaMemcpyDeviceToDevice, stream_));
+  // RM_CUDA_CHECK(cudaStreamSynchronize(stream_));
+}
+
 void *cupcl_create_buffer(void *stream, void *buffer_cpu,
                           unsigned int element_size, unsigned int n) {
   cudaStream_t stream_ = (cudaStream_t)stream;
   void *buff = NULL;
-  RM_CUDA_CHECK(cudaMallocManaged(&buff, element_size * n, cudaMemAttachHost));
-  RM_CUDA_CHECK(cudaStreamAttachMemAsync(stream_, buff));
+  RM_CUDA_CHECK(cudaMallocAsync(&buff, element_size * n, stream_));
+  // RM_CUDA_CHECK(cudaStreamAttachMemAsync(stream_, buff));
   RM_CUDA_CHECK(cudaMemcpyAsync(buff, buffer_cpu, element_size * n,
                                 cudaMemcpyHostToDevice, stream_));
   // RM_CUDA_CHECK(cudaStreamSynchronize(stream_));
@@ -75,5 +92,20 @@ void cupcl_destroy_stream(void *stream) {
     RM_CUDA_CHECK(cudaStreamDestroy((cudaStream_t)stream));
     stream = NULL;
   }
+}
+
+void add_to_map(void *stream, Point *points, Pose registered_pose) {
+  // TODO
+}
+
+// returns: size of out_buff
+u_int32_t planes(void *stream, Point *neighbor_cache,
+                 u_int32_t *neighbor_size_cache, Pose ekf_lidar_to_imu,
+                 Pose ekf_pose, u_int32_t k, float neighbor_max_range,
+                 double plane_point_error_threshold, bool first_it_local,
+                 PointNormal *out_buff) {
+  // TODO
+
+  return 0;
 }
 }

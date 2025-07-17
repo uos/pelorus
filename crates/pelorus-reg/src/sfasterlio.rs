@@ -248,7 +248,7 @@ impl crate::Registration for SFasterLio {
         cloud: &LocatedBufferView<PointXYZ>,
         ready_for_next: Option<&std::sync::mpsc::Sender<()>>,
         eval: &mut RuntimeEvaluator,
-        planes_gpu: bool,
+        _planes_gpu: bool, // TODO remove. ganz oder gar nicht
         stream: &cuda::Stream,
     ) -> anyhow::Result<crate::CloudRegisterResult> {
         // let cloud = match cloud {
@@ -277,6 +277,10 @@ impl crate::Registration for SFasterLio {
                 eval_outer.write().unwrap().start("ekf correct").unwrap();
             }
             let eval_cb = eval_outer.clone();
+
+            // TODO use cfg cuda to not allocate useless buffer
+            let planes_gpu_buffer = Arc::new(Mutex::new(Vec::new()));
+
             self.ekf.correct(
                 self.laser_point_noise_cov,
                 self.ekf_max_iterations,
@@ -288,6 +292,9 @@ impl crate::Registration for SFasterLio {
                       h_x: &mut DMatrix<f64>,
                       extrinsic_estimation| {
                     let first_it_local = { first_it.lock().unwrap().clone() };
+
+                    let mut planes = planes_gpu_buffer.lock().unwrap();
+                    planes.resize_with(cloud_len_alloc, || PointXYZINormal::default());
 
                     let mut neighbors = neighbors_cloud_in_ekf.lock().unwrap().take().unwrap_or({
                         let len = cloud_len_alloc * k;
@@ -331,8 +338,9 @@ impl crate::Registration for SFasterLio {
 
                     let mut eval = eval_cb.write().unwrap();
 
-                    let planes = if planes_gpu {
-                        eval.start("[gpu] planes").unwrap();
+                    eval.start("planes").unwrap();
+                    #[cfg(feature = "cuda")]
+                    let planes = {
                         let neighbors = match &mut neighbors {
                             LocatedBufferView::Ram(_) => {
                                 panic!("neighbors not allocated on GPU")
@@ -354,28 +362,53 @@ impl crate::Registration for SFasterLio {
                             LocatedBufferView::Cuda { buffer } => buffer,
                         };
 
-                        // TODO add ekf state, k, neighbor_max_range, PLANE_POINT_ERROR_THRESHOLD
-                        let planes = cuda::planes_cuda(&stream, neighbors, neighbor_sizes, cloud);
-
-                        eval.stop("[gpu] planes").unwrap();
+                        // call to cuda kernel
+                        cuda::planes_cuda(
+                            &stream,
+                            neighbors,
+                            neighbor_sizes,
+                            cloud,
+                            &cuda::Vector3::new(
+                                ekf_state.pose.translation().x,
+                                ekf_state.pose.translation().y,
+                                ekf_state.pose.translation().z,
+                            ),
+                            &ekf_state.pose.rotation().matrix().into(),
+                            &cuda::Vector3::new(
+                                ekf_state.offset_t_l_i.x,
+                                ekf_state.offset_t_l_i.y,
+                                ekf_state.offset_t_l_i.z,
+                            ),
+                            &ekf_state.offset_r_l_i.matrix().into(),
+                            k,
+                            neighbor_max_range,
+                            PLANE_POINT_ERROR_THRESHOLD,
+                            first_it_local,
+                            &mut planes,
+                        );
 
                         planes
-                    } else {
+                    };
+
+                    #[cfg(not(feature = "cuda"))]
+                    let planes = {
                         let cloud = match cloud {
-                            LocatedBufferView::Ram(point_xyzs) => point_xyzs.as_slice(),
-                            LocatedBufferView::Cuda { buffer: cloud } => cloud.as_slice(&stream),
+                            LocatedBufferView::Ram(point_xyzs) => point_xyzs,
+                            LocatedBufferView::Cuda { buffer: _ } => {
+                                panic!("cuda buffer in cpu task")
+                            }
                         };
                         let iter = {
                             let neighbor_sizes = match &mut neighbor_sizes {
                                 LocatedBufferView::Ram(point_xyzs) => point_xyzs.as_mut_slice(),
-                                LocatedBufferView::Cuda { buffer: cloud } => {
-                                    cloud.as_mut_slice(&stream)
+                                LocatedBufferView::Cuda { buffer: _ } => {
+                                    panic!("cuda buffer in cpu task")
                                 }
                             };
                             let neighbors = match &mut neighbors {
                                 LocatedBufferView::Ram(point_xyzs) => point_xyzs.as_mut_slice(),
-                                LocatedBufferView::Cuda { buffer: cloud } => {
-                                    cloud.as_mut_slice(&stream)
+                                LocatedBufferView::Cuda { buffer: _ } => {
+                                    panic!("cuda buffer in cpu task")
                                 }
                             };
 
@@ -395,71 +428,62 @@ impl crate::Registration for SFasterLio {
                             }
                         };
 
-                        let planes = {
-                            eval.start("planes").unwrap();
-                            let planes: Vec<PointXYZINormal> = iter
-                                .filter_map(
-                                    |((point_local, neighbor_size), curr_point_neighbors)| {
-                                        // Global in IMU frame
-                                        let point_imu = ekf_state.offset_r_l_i.matrix()
-                                            * point_local.xyz_f64()
-                                            + ekf_state.offset_t_l_i;
-                                        let point_global =
-                                            ekf_state.pose.transform(&point_imu.coords);
+                        let planes: Vec<PointXYZINormal> = iter
+                            .filter_map(|((point_local, neighbor_size), curr_point_neighbors)| {
+                                // Global in IMU frame
+                                let point_imu = ekf_state.offset_r_l_i.matrix()
+                                    * point_local.xyz_f64()
+                                    + ekf_state.offset_t_l_i;
+                                let point_global = ekf_state.pose.transform(&point_imu.coords);
 
-                                        let query_point = PointXYZ::new(
-                                            point_global.x as f32,
-                                            point_global.y as f32,
-                                            point_global.z as f32,
-                                        );
+                                let query_point = PointXYZ::new(
+                                    point_global.x as f32,
+                                    point_global.y as f32,
+                                    point_global.z as f32,
+                                );
 
-                                        if first_it_local || converged {
-                                            if !map.k_nearest_neighbor_query(
-                                                &query_point,
-                                                k,
-                                                neighbor_max_range,
-                                                curr_point_neighbors,
-                                                neighbor_size,
-                                            ) {
-                                                return None;
-                                            }
-                                        }
+                                if first_it_local || converged {
+                                    if !map.k_nearest_neighbor_query(
+                                        &query_point,
+                                        k,
+                                        neighbor_max_range,
+                                        curr_point_neighbors,
+                                        neighbor_size,
+                                    ) {
+                                        return None;
+                                    }
+                                }
 
-                                        let plane = Self::plane_from_points(
-                                            &curr_point_neighbors[..*neighbor_size],
-                                            PLANE_POINT_ERROR_THRESHOLD,
-                                        )?;
+                                let plane = Self::plane_from_points(
+                                    &curr_point_neighbors[..*neighbor_size],
+                                    PLANE_POINT_ERROR_THRESHOLD,
+                                )?;
 
-                                        let pd2 = plane[0] * point_global.x
-                                            + plane[1] * point_global.y
-                                            + plane[2] * point_global.z
-                                            + plane[3];
-                                        let s = 1.0
-                                            - 0.9 * pd2.abs()
-                                                / point_local.xyz_f64().coords.norm().sqrt();
+                                let pd2 = plane[0] * point_global.x
+                                    + plane[1] * point_global.y
+                                    + plane[2] * point_global.z
+                                    + plane[3];
+                                let s = 1.0
+                                    - 0.9 * pd2.abs() / point_local.xyz_f64().coords.norm().sqrt();
 
-                                        if s <= 0.9 {
-                                            return None;
-                                        }
+                                if s <= 0.9 {
+                                    return None;
+                                }
 
-                                        Some(PointXYZINormal::new(
-                                            point_local.x,
-                                            point_local.y,
-                                            point_local.z,
-                                            pd2 as f32,
-                                            plane[0] as f32,
-                                            plane[1] as f32,
-                                            plane[2] as f32,
-                                        ))
-                                    },
-                                )
-                                .collect::<Vec<_>>();
-                            eval.stop("planes").unwrap();
-                            planes
-                        };
-
+                                Some(PointXYZINormal::new(
+                                    point_local.x,
+                                    point_local.y,
+                                    point_local.z,
+                                    pd2 as f32,
+                                    plane[0] as f32,
+                                    plane[1] as f32,
+                                    plane[2] as f32,
+                                ))
+                            })
+                            .collect::<Vec<_>>();
                         planes
                     };
+                    eval.stop("planes").unwrap();
 
                     // put neighbors back
                     {
@@ -587,7 +611,18 @@ impl crate::Registration for SFasterLio {
         {
             eval_outer.write().unwrap().start("map update").unwrap();
         }
+
+        #[cfg(not(feature = "cuda"))]
         self.add_to_map(&cloud, global_pose);
+        #[cfg(feature = "cuda")]
+        {
+            let cloud = match cloud {
+                LocatedBufferView::Ram(_) => panic!("cuda buffer in cpu task"),
+                LocatedBufferView::Cuda { buffer } => buffer,
+            };
+
+            cuda::add_to_map(&stream, cloud);
+        }
         {
             eval_outer.write().unwrap().stop("map update").unwrap();
         }
