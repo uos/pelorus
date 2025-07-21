@@ -111,7 +111,7 @@ impl Livodish {
                     // lookup keeps index but changes hash
                     self.lookup.insert(hash, must_be_deleted);
 
-                    self.lru_cursor += 1;
+                    // self.lru_cursor += 1; // TODO check should be wrong
                 } else {
                     // map not at capacity, clean add
                     unsafe { self.buffer.get_unchecked_mut(self.add_cursor) }.replace(value);

@@ -19,6 +19,7 @@ fn main() {
             "src/src/exceptions.cu",
             "src/src/cuda_stream.cu",
             "src/src/hashmap.cu",
+            "src/src/localmap.cu",
         ];
         let include_paths = vec!["src/include"];
 
