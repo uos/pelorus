@@ -7,24 +7,11 @@
 
 #include <cstdint>
 #include <memory>
+#include <optional>
 #include <stdexcept>
 #include <vector>
 
-constexpr int32_t EMPTY_KEY = INT32_MIN;
-
-// The key-value pair stored in the hash table.
-// Maps a 32-bit integer to a 64-bit unsigned integer (size_t).
-struct KeyValuePair {
-  int32_t key;
-  uint64_t value;
-};
-
-// Host-side handle for the GPU hash map.
-class GpuHashMap {
-public:
-  KeyValuePair *d_table;
-  size_t capacity;
-};
+#include <hashmap.h>
 
 // Murmur3
 __device__ uint32_t hash_function(int32_t key) {
@@ -37,7 +24,7 @@ __device__ uint32_t hash_function(int32_t key) {
 
 __device__ void insert_item(KeyValuePair *table, size_t capacity, int32_t key,
                             uint64_t value) {
-  if (key == EMPTY_KEY)
+  if (key == EMPTY_KEY || key == DELETED_SLOT)
     return;
 
   uint32_t slot = hash_function(key) & (capacity - 1);
@@ -45,7 +32,7 @@ __device__ void insert_item(KeyValuePair *table, size_t capacity, int32_t key,
   while (true) {
     int32_t prev_key = atomicCAS(&table[slot].key, EMPTY_KEY, key);
 
-    if (prev_key == EMPTY_KEY || prev_key == key) {
+    if (prev_key == EMPTY_KEY || prev_key == DELETED_SLOT || prev_key == key) {
       table[slot].value = value;
       return;
     }
@@ -55,10 +42,12 @@ __device__ void insert_item(KeyValuePair *table, size_t capacity, int32_t key,
   }
 }
 
-__device__ uint64_t lookup_item(const KeyValuePair *table, size_t capacity,
-                                int32_t key, uint64_t not_found_value) {
-  if (key == EMPTY_KEY)
-    return not_found_value;
+__device__ uint32_t lookup_item(const KeyValuePair *table, size_t capacity,
+                                int32_t key, bool &found) {
+  if (key == EMPTY_KEY) {
+    found = false;
+    return 0;
+  }
 
   uint32_t slot = hash_function(key) & (capacity - 1);
 
@@ -67,16 +56,41 @@ __device__ uint64_t lookup_item(const KeyValuePair *table, size_t capacity,
 
     // If we find the key, return its associated value.
     if (current_key == key) {
+      found = true;
       return table[slot].value;
     }
 
     // If we find an empty slot, the key cannot be in the table,
     // because linear probing does not leave gaps.
     if (current_key == EMPTY_KEY) {
-      return not_found_value;
+      found = false;
+      return 0;
     }
 
     // Otherwise, continue probing.
+    slot = (slot + 1) & (capacity - 1);
+  }
+}
+
+__device__ bool remove_item(KeyValuePair *table, size_t capacity, int32_t key) {
+  if (key == EMPTY_KEY) {
+    return false;
+  }
+
+  uint32_t slot = hash_function(key) & (capacity - 1);
+
+  while (true) {
+    int32_t current_key = table[slot].key;
+
+    if (current_key == key) {
+      atomicExch(&table[slot].key, DELETED_SLOT);
+      return true;
+    }
+
+    if (current_key == EMPTY_KEY) {
+      return false;
+    }
+
     slot = (slot + 1) & (capacity - 1);
   }
 }
@@ -91,24 +105,24 @@ __global__ void initialize_kernel(KeyValuePair *table, size_t capacity) {
   }
 }
 
-__global__ void insert_kernel(KeyValuePair *table, size_t capacity,
-                              const int32_t *keys, const uint64_t *values,
-                              size_t num_items) {
-  size_t idx = blockIdx.x * blockDim.x + threadIdx.x;
-  if (idx < num_items) {
-    insert_item(table, capacity, keys[idx], values[idx]);
-  }
-}
+// __global__ void insert_kernel(KeyValuePair *table, size_t capacity,
+//                               const int32_t *keys, const uint64_t *values,
+//                               size_t num_items) {
+//   size_t idx = blockIdx.x * blockDim.x + threadIdx.x;
+//   if (idx < num_items) {
+//     insert_item(table, capacity, keys[idx], values[idx]);
+//   }
+// }
 
-__global__ void lookup_kernel(const KeyValuePair *table, size_t capacity,
-                              const int32_t *keys_to_find, uint64_t *results,
-                              size_t num_items, uint64_t not_found_value) {
-  size_t idx = blockIdx.x * blockDim.x + threadIdx.x;
-  if (idx < num_items) {
-    results[idx] =
-        lookup_item(table, capacity, keys_to_find[idx], not_found_value);
-  }
-}
+// __global__ void lookup_kernel(const KeyValuePair *table, size_t capacity,
+//                               const int32_t *keys_to_find, uint64_t *results,
+//                               size_t num_items, uint64_t not_found_value) {
+//   size_t idx = blockIdx.x * blockDim.x + threadIdx.x;
+//   if (idx < num_items) {
+//     results[idx] =
+//         lookup_item(table, capacity, keys_to_find[idx], not_found_value);
+//   }
+// }
 
 // --- Host-Side API Functions ---
 
@@ -125,17 +139,29 @@ std::shared_ptr<GpuHashMap> create_map(size_t capacity,
 
   RM_CUDA_CHECK(cudaMallocAsync(&map->d_table, capacity * sizeof(KeyValuePair),
                                 stream.handle()));
-  stream.synchronize();
+  // stream.synchronize();
 
   // Initialize the table with the EMPTY_KEY sentinel.
   int threads_per_block = 256;
   int blocks_per_grid = (capacity + threads_per_block - 1) / threads_per_block;
-  initialize_kernel<<<blocks_per_grid, threads_per_block>>>(map->d_table,
-                                                            capacity);
+  initialize_kernel<<<blocks_per_grid, threads_per_block, 0, stream.handle()>>>(
+      map->d_table, capacity);
 
   checkLastCudaError(__FILE__, __LINE__);
 
   return map;
+}
+
+void clear_map(std::shared_ptr<GpuHashMap> map) {
+
+  // Initialize the table with the EMPTY_KEY sentinel.
+  int threads_per_block = 256;
+  int blocks_per_grid =
+      (map->capacity + threads_per_block - 1) / threads_per_block;
+  initialize_kernel<<<blocks_per_grid, threads_per_block>>>(map->d_table,
+                                                            map->capacity);
+
+  checkLastCudaError(__FILE__, __LINE__);
 }
 
 // Frees the GPU memory associated with the hash map.
@@ -145,76 +171,79 @@ void destroy_map(std::shared_ptr<GpuHashMap> &map) {
   }
 }
 
-// Inserts a batch of key-value pairs into the hash map.
-void insert_batch(GpuHashMap *map, const std::vector<int32_t> &h_keys,
-                  const std::vector<uint64_t> &h_values,
-                  rmagine::CudaStream &stream) {
-  if (h_keys.size() != h_values.size() || h_keys.empty()) {
-    return;
-  }
+// // Inserts a batch of key-value pairs into the hash map.
+// void insert_batch(GpuHashMap *map, const std::vector<int32_t> &h_keys,
+//                   const std::vector<uint64_t> &h_values,
+//                   rmagine::CudaStream &stream) {
+//   if (h_keys.size() != h_values.size() || h_keys.empty()) {
+//     return;
+//   }
 
-  size_t num_items = h_keys.size();
-  int32_t *d_keys;
-  uint64_t *d_values;
+//   size_t num_items = h_keys.size();
+//   int32_t *d_keys;
+//   uint64_t *d_values;
 
-  RM_CUDA_CHECK(
-      cudaMallocAsync(&d_keys, num_items * sizeof(int32_t), stream.handle()));
-  RM_CUDA_CHECK(cudaMallocAsync(&d_values, num_items * sizeof(uint64_t),
-                                stream.handle()));
+//   RM_CUDA_CHECK(
+//       cudaMallocAsync(&d_keys, num_items * sizeof(int32_t),
+//       stream.handle()));
+//   RM_CUDA_CHECK(cudaMallocAsync(&d_values, num_items * sizeof(uint64_t),
+//                                 stream.handle()));
 
-  RM_CUDA_CHECK(cudaMemcpyAsync(d_keys, h_keys.data(),
-                                num_items * sizeof(int32_t),
-                                cudaMemcpyHostToDevice, stream.handle()));
-  RM_CUDA_CHECK(cudaMemcpyAsync(d_values, h_values.data(),
-                                num_items * sizeof(uint64_t),
-                                cudaMemcpyHostToDevice, stream.handle()));
+//   RM_CUDA_CHECK(cudaMemcpyAsync(d_keys, h_keys.data(),
+//                                 num_items * sizeof(int32_t),
+//                                 cudaMemcpyHostToDevice, stream.handle()));
+//   RM_CUDA_CHECK(cudaMemcpyAsync(d_values, h_values.data(),
+//                                 num_items * sizeof(uint64_t),
+//                                 cudaMemcpyHostToDevice, stream.handle()));
 
-  stream.synchronize();
+//   stream.synchronize();
 
-  int threads_per_block = 256;
-  int blocks_per_grid = (num_items + threads_per_block - 1) / threads_per_block;
-  insert_kernel<<<blocks_per_grid, threads_per_block>>>(
-      map->d_table, map->capacity, d_keys, d_values, num_items);
+//   int threads_per_block = 256;
+//   int blocks_per_grid = (num_items + threads_per_block - 1) /
+//   threads_per_block; insert_kernel<<<blocks_per_grid, threads_per_block>>>(
+//       map->d_table, map->capacity, d_keys, d_values, num_items);
 
-  checkLastCudaError(__FILE__, __LINE__);
+//   checkLastCudaError(__FILE__, __LINE__);
 
-  cudaFree(d_keys);
-  cudaFree(d_values);
-}
+//   cudaFree(d_keys);
+//   cudaFree(d_values);
+// }
 
-// Looks up a batch of keys and returns the corresponding values.
-std::vector<uint64_t> lookup_batch(GpuHashMap *map,
-                                   const std::vector<int32_t> &h_keys_to_find,
-                                   uint64_t not_found_value) {
-  if (h_keys_to_find.empty()) {
-    return {};
-  }
+// // Looks up a batch of keys and returns the corresponding values.
+// std::vector<uint64_t> lookup_batch(GpuHashMap *map,
+//                                    const std::vector<int32_t>
+//                                    &h_keys_to_find, uint64_t not_found_value)
+//                                    {
+//   if (h_keys_to_find.empty()) {
+//     return {};
+//   }
 
-  size_t num_items = h_keys_to_find.size();
-  int32_t *d_keys_to_find;
-  uint64_t *d_results;
+//   size_t num_items = h_keys_to_find.size();
+//   int32_t *d_keys_to_find;
+//   uint64_t *d_results;
 
-  cudaMalloc(&d_keys_to_find, num_items * sizeof(int32_t));
-  cudaMalloc(&d_results, num_items * sizeof(uint64_t));
+//   cudaMalloc(&d_keys_to_find, num_items * sizeof(int32_t));
+//   cudaMalloc(&d_results, num_items * sizeof(uint64_t));
 
-  cudaMemcpy(d_keys_to_find, h_keys_to_find.data(), num_items * sizeof(int32_t),
-             cudaMemcpyHostToDevice);
+//   cudaMemcpy(d_keys_to_find, h_keys_to_find.data(), num_items *
+//   sizeof(int32_t),
+//              cudaMemcpyHostToDevice);
 
-  int threads_per_block = 256;
-  int blocks_per_grid = (num_items + threads_per_block - 1) / threads_per_block;
-  lookup_kernel<<<blocks_per_grid, threads_per_block>>>(
-      map->d_table, map->capacity, d_keys_to_find, d_results, num_items,
-      not_found_value);
+//   int threads_per_block = 256;
+//   int blocks_per_grid = (num_items + threads_per_block - 1) /
+//   threads_per_block; lookup_kernel<<<blocks_per_grid, threads_per_block>>>(
+//       map->d_table, map->capacity, d_keys_to_find, d_results, num_items,
+//       not_found_value);
 
-  std::vector<uint64_t> h_results(num_items);
-  cudaMemcpy(h_results.data(), d_results, num_items * sizeof(uint64_t),
-             cudaMemcpyDeviceToHost);
+//   std::vector<uint64_t> h_results(num_items);
+//   cudaMemcpy(h_results.data(), d_results, num_items * sizeof(uint64_t),
+//              cudaMemcpyDeviceToHost);
 
-  cudaFree(d_keys_to_find);
-  cudaFree(d_results);
+//   cudaFree(d_keys_to_find);
+//   cudaFree(d_results);
 
-  return h_results;
-}
+//   return h_results;
+// }
 
 // --- Main Function (Example Usage) ---
 
