@@ -177,8 +177,22 @@ impl CudaBuffer {
     // }
 }
 
-pub fn init_map(stream: &Stream, capacity: usize, voxel_size: f32) {
-    unsafe { ffi::init_map(stream.stream, capacity as u32, voxel_size) }
+pub fn init_map(
+    stream: &Stream,
+    capacity: usize,
+    voxel_size: f32,
+    sensitivity: f32,
+    min_dist: f32,
+) {
+    unsafe {
+        ffi::init_map(
+            stream.stream,
+            capacity as u32,
+            sensitivity,
+            min_dist,
+            voxel_size,
+        )
+    }
 }
 
 pub fn add_to_map(stream: &Stream, cloud: &CudaBuffer, ekf_pose_t: &Vector3, ekf_pose_r: &Matrix3) {
@@ -211,6 +225,7 @@ pub fn planes_cuda(
     plane_point_error_threshold: f64,
     first_it_local: bool,
     out_buff: &mut Vec<PointXYZINormal>,
+    out_buff_gpu: &mut CudaBuffer,
 ) {
     assert!(out_buff.len() >= cloud.n);
 
@@ -228,6 +243,8 @@ pub fn planes_cuda(
     let size = unsafe {
         ffi::planes(
             stream.stream,
+            cloud.gpu_ptr as *mut ffi::Point,
+            cloud.n as u32,
             neighbors.gpu_ptr as *mut ffi::Point,
             neighbor_sizes.gpu_ptr as *mut u32,
             lidar_to_imu,
@@ -236,10 +253,12 @@ pub fn planes_cuda(
             neighbor_max_range,
             plane_point_error_threshold,
             first_it_local,
-            out_buff.as_mut_ptr() as *mut ffi::PointNormal,
+            out_buff_gpu.gpu_ptr as *mut ffi::PointNormal,
         )
     };
 
+    // copy to cpu side
+    out_buff_gpu.download_into(stream, out_buff);
     unsafe { out_buff.set_len(size as usize) };
 }
 

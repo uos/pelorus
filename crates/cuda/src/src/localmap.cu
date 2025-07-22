@@ -6,6 +6,7 @@
 #include <core/memory.h>
 #include <core/memory_cuda.h>
 #include <cstdint>
+#include <ctime>
 #include <hashmap.h>
 #include <lib.h>
 #include <localmap.h>
@@ -235,10 +236,10 @@ __device__ void VoxelDistribution::update(const rm::Vector3f &new_point,
 // -- Localmap --
 
 Localmap::Localmap(size_t capacity, float sensitivity, float min_dist,
-                   float resolution, rm::CudaStream &stream)
+                   float resolution, NearbyType nbtype, rm::CudaStream &stream)
     : capacity(capacity), sensitivity(sensitivity), min_dist(min_dist),
       add_cursor(0), lru_cursor(0), buffer(capacity), lru_mapping(capacity),
-      resolution(resolution) {
+      resolution(resolution), nbtype(nbtype) {
   thrust::fill(thrust::device.on(stream.handle()), lru_mapping.begin(),
                lru_mapping.end(), INVALID_INDEX);
   // TODO one larger power of two
@@ -286,7 +287,7 @@ __global__ void point_insert(Point *points, size_t point_size,
                              uint32_t *lru_mapping) {
   size_t idx = blockIdx.x * blockDim.x + threadIdx.x;
 
-  if (idx > point_size) {
+  if (idx >= point_size) {
     return;
   }
 
@@ -400,6 +401,7 @@ void Localmap::build(size_t scan_number, rm::CudaStream &stream) {
   ScoreComparator comparator{thrust::raw_pointer_cast(buffer.data()),
                              scan_number};
 
+  // TODO move to cub onesweep sorting
   thrust::sort(thrust::device.on(stream.handle()), lru_mapping.begin(),
                lru_mapping.begin() + add_cursor, comparator);
 }
@@ -425,4 +427,338 @@ std::vector<Point> Localmap::get_map() const {
   thrust::copy(device_means.begin(), device_means.end(), host_means.begin());
 
   return host_means;
+}
+
+// A struct to hold 7 neighbors for nearby_6
+struct Neighbors7 {
+  rm::Vector3i data[7];
+};
+
+// A struct to hold 19 neighbors for nearby_18
+struct Neighbors19 {
+  rm::Vector3i data[19];
+};
+
+// A struct to hold 27 neighbors for nearby_26
+struct Neighbors27 {
+  rm::Vector3i data[27];
+};
+
+/**
+ * @brief Returns the 7 grid coordinates for the center and face neighbors.
+ * @param grid_key The center grid coordinate (gx, gy, gz).
+ * @return A struct containing a fixed-size array of 7 coordinates.
+ */
+__device__ inline Neighbors7 nearby_6(const rm::Vector3i &grid_key) {
+  const int gx = grid_key.x;
+  const int gy = grid_key.y;
+  const int gz = grid_key.z;
+
+  Neighbors7 neighbors;
+  neighbors.data[0] = {gx, gy, gz};
+  neighbors.data[1] = {gx - 1, gy, gz};
+  neighbors.data[2] = {gx + 1, gy, gz};
+  neighbors.data[3] = {gx, gy + 1, gz};
+  neighbors.data[4] = {gx, gy - 1, gz};
+  neighbors.data[5] = {gx, gy, gz - 1};
+  neighbors.data[6] = {gx, gy, gz + 1};
+
+  return neighbors;
+}
+
+/**
+ * @brief Returns the 19 grid coordinates for the center, face, and edge
+ * neighbors.
+ * @param grid_key The center grid coordinate (gx, gy, gz).
+ * @return A struct containing a fixed-size array of 19 coordinates.
+ */
+__device__ inline Neighbors19 nearby_18(const rm::Vector3i &grid_key) {
+  const int gx = grid_key.x;
+  const int gy = grid_key.y;
+  const int gz = grid_key.z;
+
+  Neighbors19 neighbors;
+  int count = 0;
+
+  for (int z = -1; z <= 1; ++z) {
+    for (int y = -1; y <= 1; ++y) {
+      for (int x = -1; x <= 1; ++x) {
+        // Exclude corners (where sum of absolute offsets is 3)
+        if (abs(x) + abs(y) + abs(z) < 3) {
+          if (count < 19) { // Boundary check for safety
+            neighbors.data[count++] = {gx + x, gy + y, gz + z};
+          }
+        }
+      }
+    }
+  }
+  return neighbors;
+}
+
+/**
+ * @brief Returns the 27 grid coordinates for a full 3x3x3 neighborhood.
+ * @param grid_key The center grid coordinate (gx, gy, gz).
+ * @return A struct containing a fixed-size array of 27 coordinates.
+ */
+__device__ inline Neighbors27 nearby_26(const rm::Vector3i &grid_key) {
+  const int gx = grid_key.x;
+  const int gy = grid_key.y;
+  const int gz = grid_key.z;
+
+  Neighbors27 neighbors;
+  int count = 0;
+
+  for (int z = -1; z <= 1; ++z) {
+    for (int y = -1; y <= 1; ++y) {
+      for (int x = -1; x <= 1; ++x) {
+        if (count < 27) { // Boundary check for safety
+          neighbors.data[count++] = {gx + x, gy + y, gz + z};
+        }
+      }
+    }
+  }
+  return neighbors;
+}
+
+__device__ void
+cache_and_sum_density(rm::Vector3i *nb, uint32_t size, GpuHashMap *map,
+                      uint32_t &total_density, uint32_t &num_cached,
+                      thrust::pair<uint32_t, VoxelDistribution> *buffer_ptr,
+                      VoxelDistribution *out) {
+  for (uint32_t i = 0; i < size; i++) {
+    auto cnb = nb[i];
+    auto k = hash_grid(cnb);
+    auto found = false;
+    auto nb_buffer_idx = lookup_item(map->d_table, map->capacity, k, found);
+
+    if (found) {
+      auto dist = buffer_ptr[nb_buffer_idx].second;
+      if (dist.point_count > 0 && num_cached < MAX_NEIGHBORS) {
+        total_density += dist.point_count;
+        num_cached += 1;
+        out[num_cached] = dist;
+      }
+    }
+  }
+}
+
+__device__ void sample_from_distribution(const VoxelDistribution &dist,
+                                         uint32_t num_samples,
+                                         curandState_t &rng,
+                                         rm::Pointf *result) {
+  assert((num_samples < MAX_NEIGHBORS));
+
+  for (uint32_t i = 0; i < num_samples; i++) {
+    rm::Pointf random_point(curand_normal(&rng), curand_normal(&rng),
+                            curand_normal(&rng));
+
+    result[i] = dist.mean + dist.transform * random_point;
+  }
+}
+
+__device__ bool
+k_nearest_neighbor_query(const rm::Pointf &query, size_t k, NearbyType nbtype,
+                         float max_range, GpuHashMap *map,
+                         thrust::pair<uint32_t, VoxelDistribution> *buffer,
+                         float resolution, rm::Pointf *result,
+                         uint32_t &out_size, time_t time, int thread_id) {
+  assert((k != 0 && result != NULL));
+
+  VoxelDistribution cached_neighbors[MAX_NEIGHBORS];
+  uint32_t num_cached = 0;
+  uint32_t total_density = 0;
+
+  auto grid = pos2grid(resolution, query);
+  switch (nbtype) {
+  case NearbyType::Center: {
+    cache_and_sum_density(&grid, 1, map, total_density, num_cached, buffer,
+                          cached_neighbors);
+    break;
+  }
+  case NearbyType::Nearby6: {
+    auto nb = nearby_6(grid);
+    cache_and_sum_density(nb.data, 7, map, total_density, num_cached, buffer,
+                          cached_neighbors);
+    break;
+  }
+  case NearbyType::Nearby18: {
+    auto nb = nearby_18(grid);
+    cache_and_sum_density(nb.data, 19, map, total_density, num_cached, buffer,
+                          cached_neighbors);
+    break;
+  }
+  case NearbyType::Nearby26: {
+    auto nb = nearby_26(grid);
+    cache_and_sum_density(nb.data, 27, map, total_density, num_cached, buffer,
+                          cached_neighbors);
+    break;
+  }
+  }
+
+  if (total_density == 0) {
+    return false;
+  }
+
+  // Proportional Sampling
+  uint32_t current_found_count = 0;
+  curandState_t rng;
+  curand_init(time, thread_id, 0, &rng);
+
+  rm::Pointf sampled_out[MAX_NEIGHBORS];
+  auto sq_max_range = max_range * max_range;
+  for (uint32_t i = 0; i < num_cached; i++) {
+    if (current_found_count >= k) {
+      break;
+    }
+
+    const VoxelDistribution *dist = &cached_neighbors[i];
+    auto relative_density = static_cast<double>(dist->point_count) /
+                            static_cast<double>(total_density);
+    auto sample_count =
+        static_cast<uint32_t>(round(relative_density * static_cast<double>(k)));
+
+    uint32_t samples_needed = k - current_found_count;
+    sample_count = min(sample_count, samples_needed);
+
+    if (sample_count == 0) {
+      continue;
+    }
+
+    sample_from_distribution(*dist, sample_count, rng, sampled_out);
+
+    for (uint32_t i = 0; i < sample_count; i++) {
+      auto p = sampled_out[i];
+      auto dist = (query - p).l2normSquared();
+      if (dist < sq_max_range) {
+        result[current_found_count++] = p;
+        if (current_found_count >= k) {
+          break;
+        }
+      }
+    }
+  }
+
+  out_size = current_found_count;
+  return out_size > 0;
+}
+
+__device__ inline float plane_normal_point_distance(const float4 &plane,
+                                                    const rm::Vector3f &point) {
+  return plane.x * point.x + plane.y * point.y + plane.z * point.z + plane.w;
+}
+
+__device__ inline float4
+plane_from_point_and_normal(const rm::Vector3f &point,
+                            const rm::Vector3f &normal) {
+  return {normal.x, normal.y, normal.z,
+          -(normal.x * point.x + normal.y * point.y + normal.z * point.z)};
+}
+
+__device__ inline rm::Vector3f calc_centroid(const rm::Vector3f *cluster,
+                                             size_t cluster_size) {
+  rm::Vector3f sum(0, 0, 0);
+  for (size_t i = 0; i < cluster_size; i++) {
+    sum.addInplace(cluster[i]);
+  }
+
+  return sum * (1.0 / static_cast<float>(cluster_size));
+}
+
+__device__ inline rm::Matrix3x3f calc_cov(const rm::Vector3f *cluster,
+                                          size_t cluster_size,
+                                          const rm::Vector3f &centroid) {
+  double xx = 0.0, xy = 0.0, xz = 0.0, yy = 0.0, yz = 0.0, zz = 0.0;
+
+  for (size_t i = 0; i < cluster_size; i++) {
+    rm::Vector3f r = cluster[i] - centroid;
+    xx += r.x * r.x;
+    xy += r.x * r.y;
+    xz += r.x * r.z;
+    yy += r.y * r.y;
+    yz += r.y * r.z;
+    zz += r.z * r.z;
+  }
+
+  xx /= static_cast<float>(cluster_size);
+  xy /= static_cast<float>(cluster_size);
+  xz /= static_cast<float>(cluster_size);
+  yy /= static_cast<float>(cluster_size);
+  yz /= static_cast<float>(cluster_size);
+  zz /= static_cast<float>(cluster_size);
+
+  rm::Matrix3x3f cov;
+  cov(0, 0) = xx;
+  cov(0, 1) = xy;
+  cov(0, 2) = xz;
+  cov(1, 0) = xy;
+  cov(1, 1) = yy;
+  cov(1, 2) = yz;
+  cov(2, 0) = xz;
+  cov(2, 1) = yz;
+  cov(2, 2) = zz;
+
+  return std::move(cov);
+}
+
+// https://www.ilikebigbits.com/2017_09_25_plane_from_points_2.html
+__device__ bool pca_constant(const rm::Vector3f *cluster, size_t n,
+                             float normal_threshold, float4 &plane_equation) {
+  if (n < 3) {
+    return false;
+  }
+
+  rm::Vector3f centroid = calc_centroid(cluster, n);
+  rm::Matrix3x3f cov = calc_cov(cluster, n, centroid);
+
+  float xx = cov(0, 0);
+  float xy = cov(0, 1);
+  float xz = cov(0, 2);
+  float yy = cov(1, 1);
+  float yz = cov(1, 2);
+  float zz = cov(2, 2);
+
+  rm::Vector3f weighted_dir(0, 0, 0);
+  rm::Vector3f axis_dir;
+  float weight;
+  float det_x, det_y, det_z;
+
+  det_x = yy * zz - yz * yz;
+  axis_dir = {det_x, xz * yz - xy * zz, xy * yz - xz * yy};
+  weight = det_x * det_x;
+  if (weighted_dir.dot(axis_dir) < 0.0) {
+    weight = -weight;
+  }
+
+  weighted_dir += axis_dir * weight;
+
+  det_y = xx * zz - xz * xz;
+  axis_dir = {xz * yz - xy * zz, det_y, xy * xz - yz * xx};
+  weight = det_y * det_y;
+  if (weighted_dir.dot(axis_dir) < 0.0) {
+    weight = -weight;
+  }
+
+  weighted_dir += axis_dir * weight;
+
+  det_z = xx * yy - xy * xy;
+  axis_dir = {xy * yz - xz * yy, xy * xz - yz * xx, det_z};
+  weight = det_z * det_z;
+  if (weighted_dir.dot(axis_dir) < 0.0) {
+    weight = -weight;
+  }
+
+  weighted_dir += axis_dir * weight;
+
+  weighted_dir.normalize();
+  plane_equation = plane_from_point_and_normal(centroid, weighted_dir);
+
+  // if any of the points is too far from the plane, return false
+  for (uint32_t i = 0; i < n; i++) {
+    if (fabs(plane_normal_point_distance(plane_equation, cluster[i])) >
+        normal_threshold) {
+      return false;
+    }
+  }
+
+  return true;
 }

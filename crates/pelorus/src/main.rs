@@ -596,6 +596,8 @@ fn lio(config_path: &str) -> Result<(), Box<dyn std::error::Error>> {
             &cuda_stream,
             config.map_capacity,
             config.map_resolution as f32,
+            config.dist_update_sensitivity,
+            config.neighbor_max_range as f32,
         );
 
         while let Ok(lifis_tick) = synced_rx.recv() {

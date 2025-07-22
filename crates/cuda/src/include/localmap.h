@@ -2,16 +2,20 @@
 #define LOCALMAP_H
 
 #include <core/cuda_stream.h>
+#include <cstdint>
 #include <cuda_runtime.h>
+#include <curand_kernel.h>
 #include <hashmap.h>
 #include <lib.h>
 #include <math/matrix3x3.h>
 #include <math/vector3.h>
 #include <thrust/device_vector.h>
-#include <utility>
 #include <vector>
 
 namespace rm = rmagine;
+
+enum class NearbyType { Center, Nearby6, Nearby18, Nearby26 };
+constexpr uint8_t MAX_NEIGHBORS = 27;
 
 struct VoxelDistribution {
   rm::Matrix3x3f transform;
@@ -35,10 +39,8 @@ using Value = thrust::pair<uint32_t, VoxelDistribution>;
 class Localmap {
 public:
   Localmap(size_t capacity, float sensitivity, float min_dist, float resolution,
-           rm::CudaStream &stream);
+           NearbyType nbtype, rm::CudaStream &stream);
   ~Localmap();
-
-  void add(Point *points, size_t point_size, size_t scan_number);
 
   /// Adds or updates a voxel in the map.
   void add(Point *points, size_t point_size, size_t scan_number,
@@ -63,12 +65,11 @@ public:
   /// Checks if the map is empty.
   bool is_empty() const { return add_cursor == 0; }
 
-private:
   thrust::device_vector<Value> buffer;
 
-  thrust::device_vector<uint32_t> lru_mapping;
-
   std::shared_ptr<GpuHashMap> lookup;
+
+  thrust::device_vector<uint32_t> lru_mapping;
 
   size_t add_cursor;
   size_t lru_cursor;
@@ -78,6 +79,17 @@ private:
   size_t resolution;
   float sensitivity;
   float min_dist;
+  NearbyType nbtype;
 };
+
+__device__ bool pca_constant(const rm::Vector3f *cluster, size_t n,
+                             float normal_threshold, float4 &plane_equation);
+
+__device__ bool
+k_nearest_neighbor_query(const rm::Pointf &query, size_t k, NearbyType nbtype,
+                         float max_range, GpuHashMap *map,
+                         thrust::pair<uint32_t, VoxelDistribution> *buffer,
+                         float resolution, rm::Pointf *result,
+                         uint32_t &out_size, time_t time, int thread_id);
 
 #endif
