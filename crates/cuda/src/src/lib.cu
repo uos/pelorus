@@ -1,57 +1,68 @@
-#include "lib.h"
-#include <cuda_runtime.h>
-#include <stdio.h>
-
+#include "core/common.h"
+#include "hashmap.h"
+#include "math/quaternion.h"
+#include "math/vector3.h"
+#include <cassert>
 #include <core/cuda_debug.h>
 #include <core/cuda_stream.h>
 #include <core/memory_cuda.h>
+#include <cstdint>
+#include <cstdlib>
+#include <cuda_runtime.h>
+#include <lib.h>
+#include <localmap.h>
 #include <math/iso3.h>
+#include <memory>
+#include <stdio.h>
 #include <sys/types.h>
+#include <thrust/copy.h>
+#include <thrust/host_vector.h>
+#include <thrust/sort.h>
 
 extern "C" {
 
 void *cupcl_create_empty_buffer(void *stream, unsigned int element_size,
                                 unsigned int n) {
-  cudaStream_t stream_ = (cudaStream_t)stream;
+  rm::CudaStream *stream_ = (rm::CudaStream *)stream;
   void *buff = NULL;
-  RM_CUDA_CHECK(cudaMallocAsync(&buff, element_size * n, stream_));
-  RM_CUDA_CHECK(cudaMemsetAsync(buff, 0, element_size * n, stream_));
+  RM_CUDA_CHECK(cudaMallocAsync(&buff, element_size * n, stream_->handle()));
+  RM_CUDA_CHECK(cudaMemsetAsync(buff, 0, element_size * n, stream_->handle()));
   // RM_CUDA_CHECK(cudaStreamSynchronize(stream_));
   return buff;
 }
 
 void cupcl_upload_buffer(void *stream, void *gpu_buffer, void *cpu_buffer,
                          unsigned int element_size, unsigned int n) {
-  cudaStream_t stream_ = (cudaStream_t)stream;
+  rm::CudaStream *stream_ = (rm::CudaStream *)stream;
   RM_CUDA_CHECK(cudaMemcpyAsync(gpu_buffer, cpu_buffer, element_size * n,
-                                cudaMemcpyHostToDevice, stream_));
+                                cudaMemcpyHostToDevice, stream_->handle()));
   // RM_CUDA_CHECK(cudaStreamSynchronize(stream_));
 }
 
 void cupcl_download_buffer(void *stream, void *cpu_buffer, void *gpu_buffer,
                            unsigned int element_size, unsigned int n) {
-  cudaStream_t stream_ = (cudaStream_t)stream;
+  rm::CudaStream *stream_ = (rm::CudaStream *)stream;
   RM_CUDA_CHECK(cudaMemcpyAsync(cpu_buffer, gpu_buffer, element_size * n,
-                                cudaMemcpyDeviceToHost, stream_));
+                                cudaMemcpyDeviceToHost, stream_->handle()));
   // RM_CUDA_CHECK(cudaStreamSynchronize(stream_));
 }
 
 void cupcl_copy_buffer(void *stream, void *src, void *target,
                        unsigned int element_size, unsigned int n) {
-  cudaStream_t stream_ = (cudaStream_t)stream;
+  rm::CudaStream *stream_ = (rm::CudaStream *)stream;
   RM_CUDA_CHECK(cudaMemcpyAsync(target, src, element_size * n,
-                                cudaMemcpyDeviceToDevice, stream_));
+                                cudaMemcpyDeviceToDevice, stream_->handle()));
   // RM_CUDA_CHECK(cudaStreamSynchronize(stream_));
 }
 
 void *cupcl_create_buffer(void *stream, void *buffer_cpu,
                           unsigned int element_size, unsigned int n) {
-  cudaStream_t stream_ = (cudaStream_t)stream;
+  rm::CudaStream *stream_ = (rm::CudaStream *)stream;
   void *buff = NULL;
-  RM_CUDA_CHECK(cudaMallocAsync(&buff, element_size * n, stream_));
+  RM_CUDA_CHECK(cudaMallocAsync(&buff, element_size * n, stream_->handle()));
   // RM_CUDA_CHECK(cudaStreamAttachMemAsync(stream_, buff));
   RM_CUDA_CHECK(cudaMemcpyAsync(buff, buffer_cpu, element_size * n,
-                                cudaMemcpyHostToDevice, stream_));
+                                cudaMemcpyHostToDevice, stream_->handle()));
   // RM_CUDA_CHECK(cudaStreamSynchronize(stream_));
   return buff;
 }
@@ -64,13 +75,12 @@ void cupcl_free_buffer(void *buffer) {
 }
 
 void cupcl_sync_stream(void *stream) {
-  cudaStream_t stream_ = (cudaStream_t)stream;
-  RM_CUDA_CHECK(cudaStreamSynchronize(stream_));
+  rm::CudaStream *stream_ = (rm::CudaStream *)stream;
+  stream_->synchronize();
 }
 
 void *cupcl_create_stream() {
-  cudaStream_t stream = NULL;
-  RM_CUDA_CHECK(cudaStreamCreate(&stream));
+  rm::CudaStream *stream = new rm::CudaStream;
   return (void *)stream;
 }
 
@@ -89,30 +99,148 @@ void cupcl_free_pointcloud(float *cloud) { cupcl_free_buffer(cloud); }
 
 void cupcl_destroy_stream(void *stream) {
   if (stream != NULL) {
-    RM_CUDA_CHECK(cudaStreamDestroy((cudaStream_t)stream));
+    delete (rm::CudaStream *)stream;
     stream = NULL;
   }
 }
 
-// TODO static state with params
+class State {
+public:
+  Localmap localmap;
+  Parameter params;
+  uint32_t scan_number;
 
-// TODO sync stream before doing stuff on memory
+  State(size_t capacity, float sensitivity, float min_dist, float resolution,
+        NearbyType nbtype, void *stream)
+      : localmap(capacity, sensitivity, min_dist, resolution, nbtype,
+                 *((rm::CudaStream *)stream)),
+        scan_number(0) {}
+};
+
+std::shared_ptr<State> state;
+
 void add_to_map(void *stream, Point *points, u_int32_t size,
                 Pose registered_pose) {
-  // TODO
+  assert((state != NULL && stream != NULL));
+
+  rm::CudaStream *stream_ = (rm::CudaStream *)stream;
+  state->scan_number++;
+  state->localmap.add(points, size, state->scan_number, *stream_);
 }
 
-void init_map(void *stream, u_int32_t map_capacity, float map_resolution) {
-  // TODO
+void init_map(void *stream, u_int32_t map_capacity, float sensitivity,
+              float min_dist, float map_resolution) {
+  assert((state == NULL && stream != NULL));
+
+  state = std::make_shared<State>(map_capacity, sensitivity, min_dist,
+                                  map_resolution, stream);
 }
 
-// returns: size of out_buff
-u_int32_t planes(void *stream, Point *neighbor_cache,
-                 u_int32_t *neighbor_size_cache, Pose ekf_lidar_to_imu,
-                 Pose ekf_pose, u_int32_t k, float neighbor_max_range,
-                 double plane_point_error_threshold, bool first_it_local,
-                 PointNormal *out_buff) {
-  // TODO
+__global__ void plane_krnl(
+    Point *cloud, uint32_t cloud_size, Point *neighbor_cache,
+    u_int32_t *neighbor_size_cache, Pose ekf_lidar_to_imu, Pose ekf_pose,
+    u_int32_t k, float neighbor_max_range, double plane_point_error_threshold,
+    bool first_it_local, bool converged, GpuHashMap *map,
+    thrust::pair<uint32_t, VoxelDistribution> *buffer, float map_resolution,
+    time_t time, NearbyType nbtype, PointNormal *out_buff, uint32_t *out_size) {
+  size_t idx = blockIdx.x * blockDim.x + threadIdx.x;
+  if (idx >= cloud_size) {
+    return;
+  }
+
+  rm::Quaternionf ekf_rot(ekf_pose.orientation.w, ekf_pose.orientation.x,
+                          ekf_pose.orientation.y, ekf_pose.orientation.z);
+  rm::Vector3f ekf_trans(ekf_pose.position.x, ekf_pose.position.y,
+                         ekf_pose.position.z);
+  rm::Isometry3f global_pose{ekf_rot, ekf_trans};
+
+  rm::Quaternionf ekf_lidar_to_imu_rot(
+      ekf_lidar_to_imu.orientation.w, ekf_lidar_to_imu.orientation.x,
+      ekf_lidar_to_imu.orientation.y, ekf_lidar_to_imu.orientation.z);
+  rm::Vector3f ekf_lidar_to_imu_trans(ekf_lidar_to_imu.position.x,
+                                      ekf_lidar_to_imu.position.y,
+                                      ekf_lidar_to_imu.position.z);
+  rm::Isometry3f lidar_to_imu_pose{ekf_lidar_to_imu_rot,
+                                   ekf_lidar_to_imu_trans};
+
+  auto p_raw = cloud[idx];
+  rm::Pointf p_local(p_raw.x, p_raw.y, p_raw.z);
+
+  rm::Pointf p_imu = lidar_to_imu_pose * p_local;
+  rm::Pointf p_global = global_pose * p_imu;
+
+  rm::Pointf neighbors[MAX_NEIGHBORS];
+  uint32_t neighbors_size = 0;
+
+  if (first_it_local || converged) {
+    if (!k_nearest_neighbor_query(p_global, k, nbtype, neighbor_max_range, map,
+                                  buffer, map_resolution, neighbors,
+                                  neighbors_size, time, idx)) {
+      return;
+    }
+  }
+
+  // Write neighbors to cache if set
+  if (neighbors_size > 0) {
+    Point *cache_offset = &neighbor_cache[idx * k];
+    for (uint32_t i = 0; i < neighbors_size; i++) {
+      rm::Pointf p = neighbors[i];
+      cache_offset[i] = Point{p.x, p.y, p.z, 0.0};
+    }
+    neighbor_size_cache[idx] = neighbors_size;
+  } else {
+    // Or get from cache if already populated in last iteration
+    neighbors_size = neighbor_size_cache[idx];
+    Point *cache_offset = &neighbor_cache[idx * k];
+    for (uint32_t i = 0; i < neighbors_size; i++) {
+      Point p = cache_offset[i];
+      neighbors[i] = rm::Pointf{p.x, p.y, p.z};
+    }
+  }
+
+  // Plane
+  float4 plane;
+  if (!pca_constant(neighbors, neighbors_size, 0.1, plane)) {
+    return;
+  }
+
+  auto pd2 = plane.x * p_global.x + plane.y * p_global.y +
+             plane.z * p_global.z + plane.w;
+  auto s = 1.0 - 0.9 * abs(pd2) / sqrtf(p_local.l2norm());
+
+  if (s <= 0.9) {
+    return;
+  }
+
+  PointNormal n = {p_local.x, p_local.y, p_local.z, (float)pd2,
+                   plane.x,   plane.y,   plane.z};
+
+  size_t out_idx = atomicAdd(out_size, 1);
+  out_buff[out_idx] = n;
+}
+
+// returns: size of out_buff, out_buff is on gpu and has enough space
+u_int32_t planes(void *stream, Point *cloud, uint32_t cloud_size,
+                 Point *neighbor_cache, u_int32_t *neighbor_size_cache,
+                 Pose ekf_lidar_to_imu, Pose ekf_pose, u_int32_t k,
+                 float neighbor_max_range, double plane_point_error_threshold,
+                 bool first_it_local, PointNormal *out_buff, uint32_t *out_size,
+                 bool converged) {
+  rm::CudaStream *stream_ = (rm::CudaStream *)stream;
+  int threads_per_block = 256;
+  int blocks_per_grid =
+      (cloud_size + threads_per_block - 1) / threads_per_block;
+  plane_krnl<<<blocks_per_grid, threads_per_block, 0, stream_->handle()>>>(
+      cloud, cloud_size, neighbor_cache, neighbor_size_cache, ekf_lidar_to_imu,
+      ekf_pose, k, neighbor_max_range, plane_point_error_threshold,
+      first_it_local, converged, state->localmap.lookup.get(),
+      thrust::raw_pointer_cast(state->localmap.buffer.data()),
+      state->localmap.resolution, time(0), state->localmap.nbtype, out_buff,
+      out_size);
+
+  stream_->synchronize();
+
+  checkLastCudaError(__FILE__, __LINE__);
 
   return 0;
 }

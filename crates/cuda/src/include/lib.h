@@ -1,6 +1,7 @@
 #ifndef PELORUS_CUDA_H
 #define PELORUS_CUDA_H
 
+#include <cstdint>
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -111,16 +112,18 @@ void cupcl_download_buffer(void *stream, void *cpu_buffer, void *gpu_buffer,
 void cupcl_copy_buffer(void *stream, void *src, void *target,
                        unsigned int element_size, unsigned int n);
 
-u_int32_t planes(void *stream, Point *neighbor_cache,
-                 u_int32_t *neighbor_size_cache, Pose ekf_lidar_to_imu,
-                 Pose ekf_pose, u_int32_t k, float neighbor_max_range,
-                 double plane_point_error_threshold, bool first_it_local,
-                 PointNormal *out_buff);
+u_int32_t planes(void *stream, Point *cloud, uint32_t cloud_size,
+                 Point *neighbor_cache, u_int32_t *neighbor_size_cache,
+                 Pose ekf_lidar_to_imu, Pose ekf_pose, u_int32_t k,
+                 float neighbor_max_range, double plane_point_error_threshold,
+                 bool first_it_local, PointNormal *out_buff, uint32_t *out_size,
+                 bool converged);
 
 void add_to_map(void *stream, Point *points, u_int32_t size,
                 Pose registered_pose);
 
-void init_map(void *stream, u_int32_t map_capacity, float map_resolution);
+void init_map(void *stream, u_int32_t map_capacity, float sensitivity,
+              float min_dist, float map_resolution);
 
 #ifdef __cplusplus
 }

@@ -6,6 +6,7 @@ use std::{
     sync::{Arc, Mutex},
 };
 
+use cuda::CudaBuffer;
 use nalgebra::*;
 use prelio::{LocatedBufferView, timing::RuntimeEvaluator};
 #[cfg(feature = "parallel")]
@@ -279,7 +280,12 @@ impl crate::Registration for SFasterLio {
             let eval_cb = eval_outer.clone();
 
             // TODO use cfg cuda to not allocate useless buffer
-            let planes_gpu_buffer = Arc::new(Mutex::new(Vec::new()));
+            let planes_cpu_buffer = Arc::new(Mutex::new(Vec::new()));
+            let planes_gpu_buffer = Arc::new(Mutex::new(CudaBuffer::new(
+                stream,
+                size_of::<PointXYZ>(),
+                cloud_len_alloc,
+            )));
 
             self.ekf.correct(
                 self.laser_point_noise_cov,
@@ -293,8 +299,9 @@ impl crate::Registration for SFasterLio {
                       extrinsic_estimation| {
                     let first_it_local = { first_it.lock().unwrap().clone() };
 
-                    let mut planes = planes_gpu_buffer.lock().unwrap();
+                    let mut planes = planes_cpu_buffer.lock().unwrap();
                     planes.resize_with(cloud_len_alloc, || PointXYZINormal::default());
+                    let mut planes_gpu = planes_gpu_buffer.lock().unwrap();
 
                     let mut neighbors = neighbors_cloud_in_ekf.lock().unwrap().take().unwrap_or({
                         let len = cloud_len_alloc * k;
@@ -385,6 +392,7 @@ impl crate::Registration for SFasterLio {
                             PLANE_POINT_ERROR_THRESHOLD,
                             first_it_local,
                             &mut planes,
+                            &mut planes_gpu,
                         );
 
                         planes
