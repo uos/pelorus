@@ -21,46 +21,9 @@ __device__ uint32_t hash_function(int32_t key) {
   return h;
 }
 
-__device__ void insert_item(KeyValuePair *table, size_t capacity, int32_t key,
-                            uint32_t value) {
-  if (key == EMPTY_KEY || key == DELETED_SLOT)
-    return;
-
-  uint32_t slot = hash_function(key) & (capacity - 1);
-
-  while (true) {
-    int32_t current_key = table[slot].key;
-
-    // If slot is available (empty or deleted), try to claim it.
-    if (current_key == EMPTY_KEY || current_key == DELETED_SLOT) {
-      int32_t prev_key = atomicCAS(&table[slot].key, current_key, key);
-
-      // If we successfully swapped (we got the slot), write the value and exit.
-      if (prev_key == current_key) {
-        table[slot].value = value;
-        return;
-      }
-      // If we failed, another thread beat us. We must re-evaluate the slot in
-      // the next loop iteration. The slot now holds a new key, so the next
-      // check will treat it as a collision.
-      continue;
-    }
-
-    // If the key already exists, update the value and exit.
-    if (current_key == key) {
-      table[slot].value = value; // Note: Not atomic, assumes one writer per key
-                                 // or last-write-wins is OK.
-      return;
-    }
-
-    // Collision: Move to the next slot.
-    slot = (slot + 1) & (capacity - 1);
-  }
-}
-
 __device__ uint32_t lookup_item(const KeyValuePair *table, size_t capacity,
                                 int32_t key, bool &found) {
-  if (key == EMPTY_KEY || key == DELETED_SLOT) {
+  if (key == EMPTY_KEY) {
     found = false;
     return 0;
   }
@@ -72,48 +35,18 @@ __device__ uint32_t lookup_item(const KeyValuePair *table, size_t capacity,
 
     if (current_key == key) {
       found = true;
-      // assert((false));
       return table[slot].value;
     }
 
     if (current_key == EMPTY_KEY) {
-      // An empty slot breaks the chain. Key not found.
       found = false;
       return 0;
     }
 
-    // If it's a DELETED_SLOT or a different key, continue probing.
+    // continue probing
     slot = (slot + 1) & (capacity - 1);
   }
 }
-
-__device__ bool remove_item(KeyValuePair *table, size_t capacity, int32_t key) {
-  if (key == EMPTY_KEY || key == DELETED_SLOT) {
-    return false;
-  }
-
-  uint32_t slot = hash_function(key) & (capacity - 1);
-
-  while (true) {
-    int32_t current_key = table[slot].key;
-
-    if (current_key == key) {
-      // Found it. Atomically swap with the tombstone.
-      atomicExch(&table[slot].key, DELETED_SLOT);
-      return true;
-    }
-
-    if (current_key == EMPTY_KEY) {
-      // Empty slot breaks the chain. Key not found.
-      return false;
-    }
-
-    // If it's a DELETED_SLOT or a different key, continue probing.
-    slot = (slot + 1) & (capacity - 1);
-  }
-}
-
-// --- Kernels ---
 
 __global__ void initialize_kernel(KeyValuePair *table, uint32_t capacity) {
   size_t idx = blockIdx.x * blockDim.x + threadIdx.x;

@@ -9,7 +9,7 @@ static GLOBAL: MiMalloc = MiMalloc;
 
 use clap::{command, Parser, Subcommand};
 use futures_lite::future;
-use log::{debug, error, info};
+use log::{error, info};
 use nalgebra::{Isometry3, Translation3, UnitQuaternion};
 #[cfg(feature = "r2r")]
 use r2r::{

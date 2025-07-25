@@ -204,11 +204,11 @@ pub fn init_map(
     nearby_seach_strategy: NeighborType,
 ) {
     assert!(capacity > 0, "No capacity");
+    let capacity = capacity.next_power_of_two();
     assert!(
         (capacity & (capacity - 1)) == 0,
         "Capacity is not a power of 2"
     );
-    debug!("MAP INIT");
     unsafe {
         ffi::init_map(
             stream.stream,
