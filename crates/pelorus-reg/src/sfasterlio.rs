@@ -6,7 +6,9 @@ use std::{
     sync::{Arc, Mutex},
 };
 
+#[cfg(feature = "cuda")]
 use cuda::CudaBuffer;
+use log::info;
 use nalgebra::*;
 use prelio::{LocatedBufferView, timing::RuntimeEvaluator};
 #[cfg(feature = "parallel")]
@@ -86,19 +88,22 @@ impl SFasterLio {
     }
 
     fn add_to_map(&mut self, cloud: &LocatedBufferView<PointXYZ>, pose: Isometry3<f64>) {
-        #[cfg(all(not(feature = "cuda"), feature = "nn_kdt"))]
+        let cloud = match cloud {
+            LocatedBufferView::Ram(items) => items,
+            #[cfg(feature = "cuda")]
+            LocatedBufferView::Cuda { buffer: _ } => {
+                panic!("cuda versions needs stream, so is outside this function")
+            }
+        };
+
+        #[cfg(feature = "nn_kdt")]
         {
             self.map.add(cloud, &pose);
         }
 
-        #[cfg(all(not(feature = "cuda"), not(feature = "nn_kdt")))]
+        #[cfg(not(feature = "nn_kdt"))]
         {
             self.map.add(cloud, &pose);
-        }
-        #[cfg(all(feature = "cuda", not(feature = "nn_kdt")))]
-        {
-            // TODO add GPU localmap
-            // self.map.add(cloud, &pose);
         }
     }
 
@@ -249,21 +254,20 @@ impl crate::Registration for SFasterLio {
         cloud: &LocatedBufferView<PointXYZ>,
         ready_for_next: Option<&std::sync::mpsc::Sender<()>>,
         eval: &mut RuntimeEvaluator,
-        _planes_gpu: bool, // TODO remove. ganz oder gar nicht
-        stream: &cuda::Stream,
+        // _planes_gpu: bool, // TODO remove. ganz oder gar nicht
+        #[cfg(feature = "cuda")] stream: &cuda::Stream,
     ) -> anyhow::Result<crate::CloudRegisterResult> {
-        // let cloud = match cloud {
-        //     LocatedBufferView::Ram(items) => items,
-        //     LocatedBufferView::Cuda {
-        //         stream: _,
-        //         cloud: _,
-        //     } => todo!(),
-        // };
         let neighbors = Arc::new(Mutex::new(None));
         let neighbor_sizes = Arc::new(Mutex::new(None));
         let first_it = Arc::new(Mutex::new(true));
         let eval_outer = std::sync::Arc::new(std::sync::RwLock::new(eval));
-        if !self.map.is_empty() {
+        #[cfg(feature = "cuda")]
+        let map_empty = cuda::get_map_size() == 0;
+
+        #[cfg(not(feature = "cuda"))]
+        let map_empty = self.map.is_empty();
+        if !map_empty {
+            #[cfg(not(feature = "cuda"))]
             let map = &mut self.map;
             let k = self.k_neighbors;
             let neighbor_max_range = self.neighbor_max_range as f32;
@@ -279,11 +283,12 @@ impl crate::Registration for SFasterLio {
             }
             let eval_cb = eval_outer.clone();
 
-            // TODO use cfg cuda to not allocate useless buffer
+            #[cfg(feature = "cuda")]
             let planes_cpu_buffer = Arc::new(Mutex::new(Vec::new()));
+            #[cfg(feature = "cuda")]
             let planes_gpu_buffer = Arc::new(Mutex::new(CudaBuffer::new(
                 stream,
-                size_of::<PointXYZ>(),
+                size_of::<PointXYZINormal>(),
                 cloud_len_alloc,
             )));
 
@@ -299,47 +304,52 @@ impl crate::Registration for SFasterLio {
                       extrinsic_estimation| {
                     let first_it_local = { first_it.lock().unwrap().clone() };
 
+                    #[cfg(feature = "cuda")]
                     let mut planes = planes_cpu_buffer.lock().unwrap();
+                    #[cfg(feature = "cuda")]
                     planes.resize_with(cloud_len_alloc, || PointXYZINormal::default());
+                    #[cfg(feature = "cuda")]
                     let mut planes_gpu = planes_gpu_buffer.lock().unwrap();
 
                     let mut neighbors = neighbors_cloud_in_ekf.lock().unwrap().take().unwrap_or({
                         let len = cloud_len_alloc * k;
-                        if cfg!(feature = "cuda") {
-                            LocatedBufferView::alloc_points_cuda(&stream, len)
-                        } else if cfg!(not(feature = "cuda")) {
+                        #[cfg(feature = "cuda")]
+                        let buff =
+                            { LocatedBufferView::<PointXYZ>::alloc_points_cuda(&stream, len) };
+                        #[cfg(not(feature = "cuda"))]
+                        let buff = {
                             LocatedBufferView::from_vec_cpu(vec![
                                 PointXYZ::default();
                                 cloud_len_alloc * k
                             ])
-                        } else {
-                            panic!("unknown neighbor data target");
-                        }
+                        };
+                        buff
                     });
-                    let mut neighbor_sizes =
+                    let mut neighbor_sizes = {
                         neighbor_sizes_in_ekf.lock().unwrap().take().unwrap_or({
-                            if cfg!(feature = "cuda") {
-                                LocatedBufferView::alloc_neighbors_cuda(&stream, cloud_len_alloc)
-                            } else if cfg!(not(feature = "cuda")) {
-                                LocatedBufferView::from_vec_cpu(vec![0usize; cloud_len_alloc])
-                            } else {
-                                panic!("unknown neighbor data target");
-                            }
-                        });
+                            #[cfg(feature = "cuda")]
+                            let buff = LocatedBufferView::<usize>::alloc_neighbors_cuda(
+                                &stream,
+                                cloud_len_alloc,
+                            );
+                            #[cfg(not(feature = "cuda"))]
+                            let buff =
+                                LocatedBufferView::from_vec_cpu(vec![0usize; cloud_len_alloc]);
+
+                            buff
+                        })
+                    };
 
                     // Perf: should never be larger than k because k never changes. add 20% extra room to avoid triggering with small upward changes.
                     if neighbors.len() < cloud.len() * k {
                         let len = cloud_len_alloc * k;
-                        let v = if cfg!(feature = "cuda") {
-                            LocatedBufferView::alloc_points_cuda(&stream, len)
-                        } else if cfg!(not(feature = "cuda")) {
-                            LocatedBufferView::from_vec_cpu(vec![
-                                PointXYZ::default();
-                                cloud_len_alloc * k
-                            ])
-                        } else {
-                            panic!("unknown neighbor data target");
-                        };
+                        #[cfg(feature = "cuda")]
+                        let v = LocatedBufferView::alloc_points_cuda(&stream, len);
+                        #[cfg(not(feature = "cuda"))]
+                        let v = LocatedBufferView::from_vec_cpu(vec![
+                            PointXYZ::default();
+                            cloud_len_alloc * k
+                        ]);
                         neighbors = v;
                     }
 
@@ -393,6 +403,7 @@ impl crate::Registration for SFasterLio {
                             first_it_local,
                             &mut planes,
                             &mut planes_gpu,
+                            converged,
                         );
 
                         planes
@@ -402,6 +413,7 @@ impl crate::Registration for SFasterLio {
                     let planes = {
                         let cloud = match cloud {
                             LocatedBufferView::Ram(point_xyzs) => point_xyzs,
+                            #[cfg(feature = "cuda")]
                             LocatedBufferView::Cuda { buffer: _ } => {
                                 panic!("cuda buffer in cpu task")
                             }
@@ -409,12 +421,14 @@ impl crate::Registration for SFasterLio {
                         let iter = {
                             let neighbor_sizes = match &mut neighbor_sizes {
                                 LocatedBufferView::Ram(point_xyzs) => point_xyzs.as_mut_slice(),
+                                #[cfg(feature = "cuda")]
                                 LocatedBufferView::Cuda { buffer: _ } => {
                                     panic!("cuda buffer in cpu task")
                                 }
                             };
                             let neighbors = match &mut neighbors {
                                 LocatedBufferView::Ram(point_xyzs) => point_xyzs.as_mut_slice(),
+                                #[cfg(feature = "cuda")]
                                 LocatedBufferView::Cuda { buffer: _ } => {
                                     panic!("cuda buffer in cpu task")
                                 }
@@ -508,6 +522,8 @@ impl crate::Registration for SFasterLio {
                         *valid = false;
                         return;
                     }
+
+                    // dbg!(planes.len());
 
                     if planes.len() > h.nrows() {
                         *h = DVector::<f64>::zeros(planes.len());

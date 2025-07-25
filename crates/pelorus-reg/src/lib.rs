@@ -49,9 +49,7 @@ pub trait Registration {
         cloud: &LocatedBufferView<PointXYZ>,
         ready_for_next: Option<&std::sync::mpsc::Sender<()>>,
         eval: &mut RuntimeEvaluator,
-        planes_gpu: bool,
-
-        stream: &cuda::Stream,
+        #[cfg(feature = "cuda")] stream: &cuda::Stream,
     ) -> Result<CloudRegisterResult>;
     fn requested_register_and_map_cloud_type(&self) -> LocatedBufferView<PointXYZ>;
 

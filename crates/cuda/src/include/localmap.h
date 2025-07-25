@@ -9,30 +9,34 @@
 #include <lib.h>
 #include <math/matrix3x3.h>
 #include <math/vector3.h>
+#include <memory>
 #include <thrust/device_vector.h>
 #include <vector>
 
 namespace rm = rmagine;
 
-enum class NearbyType { Center, Nearby6, Nearby18, Nearby26 };
 constexpr uint8_t MAX_NEIGHBORS = 27;
 
 struct VoxelDistribution {
+  int lock_flag;
   rm::Matrix3x3f transform;
-  u_int64_t point_count;
+  uint32_t point_count;
   rm::Vector3f mean;
   rm::Matrix3x3f covariance;
-  size_t last_updated_at_scan;
+  uint32_t last_updated_at_scan;
 
   __host__ __device__ VoxelDistribution()
       : mean(rm::Vector3f(0.0f, 0.0f, 0.0f)), point_count(0),
-        last_updated_at_scan(0) {}
+        last_updated_at_scan(0), lock_flag(0) {}
 
   __host__ __device__ VoxelDistribution(const rm::Vector3f &point)
-      : mean(point), point_count(1), last_updated_at_scan(0) {}
+      : mean(point), point_count(1), last_updated_at_scan(0), lock_flag(0) {}
 
   __device__ void update(const rm::Vector3f &point, float sensitivity,
                          float min_dist, size_t scan_number);
+
+  __device__ void lock();
+  __device__ void unlock();
 };
 using Value = thrust::pair<uint32_t, VoxelDistribution>;
 
@@ -43,8 +47,8 @@ public:
   ~Localmap();
 
   /// Adds or updates a voxel in the map.
-  void add(Point *points, size_t point_size, size_t scan_number,
-           rm::CudaStream &stream);
+  void add(Point *points, uint32_t point_size, uint32_t scan_number,
+           Pose registered_pose, rm::CudaStream &stream);
 
   /// Finds a voxel distribution by its hash.
   /// Note: This copies data from device to host. Returns false if not found.
@@ -60,34 +64,37 @@ public:
   std::vector<Point> get_map() const;
 
   /// Returns the number of active elements in the map.
-  size_t size() const { return add_cursor; }
+  uint32_t size() const { return std::min(this->add_cursor, this->capacity); }
 
   /// Checks if the map is empty.
   bool is_empty() const { return add_cursor == 0; }
 
   thrust::device_vector<Value> buffer;
 
-  std::shared_ptr<GpuHashMap> lookup;
+  std::unique_ptr<GpuHashMap> lookup;
 
   thrust::device_vector<uint32_t> lru_mapping;
 
-  size_t add_cursor;
-  size_t lru_cursor;
+  uint32_t add_cursor;
+  uint32_t lru_cursor;
 
   // Configuration parameters
-  size_t capacity;
-  size_t resolution;
+  uint32_t capacity;
+  float resolution;
   float sensitivity;
   float min_dist;
   NearbyType nbtype;
 };
 
-__device__ bool pca_constant(const rm::Vector3f *cluster, size_t n,
-                             float normal_threshold, float4 &plane_equation);
+__device__ bool pca_constant(const rm::Vector3f *cluster, uint32_t n,
+                             float normal_threshold, double4 &plane_equation);
+__device__ bool pca_eigen_robust(const rm::Vector3f *cluster, uint32_t n,
+                                 float normal_threshold,
+                                 float4 &plane_equation);
 
 __device__ bool
-k_nearest_neighbor_query(const rm::Pointf &query, size_t k, NearbyType nbtype,
-                         float max_range, GpuHashMap *map,
+k_nearest_neighbor_query(const rm::Pointf &query, uint32_t k, NearbyType nbtype,
+                         float max_range, KeyValuePair *map, uint32_t capacity,
                          thrust::pair<uint32_t, VoxelDistribution> *buffer,
                          float resolution, rm::Pointf *result,
                          uint32_t &out_size, time_t time, int thread_id);

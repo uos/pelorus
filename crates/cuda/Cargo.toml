@@ -10,6 +10,7 @@ version.workspace = true
 [dependencies]
 nalgebra.workspace = true
 ros_pointcloud2.workspace = true
+log.workspace = true
 
 [build-dependencies]
 bindgen = "0.72"

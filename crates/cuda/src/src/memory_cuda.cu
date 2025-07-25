@@ -73,7 +73,9 @@ void **mallocManaged(void **ptr, size_t count) {
 }
 
 void *free(void *ptr) {
-  RM_CUDA_CHECK(cudaFree(ptr));
+  if (ptr) {
+    RM_CUDA_CHECK(cudaFree(ptr));
+  }
   return ptr;
 }
 

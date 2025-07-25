@@ -1,3 +1,5 @@
+#include "math/iso3.h"
+#include "math/quaternion.h"
 #include <cassert>
 #include <cfloat>
 #include <cmath>
@@ -6,6 +8,7 @@
 #include <core/memory.h>
 #include <core/memory_cuda.h>
 #include <cstdint>
+#include <cstdio>
 #include <ctime>
 #include <hashmap.h>
 #include <lib.h>
@@ -146,6 +149,21 @@ __device__ rm::Vector3f symmetric_eigen_3x3(const rm::Matrix3x3f &A) {
   return eigenvalues;
 }
 
+__device__ void VoxelDistribution::lock() {
+  // Spin until we successfully acquire the lock by swapping 0 to 1
+  while (atomicCAS(&this->lock_flag, 0, 1) != 0) {
+    // You can optionally add __nanosleep or other yield instructions here
+    // if contention is high, but for most cases, a tight spin is fine.
+  }
+}
+
+__device__ void VoxelDistribution::unlock() {
+  // Ensure all memory writes are globally visible before releasing the lock
+  __threadfence();
+  // Release the lock by setting it back to 0
+  atomicExch(&this->lock_flag, 0);
+}
+
 // Weighted update of the distribution in a voxel. For more information see the
 // CPU variant in Rust. This function is just a port.
 __device__ void VoxelDistribution::update(const rm::Vector3f &new_point,
@@ -240,11 +258,14 @@ Localmap::Localmap(size_t capacity, float sensitivity, float min_dist,
     : capacity(capacity), sensitivity(sensitivity), min_dist(min_dist),
       add_cursor(0), lru_cursor(0), buffer(capacity), lru_mapping(capacity),
       resolution(resolution), nbtype(nbtype) {
+
+  assert((stream.handle() != NULL));
+
   thrust::fill(thrust::device.on(stream.handle()), lru_mapping.begin(),
                lru_mapping.end(), INVALID_INDEX);
-  // TODO one larger power of two
   // syncs the stream after initial copy
-  lookup = create_map(capacity, stream);
+  lookup = create_map(capacity);
+  stream.synchronize();
 }
 
 Localmap::~Localmap() { destroy_map(this->lookup); }
@@ -259,77 +280,145 @@ void Localmap::clear() {
 __device__ rm::Vector3<int32_t> pos2grid(float resolution,
                                          const rm::Pointf &point) {
   float inverse_res = 1.0 / resolution;
-  auto inv = point * inverse_res;
-
-  float x = roundf(inv.x);
-  float y = roundf(inv.y);
-  float z = roundf(inv.z);
-  return rm::Vector3<int32_t>(x, y, z);
+  float x = floorf(point.x * inverse_res);
+  float y = floorf(point.y * inverse_res);
+  float z = floorf(point.z * inverse_res);
+  return rm::Vector3<int32_t>(static_cast<int32_t>(x), static_cast<int32_t>(y),
+                              static_cast<int32_t>(z));
 }
 
 __device__ int32_t hash_grid(const rm::Vector3<int32_t> &grid_key) {
-  constexpr int32_t PRIME_1 = 73856093;
-  constexpr int32_t PRIME_2 = 19349663;
-  constexpr int32_t PRIME_3 = 83492791;
-
-  int32_t hash = grid_key.x * PRIME_1;
-  hash = hash + grid_key.y * PRIME_2;
-  hash = hash + grid_key.z * PRIME_3;
-
-  return hash;
+  return static_cast<int32_t>(static_cast<size_t>(((grid_key.x) * 73856093) ^
+                                                  ((grid_key.y) * 471943) ^
+                                                  ((grid_key.z) * 83492791)));
 }
 
-__global__ void point_insert(Point *points, size_t point_size,
-                             size_t scan_number, Value *buffer,
-                             GpuHashMap *lookup, float resolution,
-                             float sensitivity, float min_dist,
-                             uint32_t *lru_cursor, uint32_t *add_cursor,
-                             uint32_t *lru_mapping) {
+__global__ void calculate_keys_kernel(const Point *points, uint32_t point_size,
+                                      const Pose *global_transform,
+                                      float resolution, int32_t *d_keys,
+                                      uint32_t *d_indices) {
   size_t idx = blockIdx.x * blockDim.x + threadIdx.x;
-
   if (idx >= point_size) {
     return;
   }
 
   Point point_raw = points[idx];
-  rm::Pointf point = rm::Pointf(point_raw.x, point_raw.y, point_raw.z);
-
+  rm::Pointf point_local = rm::Pointf(point_raw.x, point_raw.y, point_raw.z);
+  rm::Quaternionf ekf_rot(
+      global_transform->orientation.w, global_transform->orientation.x,
+      global_transform->orientation.y, global_transform->orientation.z);
+  rm::Vector3f ekf_trans(global_transform->position.x,
+                         global_transform->position.y,
+                         global_transform->position.z);
+  rm::Isometry3f global_pose{ekf_rot, ekf_trans};
+  rm::Pointf point = global_pose * point_local;
   auto cell = pos2grid(resolution, point);
-  auto key = hash_grid(cell);
-  bool found = true;
-  auto buffer_idx = lookup_item(lookup->d_table, lookup->capacity, key, found);
-  if (found) {
-    buffer[buffer_idx].second.update(point, sensitivity, min_dist, scan_number);
-  } else {
-    // not found in map, must create new dist
-    thrust::pair<uint32_t, VoxelDistribution> val =
-        thrust::make_pair(key, VoxelDistribution(point));
-    // NOTE diff to CPU version: since point inserting is fully parallel, the
-    // lru mapping can not be triggered inside a check of a single point.
-    // Therefore the lru_mapping is built at every step, regardless of not
-    // reaching capacity. So it is potentially unused but makes the per-point
-    // insertion easier.
-    // auto lru_cursor_local = *lru_cursor;
-    if (*add_cursor > lookup->capacity) {
-      auto lru_cursor_local = atomicAdd(lru_cursor, 1);
-      assert((lru_cursor_local < lookup->capacity));
-      auto must_be_deleted = lru_mapping[lru_cursor_local];
-      auto del = &buffer[must_be_deleted];
-      assert((remove_item(lookup->d_table, lookup->capacity, del->first)));
-      del->swap(val);
-      insert_item(lookup->d_table, lookup->capacity, key, must_be_deleted);
-    } else {
-      auto add_cursor_local = atomicAdd(add_cursor, 1);
-      buffer[add_cursor_local].swap(val);
-      lru_mapping[add_cursor_local] = add_cursor_local;
-      insert_item(lookup->d_table, lookup->capacity, key, add_cursor_local);
+
+  d_keys[idx] = hash_grid(cell);
+  d_indices[idx] = idx; // Store original index
+}
+
+__global__ void process_voxels_kernel(
+    const int32_t *unique_keys,     // List of unique keys to process
+    const uint32_t *run_starts,     // Start index for each key's points
+    const uint32_t *run_ends,       // End index for each key's points
+    const Point *original_points,   // The original, unsorted point array
+    const uint32_t *sorted_indices, // The sorted index mapping
+    uint32_t unique_key_count, uint32_t scan_number, KeyValuePair *lookup,
+    Value *buffer, uint32_t capacity, float resolution, float sensitivity,
+    float min_dist, uint32_t *lru_cursor, uint32_t *add_cursor,
+    uint32_t *lru_mapping, const Pose *global_transform) {
+  size_t idx = blockIdx.x * blockDim.x + threadIdx.x;
+  if (idx >= unique_key_count) {
+    return;
+  }
+
+  int32_t key = unique_keys[idx];
+  uint32_t start_offset = run_starts[idx];
+  uint32_t end_offset = run_ends[idx];
+
+  uint32_t buffer_idx;
+  bool found_existing = false;
+  uint32_t slot = hash_function(key) & ((capacity * 2) - 1);
+
+  while (true) {
+    if (lookup[slot].key == key) {
+      buffer_idx = lookup[slot].value;
+      found_existing = true;
+      break;
     }
+    if (lookup[slot].key == EMPTY_KEY) {
+      break; // Key not in table, end of probe chain.
+    }
+    slot = (slot + 1) & ((capacity * 2) - 1); // Linear probe
+  }
+
+  rm::Quaternionf ekf_rot(
+      global_transform->orientation.w, global_transform->orientation.x,
+      global_transform->orientation.y, global_transform->orientation.z);
+  rm::Vector3f ekf_trans(global_transform->position.x,
+                         global_transform->position.y,
+                         global_transform->position.z);
+  rm::Isometry3f global_pose{ekf_rot, ekf_trans};
+
+  if (!found_existing) {
+    // --- This is a brand new voxel ---
+    // 1. Atomically allocate a slot in the main buffer.
+    uint32_t claimed_idx = atomicAdd(add_cursor, 1);
+    if (claimed_idx < capacity) {
+      buffer_idx = claimed_idx;
+      lru_mapping[buffer_idx] = buffer_idx;
+    } else {
+      // Buffer is full, get a victim's slot to overwrite from the LRU list.
+      uint32_t lru_idx_local = atomicAdd(lru_cursor, 1);
+      buffer_idx = lru_mapping[lru_idx_local & (capacity - 1)];
+    }
+
+    // 2. Get the first point to initialize the distribution.
+    uint32_t first_point_original_idx = sorted_indices[start_offset];
+    Point first_point_raw = original_points[first_point_original_idx];
+    rm::Pointf first_point_local =
+        rm::Pointf(first_point_raw.x, first_point_raw.y, first_point_raw.z);
+    rm::Pointf first_point_global = global_pose * first_point_local;
+
+    // 3. Create the VoxelDistribution in the allocated buffer slot.
+    // The hash map is NOT updated here; build() will do that later.
+    buffer[buffer_idx] =
+        thrust::make_pair(key, VoxelDistribution(first_point_global));
+
+    // 4. Update with the rest of the points for this voxel.
+    for (uint32_t i = start_offset + 1; i < end_offset; ++i) {
+      uint32_t point_original_idx = sorted_indices[i];
+      Point point_raw = original_points[point_original_idx];
+      rm::Pointf point_local =
+          rm::Pointf(point_raw.x, point_raw.y, point_raw.z);
+      rm::Pointf point_global = global_pose * point_local;
+      buffer[buffer_idx].second.update(point_global, sensitivity, min_dist,
+                                       scan_number);
+    }
+  } else {
+    // --- This voxel already exists from a previous frame ---
+    // We must lock it before updating.
+    VoxelDistribution &voxel = buffer[buffer_idx].second;
+    voxel.lock();
+
+    // Update with ALL points for this voxel from the current batch.
+    for (uint32_t i = start_offset; i < end_offset; ++i) {
+      uint32_t point_original_idx = sorted_indices[i];
+      Point point_raw = original_points[point_original_idx];
+      rm::Pointf point_local =
+          rm::Pointf(point_raw.x, point_raw.y, point_raw.z);
+      rm::Pointf point_global = global_pose * point_local;
+      voxel.update(point_global, sensitivity, min_dist, scan_number);
+    }
+
+    voxel.unlock();
   }
 }
 
 // assumes points is already on the gpu
-void Localmap::add(Point *points, size_t point_size, size_t scan_number,
-                   rm::CudaStream &stream) {
+void Localmap::add(Point *points, uint32_t point_size, uint32_t scan_number,
+                   Pose registered_pose, rm::CudaStream &stream) {
 
   rm::Memory<uint32_t, rm::RAM> lru_cursor_host(1);
   *lru_cursor_host = this->lru_cursor;
@@ -339,21 +428,107 @@ void Localmap::add(Point *points, size_t point_size, size_t scan_number,
   *add_cursor_host = this->add_cursor;
   rm::Memory<uint32_t, rm::VRAM_CUDA> add_cursor_device = add_cursor_host;
 
-  Value *buffer = thrust::raw_pointer_cast(this->buffer.data());
-  uint32_t *lru_mapping = thrust::raw_pointer_cast(this->lru_mapping.data());
-  int threads_per_block = 256;
-  int blocks_per_grid = (capacity + threads_per_block - 1) / threads_per_block;
-  point_insert<<<blocks_per_grid, threads_per_block, 0, stream.handle()>>>(
-      points, point_size, scan_number, buffer, this->lookup.get(),
-      this->resolution, this->sensitivity, this->min_dist,
-      lru_cursor_device.raw(), add_cursor_device.raw(), lru_mapping);
+  rm::Memory<Pose, rm::RAM> registered_pose_host(1);
+  *registered_pose_host = registered_pose;
+  rm::Memory<Pose, rm::VRAM_CUDA> registered_pose_device = registered_pose_host;
 
+  // TODO alloc these buffers in localmap struct and resize if needed
+  thrust::device_vector<int32_t> d_keys(point_size);
+  thrust::device_vector<uint32_t> d_indices(point_size);
+
+  // --- STAGE 1: Calculate keys for all points ---
+  int threads_per_block = 256;
+  int blocks_per_grid =
+      (point_size + threads_per_block - 1) / threads_per_block;
+  calculate_keys_kernel<<<blocks_per_grid, threads_per_block, 0,
+                          stream.handle()>>>(
+      points, point_size, registered_pose_device.raw(), this->resolution,
+      thrust::raw_pointer_cast(d_keys.data()),
+      thrust::raw_pointer_cast(d_indices.data()));
+
+  // --- STAGE 2: Sort by key to group points belonging to the same voxel ---
+  thrust::sort_by_key(thrust::device.on(stream.handle()), d_keys.begin(),
+                      d_keys.end(), d_indices.begin());
+
+  // --- STAGE 3: Find unique keys and the number of points for each ---
+  // TODO alloc these buffers in localmap struct and resize if needed
+  thrust::device_vector<int32_t> d_unique_keys(point_size);
+  thrust::device_vector<uint32_t> d_run_counts(point_size);
+
+  auto new_end = thrust::reduce_by_key(
+      thrust::device.on(stream.handle()), d_keys.begin(), d_keys.end(),
+      thrust::make_constant_iterator(1), // Count 1 for each key
+      d_unique_keys.begin(), d_run_counts.begin());
+
+  uint32_t unique_key_count = new_end.first - d_unique_keys.begin();
+  d_unique_keys.resize(unique_key_count);
+  d_run_counts.resize(unique_key_count);
+
+  // --- STAGE 4: Calculate run start/end indices for each unique key ---
+  thrust::device_vector<uint32_t> d_run_ends(unique_key_count);
+  thrust::inclusive_scan(thrust::device.on(stream.handle()),
+                         d_run_counts.begin(), d_run_counts.end(),
+                         d_run_ends.begin());
+  // The start of a run is the end of the previous run.
+  // We can derive this inside the kernel or create another vector. For clarity,
+  // we will pass both start and end indices.
+
+  // TODO alloc these buffers in localmap struct and resize if needed
+  thrust::device_vector<uint32_t> d_run_starts(unique_key_count);
+  d_run_starts[0] = 0; // First run always starts at 0
+  thrust::transform(thrust::device.on(stream.handle()), d_run_ends.begin(),
+                    d_run_ends.end() - 1, d_run_starts.begin() + 1,
+                    thrust::identity<uint32_t>());
+  // TODO end resize needed
+
+  // --- STAGE 5: Launch the main kernel to process each unique voxel ---
+  blocks_per_grid =
+      (unique_key_count + threads_per_block - 1) / threads_per_block;
+  process_voxels_kernel<<<blocks_per_grid, threads_per_block, 0,
+                          stream.handle()>>>(
+      thrust::raw_pointer_cast(d_unique_keys.data()),
+      thrust::raw_pointer_cast(d_run_starts.data()),
+      thrust::raw_pointer_cast(d_run_ends.data()), points,
+      thrust::raw_pointer_cast(d_indices.data()), unique_key_count, scan_number,
+      thrust::raw_pointer_cast(this->lookup.get()->d_table.data()),
+      thrust::raw_pointer_cast(this->buffer.data()), this->capacity,
+      this->resolution, this->sensitivity, this->min_dist,
+      lru_cursor_device.raw(), add_cursor_device.raw(),
+      thrust::raw_pointer_cast(this->lru_mapping.data()),
+      registered_pose_device.raw());
+
+  stream.synchronize();
   checkLastCudaError(__FILE__, __LINE__);
 
+  add_cursor_host = add_cursor_device;
+  this->add_cursor = *add_cursor_host;
   this->build(scan_number, stream);
 
   // rm::Memory could go out of scope before point_insert is accessing it
   stream.synchronize();
+  checkLastCudaError(__FILE__, __LINE__);
+}
+
+__global__ void rebuild_hashmap_kernel(KeyValuePair *table, uint32_t capacity,
+                                       const Value *buffer,
+                                       uint32_t valid_size) {
+  uint32_t idx = blockIdx.x * blockDim.x + threadIdx.x;
+  if (idx >= valid_size) {
+    return;
+  }
+
+  int32_t key = buffer[idx].first;
+  uint32_t value_idx = idx; // The value is the item's own index in the buffer
+
+  uint32_t slot = hash_function(key) & (capacity - 1);
+  while (true) {
+    // Use atomicCAS to handle the rare case of hash collisions
+    if (atomicCAS(&table[slot].key, EMPTY_KEY, key) == EMPTY_KEY) {
+      table[slot].value = value_idx;
+      return;
+    }
+    slot = (slot + 1) & (capacity - 1);
+  }
 }
 
 struct ScoreComparator {
@@ -386,10 +561,26 @@ struct ScoreComparator {
     double score_l = calculate_score(l.last_updated_at_scan, l.point_count);
     double score_r = calculate_score(r.last_updated_at_scan, r.point_count);
 
-    // higher scores first
-    return score_r < score_l;
+    // First, compare by score. A higher score means it's "less than" in a
+    // min-heap sense, so it comes first in a descending sort.
+    if (score_l > score_r)
+      return true;
+    if (score_l < score_r)
+      return false;
+
+    // Tie-breaker: If scores are identical, use the unique index
+    // to create a stable, deterministic order.
+    // This prevents the infinite loop.
+    return l_idx < r_idx;
   }
 };
+__global__ void initialize_kernel_a(KeyValuePair *table, uint32_t capacity) {
+  size_t idx = blockIdx.x * blockDim.x + threadIdx.x;
+  if (idx < capacity) {
+    table[idx].key = EMPTY_KEY;
+    table[idx].value = 0;
+  }
+}
 
 void Localmap::build(size_t scan_number, rm::CudaStream &stream) {
   if (this->is_empty()) {
@@ -398,12 +589,35 @@ void Localmap::build(size_t scan_number, rm::CudaStream &stream) {
 
   this->lru_cursor = 0;
 
-  ScoreComparator comparator{thrust::raw_pointer_cast(buffer.data()),
+  int threads_per_block = 256;
+
+  // clear_map(this->lookup);
+  int blocks_per_grid =
+      (this->lookup->capacity + threads_per_block - 1) / threads_per_block;
+  initialize_kernel_a<<<blocks_per_grid, threads_per_block, 0,
+                        stream.handle()>>>(
+      thrust::raw_pointer_cast(this->lookup->d_table.data()),
+      this->lookup->capacity);
+
+  blocks_per_grid =
+      (std::min(this->add_cursor, this->capacity) + threads_per_block - 1) /
+      threads_per_block;
+
+  rebuild_hashmap_kernel<<<blocks_per_grid, threads_per_block, 0,
+                           stream.handle()>>>(
+      thrust::raw_pointer_cast(this->lookup.get()->d_table.data()),
+      this->lookup.get()->capacity,
+      thrust::raw_pointer_cast(this->buffer.data()),
+      this->add_cursor // Use the correct, updated size
+  );
+
+  ScoreComparator comparator{thrust::raw_pointer_cast(this->buffer.data()),
                              scan_number};
 
-  // TODO move to cub onesweep sorting
-  thrust::sort(thrust::device.on(stream.handle()), lru_mapping.begin(),
-               lru_mapping.begin() + add_cursor, comparator);
+  thrust::sort(thrust::device.on(stream.handle()), this->lru_mapping.begin(),
+               this->lru_mapping.begin() +
+                   std::min(this->add_cursor, this->capacity),
+               comparator);
 }
 
 struct GetMean {
@@ -418,10 +632,11 @@ std::vector<Point> Localmap::get_map() const {
     return {};
   }
 
-  std::vector<Point> host_means(add_cursor);
-  thrust::device_vector<Point> device_means(add_cursor);
+  auto capped = std::min(this->add_cursor, this->capacity);
+  std::vector<Point> host_means(capped);
+  thrust::device_vector<Point> device_means(capped);
 
-  thrust::transform(buffer.begin(), buffer.begin() + add_cursor,
+  thrust::transform(buffer.begin(), buffer.begin() + capped,
                     device_means.begin(), GetMean());
 
   thrust::copy(device_means.begin(), device_means.end(), host_means.begin());
@@ -445,6 +660,7 @@ struct Neighbors27 {
 };
 
 /**
+ * TODO Von Neumann Neighborhood?
  * @brief Returns the 7 grid coordinates for the center and face neighbors.
  * @param grid_key The center grid coordinate (gx, gy, gz).
  * @return A struct containing a fixed-size array of 7 coordinates.
@@ -453,20 +669,20 @@ __device__ inline Neighbors7 nearby_6(const rm::Vector3i &grid_key) {
   const int gx = grid_key.x;
   const int gy = grid_key.y;
   const int gz = grid_key.z;
-
-  Neighbors7 neighbors;
-  neighbors.data[0] = {gx, gy, gz};
-  neighbors.data[1] = {gx - 1, gy, gz};
-  neighbors.data[2] = {gx + 1, gy, gz};
-  neighbors.data[3] = {gx, gy + 1, gz};
-  neighbors.data[4] = {gx, gy - 1, gz};
-  neighbors.data[5] = {gx, gy, gz - 1};
-  neighbors.data[6] = {gx, gy, gz + 1};
-
-  return neighbors;
+  const Neighbors7 result = {{
+      {gx, gy, gz},
+      {gx - 1, gy, gz},
+      {gx + 1, gy, gz},
+      {gx, gy + 1, gz},
+      {gx, gy - 1, gz},
+      {gx, gy, gz - 1},
+      {gx, gy, gz + 1},
+  }};
+  return result;
 }
 
 /**
+ * TODO Edge Neighbors ?
  * @brief Returns the 19 grid coordinates for the center, face, and edge
  * neighbors.
  * @param grid_key The center grid coordinate (gx, gy, gz).
@@ -476,26 +692,20 @@ __device__ inline Neighbors19 nearby_18(const rm::Vector3i &grid_key) {
   const int gx = grid_key.x;
   const int gy = grid_key.y;
   const int gz = grid_key.z;
-
-  Neighbors19 neighbors;
-  int count = 0;
-
-  for (int z = -1; z <= 1; ++z) {
-    for (int y = -1; y <= 1; ++y) {
-      for (int x = -1; x <= 1; ++x) {
-        // Exclude corners (where sum of absolute offsets is 3)
-        if (abs(x) + abs(y) + abs(z) < 3) {
-          if (count < 19) { // Boundary check for safety
-            neighbors.data[count++] = {gx + x, gy + y, gz + z};
-          }
-        }
-      }
-    }
-  }
-  return neighbors;
+  const Neighbors19 result = {{
+      {gx, gy, gz},         {gx - 1, gy, gz},     {gx + 1, gy, gz},
+      {gx, gy + 1, gz},     {gx, gy - 1, gz},     {gx, gy, gz - 1},
+      {gx, gy, gz + 1},     {gx + 1, gy + 1, gz}, {gx - 1, gy + 1, gz},
+      {gx + 1, gy - 1, gz}, {gx - 1, gy - 1, gz}, {gx + 1, gy, gz + 1},
+      {gx - 1, gy, gz + 1}, {gx + 1, gy, gz - 1}, {gx - 1, gy, gz - 1},
+      {gx, gy + 1, gz + 1}, {gx, gy - 1, gz + 1}, {gx, gy + 1, gz - 1},
+      {gx, gy - 1, gz - 1},
+  }};
+  return result;
 }
 
 /**
+ * TODO Moore Neighborhood sharing face, edge or corner ?
  * @brief Returns the 27 grid coordinates for a full 3x3x3 neighborhood.
  * @param grid_key The center grid coordinate (gx, gy, gz).
  * @return A struct containing a fixed-size array of 27 coordinates.
@@ -504,32 +714,49 @@ __device__ inline Neighbors27 nearby_26(const rm::Vector3i &grid_key) {
   const int gx = grid_key.x;
   const int gy = grid_key.y;
   const int gz = grid_key.z;
-
-  Neighbors27 neighbors;
-  int count = 0;
-
-  for (int z = -1; z <= 1; ++z) {
-    for (int y = -1; y <= 1; ++y) {
-      for (int x = -1; x <= 1; ++x) {
-        if (count < 27) { // Boundary check for safety
-          neighbors.data[count++] = {gx + x, gy + y, gz + z};
-        }
-      }
-    }
-  }
-  return neighbors;
+  const Neighbors27 result = {{
+      {gx, gy, gz},
+      {gx - 1, gy, gz},
+      {gx + 1, gy, gz},
+      {gx, gy + 1, gz},
+      {gx, gy - 1, gz},
+      {gx, gy, gz - 1},
+      {gx, gy, gz + 1},
+      {gx + 1, gy + 1, gz},
+      {gx - 1, gy + 1, gz},
+      {gx + 1, gy - 1, gz},
+      {gx - 1, gy - 1, gz},
+      {gx + 1, gy, gz + 1},
+      {gx - 1, gy, gz + 1},
+      {gx + 1, gy, gz - 1},
+      {gx - 1, gy, gz - 1},
+      {gx, gy + 1, gz + 1},
+      {gx, gy - 1, gz + 1},
+      {gx, gy + 1, gz - 1},
+      {gx, gy - 1, gz - 1},
+      {gx + 1, gy + 1, gz + 1},
+      {gx - 1, gy + 1, gz + 1},
+      {gx + 1, gy - 1, gz + 1},
+      {gx + 1, gy + 1, gz - 1},
+      {gx - 1, gy - 1, gz + 1},
+      {gx - 1, gy + 1, gz - 1},
+      {gx + 1, gy - 1, gz - 1},
+      {gx - 1, gy - 1, gz - 1},
+  }};
+  return result;
 }
 
 __device__ void
-cache_and_sum_density(rm::Vector3i *nb, uint32_t size, GpuHashMap *map,
-                      uint32_t &total_density, uint32_t &num_cached,
+cache_and_sum_density(rm::Vector3i *nb, uint32_t size, KeyValuePair *map,
+                      uint32_t capacity, uint32_t &total_density,
+                      uint32_t &num_cached,
                       thrust::pair<uint32_t, VoxelDistribution> *buffer_ptr,
                       VoxelDistribution *out) {
   for (uint32_t i = 0; i < size; i++) {
     auto cnb = nb[i];
     auto k = hash_grid(cnb);
     auto found = false;
-    auto nb_buffer_idx = lookup_item(map->d_table, map->capacity, k, found);
+    auto nb_buffer_idx = lookup_item(map, capacity, k, found);
 
     if (found) {
       auto dist = buffer_ptr[nb_buffer_idx].second;
@@ -557,8 +784,8 @@ __device__ void sample_from_distribution(const VoxelDistribution &dist,
 }
 
 __device__ bool
-k_nearest_neighbor_query(const rm::Pointf &query, size_t k, NearbyType nbtype,
-                         float max_range, GpuHashMap *map,
+k_nearest_neighbor_query(const rm::Pointf &query, uint32_t k, NearbyType nbtype,
+                         float max_range, KeyValuePair *map, uint32_t capacity,
                          thrust::pair<uint32_t, VoxelDistribution> *buffer,
                          float resolution, rm::Pointf *result,
                          uint32_t &out_size, time_t time, int thread_id) {
@@ -571,26 +798,26 @@ k_nearest_neighbor_query(const rm::Pointf &query, size_t k, NearbyType nbtype,
   auto grid = pos2grid(resolution, query);
   switch (nbtype) {
   case NearbyType::Center: {
-    cache_and_sum_density(&grid, 1, map, total_density, num_cached, buffer,
-                          cached_neighbors);
+    cache_and_sum_density(&grid, 1, map, capacity, total_density, num_cached,
+                          buffer, cached_neighbors);
     break;
   }
   case NearbyType::Nearby6: {
     auto nb = nearby_6(grid);
-    cache_and_sum_density(nb.data, 7, map, total_density, num_cached, buffer,
-                          cached_neighbors);
+    cache_and_sum_density(nb.data, 7, map, capacity, total_density, num_cached,
+                          buffer, cached_neighbors);
     break;
   }
   case NearbyType::Nearby18: {
     auto nb = nearby_18(grid);
-    cache_and_sum_density(nb.data, 19, map, total_density, num_cached, buffer,
-                          cached_neighbors);
+    cache_and_sum_density(nb.data, 19, map, capacity, total_density, num_cached,
+                          buffer, cached_neighbors);
     break;
   }
   case NearbyType::Nearby26: {
     auto nb = nearby_26(grid);
-    cache_and_sum_density(nb.data, 27, map, total_density, num_cached, buffer,
-                          cached_neighbors);
+    cache_and_sum_density(nb.data, 27, map, capacity, total_density, num_cached,
+                          buffer, cached_neighbors);
     break;
   }
   }
@@ -642,6 +869,18 @@ k_nearest_neighbor_query(const rm::Pointf &query, size_t k, NearbyType nbtype,
   return out_size > 0;
 }
 
+__device__ inline double
+plane_normal_point_distance(const double4 &plane, const rm::Vector3d &point) {
+  return plane.x * point.x + plane.y * point.y + plane.z * point.z + plane.w;
+}
+
+__device__ inline double4
+plane_from_point_and_normal(const rm::Vector3d &point,
+                            const rm::Vector3d &normal) {
+  return {normal.x, normal.y, normal.z,
+          -(normal.x * point.x + normal.y * point.y + normal.z * point.z)};
+}
+
 __device__ inline float plane_normal_point_distance(const float4 &plane,
                                                     const rm::Vector3f &point) {
   return plane.x * point.x + plane.y * point.y + plane.z * point.z + plane.w;
@@ -654,20 +893,30 @@ plane_from_point_and_normal(const rm::Vector3f &point,
           -(normal.x * point.x + normal.y * point.y + normal.z * point.z)};
 }
 
-__device__ inline rm::Vector3f calc_centroid(const rm::Vector3f *cluster,
+__device__ inline rm::Vector3d calc_centroid(const rm::Vector3f *cluster,
                                              size_t cluster_size) {
+  rm::Vector3d sum(0, 0, 0);
+  for (size_t i = 0; i < cluster_size; i++) {
+    sum.addInplace(rm::Vector3d(cluster[i].x, cluster[i].y, cluster[i].z));
+  }
+
+  return sum * (1.0 / static_cast<double>(cluster_size));
+}
+
+__device__ inline rm::Vector3f calc_centroid_f(const rm::Vector3f *cluster,
+                                               size_t cluster_size) {
   rm::Vector3f sum(0, 0, 0);
   for (size_t i = 0; i < cluster_size; i++) {
     sum.addInplace(cluster[i]);
   }
 
-  return sum * (1.0 / static_cast<float>(cluster_size));
+  return sum * (1.0 / static_cast<double>(cluster_size));
 }
 
 __device__ inline rm::Matrix3x3f calc_cov(const rm::Vector3f *cluster,
                                           size_t cluster_size,
                                           const rm::Vector3f &centroid) {
-  double xx = 0.0, xy = 0.0, xz = 0.0, yy = 0.0, yz = 0.0, zz = 0.0;
+  float xx = 0.0, xy = 0.0, xz = 0.0, yy = 0.0, yz = 0.0, zz = 0.0;
 
   for (size_t i = 0; i < cluster_size; i++) {
     rm::Vector3f r = cluster[i] - centroid;
@@ -700,27 +949,170 @@ __device__ inline rm::Matrix3x3f calc_cov(const rm::Vector3f *cluster,
   return std::move(cov);
 }
 
-// https://www.ilikebigbits.com/2017_09_25_plane_from_points_2.html
-__device__ bool pca_constant(const rm::Vector3f *cluster, size_t n,
-                             float normal_threshold, float4 &plane_equation) {
+__device__ inline rm::Matrix3x3d calc_cov(const rm::Vector3f *cluster,
+                                          size_t cluster_size,
+                                          const rm::Vector3d &centroid) {
+  double xx = 0.0, xy = 0.0, xz = 0.0, yy = 0.0, yz = 0.0, zz = 0.0;
+
+  for (size_t i = 0; i < cluster_size; i++) {
+    rm::Vector3d r =
+        rm::Vector3d(cluster[i].x, cluster[i].y, cluster[i].z) - centroid;
+    xx += r.x * r.x;
+    xy += r.x * r.y;
+    xz += r.x * r.z;
+    yy += r.y * r.y;
+    yz += r.y * r.z;
+    zz += r.z * r.z;
+  }
+
+  xx /= static_cast<double>(cluster_size);
+  xy /= static_cast<double>(cluster_size);
+  xz /= static_cast<double>(cluster_size);
+  yy /= static_cast<double>(cluster_size);
+  yz /= static_cast<double>(cluster_size);
+  zz /= static_cast<double>(cluster_size);
+
+  rm::Matrix3x3d cov;
+  cov(0, 0) = xx;
+  cov(0, 1) = xy;
+  cov(0, 2) = xz;
+  cov(1, 0) = xy;
+  cov(1, 1) = yy;
+  cov(1, 2) = yz;
+  cov(2, 0) = xz;
+  cov(2, 1) = yz;
+  cov(2, 2) = zz;
+
+  return std::move(cov);
+}
+
+__device__ void normalize_safe(rm::Vector3f &v) {
+  float mag = sqrtf(v.dot(v));
+  // Add the safety check
+  if (mag > 1e-9f) { // Use a small epsilon
+    v = v * (1.0f / mag);
+  } else {
+    v.x = 0.0f;
+    v.y = 0.0f;
+    v.z = 0.0f;
+  }
+}
+
+/**
+ * @brief Fits a plane to a point cloud using Principal Component Analysis (PCA)
+ * via robust eigen-decomposition.
+ *
+ * This method calculates the covariance matrix of the points, finds its
+ * eigenvalues and eigenvectors. The eigenvector corresponding to the smallest
+ * eigenvalue is the normal of the best-fit plane.
+ *
+ * @param cluster Pointer to the array of 3D points.
+ * @param n Number of points in the cluster.
+ * @param normal_threshold The maximum distance a point can be from the
+ * fitted plane for the fit to be considered successful.
+ * @param plane_equation Output reference to a float4 representing the plane.
+ * @return True if a stable plane was found, false otherwise.
+ */
+__device__ bool pca_eigen_robust(const rm::Vector3f *cluster, uint32_t n,
+                                 float normal_threshold,
+                                 float4 &plane_equation) {
   if (n < 3) {
     return false;
   }
 
-  rm::Vector3f centroid = calc_centroid(cluster, n);
+  // Step 1: Calculate the centroid and covariance matrix (same as before)
+  rm::Vector3f centroid = calc_centroid_f(cluster, n);
   rm::Matrix3x3f cov = calc_cov(cluster, n, centroid);
 
-  float xx = cov(0, 0);
-  float xy = cov(0, 1);
-  float xz = cov(0, 2);
-  float yy = cov(1, 1);
-  float yz = cov(1, 2);
-  float zz = cov(2, 2);
+  // Step 2: Calculate the eigenvalues of the covariance matrix
+  rm::Vector3f eigenvalues = symmetric_eigen_3x3(cov);
 
-  rm::Vector3f weighted_dir(0, 0, 0);
-  rm::Vector3f axis_dir;
-  float weight;
-  float det_x, det_y, det_z;
+  // Step 3: Find the smallest eigenvalue. Its corresponding eigenvector is our
+  // normal.
+  float min_eigenvalue = eigenvalues.x;
+  if (eigenvalues.y < min_eigenvalue) {
+    min_eigenvalue = eigenvalues.y;
+  }
+  if (eigenvalues.z < min_eigenvalue) {
+    min_eigenvalue = eigenvalues.z;
+  }
+
+  // Step 4: Find the eigenvector for the smallest eigenvalue.
+  // We solve (cov - min_eigenvalue * I) * v = 0.
+  // The eigenvector 'v' is in the null space of the matrix M = cov - λI.
+  // A robust way to find a vector in the null space is to take the cross
+  // product of two non-parallel rows of M. We compute all three cross
+  // products and pick the one with the largest magnitude for best stability.
+  rm::Matrix3x3f M = cov;
+  M.at(0, 0) -= min_eigenvalue;
+  M.at(1, 1) -= min_eigenvalue;
+  M.at(2, 2) -= min_eigenvalue;
+
+  rm::Vector3f row0(M.at(0, 0), M.at(0, 1), M.at(0, 2));
+  rm::Vector3f row1(M.at(1, 0), M.at(1, 1), M.at(1, 2));
+  rm::Vector3f row2(M.at(2, 0), M.at(2, 1), M.at(2, 2));
+
+  rm::Vector3f v1 = row0.cross(row1);
+  rm::Vector3f v2 = row1.cross(row2);
+  rm::Vector3f v3 = row2.cross(row0);
+
+  float mag1_sq = v1.dot(v1);
+  float mag2_sq = v2.dot(v2);
+  float mag3_sq = v3.dot(v3);
+
+  rm::Vector3f normal_vec;
+  if (mag1_sq > mag2_sq && mag1_sq > mag3_sq) {
+    normal_vec = v1;
+  } else if (mag2_sq > mag3_sq) {
+    normal_vec = v2;
+  } else {
+    normal_vec = v3;
+  }
+
+  // Step 5: Normalize the resulting normal vector (with a safety check)
+  // float normal_mag_sq = normal_vec.dot(normal_vec);
+  // if (normal_mag_sq < 1e-12f) {
+  //   // This can happen with degenerate point configurations (e.g., spherical)
+  //   // where eigenvalues are repeated, or due to numerical instability.
+  //   return false;
+  // }
+  normalize_safe(normal_vec);
+  // normal_vec.normalize();
+
+  // Step 6: Form the plane equation and perform final validation
+  plane_equation = plane_from_point_and_normal(centroid, normal_vec);
+
+  for (uint32_t i = 0; i < n; i++) {
+    if (fabs(plane_normal_point_distance(plane_equation, cluster[i])) >
+        normal_threshold) {
+      return false;
+    }
+  }
+
+  return true;
+}
+
+// https://www.ilikebigbits.com/2017_09_25_plane_from_points_2.html
+__device__ bool pca_constant(const rm::Vector3f *cluster, uint32_t n,
+                             float normal_threshold, double4 &plane_equation) {
+  if (n < 3) {
+    return false;
+  }
+
+  rm::Vector3d centroid = calc_centroid(cluster, n);
+  rm::Matrix3x3d cov = calc_cov(cluster, n, centroid);
+
+  double xx = cov(0, 0);
+  double xy = cov(0, 1);
+  double xz = cov(0, 2);
+  double yy = cov(1, 1);
+  double yz = cov(1, 2);
+  double zz = cov(2, 2);
+
+  rm::Vector3d weighted_dir(0, 0, 0);
+  rm::Vector3d axis_dir;
+  double weight;
+  double det_x, det_y, det_z;
 
   det_x = yy * zz - yz * yz;
   axis_dir = {det_x, xz * yz - xy * zz, xy * yz - xz * yy};
@@ -749,13 +1141,22 @@ __device__ bool pca_constant(const rm::Vector3f *cluster, size_t n,
 
   weighted_dir += axis_dir * weight;
 
+  // double magnitude_sq = weighted_dir.dot(weighted_dir);
+  // constexpr double epsilon_sq = 1e-12f; // A small threshold
+
+  // if (magnitude_sq < epsilon_sq) {
+  //   // The points are collinear or coincident, cannot form a plane.
+  //   return false;
+  // }
+
   weighted_dir.normalize();
   plane_equation = plane_from_point_and_normal(centroid, weighted_dir);
 
   // if any of the points is too far from the plane, return false
   for (uint32_t i = 0; i < n; i++) {
-    if (fabs(plane_normal_point_distance(plane_equation, cluster[i])) >
-        normal_threshold) {
+    if (abs(plane_normal_point_distance(
+            plane_equation, rm::Vector3d(cluster[i].x, cluster[i].y,
+                                         cluster[i].z))) > normal_threshold) {
       return false;
     }
   }
