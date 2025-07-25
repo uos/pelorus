@@ -33,7 +33,7 @@ cuda = { optional = true, workspace = true }
 
 [features]
 #           MODE     COMM          EXTRAS
-default = ["r2r", "mimalloc"]
+default = ["r2r", "mimalloc", "cuda"]
 # default = ["dev"]
 
 cuda = ["prelio-ros2/cuda", "dep:cuda", "pelorus-reg/cuda"]
@@ -50,7 +50,7 @@ no-viz = []
 gicp = ["dep:small_gicp-sys", "prelio-ros2/no-imu-sync"]
 
 # Toggle tooling
-dev = ["rerun", "ratpub", "rat", "map"]
+dev = ["rerun", "ratpub", "rat", "map", "cuda"]
 
 # Use variable syncing for triggers
 rat = ["dep:rat", "dep:tokio"]

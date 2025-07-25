@@ -13,10 +13,10 @@
  *       names of its contributors may be used to endorse or promote products
  *       derived from this software without specific prior written permission.
  *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND
- * ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
- * WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
- * DISCLAIMED. IN NO EVENT SHALL University Osnabrück BE LIABLE FOR ANY
+ * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+ * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+ * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+ * ARE DISCLAIMED. IN NO EVENT SHALL University Osnabrück BE LIABLE FOR ANY
  * DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES
  * (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
  * LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND
@@ -35,63 +35,65 @@
 #ifndef RMAGINE_UTIL_CUDA_CONTEXT_HPP
 #define RMAGINE_UTIL_CUDA_CONTEXT_HPP
 
-#include <cuda_runtime.h>
 #include <cuda.h>
-#include <memory>
+#include <cuda_runtime.h>
 #include <iostream>
+#include <memory>
 #include <sstream>
 
-#include <core/cuda_helper.h>
+#include <core/cuda_helper.cuh>
 
-#include <core/cuda_definitions.h>
+#include <core/cuda_definitions.cuh>
 
 namespace rmagine {
 
-static void printCudaInfo()
-{
-    int driver;
-    cudaDriverGetVersion(&driver);
-    int cuda_version;
-    cudaRuntimeGetVersion(&cuda_version);
+static void printCudaInfo() {
+  int driver;
+  cudaDriverGetVersion(&driver);
+  int cuda_version;
+  cudaRuntimeGetVersion(&cuda_version);
 
-    std::stringstream driver_version_str, cuda_version_str;
-    driver_version_str << driver / 1000 << "." << (driver % 1000) / 10 << "." << driver % 10;
-    cuda_version_str << cuda_version / 1000 << "." << (cuda_version % 1000) / 10 << "." << cuda_version % 10;
+  std::stringstream driver_version_str, cuda_version_str;
+  driver_version_str << driver / 1000 << "." << (driver % 1000) / 10 << "."
+                     << driver % 10;
+  cuda_version_str << cuda_version / 1000 << "." << (cuda_version % 1000) / 10
+                   << "." << cuda_version % 10;
 
-    std::cout << "[Pelorus - CudaContext] CUDA Driver Version / Runtime Version: " << driver_version_str.str() << " / " << cuda_version_str.str() << std::endl;
+  std::cout << "[Pelorus - CudaContext] CUDA Driver Version / Runtime Version: "
+            << driver_version_str.str() << " / " << cuda_version_str.str()
+            << std::endl;
 }
 
 bool cuda_initialized();
 void cuda_initialize();
 
-class CudaContext : std::enable_shared_from_this<CudaContext>
-{
+class CudaContext : std::enable_shared_from_this<CudaContext> {
 public:
-    CudaContext(int device_id = 0);
-    CudaContext(CUcontext ctx);
-    ~CudaContext();
+  CudaContext(int device_id = 0);
+  CudaContext(CUcontext ctx);
+  ~CudaContext();
 
-    int getDeviceId() const;
-    cudaDeviceProp getDeviceInfo() const;
-    void use();
-    void enqueue();
-    bool isActive() const;
+  int getDeviceId() const;
+  cudaDeviceProp getDeviceInfo() const;
+  void use();
+  void enqueue();
+  bool isActive() const;
 
-    CudaStreamPtr createStream(unsigned int flags = 0) const;
+  CudaStreamPtr createStream(unsigned int flags = 0) const;
 
-    // Only 4 and 8 Bytes are supported yet
-    void setSharedMemBankSize(unsigned int bytes);
-    
-    unsigned int getSharedMemBankSize() const;
+  // Only 4 and 8 Bytes are supported yet
+  void setSharedMemBankSize(unsigned int bytes);
 
-    void synchronize();
+  unsigned int getSharedMemBankSize() const;
 
-    CUcontext ref();
+  void synchronize();
 
-    friend std::ostream& operator<<(std::ostream& os, const CudaContext& dt);
+  CUcontext ref();
+
+  friend std::ostream &operator<<(std::ostream &os, const CudaContext &dt);
 
 private:
-    CUcontext m_context;
+  CUcontext m_context;
 };
 
 using CudaContextPtr = std::shared_ptr<CudaContext>;

@@ -1,8 +1,8 @@
 #pragma once
 
-#include "common.h"
-#include "vector3.h"
-#include "quaternion.h"
+#include "common.cuh"
+#include "vector3.cuh"
+#include "quaternion.cuh"
 
 namespace rmagine
 {
