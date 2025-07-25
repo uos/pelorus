@@ -1,6 +1,6 @@
 #pragma once
-#include "common.h"
-#include "vector3.h"
+#include "common.cuh"
+#include "vector3.cuh"
 
 namespace rmagine
 {

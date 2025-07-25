@@ -13,10 +13,10 @@
  *       names of its contributors may be used to endorse or promote products
  *       derived from this software without specific prior written permission.
  *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND
- * ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
- * WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
- * DISCLAIMED. IN NO EVENT SHALL University Osnabrück BE LIABLE FOR ANY
+ * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+ * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+ * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+ * ARE DISCLAIMED. IN NO EVENT SHALL University Osnabrück BE LIABLE FOR ANY
  * DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES
  * (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
  * LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND
@@ -27,15 +27,15 @@
 
 /**
  * @file
- * 
+ *
  * @brief Rmagine Exceptions
  *
  * @date 03.10.2022
  * @author Alexander Mock
- * 
+ *
  * @copyright Copyright (c) 2022, University Osnabrück. All rights reserved.
  * This project is released under the 3-Clause BSD License.
- * 
+ *
  */
 
 #ifndef RMAGINE_UTIL_EXCEPTIONS_H
@@ -43,59 +43,31 @@
 
 #include <stdexcept>
 
+#define RM_THROW(Type, arg)                                                    \
+  throw Type(arg, __FILE__, __PRETTY_FUNCTION__, __LINE__)
 
-#define RM_THROW(Type, arg) throw Type(arg, __FILE__, __PRETTY_FUNCTION__, __LINE__)
+namespace rmagine {
 
-
-namespace rmagine
-{
-
-class Exception
-: public std::runtime_error
-{
+class Exception : public std::runtime_error {
 public:
-    Exception(const std::string& msg);
-    Exception(const std::string& msg, const char* file, const char* func, int line);
-    const char* what() const throw();
-    ~Exception() throw();
+  Exception(const std::string &msg);
+  Exception(const std::string &msg, const char *file, const char *func,
+            int line);
+  const char *what() const throw();
+  ~Exception() throw();
+
 private:
-    std::string m_msg;
+  std::string m_msg;
 };
 
-
-class EmbreeException 
-: public Exception
-{
+class CudaException : public Exception {
 public:
-    EmbreeException(const std::string& msg);
-    EmbreeException(const std::string& msg, const char* file, const char* func, int line);
-    ~EmbreeException() throw();
+  CudaException(const std::string &msg);
+  CudaException(const std::string &msg, const char *file, const char *func,
+                int line);
+  ~CudaException() throw();
 };
-
-
-
-class CudaException 
-: public Exception
-{
-public:
-    CudaException(const std::string& msg);
-    CudaException(const std::string& msg, const char* file, const char* func, int line);
-    ~CudaException() throw();
-};
-
-
-class OptixException 
-: public Exception
-{
-public:
-    OptixException(const std::string& msg);
-    OptixException(const std::string& msg, const char* file, const char* func, int line);
-    ~OptixException() throw();
-};
-
-
 
 } // namespace rmagine
-
 
 #endif // RMAGINE_UTIL_EXCEPTIONS_H
