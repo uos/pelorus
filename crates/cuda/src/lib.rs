@@ -1,3 +1,5 @@
+#![cfg(feature = "cuda_available")]
+
 use std::fmt::Debug;
 
 use ffi::Point;
