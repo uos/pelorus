@@ -50,23 +50,13 @@ public:
   void add(Point *points, uint32_t point_size, uint32_t scan_number,
            Pose registered_pose, rm::CudaStream &stream);
 
-  /// Finds a voxel distribution by its hash.
-  /// Note: This copies data from device to host. Returns false if not found.
   bool find(uint32_t key, const VoxelDistribution &out_dist) const;
 
-  /// Sorts the internal mapping to prepare for LRU eviction.
   void build(size_t scan_number, rm::CudaStream &stream);
-
-  /// Clears the map of all entries.
   void clear();
 
-  /// Returns a host vector of the means of all stored voxel distributions.
   std::vector<Point> get_map() const;
-
-  /// Returns the number of active elements in the map.
   uint32_t size() const { return std::min(this->add_cursor, this->capacity); }
-
-  /// Checks if the map is empty.
   bool is_empty() const { return add_cursor == 0; }
 
   thrust::device_vector<Value> buffer;
@@ -78,19 +68,24 @@ public:
   uint32_t add_cursor;
   uint32_t lru_cursor;
 
-  // Configuration parameters
   uint32_t capacity;
   float resolution;
   float sensitivity;
   float min_dist;
   NearbyType nbtype;
+  thrust::device_vector<int32_t> d_unique_keys;
+  thrust::device_vector<uint32_t> d_run_counts;
+  thrust::device_vector<int32_t> d_keys;
+  thrust::device_vector<uint32_t> d_indices;
+  thrust::device_vector<uint32_t> d_run_starts;
+
+  thrust::device_vector<uint32_t> d_run_ends;
 };
 
 __device__ bool pca_constant(const rm::Vector3f *cluster, uint32_t n,
                              float normal_threshold, double4 &plane_equation);
-__device__ bool pca_eigen_robust(const rm::Vector3f *cluster, uint32_t n,
-                                 float normal_threshold,
-                                 float4 &plane_equation);
+__device__ bool pca_eigen(const rm::Vector3f *cluster, uint32_t n,
+                          float normal_threshold, float4 &plane_equation);
 
 __device__ bool
 k_nearest_neighbor_query(const rm::Pointf &query, uint32_t k, NearbyType nbtype,

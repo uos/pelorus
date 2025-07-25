@@ -300,7 +300,7 @@ __global__ void plane_krnl(
 
   // Plane
   float4 plane;
-  if (!pca_eigen_robust(neighbors, neighbors_size, 0.1, plane)) {
+  if (!pca_eigen(neighbors, neighbors_size, 0.1, plane)) {
     return;
   }
 

@@ -1,5 +1,3 @@
-#include "math/iso3.h"
-#include "math/quaternion.h"
 #include <cassert>
 #include <cfloat>
 #include <cmath>
@@ -13,7 +11,9 @@
 #include <hashmap.h>
 #include <lib.h>
 #include <localmap.h>
+#include <math/iso3.h>
 #include <math/matrix3x3.h>
+#include <math/quaternion.h>
 #include <math/vector3.h>
 #include <sys/types.h>
 #include <thrust/copy.h>
@@ -150,22 +150,19 @@ __device__ rm::Vector3f symmetric_eigen_3x3(const rm::Matrix3x3f &A) {
 }
 
 __device__ void VoxelDistribution::lock() {
-  // Spin until we successfully acquire the lock by swapping 0 to 1
+  // spin until we successfully acquire the lock by swapping 0 to 1
   while (atomicCAS(&this->lock_flag, 0, 1) != 0) {
-    // You can optionally add __nanosleep or other yield instructions here
-    // if contention is high, but for most cases, a tight spin is fine.
+    // add __nanosleep or other yield instructions here if contention is high
   }
 }
 
 __device__ void VoxelDistribution::unlock() {
-  // Ensure all memory writes are globally visible before releasing the lock
+  // ensure all memory writes are globally visible before releasing the lock
   __threadfence();
   // Release the lock by setting it back to 0
   atomicExch(&this->lock_flag, 0);
 }
 
-// Weighted update of the distribution in a voxel. For more information see the
-// CPU variant in Rust. This function is just a port.
 __device__ void VoxelDistribution::update(const rm::Vector3f &new_point,
                                           float sensitivity, float min_dist,
                                           size_t current_scan_number) {
@@ -251,8 +248,6 @@ __device__ void VoxelDistribution::update(const rm::Vector3f &new_point,
   this->point_count++;
 }
 
-// -- Localmap --
-
 Localmap::Localmap(size_t capacity, float sensitivity, float min_dist,
                    float resolution, NearbyType nbtype, rm::CudaStream &stream)
     : capacity(capacity), sensitivity(sensitivity), min_dist(min_dist),
@@ -294,9 +289,8 @@ __device__ int32_t hash_grid(const rm::Vector3<int32_t> &grid_key) {
 }
 
 __global__ void calculate_keys_kernel(const Point *points, uint32_t point_size,
-                                      const Pose *global_transform,
-                                      float resolution, int32_t *d_keys,
-                                      uint32_t *d_indices) {
+                                      Pose global_transform, float resolution,
+                                      int32_t *d_keys, uint32_t *d_indices) {
   size_t idx = blockIdx.x * blockDim.x + threadIdx.x;
   if (idx >= point_size) {
     return;
@@ -305,29 +299,29 @@ __global__ void calculate_keys_kernel(const Point *points, uint32_t point_size,
   Point point_raw = points[idx];
   rm::Pointf point_local = rm::Pointf(point_raw.x, point_raw.y, point_raw.z);
   rm::Quaternionf ekf_rot(
-      global_transform->orientation.w, global_transform->orientation.x,
-      global_transform->orientation.y, global_transform->orientation.z);
-  rm::Vector3f ekf_trans(global_transform->position.x,
-                         global_transform->position.y,
-                         global_transform->position.z);
+      global_transform.orientation.w, global_transform.orientation.x,
+      global_transform.orientation.y, global_transform.orientation.z);
+  rm::Vector3f ekf_trans(global_transform.position.x,
+                         global_transform.position.y,
+                         global_transform.position.z);
   rm::Isometry3f global_pose{ekf_rot, ekf_trans};
   rm::Pointf point = global_pose * point_local;
   auto cell = pos2grid(resolution, point);
 
   d_keys[idx] = hash_grid(cell);
-  d_indices[idx] = idx; // Store original index
+  d_indices[idx] = idx;
 }
 
-__global__ void process_voxels_kernel(
-    const int32_t *unique_keys,     // List of unique keys to process
-    const uint32_t *run_starts,     // Start index for each key's points
-    const uint32_t *run_ends,       // End index for each key's points
-    const Point *original_points,   // The original, unsorted point array
-    const uint32_t *sorted_indices, // The sorted index mapping
-    uint32_t unique_key_count, uint32_t scan_number, KeyValuePair *lookup,
-    Value *buffer, uint32_t capacity, float resolution, float sensitivity,
-    float min_dist, uint32_t *lru_cursor, uint32_t *add_cursor,
-    uint32_t *lru_mapping, const Pose *global_transform) {
+__global__ void
+voxel_krnl(const int32_t *unique_keys,
+           const uint32_t *run_starts, // start index for each key points
+           const uint32_t *run_ends,   // end index for each key points
+           const Point *original_points, const uint32_t *sorted_indices,
+           uint32_t unique_key_count, uint32_t scan_number,
+           KeyValuePair *lookup, Value *buffer, uint32_t capacity,
+           float resolution, float sensitivity, float min_dist,
+           uint32_t *lru_cursor, uint32_t *add_cursor, uint32_t *lru_mapping,
+           Pose global_transform) {
   size_t idx = blockIdx.x * blockDim.x + threadIdx.x;
   if (idx >= unique_key_count) {
     return;
@@ -337,10 +331,10 @@ __global__ void process_voxels_kernel(
   uint32_t start_offset = run_starts[idx];
   uint32_t end_offset = run_ends[idx];
 
+  // inlined search in the hashmap
   uint32_t buffer_idx;
   bool found_existing = false;
   uint32_t slot = hash_function(key) & ((capacity * 2) - 1);
-
   while (true) {
     if (lookup[slot].key == key) {
       buffer_idx = lookup[slot].value;
@@ -348,22 +342,34 @@ __global__ void process_voxels_kernel(
       break;
     }
     if (lookup[slot].key == EMPTY_KEY) {
-      break; // Key not in table, end of probe chain.
+      break;
     }
     slot = (slot + 1) & ((capacity * 2) - 1); // Linear probe
   }
 
   rm::Quaternionf ekf_rot(
-      global_transform->orientation.w, global_transform->orientation.x,
-      global_transform->orientation.y, global_transform->orientation.z);
-  rm::Vector3f ekf_trans(global_transform->position.x,
-                         global_transform->position.y,
-                         global_transform->position.z);
+      global_transform.orientation.w, global_transform.orientation.x,
+      global_transform.orientation.y, global_transform.orientation.z);
+  rm::Vector3f ekf_trans(global_transform.position.x,
+                         global_transform.position.y,
+                         global_transform.position.z);
   rm::Isometry3f global_pose{ekf_rot, ekf_trans};
 
-  if (!found_existing) {
-    // --- This is a brand new voxel ---
-    // 1. Atomically allocate a slot in the main buffer.
+  if (found_existing) {
+    VoxelDistribution &voxel = buffer[buffer_idx].second;
+    voxel.lock();
+
+    for (uint32_t i = start_offset; i < end_offset; ++i) {
+      uint32_t point_original_idx = sorted_indices[i];
+      Point point_raw = original_points[point_original_idx];
+      rm::Pointf point_local =
+          rm::Pointf(point_raw.x, point_raw.y, point_raw.z);
+      rm::Pointf point_global = global_pose * point_local;
+      voxel.update(point_global, sensitivity, min_dist, scan_number);
+    }
+    voxel.unlock();
+
+  } else {
     uint32_t claimed_idx = atomicAdd(add_cursor, 1);
     if (claimed_idx < capacity) {
       buffer_idx = claimed_idx;
@@ -374,19 +380,15 @@ __global__ void process_voxels_kernel(
       buffer_idx = lru_mapping[lru_idx_local & (capacity - 1)];
     }
 
-    // 2. Get the first point to initialize the distribution.
     uint32_t first_point_original_idx = sorted_indices[start_offset];
     Point first_point_raw = original_points[first_point_original_idx];
     rm::Pointf first_point_local =
         rm::Pointf(first_point_raw.x, first_point_raw.y, first_point_raw.z);
     rm::Pointf first_point_global = global_pose * first_point_local;
 
-    // 3. Create the VoxelDistribution in the allocated buffer slot.
-    // The hash map is NOT updated here; build() will do that later.
     buffer[buffer_idx] =
         thrust::make_pair(key, VoxelDistribution(first_point_global));
 
-    // 4. Update with the rest of the points for this voxel.
     for (uint32_t i = start_offset + 1; i < end_offset; ++i) {
       uint32_t point_original_idx = sorted_indices[i];
       Point point_raw = original_points[point_original_idx];
@@ -396,29 +398,20 @@ __global__ void process_voxels_kernel(
       buffer[buffer_idx].second.update(point_global, sensitivity, min_dist,
                                        scan_number);
     }
-  } else {
-    // --- This voxel already exists from a previous frame ---
-    // We must lock it before updating.
-    VoxelDistribution &voxel = buffer[buffer_idx].second;
-    voxel.lock();
-
-    // Update with ALL points for this voxel from the current batch.
-    for (uint32_t i = start_offset; i < end_offset; ++i) {
-      uint32_t point_original_idx = sorted_indices[i];
-      Point point_raw = original_points[point_original_idx];
-      rm::Pointf point_local =
-          rm::Pointf(point_raw.x, point_raw.y, point_raw.z);
-      rm::Pointf point_global = global_pose * point_local;
-      voxel.update(point_global, sensitivity, min_dist, scan_number);
-    }
-
-    voxel.unlock();
   }
 }
 
 // assumes points is already on the gpu
 void Localmap::add(Point *points, uint32_t point_size, uint32_t scan_number,
                    Pose registered_pose, rm::CudaStream &stream) {
+
+  constexpr float BUFFER_ADDITIONAL = 0.2;
+  uint32_t point_buffer_with_additional = static_cast<uint32_t>(
+      static_cast<float>(point_size) * (1.0 + BUFFER_ADDITIONAL));
+  this->d_unique_keys.resize(point_buffer_with_additional);
+  this->d_run_counts.resize(point_buffer_with_additional);
+  this->d_keys.resize(point_buffer_with_additional);
+  this->d_indices.resize(point_buffer_with_additional);
 
   rm::Memory<uint32_t, rm::RAM> lru_cursor_host(1);
   *lru_cursor_host = this->lru_cursor;
@@ -428,74 +421,57 @@ void Localmap::add(Point *points, uint32_t point_size, uint32_t scan_number,
   *add_cursor_host = this->add_cursor;
   rm::Memory<uint32_t, rm::VRAM_CUDA> add_cursor_device = add_cursor_host;
 
-  rm::Memory<Pose, rm::RAM> registered_pose_host(1);
-  *registered_pose_host = registered_pose;
-  rm::Memory<Pose, rm::VRAM_CUDA> registered_pose_device = registered_pose_host;
-
-  // TODO alloc these buffers in localmap struct and resize if needed
-  thrust::device_vector<int32_t> d_keys(point_size);
-  thrust::device_vector<uint32_t> d_indices(point_size);
-
-  // --- STAGE 1: Calculate keys for all points ---
+  // keys for all points
   int threads_per_block = 256;
   int blocks_per_grid =
       (point_size + threads_per_block - 1) / threads_per_block;
   calculate_keys_kernel<<<blocks_per_grid, threads_per_block, 0,
                           stream.handle()>>>(
-      points, point_size, registered_pose_device.raw(), this->resolution,
+      points, point_size, registered_pose, this->resolution,
       thrust::raw_pointer_cast(d_keys.data()),
       thrust::raw_pointer_cast(d_indices.data()));
 
-  // --- STAGE 2: Sort by key to group points belonging to the same voxel ---
+  // sort by key to group points belonging to the same voxel
   thrust::sort_by_key(thrust::device.on(stream.handle()), d_keys.begin(),
                       d_keys.end(), d_indices.begin());
 
-  // --- STAGE 3: Find unique keys and the number of points for each ---
-  // TODO alloc these buffers in localmap struct and resize if needed
-  thrust::device_vector<int32_t> d_unique_keys(point_size);
-  thrust::device_vector<uint32_t> d_run_counts(point_size);
-
+  // unique keys and the number of points for each
   auto new_end = thrust::reduce_by_key(
       thrust::device.on(stream.handle()), d_keys.begin(), d_keys.end(),
       thrust::make_constant_iterator(1), // Count 1 for each key
-      d_unique_keys.begin(), d_run_counts.begin());
+      this->d_unique_keys.begin(), this->d_run_counts.begin());
 
   uint32_t unique_key_count = new_end.first - d_unique_keys.begin();
-  d_unique_keys.resize(unique_key_count);
-  d_run_counts.resize(unique_key_count);
+  uint32_t unique_keys_with_additional = static_cast<uint32_t>(
+      static_cast<float>(unique_key_count) * (1.0 + BUFFER_ADDITIONAL));
+  this->d_unique_keys.resize(unique_keys_with_additional);
+  this->d_run_counts.resize(unique_keys_with_additional);
+  this->d_run_starts.resize(unique_keys_with_additional);
+  this->d_run_ends.resize(unique_keys_with_additional);
 
-  // --- STAGE 4: Calculate run start/end indices for each unique key ---
-  thrust::device_vector<uint32_t> d_run_ends(unique_key_count);
+  // run start/end indices for each unique key
   thrust::inclusive_scan(thrust::device.on(stream.handle()),
-                         d_run_counts.begin(), d_run_counts.end(),
-                         d_run_ends.begin());
-  // The start of a run is the end of the previous run.
-  // We can derive this inside the kernel or create another vector. For clarity,
-  // we will pass both start and end indices.
+                         this->d_run_counts.begin(), this->d_run_counts.end(),
+                         this->d_run_ends.begin());
 
-  // TODO alloc these buffers in localmap struct and resize if needed
-  thrust::device_vector<uint32_t> d_run_starts(unique_key_count);
-  d_run_starts[0] = 0; // First run always starts at 0
-  thrust::transform(thrust::device.on(stream.handle()), d_run_ends.begin(),
-                    d_run_ends.end() - 1, d_run_starts.begin() + 1,
+  this->d_run_starts[0] = 0;
+  thrust::transform(thrust::device.on(stream.handle()),
+                    this->d_run_ends.begin(), this->d_run_ends.end() - 1,
+                    this->d_run_starts.begin() + 1,
                     thrust::identity<uint32_t>());
-  // TODO end resize needed
 
-  // --- STAGE 5: Launch the main kernel to process each unique voxel ---
   blocks_per_grid =
       (unique_key_count + threads_per_block - 1) / threads_per_block;
-  process_voxels_kernel<<<blocks_per_grid, threads_per_block, 0,
-                          stream.handle()>>>(
-      thrust::raw_pointer_cast(d_unique_keys.data()),
-      thrust::raw_pointer_cast(d_run_starts.data()),
-      thrust::raw_pointer_cast(d_run_ends.data()), points,
+  voxel_krnl<<<blocks_per_grid, threads_per_block, 0, stream.handle()>>>(
+      thrust::raw_pointer_cast(this->d_unique_keys.data()),
+      thrust::raw_pointer_cast(this->d_run_starts.data()),
+      thrust::raw_pointer_cast(this->d_run_ends.data()), points,
       thrust::raw_pointer_cast(d_indices.data()), unique_key_count, scan_number,
       thrust::raw_pointer_cast(this->lookup.get()->d_table.data()),
       thrust::raw_pointer_cast(this->buffer.data()), this->capacity,
       this->resolution, this->sensitivity, this->min_dist,
       lru_cursor_device.raw(), add_cursor_device.raw(),
-      thrust::raw_pointer_cast(this->lru_mapping.data()),
-      registered_pose_device.raw());
+      thrust::raw_pointer_cast(this->lru_mapping.data()), registered_pose);
 
   stream.synchronize();
   checkLastCudaError(__FILE__, __LINE__);
@@ -518,11 +494,11 @@ __global__ void rebuild_hashmap_kernel(KeyValuePair *table, uint32_t capacity,
   }
 
   int32_t key = buffer[idx].first;
-  uint32_t value_idx = idx; // The value is the item's own index in the buffer
+  uint32_t value_idx = idx;
 
   uint32_t slot = hash_function(key) & (capacity - 1);
   while (true) {
-    // Use atomicCAS to handle the rare case of hash collisions
+    // handle the rare case of hash collisions
     if (atomicCAS(&table[slot].key, EMPTY_KEY, key) == EMPTY_KEY) {
       table[slot].value = value_idx;
       return;
@@ -570,7 +546,6 @@ struct ScoreComparator {
 
     // Tie-breaker: If scores are identical, use the unique index
     // to create a stable, deterministic order.
-    // This prevents the infinite loop.
     return l_idx < r_idx;
   }
 };
@@ -591,7 +566,6 @@ void Localmap::build(size_t scan_number, rm::CudaStream &stream) {
 
   int threads_per_block = 256;
 
-  // clear_map(this->lookup);
   int blocks_per_grid =
       (this->lookup->capacity + threads_per_block - 1) / threads_per_block;
   initialize_kernel_a<<<blocks_per_grid, threads_per_block, 0,
@@ -1013,22 +987,18 @@ __device__ void normalize_safe(rm::Vector3f &v) {
  * @param plane_equation Output reference to a float4 representing the plane.
  * @return True if a stable plane was found, false otherwise.
  */
-__device__ bool pca_eigen_robust(const rm::Vector3f *cluster, uint32_t n,
-                                 float normal_threshold,
-                                 float4 &plane_equation) {
+__device__ bool pca_eigen(const rm::Vector3f *cluster, uint32_t n,
+                          float normal_threshold, float4 &plane_equation) {
   if (n < 3) {
     return false;
   }
 
-  // Step 1: Calculate the centroid and covariance matrix (same as before)
   rm::Vector3f centroid = calc_centroid_f(cluster, n);
   rm::Matrix3x3f cov = calc_cov(cluster, n, centroid);
 
-  // Step 2: Calculate the eigenvalues of the covariance matrix
   rm::Vector3f eigenvalues = symmetric_eigen_3x3(cov);
 
-  // Step 3: Find the smallest eigenvalue. Its corresponding eigenvector is our
-  // normal.
+  // smallest eigenvalue
   float min_eigenvalue = eigenvalues.x;
   if (eigenvalues.y < min_eigenvalue) {
     min_eigenvalue = eigenvalues.y;
@@ -1037,7 +1007,7 @@ __device__ bool pca_eigen_robust(const rm::Vector3f *cluster, uint32_t n,
     min_eigenvalue = eigenvalues.z;
   }
 
-  // Step 4: Find the eigenvector for the smallest eigenvalue.
+  // Find the eigenvector for the smallest eigenvalue.
   // We solve (cov - min_eigenvalue * I) * v = 0.
   // The eigenvector 'v' is in the null space of the matrix M = cov - λI.
   // A robust way to find a vector in the null space is to take the cross
@@ -1069,7 +1039,7 @@ __device__ bool pca_eigen_robust(const rm::Vector3f *cluster, uint32_t n,
     normal_vec = v3;
   }
 
-  // Step 5: Normalize the resulting normal vector (with a safety check)
+  // Normalize the resulting normal vector (with a safety check)
   // float normal_mag_sq = normal_vec.dot(normal_vec);
   // if (normal_mag_sq < 1e-12f) {
   //   // This can happen with degenerate point configurations (e.g., spherical)
@@ -1079,84 +1049,11 @@ __device__ bool pca_eigen_robust(const rm::Vector3f *cluster, uint32_t n,
   normalize_safe(normal_vec);
   // normal_vec.normalize();
 
-  // Step 6: Form the plane equation and perform final validation
   plane_equation = plane_from_point_and_normal(centroid, normal_vec);
 
   for (uint32_t i = 0; i < n; i++) {
     if (fabs(plane_normal_point_distance(plane_equation, cluster[i])) >
         normal_threshold) {
-      return false;
-    }
-  }
-
-  return true;
-}
-
-// https://www.ilikebigbits.com/2017_09_25_plane_from_points_2.html
-__device__ bool pca_constant(const rm::Vector3f *cluster, uint32_t n,
-                             float normal_threshold, double4 &plane_equation) {
-  if (n < 3) {
-    return false;
-  }
-
-  rm::Vector3d centroid = calc_centroid(cluster, n);
-  rm::Matrix3x3d cov = calc_cov(cluster, n, centroid);
-
-  double xx = cov(0, 0);
-  double xy = cov(0, 1);
-  double xz = cov(0, 2);
-  double yy = cov(1, 1);
-  double yz = cov(1, 2);
-  double zz = cov(2, 2);
-
-  rm::Vector3d weighted_dir(0, 0, 0);
-  rm::Vector3d axis_dir;
-  double weight;
-  double det_x, det_y, det_z;
-
-  det_x = yy * zz - yz * yz;
-  axis_dir = {det_x, xz * yz - xy * zz, xy * yz - xz * yy};
-  weight = det_x * det_x;
-  if (weighted_dir.dot(axis_dir) < 0.0) {
-    weight = -weight;
-  }
-
-  weighted_dir += axis_dir * weight;
-
-  det_y = xx * zz - xz * xz;
-  axis_dir = {xz * yz - xy * zz, det_y, xy * xz - yz * xx};
-  weight = det_y * det_y;
-  if (weighted_dir.dot(axis_dir) < 0.0) {
-    weight = -weight;
-  }
-
-  weighted_dir += axis_dir * weight;
-
-  det_z = xx * yy - xy * xy;
-  axis_dir = {xy * yz - xz * yy, xy * xz - yz * xx, det_z};
-  weight = det_z * det_z;
-  if (weighted_dir.dot(axis_dir) < 0.0) {
-    weight = -weight;
-  }
-
-  weighted_dir += axis_dir * weight;
-
-  // double magnitude_sq = weighted_dir.dot(weighted_dir);
-  // constexpr double epsilon_sq = 1e-12f; // A small threshold
-
-  // if (magnitude_sq < epsilon_sq) {
-  //   // The points are collinear or coincident, cannot form a plane.
-  //   return false;
-  // }
-
-  weighted_dir.normalize();
-  plane_equation = plane_from_point_and_normal(centroid, weighted_dir);
-
-  // if any of the points is too far from the plane, return false
-  for (uint32_t i = 0; i < n; i++) {
-    if (abs(plane_normal_point_distance(
-            plane_equation, rm::Vector3d(cluster[i].x, cluster[i].y,
-                                         cluster[i].z))) > normal_threshold) {
       return false;
     }
   }
