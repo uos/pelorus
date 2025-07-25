@@ -26,14 +26,12 @@ extern "C" {
 // ------------------- Types -------------------
 typedef enum { Center, Nearby6, Nearby18, Nearby26 } NearbyType;
 
-// TODO CHECK ALIGN 16
 typedef struct MY_ALIGN(16) {
   float x;
   float y;
   float z;
 } Point;
 
-// TODO CHECK ALIGN 16
 typedef struct MY_ALIGN(16) {
   float x;
   float y;
@@ -43,19 +41,6 @@ typedef struct MY_ALIGN(16) {
   float normal_y;
   float normal_z;
 } PointNormal;
-
-typedef struct {       // TODO add more parameters if needed. prefer parameter.h
-  double imu_acc_cov;  // default 0.01
-  double imu_gyro_cov; // default 0.01
-  double imu_acc_bias_cov;  // default 0.0001
-  double imu_gyro_bias_cov; // default 0.0001
-} Parameter;
-
-typedef struct {
-  uint32_t seq;
-  double stamp;
-  char frame_id[100];
-} jlio_header_t;
 
 typedef struct {
   double x;
@@ -78,29 +63,6 @@ typedef struct {
 typedef struct {
   double data[3][3];
 } Matrix3;
-
-typedef struct {
-  double timestamp_sec;
-  Quaternion orientation;
-  double orientation_covariance[9];
-  Vector3 angular_velocity;
-  double angular_velocity_covariance[9];
-  Vector3 linear_acceleration;
-  double linear_acceleration_covariance[9];
-} ImuMsg;
-
-typedef struct {
-  Pose pose;
-  Vector3 linear_velocity;
-  Matrix3
-      lidar_imu_extrinsic_rotation; // When applying offset_R_L_I to a vector in
-                                    // the LiDAR frame, you rotate the vector to
-                                    // align it with the IMU frame.
-  Vector3
-      lidar_imu_extrinsic_translation; // When adding offset_T_L_I to a point in
-                                       // the LiDAR frame, you effectively
-                                       // translate the point to the IMU frame.
-} ImuEkfPrediction;
 
 void *cupcl_create_stream();
 float *cupcl_create_pointcloud(void *stream, float *point_buffer_cpu,

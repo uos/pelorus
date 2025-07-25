@@ -1,19 +1,19 @@
-#include "core/common.h"
-#include "core/memory.h"
-#include "hashmap.h"
-#include "math/quaternion.h"
-#include "math/vector3.h"
 #include <cassert>
-#include <core/cuda_debug.h>
-#include <core/cuda_stream.h>
-#include <core/memory_cuda.h>
+#include <core/common.cuh>
+#include <core/cuda_debug.cuh>
+#include <core/cuda_stream.cuh>
+#include <core/memory.cuh>
+#include <core/memory_cuda.cuh>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <cuda_runtime.h>
+#include <hashmap.cuh>
 #include <lib.h>
-#include <localmap.h>
-#include <math/iso3.h>
+#include <localmap.cuh>
+#include <math/iso3.cuh>
+#include <math/quaternion.cuh>
+#include <math/vector3.cuh>
 #include <memory>
 #include <stdio.h>
 #include <sys/types.h>
@@ -174,7 +174,6 @@ void cupcl_destroy_stream(void *stream) {
 class State {
 public:
   Localmap localmap;
-  Parameter params;
   uint32_t scan_number;
 
   State(size_t capacity, float sensitivity, float min_dist, float resolution,

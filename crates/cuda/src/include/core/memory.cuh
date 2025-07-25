@@ -36,7 +36,7 @@
 #define RMAGINE_MEMORY_HPP
 
 #include <cstring>
-#include <math/common.h>
+#include <math/common.cuh>
 #include <stdexcept>
 
 namespace rmagine {

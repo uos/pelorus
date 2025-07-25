@@ -1,16 +1,15 @@
 #include <cassert>
-#include <core/common.h>
-#include <core/cuda_stream.h>
-#include <core/memory_cuda.h>
+#include <core/common.cuh>
+#include <core/cuda_stream.cuh>
+#include <core/memory_cuda.cuh>
 
-#include <core/cuda_debug.h>
+#include <core/cuda_debug.cuh>
 #include <cuda_runtime.h>
 
 #include <cstdint>
-#include <memory>
 #include <stdexcept>
 
-#include <hashmap.h>
+#include <hashmap.cuh>
 
 // Murmur3
 __device__ uint32_t hash_function(int32_t key) {

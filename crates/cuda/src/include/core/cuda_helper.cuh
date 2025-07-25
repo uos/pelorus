@@ -13,10 +13,10 @@
  *       names of its contributors may be used to endorse or promote products
  *       derived from this software without specific prior written permission.
  *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND
- * ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
- * WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
- * DISCLAIMED. IN NO EVENT SHALL University Osnabrück BE LIABLE FOR ANY
+ * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+ * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+ * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+ * ARE DISCLAIMED. IN NO EVENT SHALL University Osnabrück BE LIABLE FOR ANY
  * DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES
  * (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
  * LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND
@@ -41,30 +41,26 @@ namespace rmagine {
 
 namespace cuda {
 
-static int getDeviceCount()
-{
-    int count = 0;
-    auto status = cudaGetDeviceCount(&count);
+static int getDeviceCount() {
+  int count = 0;
+  auto status = cudaGetDeviceCount(&count);
 
-    if(status != cudaSuccess)
-    {
-        throw std::runtime_error("Error calling cudaGetDeviceCount");
-    }
+  if (status != cudaSuccess) {
+    throw std::runtime_error("Error calling cudaGetDeviceCount");
+  }
 
-    return count;
+  return count;
 }
 
-static cudaDeviceProp getDeviceInfo(int device_id)
-{
-    cudaDeviceProp info;
-    auto status = cudaGetDeviceProperties(&info, device_id);
+static cudaDeviceProp getDeviceInfo(int device_id) {
+  cudaDeviceProp info;
+  auto status = cudaGetDeviceProperties(&info, device_id);
 
-    if(status != cudaSuccess)
-    {
-        throw std::runtime_error("Error calling cudaGetDeviceProperties");
-    }
+  if (status != cudaSuccess) {
+    throw std::runtime_error("Error calling cudaGetDeviceProperties");
+  }
 
-    return info;
+  return info;
 }
 
 } // namespace cuda

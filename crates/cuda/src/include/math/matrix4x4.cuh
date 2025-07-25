@@ -1,8 +1,8 @@
 #pragma once
 
-#include "common.h"
-#include "vector3.h"
-#include "matrix3x3.h"
+#include "common.cuh"
+#include "vector3.cuh"
+#include "matrix3x3.cuh"
 
 namespace rmagine
 {
