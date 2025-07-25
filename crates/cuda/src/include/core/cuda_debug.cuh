@@ -13,10 +13,10 @@
  *       names of its contributors may be used to endorse or promote products
  *       derived from this software without specific prior written permission.
  *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND
- * ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
- * WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
- * DISCLAIMED. IN NO EVENT SHALL University Osnabrück BE LIABLE FOR ANY
+ * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+ * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+ * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+ * ARE DISCLAIMED. IN NO EVENT SHALL University Osnabrück BE LIABLE FOR ANY
  * DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES
  * (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
  * LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND
@@ -35,19 +35,15 @@
 #ifndef RMAGINE_UTIL_CUDA_DEBUG_HPP
 #define RMAGINE_UTIL_CUDA_DEBUG_HPP
 
-#include <core/exceptions.h>
+#include <core/exceptions.cuh>
 #include <cuda_runtime.h>
 
-#define RM_CUDA_CHECK(call)    \
-{                 \
-   cudaError_t code = call; \
-   cudaAssert(code, __FILE__, __PRETTY_FUNCTION__, __LINE__);  \
-}
+#define RM_CUDA_CHECK(call)                                                    \
+  {                                                                            \
+    cudaError_t code = call;                                                   \
+    cudaAssert(code, __FILE__, __PRETTY_FUNCTION__, __LINE__);                 \
+  }
 
-void cudaAssert(
-   cudaError_t code, 
-   const char* file, 
-   const char* func,
-   int line);
+void cudaAssert(cudaError_t code, const char *file, const char *func, int line);
 
 #endif // RMAGINE_UTIL_CUDA_DEBUG_HPP

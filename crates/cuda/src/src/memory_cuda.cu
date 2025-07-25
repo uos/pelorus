@@ -1,7 +1,6 @@
-#include <core/cuda_stream.h>
-#include <core/memory_cuda.h>
-
-#include <core/cuda_debug.h>
+#include <core/cuda_debug.cuh>
+#include <core/cuda_stream.cuh>
+#include <core/memory_cuda.cuh>
 #include <cuda_runtime.h>
 
 namespace rmagine {

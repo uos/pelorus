@@ -1,17 +1,15 @@
 #ifndef LOCALMAP_H
 #define LOCALMAP_H
 
-#include <core/cuda_stream.h>
+#include <core/cuda_stream.cuh>
 #include <cstdint>
 #include <cuda_runtime.h>
 #include <curand_kernel.h>
-#include <hashmap.h>
+#include <hashmap.cuh>
 #include <lib.h>
-#include <math/matrix3x3.h>
-#include <math/vector3.h>
-#include <memory>
+#include <math/matrix3x3.cuh>
+#include <math/vector3.cuh>
 #include <thrust/device_vector.h>
-#include <vector>
 
 namespace rm = rmagine;
 

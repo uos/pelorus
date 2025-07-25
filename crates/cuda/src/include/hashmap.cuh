@@ -1,9 +1,9 @@
 #ifndef HASHMAP_H
 #define HASHMAP_H
 
-#include <core/cuda_stream.h>
-#include <core/memory.h>
-#include <core/memory_cuda.h>
+#include <core/cuda_stream.cuh>
+#include <core/memory.cuh>
+#include <core/memory_cuda.cuh>
 #include <cstdint>
 #include <memory>
 #include <thrust/device_vector.h>
