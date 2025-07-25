@@ -50,7 +50,7 @@ no-viz = []
 gicp = ["dep:small_gicp-sys", "prelio-ros2/no-imu-sync"]
 
 # Toggle tooling
-dev = ["rerun", "ratpub", "rat", "map", "cuda"]
+dev = ["rerun", "ratpub", "rat", "map"]
 
 # Use variable syncing for triggers
 rat = ["dep:rat", "dep:tokio"]
