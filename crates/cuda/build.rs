@@ -42,7 +42,8 @@ fn main() {
         // * Perform a "device link" on the object file to resolve device symbols.
         // * Archive both object files into a static library (.a).
 
-        let gencode = format!("arch={},code={}", compute, arch);
+        // let gencode = format!("arch={},code={}", compute, arch);
+        let gencode = format!("-arch=native");
 
         for path in source_files.iter() {
             println!("cargo:rerun-if-changed={}", path);
@@ -87,8 +88,7 @@ fn main() {
                 .arg("-o")
                 .arg(&obj_path)
                 .arg("-rdc=true") // Relocatable Device Code
-                .arg("-gencode")
-                .arg(&gencode)
+                .arg("-arch=native")
                 .status()
                 .expect("Failed to execute nvcc for compilation. Is it in your PATH?");
 
@@ -105,7 +105,7 @@ fn main() {
             .arg("-dlink")
             .arg("-o")
             .arg(&dlink_obj_path)
-            .arg("-gencode")
+            .arg("-arch=native")
             .arg(&gencode)
             .arg(format!("-L{}", cuda_lib_path.display())) // Tell dlink where to find libs
             .arg("-lcudadevrt"); // Link the device runtime
