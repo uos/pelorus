@@ -7,6 +7,7 @@ use mimalloc::MiMalloc;
 #[cfg(feature = "mimalloc")]
 static GLOBAL: MiMalloc = MiMalloc;
 
+mod mapping;
 use clap::{command, Parser, Subcommand};
 use futures_lite::future;
 use log::{error, info};
@@ -109,6 +110,7 @@ pub struct LioConfig {
     pub ekf_max_iterations: i8,
     pub dist_update_sensitivity: f32,
     pub lidar_as_map_tf: bool, // Transforms all points and paths back to the lidar TF before publishing. All calculations are done in the IMU frame.
+    pub mapping_resolution: f32,
 }
 
 impl Default for LioConfig {
@@ -132,6 +134,7 @@ impl Default for LioConfig {
             dist_update_sensitivity: 60.0,
             map_capacity: 80_000,
             lidar_as_map_tf: true,
+            mapping_resolution: 0.01,
         }
     }
 }
@@ -209,6 +212,13 @@ pub enum Command {
 struct Args {
     #[command(subcommand)]
     pub command: Command,
+}
+
+#[derive(Debug)]
+struct RegisteredCloud {
+    cloud: ros_pointcloud2::PointCloud2Msg,
+    registration: nalgebra::Isometry3<f32>,
+    timestamp: f64,
 }
 
 fn lio(config_path: &str) -> Result<(), Box<dyn std::error::Error>> {
@@ -580,6 +590,44 @@ fn lio(config_path: &str) -> Result<(), Box<dyn std::error::Error>> {
     };
     let mut last_render = std::time::Instant::now();
 
+    #[cfg(feature = "mapping")]
+    let (out_chan_sender, out_chan_receiver) = std::sync::mpsc::channel::<RegisteredCloud>();
+
+    // TODO handle just mapping without rerun with fileio
+    // handle mapping of the registered results
+    #[cfg(all(feature = "mapping", feature = "rerun"))]
+    {
+        let mapping_rec = rec.clone();
+        let mapping_resolution = config.mapping_resolution;
+        std::thread::spawn(move || {
+            let mut total_map = mapping::VoxelGrid::new(mapping_resolution);
+            while let Ok(reg) = out_chan_receiver.recv() {
+                reg.cloud.try_into_iter().unwrap().for_each(|p: PointXYZ| {
+                    let p = p.xyz_f32();
+                    let p = reg.registration.transform_point(&p);
+                    total_map.insert(p);
+                });
+
+                mapping_rec.set_timestamp_secs_since_epoch("sensor", reg.timestamp);
+                if let Err(err) = mapping_rec.log(
+                    "world/mapping",
+                    &rerun::Points3D::update_fields()
+                        .with_positions(total_map.iter().map(|p| glam::Vec3::new(p.x, p.y, p.z))),
+                ) {
+                    error!("Error sending to rerun {err}");
+                }
+
+                #[cfg(feature = "rat")]
+                rat::bacon(
+                    "tick_end",
+                    &mut "".to_string(),
+                    rat::VariableType::StaticOnly,
+                )
+                .unwrap();
+            }
+        });
+    }
+
     std::thread::spawn(move || {
         #[cfg(feature = "gicp")]
         let mut first_scan = true;
@@ -821,7 +869,10 @@ fn lio(config_path: &str) -> Result<(), Box<dyn std::error::Error>> {
                         glam::Vec3::new(v.x, v.y, v.z)
                     });
 
-                    if let Err(err) = rec.log("world/map", &rerun::Points3D::new(points)) {
+                    if let Err(err) = rec.log(
+                        "world/map",
+                        &rerun::Points3D::update_fields().with_positions(points),
+                    ) {
                         error!("Error sending to rerun {err}");
                     }
                 }
@@ -843,7 +894,6 @@ fn lio(config_path: &str) -> Result<(), Box<dyn std::error::Error>> {
                 }
             }
 
-            // -- TF --
             #[cfg(feature = "rerun")]
             {
                 let pose = rerun::Transform3D::from_translation(glam::Vec3::new(
@@ -869,14 +919,16 @@ fn lio(config_path: &str) -> Result<(), Box<dyn std::error::Error>> {
                         glam::Vec3::new(v.x, v.y, v.z)
                     });
 
-                    if let Err(err) =
-                        rec.log("world/lidar/undistorted", &rerun::Points3D::new(points))
-                    {
+                    if let Err(err) = rec.log(
+                        "world/lidar/undistorted",
+                        &rerun::Points3D::update_fields().with_positions(points),
+                    ) {
                         error!("Error sending to rerun {err}");
                     }
                 }
             }
 
+            // -- TF --
             let tf = TransformStamped {
                 header: Header {
                     frame_id: config.prelio_params.map_frame.clone(),
@@ -917,6 +969,18 @@ fn lio(config_path: &str) -> Result<(), Box<dyn std::error::Error>> {
                 .send_transform(tf)
                 .expect("Failed to send transform");
             // -- --
+
+            #[cfg(feature = "mapping")]
+            {
+                let ps: ros_pointcloud2::PointCloud2Msg = cloud.clone().into();
+                let reg_out = RegisteredCloud {
+                    cloud: ps,
+                    registration: map_to_lidar_transform,
+                    timestamp: current_cloud_time,
+                };
+
+                out_chan_sender.send(reg_out).unwrap();
+            }
 
             let mut imu_odom = lidar_odom.clone();
             imu_odom.pose.pose.position.x = init_guess_world.translation.vector.x;
@@ -1042,7 +1106,7 @@ fn lio(config_path: &str) -> Result<(), Box<dyn std::error::Error>> {
             }
 
             // mark to send new data
-            #[cfg(feature = "rat")]
+            #[cfg(all(feature = "rat", not(feature = "mapping")))]
             rat::bacon(
                 "tick_end",
                 &mut "".to_string(),

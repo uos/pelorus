@@ -5527,6 +5527,7 @@ dependencies = [
  "ros2-interfaces-jazzy",
  "ros2-interfaces-jazzy-rkyv 0.0.4 (git+https://github.com/stelzo/ros2-interfaces-jazzy-rkyv.git?branch=main)",
  "ros_pointcloud2 0.5.3 (git+https://github.com/stelzo/ros_pointcloud2.git?branch=rkyv)",
+ "rustc-hash 2.1.1",
  "serde 1.0.219",
  "small_gicp-sys",
  "tokio",
