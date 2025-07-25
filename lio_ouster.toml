@@ -1,0 +1,90 @@
+feedback_fps = 1
+odom_qos = "SystemDefault"
+imu_odom_qos = "SystemDefault"
+imu_path_qos = "SystemDefault"
+path_qos = "SystemDefault"
+map_resolution = 0.5
+map_capacity = 30000
+imu_init_length = 10
+lidar_odom_cov = 0.001
+enable_live_extrinsic_calibration = false
+k_neighbors = 5
+neighbor_max_range = 5.0
+ekf_max_iterations = 4
+dist_update_sensitivity = 60.0
+
+[registered_cloud_qos]
+Sensor = "Reliable"
+
+[imu_params]
+cov_acc = [0.001, 0.001, 0.001]
+cov_gyr = [0.001, 0.001, 0.001]
+cov_gyr_bias = [0.0001, 0.0001, 0.0001]
+cov_acc_bias = [0.0001, 0.0001, 0.0001]
+
+[prelio_params]
+lidar_vendor = "Ouster"
+imu_lidar_tf_override = false
+global_zero_frame = ""
+map_frame = "map"
+
+[prelio_params.undistort.lidar_to_imu]
+rotation = [0.0, 0.0, 0.0, 1.0]
+translation = [0.0, 0.0, 0.0]
+
+[prelio_params.imu]
+gravity = 9.81
+accel_noise = 0.0001
+gyro_noise = 0.0001
+accel_bias_noise = 0.00001
+gyro_bias_noise = 0.00001
+integration_noise = 0.00000001
+bias_acc = [0.0, 0.0, 0.0]
+bias_gyro = [0.0, 0.0, 0.0]
+imu_lidar_tf_override = false
+madgwick_setting = "FilterAccelerationAndCreateOrientation"
+imu_frame = "imu"
+
+[prelio_params.imu.calibration]
+imu_calibrate_gyros = true
+gyro_calibration_samples = 100
+
+[prelio_params.downsample]
+voxel_size = 0.15000000596046448
+
+[prelio_params.passthrough_filter]
+min = [-340282346638528860000000000000000000000.0, -340282346638528860000000000000000000000.0, -340282346638528860000000000000000000000.0]
+max = [340282346638528860000000000000000000000.0, 340282346638528860000000000000000000000.0, 340282346638528860000000000000000000000.0]
+invert_bounding_box = false
+min_dist = 0.0
+max_dist = 136112938655411540000000000000000000000.0
+invert_distance = false
+fov_right = 0.0
+fov_left = 0.0
+forward = [1.0, 0.0]
+enable_horizontal_fov = false
+invert_polygon = false
+invert_fov = false
+min_intensity = -340282346638528860000000000000000000000.0
+max_intensity = 340282346638528860000000000000000000000.0
+invert_intensity = false
+
+[prelio_params.passthrough_filter.filter_frame_transform]
+rotation = [0.0, 0.0, 0.0, 1.0]
+translation = [0.0, 0.0, 0.0]
+
+[prelio_node_params]
+cloud_src_topic = "/ouster/points"
+imu_src_topic = "/ouster/imu"
+logger_prefix = "lifis"
+imu_filtered_topic = "/imu_filtered"
+imu_predictor_init_time_sec = 0.1
+
+[prelio_node_params.cloud_qos]
+Sensor = "BestEffort"
+
+[prelio_node_params.imu_qos]
+Sensor = "BestEffort"
+
+[prelio_node_params.imu_filtered_qos]
+Sensor = "Reliable"

@@ -1,8 +1,12 @@
+use std::fmt::Debug;
+
+use ffi::Point;
+use log::debug;
 use ros_pointcloud2::points::{PointXYZ, PointXYZINormal};
 
 mod ffi;
 
-pub use ffi::{Matrix3, Pose, Quaternion, Vector3};
+pub use ffi::{Matrix3, NeighborType, Pose, Quaternion, Vector3};
 
 pub struct Stream {
     pub stream: *mut ::std::os::raw::c_void,
@@ -177,13 +181,34 @@ impl CudaBuffer {
     // }
 }
 
+pub fn get_map() -> Vec<nalgebra::Point3<f32>> {
+    let mut out = vec![PointXYZ::default(); unsafe { ffi::get_map_capacity() as usize }];
+    let mut actual_size: u32 = 0;
+
+    unsafe {
+        ffi::get_map(out.as_mut_ptr() as *mut Point, &mut actual_size as *mut u32);
+        out.set_len(actual_size as usize);
+    };
+
+    out.iter()
+        .map(|p| nalgebra::Point3::new(p.x, p.y, p.z))
+        .collect()
+}
+
 pub fn init_map(
     stream: &Stream,
     capacity: usize,
     voxel_size: f32,
     sensitivity: f32,
     min_dist: f32,
+    nearby_seach_strategy: NeighborType,
 ) {
+    assert!(capacity > 0, "No capacity");
+    assert!(
+        (capacity & (capacity - 1)) == 0,
+        "Capacity is not a power of 2"
+    );
+    debug!("MAP INIT");
     unsafe {
         ffi::init_map(
             stream.stream,
@@ -191,6 +216,7 @@ pub fn init_map(
             sensitivity,
             min_dist,
             voxel_size,
+            nearby_seach_strategy.into(),
         )
     }
 }
@@ -207,8 +233,11 @@ pub fn add_to_map(stream: &Stream, cloud: &CudaBuffer, ekf_pose_t: &Vector3, ekf
             cloud.gpu_ptr as *mut ffi::Point,
             cloud.n as u32,
             pose,
-        )
+        );
     }
+}
+pub fn get_map_size() -> u32 {
+    unsafe { ffi::get_map_size() }
 }
 
 pub fn planes_cuda(
@@ -226,6 +255,7 @@ pub fn planes_cuda(
     first_it_local: bool,
     out_buff: &mut Vec<PointXYZINormal>,
     out_buff_gpu: &mut CudaBuffer,
+    converged: bool,
 ) {
     assert!(out_buff.len() >= cloud.n);
 
@@ -239,6 +269,9 @@ pub fn planes_cuda(
         position: *ekf_pose_t,
         orientation: Quaternion::new(pose_r_quat.i, pose_r_quat.j, pose_r_quat.k, pose_r_quat.w),
     };
+
+    assert_eq!(size_of::<ffi::Point>(), size_of::<PointXYZ>());
+    assert_eq!(size_of::<ffi::PointNormal>(), size_of::<PointXYZINormal>());
 
     let size = unsafe {
         ffi::planes(
@@ -254,6 +287,7 @@ pub fn planes_cuda(
             plane_point_error_threshold,
             first_it_local,
             out_buff_gpu.gpu_ptr as *mut ffi::PointNormal,
+            converged,
         )
     };
 

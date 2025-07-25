@@ -9,7 +9,7 @@ static GLOBAL: MiMalloc = MiMalloc;
 
 use clap::{command, Parser, Subcommand};
 use futures_lite::future;
-use log::{error, info};
+use log::{debug, error, info};
 use nalgebra::{Isometry3, Translation3, UnitQuaternion};
 #[cfg(feature = "r2r")]
 use r2r::{
@@ -598,6 +598,7 @@ fn lio(config_path: &str) -> Result<(), Box<dyn std::error::Error>> {
             config.map_resolution as f32,
             config.dist_update_sensitivity,
             config.neighbor_max_range as f32,
+            cuda::NeighborType::Neighbor26,
         );
 
         while let Ok(lifis_tick) = synced_rx.recv() {
@@ -682,7 +683,7 @@ fn lio(config_path: &str) -> Result<(), Box<dyn std::error::Error>> {
                     &cloud,
                     Some(&ready_for_next_tx),
                     &mut eval,
-                    true,
+                    #[cfg(feature = "cuda")]
                     &cuda_stream,
                 ) {
                     Ok(pose) => (pose, map.get_state()),
@@ -725,7 +726,7 @@ fn lio(config_path: &str) -> Result<(), Box<dyn std::error::Error>> {
             rec.set_timestamp_secs_since_epoch("sensor", current_cloud_time);
 
             let rev_imu_tf = if config.lidar_as_map_tf {
-                ekf_state.lidar_imu_extrinsic.inverse().cast()
+                ekf_state.lidar_imu_extrinsic.inverse().cast::<f32>()
             } else {
                 Isometry3::identity()
             };
@@ -795,6 +796,7 @@ fn lio(config_path: &str) -> Result<(), Box<dyn std::error::Error>> {
                             .unwrap()
                             .into()
                     }
+                    #[cfg(feature = "cuda")]
                     LocatedBufferView::Cuda { buffer: cloud } => {
                         let buff = cloud.into_cloud(&cuda_stream);
                         ros_pointcloud2::PointCloud2Msg::try_from_vec(buff)
@@ -808,7 +810,10 @@ fn lio(config_path: &str) -> Result<(), Box<dyn std::error::Error>> {
 
             #[cfg(all(not(feature = "gicp"), feature = "map"))]
             {
+                #[cfg(not(feature = "cuda"))]
                 let total_map = map.lock().unwrap().get_entire_map();
+                #[cfg(feature = "cuda")]
+                let total_map = cuda::get_map();
                 #[cfg(feature = "rerun")]
                 {
                     let points = total_map.iter().map(|v| {

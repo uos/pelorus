@@ -2,6 +2,15 @@
 
 Quick commands usually needed for developing Pelorus.
 
+## opt
+
+> Maximum speed
+
+~~~sh
+RUSTFLAGS="-C target-cpu=native -C llvm-args=-cost-kind=latency" cargo run --release -- run
+~~~
+
+
 ## dev
 
 > Start with development flags and debug info

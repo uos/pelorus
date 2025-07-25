@@ -3,6 +3,8 @@
 #![allow(non_snake_case)]
 #![allow(dead_code)]
 
+use core::panic;
+
 include!(concat!(env!("OUT_DIR"), "/bindings.rs"));
 
 impl From<[[f64; 3usize]; 3usize]> for Matrix3 {
@@ -451,6 +453,40 @@ impl Parameter {
             imu_acc_bias_cov,
             imu_gyro_cov,
             imu_gyro_bias_cov,
+        }
+    }
+}
+
+#[derive(Debug, Copy, Clone, Default)]
+pub enum NeighborType {
+    Center,
+    Neighbor6,
+    #[default]
+    Neighbor18,
+    Neighbor26,
+}
+
+impl From<NearbyType> for NeighborType {
+    fn from(value: NearbyType) -> Self {
+        match value {
+            NearbyType_Center => Self::Center,
+            NearbyType_Nearby18 => Self::Neighbor18,
+            NearbyType_Nearby26 => Self::Neighbor26,
+            NearbyType_Nearby6 => Self::Neighbor6,
+            _ => {
+                panic!("unknown nearby type")
+            }
+        }
+    }
+}
+
+impl From<NeighborType> for NearbyType {
+    fn from(value: NeighborType) -> Self {
+        match value {
+            NeighborType::Center => NearbyType_Center,
+            NeighborType::Neighbor6 => NearbyType_Nearby6,
+            NeighborType::Neighbor18 => NearbyType_Nearby18,
+            NeighborType::Neighbor26 => NearbyType_Nearby26,
         }
     }
 }

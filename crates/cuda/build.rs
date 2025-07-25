@@ -23,8 +23,15 @@ fn main() {
         ];
         let include_paths = vec!["src/include"];
 
-        let arch = env::var("CUDA_ARCH").unwrap_or_else(|_| "sm_75".to_string());
-        let compute = format!("compute_{}", arch.strip_prefix("sm_").unwrap_or("75"));
+        // TODO detect jetson orin etc. https://developer.nvidia.com/cuda-gpus
+        // orin: 87
+        // rtx 40xx: 89
+        // jetson nano: 5.3
+        // jetson tx2: 6.2
+        // jetson xavier: 7.2
+        // jetson tegra k1/tk1: 3.2
+        let arch = env::var("CUDA_ARCH").unwrap_or_else(|_| "sm_89".to_string());
+        let compute = format!("compute_{}", arch.strip_prefix("sm_").unwrap_or("89"));
 
         // CUDA Toolkit directory, TODO check jetson specific folders
         let cuda_lib_path = PathBuf::from(&cuda_path).join("lib64");
@@ -73,7 +80,9 @@ fn main() {
                 nvcc_compile_cmd.arg(format!("-I{}", path));
             }
             let status_compile = nvcc_compile_cmd
-                .arg("-c") // Compile, don't link
+                .arg("-Xcompiler")
+                .arg("-fPIC")
+                .arg("-c")
                 .arg(source_file)
                 .arg("-o")
                 .arg(&obj_path)
@@ -97,7 +106,9 @@ fn main() {
             .arg("-o")
             .arg(&dlink_obj_path)
             .arg("-gencode")
-            .arg(&gencode);
+            .arg(&gencode)
+            .arg(format!("-L{}", cuda_lib_path.display())) // Tell dlink where to find libs
+            .arg("-lcudadevrt"); // Link the device runtime
         for obj in &object_files {
             dlink_cmd.arg(obj);
         }
@@ -128,9 +139,11 @@ fn main() {
         println!("cargo:rustc-link-search=native={}", out_dir.display());
         println!("cargo:rustc-link-search=native={}", cuda_lib_path.display());
         println!("cargo:rustc-link-lib=static=kernel");
-        println!("cargo:rustc-link-lib=cudart");
+        // println!("cargo:rustc-link-lib=cudart");
         println!("cargo:rustc-link-lib=stdc++");
         println!("cargo:rustc-link-lib=cuda");
+        println!("cargo:rustc-link-lib=cudadevrt");
+        println!("cargo:rustc-link-lib=static=cudart_static");
 
         // Generate bindings using bindgen.
         bindgen::Builder::default()
