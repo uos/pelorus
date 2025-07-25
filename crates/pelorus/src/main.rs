@@ -805,7 +805,7 @@ fn lio(config_path: &str) -> Result<(), Box<dyn std::error::Error>> {
                     }
                 }
             };
-            let map_to_lidar_transform = t_world_lidar.clone().cast();
+            let map_to_lidar_transform = t_world_lidar.clone().cast::<f32>();
             cloud.header.frame_id = orig_frame.clone();
 
             #[cfg(all(not(feature = "gicp"), feature = "map"))]
