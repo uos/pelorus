@@ -30,8 +30,8 @@ fn main() {
         // jetson tx2: 6.2
         // jetson xavier: 7.2
         // jetson tegra k1/tk1: 3.2
-        let arch = env::var("CUDA_ARCH").unwrap_or_else(|_| "sm_87".to_string());
-        let compute = format!("compute_{}", arch.strip_prefix("sm_").unwrap_or("87"));
+        // let arch = env::var("CUDA_ARCH").unwrap_or_else(|_| "sm_87".to_string());
+        // let compute = format!("compute_{}", arch.strip_prefix("sm_").unwrap_or("87"));
 
         // CUDA Toolkit directory, TODO check jetson specific folders
         let cuda_lib_path = PathBuf::from(&cuda_path).join("lib64");
