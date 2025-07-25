@@ -20,6 +20,7 @@
 #include <thrust/device_vector.h>
 #include <thrust/execution_policy.h>
 #include <thrust/fill.h>
+#include <thrust/iterator/constant_iterator.h>
 #include <thrust/sort.h>
 #include <thrust/transform.h>
 
