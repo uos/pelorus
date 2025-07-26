@@ -2,7 +2,6 @@ use std::vec;
 
 use log::warn;
 use nalgebra::*;
-use prelio::LocatedBufferView;
 use ros_pointcloud2::points::PointXYZ;
 use serde::{Deserialize, Serialize};
 use sophus_lie::traits::IsTranslationProductGroup;

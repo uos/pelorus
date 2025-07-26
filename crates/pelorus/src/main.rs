@@ -215,6 +215,7 @@ struct Args {
 }
 
 #[derive(Debug)]
+#[allow(dead_code)]
 struct RegisteredCloud {
     cloud: ros_pointcloud2::PointCloud2Msg,
     registration: nalgebra::Isometry3<f32>,
@@ -591,6 +592,7 @@ fn lio(config_path: &str) -> Result<(), Box<dyn std::error::Error>> {
     let mut last_render = std::time::Instant::now();
 
     #[cfg(feature = "mapping")]
+    #[allow(unused_variables)]
     let (out_chan_sender, out_chan_receiver) = std::sync::mpsc::channel::<RegisteredCloud>();
 
     // TODO handle just mapping without rerun with fileio
@@ -856,8 +858,13 @@ fn lio(config_path: &str) -> Result<(), Box<dyn std::error::Error>> {
             let map_to_lidar_transform = t_world_lidar.clone().cast::<f32>();
             cloud.header.frame_id = orig_frame.clone();
 
-            #[cfg(all(not(feature = "gicp"), feature = "map"))]
+            #[cfg(all(
+                not(feature = "gicp"),
+                feature = "map",
+                all(feature = "rerun", feature = "ratpub")
+            ))]
             {
+                eval.start("pub_localmap").unwrap();
                 #[cfg(not(feature = "cuda"))]
                 let total_map = map.lock().unwrap().get_entire_map();
                 #[cfg(feature = "cuda")]
@@ -876,7 +883,11 @@ fn lio(config_path: &str) -> Result<(), Box<dyn std::error::Error>> {
                         error!("Error sending to rerun {err}");
                     }
                 }
-                #[cfg(all(not(feature = "no-viz"), not(feature = "rerun")))]
+                #[cfg(all(
+                    not(feature = "no-viz"),
+                    not(feature = "rerun"),
+                    not(feature = "ratpub") // currently no use of the total map in ratpub
+                ))]
                 {
                     let mut total_map = PointCloud2Msg::try_from_vec(
                         total_map
@@ -892,6 +903,7 @@ fn lio(config_path: &str) -> Result<(), Box<dyn std::error::Error>> {
                     let msg: PointCloud2 = total_map.into();
                     map_publisher.publish(&msg).expect("Failed to publish map");
                 }
+                eval.stop("pub_localmap").unwrap();
             }
 
             #[cfg(feature = "rerun")]
@@ -979,7 +991,7 @@ fn lio(config_path: &str) -> Result<(), Box<dyn std::error::Error>> {
                     timestamp: current_cloud_time,
                 };
 
-                out_chan_sender.send(reg_out).unwrap();
+                let _ = out_chan_sender.send(reg_out); // currently ignore res
             }
 
             let mut imu_odom = lidar_odom.clone();

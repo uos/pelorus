@@ -6,7 +6,7 @@ edition = "2021"
 
 [dependencies]
 ros_pointcloud2.workspace = true
-prelio-ros2 = { workspace = true, default-features = false }
+prelio-ros2.workspace = true
 pelorus-reg.workspace = true
 ros2-client = { workspace = true, optional = true }
 nalgebra.workspace = true
@@ -30,38 +30,21 @@ tokio = { workspace = true, optional = true }
 rat = { workspace = true, optional = true }
 small_gicp-sys = { workspace = true, optional = true }
 cuda = { optional = true, workspace = true }
+rustc-hash.workspace = true
 
 [features]
-#           MODE     COMM          EXTRAS
-default = ["r2r", "mimalloc"]
-# default = ["dev"]
+default = ["ros2", "mimalloc", "downsample"]
+# default = ["dev"] # toggled in development
 
-cuda = ["prelio-ros2/cuda", "dep:cuda", "pelorus-reg/cuda"]
+# -#-#-#-#-#- Sensor Communication -#-#-#-#-#-
 
-map = []
+# ROS2 Node via C bindings. See the lio.toml for controlling QoS.
+ros2-c = ["r2r"]
 
-# Uses threadpool workstealing whenever large buffers are processed.
-parallel = ["prelio-ros2/parallel", "pelorus-reg/parallel"]
+# ROS2 with Rust native implementation. No ROS2 installation required. See the lio.toml for controlling QoS.
+ros2-rust = ["ros2-client"]
 
-# Skips publishing any visualizations that take compute resources
-no-viz = []
-
-# Use Lidar Odom with small_gicp
-gicp = ["dep:small_gicp-sys", "prelio-ros2/no-imu-sync"]
-
-# Toggle tooling
-dev = ["rerun", "ratpub", "rat", "map"]
-
-# Use variable syncing for triggers
-rat = ["dep:rat", "dep:tokio"]
-
-# Use Mimalloc as allocator. General speedup when using dynamic memory.
-mimalloc = ["dep:mimalloc"]
-
-# Visualize data with rerun
-rerun = ["dep:rerun", "prelio-ros2/rerun"]
-
-# Use ratpub as pub/sub system
+# Custom Rust-only pub/sub implementation used in my offline-mapping, development and debugging workflow (see https://uos.github.io/minot/#native-publishsubscribe).
 ratpub = [
   "dep:ratpub",
   "dep:tokio",
@@ -69,6 +52,54 @@ ratpub = [
   "ros_pointcloud2/lh",
   "prelio-ros2/ratpub",
 ]
+
+# -#-#-#-#-#- Performance and Methods -#-#-#-#-#-
+
+# The input scan is reduced for faster registration (resolution affects accuracy)
+downsample = ["prelio-ros2/downsample"]
+
+# Build and use CUDA accelerations
+cuda = ["prelio-ros2/cuda", "dep:cuda", "pelorus-reg/cuda"]
+
+# Switch to threadpool workstealing whenever large buffers are processed. The cuda feature has higher precedence, but not every parallel part is implemented with cuda, so a combination of both flags make sense.
+parallel = ["prelio-ros2/parallel", "pelorus-reg/parallel"]
+
+# Lidar Odometry only with parallel ICP, ignore IMU
+lidar_only = ["gicp"]
+
+# Lidar + IMU with naiive kdtree for neighborsearch. Currently slow and unstable. Use only with good reason.
+kdtree = ["pelorus-reg/nn_kdt"]
+
+# Enables synchronization with a bagfile using Minot (https://uos.github.io/minot/)
+offline = ["ratpub", "rat"]
+
+# -#-#-#-#-#- Visualizations -#-#-#-#-#-
+
+# Visualize data with rerun
+rerun = ["dep:rerun", "prelio-ros2/rerun"]
+
+# Collect undistorted and registered scans to a map. WARNING: This feature is really naiive right now and slows down computation dramatically. In combination with the "offline" flag, the synchronization for "rat" will move to post-mapping.
+mapping = []
+
+# Publish the localmap. WARNING: You should only enable this for debugging or you want to fiddle with the config. Getting the map is inefficient and unoptimized.
+map = []
+
+# Skips publishing any visualizations that take too much compute resources (e.g. iterating a point cloud)
+no-viz = []
+
+# -#-#-#-#-#- Low level -#-#-#-#-#-
+
+# Toggle tooling typically used for development
+dev = ["offline", "mapping", "rerun", "parallel"]
+
+# Use variable syncing for triggers
+rat = ["dep:rat", "dep:tokio"]
+
+# Use Mimalloc as allocator. General speedup when using dynamic memory.
+mimalloc = ["dep:mimalloc"]
+
+# Uses small_gicp as backend, which requires Eigen3 to be installed.
+gicp = ["dep:small_gicp-sys", "prelio-ros2/no-imu-sync"]
 
 # Use native ROS2 as pub/sub system
 ros2-client = [
@@ -80,7 +111,6 @@ ros2-client = [
 
 # Use rclc bindings as pub/sub system
 r2r = ["dep:r2r", "ros_pointcloud2/r2r_msg", "prelio-ros2/r2r"]
-
 
 [profile.release]
 lto = true          # Link Time Optimization

@@ -1,14 +1,10 @@
 //! An implementation of point cloud registering, tightly coupled with the IMU.
 //! The used method is a combination of the EKF from S-FAST_LIO and a hashgrid-based nearest neighbor search similar to faster-lio.
 
-use std::{
-    panic,
-    sync::{Arc, Mutex},
-};
+use std::sync::{Arc, Mutex};
 
 #[cfg(feature = "cuda")]
 use cuda::CudaBuffer;
-use log::info;
 use nalgebra::*;
 use prelio::{LocatedBufferView, timing::RuntimeEvaluator};
 #[cfg(feature = "parallel")]
@@ -116,7 +112,116 @@ impl SFasterLio {
         self.map.clear();
     }
 
+    #[allow(dead_code)]
+    fn symmetric_eigen_3x3(a: &Matrix3<f32>) -> Vector3<f32> {
+        // The characteristic equation is λ³ - tr(A)λ² + c₂λ - det(A) = 0
+        // where c₂ = 0.5 * (tr(A)² - tr(A²))
+        let trace_a = a.trace();
+
+        let c2 = (a[(0, 0)] * a[(1, 1)] + a[(0, 0)] * a[(2, 2)] + a[(1, 1)] * a[(2, 2)])
+            - (a[(0, 1)] * a[(0, 1)] + a[(0, 2)] * a[(0, 2)] + a[(1, 2)] * a[(1, 2)]);
+
+        let det_a = a.determinant();
+
+        // Solve the cubic equation: x³ + p*x² + q*x + r = 0
+        let p = -trace_a;
+        let q = c2;
+        let r = -det_a;
+
+        // Convert to depressed cubic: t³ + a*t + b = 0
+        let a_cub = (3.0 * q - p * p) / 3.0;
+        let b_cub = (2.0 * p * p * p - 9.0 * p * q + 27.0 * r) / 27.0;
+
+        // For symmetric matrices, eigenvalues are real, so the discriminant is <= 0.
+        // We use the trigonometric solution for three real roots.
+        let angle = if a_cub.abs() < 1e-6 {
+            // Handle case where a is zero
+            0.0
+        } else {
+            let acos_arg = (-b_cub / 2.0) / (-a_cub * a_cub * a_cub / 27.0).sqrt();
+            // Clamp the argument to acos to handle floating point inaccuracies
+            acos_arg.clamp(-1.0, 1.0).acos()
+        };
+
+        let two_sqrt_neg_a_div_3 = 2.0 * (-a_cub / 3.0).sqrt();
+        let p_div_3 = p / 3.0;
+
+        // Root 1
+        let e1 = two_sqrt_neg_a_div_3 * (angle / 3.0).cos() - p_div_3;
+        // Root 2
+        let e2 =
+            two_sqrt_neg_a_div_3 * ((angle + 2.0 * std::f32::consts::PI) / 3.0).cos() - p_div_3;
+        // Root 3
+        let e3 =
+            two_sqrt_neg_a_div_3 * ((angle + 4.0 * std::f32::consts::PI) / 3.0).cos() - p_div_3;
+
+        Vector3::new(e1, e2, e3)
+    }
+
+    #[allow(dead_code)]
+    pub fn plane_fit_stable<I>(points_iter: I, n: usize, error_threshold: f32) -> Option<[f32; 4]>
+    where
+        I: Iterator<Item = Vector3<f32>> + Clone,
+    {
+        if n < 3 {
+            return None;
+        }
+        let n_f32 = n as f32;
+
+        let centroid = points_iter.clone().sum::<Vector3<f32>>() / n_f32;
+        let mut covariance = points_iter.clone().fold(Matrix3::zeros(), |cov, p| {
+            let r = p - centroid;
+            cov + r * r.transpose()
+        });
+        covariance /= n_f32;
+
+        let eigenvalues = Self::symmetric_eigen_3x3(&covariance);
+
+        let min_eigenvalue = eigenvalues.x.min(eigenvalues.y).min(eigenvalues.z);
+
+        // the eigenvector for the smallest eigenvalue
+        let mut m = covariance;
+        m[(0, 0)] -= min_eigenvalue;
+        m[(1, 1)] -= min_eigenvalue;
+        m[(2, 2)] -= min_eigenvalue;
+
+        let row0 = m.row(0).transpose();
+        let row1 = m.row(1).transpose();
+        let row2 = m.row(2).transpose();
+
+        // compute all three cross products and pick the one with the largest magnitude for stability
+        let v1 = row0.cross(&row1);
+        let v2 = row1.cross(&row2);
+        let v3 = row2.cross(&row0);
+
+        let mag1_sq = v1.norm_squared();
+        let mag2_sq = v2.norm_squared();
+        let mag3_sq = v3.norm_squared();
+
+        let normal_vec = if mag1_sq > mag2_sq && mag1_sq > mag3_sq {
+            v1
+        } else if mag2_sq > mag3_sq {
+            v2
+        } else {
+            v3
+        };
+
+        let normal = normal_vec.try_normalize(1e-12)?;
+
+        let d = -normal.dot(&centroid);
+
+        for p in points_iter {
+            let distance = (normal.dot(&p) + d).abs();
+            if distance > error_threshold {
+                return None;
+            }
+        }
+
+        Some([normal.x, normal.y, normal.z, d])
+    }
+
     // https://www.ilikebigbits.com/2017_09_25_plane_from_points_2.html
+    #[allow(dead_code)]
     fn plane_from_points(points: &[PointXYZ], error_threshold: f64) -> Option<[f64; 4]> {
         let points = points.iter().map(|p| p.xyz_f64()).collect::<Vec<_>>();
         let n = points.len();
@@ -312,10 +417,13 @@ impl crate::Registration for SFasterLio {
                     let mut planes_gpu = planes_gpu_buffer.lock().unwrap();
 
                     let mut neighbors = neighbors_cloud_in_ekf.lock().unwrap().take().unwrap_or({
-                        let len = cloud_len_alloc * k;
                         #[cfg(feature = "cuda")]
-                        let buff =
-                            { LocatedBufferView::<PointXYZ>::alloc_points_cuda(&stream, len) };
+                        let buff = {
+                            LocatedBufferView::<PointXYZ>::alloc_points_cuda(
+                                &stream,
+                                cloud_len_alloc * k,
+                            )
+                        };
                         #[cfg(not(feature = "cuda"))]
                         let buff = {
                             LocatedBufferView::from_vec_cpu(vec![
@@ -342,9 +450,8 @@ impl crate::Registration for SFasterLio {
 
                     // Perf: should never be larger than k because k never changes. add 20% extra room to avoid triggering with small upward changes.
                     if neighbors.len() < cloud.len() * k {
-                        let len = cloud_len_alloc * k;
                         #[cfg(feature = "cuda")]
-                        let v = LocatedBufferView::alloc_points_cuda(&stream, len);
+                        let v = LocatedBufferView::alloc_points_cuda(&stream, cloud_len_alloc * k);
                         #[cfg(not(feature = "cuda"))]
                         let v = LocatedBufferView::from_vec_cpu(vec![
                             PointXYZ::default();
@@ -476,17 +583,31 @@ impl crate::Registration for SFasterLio {
                                     }
                                 }
 
-                                let plane = Self::plane_from_points(
-                                    &curr_point_neighbors[..*neighbor_size],
-                                    PLANE_POINT_ERROR_THRESHOLD,
+                                let plane = Self::plane_fit_stable(
+                                    curr_point_neighbors[..*neighbor_size]
+                                        .iter()
+                                        .map(|p| p.xyz_f32().coords),
+                                    *neighbor_size,
+                                    PLANE_POINT_ERROR_THRESHOLD as f32,
                                 )?;
-
-                                let pd2 = plane[0] * point_global.x
-                                    + plane[1] * point_global.y
-                                    + plane[2] * point_global.z
+                                let pd2 = plane[0] * point_global.x as f32
+                                    + plane[1] * point_global.y as f32
+                                    + plane[2] * point_global.z as f32
                                     + plane[3];
                                 let s = 1.0
-                                    - 0.9 * pd2.abs() / point_local.xyz_f64().coords.norm().sqrt();
+                                    - 0.9 * pd2.abs()
+                                        / point_local.xyz_f64().coords.norm().sqrt() as f32;
+
+                                // let plane = Self::plane_from_points(
+                                //     &curr_point_neighbors[..*neighbor_size],
+                                //     PLANE_POINT_ERROR_THRESHOLD,
+                                // )?;
+                                // let pd2 = plane[0] * point_global.x
+                                //     + plane[1] * point_global.y
+                                //     + plane[2] * point_global.z
+                                //     + plane[3];
+                                // let s = 1.0
+                                //     - 0.9 * pd2.abs() / point_local.xyz_f64().coords.norm().sqrt();
 
                                 if s <= 0.9 {
                                     return None;
