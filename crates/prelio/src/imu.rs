@@ -1,5 +1,6 @@
 use either::Either;
 use either::Either::{Left, Right};
+#[cfg(feature = "parallel")]
 use rayon::iter::{IntoParallelIterator, ParallelIterator};
 use sophus_lie::traits::IsTranslationProductGroup;
 
@@ -362,7 +363,7 @@ impl ImuProcess {
     }
 
     pub fn process(
-        &mut self,
+        &'_ mut self,
         meas: MeasureGroup,
         _config: &config::UndistortParameters,
         imu_pose_prediction: &Option<
@@ -374,7 +375,7 @@ impl ImuProcess {
                 &[PointXYZT],
             ) -> Either<crate::ImuPosePrediction, (Isometry3<f64>, Vec<PointXYZ>)>,
         >,
-    ) -> Option<ImuProcessedCloud> {
+    ) -> Option<ImuProcessedCloud<'_>> {
         debug_assert!(!meas.imu_buffer.is_empty());
         debug_assert!(!meas.cloud.is_empty());
 

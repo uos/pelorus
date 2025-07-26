@@ -5,6 +5,7 @@ pub mod tf_lh;
 #[cfg(feature = "r2r")]
 pub mod tf_r2r;
 
+#[allow(unused_imports)]
 use futures_lite::{StreamExt, future};
 use log::{debug, error, info, warn};
 pub use prelio;
@@ -26,8 +27,6 @@ use r2r::{
 };
 #[cfg(feature = "ratpub")]
 use ratpub::Node;
-#[cfg(feature = "rerun")]
-use rerun::external::glam;
 use ros_pointcloud2::prelude::*;
 #[cfg(feature = "ros2-client")]
 use ros2_client::{ros2, ros2::Duration};
@@ -51,7 +50,7 @@ use ros2_interfaces_jazzy_rkyv::{
     sensor_msgs::msg::{Imu, PointCloud2},
     std_msgs::msg::Header,
 };
-use serde::{Deserialize, Serialize, ser::Error};
+use serde::{Deserialize, Serialize};
 use std::sync::{Arc, Mutex};
 
 #[derive(Debug, Clone, Default, PointConvertible, Copy)]
@@ -1155,6 +1154,7 @@ fn imu_to_lifis(msg: Imu) -> prelio::imu::ImuMsg {
     }
 }
 
+#[allow(dead_code)] // only used with ROS
 fn lifis_to_imu(msg: prelio::imu::ImuMsg) -> Imu {
     Imu {
         header: Header {

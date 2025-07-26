@@ -200,29 +200,6 @@ pub struct MeasureGroup {
     imu_buffer: Vec<ImuMsg>,
 }
 
-#[derive(Debug, Clone, Default)]
-struct PointXYZIT {
-    x: f32,
-    y: f32,
-    z: f32,
-    intensity: f32,
-    timestamp: f64,
-}
-
-impl std::ops::Add for PointXYZIT {
-    type Output = Self;
-
-    fn add(self, other: Self) -> Self {
-        Self {
-            x: self.x + other.x,
-            y: self.y + other.y,
-            z: self.z + other.z,
-            intensity: self.intensity + other.intensity,
-            timestamp: self.timestamp + other.timestamp,
-        }
-    }
-}
-
 #[derive(Debug, Clone, Default, Copy)]
 pub struct PointXYZT {
     pub x: f32,
@@ -282,6 +259,7 @@ impl<T> LocatedBufferView<T> {
     }
 }
 
+#[cfg(feature = "downsample")]
 fn hash(point: &Point3<f32>, voxel_size: f32) -> i32 {
     const PRIME_1: i32 = 73_856_093;
     const PRIME_2: i32 = 19_349_663;
@@ -303,6 +281,7 @@ fn hash(point: &Point3<f32>, voxel_size: f32) -> i32 {
 }
 
 /// Helper function to find the medoid within a slice of points.
+#[cfg(feature = "downsample")]
 fn find_medoid_in_slice(points: &[(i32, PointXYZT)]) -> PointXYZT {
     if points.len() == 1 {
         return points[0].1;
@@ -342,7 +321,9 @@ fn filter_downsample<const N: usize, P: PointXYZITimestamp<N>>(
     lifis_params: &config::LifisParameters,
 ) -> Result<Option<(Vec<PointXYZT>, f64, f64, HeaderMsg)>> {
     let header = cloud.header.clone();
+    #[cfg(feature = "downsample")]
     let voxel_size = lifis_params.downsample.voxel_size;
+    #[cfg(feature = "parallel")]
     const PAR_SORT_BOUNDARY: usize = 1; // When tested on an M3, par sort was always faster, no matter the size. TODO test on other platforms
     // let offset = 2i32.pow(20); // A large offset to handle negative coordinates)
     let iter = {
@@ -355,7 +336,14 @@ fn filter_downsample<const N: usize, P: PointXYZITimestamp<N>>(
             cloud.try_into_iter()?
         }
     };
-    let mut keyed_points: Vec<(i32, PointXYZT)> = iter
+
+    #[cfg(feature = "downsample")]
+    type PointsFiltered = (i32, PointXYZT);
+    #[cfg(not(feature = "downsample"))]
+    type PointsFiltered = PointXYZT;
+
+    #[allow(unused_mut)]
+    let mut keyed_points: Vec<PointsFiltered> = iter
         .filter_map(|point: P| {
             let params = &lifis_params.passthrough_filter;
             let p_t = params.filter_frame_transform * point.xyz();
@@ -423,53 +411,64 @@ fn filter_downsample<const N: usize, P: PointXYZITimestamp<N>>(
             }
 
             let point_raw = point.xyz();
-            let key = hash(&point_raw, voxel_size);
-            Some((key, PointXYZT::from_p(point_raw, ts)))
+            #[cfg(feature = "downsample")]
+            {
+                let key = hash(&point_raw, voxel_size);
+                return Some((key, PointXYZT::from_p(point_raw, ts)));
+            }
+            #[cfg(not(feature = "downsample"))]
+            return Some(PointXYZT::from_p(point_raw, ts));
         })
         .collect::<Vec<_>>();
 
-    // After this, all points in the same voxel are adjacent
-    #[cfg(feature = "parallel")]
-    {
-        if keyed_points.len() > PAR_SORT_BOUNDARY {
-            keyed_points.par_sort_unstable_by_key(|(key, _)| *key);
-        } else {
+    #[cfg(feature = "downsample")]
+    let mut downsampled_cloud = {
+        // After this, all points in the same voxel are adjacent
+        #[cfg(feature = "parallel")]
+        {
+            if keyed_points.len() > PAR_SORT_BOUNDARY {
+                keyed_points.par_sort_unstable_by_key(|(key, _)| *key);
+            } else {
+                keyed_points.sort_unstable_by_key(|(key, _)| *key);
+            }
+        }
+        #[cfg(not(feature = "parallel"))]
+        {
             keyed_points.sort_unstable_by_key(|(key, _)| *key);
         }
-    }
-    #[cfg(not(feature = "parallel"))]
-    {
-        keyed_points.sort_unstable_by_key(|(key, _)| *key);
-    }
 
-    if keyed_points.is_empty() {
-        return Ok(None);
-    }
+        if keyed_points.is_empty() {
+            return Ok(None);
+        }
 
-    let mut downsampled_cloud: Vec<PointXYZT> = {
-        // TODO chunk by seems extremely fast on M3 Pro
-        // #[cfg(feature = "parallel")]
-        // {
-        //     if keyed_points.len() > PAR_SORT_BOUNDARY {
-        //         keyed_points
-        //             .par_chunk_by(|a, b| a.0 == b.0)
-        //             .map(|group_slice| find_medoid_in_slice(group_slice))
-        //             .collect()
-        //     } else {
-        //         keyed_points
-        //             .chunk_by(|a, b| a.0 == b.0)
-        //             .map(|group_slice| find_medoid_in_slice(group_slice))
-        //             .collect()
-        //     }
-        // }
-        // #[cfg(not(feature = "parallel"))]
-        // {
-        keyed_points
-            .chunk_by(|a, b| a.0 == b.0)
-            .map(|group_slice| find_medoid_in_slice(group_slice))
-            .collect()
-        // }
+        let downsampled_cloud: Vec<PointXYZT> = {
+            // TODO chunk by seems extremely fast on M3 Pro
+            // #[cfg(feature = "parallel")]
+            // {
+            //     if keyed_points.len() > PAR_SORT_BOUNDARY {
+            //         keyed_points
+            //             .par_chunk_by(|a, b| a.0 == b.0)
+            //             .map(|group_slice| find_medoid_in_slice(group_slice))
+            //             .collect()
+            //     } else {
+            //         keyed_points
+            //             .chunk_by(|a, b| a.0 == b.0)
+            //             .map(|group_slice| find_medoid_in_slice(group_slice))
+            //             .collect()
+            //     }
+            // }
+            // #[cfg(not(feature = "parallel"))]
+            // {
+            keyed_points
+                .chunk_by(|a, b| a.0 == b.0)
+                .map(|group_slice| find_medoid_in_slice(group_slice))
+                .collect()
+            // }
+        };
+        downsampled_cloud
     };
+    #[cfg(not(feature = "downsample"))]
+    let mut downsampled_cloud = keyed_points;
 
     // needed for undistort
     let cmp = |a: &PointXYZT, b: &PointXYZT| {
@@ -790,20 +789,25 @@ impl Prelio {
         thread::spawn(move || {
             let mut eval = RuntimeEvaluator::new();
             while let Ok(cloud) = preproc_rx.recv() {
-                eval.start("downsample").unwrap();
+                let eval_name = if cfg!(feature = "downsample") {
+                    "filter_downsample"
+                } else {
+                    "filter"
+                };
+                eval.start(eval_name).unwrap();
                 match filter_downsample::<N, P>(cloud, &params_clone) {
                     Ok(Some(cloud_meta)) => {
-                        eval.stop("downsample").unwrap();
+                        eval.stop(eval_name).unwrap();
                         if let Err(e) = filtered_cloud_tx.send((cloud_meta, eval.clone())) {
                             error!("Error sending pointcloud: {}", e);
                         }
                     }
                     Ok(None) => {
-                        eval.stop("downsample").unwrap();
+                        eval.stop(eval_name).unwrap();
                         info!("Pointcloud was filtered out");
                     }
                     Err(e) => {
-                        eval.stop("downsample").unwrap();
+                        eval.stop(eval_name).unwrap();
                         error!("Error processing pointcloud: {}", e);
                     }
                 }

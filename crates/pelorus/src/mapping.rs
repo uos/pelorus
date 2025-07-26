@@ -1,6 +1,6 @@
-use rustc_hash::FxHashMap;
+#![allow(dead_code)] // may be not included without mapping flag but still good to compile
 
-use ros_pointcloud2::points::PointXYZ;
+use rustc_hash::FxHashMap;
 
 pub type Point = nalgebra::Point3<f32>;
 
