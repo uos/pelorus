@@ -2,6 +2,8 @@ use std::vec;
 
 use log::warn;
 use nalgebra::*;
+#[cfg(feature = "parallel")]
+use rayon::prelude::*;
 use ros_pointcloud2::points::PointXYZ;
 use serde::{Deserialize, Serialize};
 use sophus_lie::traits::IsTranslationProductGroup;
@@ -375,25 +377,79 @@ impl ImuProcessing {
         let _ = self.predict(ekf, avr_x, angvel_avr, dt);
         self.imu_state = ekf.state.clone();
 
+        // TODO perf this alloc could be optimized out by changing the undistort closure return to be a mut& Vec. then it could be resized here to avoid new allocs for the cloud
         let mut out_cloud = vec![PointXYZ::default(); cloud.len()];
 
-        let mut it_pcl = cloud.len();
+        #[cfg(not(feature = "parallel"))]
+        {
+            let mut it_pcl = cloud.len();
+            for i in (1..imu_poses.len()).rev() {
+                let head = &imu_poses[i - 1];
+                let tail = &imu_poses[i];
 
-        for i in (1..imu_poses.len()).rev() {
-            let head = &imu_poses[i - 1];
-            let tail = &imu_poses[i];
+                while it_pcl > 0 && cloud[it_pcl - 1].timestamp > head.offset_time {
+                    it_pcl -= 1;
+                    let pcl_point = &cloud[it_pcl];
 
-            while it_pcl > 0 && cloud[it_pcl - 1].timestamp > head.offset_time {
-                it_pcl -= 1;
-                let pcl_point = &cloud[it_pcl];
+                    let mut dt = pcl_point.timestamp - head.offset_time;
+                    if dt < 0.0 {
+                        // This can happen due to floating point inaccuracies if the point is very close
+                        // to the head time. We can treat it as having zero offset.
+                        warn!(
+                            "Point timestamp slightly before IMU head offset_time, clamping dt to 0."
+                        );
+                        dt = 0.0;
+                    }
+
+                    let r_i = head
+                        .pose
+                        .rotation()
+                        .group_mul(&crate::sophus_ekf::SO3::exp(&(tail.gyr * dt)))
+                        .matrix();
+                    let t_ei = head.pose.translation() + head.vel * dt + 0.5 * tail.acc * dt * dt
+                        - self.imu_state.pose.translation();
+
+                    let p_imu_frame = self.imu_state.offset_r_l_i.matrix()
+                        * Vector3::new(pcl_point.x as f64, pcl_point.y as f64, pcl_point.z as f64)
+                        + self.imu_state.offset_t_l_i;
+                    let p_compensate = self.imu_state.offset_r_l_i.matrix().transpose()
+                        * (self.imu_state.pose.rotation().matrix().transpose()
+                            * (r_i * p_imu_frame + t_ei)
+                            - self.imu_state.offset_t_l_i);
+
+                    out_cloud[it_pcl].x = p_compensate.x as f32;
+                    out_cloud[it_pcl].y = p_compensate.y as f32;
+                    out_cloud[it_pcl].z = p_compensate.z as f32;
+                }
+            }
+        }
+
+        #[cfg(feature = "parallel")]
+        out_cloud
+            .par_iter_mut()
+            .zip(cloud.par_iter())
+            .for_each(|(out_point, pcl_point)| {
+                // For each point, find the correct IMU pose interval.
+                // binary_search_by finds the index of the first pose with a timestamp >= the point's timestamp.
+                let tail_idx = imu_poses
+                    .binary_search_by(|p| {
+                        p.offset_time
+                            .partial_cmp(&pcl_point.timestamp)
+                            .unwrap_or(std::cmp::Ordering::Less)
+                    })
+                    .unwrap_or_else(|e| e);
+
+                if tail_idx == 0 || tail_idx >= imu_poses.len() {
+                    // point is before the first pose or after the last.
+                    return;
+                }
+                let head_idx = tail_idx - 1;
+
+                let head = &imu_poses[head_idx];
+                let tail = &imu_poses[tail_idx];
 
                 let mut dt = pcl_point.timestamp - head.offset_time;
                 if dt < 0.0 {
-                    // This can happen due to floating point inaccuracies if the point is very close
-                    // to the head time. We can treat it as having zero offset.
-                    warn!(
-                        "Point timestamp slightly before IMU head offset_time, clamping dt to 0."
-                    );
                     dt = 0.0;
                 }
 
@@ -402,22 +458,23 @@ impl ImuProcessing {
                     .rotation()
                     .group_mul(&crate::sophus_ekf::SO3::exp(&(tail.gyr * dt)))
                     .matrix();
+
                 let t_ei = head.pose.translation() + head.vel * dt + 0.5 * tail.acc * dt * dt
                     - self.imu_state.pose.translation();
 
                 let p_imu_frame = self.imu_state.offset_r_l_i.matrix()
                     * Vector3::new(pcl_point.x as f64, pcl_point.y as f64, pcl_point.z as f64)
                     + self.imu_state.offset_t_l_i;
+
                 let p_compensate = self.imu_state.offset_r_l_i.matrix().transpose()
                     * (self.imu_state.pose.rotation().matrix().transpose()
                         * (r_i * p_imu_frame + t_ei)
                         - self.imu_state.offset_t_l_i);
 
-                out_cloud[it_pcl].x = p_compensate.x as f32;
-                out_cloud[it_pcl].y = p_compensate.y as f32;
-                out_cloud[it_pcl].z = p_compensate.z as f32;
-            }
-        }
+                out_point.x = p_compensate.x as f32;
+                out_point.y = p_compensate.y as f32;
+                out_point.z = p_compensate.z as f32;
+            });
 
         out_cloud
     }
