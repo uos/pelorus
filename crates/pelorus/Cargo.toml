@@ -33,7 +33,7 @@ cuda = { optional = true, workspace = true }
 rustc-hash.workspace = true
 
 [features]
-default = ["ros2", "mimalloc", "downsample"]
+default = ["ros2-c", "mimalloc", "downsample"]
 # default = ["dev"] # toggled in development
 
 # -#-#-#-#-#- Sensor Communication -#-#-#-#-#-
