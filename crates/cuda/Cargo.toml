@@ -18,3 +18,4 @@ walkdir = "2"
 
 [features]
 cuda_available = []
+cuda_enable = []

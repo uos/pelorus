@@ -27,5 +27,5 @@ cuda = { workspace = true, optional = true }
 # default = ["cuda"]                 # TODO optional with flags
 parallel = ["spole/parallel"]
 nn_kdt = ["spole/nn_kdt"]
-cuda = ["dep:cuda", "prelio/cuda"]
+cuda = ["dep:cuda", "cuda/cuda_available", "cuda/cuda_enable", "prelio/cuda"]
 # gicp = ["dep:small_gicp-sys"]

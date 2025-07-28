@@ -7,7 +7,7 @@ use std::sync::{Arc, Mutex};
 use cuda::CudaBuffer;
 use nalgebra::*;
 use prelio::{LocatedBufferView, timing::RuntimeEvaluator};
-#[cfg(feature = "parallel")]
+#[cfg(all(feature = "parallel", not(feature = "cuda")))]
 use rayon::prelude::*;
 use ros_pointcloud2::points::{PointXYZ, PointXYZINormal};
 
@@ -83,6 +83,7 @@ impl SFasterLio {
         }
     }
 
+    #[cfg(not(feature = "cuda"))]
     fn add_to_map(&mut self, cloud: &LocatedBufferView<PointXYZ>, pose: Isometry3<f64>) {
         let cloud = match cloud {
             LocatedBufferView::Ram(items) => items,

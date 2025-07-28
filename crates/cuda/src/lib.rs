@@ -3,7 +3,6 @@
 use std::fmt::Debug;
 
 use ffi::Point;
-use log::debug;
 use ros_pointcloud2::points::{PointXYZ, PointXYZINormal};
 
 mod ffi;
