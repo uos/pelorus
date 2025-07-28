@@ -370,7 +370,7 @@ impl ImuProcessing {
         // Integrate to end of cloud
         self.last_imu = imu_msgs[imu_msgs.len() - 1].clone();
         let dt = cloud_end_time - self.last_imu.timestamp_sec;
-        assert!(dt > 0.0);
+        assert!(dt >= 0.0);
 
         let avr_x = [acc_avr_x, acc_avr_y, acc_avr_z];
         let angvel_avr = [angvel_avr_x, angvel_avr_y, angvel_avr_z];
