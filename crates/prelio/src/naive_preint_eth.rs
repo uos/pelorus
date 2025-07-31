@@ -1,14 +1,12 @@
-use crate::config;
 use crate::imu::ImuMsg;
 use nalgebra::*;
 
 type SO3 = sophus_lie::Rotation3<f64, 1>;
 
-#[allow(dead_code, unused_variables)]
+#[allow(dead_code)]
 pub fn integrate_imu(
     imu_data: &Vec<ImuMsg>,
     start_time: f64,
-    config: Option<&config::UndistortParameters>,
     use_ahrs_orientation: bool,
     gravity: f64,
 ) -> Isometry3<f64> {
@@ -69,8 +67,8 @@ pub fn integrate_imu(
         kum_linear_velocity += delta_linear_velocity;
     }
 
-    let final_angular_velocity = kum_angular_velocity;
-    let final_linear_velocity = kum_linear_velocity;
+    // let final_angular_velocity = kum_angular_velocity;
+    // let final_linear_velocity = kum_linear_velocity;
 
     //(init, final_angular_velocity, final_linear_velocity)
     init

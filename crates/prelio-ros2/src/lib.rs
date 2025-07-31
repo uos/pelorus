@@ -29,7 +29,7 @@ use r2r::{
 use ratpub::Node;
 use ros_pointcloud2::prelude::*;
 #[cfg(feature = "ros2-client")]
-use ros2_client::{ros2, ros2::Duration};
+use ros2_client::ros2;
 #[cfg(feature = "ros2-client")]
 use ros2_interfaces_jazzy::{
     builtin_interfaces::msg::Time,
@@ -441,7 +441,7 @@ pub struct PrelioNode {
     pub logger: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct LifisNodeParameters {
     pub cloud_src_topic: String,
     pub imu_src_topic: String,
@@ -471,11 +471,16 @@ pub enum Qos {
 impl From<crate::Qos> for ros2::QosPolicies {
     fn from(value: crate::Qos) -> Self {
         match value {
-            Qos::Sensor => ros2::QosPolicyBuilder::new()
+            Qos::Sensor(rel) => ros2::QosPolicyBuilder::new()
                 .durability(ros2::policy::Durability::Volatile)
                 .deadline(ros2::policy::Deadline(ros2::Duration::INFINITE))
                 .ownership(ros2::policy::Ownership::Shared)
-                .reliability(ros2::policy::Reliability::BestEffort)
+                .reliability(match rel {
+                    Reliability::Reliable => ros2::policy::Reliability::Reliable {
+                        max_blocking_time: ros2::Duration::INFINITE,
+                    },
+                    Reliability::BestEffort => ros2::policy::Reliability::BestEffort,
+                })
                 .history(ros2::policy::History::KeepLast { depth: 5 })
                 .lifespan(ros2::policy::Lifespan {
                     duration: ros2::Duration::INFINITE,
@@ -517,24 +522,6 @@ impl From<crate::Qos> for QosProfile {
                 .history(r2r::qos::HistoryPolicy::KeepLast)
                 .keep_last(1)
                 .lifespan(std::time::Duration::MAX),
-        }
-    }
-}
-
-impl Default for LifisNodeParameters {
-    fn default() -> Self {
-        LifisNodeParameters {
-            cloud_src_topic: "/ouster/points".to_string(),
-            #[cfg(not(feature = "no-imu-sync"))]
-            imu_src_topic: "/ouster/imu".to_string(),
-            #[cfg(feature = "no-imu-sync")]
-            imu_src_topic: "".to_string(),
-            logger_prefix: "lifis".to_string(),
-            imu_filtered_topic: "/imu_filtered".to_string(),
-            imu_predictor_init_time_sec: 0.1,
-            cloud_qos: Qos::Sensor(Reliability::BestEffort),
-            imu_qos: Qos::Sensor(Reliability::BestEffort),
-            imu_filtered_qos: Qos::Sensor(Reliability::Reliable),
         }
     }
 }
@@ -603,18 +590,15 @@ impl PrelioNode {
             ready_for_next,
         )?;
 
-        let (chan, imu_frame) = {
+        let chan = {
             let mut lifis = state.lifis.lock().unwrap();
-            let chan = lifis.get_chan().unwrap();
-
-            let imu_frame = state.lifis_params.imu.imu_frame.clone();
-            (chan, imu_frame)
+            lifis.get_chan().unwrap()
         };
 
         let (tx, rx) = std::sync::mpsc::channel();
 
         std::thread::spawn(move || {
-            Self::transform_types(tx, chan, &imu_frame);
+            Self::transform_types(tx, chan);
         });
 
         // first option None = override not set.
@@ -665,8 +649,8 @@ impl PrelioNode {
         let state_clone = state.clone();
         #[cfg(any(feature = "ros2-client", feature = "ratpub", feature = "r2r"))]
         let imu_tf_frame_lidar_inner = Arc::clone(&imu_tf_frame);
-        #[cfg(not(feature = "no-imu-sync"))]
-        let lidar_imu_init_buffer = imu_init_buffer.clone();
+        // #[cfg(all(not(feature = "no-imu-sync"), feature = "ratpub"))]
+        // let lidar_imu_init_buffer = imu_init_buffer.clone();
         #[cfg(feature = "ros2-client")]
         std::thread::spawn(move || {
             loop {
@@ -728,13 +712,13 @@ impl PrelioNode {
             std::thread::spawn(move || {
                 cloud_sub_rt.block_on(async {
                     while let Some(msg) = cloud_subscriber.next().await {
-                        #[cfg(not(feature = "no-imu-sync"))]
-                        {
-                            let b = lidar_imu_init_buffer.lock().unwrap();
-                            if b.is_some() {
-                                continue;
-                            }
-                        }
+                        // #[cfg(not(feature = "no-imu-sync"))]
+                        // {
+                        //     let b = lidar_imu_init_buffer.lock().unwrap();
+                        //     if b.is_some() {
+                        //         continue;
+                        //     }
+                        // }
                         debug!("received cloud");
                         let imu_tf_frame_lidar_inner =
                             imu_tf_frame_lidar_inner.clone().lock().unwrap().clone();
@@ -858,6 +842,7 @@ impl PrelioNode {
                                     // apply the init buffer
                                     if let Some(imu_init_buffer) = imu_init_buffer.take() {
                                         imu_pose_predictor_init(&imu_init_buffer);
+                                        info!("EKF: Imu initialized");
                                     }
                                 }
                             }
@@ -1034,7 +1019,6 @@ impl PrelioNode {
     pub fn transform_types(
         sender: std::sync::mpsc::Sender<Tick>,
         receiver: std::sync::mpsc::Receiver<prelio::PrelioProcessedCloud>,
-        imu_frame: &String,
     ) {
         while let Ok(synced_data) = receiver.recv() {
             let pose = PoseWithCovariance {
@@ -1078,7 +1062,7 @@ impl PrelioNode {
                     },
                     frame_id: synced_data.header.frame_id.clone(),
                 },
-                child_frame_id: imu_frame.clone(),
+                child_frame_id: synced_data.imu_frame,
                 pose,
                 twist,
             };

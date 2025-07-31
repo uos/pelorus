@@ -5522,6 +5522,7 @@ dependencies = [
  "rand 0.9.1",
  "rat",
  "ratpub",
+ "ratslang",
  "rerun",
  "ros2-client 0.7.6",
  "ros2-interfaces-jazzy",
@@ -5532,6 +5533,7 @@ dependencies = [
  "small_gicp-sys",
  "tokio",
  "toml",
+ "uom",
 ]
 
 [[package]]
@@ -6359,6 +6361,18 @@ dependencies = [
  "ros2-interfaces-jazzy-rkyv 0.0.4 (git+https://github.com/stelzo/ros2-interfaces-jazzy-rkyv.git)",
  "sea",
  "tokio",
+]
+
+[[package]]
+name = "ratslang"
+version = "0.1.0-alpha.3"
+source = "git+https://github.com/stelzo/ratslang?branch=main#29c485f578b58423372b8fa9fe279d65ac351d66"
+dependencies = [
+ "anyhow",
+ "ariadne",
+ "chumsky",
+ "log",
+ "logos",
 ]
 
 [[package]]
@@ -10134,6 +10148,17 @@ name = "untrusted"
 version = "0.9.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8ecb6da28b8a351d773b68d5825ac39017e680750f980f3a1a85cd8dd28a47c1"
+
+[[package]]
+name = "uom"
+version = "0.37.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "cd5cfe7d84f6774726717f358a37f5bca8fca273bed4de40604ad129d1107b49"
+dependencies = [
+ "num-rational 0.4.2",
+ "num-traits 0.2.19",
+ "typenum",
+]
 
 [[package]]
 name = "ureq"

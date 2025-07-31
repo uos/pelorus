@@ -31,6 +31,8 @@ rat = { workspace = true, optional = true }
 small_gicp-sys = { workspace = true, optional = true }
 cuda = { optional = true, workspace = true }
 rustc-hash.workspace = true
+ratslang.workspace = true
+uom.workspace = true
 
 [features]
 default = ["ros2-c", "mimalloc", "downsample"]

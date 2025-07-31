@@ -2,9 +2,8 @@ use nalgebra::*;
 
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct LifisParameters {
-    pub undistort: UndistortParameters,
     pub imu: ImuParameters,
     pub downsample: DownsampleParameters,
     pub passthrough_filter: PassthroughFilterParameters,
@@ -14,36 +13,11 @@ pub struct LifisParameters {
     pub map_frame: String,
 }
 
-impl Default for LifisParameters {
-    fn default() -> Self {
-        Self {
-            undistort: UndistortParameters::default(),
-            imu: ImuParameters::default(),
-            downsample: DownsampleParameters::default(),
-            passthrough_filter: PassthroughFilterParameters::default(),
-            lidar_vendor: crate::LidarVendor::default(),
-            imu_lidar_tf_override: false,
-            global_zero_frame: "".to_string(),
-            map_frame: "map".to_string(),
-        }
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct ImuCalibrationParameters {
     pub imu_intrinsics_calib_file_path: Option<String>,
     pub imu_calibrate_gyros: bool,
     pub gyro_calibration_samples: usize,
-}
-
-impl Default for ImuCalibrationParameters {
-    fn default() -> Self {
-        Self {
-            imu_intrinsics_calib_file_path: None,
-            imu_calibrate_gyros: true,
-            gyro_calibration_samples: 100,
-        }
-    }
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -51,53 +25,24 @@ pub struct UndistortParameters {
     pub lidar_to_imu: Isometry3<f64>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct DownsampleParameters {
     pub voxel_size: f32,
 }
 
-impl Default for DownsampleParameters {
-    fn default() -> Self {
-        Self { voxel_size: 0.15 }
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct ImuParameters {
     pub gravity: f64,
     pub accel_noise: f64,
     pub gyro_noise: f64,
     pub accel_bias_noise: f64,
     pub gyro_bias_noise: f64,
-    pub integration_noise: f64,
-    pub bias_acc: Vector3<f64>, // TODO if we have a known bias, it is removed while applying the calibration?
-    pub bias_gyro: Vector3<f64>,
     pub imu_lidar_tf_override: bool,
     pub madgwick_setting: crate::MadgwickSetting,
     pub calibration: ImuCalibrationParameters,
-    pub imu_frame: String,
 }
 
-impl Default for ImuParameters {
-    fn default() -> Self {
-        Self {
-            gravity: 9.81,
-            accel_noise: 1e-4,
-            gyro_noise: 1e-4,
-            accel_bias_noise: 1e-5,
-            gyro_bias_noise: 1e-5,
-            integration_noise: 1e-8,
-            bias_acc: Vector3::new(0.0, 0.0, 0.0),
-            bias_gyro: Vector3::new(0.0, 0.0, 0.0),
-            imu_lidar_tf_override: false,
-            madgwick_setting: crate::MadgwickSetting::default(),
-            calibration: ImuCalibrationParameters::default(),
-            imu_frame: "imu".to_string(),
-        }
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct PassthroughFilterParameters {
     pub min: Vector3<f32>,
     pub max: Vector3<f32>,
@@ -116,28 +61,4 @@ pub struct PassthroughFilterParameters {
     pub min_intensity: f32,
     pub max_intensity: f32,
     pub invert_intensity: bool,
-}
-
-impl Default for PassthroughFilterParameters {
-    fn default() -> Self {
-        Self {
-            min: Vector3::new(f32::MIN, f32::MIN, f32::MIN),
-            max: Vector3::new(f32::MAX, f32::MAX, f32::MAX),
-            invert_bounding_box: false,
-            min_dist: 0.0,
-            max_dist: f32::MAX / 2.5,
-            invert_distance: false,
-            filter_frame_transform: Isometry3::identity(),
-            fov_right: 0.0,
-            fov_left: 0.0,
-            forward: Vector2::new(1.0, 0.0),
-            enable_horizontal_fov: false,
-            polygon: None,
-            invert_polygon: false,
-            invert_fov: false,
-            min_intensity: f32::MIN,
-            max_intensity: f32::MAX,
-            invert_intensity: false,
-        }
-    }
 }

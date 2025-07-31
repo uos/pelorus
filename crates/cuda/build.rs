@@ -23,8 +23,6 @@ fn main() {
                 "src/src/localmap.cu",
             ];
             let include_paths = vec!["src/include"];
-
-            // TODO detect jetson orin etc. https://developer.nvidia.com/cuda-gpus
             // orin: 87
             // rtx 40xx: 89
             // jetson nano: 5.3

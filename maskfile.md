@@ -16,7 +16,7 @@ RUSTFLAGS="-C target-cpu=native -C llvm-args=-cost-kind=latency" cargo run --rel
 > Start with development flags and debug info
 
 ~~~sh
-RUST_BACKTRACE=1 RUST_LOG=debug,lighthouse=off,sea=off,h2=off,hyper_util=off,re_sdk=off,re_chunk=off,tower=off,ratpub=off,tonic=off,tonic_web=off cargo run --release --no-default-features --features dev -- run
+RUST_BACKTRACE=1 RUST_LOG=debug,lighthouse=off,sea=off,h2=off,hyper_util=off,re_sdk=off,re_chunk=off,tower=off,ratpub=off,tonic=off,tonic_web=off cargo run --release --no-default-features --features dev -- run -c pelorus.rl
 ~~~
 <!-- RUST_LOG=debug,lighthouse=off,sea=off,h2=off,hyper_util=off,re_sdk=off,re_chunk=off,tower=off,ratpub=off cargo run --no-default-features --features dev -- run -->
 
