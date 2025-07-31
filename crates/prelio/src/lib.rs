@@ -517,6 +517,7 @@ pub struct ImuPosePrediction {
 #[derive(Debug)]
 pub struct PrelioProcessedCloud {
     pub cloud: Vec<PointXYZ>,
+    pub imu_frame: String,
     pub header: HeaderMsg,
     pub end_of_frame_guess: Isometry3<f64>,
     pub end_of_frame_time: TimeMsg,
@@ -757,7 +758,6 @@ impl Prelio {
         // sync and imu integration worker
         // TODO move to main processing, since else predict and correct is async
         let intrinsic_given = imu_intrinsic_calibration.is_some();
-        let undistort_params = params.undistort.clone();
         thread::spawn(move || {
             let mut last_lidar_frame_time = 0.0;
             let imu_process = ImuProcess::new(gravity, intrinsic_given);
@@ -776,7 +776,6 @@ impl Prelio {
                 &synced_cloud_imu_tx,
                 intrinsic_given,
                 imu_process,
-                &undistort_params,
                 imu_pose_prediction_undistort,
                 imu_pose_prediction_init_guess,
                 lidar_vendor.clone(),
@@ -949,7 +948,6 @@ impl Prelio {
         synced_sender: &std::sync::mpsc::Sender<PrelioProcessedCloud>,
         imu_intrinsic_calibration_given: bool,
         mut imu_process: ImuProcess,
-        undistort_parameters: &config::UndistortParameters,
         imu_pose_prediction_undistort: Option<Box<ImuPredictorUndistort>>,
         imu_pose_prediction_init_guess: Option<Box<ImuPredictor>>,
         lidar_vendor: Option<LidarVendor>,
@@ -1059,6 +1057,7 @@ impl Prelio {
 
                 let res = PrelioProcessedCloud {
                     cloud,
+                    imu_frame: "".to_string(),
                     header: lidar_header,
                     end_of_frame_guess: Isometry3::identity(),
                     end_of_frame_time: secs_to_timestamp(meas.lidar_end_stamp),
@@ -1078,9 +1077,15 @@ impl Prelio {
                     let _ = wait_for_next.recv().unwrap();
                 }
 
+                let imu_frame = meas
+                    .imu_buffer
+                    .first()
+                    .expect("what did we just merge?")
+                    .frame_id
+                    .clone();
+
                 // Deskewing cloud with synced data
-                let deskew =
-                    imu_process.process(meas, undistort_parameters, &imu_pose_prediction_undistort);
+                let deskew = imu_process.process(meas, &imu_pose_prediction_undistort);
 
                 if let Some(imu_cloud) = deskew {
                     eval.merge(imu_cloud.runtime_eval);
@@ -1110,7 +1115,6 @@ impl Prelio {
                                     naive_preint_eth::integrate_imu(
                                         &imu_data,
                                         *prev_lidar_end_time,
-                                        Some(undistort_parameters),
                                         false, // TODO check ahrs orientation via config or if enabled
                                         gravity,
                                     )
@@ -1143,6 +1147,7 @@ impl Prelio {
 
                     let res = PrelioProcessedCloud {
                         cloud: imu_cloud.cloud,
+                        imu_frame,
                         header: lidar_header,
                         end_of_frame_guess: imu_int.pose,
                         end_of_frame_time: imu_data.last().unwrap().stamp.clone(),

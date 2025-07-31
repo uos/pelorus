@@ -1,3 +1,4 @@
+use anyhow::anyhow;
 #[allow(unused_imports)]
 use anyhow::Error;
 #[cfg(feature = "mimalloc")]
@@ -7,6 +8,7 @@ use mimalloc::MiMalloc;
 #[cfg(feature = "mimalloc")]
 static GLOBAL: MiMalloc = MiMalloc;
 
+mod config;
 mod mapping;
 use clap::{command, Parser, Subcommand};
 use futures_lite::future;
@@ -29,6 +31,7 @@ use rerun::external::glam;
 #[cfg(feature = "ros2-client")]
 use ros2_client::{NodeName, NodeOptions};
 #[cfg(feature = "ros2-client")]
+#[allow(unused_imports)]
 use ros2_interfaces_jazzy::{
     builtin_interfaces::msg::Time,
     geometry_msgs::msg::{Point, PoseStamped, Quaternion, Transform, TransformStamped, Vector3},
@@ -49,7 +52,6 @@ use ros2_interfaces_jazzy_rkyv::{
 };
 
 use serde::{Deserialize, Serialize};
-use std::io::Read;
 
 use either::*;
 #[cfg(feature = "ros2-client")]
@@ -60,10 +62,10 @@ use prelio_ros2::tf_lh::TfBroadcaster;
 use prelio_ros2::tf_r2r::TfBroadcaster;
 use prelio_ros2::{
     prelio::{config::LifisParameters, LocatedBufferView},
-    LifisNodeParameters, Qos, Reliability,
+    LifisNodeParameters,
 };
 
-use pelorus_reg::{sfasterlio::SFasterLio, Registration};
+use pelorus_reg::{registration::RegistrationState, Registration};
 use prelio_ros2::{prelio::imu::ImuMsg, PrelioNode};
 //use small_gicp_sys::*;
 use ros_pointcloud2::prelude::*;
@@ -90,7 +92,7 @@ pub enum LioMethod {
     JlioGPU,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct LioConfig {
     pub feedback_fps: u32,
     pub registered_cloud_qos: prelio_ros2::Qos,
@@ -102,41 +104,15 @@ pub struct LioConfig {
     pub map_capacity: usize,
     pub imu_params: pelorus_reg::imu::ImuParameters,
     pub lidar_odom_cov: f64,
-    pub enable_live_extrinsic_calibration: bool,
+    pub enable_live_extrinsic_calibration: bool, // TODO rm
     pub prelio_params: LifisParameters,
     pub prelio_node_params: LifisNodeParameters,
     pub k_neighbors: usize,
     pub neighbor_max_range: f64,
-    pub ekf_max_iterations: i8,
+    pub ekf_max_iterations: i8, // TODO rm
     pub dist_update_sensitivity: f32,
     pub lidar_as_map_tf: bool, // Transforms all points and paths back to the lidar TF before publishing. All calculations are done in the IMU frame.
     pub mapping_resolution: f32,
-}
-
-impl Default for LioConfig {
-    fn default() -> Self {
-        Self {
-            map_resolution: 0.5,
-            lidar_odom_cov: 0.001,
-            feedback_fps: 1,
-            enable_live_extrinsic_calibration: false,
-            registered_cloud_qos: Qos::Sensor(Reliability::Reliable),
-            odom_qos: Qos::default(),
-            imu_odom_qos: Qos::default(),
-            imu_path_qos: Qos::default(),
-            path_qos: Qos::default(),
-            imu_params: pelorus_reg::imu::ImuParameters::default(),
-            prelio_params: LifisParameters::default(),
-            prelio_node_params: LifisNodeParameters::default(),
-            k_neighbors: 5,
-            neighbor_max_range: 5.0,
-            ekf_max_iterations: 4,
-            dist_update_sensitivity: 60.0,
-            map_capacity: 80_000,
-            lidar_as_map_tf: true,
-            mapping_resolution: 0.01,
-        }
-    }
 }
 
 #[allow(dead_code)]
@@ -173,45 +149,46 @@ fn imu_msg_to_pelorus_reg(m: &ImuMsg) -> pelorus_reg::ImuMsg {
     }
 }
 
-fn read_config<T>(file_path: &str) -> Result<T, Box<dyn std::error::Error>>
-where
-    T: for<'a> Deserialize<'a>,
-{
-    let mut file = std::fs::File::open(file_path)?;
-    let mut contents = String::new();
-    file.read_to_string(&mut contents)?;
-    let config: T = toml::from_str(&contents)?;
-
-    Ok(config)
-}
-
-#[derive(Debug, Clone, Parser)]
-pub struct ConfigArgs {
-    #[arg(short, long, default_value = "lio.toml")]
-    pub config_path: String,
-}
-
-#[derive(Debug, Clone, Parser)]
-pub enum ConfigCommand {
-    Init(ConfigArgs),
-    Test(ConfigArgs),
-}
-
-#[derive(Debug, Clone, Subcommand)]
-#[command()]
-pub enum Command {
-    Run(ConfigArgs),
-
-    //#[command(visible_alias = "w")]
-    #[command(subcommand)]
-    Config(ConfigCommand),
-}
-
 #[derive(Parser, Debug)]
 #[command(version, about, long_about = None)]
 struct Args {
     #[command(subcommand)]
     pub command: Command,
+}
+
+#[derive(Debug, Clone, Subcommand)]
+#[command()]
+pub enum Command {
+    /// Run the main Lidar-Inertial Odometry process.
+    Run(ConfigArgs),
+
+    /// Manage configuration files.
+    #[command(subcommand)]
+    Config(ConfigCommand),
+}
+
+#[derive(Debug, Clone, Parser)]
+pub struct ConfigArgs {
+    /// Optional path to a custom '.rl' configuration file.
+    /// If not provided, only the default configuration will be used.
+    #[arg(short, long)]
+    pub config_path: Option<String>,
+}
+
+#[derive(Debug, Clone, Subcommand)]
+pub enum ConfigCommand {
+    /// Prints the default configuration to standard output.
+    /// You can redirect this to a file, e.g., `pelorus config init > my_config.rl`
+    Init,
+    /// Compiles and validates a given configuration file against the defaults.
+    Test(TestArgs),
+}
+
+#[derive(Debug, Clone, Parser)]
+pub struct TestArgs {
+    /// The path of the configuration file to test.
+    #[arg(default_value = "pelorus.rl")]
+    pub config_path: String,
 }
 
 #[derive(Debug)]
@@ -222,7 +199,7 @@ struct RegisteredCloud {
     timestamp: f64,
 }
 
-fn lio(config_path: &str) -> Result<(), Box<dyn std::error::Error>> {
+fn lio(config: LioConfig) -> Result<(), Box<dyn std::error::Error>> {
     // TODO add logging file
     // log4rs::init_file("examples/async_listener/log4rs.yaml", Default::default()).unwrap();
     #[cfg(any(feature = "ratpub", feature = "rat"))]
@@ -254,24 +231,6 @@ fn lio(config_path: &str) -> Result<(), Box<dyn std::error::Error>> {
     #[cfg(feature = "r2r")]
     let mut node = r2r::Node::create(ctx, "lio", "lio")?;
 
-    // TODO add config path via CLI (clap)
-    // also make option to export default config to file
-    let config = read_config(config_path);
-    let config = match config {
-        Err(e) => {
-            if let Some(io_err) = e.downcast_ref::<std::io::Error>() {
-                if io_err.kind() == std::io::ErrorKind::NotFound {
-                    LioConfig::default()
-                } else {
-                    return Err(e);
-                }
-            } else {
-                return Err(e);
-            }
-        }
-        Ok(cfg) => cfg,
-    };
-
     #[cfg(not(feature = "ratpub"))]
     let tf_broadcaster = TfBroadcaster::new(&mut node);
     #[cfg(feature = "ratpub")]
@@ -289,7 +248,7 @@ fn lio(config_path: &str) -> Result<(), Box<dyn std::error::Error>> {
     #[cfg(feature = "gicp")]
     let map = Arc::new(Mutex::new(small_gicp_sys::Map::new(config.map_resolution)));
     #[cfg(not(feature = "gicp"))]
-    let map = Arc::new(Mutex::new(SFasterLio::new(
+    let map = Arc::new(Mutex::new(RegistrationState::new(
         config.map_resolution,
         config.map_capacity,
         config.prelio_params.imu.gravity,
@@ -403,7 +362,11 @@ fn lio(config_path: &str) -> Result<(), Box<dyn std::error::Error>> {
         Some(ready_for_next_rx),
     )?;
 
-    #[cfg(all(not(feature = "no-viz"), feature = "ros2-client"))]
+    #[cfg(all(
+                    not(feature = "no-viz"),
+                    not(feature = "rerun"),
+                    not(feature = "ratpub") // currently no use of the total map in ratpub
+                ))]
     let map_publisher = node
         .create_publisher::<PointCloud2>(
             &node
@@ -1156,30 +1119,66 @@ fn lio(config_path: &str) -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-/*#[cfg(debug_assertions)]
-fn main() -> color_eyre::eyre::Result<(), Box<dyn std::error::Error>> {
-    color_eyre::install()?;
-    env_logger::init();
-    log::warn!("Running in dev mode.");
-    lio()
-}*/
-
-//#[cfg(not(debug_assertions))]
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     env_logger::init();
     let args = Args::parse();
 
+    const DEFAULT_CONFIG_STR: &str = include_str!("../../../default.rl");
+
     match args.command {
-        Command::Run(args) => lio(&args.config_path),
-        Command::Config(args) => match args {
-            ConfigCommand::Init(args) => {
-                let config = LioConfig::default();
-                let toml = toml::to_string(&config)?;
-                std::fs::write(&args.config_path, toml)?;
+        Command::Run(args) => {
+            let default_ast = ratslang::compile_code(DEFAULT_CONFIG_STR)
+                .map_err(|e| anyhow!("Failed to compile embedded default config: {}", e))?;
+
+            let user_ast = if let Some(config_path) = args.config_path {
+                let path = std::path::Path::new(&config_path);
+                if !path.exists() {
+                    return Err(anyhow!(
+                        "Error: Configuration file not found at '{}'",
+                        config_path
+                    )
+                    .into());
+                }
+                ratslang::compile_file(&path.to_path_buf(), None, None).map_err(|e| {
+                    anyhow!("Failed to compile user config '{}': {}", config_path, e)
+                })?
+            } else {
+                ratslang::compile_code("")?
+            };
+
+            let config = config::ast_to_config(default_ast, user_ast)?;
+            lio(config)
+        }
+        Command::Config(cmd) => match cmd {
+            ConfigCommand::Init => {
+                print!("{}", DEFAULT_CONFIG_STR);
                 Ok(())
             }
             ConfigCommand::Test(args) => {
-                let _config = read_config::<LioConfig>(&args.config_path)?;
+                println!("Testing configuration file: {}", args.config_path);
+
+                let default_ast = ratslang::compile_code(DEFAULT_CONFIG_STR)
+                    .map_err(|e| anyhow!("Failed to compile embedded default config: {}", e))?;
+
+                let path = std::path::Path::new(&args.config_path);
+                if !path.exists() {
+                    return Err(anyhow!(
+                        "Error: Configuration file not found at '{}'",
+                        args.config_path
+                    )
+                    .into());
+                }
+                let user_ast =
+                    ratslang::compile_file(&path.to_path_buf(), None, None).map_err(|e| {
+                        anyhow!(
+                            "Failed to compile user config '{}': {}",
+                            args.config_path,
+                            e
+                        )
+                    })?;
+
+                let _ = config::ast_to_config(default_ast, user_ast)?;
+                println!("Configuration file at '{}' is valid.", args.config_path);
                 Ok(())
             }
         },

@@ -25,6 +25,8 @@ prelio-ros2 = { path = "crates/prelio-ros2", version = "0.1.0" }
 spole = { path = "crates/spole", version = "0.1.0" }
 cuda = { path = "crates/cuda", version = "0.1.0" }
 
+uom = { version= "0.37.0", default-features = false, features = ["usize", "si", "f64", "f32"]  }
+ratslang = { version = "0.1.0-alpha.3", git = "https://github.com/stelzo/ratslang", branch = "main" }
 ros_pointcloud2 = { version = "0.5.3", features = [
   "nalgebra",
   "rayon",

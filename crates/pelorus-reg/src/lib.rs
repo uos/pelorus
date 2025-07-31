@@ -3,7 +3,7 @@ use prelio::{LocatedBufferView, timing::RuntimeEvaluator};
 use ros_pointcloud2::prelude::*;
 
 pub mod imu;
-pub mod sfasterlio;
+pub mod registration;
 pub mod sophus_ekf;
 use anyhow::Result;
 pub use spole::*;

@@ -16,7 +16,7 @@ pub use spole::IVoxNearbyType;
 
 const PLANE_POINT_ERROR_THRESHOLD: f64 = 0.1;
 
-pub struct SFasterLio {
+pub struct RegistrationState {
     ekf: crate::sophus_ekf::Esekf,
     imu_processing: crate::imu::ImuProcessing,
     pub map: spole::IVoxHashMap,
@@ -27,26 +27,7 @@ pub struct SFasterLio {
     imu_lidar_extrinsic_calibration_optimization: bool,
 }
 
-impl Default for SFasterLio {
-    fn default() -> Self {
-        Self::new(
-            0.2,
-            10_000,
-            9.81,
-            &crate::imu::ImuParameters::default(),
-            0.001,
-            4,
-            5,
-            5.0,
-            false,
-            Isometry3::identity(),
-            IVoxNearbyType::default(),
-            3.0,
-        )
-    }
-}
-
-impl SFasterLio {
+impl RegistrationState {
     pub fn new(
         map_resolution: f64,
         map_capacity: usize,
@@ -311,7 +292,7 @@ impl SFasterLio {
 }
 
 // TODO add ekf init function to here, not in pelorus
-impl crate::Registration for SFasterLio {
+impl crate::Registration for RegistrationState {
     fn undistort(
         &mut self,
         imu_msgs: &[crate::ImuMsg],
