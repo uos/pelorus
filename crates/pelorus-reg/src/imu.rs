@@ -226,37 +226,19 @@ impl ImuProcessing {
         ekf.state.offset_r_l_i =
             sophus_lie::Rotation3::try_from_mat(&self.lidar_r_wrt_imu).unwrap();
 
-        ekf.cov[(0, 0)] = 1.0; // pos
-        ekf.cov[(1, 1)] = 1.0;
-        ekf.cov[(2, 2)] = 1.0;
+        ekf.cov = nalgebra::SMatrix::<f64, 18, 18>::identity();
 
-        ekf.cov[(3, 3)] = 1.0; // rot
-        ekf.cov[(4, 4)] = 1.0;
-        ekf.cov[(5, 5)] = 1.0;
+        ekf.cov[(9, 9)] = COV2;
+        ekf.cov[(10, 10)] = COV2;
+        ekf.cov[(11, 11)] = COV2;
 
-        ekf.cov[(6, 6)] = COV1; // offset_r_l_i
-        ekf.cov[(7, 7)] = COV1;
-        ekf.cov[(8, 8)] = COV1;
+        ekf.cov[(12, 12)] = COV3;
+        ekf.cov[(13, 13)] = COV3;
+        ekf.cov[(14, 14)] = COV3;
 
-        ekf.cov[(9, 9)] = COV1; // offset_t_l_i
-        ekf.cov[(10, 10)] = COV1;
-        ekf.cov[(11, 11)] = COV1;
-
-        ekf.cov[(12, 12)] = 1.0; // vel
-        ekf.cov[(13, 13)] = 1.0;
-        ekf.cov[(14, 14)] = 1.0;
-
-        ekf.cov[(15, 15)] = COV2; // bg
-        ekf.cov[(16, 16)] = COV2;
-        ekf.cov[(17, 17)] = COV2;
-
-        ekf.cov[(18, 18)] = COV3; // ba
-        ekf.cov[(19, 19)] = COV3;
-        ekf.cov[(20, 20)] = COV3;
-
-        ekf.cov[(21, 21)] = COV1; // grav
-        ekf.cov[(22, 22)] = COV1;
-        ekf.cov[(23, 23)] = COV1;
+        ekf.cov[(15, 15)] = COV1;
+        ekf.cov[(16, 16)] = COV1;
+        ekf.cov[(17, 17)] = COV1;
 
         self.last_imu = msgs[msgs.len() - 1].clone();
 

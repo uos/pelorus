@@ -92,7 +92,7 @@ no-viz = []
 # -#-#-#-#-#- Low level -#-#-#-#-#-
 
 # Toggle tooling typically used for development
-dev = ["offline", "mapping", "rerun", "parallel"]
+dev = ["offline", "map", "rerun", "downsample"]
 
 # Use variable syncing for triggers
 rat = ["dep:rat", "dep:tokio"]

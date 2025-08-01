@@ -1139,8 +1139,6 @@ impl Prelio {
                                     imu_cloud.last_twist[4],
                                     imu_cloud.last_twist[5],
                                 ),
-                                // lidar_imu_extrinsic_rotation: Matrix3::identity(), // TODO never used?
-                                // lidar_imu_extrinsic_translation: Vector3::zeros(), // TODO never used?
                             }
                         }
                     };

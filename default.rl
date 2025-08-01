@@ -4,7 +4,7 @@ registration {
     resolution = 0.5m # Voxel side length. NOTE: This will heavily affect your registration accuracy.
     capacity = 80000 # How many Voxels of the previous defined resolution to save at any time. With Cuda enabled, the capacity will be round up to the next power of 2.
    
-    distribution_update_sensitivity = 60.0 # Magic weighting value for handling the sensivity to new scans. The higher this value, the sensitive is it to brand new scans.
+    distribution_update_sensitivity = 10.0 # Magic weighting value for handling the sensivity to new scans. The higher this value, the sensitive is it to brand new scans.
   }
 
   k_neighborhood = 5 # How many points to get from the neighborhood. Higher values yield higher accuracy at the cost of runtime.
@@ -43,17 +43,11 @@ imu {
 
   gravity = 9.81 # Initial guess in m/s^2 for initialization.
 
-  covariance_gyroscope = 0.001
+  covariance_gyroscope = 0.1
   covariance_gyroscope_bias = 0.0001
 
-  covariance_acceleration = 0.001
+  covariance_acceleration = 0.1
   covariance_acceleration_bias = 0.0001
-
-  acceleration_noise = 0.0001
-  acceleration_bias_noise = 0.00001
-
-  gyroscope_noise = 0.0001
-  gyroscope_bias_noise = 0.00001
 
   calibration {
     gyroscope = true # Take a few measurements first without rotating in the beginning to smooth out rotations.

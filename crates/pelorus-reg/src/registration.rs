@@ -14,6 +14,8 @@ use ros_pointcloud2::points::{PointXYZ, PointXYZINormal};
 use sophus_lie::traits::IsTranslationProductGroup;
 pub use spole::IVoxNearbyType;
 
+use crate::sophus_ekf::skew_symmetric;
+
 const PLANE_POINT_ERROR_THRESHOLD: f64 = 0.1;
 
 pub struct RegistrationState {
@@ -21,10 +23,8 @@ pub struct RegistrationState {
     imu_processing: crate::imu::ImuProcessing,
     pub map: spole::IVoxHashMap,
     laser_point_noise_cov: f64,
-    ekf_max_iterations: i8,
     k_neighbors: usize,
     neighbor_max_range: f64,
-    imu_lidar_extrinsic_calibration_optimization: bool,
 }
 
 impl RegistrationState {
@@ -34,10 +34,8 @@ impl RegistrationState {
         g: f64,
         imu_params: &crate::imu::ImuParameters,
         laser_point_noise_cov: f64,
-        ekf_max_iterations: i8,
         k_neighbors: usize,
         neighbor_max_range: f64,
-        imu_lidar_extrinsic_calibration_optimization: bool,
         initial_extrinsic_calibration: Isometry3<f64>,
         knn_nearby_voxel_search_range: IVoxNearbyType,
         update_cov_sensitivity: f32,
@@ -57,10 +55,8 @@ impl RegistrationState {
             ),
             map,
             laser_point_noise_cov,
-            ekf_max_iterations,
             k_neighbors,
             neighbor_max_range,
-            imu_lidar_extrinsic_calibration_optimization,
         }
     }
 
@@ -341,7 +337,6 @@ impl crate::Registration for RegistrationState {
         cloud: &LocatedBufferView<PointXYZ>,
         ready_for_next: Option<&std::sync::mpsc::Sender<()>>,
         eval: &mut RuntimeEvaluator,
-        // _planes_gpu: bool, // TODO remove. ganz oder gar nicht
         #[cfg(feature = "cuda")] stream: &cuda::Stream,
     ) -> anyhow::Result<crate::CloudRegisterResult> {
         let neighbors = Arc::new(Mutex::new(None));
@@ -358,7 +353,6 @@ impl crate::Registration for RegistrationState {
             let map = &mut self.map;
             let k = self.k_neighbors;
             let neighbor_max_range = self.neighbor_max_range as f32;
-            let extrinsic_estimation = self.imu_lidar_extrinsic_calibration_optimization;
 
             let neighbors_cloud_in_ekf = neighbors.clone();
             let neighbor_sizes_in_ekf = neighbor_sizes.clone();
@@ -381,14 +375,11 @@ impl crate::Registration for RegistrationState {
 
             self.ekf.correct(
                 self.laser_point_noise_cov,
-                self.ekf_max_iterations,
-                extrinsic_estimation,
                 move |ekf_state: &crate::sophus_ekf::StateIKFom,
                       valid: &mut bool,
                       converged: bool,
                       h: &mut DVector<f64>,
-                      h_x: &mut DMatrix<f64>,
-                      extrinsic_estimation| {
+                      h_x: &mut DMatrix<f64>| {
                     let first_it_local = { first_it.lock().unwrap().clone() };
 
                     #[cfg(feature = "cuda")]
@@ -576,6 +567,7 @@ impl crate::Registration for RegistrationState {
                                     + plane[1] * point_global.y as f32
                                     + plane[2] * point_global.z as f32
                                     + plane[3];
+                                // float s = 1 - 0.9 * fabs(pd2) / sqrt(p_body.norm());
                                 let s = 1.0
                                     - 0.9 * pd2.abs()
                                         / point_local.xyz_f64().coords.norm().sqrt() as f32;
@@ -633,7 +625,7 @@ impl crate::Registration for RegistrationState {
                     }
 
                     if planes.len() > h_x.nrows() {
-                        *h_x = DMatrix::<f64>::zeros(planes.len(), 12);
+                        *h_x = DMatrix::<f64>::zeros(planes.len(), 18);
                     }
 
                     // TODO (AS REF) if converge, do use old planes/neighbors since it is likely to be the same
@@ -655,56 +647,38 @@ impl crate::Registration for RegistrationState {
                             let v = ekf_state.offset_r_l_i.matrix() * point_local
                                 + ekf_state.offset_t_l_i;
 
-                            let point_crossmat =
-                                Matrix3::new(0.0, -v.z, v.y, v.z, 0.0, -v.x, -v.y, v.x, 0.0);
-
                             let norm =
                                 Vector3::new(nearest_plane[0], nearest_plane[1], nearest_plane[2]);
 
-                            // Jacobian w.r.t extrinsic translation
-                            let c = ekf_state.pose.rotation().matrix().transpose() * norm;
+                            let a = -1.0
+                                * norm.transpose()
+                                * skew_symmetric(
+                                    &(ekf_state.pose.rotation().matrix() * v.coords
+                                        + ekf_state.pose.translation()),
+                                );
 
-                            // Jacobian w.r.t IMU rotation
-                            let a = point_crossmat * c;
+                            // Rotation Jacobian
+                            h_x_row[0] = a.x;
+                            h_x_row[1] = a.y;
+                            h_x_row[2] = a.z;
 
-                            if extrinsic_estimation {
-                                // Jacobian w.r.t extrinsic rotation
-                                let b = point_crossmat
-                                    * (ekf_state.pose.rotation().matrix().transpose() * c);
+                            // Position Jacobian
+                            h_x_row[3] = norm.x;
+                            h_x_row[4] = norm.y;
+                            h_x_row[5] = norm.z;
 
-                                // Position Jacobian
-                                h_x_row[0] = norm.x;
-                                h_x_row[1] = norm.y;
-                                h_x_row[2] = norm.z;
-
-                                h_x_row[3] = a.x;
-                                h_x_row[4] = a.y;
-                                h_x_row[5] = a.z;
-
-                                h_x_row[6] = b.x;
-                                h_x_row[7] = b.y;
-                                h_x_row[8] = b.z;
-
-                                h_x_row[9] = c.x;
-                                h_x_row[10] = c.y;
-                                h_x_row[11] = c.z;
-                            } else {
-                                // Position Jacobian
-                                h_x_row[0] = norm.x;
-                                h_x_row[1] = norm.y;
-                                h_x_row[2] = norm.z;
-
-                                h_x_row[3] = a.x;
-                                h_x_row[4] = a.y;
-                                h_x_row[5] = a.z;
-
-                                h_x_row[6] = 0.0;
-                                h_x_row[7] = 0.0;
-                                h_x_row[8] = 0.0;
-                                h_x_row[9] = 0.0;
-                                h_x_row[10] = 0.0;
-                                h_x_row[11] = 0.0;
-                            }
+                            h_x_row[6] = 0.0;
+                            h_x_row[7] = 0.0;
+                            h_x_row[8] = 0.0;
+                            h_x_row[9] = 0.0;
+                            h_x_row[10] = 0.0;
+                            h_x_row[11] = 0.0;
+                            h_x_row[12] = 0.0;
+                            h_x_row[13] = 0.0;
+                            h_x_row[14] = 0.0;
+                            h_x_row[15] = 0.0;
+                            h_x_row[16] = 0.0;
+                            h_x_row[17] = 0.0;
 
                             h_row[0] = -nearest_plane[3];
                         });
