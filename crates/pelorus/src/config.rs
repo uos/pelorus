@@ -312,10 +312,6 @@ pub fn ast_to_config(defaults: Evaluated, user: Evaluated) -> anyhow::Result<Lio
         let cov_acc = Vector3::new(cov_acc_val, cov_acc_val, cov_acc_val);
         let cov_acc_bias_val = resolve_var!(imu, "covariance_acceleration_bias", as f64, Rhs::Val(Val::NumVal(NumVal::Floating(f))) => {f})?;
         let cov_acc_bias = Vector3::new(cov_acc_bias_val, cov_acc_bias_val, cov_acc_bias_val);
-        let accel_noise = resolve_var!(imu, "acceleration_noise", as f64, Rhs::Val(Val::NumVal(NumVal::Floating(f))) => {f})?;
-        let accel_bias_noise = resolve_var!(imu, "acceleration_bias_noise", as f64, Rhs::Val(Val::NumVal(NumVal::Floating(f))) => {f})?;
-        let gyro_noise = resolve_var!(imu, "gyroscope_noise", as f64, Rhs::Val(Val::NumVal(NumVal::Floating(f))) => {f})?;
-        let gyro_bias_noise = resolve_var!(imu, "gyroscope_bias_noise", as f64, Rhs::Val(Val::NumVal(NumVal::Floating(f))) => {f})?;
 
         let calib = imu.filter_ns(&["calibration"]);
         let imu_calibrate_gyros =
@@ -334,10 +330,6 @@ pub fn ast_to_config(defaults: Evaluated, user: Evaluated) -> anyhow::Result<Lio
         let imu_prelio_params = ImuParameters {
             madgwick_setting,
             gravity,
-            accel_noise,
-            accel_bias_noise,
-            gyro_noise,
-            gyro_bias_noise,
             calibration: ImuCalibrationParameters {
                 imu_calibrate_gyros,
                 gyro_calibration_samples,

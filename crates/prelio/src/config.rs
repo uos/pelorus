@@ -33,10 +33,6 @@ pub struct DownsampleParameters {
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct ImuParameters {
     pub gravity: f64,
-    pub accel_noise: f64,
-    pub gyro_noise: f64,
-    pub accel_bias_noise: f64,
-    pub gyro_bias_noise: f64,
     pub imu_lidar_tf_override: bool,
     pub madgwick_setting: crate::MadgwickSetting,
     pub calibration: ImuCalibrationParameters,
