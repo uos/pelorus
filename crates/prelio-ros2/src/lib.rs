@@ -7,6 +7,7 @@ pub mod tf_r2r;
 
 #[allow(unused_imports)]
 use futures_lite::{StreamExt, future};
+#[allow(unused_imports)]
 use log::{debug, error, info, warn};
 pub use prelio;
 
