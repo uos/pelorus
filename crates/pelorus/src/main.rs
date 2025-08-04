@@ -11,10 +11,12 @@ static GLOBAL: MiMalloc = MiMalloc;
 mod config;
 mod mapping;
 use clap::{command, Parser, Subcommand};
+#[allow(unused_imports)]
 use futures_lite::future;
 use log::{error, info};
 use nalgebra::{Isometry3, Translation3, UnitQuaternion};
 #[cfg(feature = "r2r")]
+#[allow(unused_imports)]
 use r2r::{
     builtin_interfaces::msg::Time,
     geometry_msgs::msg::{Point, PoseStamped, Quaternion, Transform, TransformStamped, Vector3},
@@ -360,23 +362,24 @@ fn lio(config: LioConfig) -> Result<(), Box<dyn std::error::Error>> {
         Some(ready_for_next_rx),
     )?;
 
-    #[cfg(all(
-                    not(feature = "no-viz"),
-                    not(feature = "rerun"),
-                    not(feature = "ratpub") // currently no use of the total map in ratpub
-                ))]
-    let map_publisher = node
-        .create_publisher::<PointCloud2>(
-            &node
-                .create_topic(
-                    &ros2_client::Name::new(&namespace, "map").unwrap(),
-                    ros2_client::MessageTypeName::new("sensor_msgs", "PointCloud2"),
-                    &Qos::default().into(),
-                )
-                .unwrap(),
-            None,
-        )
-        .unwrap();
+    // #[cfg(feature = "ros2-client")]
+    // {
+    //     #[cfg(all(feature = "map", not(feature = "no-viz")))]
+    //     {
+    //         let map_publisher = node
+    //             .create_publisher::<PointCloud2>(
+    //                 &node
+    //                     .create_topic(
+    //                         &ros2_client::Name::new(&namespace, "map").unwrap(),
+    //                         ros2_client::MessageTypeName::new("sensor_msgs", "PointCloud2"),
+    //                         &Qos::default().into(),
+    //                     )
+    //                     .unwrap(),
+    //                 None,
+    //             )
+    //             .unwrap();
+    //     }
+    // }
     #[cfg(all(not(feature = "no-viz"), feature = "ros2-client"))]
     let cloud_publisher = node
         .create_publisher(
@@ -443,26 +446,25 @@ fn lio(config: LioConfig) -> Result<(), Box<dyn std::error::Error>> {
             None,
         )
         .unwrap();
-    #[cfg(all(
-        not(feature = "no-viz"),
-        feature = "ros2-client",
-        not(feature = "rerun")
-    ))]
-    let registered_visual_publisher = node
-        .create_publisher::<Marker>(
-            &node
-                .create_topic(
-                    &ros2_client::Name::new(&format!("{namespace}/viz"), "registered").unwrap(),
-                    ros2_client::MessageTypeName::new("visualization_msgs", "Marker"),
-                    &ros2_client::DEFAULT_PUBLISHER_QOS,
-                )
-                .unwrap(),
-            None,
-        )
-        .unwrap();
-
-    #[cfg(all(not(feature = "no-viz"), feature = "r2r"))]
-    let map_publisher = node.create_publisher::<PointCloud2>("map", QosProfile::default())?;
+    // #[cfg(all(
+    //     not(feature = "no-viz"),
+    //     feature = "ros2-client",
+    //     not(feature = "rerun")
+    // ))]
+    // let registered_visual_publisher = node
+    //     .create_publisher::<Marker>(
+    //         &node
+    //             .create_topic(
+    //                 &ros2_client::Name::new(&format!("{namespace}/viz"), "registered").unwrap(),
+    //                 ros2_client::MessageTypeName::new("visualization_msgs", "Marker"),
+    //                 &ros2_client::DEFAULT_PUBLISHER_QOS,
+    //             )
+    //             .unwrap(),
+    //         None,
+    //     )
+    //     .unwrap();
+    // #[cfg(all(not(feature = "no-viz"), feature = "map", feature = "r2r"))]
+    // let map_publisher = node.create_publisher::<PointCloud2>("map", QosProfile::default())?;
     // #[cfg(feature = "ratpub")]
     // let map_publisher = rt.block_on(async {
     //     node.create_publisher::<PointCloud2>("map".to_owned())
@@ -512,9 +514,14 @@ fn lio(config: LioConfig) -> Result<(), Box<dyn std::error::Error>> {
             .await
             .unwrap()
     });
-    #[cfg(all(not(feature = "no-viz"), feature = "r2r", not(feature = "rerun")))]
-    let registered_visual_publisher =
-        node.create_publisher::<Marker>("registered_viz", r2r::QosProfile::default())?;
+    // #[cfg(all(
+    //     not(feature = "no-viz"),
+    //     feature = "map",
+    //     feature = "r2r",
+    //     not(feature = "rerun")
+    // ))]
+    // let registered_visual_publisher =
+    // node.create_publisher::<Marker>("registered_viz", r2r::QosProfile::default())?;
 
     let mut t_world_lidar = nalgebra::Isometry3::identity();
     let mut t_last_current = nalgebra::Isometry3::identity();
@@ -534,10 +541,6 @@ fn lio(config: LioConfig) -> Result<(), Box<dyn std::error::Error>> {
     imu_path.header.frame_id = config.prelio_params.map_frame.clone();
 
     let mut last_scan_time = None;
-    // let mut total_viz_marker = 0;
-
-    //let mut avg_iterations = 0.0;
-    //let mut iteration_updates = 0;
 
     let path_update_translate_threshold = 0.15; // default 0.15 meters - TODO config
 
