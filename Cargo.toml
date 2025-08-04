@@ -25,7 +25,12 @@ prelio-ros2 = { path = "crates/prelio-ros2", version = "0.1.0" }
 spole = { path = "crates/spole", version = "0.1.0" }
 cuda = { path = "crates/cuda", version = "0.1.0" }
 
-uom = { version= "0.37.0", default-features = false, features = ["usize", "si", "f64", "f32"]  }
+uom = { version = "0.37.0", default-features = false, features = [
+  "usize",
+  "si",
+  "f64",
+  "f32",
+] }
 ratslang = { version = "0.1.0-alpha.3", git = "https://github.com/stelzo/ratslang", branch = "main" }
 ros_pointcloud2 = { version = "0.5.3", features = [
   "nalgebra",
@@ -55,8 +60,8 @@ ros2-interfaces-jazzy-rkyv = { version = "0.0.4", features = [
   "tf2_msgs",
   "builtin_interfaces",
 ], git = "https://github.com/stelzo/ros2-interfaces-jazzy-rkyv.git", branch = "main" }
-ratpub = { version = "0.1.0-rc.1", git = "https://github.com/uos/minot", branch = "main" }
-rat = { version = "0.1.0-rc.1", git = "https://github.com/uos/minot", branch = "main" }
+ratpub = { version = "0.1.0-rc.3", git = "https://github.com/uos/minot", branch = "main" }
+rat = { version = "0.1.0-rc.3", git = "https://github.com/uos/minot", branch = "main" }
 small_gicp-sys = { version = "0.1.0", git = "https://github.com/stelzo/small_gicp-sys", rev = "30da271" }
 gtsam-sys = { version = "0.1.0", git = "https://github.com/stelzo/gtsam-sys.git", branch = "main" }
 anyhow = "1"
