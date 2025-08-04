@@ -660,7 +660,7 @@ impl PrelioNode {
                         error!("Could not read cloud: {e}");
                     }
                     Ok(Some((msg, _msg_info))) => {
-                        error!("received cloud message");
+                        // error!("received cloud message");
                         // TODO if config says we are system time, we can also the source timestamp of dds
                         /*if let Some(source_timestamp) = msg_info.source_timestamp() {
                             msg.header.stamp = source_timestamp
@@ -720,7 +720,7 @@ impl PrelioNode {
                         //         continue;
                         //     }
                         // }
-                        debug!("received cloud");
+                        // debug!("received cloud");
                         let imu_tf_frame_lidar_inner =
                             imu_tf_frame_lidar_inner.clone().lock().unwrap().clone();
 
@@ -811,7 +811,7 @@ impl PrelioNode {
                         error!("Could not read imu: {e}");
                     }
                     Ok(Some((msg, _msg_info))) => {
-                        debug!("received imu message");
+                        // debug!("received imu message");
                         imu_tf_frame_lidar_inner
                             .clone()
                             .lock()
@@ -882,6 +882,7 @@ impl PrelioNode {
                 let imu_pose_predictor_init = imu_pose_predictor_init.clone();
                 imu_sub_rt.block_on(async {
                     while let Some(msg) = imu_sub.next().await {
+                        // debug!("received imu");
                         let state = state_clone.lock().unwrap();
                         {
                             imu_tf_frame_lidar_inner

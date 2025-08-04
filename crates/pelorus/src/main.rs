@@ -29,7 +29,7 @@ use r2r::{
 #[cfg(feature = "ratpub")]
 use ratpub::Node;
 #[cfg(feature = "rerun")]
-use rerun::external::glam;
+use rerun::{default_flush_timeout, external::glam};
 #[cfg(feature = "ros2-client")]
 use ros2_client::{NodeName, NodeOptions};
 #[cfg(feature = "ros2-client")]
@@ -267,7 +267,18 @@ fn lio(config: LioConfig) -> Result<(), Box<dyn std::error::Error>> {
     let mean_acc = Arc::new(Mutex::new(None));
 
     #[cfg(feature = "rerun")]
-    let rec = Arc::new(rerun::RecordingStreamBuilder::new("pelorus").spawn()?);
+    let rec = {
+        let rerun_server_addr =
+            std::env::var("RERUN_SERVER_ADDR").unwrap_or("127.0.0.1:9876".to_string());
+        let rec = Arc::new(
+            rerun::RecordingStreamBuilder::new("pelorus").connect_grpc_opts(
+                format!("rerun+http://{}/proxy", rerun_server_addr),
+                default_flush_timeout(),
+            )?,
+        );
+        rec
+    };
+    // let rec = Arc::new(rerun::RecordingStreamBuilder::new("pelorus").spawn()?);
 
     let lidar_vendor = config.prelio_params.lidar_vendor.clone();
 

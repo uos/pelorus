@@ -60,8 +60,8 @@ ros2-interfaces-jazzy-rkyv = { version = "0.0.4", features = [
   "tf2_msgs",
   "builtin_interfaces",
 ], git = "https://github.com/stelzo/ros2-interfaces-jazzy-rkyv.git", branch = "main" }
-ratpub = { version = "0.1.0-rc.3", git = "https://github.com/uos/minot", branch = "main" }
-rat = { version = "0.1.0-rc.3", git = "https://github.com/uos/minot", branch = "main" }
+ratpub = { version = "0.1.0-rc.4", git = "https://github.com/uos/minot", branch = "main" }
+rat = { version = "0.1.0-rc.4", git = "https://github.com/uos/minot", branch = "main" }
 small_gicp-sys = { version = "0.1.0", git = "https://github.com/stelzo/small_gicp-sys", rev = "30da271" }
 gtsam-sys = { version = "0.1.0", git = "https://github.com/stelzo/gtsam-sys.git", branch = "main" }
 anyhow = "1"

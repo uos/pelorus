@@ -895,8 +895,8 @@ dependencies = [
 
 [[package]]
 name = "bagread"
-version = "0.1.0-rc.2"
-source = "git+https://github.com/uos/minot?branch=main#2860d026d1ad104a779d853b4991b67ee9de7fb7"
+version = "0.1.0-rc.4"
+source = "git+https://github.com/uos/minot?branch=main#fa8b9a69650bd396435561d6c1b77724432858f1"
 dependencies = [
  "anyhow",
  "byteorder",
@@ -1980,6 +1980,23 @@ name = "data-url"
 version = "0.3.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5c297a1c74b71ae29df00c3e22dd9534821d60eb9af5a0192823fa2acea70c2a"
+
+[[package]]
+name = "deadpool"
+version = "0.12.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5ed5957ff93768adf7a65ab167a17835c3d2c3c50d084fe305174c112f468e2f"
+dependencies = [
+ "deadpool-runtime",
+ "num_cpus",
+ "tokio",
+]
+
+[[package]]
+name = "deadpool-runtime"
+version = "0.1.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "092966b41edc516079bdf31ec78a2e0588d1d0c08f78b91d8307215928642b2b"
 
 [[package]]
 name = "deranged"
@@ -5954,7 +5971,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8a56d757972c98b346a9b766e3f02746cde6dd1cd1d1d563472929fdd74bec4d"
 dependencies = [
  "anyhow",
- "itertools 0.14.0",
+ "itertools 0.10.5",
  "proc-macro2",
  "quote",
  "syn 2.0.104",
@@ -6331,8 +6348,8 @@ dependencies = [
 
 [[package]]
 name = "rat"
-version = "0.1.0-rc.2"
-source = "git+https://github.com/uos/minot?branch=main#2860d026d1ad104a779d853b4991b67ee9de7fb7"
+version = "0.1.0-rc.4"
+source = "git+https://github.com/uos/minot?branch=main#fa8b9a69650bd396435561d6c1b77724432858f1"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -6348,8 +6365,8 @@ dependencies = [
 
 [[package]]
 name = "ratpub"
-version = "0.1.0-rc.2"
-source = "git+https://github.com/uos/minot?branch=main#2860d026d1ad104a779d853b4991b67ee9de7fb7"
+version = "0.1.0-rc.4"
+source = "git+https://github.com/uos/minot?branch=main#fa8b9a69650bd396435561d6c1b77724432858f1"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -8373,8 +8390,8 @@ dependencies = [
 
 [[package]]
 name = "rlc"
-version = "0.1.0-rc.2"
-source = "git+https://github.com/uos/minot?branch=main#2860d026d1ad104a779d853b4991b67ee9de7fb7"
+version = "0.1.0-rc.4"
+source = "git+https://github.com/uos/minot?branch=main#fa8b9a69650bd396435561d6c1b77724432858f1"
 dependencies = [
  "anyhow",
  "ariadne",
@@ -8778,14 +8795,15 @@ dependencies = [
 
 [[package]]
 name = "sea"
-version = "0.1.0-rc.2"
-source = "git+https://github.com/uos/minot?branch=main#2860d026d1ad104a779d853b4991b67ee9de7fb7"
+version = "0.1.0-rc.4"
+source = "git+https://github.com/uos/minot?branch=main#fa8b9a69650bd396435561d6c1b77724432858f1"
 dependencies = [
  "anyhow",
  "async-trait",
  "bagread",
  "bimap",
  "bincode 0.6.1",
+ "deadpool",
  "env_logger",
  "etherparse",
  "ipnet",
