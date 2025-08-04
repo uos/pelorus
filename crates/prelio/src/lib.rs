@@ -969,7 +969,7 @@ impl Prelio {
                     (lidar_begin_time + lidar_time, lidar_end_time + lidar_time)
                 };
 
-            debug!("Lidar received");
+            // debug!("Lidar received");
 
             // Use 0 as start if there was no last lidar frame which we can use as start for our time range
             let imu_span_start_time = if *prev_lidar_end_time > 0.0 {
