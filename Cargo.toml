@@ -41,7 +41,7 @@ nalgebra = { version = "0.33", features = ["serde-serialize"] }
 r2r = { version = "0.9.5" }
 ros2-client = { version = "0.7.6" }
 tokio = { version = "1", features = ["full"] }
-rerun = { version = "0.23.1" }
+rerun = { version = "0.24" }
 ros2-interfaces-jazzy = { version = "0.0.4", features = [
   "std_msgs",
   "geometry_msgs",

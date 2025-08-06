@@ -1,23 +1,63 @@
+preprocessing {
+
+  downsample.resolution = 15cm # "downsample" feature flag needs to be enabled in crates/pelorus/Cargo.toml.
+
+  filter {
+
+    bounding_box {
+      # The Bounding Box is built from MIN_{x, y, z} and MAX_{x, y, z}. Empty ranges mean maximum or minimum limits, so ".." is an infinitely large Bounding Box.
+      x = .. # <MIN_x>..<MAX_x>, Example 1m..3m
+      y = .. # <MIN_y>..<MAX_y>, Example 2m..
+      z = .. # <MIN_z>..<MAX_z>, Example 4cm..100m
+      invert = false # true = only accept points inside this bounding_box
+    }
+
+    distance {
+      range = 2m.. # Example ..2m (up to 2m from origin) or 1cm..4m (everything from 1cm to 4m distance)
+      invert = false # true = only accept points outside the range
+    }
+
+    horizontal_fov {
+      degrees = .. # Degrees, Example 10..42
+      forward = [1.0, 0.0] # Axis to determine where field of view ranges start and end.
+      enable = false
+      invert = false # true = only accept points outside the range
+    }
+
+    polygon_2d {
+      coords = [] # 2D coordinates of each vertex. Example [ [1.0m, -1.5m], [-1.0m, 1.5m], [0m, 0m] ]
+      global_zero_frame = "" # If set to a TF frame, the polygon is transformed to that frame first. This enables global scan boundaries in any global coordinate system given by TF.
+      invert = false # true = only accept points outside the polygon
+    }
+
+    intensity {
+      values = .. # Floating range normalized to 0..1.0
+      invert = false # true = only accept points outside the range
+    }
+    
+  }
+
+}
+
 registration {
 
   map {
-    resolution = 0.5m # Voxel side length. NOTE: This will heavily affect your registration accuracy.
+    resolution = 50cm # Voxel side length. NOTE: This will heavily affect your registration accuracy.
     capacity = 80000 # How many Voxels of the previous defined resolution to save at any time. With Cuda enabled, the capacity will be round up to the next power of 2.
    
     distribution_update_sensitivity = 10.0 # Magic weighting value for handling the sensivity to new scans. The higher this value, the sensitive is it to brand new scans.
   }
 
-  k_neighborhood = 5 # How many points to get from the neighborhood. Higher values yield higher accuracy at the cost of runtime.
+  k_neighborhood = 12 # How many points to get from the neighborhood. Higher values yield higher accuracy at the cost of runtime.
 
   neighbors_max_range = 5m # Maximum distance to any neighbor. Default is mostly ok if you do not drastically reduce the map resolution.
 }
 
 lidar {
   topic = "/ouster/points"
-  qos.reliability = BestEffort # Reliable | BestEffort | SystemDefault
-
   vendor = Ouster # Velodyne | Ouster | Robosense | Skip (Use any 3D sensor when just Lidar Odometry is selected)
 
+  qos.reliability = BestEffort # Reliable | BestEffort | SystemDefault
   covariance = 0.001 # Weight for ICP correction in the IEKF
 }
 
@@ -26,7 +66,7 @@ imu {
   topic = "/ouster/imu"
   qos.reliability = BestEffort # Reliable | BestEffort | SystemDefault
 
-  initial_setup = 0.1s
+  initial_setup = 100ms
 
   from_lidar_transform {
     use_tf_tree = false # Ignore the next manual translation and use the TF tree instead. The lookup will be once with receiving the first IMU message.
@@ -69,7 +109,7 @@ output {
   lidar_as_map_tf_base = true # The cloud is processed in the IMU coordinate system. With this parameter, each point that wants to be published is first transformed back to the Lidar coordinate system again.
 
   mapping {
-    resolution = 0.15m # When "mapping" flag is enabled, this defines the resolution of the global map.
+    resolution = 15cm # When "mapping" flag is enabled, this defines the resolution of the global map.
   }
 
   lio_odometry_msg_qos = SystemDefault # Reliable | BestEffort | SystemDefault
@@ -83,45 +123,5 @@ output {
   logger_prefix = "pelorus"
 }
 
-preprocessing {
-
-  downsample.resolution = 0.15m # "downsample" feature flag needs to be enabled in crates/pelorus/Cargo.toml.
-
-  filter {
-
-    bounding_box {
-      # The Bounding Box is built from MIN_{x, y, z} and MAX_{x, y, z}. Empty ranges mean maximum or minimum limits, so ".." is an infinitely large Bounding Box.
-      x = .. # <MIN_x>..<MAX_x>, Example 1m..3m
-      y = .. # <MIN_y>..<MAX_y>, Example 2m..
-      z = .. # <MIN_z>..<MAX_z>, Example 4cm..100m
-      invert = false # true = only accept points inside this bounding_box
-    }
-
-    distance {
-      range = .. # Example ..2m (up to 2m from origin) or 1cm..4m (everything from 1cm to 4m distance)
-      invert = false # true = only accept points inside the range
-    }
-
-    horizontal_fov {
-      range = .. # Degrees, Example 10..42
-      forward = [1.0, 0.0] # Axis to determine where field of view ranges start and end.
-      enable = false
-      invert = false # true = only accept points inside the range
-    }
-
-    polygon_2d {
-      coords = [] # 2D coordinates of each vertex. Example [ [1.0m, -1.5m], [-1.0m, 1.5m], [0m, 0m] ]
-      global_zero_frame = "" # If set to a TF frame, the polygon is transformed to that frame first. This enables global scan boundaries in any global coordinate system given by TF.
-      invert = false # true = only accept points inside the polygon
-    }
-
-    intensity {
-      range = .. # Floating range normalized to 0..1.0
-      invert = false
-    }
-    
-  }
-
-}
 
 
