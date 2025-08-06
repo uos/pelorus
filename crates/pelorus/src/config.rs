@@ -416,7 +416,7 @@ pub fn ast_to_config(defaults: Evaluated, user: Evaluated) -> anyhow::Result<Lio
             resolve_var!(dist_ns, "invert", as bool, Rhs::Val(Val::BoolVal(b)) => {b})?;
 
         let hfov_ns = filter_ns.filter_ns(&["horizontal_fov"]);
-        let (fov_left, fov_right) = resolve_angle_range!(hfov_ns, "range", -180.0, 180.0)?;
+        let (fov_left, fov_right) = resolve_angle_range!(hfov_ns, "degrees", -180.0, 180.0)?;
         let enable_horizontal_fov =
             resolve_var!(hfov_ns, "enable", as bool, Rhs::Val(Val::BoolVal(b)) => {b})?;
         let invert_fov =
@@ -448,7 +448,7 @@ pub fn ast_to_config(defaults: Evaluated, user: Evaluated) -> anyhow::Result<Lio
 
         let intensity_ns = filter_ns.filter_ns(&["intensity"]);
         let (min_intensity, max_intensity) =
-            resolve_float_range!(intensity_ns, "range", f32::MIN, f32::MAX)?;
+            resolve_float_range!(intensity_ns, "values", f32::MIN, f32::MAX)?;
         let invert_intensity =
             resolve_var!(intensity_ns, "invert", as bool, Rhs::Val(Val::BoolVal(b)) => {b})?;
 
