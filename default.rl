@@ -2,6 +2,8 @@ preprocessing {
 
   downsample.resolution = 15cm # "downsample" feature flag needs to be enabled in crates/pelorus/Cargo.toml.
 
+  initial_scan_accumulate = 2 # Assume the first n scans are recorded while standing still. This can help with non-repetitive patterns because this method heavily depends on spatial resolution.
+
   filter {
 
     bounding_box {
@@ -43,7 +45,7 @@ registration {
 
   map {
     resolution = 50cm # Voxel side length. NOTE: This will heavily affect your registration accuracy.
-    capacity = 80000 # How many Voxels of the previous defined resolution to save at any time. With Cuda enabled, the capacity will be round up to the next power of 2.
+    capacity = 220000 # How many Voxels of the previous defined resolution to save at any time. With Cuda enabled, the capacity will be round up to the next power of 2.
    
     distribution_update_sensitivity = 10.0 # Magic weighting value for handling the sensivity to new scans. The higher this value, the sensitive is it to brand new scans.
   }
@@ -55,18 +57,18 @@ registration {
 
 lidar {
   topic = "/ouster/points"
-  vendor = Ouster # Velodyne | Ouster | Robosense | Skip (Use any 3D sensor when just Lidar Odometry is selected)
+  vendor = Ouster # Velodyne | Ouster | Livox | Robosense | Skip (Use any 3D sensor when just Lidar Odometry is selected)
 
-  qos.reliability = BestEffort # Reliable | BestEffort | SystemDefault
+  qos.reliability = Reliable # Reliable | BestEffort | SystemDefault
   covariance = 0.001 # Weight for ICP correction in the IEKF
 }
 
 
 imu {
   topic = "/ouster/imu"
-  qos.reliability = BestEffort # Reliable | BestEffort | SystemDefault
+  qos.reliability = Reliable # Reliable | BestEffort | SystemDefault
 
-  initial_setup = 100ms
+  initial_setup = 250ms
 
   from_lidar_transform {
     use_tf_tree = false # Ignore the next manual translation and use the TF tree instead. The lookup will be once with receiving the first IMU message.
@@ -119,6 +121,8 @@ output {
   imu_path_msg_qos = SystemDefault # Reliable | BestEffort | SystemDefault
 
   imu_ahrs_filtered_msg_qos = Reliable # Reliable | BestEffort | SystemDefault
+
+  imu_ahrs_filtered_topic = "imu/filtered" # AHRS filtered output
 
   logger_prefix = "pelorus"
 }

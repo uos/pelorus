@@ -11,6 +11,7 @@ pub struct LifisParameters {
     pub imu_lidar_tf_override: bool,
     pub global_zero_frame: String,
     pub map_frame: String,
+    pub initial_scan_accumulate: usize,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]

@@ -132,6 +132,29 @@ impl prelio::PointXYZITimestamp<6> for VelodynePoint {
 }
 
 #[derive(Debug, Clone, Default, PointConvertible, Copy)]
+pub struct LivoxPoint {
+    pub x: f32,
+    pub y: f32,
+    pub z: f32,
+    pub t: u32,
+    pub intensity: u32,
+}
+
+impl prelio::PointXYZITimestamp<5> for LivoxPoint {
+    fn intensity(&self) -> f32 {
+        self.intensity as f32 / 255.0
+    }
+
+    fn timestamp(&self) -> f64 {
+        self.t as f64 * 1e-9
+    }
+
+    fn xyz(&self) -> nalgebra::Point3<f32> {
+        nalgebra::Point3::new(self.x, self.y, self.z)
+    }
+}
+
+#[derive(Debug, Clone, Default, PointConvertible, Copy)]
 pub struct OusterPoint {
     pub x: f32,
     pub y: f32,
@@ -185,6 +208,18 @@ impl State {
             lifis: match config.lidar_vendor {
                 prelio::LidarVendor::Velodyne => {
                     Arc::new(Mutex::new(prelio::Prelio::create::<6, VelodynePoint>(
+                        config.imu.gravity,
+                        config.imu.madgwick_setting,
+                        &config.imu.calibration,
+                        &config, // TODO more specific
+                        imu_pose_prediction_undistort,
+                        imu_pose_prediction_init_guess,
+                        Some(config.lidar_vendor),
+                        ready_for_next,
+                    )?))
+                }
+                prelio::LidarVendor::Livox => {
+                    Arc::new(Mutex::new(prelio::Prelio::create::<5, LivoxPoint>(
                         config.imu.gravity,
                         config.imu.madgwick_setting,
                         &config.imu.calibration,
@@ -530,6 +565,7 @@ impl From<crate::Qos> for QosProfile {
 #[derive(Debug)]
 pub struct Tick {
     pub deskewed_cloud: Vec<PointXYZ>,
+    pub map_only: bool,
     pub cloud_header: HeaderMsg,
     pub imu_odom: Odometry,
     pub runtime_eval: prelio::timing::RuntimeEvaluator,
@@ -1070,6 +1106,7 @@ impl PrelioNode {
             };
 
             let res = Tick {
+                map_only: synced_data.should_map_only,
                 deskewed_cloud: synced_data.cloud,
                 cloud_header: synced_data.header,
                 imu_odom: odom,

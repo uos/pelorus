@@ -10,6 +10,7 @@ static GLOBAL: MiMalloc = MiMalloc;
 
 mod config;
 mod mapping;
+mod trajectory;
 use clap::{command, Parser, Subcommand};
 #[allow(unused_imports)]
 use futures_lite::future;
@@ -167,6 +168,8 @@ pub enum Command {
     /// Manage configuration files.
     #[command(subcommand)]
     Config(ConfigCommand),
+
+    Evaluate(EvalArgs),
 }
 
 #[derive(Debug, Clone, Parser)]
@@ -184,6 +187,12 @@ pub enum ConfigCommand {
     Init,
     /// Compiles and validates a given configuration file against the defaults.
     Test(TestArgs),
+}
+
+#[derive(Debug, Clone, Parser)]
+pub struct EvalArgs {
+    pub estimated_file: String,
+    pub ground_truth_file: String,
 }
 
 #[derive(Debug, Clone, Parser)]
@@ -626,6 +635,14 @@ fn lio(config: LioConfig) -> Result<(), Box<dyn std::error::Error>> {
             cuda::NeighborType::Neighbor26,
         );
 
+        #[cfg(feature = "trajectory")]
+        let mut trajectory_file = {
+            let name = petname::petname(2, "_").unwrap();
+            let filename = format!("pelorus_trajectory_{}.txt", name);
+            println!("Saving trajectory to {}", &filename);
+            std::fs::File::create(&filename).unwrap()
+        };
+
         while let Ok(lifis_tick) = synced_rx.recv() {
             eval.merge(&lifis_tick.runtime_eval);
 
@@ -705,6 +722,7 @@ fn lio(config: LioConfig) -> Result<(), Box<dyn std::error::Error>> {
                 let mut map = map.lock().unwrap();
                 #[cfg(not(feature = "gicp"))]
                 match map.register_and_map(
+                    lifis_tick.map_only,
                     &cloud,
                     Some(&ready_for_next_tx),
                     &mut eval,
@@ -832,6 +850,22 @@ fn lio(config: LioConfig) -> Result<(), Box<dyn std::error::Error>> {
             };
             let map_to_lidar_transform = t_world_lidar.clone().cast::<f32>();
             cloud.header.frame_id = orig_frame.clone();
+            #[cfg(feature = "trajectory")]
+            {
+                let time = timestamp_to_secs(&lifis_tick.cloud_header.stamp);
+                let t = &map_to_lidar_transform.translation.vector;
+                let q = map_to_lidar_transform.rotation.quaternion();
+
+                // <time in seconds> <translation_x> <translation_y> <translation_z> <quaternion_x> <quaternion_y> <quaternion_z> <quaternion_w>
+                // Format the string to write to the file
+                let content_to_write = format!(
+                    "{} {} {} {} {} {} {} {}\n",
+                    time, t.x, t.y, t.z, q.i, q.j, q.k, q.w
+                );
+
+                std::io::Write::write_all(&mut trajectory_file, content_to_write.as_bytes())
+                    .unwrap();
+            }
 
             #[cfg(all(
                 not(feature = "gicp"),
@@ -1194,5 +1228,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 Ok(())
             }
         },
+        #[allow(unused_variables)]
+        Command::Evaluate(paths) => {
+            #[cfg(feature = "trajectory")]
+            {
+                let estimated_path = std::path::PathBuf::from(&paths.estimated_file);
+                let ground_truth_path = std::path::PathBuf::from(&paths.ground_truth_file);
+                trajectory::visualize_results(&estimated_path, &ground_truth_path, false)?;
+            }
+            #[cfg(not(feature = "trajectory"))]
+            eprintln!("Please enable the trajectory feature for this command. `--features [..,]trajectory` ");
+            Ok(())
+        }
     }
 }
