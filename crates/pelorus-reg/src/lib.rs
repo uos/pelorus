@@ -46,6 +46,7 @@ impl Default for ImuEkfPrediction {
 pub trait Registration {
     fn register_and_map(
         &mut self,
+        map_only: bool,
         cloud: &LocatedBufferView<PointXYZ>,
         ready_for_next: Option<&std::sync::mpsc::Sender<()>>,
         eval: &mut RuntimeEvaluator,

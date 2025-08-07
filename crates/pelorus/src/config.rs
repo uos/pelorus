@@ -216,6 +216,7 @@ pub fn ast_to_config(defaults: Evaluated, user: Evaluated) -> anyhow::Result<Lio
         Ok(match src.to_lowercase().as_str() {
             "velodyne" => LidarVendor::Velodyne,
             "ouster" => LidarVendor::Ouster,
+            "livox" => LidarVendor::Livox,
             "robosense" => LidarVendor::Robosense,
             "skip" => LidarVendor::Skip,
             _ => return Err(anyhow!("Unknown Lidar vendor.")),
@@ -350,6 +351,7 @@ pub fn ast_to_config(defaults: Evaluated, user: Evaluated) -> anyhow::Result<Lio
 
     // --- Output Configuration ---
     let (
+        imu_filtered_topic,
         feedback_fps,
         map_frame,
         lidar_as_map_tf,
@@ -376,11 +378,13 @@ pub fn ast_to_config(defaults: Evaluated, user: Evaluated) -> anyhow::Result<Lio
         let mapping_ns = output_ns.filter_ns(&["mapping"]);
         let mapping_resolution = resolve_var!(mapping_ns, "resolution", as f32, Rhs::Val(Val::UnitedVal(UnitVal { val, unit: Unit::WayMillimeter })) => { Length::new::<millimeter>(val as f32).get::<meter>() })?;
         let odom_qos = resolve_var!(output_ns, "lio_odometry_msg_qos", as Qos, Rhs::Val(Val::StringVal(s)) => {reliablility_parse(&s)?})?;
+        let imu_filtered_topic = resolve_var!(output_ns, "imu_ahrs_filtered_topic", as String, Rhs::Val(Val::StringVal(s)) | Rhs::Path(s) => {s})?;
         let path_qos = resolve_var!(output_ns, "lio_path_msg_qos", as Qos, Rhs::Val(Val::StringVal(s)) => {reliablility_parse(&s)?})?;
         let imu_odom_qos = resolve_var!(output_ns, "imu_odometry_msg_qos", as Qos, Rhs::Val(Val::StringVal(s)) => {reliablility_parse(&s)?})?;
         let imu_path_qos = resolve_var!(output_ns, "imu_path_msg_qos", as Qos, Rhs::Val(Val::StringVal(s)) => {reliablility_parse(&s)?})?;
         let imu_filtered_qos = resolve_var!(output_ns, "imu_ahrs_filtered_msg_qos", as Qos, Rhs::Val(Val::StringVal(s)) => {reliablility_parse(&s)?})?;
         (
+            imu_filtered_topic,
             feedback_fps,
             map_frame,
             lidar_as_map_tf,
@@ -395,8 +399,9 @@ pub fn ast_to_config(defaults: Evaluated, user: Evaluated) -> anyhow::Result<Lio
     };
 
     // --- Preprocessing Configuration ---
-    let (voxel_size, passthrough_filter) = {
+    let (initial_scan_accumulate, voxel_size, passthrough_filter, global_zero_frame) = {
         let preproc_ns = asts.filter_ns(&["preprocessing"]);
+        let initial_scan_accumulate = resolve_var!(preproc_ns, "initial_scan_accumulate", as usize, Rhs::Val(Val::NumVal(NumVal::Integer(i))) => { i })?;
         let downsample_ns = preproc_ns.filter_ns(&["downsample"]);
         let voxel_size = resolve_var!(downsample_ns, "resolution", as f32, Rhs::Val(Val::UnitedVal(UnitVal { val, unit: Unit::WayMillimeter })) => { Length::new::<millimeter>(val as f32).get::<meter>() })?;
 
@@ -445,6 +450,7 @@ pub fn ast_to_config(defaults: Evaluated, user: Evaluated) -> anyhow::Result<Lio
         };
         let invert_polygon =
             resolve_var!(poly_ns, "invert", as bool, Rhs::Val(Val::BoolVal(b)) => {b})?;
+        let global_zero_frame = resolve_var!(poly_ns, "global_zero_frame", as String, Rhs::Val(Val::StringVal(s)) | Rhs::Path(s) => {s})?;
 
         let intensity_ns = filter_ns.filter_ns(&["intensity"]);
         let (min_intensity, max_intensity) =
@@ -469,9 +475,14 @@ pub fn ast_to_config(defaults: Evaluated, user: Evaluated) -> anyhow::Result<Lio
             min_intensity,
             max_intensity,
             invert_intensity,
-            ..Default::default()
+            filter_frame_transform: nalgebra::Isometry3::identity(), // TODO what is this param again? the override for global_zero_frame in tf?
         };
-        (voxel_size, passthrough_filter)
+        (
+            initial_scan_accumulate,
+            voxel_size,
+            passthrough_filter,
+            global_zero_frame,
+        )
     };
 
     //================================================================================
@@ -500,7 +511,7 @@ pub fn ast_to_config(defaults: Evaluated, user: Evaluated) -> anyhow::Result<Lio
             imu_predictor_init_time_sec: imu_node_params.2,
             logger_prefix,
             imu_filtered_qos,
-            ..Default::default()
+            imu_filtered_topic,
         },
         prelio_params: LifisParameters {
             lidar_vendor,
@@ -509,7 +520,8 @@ pub fn ast_to_config(defaults: Evaluated, user: Evaluated) -> anyhow::Result<Lio
             imu: imu_prelio_params,
             downsample: DownsampleParameters { voxel_size },
             passthrough_filter,
-            ..Default::default()
+            global_zero_frame,
+            initial_scan_accumulate,
         },
         // TODO currently hardcoded
         registered_cloud_qos: Qos::Sensor(Reliability::Reliable),

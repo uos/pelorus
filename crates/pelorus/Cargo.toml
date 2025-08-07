@@ -33,9 +33,13 @@ cuda = { optional = true, workspace = true }
 rustc-hash.workspace = true
 ratslang.workspace = true
 uom.workspace = true
+sophus_lie = { workspace = true, optional = true }
+kiss3d = { workspace = true, optional = true }
+plotters= { workspace = true, optional = true }
+petname= { workspace = true, optional = true }
 
 [features]
-default = ["ros2-rust", "perf", "downsample"]
+default = ["mimalloc", "downsample"]
 # default = ["dev"] # toggled in development
 
 # -#-#-#-#-#- Sensor Communication -#-#-#-#-#-
@@ -75,10 +79,12 @@ kdtree = ["pelorus-reg/nn_kdt"]
 # Enables synchronization with a bagfile using Minot (https://uos.github.io/minot/)
 offline = ["ratpub", "rat"]
 
-perf = ["mimalloc"]
+# Use Mimalloc as allocator. General speedup when using dynamic memory.
+mimalloc = ["dep:mimalloc"]
+
 # -#-#-#-#-#- Visualizations -#-#-#-#-#-
 
-# Visualize data with rerun
+# Visualize data with rerun. Set the `RERUN_SERVER_ADDR` env variable to your rerun instance, default is '127.0.0.1:9876'.
 rerun = ["dep:rerun", "prelio-ros2/rerun"]
 
 # Collect undistorted and registered scans to a map. WARNING: This feature is really naiive right now and slows down computation dramatically. In combination with the "offline" flag, the synchronization for "rat" will move to post-mapping.
@@ -90,16 +96,16 @@ map = []
 # Skips publishing any visualizations that take too much compute resources (e.g. iterating a point cloud)
 no-viz = []
 
+# Export the trajectory to the TUM format and enable the visualization tools (`evaluate` subcommand) for comparing against ground truths.
+trajectory = ["dep:petname", "dep:sophus_lie", "dep:plotters", "dep:kiss3d"]
+
 # -#-#-#-#-#- Low level -#-#-#-#-#-
 
 # Toggle tooling typically used for development
-dev = ["offline", "map", "rerun", "downsample"]
+dev = ["offline", "map", "rerun", "downsample", "parallel"]
 
 # Use variable syncing for triggers
 rat = ["dep:rat", "dep:tokio"]
-
-# Use Mimalloc as allocator. General speedup when using dynamic memory.
-mimalloc = ["dep:mimalloc"]
 
 # Uses small_gicp as backend, which requires Eigen3 to be installed.
 gicp = ["dep:small_gicp-sys", "prelio-ros2/no-imu-sync"]

@@ -34,18 +34,12 @@ pub type ImuPredictorUndistort = dyn for<'a> Fn(
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, Copy)]
 pub enum LidarVendor {
-    /// microseconds
     Velodyne,
-
-    /// nanoseconds
+    Livox,
     #[default]
     Ouster,
-
     /// microseconds?
     Robosense,
-
-    // microseconds, TODO the driver currently does not publish timestamp per point in PointCloud2, only in custom messages
-    //Livox,
     Skip,
 }
 
@@ -524,6 +518,7 @@ pub struct PrelioProcessedCloud {
     pub end_of_frame_twist: Twist,
     pub pose_covariance: [f64; 36],
     pub twist_covariance: [f64; 36],
+    pub should_map_only: bool,
     pub runtime_eval: RuntimeEvaluator,
 }
 
@@ -758,6 +753,7 @@ impl Prelio {
         // sync and imu integration worker
         // TODO move to main processing, since else predict and correct is async
         let intrinsic_given = imu_intrinsic_calibration.is_some();
+        let initial_scan_accumulate = params.initial_scan_accumulate;
         thread::spawn(move || {
             let mut last_lidar_frame_time = 0.0;
             let imu_process = ImuProcess::new(gravity, intrinsic_given);
@@ -769,6 +765,7 @@ impl Prelio {
             let imu_rx = Some(imu_rx);
 
             Self::sync_lidar_imu_worker(
+                initial_scan_accumulate,
                 &mut last_lidar_frame_time,
                 gravity,
                 filtered_cloud_rx,
@@ -938,6 +935,7 @@ impl Prelio {
     /// Syncs lidar and imu data by using the timestamps from the headers and timestamps in the lidar message.
     /// A lidar message is therefore mapped to multiple imu messages that happened in between the previous end stamp and end stamp of the last point in the lidar message.
     pub fn sync_lidar_imu_worker(
+        initial_scan_accumulate: usize,
         prev_lidar_end_time: &mut f64,
         gravity: f64,
         lidar_receiver: std::sync::mpsc::Receiver<(
@@ -955,11 +953,37 @@ impl Prelio {
     ) {
         let mut eval = RuntimeEvaluator::new();
         let mut to_next: Option<ImuMsg> = None;
+        let mut cloud_count: usize = 0;
         while let Ok(((cloud, lidar_begin_time, lidar_end_time, lidar_header), prelio_eval)) =
             lidar_receiver.recv()
         {
             eval.merge(&prelio_eval);
             let lidar_time = timestamp_to_secs(&lidar_header.stamp);
+
+            if cloud_count < initial_scan_accumulate {
+                cloud_count += 1;
+                let res = PrelioProcessedCloud {
+                    cloud: cloud
+                        .into_iter()
+                        .map(|p| PointXYZ::new(p.x, p.y, p.z))
+                        .collect(),
+                    imu_frame: "".to_string(),
+                    header: lidar_header,
+                    end_of_frame_guess: Isometry3::identity(),
+                    end_of_frame_time: time_msg_from_secs(0.0),
+                    pose_covariance: [0.0; 36],
+                    twist_covariance: [0.0; 36],
+                    end_of_frame_twist: Twist {
+                        linear: Vector3::zeros(),
+                        angular: Vector3::zeros(),
+                    },
+                    runtime_eval: eval.clone(),
+                    should_map_only: true,
+                };
+
+                synced_sender.send(res).unwrap();
+                continue;
+            }
 
             // Handle relative vs absolute timestamps
             let (lidar_begin_time, imu_span_end_time) =
@@ -969,7 +993,7 @@ impl Prelio {
                     (lidar_begin_time + lidar_time, lidar_end_time + lidar_time)
                 };
 
-            // debug!("Lidar received");
+            debug!("Lidar as sync received");
 
             // Use 0 as start if there was no last lidar frame which we can use as start for our time range
             let imu_span_start_time = if *prev_lidar_end_time > 0.0 {
@@ -1001,10 +1025,16 @@ impl Prelio {
                         Ok(imu) => {
                             let imu_time = timestamp_to_secs(&imu.stamp);
 
-                            // Imu too early
-                            // dbg!(imu_time);
+                            // warn!("got msg");
+                            // dbg!(
+                            //     lidar_begin_time,
+                            //     lidar_time,
+                            //     imu_span_start_time,
+                            //     imu_span_end_time,
+                            //     imu_time
+                            // );
                             if imu_time < imu_span_start_time {
-                                warn!("IMU msg skipped");
+                                warn!("IMU msg too early, skipped.");
                                 continue;
                             }
 
@@ -1037,7 +1067,7 @@ impl Prelio {
             });
 
             // - data synced -
-            debug!("data synced");
+            warn!("data synced");
 
             let meas = MeasureGroup {
                 cloud,
@@ -1068,6 +1098,7 @@ impl Prelio {
                         angular: Vector3::new(0., 0., 0.),
                     },
                     runtime_eval: eval.clone(),
+                    should_map_only: false,
                 };
 
                 synced_sender.send(res).unwrap();
@@ -1164,6 +1195,7 @@ impl Prelio {
                             ),
                         },
                         runtime_eval: eval.clone(),
+                        should_map_only: false,
                     };
 
                     synced_sender.send(res).unwrap();

@@ -83,6 +83,9 @@ serde = { version = "1", features = ["derive"] }
 toml = "0.8.20"
 morton-encoding = "2.0.1"
 rustc-hash = "2.1.1"
+kiss3d = "0.35"
+plotters = "0.3"
+petname = "2"
 
 # [patch."ssh://git@github.com/stelzo/small_gicp-sys.git"]
 # small_gicp-sys = { path = "../small_gicp-rs" }

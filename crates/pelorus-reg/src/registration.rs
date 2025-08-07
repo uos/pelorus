@@ -334,6 +334,7 @@ impl crate::Registration for RegistrationState {
 
     fn register_and_map(
         &mut self,
+        map_only: bool,
         cloud: &LocatedBufferView<PointXYZ>,
         ready_for_next: Option<&std::sync::mpsc::Sender<()>>,
         eval: &mut RuntimeEvaluator,
@@ -345,6 +346,35 @@ impl crate::Registration for RegistrationState {
         let eval_outer = std::sync::Arc::new(std::sync::RwLock::new(eval));
         #[cfg(feature = "cuda")]
         let map_empty = cuda::get_map_size() == 0;
+
+        if map_only {
+            #[cfg(not(feature = "cuda"))]
+            self.add_to_map(&cloud, Isometry3::identity());
+            #[cfg(feature = "cuda")]
+            {
+                let cloud = match cloud {
+                    LocatedBufferView::Ram(_) => panic!("cuda buffer in cpu task"),
+                    LocatedBufferView::Cuda { buffer } => buffer,
+                };
+
+                let rotmat = Isometry3::identity()
+                    .rotation
+                    .to_rotation_matrix()
+                    .matrix()
+                    .clone();
+                cuda::add_to_map(
+                    &stream,
+                    cloud,
+                    &Isometry3::identity().translation.vector.into(),
+                    &rotmat.into(),
+                );
+            }
+
+            return Ok(crate::CloudRegisterResult {
+                pose: Isometry3::identity(),
+                avg_iterations: None,
+            });
+        }
 
         #[cfg(not(feature = "cuda"))]
         let map_empty = self.map.is_empty();
@@ -389,6 +419,7 @@ impl crate::Registration for RegistrationState {
                     #[cfg(feature = "cuda")]
                     let mut planes_gpu = planes_gpu_buffer.lock().unwrap();
 
+                    // TODO remove, since no iteration anymore
                     let mut neighbors = neighbors_cloud_in_ekf.lock().unwrap().take().unwrap_or({
                         #[cfg(feature = "cuda")]
                         let buff = {
@@ -613,6 +644,10 @@ impl crate::Registration for RegistrationState {
 
                     *first_it.lock().unwrap() = false;
 
+                    // if current_scan_count < 11 {
+                    //     planes.resize(1000, PointXYZINormal::default());
+                    // }
+
                     if planes.is_empty() {
                         *valid = false;
                         return;
@@ -628,9 +663,6 @@ impl crate::Registration for RegistrationState {
                         *h_x = DMatrix::<f64>::zeros(planes.len(), 18);
                     }
 
-                    // TODO (AS REF) if converge, do use old planes/neighbors since it is likely to be the same
-
-                    // NOTE CUDA? Fast enough due to SIMD
                     eval.start("jacobian").unwrap();
                     planes
                         .iter()
@@ -656,7 +688,8 @@ impl crate::Registration for RegistrationState {
                                     &(ekf_state.pose.rotation().matrix() * v.coords
                                         + ekf_state.pose.translation()),
                                 );
-
+                            // if current_scan_count > 11 {
+                            //     warn!("not standing still anymore");
                             // Rotation Jacobian
                             h_x_row[0] = a.x;
                             h_x_row[1] = a.y;
@@ -679,8 +712,11 @@ impl crate::Registration for RegistrationState {
                             h_x_row[15] = 0.0;
                             h_x_row[16] = 0.0;
                             h_x_row[17] = 0.0;
-
                             h_row[0] = -nearest_plane[3];
+                            // } else {
+                            //     h_x_row.fill(0.000000000001);
+                            //     h_row[0] = 0.000000000001;
+                            // }
                         });
                     eval.stop("jacobian").unwrap();
                 },
