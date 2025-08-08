@@ -515,6 +515,7 @@ pub struct PrelioProcessedCloud {
     pub header: HeaderMsg,
     pub end_of_frame_guess: Isometry3<f64>,
     pub end_of_frame_time: TimeMsg,
+    pub lidar_end_time_abs: TimeMsg, // TODO merge with upper end_frame_time. currently changing the upper leads to strange effects. probably misused
     pub end_of_frame_twist: Twist,
     pub pose_covariance: [f64; 36],
     pub twist_covariance: [f64; 36],
@@ -959,6 +960,8 @@ impl Prelio {
         {
             eval.merge(&prelio_eval);
             let lidar_time = timestamp_to_secs(&lidar_header.stamp);
+            let abs_lidar_end =
+                secs_to_timestamp(timestamp_to_secs(&lidar_header.stamp) + lidar_end_time);
 
             if cloud_count < initial_scan_accumulate {
                 cloud_count += 1;
@@ -979,6 +982,7 @@ impl Prelio {
                     },
                     runtime_eval: eval.clone(),
                     should_map_only: true,
+                    lidar_end_time_abs: abs_lidar_end,
                 };
 
                 synced_sender.send(res).unwrap();
@@ -1067,7 +1071,7 @@ impl Prelio {
             });
 
             // - data synced -
-            warn!("data synced");
+            debug!("data synced");
 
             let meas = MeasureGroup {
                 cloud,
@@ -1099,6 +1103,7 @@ impl Prelio {
                     },
                     runtime_eval: eval.clone(),
                     should_map_only: false,
+                    lidar_end_time_abs: abs_lidar_end,
                 };
 
                 synced_sender.send(res).unwrap();
@@ -1196,6 +1201,7 @@ impl Prelio {
                         },
                         runtime_eval: eval.clone(),
                         should_map_only: false,
+                        lidar_end_time_abs: abs_lidar_end,
                     };
 
                     synced_sender.send(res).unwrap();

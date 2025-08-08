@@ -654,7 +654,7 @@ fn lio(config: LioConfig) -> Result<(), Box<dyn std::error::Error>> {
 
             let orig_frame = lifis_tick.cloud_header.frame_id.clone();
             let orig_time = lifis_tick.cloud_header.stamp.clone();
-            let current_cloud_time = timestamp_to_secs(&orig_time);
+            let current_cloud_time = timestamp_to_secs(&lifis_tick.odom_time);
             if let Some(existing_last_scan_time) = last_scan_time {
                 if current_cloud_time < existing_last_scan_time {
                     let mut map = map.lock().unwrap();
@@ -780,8 +780,8 @@ fn lio(config: LioConfig) -> Result<(), Box<dyn std::error::Error>> {
 
             let mut lidar_odom = lifis_tick.imu_odom.clone();
             lidar_odom.header.stamp = Time {
-                sec: orig_time.sec,
-                nanosec: orig_time.nanosec,
+                sec: lifis_tick.odom_time.sec,
+                nanosec: lifis_tick.odom_time.nanosec,
             };
             lidar_odom.header.frame_id = config.prelio_params.map_frame.clone();
             lidar_odom.child_frame_id = orig_frame.clone();
@@ -792,6 +792,7 @@ fn lio(config: LioConfig) -> Result<(), Box<dyn std::error::Error>> {
             lidar_odom.pose.pose.orientation.y = t_world_lidar.rotation.j;
             lidar_odom.pose.pose.orientation.z = t_world_lidar.rotation.k;
             lidar_odom.pose.pose.orientation.w = t_world_lidar.rotation.w;
+            // TODO publish with covariances to own topic separately
 
             let lp_pose = &lidar_path.poses;
             let changed_lidar_path = match lp_pose.last() {
@@ -954,8 +955,8 @@ fn lio(config: LioConfig) -> Result<(), Box<dyn std::error::Error>> {
                 header: Header {
                     frame_id: config.prelio_params.map_frame.clone(),
                     stamp: Time {
-                        sec: orig_time.sec,
-                        nanosec: orig_time.nanosec,
+                        sec: lifis_tick.odom_time.sec,
+                        nanosec: lifis_tick.odom_time.nanosec,
                     },
                 },
                 child_frame_id: orig_frame,

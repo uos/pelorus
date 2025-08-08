@@ -106,7 +106,7 @@ output {
     fps = 1 # Refresh rate for rendering to the terminal in frames per second
   }
 
-  global_frame = "map" # Which frame to publish the TF messages to
+  global_frame = "lio_init" # Which frame to publish the TF messages to
 
   lidar_as_map_tf_base = true # The cloud is processed in the IMU coordinate system. With this parameter, each point that wants to be published is first transformed back to the Lidar coordinate system again.
 
