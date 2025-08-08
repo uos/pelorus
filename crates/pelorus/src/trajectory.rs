@@ -112,9 +112,12 @@ fn parse_pose(line: &str, gt_coord_switch: bool) -> Result<Pose, Box<dyn Error>>
     }
 
     let translation = if gt_coord_switch {
-        Translation3::new(-parts[1], parts[3], parts[2])
-    } else {
+        // 3MGRS oder so, GroundFusion++
+        // Translation3::new(-parts[1], parts[3], parts[2])
         Translation3::new(parts[1], parts[3], -parts[2])
+    } else {
+        // Translation3::new(parts[1], parts[3], -parts[2])
+        Translation3::new(parts[2], parts[3], parts[1])
     };
     Ok(Pose {
         timestamp: parts[0],

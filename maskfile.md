@@ -13,12 +13,12 @@ rustup default stable
 rustup update
 ~~~
 
-## create-config
+## build-release-ros2
 
-> Write the default config to `./pelorus.rl`.
+> Build for your current system with ROS2 as sensor abstraction layer with recommended settings.
 
 ~~~sh
-cargo run --release -- config init > pelorus.rl
+RUSTFLAGS="-C target-cpu=native -C llvm-args=-cost-kind=latency" cargo build --release --features mimalloc,downsample,parallel,ros2c
 ~~~
 
 ## demo-bag

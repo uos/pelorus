@@ -567,6 +567,7 @@ pub struct Tick {
     pub deskewed_cloud: Vec<PointXYZ>,
     pub map_only: bool,
     pub cloud_header: HeaderMsg,
+    pub odom_time: TimeMsg,
     pub imu_odom: Odometry,
     pub runtime_eval: prelio::timing::RuntimeEvaluator,
 }
@@ -1111,6 +1112,7 @@ impl PrelioNode {
                 cloud_header: synced_data.header,
                 imu_odom: odom,
                 runtime_eval: synced_data.runtime_eval,
+                odom_time: synced_data.lidar_end_time_abs,
             };
 
             sender.send(res).expect("could not send lifis tick");
