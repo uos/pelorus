@@ -1235,7 +1235,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             {
                 let estimated_path = std::path::PathBuf::from(&paths.estimated_file);
                 let ground_truth_path = std::path::PathBuf::from(&paths.ground_truth_file);
-                trajectory::visualize_results(&estimated_path, &ground_truth_path, false)?;
+                trajectory::visualize_results(&estimated_path, &ground_truth_path)?;
             }
             #[cfg(not(feature = "trajectory"))]
             eprintln!("Please enable the trajectory feature for this command. `--features [..,]trajectory` ");

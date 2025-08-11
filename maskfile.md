@@ -18,7 +18,7 @@ rustup update
 > Build for your current system with ROS2 as sensor abstraction layer with recommended settings.
 
 ~~~sh
-RUSTFLAGS="-C target-cpu=native -C llvm-args=-cost-kind=latency" cargo build --release --features mimalloc,downsample,parallel,ros2c
+RUSTFLAGS="-C target-cpu=native -C llvm-args=-cost-kind=latency" cargo build --no-default-features --release --features mimalloc,downsample,parallel,ros2c
 ~~~
 
 ## demo-bag
