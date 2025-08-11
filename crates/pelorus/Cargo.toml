@@ -34,9 +34,9 @@ rustc-hash.workspace = true
 ratslang.workspace = true
 uom.workspace = true
 sophus_lie = { workspace = true, optional = true }
-kiss3d = { workspace = true, optional = true }
 plotters = { workspace = true, optional = true }
 petname = { workspace = true, optional = true }
+image = { workspace = true, optional = true }
 
 [features]
 # default = ["mimalloc", "downsample"]
@@ -97,7 +97,7 @@ map = []
 no-viz = []
 
 # Export the trajectory to the TUM format and enable the visualization tools (`evaluate` subcommand) for comparing against ground truths.
-trajectory = ["dep:petname", "dep:sophus_lie", "dep:plotters", "dep:kiss3d"]
+trajectory = ["dep:petname", "dep:sophus_lie", "dep:plotters", "dep:image"]
 
 # -#-#-#-#-#- Low level -#-#-#-#-#-
 
