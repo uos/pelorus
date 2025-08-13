@@ -3,6 +3,8 @@
 use nalgebra::{Matrix3, Quaternion, Translation3, UnitQuaternion, SVD};
 use plotters::prelude::*;
 use plotters::style::full_palette::GREY;
+use rerun as rr;
+use rerun::external::glam;
 use sophus_lie::traits::IsTranslationProductGroup;
 use std::error::Error;
 use std::fs::File;
@@ -15,20 +17,12 @@ type SO3 = sophus_lie::Rotation3<f64, 1>;
 const PLOT_WIDTH: u32 = 800;
 const PLOT_HEIGHT: u32 = 600;
 
-// Add this to your use statements at the top
-use rerun as rr;
-use rerun::external::glam;
-
-// Helper function to convert your nalgebra pose to a Rerun transform
-// This makes the logging code cleaner
 fn pose_to_rerun_transform(pose: &Pose) -> rr::Transform3D {
     let correction = nalgebra::UnitQuaternion::from_axis_angle(
         &nalgebra::Vector3::x_axis(),
         -std::f32::consts::FRAC_PI_2,
     );
 
-    // Apply the correction to the pose's rotation.
-    // The order (pose.rotation * correction) is important.
     let corrected_rot = pose.rotation.cast::<f32>() * correction;
 
     rr::Transform3D::from_translation_rotation(
@@ -37,7 +31,6 @@ fn pose_to_rerun_transform(pose: &Pose) -> rr::Transform3D {
             pose.translation.y as f32,
             pose.translation.z as f32,
         ),
-        // Use the corrected rotation here.
         rr::datatypes::Quaternion::from_xyzw([
             corrected_rot.i,
             corrected_rot.j,
@@ -47,10 +40,8 @@ fn pose_to_rerun_transform(pose: &Pose) -> rr::Transform3D {
     )
 }
 
-// Helper to get Rerun colors
 fn get_rerun_color_for_error(error: f64, max_error: f64) -> rr::Color {
     let normalized_error = (error / max_error).min(1.0).max(0.0) as f32;
-    // Blue (low error) to Red (high error)
     rr::Color::from_rgb(
         (normalized_error * 255.0) as u8,
         0,
@@ -58,22 +49,15 @@ fn get_rerun_color_for_error(error: f64, max_error: f64) -> rr::Color {
     )
 }
 
-// The new Rerun visualization function
 fn visualize_with_rerun(
     corresponding_gt_trajectory: &[Pose],
     aligned_est_trajectory: &[Pose],
     ape_data_for_plot: &[(f64, f64)],
     rpe_data_for_plot: &[(f64, f64)],
 ) -> anyhow::Result<()> {
-    // 1. Initialize the Rerun recording stream
-    // This will spawn a viewer and connect to it.
     let rec = rr::RecordingStreamBuilder::new("Trajectory Analysis").spawn()?;
 
-    // 2. Log a coordinate system for the 3D view.
-    // TUM dataset standard is RDF: Right, Down, Forward (+X, +Y, +Z)
     rec.log("world", &rr::ViewCoordinates::RDF())?;
-
-    // Log the world origin axes, similar to draw_world_frame
     rec.log_static(
         "world/axes",
         &rr::Arrows3D::from_vectors([[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]])
@@ -81,8 +65,6 @@ fn visualize_with_rerun(
             .with_labels(["X", "Y", "Z"]),
     )?;
 
-    // 3. Log the complete trajectories as static line strips
-    // This allows seeing the full path at all times.
     let gt_points: Vec<glam::Vec3> = corresponding_gt_trajectory
         .iter()
         .map(|p| {
@@ -150,21 +132,16 @@ fn visualize_with_rerun(
         0.5,
     )?;
 
-    // 4. Log data over time
-    // This creates the animation and plots.
     for i in 0..corresponding_gt_trajectory.len() {
         let gt_pose = &corresponding_gt_trajectory[i];
         let est_pose = &aligned_est_trajectory[i];
         let (timestamp, ape) = ape_data_for_plot[i];
 
-        // Set the time for this frame
         rec.set_timestamp_secs_since_epoch("timestamp", timestamp);
 
-        // Log the current camera poses as transforms
         rec.log("world/ground_truth_pose", &pose_to_rerun_transform(gt_pose))?;
         rec.log("world/estimated_pose", &pose_to_rerun_transform(est_pose))?;
 
-        // Log a pinhole camera to visualize the frustum automatically
         rec.log(
             "world/estimated_pose/camera",
             &rr::Pinhole::from_focal_length_and_resolution(
@@ -190,11 +167,9 @@ fn visualize_with_rerun(
                 .with_colors([rr::Color::from_rgb(255, 128, 128)]),
         )?;
 
-        // Log the scalar error values to auto-generate plots
         rec.log("errors/ape_translation", &rr::Scalars::single(ape))?;
     }
 
-    // Log RPE data separately since it might have a different length
     for (timestamp, rpe) in rpe_data_for_plot {
         rec.set_timestamp_secs_since_epoch("timestamp", *timestamp);
         rec.log("errors/rpe_translation", &rr::Scalars::single(*rpe))?;
@@ -211,22 +186,18 @@ fn log_colored_trajectory(
     label: &str,
     radius: f32,
 ) -> anyhow::Result<()> {
-    // Ensure we have at least one segment to draw.
     if points.len() < 2 {
         return Ok(());
     }
 
     let strips = points.windows(2).map(|segment| segment.to_vec());
 
-    // The color of a segment can be the color of its starting point.
-    // We need one color per segment, so we slice the colors array
-    // and convert it to an owned Vec.
-    let segment_colors: Vec<rr::Color> = colors[0..points.len() - 1].to_vec(); // <-- The fix is here
+    let segment_colors: Vec<rr::Color> = colors[0..points.len() - 1].to_vec();
 
     rec.log_static(
         entity_path,
-        &rr::LineStrips3D::new(strips) // Pass the iterator of 2-point strips
-            .with_colors(segment_colors) // Pass the new owned Vec of colors
+        &rr::LineStrips3D::new(strips)
+            .with_colors(segment_colors)
             .with_labels([label])
             .with_radii([rr::Radius::new_ui_points(radius)]),
     )?;
@@ -295,13 +266,9 @@ fn create_error_plot(
     let root = SVGBackend::new(filename, (PLOT_WIDTH, PLOT_HEIGHT)).into_drawing_area();
     root.fill(&WHITE)?;
 
-    // --- CHANGES FOR RELATIVE TIME ---
-    // 1. Get the start time from the first data point.
     let start_t = data[0].0;
 
-    // 2. Find the end time to set the range.
     let max_t = data.iter().last().map_or(0.0, |(t, _)| *t);
-
     let max_err = data.iter().fold(0.0, |max: f64, (_, e)| max.max(*e));
 
     let mut chart = ChartBuilder::on(&root)
@@ -309,7 +276,6 @@ fn create_error_plot(
         .margin(10)
         .x_label_area_size(40)
         .y_label_area_size(60)
-        // 3. Build the X-axis from 0 to the total duration.
         .build_cartesian_2d(0.0..(max_t - start_t), 0.0..max_err * 1.1)?;
 
     chart
@@ -318,7 +284,6 @@ fn create_error_plot(
         .y_desc("Error")
         .draw()?;
 
-    // 4. Map each timestamp to be relative to the start time.
     chart.draw_series(LineSeries::new(
         data.iter().map(|(t, e)| (*t - start_t, *e)),
         &RED,
@@ -616,9 +581,8 @@ pub fn visualize_results(estimated_path: &Path, ground_truth_path: &Path) -> any
     let estimated_trajectory_raw = read_trajectory(estimated_path).unwrap();
     let ground_truth_trajectory = read_trajectory(ground_truth_path).unwrap();
 
-    // --- Time Synchronization and Interpolation ---
     let mut interpolated_estimated_trajectory = Vec::new();
-    let mut corresponding_gt_trajectory = Vec::new();
+    let mut synced_gt_poses = Vec::new();
 
     for gt_pose in &ground_truth_trajectory {
         let mut p1_idx = 0;
@@ -637,10 +601,28 @@ pub fn visualize_results(estimated_path: &Path, ground_truth_path: &Path) -> any
 
         let interpolated_pose = interpolate_pose(p1, p2, gt_pose.timestamp);
         interpolated_estimated_trajectory.push(interpolated_pose);
-        corresponding_gt_trajectory.push(*gt_pose);
+        synced_gt_poses.push(*gt_pose);
     }
 
-    // --- Umeyama Alignment ---
+    if synced_gt_poses.is_empty() {
+        println!("No overlapping timestamps found. Cannot perform analysis.");
+        return Ok(());
+    }
+
+    let first_gt_pose_inv = pose_to_se3(&synced_gt_poses[0]).inverse();
+    let corresponding_gt_trajectory: Vec<Pose> = synced_gt_poses
+        .iter()
+        .map(|pose| {
+            let se3_pose = pose_to_se3(pose);
+            let normalized_se3 = first_gt_pose_inv.group_mul(&se3_pose);
+            Pose {
+                timestamp: pose.timestamp,
+                translation: Translation3::from(normalized_se3.translation()),
+                rotation: UnitQuaternion::from_matrix(&normalized_se3.rotation().matrix()),
+            }
+        })
+        .collect();
+
     let (s, r, t) = umeyama_alignment(
         &corresponding_gt_trajectory,
         &interpolated_estimated_trajectory,
@@ -664,7 +646,6 @@ pub fn visualize_results(estimated_path: &Path, ground_truth_path: &Path) -> any
         })
         .collect();
 
-    // --- Absolute Pose Error (APE) Calculation ---
     let mut ape_trans_errors = Vec::new();
     let mut ape_rot_errors = Vec::new();
     let mut ape_data_for_plot = Vec::new();
@@ -693,11 +674,10 @@ pub fn visualize_results(estimated_path: &Path, ground_truth_path: &Path) -> any
     )
     .unwrap();
 
-    // --- Relative Pose Error (RPE) Calculation ---
     let mut rpe_trans_errors = Vec::new();
     let mut rpe_rot_errors = Vec::new();
     let mut rpe_data_for_plot = Vec::new();
-    let delta = 10; // Frame step for relative error
+    let delta = 10;
 
     for i in 0..(corresponding_gt_trajectory.len() - delta) {
         let gt_pose1 = pose_to_se3(&corresponding_gt_trajectory[i]);
