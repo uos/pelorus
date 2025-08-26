@@ -290,7 +290,6 @@ fn create_error_plot(
     ))?;
 
     root.present()?;
-    println!("Generated error plot: {}", filename);
     Ok(())
 }
 
