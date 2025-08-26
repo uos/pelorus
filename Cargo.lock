@@ -979,7 +979,6 @@ dependencies = [
 [[package]]
 name = "bagread"
 version = "0.1.0-rc.4"
-source = "git+https://github.com/uos/minot?branch=main#fa8b9a69650bd396435561d6c1b77724432858f1"
 dependencies = [
  "anyhow",
  "byteorder",
@@ -7476,7 +7475,6 @@ dependencies = [
 [[package]]
 name = "rat"
 version = "0.1.0-rc.4"
-source = "git+https://github.com/uos/minot?branch=main#fa8b9a69650bd396435561d6c1b77724432858f1"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -7493,7 +7491,6 @@ dependencies = [
 [[package]]
 name = "ratpub"
 version = "0.1.0-rc.4"
-source = "git+https://github.com/uos/minot?branch=main#fa8b9a69650bd396435561d6c1b77724432858f1"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -9717,7 +9714,6 @@ dependencies = [
 [[package]]
 name = "rlc"
 version = "0.1.0-rc.4"
-source = "git+https://github.com/uos/minot?branch=main#fa8b9a69650bd396435561d6c1b77724432858f1"
 dependencies = [
  "anyhow",
  "ariadne",
@@ -10079,7 +10075,6 @@ checksum = "94143f37725109f92c262ed2cf5e59bce7498c01bcc1502d7b9afe439a4e9f49"
 [[package]]
 name = "sea"
 version = "0.1.0-rc.4"
-source = "git+https://github.com/uos/minot?branch=main#fa8b9a69650bd396435561d6c1b77724432858f1"
 dependencies = [
  "anyhow",
  "async-trait",

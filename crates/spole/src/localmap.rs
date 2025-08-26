@@ -56,7 +56,7 @@ impl Livodish {
     }
 
     /// Insert at the beginning, since the ones in the beginning are the ones least used
-    pub fn add(&mut self, point: &Point3<f32>, hash: i32, scan_number: usize) {
+    pub fn add(&mut self, dist: VoxelDistribution, hash: i32, scan_number: usize) {
         let entry = self.lookup.get_mut(&hash);
 
         match entry {
@@ -72,10 +72,10 @@ impl Livodish {
                 entry
                     .0
                     .1
-                    .update(&point, self.sensitivity, self.min_dist, scan_number);
+                    .update(&dist, self.sensitivity, self.min_dist, scan_number);
             }
             None => {
-                let value = Value((hash, VoxelDistribution::new(&point)));
+                let value = Value((hash, dist));
                 if self.add_cursor > self.capacity {
                     // full but new, make space
                     if self.lru_cursor > self.capacity {
@@ -131,9 +131,9 @@ impl Livodish {
             .collect()
     }
 
-    pub fn find(&self, key: &i32) -> Option<&VoxelDistribution> {
+    pub fn find(&self, key: &i32) -> Option<VoxelDistribution> {
         let idx = self.lookup.get(&key)?;
-        unsafe { self.buffer.get_unchecked(*idx).as_ref() }.map(|v| &v.0.1)
+        unsafe { self.buffer.get_unchecked(*idx).as_ref() }.map(|v| v.0.1)
     }
 
     /// Re-arranges the map to be ready for new inserts.

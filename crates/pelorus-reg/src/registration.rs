@@ -1,6 +1,3 @@
-//! An implementation of point cloud registering, tightly coupled with the IMU.
-//! The used method is a combination of the EKF from S-FAST_LIO and a hashgrid-based nearest neighbor search similar to faster-lio.
-
 use std::sync::{Arc, Mutex};
 
 #[cfg(feature = "cuda")]
@@ -13,6 +10,7 @@ use ros_pointcloud2::points::{PointXYZ, PointXYZINormal};
 
 use sophus_lie::traits::IsTranslationProductGroup;
 pub use spole::IVoxNearbyType;
+use spole::VoxelDistribution;
 
 use crate::sophus_ekf::skew_symmetric;
 
@@ -191,6 +189,7 @@ impl RegistrationState {
         for p in points_iter {
             let distance = (normal.dot(&p) + d).abs();
             if distance > error_threshold {
+                dbg!(distance, error_threshold);
                 return None;
             }
         }
@@ -407,11 +406,9 @@ impl crate::Registration for RegistrationState {
                 self.laser_point_noise_cov,
                 move |ekf_state: &crate::sophus_ekf::StateIKFom,
                       valid: &mut bool,
-                      converged: bool,
+                      _converged: bool,
                       h: &mut DVector<f64>,
                       h_x: &mut DMatrix<f64>| {
-                    let first_it_local = { first_it.lock().unwrap().clone() };
-
                     #[cfg(feature = "cuda")]
                     let mut planes = planes_cpu_buffer.lock().unwrap();
                     #[cfg(feature = "cuda")]
@@ -561,6 +558,10 @@ impl crate::Registration for RegistrationState {
                             }
                         };
 
+                        let mut lr_part = 0;
+                        let mut lr2_part = 0;
+                        let mut total_returned = 0;
+
                         let planes: Vec<PointXYZINormal> = iter
                             .filter_map(|((point_local, neighbor_size), curr_point_neighbors)| {
                                 // Global in IMU frame
@@ -575,60 +576,119 @@ impl crate::Registration for RegistrationState {
                                     point_global.z as f32,
                                 );
 
-                                if first_it_local || converged {
-                                    if !map.k_nearest_neighbor_query(
-                                        &query_point,
-                                        k,
-                                        neighbor_max_range,
-                                        curr_point_neighbors,
-                                        neighbor_size,
-                                    ) {
-                                        return None;
+                                let mut winning_factor = None;
+
+                                let n1 = {
+                                    *neighbor_size = 0;
+                                    let plane = map.plane_fit_from_distributions(&query_point)?;
+                                    let pd2 = plane[0] * point_global.x as f32
+                                        + plane[1] * point_global.y as f32
+                                        + plane[2] * point_global.z as f32
+                                        + plane[3];
+                                    let s = 1.0
+                                        - 0.9 * pd2.abs()
+                                            / point_local.xyz_f64().coords.norm().sqrt() as f32;
+
+                                    if s <= 0.9 {
+                                        None
+                                    } else {
+                                        winning_factor = Some((pd2, 0));
+
+                                        Some(PointXYZINormal::new(
+                                            point_local.x,
+                                            point_local.y,
+                                            point_local.z,
+                                            pd2 as f32,
+                                            plane[0] as f32,
+                                            plane[1] as f32,
+                                            plane[2] as f32,
+                                        ))
                                     }
-                                }
+                                };
 
-                                let plane = Self::plane_fit_stable(
-                                    curr_point_neighbors[..*neighbor_size]
-                                        .iter()
-                                        .map(|p| p.xyz_f32().coords),
-                                    *neighbor_size,
-                                    PLANE_POINT_ERROR_THRESHOLD as f32,
-                                )?;
-                                let pd2 = plane[0] * point_global.x as f32
-                                    + plane[1] * point_global.y as f32
-                                    + plane[2] * point_global.z as f32
-                                    + plane[3];
-                                // float s = 1 - 0.9 * fabs(pd2) / sqrt(p_body.norm());
-                                let s = 1.0
-                                    - 0.9 * pd2.abs()
-                                        / point_local.xyz_f64().coords.norm().sqrt() as f32;
+                                // let n2 = {
+                                //     *neighbor_size = 0;
+                                //     let plane = map
+                                //         .plane_fit_from_distributions_lower_res(&query_point, 2)?; // TODO param?
+                                //     let pd2 = plane[0] * point_global.x as f32
+                                //         + plane[1] * point_global.y as f32
+                                //         + plane[2] * point_global.z as f32
+                                //         + plane[3];
+                                //     let s = 1.0
+                                //         - 0.9 * pd2.abs()
+                                //             / point_local.xyz_f64().coords.norm().sqrt() as f32;
 
-                                // let plane = Self::plane_from_points(
-                                //     &curr_point_neighbors[..*neighbor_size],
-                                //     PLANE_POINT_ERROR_THRESHOLD,
-                                // )?;
-                                // let pd2 = plane[0] * point_global.x
-                                //     + plane[1] * point_global.y
-                                //     + plane[2] * point_global.z
-                                //     + plane[3];
-                                // let s = 1.0
-                                //     - 0.9 * pd2.abs() / point_local.xyz_f64().coords.norm().sqrt();
+                                //     if s <= 0.9 {
+                                //         None
+                                //     } else {
+                                //         winning_factor = Some((pd2, 1));
 
-                                if s <= 0.9 {
-                                    return None;
-                                }
+                                //         Some(PointXYZINormal::new(
+                                //             point_local.x,
+                                //             point_local.y,
+                                //             point_local.z,
+                                //             pd2 as f32,
+                                //             plane[0] as f32,
+                                //             plane[1] as f32,
+                                //             plane[2] as f32,
+                                //         ))
+                                //     }
+                                // };
 
-                                Some(PointXYZINormal::new(
-                                    point_local.x,
-                                    point_local.y,
-                                    point_local.z,
-                                    pd2 as f32,
-                                    plane[0] as f32,
-                                    plane[1] as f32,
-                                    plane[2] as f32,
-                                ))
+                                // let n3 = {
+                                //     *neighbor_size = 0;
+                                //     let plane = map
+                                //         .plane_fit_from_distributions_lower_res(&query_point, 3)?; // TODO param?
+                                //     let pd2 = plane[0] * point_global.x as f32
+                                //         + plane[1] * point_global.y as f32
+                                //         + plane[2] * point_global.z as f32
+                                //         + plane[3];
+                                //     let s = 1.0
+                                //         - 0.9 * pd2.abs()
+                                //             / point_local.xyz_f64().coords.norm().sqrt() as f32;
+
+                                //     if s <= 0.9 {
+                                //         None
+                                //     } else {
+                                //         winning_factor = Some((pd2, 2));
+
+                                //         Some(PointXYZINormal::new(
+                                //             point_local.x,
+                                //             point_local.y,
+                                //             point_local.z,
+                                //             pd2 as f32,
+                                //             plane[0] as f32,
+                                //             plane[1] as f32,
+                                //             plane[2] as f32,
+                                //         ))
+                                //     }
+                                // };
+
+                                n1
+
+                                // match winning_factor?.1 {
+                                //     0 => {
+                                //         total_returned += 1;
+                                //         n1
+                                //     }
+                                //     1 => {
+                                //         total_returned += 1;
+                                //         lr_part += 1;
+                                //         n2
+                                //     }
+                                //     // 2 => {
+                                //     //     total_returned += 1;
+                                //     //     lr2_part += 1;
+                                //     //     n3
+                                //     // }
+                                //     _ => panic!("winner has not been implemented"),
+                                // }
                             })
                             .collect::<Vec<_>>();
+
+                        let tp = lr_part as f32 / total_returned as f32;
+                        let tp2 = lr2_part as f32 / total_returned as f32;
+                        dbg!(tp, tp2, total_returned);
                         planes
                     };
                     eval.stop("planes").unwrap();
@@ -653,7 +713,7 @@ impl crate::Registration for RegistrationState {
                         return;
                     }
 
-                    // dbg!(planes.len());
+                    dbg!(planes.len());
 
                     if planes.len() > h.nrows() {
                         *h = DVector::<f64>::zeros(planes.len());
