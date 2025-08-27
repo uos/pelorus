@@ -11,7 +11,7 @@ use rand::{Rng, SeedableRng};
 use nalgebra::{Cholesky, Matrix3};
 #[cfg(feature = "parallel")]
 use rayon::slice::ParallelSliceMut;
-use ros_pointcloud2::points::PointXYZ;
+use ros_pointcloud2::points::{PointXYZ, PointXYZI};
 
 use serde::{Deserialize, Serialize};
 
@@ -451,7 +451,7 @@ impl IVoxHashMap {
         return self.livodish.is_empty();
     }
 
-    pub fn add(&mut self, points: &[PointXYZ], transform: &nalgebra::Isometry3<f64>) {
+    pub fn add(&mut self, points: &[PointXYZI], transform: &nalgebra::Isometry3<f64>) {
         self.scan_number += 1;
 
         #[cfg(feature = "nn_kdt")]
@@ -1198,10 +1198,10 @@ mod tests {
         use nalgebra::Isometry3;
 
         let h_points = vec![
-            PointXYZ::new(0.2, 0.2, 0.0),
-            PointXYZ::new(0.4, 0.4, 0.1),
-            PointXYZ::new(0.49, 0.49, 0.1),
-            PointXYZ::new(0.75001, 0.51, 0.51),
+            PointXYZI::new(0.2, 0.2, 0.0, 0.0),
+            PointXYZI::new(0.4, 0.4, 0.1, 0.0),
+            PointXYZI::new(0.49, 0.49, 0.1, 0.0),
+            PointXYZI::new(0.75001, 0.51, 0.51, 0.0),
         ];
         let mut map = IVoxHashMap::new(0.5, 1_000, IVoxNearbyType::default(), 0.3);
         map.add(&h_points, &Isometry3::identity());
@@ -1224,7 +1224,10 @@ mod tests {
     #[cfg(not(feature = "nn_kdt"))]
     fn basic_add_and_search() {
         let mut map = IVoxHashMap::new(0.5, 1_000, IVoxNearbyType::default(), 0.3);
-        map.add(&[PointXYZ::new(3.3, 3.3, 3.0)], &Isometry3::identity());
+        map.add(
+            &[PointXYZI::new(3.3, 3.3, 3.0, 0.0)],
+            &Isometry3::identity(),
+        );
         let mut result = vec![PointXYZ::default(); 1];
         let out_size = &mut 0;
         let res = map.k_nearest_neighbor_query(
@@ -1242,10 +1245,10 @@ mod tests {
     #[cfg(not(feature = "nn_kdt"))]
     fn basic_origin() {
         let h_points = vec![
-            PointXYZ::new(0.2, 0.2, 0.0),
-            PointXYZ::new(0.4, 0.4, 0.1),
-            PointXYZ::new(0.49, 0.49, 0.1),
-            PointXYZ::new(0.75001, 0.51, 0.51),
+            PointXYZI::new(0.2, 0.2, 0.0, 0.0),
+            PointXYZI::new(0.4, 0.4, 0.1, 0.0),
+            PointXYZI::new(0.49, 0.49, 0.1, 0.0),
+            PointXYZI::new(0.75001, 0.51, 0.51, 0.0),
         ];
         let mut map = IVoxHashMap::new(0.5, 1_000, IVoxNearbyType::Nearby26, 0.3);
         map.add(&h_points, &Isometry3::identity());
@@ -1267,13 +1270,13 @@ mod tests {
     #[cfg(not(feature = "nn_kdt"))]
     fn more_distant() {
         let distant_points = vec![
-            PointXYZ::new(0.2, 0.2, 0.0),
-            PointXYZ::new(5.3, 10.7, 0.1),
-            PointXYZ::new(5.6, 10.4, 0.3),
-            PointXYZ::new(5.9, 10.1, 0.5),
-            PointXYZ::new(6.2, 9.8, 0.7),
-            PointXYZ::new(6.5, 9.5, 0.9),
-            PointXYZ::new(6.8, 9.2, 1.1),
+            PointXYZI::new(0.2, 0.2, 0.0, 0.0),
+            PointXYZI::new(5.3, 10.7, 0.1, 0.0),
+            PointXYZI::new(5.6, 10.4, 0.3, 0.0),
+            PointXYZI::new(5.9, 10.1, 0.5, 0.0),
+            PointXYZI::new(6.2, 9.8, 0.7, 0.0),
+            PointXYZI::new(6.5, 9.5, 0.9, 0.0),
+            PointXYZI::new(6.8, 9.2, 1.1, 0.0),
         ];
 
         let mut map = IVoxHashMap::new(0.5, 1_000, IVoxNearbyType::Nearby18, 0.3);

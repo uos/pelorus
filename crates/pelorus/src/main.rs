@@ -935,15 +935,39 @@ fn lio(config: LioConfig) -> Result<(), Box<dyn std::error::Error>> {
                 }
 
                 {
+                    const DECAY: bool = true;
+
                     let ps: ros_pointcloud2::PointCloud2Msg = cloud.clone().into();
-                    let points = ps.try_into_iter().unwrap().map(|v: PointXYZ| {
-                        // NOTE: No need for imu_rev transformation since this cloud stays in lidar coordinate space
-                        glam::Vec3::new(v.x, v.y, v.z)
-                    });
+                    let gradient = colorous::TURBO;
+                    let (positions, colors): (Vec<_>, Vec<_>) = ps
+                        .try_into_iter()
+                        .unwrap()
+                        .map(|v: PointXYZI| {
+                            let color = gradient.eval_continuous(v.intensity as f64);
+                            let v = if DECAY {
+                                map_to_lidar_transform.transform_point(&v.xyz_f32().cast())
+                            } else {
+                                v.xyz_f32()
+                            };
+                            let pos = glam::Vec3::new(v.x as f32, v.y as f32, v.z as f32);
+                            let color_rgb = [color.r, color.g, color.b];
+
+                            (pos, color_rgb)
+                        })
+                        .unzip();
+
+                    let topic = if DECAY {
+                        format!("undistorted_{:?}", current_cloud_time)
+                    } else {
+                        "world/lidar/undistorted".to_string()
+                    };
 
                     if let Err(err) = rec.log(
-                        "world/lidar/undistorted",
-                        &rerun::Points3D::update_fields().with_positions(points),
+                        topic,
+                        &rerun::Points3D::update_fields()
+                            .with_positions(positions)
+                            .with_colors(colors)
+                            .with_radii([rerun::Radius::new_scene_units(0.025)]),
                     ) {
                         error!("Error sending to rerun {err}");
                     }

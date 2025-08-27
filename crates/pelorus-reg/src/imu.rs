@@ -4,7 +4,7 @@ use log::warn;
 use nalgebra::*;
 #[cfg(feature = "parallel")]
 use rayon::prelude::*;
-use ros_pointcloud2::points::PointXYZ;
+use ros_pointcloud2::points::PointXYZI;
 use serde::{Deserialize, Serialize};
 use sophus_lie::traits::IsTranslationProductGroup;
 
@@ -254,9 +254,9 @@ impl ImuProcessing {
         last_cloud_end_time: f64,
         cloud_begin_time: f64,
         mut cloud_end_time: f64,
-        cloud: &[prelio::PointXYZT],
+        cloud: &[prelio::PointXYZIT],
         lidar_vendor: Option<prelio::LidarVendor>,
-    ) -> Vec<PointXYZ> {
+    ) -> Vec<PointXYZI> {
         assert!(!imu_msgs.is_empty());
         assert!(last_cloud_end_time > 0.0);
         assert!(cloud_begin_time > 0.0);
@@ -360,7 +360,7 @@ impl ImuProcessing {
         self.imu_state = ekf.state.clone();
 
         // TODO perf this alloc could be optimized out by changing the undistort closure return to be a mut& Vec. then it could be resized here to avoid new allocs for the cloud
-        let mut out_cloud = vec![PointXYZ::default(); cloud.len()];
+        let mut out_cloud = vec![PointXYZI::default(); cloud.len()];
 
         #[cfg(not(feature = "parallel"))]
         {
@@ -402,6 +402,7 @@ impl ImuProcessing {
                     out_cloud[it_pcl].x = p_compensate.x as f32;
                     out_cloud[it_pcl].y = p_compensate.y as f32;
                     out_cloud[it_pcl].z = p_compensate.z as f32;
+                    out_cloud[it_pcl].intensity = pcl_point.intensity;
                 }
             }
         }
@@ -456,6 +457,7 @@ impl ImuProcessing {
                 out_point.x = p_compensate.x as f32;
                 out_point.y = p_compensate.y as f32;
                 out_point.z = p_compensate.z as f32;
+                out_point.intensity = pcl_point.intensity;
             });
 
         out_cloud

@@ -28,8 +28,8 @@ pub type ImuPredictorUndistort = dyn for<'a> Fn(
         f64,
         f64,
         f64,
-        &[PointXYZT],
-    ) -> Either<ImuPosePrediction, (Isometry3<f64>, Vec<PointXYZ>)>
+        &[PointXYZIT],
+    ) -> Either<ImuPosePrediction, (Isometry3<f64>, Vec<PointXYZI>)>
     + Send;
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, Copy)]
@@ -187,7 +187,7 @@ pub trait PointXYZITimestamp<const N: usize>:
 
 #[derive(Debug, Clone, Default)]
 pub struct MeasureGroup {
-    cloud: Vec<PointXYZT>,
+    cloud: Vec<PointXYZIT>,
     last_lidar_end_stamp: f64,
     lidar_start_stamp: f64,
     lidar_end_stamp: f64,
@@ -195,19 +195,21 @@ pub struct MeasureGroup {
 }
 
 #[derive(Debug, Clone, Default, Copy)]
-pub struct PointXYZT {
+pub struct PointXYZIT {
     pub x: f32,
     pub y: f32,
     pub z: f32,
+    pub intensity: f32,
     pub timestamp: f64,
 }
 
-impl PointXYZT {
-    fn from_p(point: Point3<f32>, timestamp: f64) -> Self {
+impl PointXYZIT {
+    fn from_p(point: Point3<f32>, intensity: f32, timestamp: f64) -> Self {
         Self {
             x: point.x,
             y: point.y,
             z: point.z,
+            intensity,
             timestamp,
         }
     }
@@ -276,7 +278,7 @@ fn hash(point: &Point3<f32>, voxel_size: f32) -> i32 {
 
 /// Helper function to find the medoid within a slice of points.
 #[cfg(feature = "downsample")]
-fn find_medoid_in_slice(points: &[(i32, PointXYZT)]) -> PointXYZT {
+fn find_medoid_in_slice(points: &[(i32, PointXYZIT)]) -> PointXYZIT {
     if points.len() == 1 {
         return points[0].1;
     }
@@ -313,7 +315,7 @@ fn find_medoid_in_slice(points: &[(i32, PointXYZT)]) -> PointXYZT {
 fn filter_downsample<const N: usize, P: PointXYZITimestamp<N>>(
     cloud: PointCloud2Msg,
     lifis_params: &config::LifisParameters,
-) -> Result<Option<(Vec<PointXYZT>, f64, f64, HeaderMsg)>> {
+) -> Result<Option<(Vec<PointXYZIT>, f64, f64, HeaderMsg)>> {
     let header = cloud.header.clone();
     #[cfg(feature = "downsample")]
     let voxel_size = lifis_params.downsample.voxel_size;
@@ -332,9 +334,9 @@ fn filter_downsample<const N: usize, P: PointXYZITimestamp<N>>(
     };
 
     #[cfg(feature = "downsample")]
-    type PointsFiltered = (i32, PointXYZT);
+    type PointsFiltered = (i32, PointXYZIT);
     #[cfg(not(feature = "downsample"))]
-    type PointsFiltered = PointXYZT;
+    type PointsFiltered = PointXYZIT;
 
     #[allow(unused_mut)]
     let mut keyed_points: Vec<PointsFiltered> = iter
@@ -408,10 +410,10 @@ fn filter_downsample<const N: usize, P: PointXYZITimestamp<N>>(
             #[cfg(feature = "downsample")]
             {
                 let key = hash(&point_raw, voxel_size);
-                return Some((key, PointXYZT::from_p(point_raw, ts)));
+                return Some((key, PointXYZIT::from_p(point_raw, point.intensity(), ts)));
             }
             #[cfg(not(feature = "downsample"))]
-            return Some(PointXYZT::from_p(point_raw, ts));
+            return Some(PointXYZIT::from_p(point_raw, point.intensity(), ts));
         })
         .collect::<Vec<_>>();
 
@@ -435,7 +437,7 @@ fn filter_downsample<const N: usize, P: PointXYZITimestamp<N>>(
             return Ok(None);
         }
 
-        let downsampled_cloud: Vec<PointXYZT> = {
+        let downsampled_cloud: Vec<PointXYZIT> = {
             // TODO chunk by seems extremely fast on M3 Pro
             // #[cfg(feature = "parallel")]
             // {
@@ -465,7 +467,7 @@ fn filter_downsample<const N: usize, P: PointXYZITimestamp<N>>(
     let mut downsampled_cloud = keyed_points;
 
     // needed for undistort
-    let cmp = |a: &PointXYZT, b: &PointXYZT| {
+    let cmp = |a: &PointXYZIT, b: &PointXYZIT| {
         // if (a.timestamp - b.timestamp).abs() < 1e-6 {
         //     a.z.partial_cmp(&b.z).unwrap()
         // } else {
@@ -510,7 +512,7 @@ pub struct ImuPosePrediction {
 
 #[derive(Debug)]
 pub struct PrelioProcessedCloud {
-    pub cloud: Vec<PointXYZ>,
+    pub cloud: Vec<PointXYZI>,
     pub imu_frame: String,
     pub header: HeaderMsg,
     pub end_of_frame_guess: Isometry3<f64>,
@@ -940,7 +942,7 @@ impl Prelio {
         prev_lidar_end_time: &mut f64,
         gravity: f64,
         lidar_receiver: std::sync::mpsc::Receiver<(
-            (Vec<PointXYZT>, f64, f64, HeaderMsg),
+            (Vec<PointXYZIT>, f64, f64, HeaderMsg),
             RuntimeEvaluator,
         )>,
         imu_receiver: Option<std::sync::mpsc::Receiver<ImuMsg>>,
@@ -968,7 +970,7 @@ impl Prelio {
                 let res = PrelioProcessedCloud {
                     cloud: cloud
                         .into_iter()
-                        .map(|p| PointXYZ::new(p.x, p.y, p.z))
+                        .map(|p| PointXYZI::new(p.x, p.y, p.z, p.intensity))
                         .collect(),
                     imu_frame: "".to_string(),
                     header: lidar_header,
@@ -1086,7 +1088,7 @@ impl Prelio {
                 let cloud = meas
                     .cloud
                     .into_iter()
-                    .map(|p| PointXYZ::new(p.x, p.y, p.z))
+                    .map(|p| PointXYZI::new(p.x, p.y, p.z, p.intensity))
                     .collect(); // TODO use iter as type in processed cloud
 
                 let res = PrelioProcessedCloud {
