@@ -265,7 +265,7 @@ fn lio(config: LioConfig) -> Result<(), Box<dyn std::error::Error>> {
         config.prelio_params.imu.gravity,
         &config.imu_params,
         config.lidar_odom_cov,
-        config.k_neighbors,
+        // config.k_neighbors, // TODO remove from config
         config.neighbor_max_range,
         ext,
         pelorus_reg::IVoxNearbyType::Nearby26,

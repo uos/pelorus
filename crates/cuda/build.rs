@@ -1,3 +1,4 @@
+use rayon::prelude::*;
 use std::env;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -35,12 +36,6 @@ fn main() {
             // CUDA Toolkit directory, TODO check jetson specific folders
             let cuda_lib_path = PathBuf::from(&cuda_path).join("lib64");
 
-            // --- Multi-Stage Compilation Process ---
-            // This is required to solve the `undefined reference to __cudaRegisterLinkedBinary` error.
-            // * Compile the .cu file into a relocatable object file (.o).
-            // * Perform a "device link" on the object file to resolve device symbols.
-            // * Archive both object files into a static library (.a).
-
             // let gencode = format!("arch={},code={}", compute, arch);
             let gencode = format!("-arch=native");
 
@@ -61,41 +56,47 @@ fn main() {
                 }
             }
 
-            // Compile each .cu file into its own object file
-            let mut object_files = Vec::new();
-            for source_file in &source_files {
-                let path = Path::new(source_file);
-                // Create a unique name for the object file based on the source file name
-                let filename = path.file_stem().unwrap().to_str().unwrap();
-                let obj_path = out_dir.join(format!("{}.o", filename));
+            let object_files: Vec<PathBuf> = source_files
+                .par_iter()
+                .map(|source_file| {
+                    let path = Path::new(source_file);
+                    let filename = path.file_stem().unwrap().to_str().unwrap();
+                    let obj_path = out_dir.join(format!("{}.o", filename));
 
-                let mut nvcc_compile_cmd = Command::new("nvcc");
-                let profile = env::var("PROFILE").unwrap();
-                if profile == "release" {
-                    nvcc_compile_cmd.arg("-O3");
-                } else {
-                    nvcc_compile_cmd.arg("-G").arg("-g");
-                }
-                for path in &include_paths {
-                    nvcc_compile_cmd.arg(format!("-I{}", path));
-                }
-                let status_compile = nvcc_compile_cmd
-                    .arg("-Xcompiler")
-                    .arg("-fPIC")
-                    .arg("-c")
-                    .arg(source_file)
-                    .arg("-o")
-                    .arg(&obj_path)
-                    .arg("-rdc=true") // Relocatable Device Code
-                    .arg("-arch=native")
-                    .status()
-                    .expect("Failed to execute nvcc for compilation. Is it in your PATH?");
+                    let mut nvcc_compile_cmd = Command::new("nvcc");
+                    let profile = env::var("PROFILE").unwrap();
+                    if profile == "release" {
+                        nvcc_compile_cmd.arg("-O3");
+                    } else {
+                        nvcc_compile_cmd.arg("-G").arg("-g");
+                    }
+                    for path in &include_paths {
+                        nvcc_compile_cmd.arg(format!("-I{}", path));
+                    }
 
-                if !status_compile.success() {
-                    panic!("nvcc compilation for {} failed", source_file);
-                }
-                object_files.push(obj_path);
-            }
+                    let output = nvcc_compile_cmd
+                        .arg("-Xcompiler")
+                        .arg("-fPIC")
+                        .arg("-c")
+                        .arg(source_file)
+                        .arg("-o")
+                        .arg(&obj_path)
+                        .arg("-rdc=true") // Relocatable Device Code
+                        .arg("-arch=native")
+                        .output() // Changed from .status()
+                        .expect("Failed to execute nvcc. Is it in your PATH?");
+
+                    if !output.status.success() {
+                        return Err(format!(
+                            "nvcc compilation for {} failed:\n{}",
+                            source_file,
+                            String::from_utf8_lossy(&output.stderr)
+                        ));
+                    }
+                    Ok(obj_path)
+                })
+                .collect::<Result<Vec<_>, String>>()
+                .unwrap_or_else(|err| panic!("{}", err));
 
             // Device link all generated object files
             let dlink_obj_path = out_dir.join("kernel.dlink.o");
@@ -106,8 +107,8 @@ fn main() {
                 .arg(&dlink_obj_path)
                 .arg("-arch=native")
                 .arg(&gencode)
-                .arg(format!("-L{}", cuda_lib_path.display())) // Tell dlink where to find libs
-                .arg("-lcudadevrt"); // Link the device runtime
+                .arg(format!("-L{}", cuda_lib_path.display()))
+                .arg("-lcudadevrt");
             for obj in &object_files {
                 dlink_cmd.arg(obj);
             }
@@ -134,17 +135,14 @@ fn main() {
                 panic!("'ar' archiving (Stage 3) failed");
             }
 
-            // Instruct cargo to link the compiled static library and the CUDA runtime.
             println!("cargo:rustc-link-search=native={}", out_dir.display());
             println!("cargo:rustc-link-search=native={}", cuda_lib_path.display());
             println!("cargo:rustc-link-lib=static=kernel");
-            // println!("cargo:rustc-link-lib=cudart");
             println!("cargo:rustc-link-lib=stdc++");
             println!("cargo:rustc-link-lib=cuda");
             println!("cargo:rustc-link-lib=cudadevrt");
             println!("cargo:rustc-link-lib=static=cudart_static");
 
-            // Generate bindings using bindgen.
             bindgen::Builder::default()
                 .header("src/include/lib.h")
                 .parse_callbacks(Box::new(bindgen::CargoCallbacks::new()))

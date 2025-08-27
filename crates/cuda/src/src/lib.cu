@@ -235,13 +235,12 @@ void get_map(Point *points, uint32_t *points_size) {
 uint32_t get_map_capacity() { return state->localmap.capacity; }
 uint32_t get_map_size() { return state->localmap.size(); }
 
-__global__ void plane_krnl(
-    Point *cloud, uint32_t cloud_size, Point *neighbor_cache,
-    uint32_t *neighbor_size_cache, Pose ekf_lidar_to_imu, Pose ekf_pose,
-    uint32_t k, float neighbor_max_range, double plane_point_error_threshold,
-    bool first_it_local, bool converged, KeyValuePair *map, uint32_t capacity,
-    thrust::pair<uint32_t, VoxelDistribution> *buffer, float map_resolution,
-    time_t time, NearbyType nbtype, PointNormal *out_buff, uint32_t *out_size) {
+__global__ void plane_krnl(Point *cloud, uint32_t cloud_size,
+                           Pose ekf_lidar_to_imu, Pose ekf_pose, uint32_t k,
+                           KeyValuePair *map, uint32_t capacity,
+                           thrust::pair<uint32_t, VoxelDistribution> *buffer,
+                           float map_resolution, time_t time, NearbyType nbtype,
+                           PointNormal *out_buff, uint32_t *out_size) {
   size_t idx = blockIdx.x * blockDim.x + threadIdx.x;
   if (idx >= cloud_size) {
     return;
@@ -268,49 +267,11 @@ __global__ void plane_krnl(
   rm::Pointf p_imu = lidar_to_imu_pose * p_local;
   rm::Pointf p_global = global_pose * p_imu;
 
-  rm::Pointf neighbors[MAX_NEIGHBORS];
-  uint32_t neighbors_size = 0;
-
-  if (first_it_local || converged) {
-    if (!k_nearest_neighbor_query(p_global, k, nbtype, neighbor_max_range, map,
-                                  capacity, buffer, map_resolution, neighbors,
-                                  neighbors_size, time, idx)) {
-      return;
-    }
-  }
-
-  // Write neighbors to cache if set
-  if (neighbors_size > 0) {
-    Point *cache_offset = &neighbor_cache[idx * k];
-    for (uint32_t i = 0; i < neighbors_size; i++) {
-      rm::Pointf p = neighbors[i];
-      cache_offset[i] = Point{p.x, p.y, p.z};
-    }
-    neighbor_size_cache[idx] = neighbors_size;
-  } else {
-    // Or get from cache if already populated in last iteration
-    neighbors_size = neighbor_size_cache[idx];
-    Point *cache_offset = &neighbor_cache[idx * k];
-    for (uint32_t i = 0; i < neighbors_size; i++) {
-      Point p = cache_offset[i];
-      neighbors[i] = rm::Pointf{p.x, p.y, p.z};
-    }
-  }
-
-  // Plane
   float4 plane;
-  if (!pca_eigen(neighbors, neighbors_size, 0.1, plane)) {
+  if (!plane_fit_from_distributions(p_global, map, capacity, buffer,
+                                    map_resolution, 0.5, plane)) {
     return;
   }
-
-  // if (idx < 100) {
-  //   for (uint32_t i = 0; i < neighbors_size; i++) {
-  //     rm::Pointf p = neighbors[i];
-  //     printf(
-  //         "  neighbor for point(%.6f, %.6f, %.6f): point(%.6f, %.6f,
-  //         %.6f)\n", p_global.x, p_global.y, p_global.z, p.x, p.y, p.z);
-  //   }
-  // }
 
   auto pd2 = plane.x * p_global.x + plane.y * p_global.y +
              plane.z * p_global.z + plane.w;
@@ -334,10 +295,8 @@ __global__ void plane_krnl(
 
 // returns: size of out_buff, out_buff is on gpu and has enough space
 u_int32_t planes(void *stream, Point *cloud, uint32_t cloud_size,
-                 Point *neighbor_cache, uint32_t *neighbor_size_cache,
                  Pose ekf_lidar_to_imu, Pose ekf_pose, uint32_t k,
-                 float neighbor_max_range, double plane_point_error_threshold,
-                 bool first_it_local, PointNormal *out_buff, bool converged) {
+                 PointNormal *out_buff) {
   try {
     rm::CudaStream *stream_ = (rm::CudaStream *)stream;
     rm::Memory<uint32_t, rmagine::RAM> out_size_cpu(1);
@@ -348,9 +307,7 @@ u_int32_t planes(void *stream, Point *cloud, uint32_t cloud_size,
     int blocks_per_grid =
         (cloud_size + threads_per_block - 1) / threads_per_block;
     plane_krnl<<<blocks_per_grid, threads_per_block, 0, stream_->handle()>>>(
-        cloud, cloud_size, neighbor_cache, neighbor_size_cache,
-        ekf_lidar_to_imu, ekf_pose, k, neighbor_max_range,
-        plane_point_error_threshold, first_it_local, converged,
+        cloud, cloud_size, ekf_lidar_to_imu, ekf_pose, k,
         thrust::raw_pointer_cast(state->localmap.lookup->d_table.data()),
         state->localmap.lookup->capacity,
         thrust::raw_pointer_cast(state->localmap.buffer.data()),

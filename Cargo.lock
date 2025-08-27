@@ -979,6 +979,7 @@ dependencies = [
 [[package]]
 name = "bagread"
 version = "0.1.0-rc.4"
+source = "git+https://github.com/uos/minot?branch=fixwait#fa523a36651e621948d126a91735881da75fe69a"
 dependencies = [
  "anyhow",
  "byteorder",
@@ -2088,6 +2089,7 @@ dependencies = [
  "bindgen 0.72.0",
  "log",
  "nalgebra 0.33.2",
+ "rayon",
  "ros_pointcloud2 0.5.3 (git+https://github.com/stelzo/ros_pointcloud2.git?branch=rkyv)",
  "walkdir",
 ]
@@ -7475,6 +7477,7 @@ dependencies = [
 [[package]]
 name = "rat"
 version = "0.1.0-rc.4"
+source = "git+https://github.com/uos/minot?branch=fixwait#fa523a36651e621948d126a91735881da75fe69a"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -7491,6 +7494,7 @@ dependencies = [
 [[package]]
 name = "ratpub"
 version = "0.1.0-rc.4"
+source = "git+https://github.com/uos/minot?branch=fixwait#fa523a36651e621948d126a91735881da75fe69a"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -9714,6 +9718,7 @@ dependencies = [
 [[package]]
 name = "rlc"
 version = "0.1.0-rc.4"
+source = "git+https://github.com/uos/minot?branch=fixwait#fa523a36651e621948d126a91735881da75fe69a"
 dependencies = [
  "anyhow",
  "ariadne",
@@ -10075,6 +10080,7 @@ checksum = "94143f37725109f92c262ed2cf5e59bce7498c01bcc1502d7b9afe439a4e9f49"
 [[package]]
 name = "sea"
 version = "0.1.0-rc.4"
+source = "git+https://github.com/uos/minot?branch=fixwait#fa523a36651e621948d126a91735881da75fe69a"
 dependencies = [
  "anyhow",
  "async-trait",

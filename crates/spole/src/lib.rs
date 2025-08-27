@@ -9,6 +9,8 @@ use nalgebra::{Point3, Vector3};
 use rand::{Rng, SeedableRng};
 
 use nalgebra::{Cholesky, Matrix3};
+#[cfg(feature = "parallel")]
+use rayon::slice::ParallelSliceMut;
 use ros_pointcloud2::points::PointXYZ;
 
 use serde::{Deserialize, Serialize};
@@ -70,7 +72,7 @@ impl VoxelDistribution {
     /// # Returns
     /// A `VoxelDistribution` representing the provided points. Returns an empty
     /// distribution if the input slice is empty.
-    pub fn from_points(points: &[(Point3<f32>, i32)]) -> Self {
+    pub fn from_points(points: &[(Point3<f32>, i32)], current_scan_number: usize) -> Self {
         let point_count = points.len();
 
         // If there are no points, return an empty distribution.
@@ -103,7 +105,7 @@ impl VoxelDistribution {
             mean,
             covariance,
             transform: Matrix3::identity(),
-            last_updated_at_scan: 0, // Or some other default/initial value
+            last_updated_at_scan: current_scan_number,
         }
     }
 
@@ -538,19 +540,7 @@ impl IVoxHashMap {
 
         #[cfg(not(feature = "nn_kdt"))]
         {
-            // points.iter().for_each(|point| {
-            //     let global_p = transform.transform_point(&point.xyz_f64());
-
-            //     let grid = self.pos2grid(&PointXYZ {
-            //         x: global_p.x as f32,
-            //         y: global_p.y as f32,
-            //         z: global_p.z as f32,
-            //     });
-            //     let voxel_key = Self::hash_grid(&grid);
-            //     self.livodish
-            //         .add(&global_p.cast(), voxel_key, self.scan_number);
-            // });
-            // self.livodish.build(self.scan_number);
+            let current_scan_number = self.scan_number;
 
             let mut keyed_points = points
                 .iter()
@@ -564,10 +554,11 @@ impl IVoxHashMap {
             // After this, all points in the same voxel are adjacent
             #[cfg(feature = "parallel")]
             {
+                const PAR_SORT_BOUNDARY: usize = 1; // When tested on an M3, par sort was always faster, no matter the size. TODO test on other platforms
                 if keyed_points.len() > PAR_SORT_BOUNDARY {
-                    keyed_points.par_sort_unstable_by_key(|(key, _)| *key);
+                    keyed_points.par_sort_unstable_by_key(|(_, key)| *key);
                 } else {
-                    keyed_points.sort_unstable_by_key(|(key, _)| *key);
+                    keyed_points.sort_unstable_by_key(|(_, key)| *key);
                 }
             }
             #[cfg(not(feature = "parallel"))]
@@ -595,7 +586,7 @@ impl IVoxHashMap {
             keyed_points
                 .chunk_by(|a, b| a.0 == b.0)
                 .for_each(|group_slice| {
-                    let dist = VoxelDistribution::from_points(group_slice);
+                    let dist = VoxelDistribution::from_points(group_slice, current_scan_number);
                     let grid = self.pos2grid(&PointXYZ {
                         x: dist.mean.x as f32,
                         y: dist.mean.y as f32,
