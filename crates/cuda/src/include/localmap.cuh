@@ -7,6 +7,7 @@
 #include <curand_kernel.h>
 #include <hashmap.cuh>
 #include <lib.h>
+#include <math/iso3.cuh>
 #include <math/matrix3x3.cuh>
 #include <math/vector3.cuh>
 #include <thrust/device_vector.h>
@@ -27,11 +28,20 @@ struct VoxelDistribution {
       : mean(rm::Vector3f(0.0f, 0.0f, 0.0f)), point_count(0),
         last_updated_at_scan(0), lock_flag(0) {}
 
-  __host__ __device__ VoxelDistribution(const rm::Vector3f &point)
-      : mean(point), point_count(1), last_updated_at_scan(0), lock_flag(0) {}
+  __device__ void update(const VoxelDistribution &other, float sensitivity,
+                         size_t scan_number);
 
-  __device__ void update(const rm::Vector3f &point, float sensitivity,
-                         float min_dist, size_t scan_number);
+  __device__ void update_from_point(const rm::Vector3f &point,
+                                    float sensitivity, float min_dist,
+                                    size_t scan_number);
+
+  __device__ VoxelDistribution(const Point *original_points,
+                               const uint32_t *sorted_indices,
+                               uint32_t start_offset, uint32_t count,
+                               const rm::Isometry3f &global_pose,
+                               uint32_t scan_number);
+
+  __device__ void pool(const VoxelDistribution &other);
 
   __device__ void lock();
   __device__ void unlock();
@@ -80,6 +90,11 @@ public:
   thrust::device_vector<uint32_t> d_run_ends;
 };
 
+__device__ bool plane_fit_from_distributions(
+    const rm::Pointf &query, const KeyValuePair *map, uint32_t table_capacity,
+    const thrust::pair<uint32_t, VoxelDistribution> *buffer, float resolution,
+    float sphericity_threshold, float4 &plane_equation);
+
 __device__ bool pca_constant(const rm::Vector3f *cluster, uint32_t n,
                              float normal_threshold, double4 &plane_equation);
 __device__ bool pca_eigen(const rm::Vector3f *cluster, uint32_t n,
@@ -87,7 +102,7 @@ __device__ bool pca_eigen(const rm::Vector3f *cluster, uint32_t n,
 
 __device__ bool
 k_nearest_neighbor_query(const rm::Pointf &query, uint32_t k, NearbyType nbtype,
-                         float max_range, KeyValuePair *map, uint32_t capacity,
+                         KeyValuePair *map, uint32_t capacity,
                          thrust::pair<uint32_t, VoxelDistribution> *buffer,
                          float resolution, rm::Pointf *result,
                          uint32_t &out_size, time_t time, int thread_id);

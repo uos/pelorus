@@ -1,4 +1,3 @@
-use nalgebra::Point3;
 #[cfg(feature = "parallel")]
 use rayon::slice::ParallelSliceMut;
 

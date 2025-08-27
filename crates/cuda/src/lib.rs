@@ -156,30 +156,6 @@ impl CudaBuffer {
         stream.sync();
         cpu_buff
     }
-
-    // pub fn as_slice<T>(&self, stream: &Stream) -> &[T] {
-    //     stream.sync();
-    //     unsafe { slice::from_raw_parts(self.as_ptr::<T>(), self.n) }
-    // }
-
-    // pub fn as_mut_slice<T>(&self, stream: &Stream) -> &mut [T] {
-    //     stream.sync();
-    //     unsafe { slice::from_raw_parts_mut(self.as_ptr::<T>(), self.n) }
-    // }
-
-    // pub fn as_cloud_mut(&self, stream: &Stream) -> &[PointXYZ] {
-    //     stream.sync();
-    //     unsafe { slice::from_raw_parts_mut(self.as_ptr::<PointXYZ>(), self.n) }
-    // }
-
-    // pub fn read_value<T: Copy>(&self) -> &T {
-    //     debug_assert_eq!(self.element_size * self.n, std::mem::size_of::<T>());
-    //     unsafe { &*(self.gpu_ptr as *mut T) }
-    // }
-
-    // pub fn as_ptr<T>(&self) -> *mut T {
-    //     self.gpu_ptr as *mut T
-    // }
 }
 
 pub fn get_map() -> Vec<nalgebra::Point3<f32>> {
@@ -243,20 +219,14 @@ pub fn get_map_size() -> u32 {
 
 pub fn planes_cuda(
     stream: &Stream,
-    neighbors: &mut CudaBuffer,
-    neighbor_sizes: &mut CudaBuffer,
     cloud: &CudaBuffer,
     ekf_pose_t: &Vector3,
     ekf_pose_r: &Matrix3,
     ekf_imu_offset_t: &Vector3,
     ekf_imu_offset_r: &Matrix3,
     k: usize,
-    neighbor_max_range: f32,
-    plane_point_error_threshold: f64,
-    first_it_local: bool,
     out_buff: &mut Vec<PointXYZINormal>,
     out_buff_gpu: &mut CudaBuffer,
-    converged: bool,
 ) {
     assert!(out_buff.len() >= cloud.n);
 
@@ -279,16 +249,10 @@ pub fn planes_cuda(
             stream.stream,
             cloud.gpu_ptr as *mut ffi::Point,
             cloud.n as u32,
-            neighbors.gpu_ptr as *mut ffi::Point,
-            neighbor_sizes.gpu_ptr as *mut u32,
             lidar_to_imu,
             pose,
             k as u32,
-            neighbor_max_range,
-            plane_point_error_threshold,
-            first_it_local,
             out_buff_gpu.gpu_ptr as *mut ffi::PointNormal,
-            converged,
         )
     };
 

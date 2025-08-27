@@ -10,19 +10,14 @@ use ros_pointcloud2::points::{PointXYZ, PointXYZINormal};
 
 use sophus_lie::traits::IsTranslationProductGroup;
 pub use spole::IVoxNearbyType;
-use spole::VoxelDistribution;
 
 use crate::sophus_ekf::skew_symmetric;
-
-const PLANE_POINT_ERROR_THRESHOLD: f64 = 0.1;
 
 pub struct RegistrationState {
     ekf: crate::sophus_ekf::Esekf,
     imu_processing: crate::imu::ImuProcessing,
     pub map: spole::IVoxHashMap,
     laser_point_noise_cov: f64,
-    k_neighbors: usize,
-    neighbor_max_range: f64,
 }
 
 impl RegistrationState {
@@ -32,8 +27,7 @@ impl RegistrationState {
         g: f64,
         imu_params: &crate::imu::ImuParameters,
         laser_point_noise_cov: f64,
-        k_neighbors: usize,
-        neighbor_max_range: f64,
+        _neighbor_max_range: f64,
         initial_extrinsic_calibration: Isometry3<f64>,
         knn_nearby_voxel_search_range: IVoxNearbyType,
         update_cov_sensitivity: f32,
@@ -53,8 +47,6 @@ impl RegistrationState {
             ),
             map,
             laser_point_noise_cov,
-            k_neighbors,
-            neighbor_max_range,
         }
     }
 
@@ -339,8 +331,6 @@ impl crate::Registration for RegistrationState {
         eval: &mut RuntimeEvaluator,
         #[cfg(feature = "cuda")] stream: &cuda::Stream,
     ) -> anyhow::Result<crate::CloudRegisterResult> {
-        let neighbors = Arc::new(Mutex::new(None));
-        let neighbor_sizes = Arc::new(Mutex::new(None));
         let first_it = Arc::new(Mutex::new(true));
         let eval_outer = std::sync::Arc::new(std::sync::RwLock::new(eval));
         #[cfg(feature = "cuda")]
@@ -380,14 +370,7 @@ impl crate::Registration for RegistrationState {
         if !map_empty {
             #[cfg(not(feature = "cuda"))]
             let map = &mut self.map;
-            let k = self.k_neighbors;
-            let neighbor_max_range = self.neighbor_max_range as f32;
 
-            let neighbors_cloud_in_ekf = neighbors.clone();
-            let neighbor_sizes_in_ekf = neighbor_sizes.clone();
-            // Allocate more on GPU to further reduce allocations
-            const EXTRA: f32 = if cfg!(feature = "cuda") { 1.3 } else { 1.2 };
-            let cloud_len_alloc = (EXTRA * cloud.len() as f32).ceil() as usize;
             {
                 eval_outer.write().unwrap().start("ekf correct").unwrap();
             }
@@ -416,70 +399,11 @@ impl crate::Registration for RegistrationState {
                     #[cfg(feature = "cuda")]
                     let mut planes_gpu = planes_gpu_buffer.lock().unwrap();
 
-                    // TODO remove, since no iteration anymore
-                    let mut neighbors = neighbors_cloud_in_ekf.lock().unwrap().take().unwrap_or({
-                        #[cfg(feature = "cuda")]
-                        let buff = {
-                            LocatedBufferView::<PointXYZ>::alloc_points_cuda(
-                                &stream,
-                                cloud_len_alloc * k,
-                            )
-                        };
-                        #[cfg(not(feature = "cuda"))]
-                        let buff = {
-                            LocatedBufferView::from_vec_cpu(vec![
-                                PointXYZ::default();
-                                cloud_len_alloc * k
-                            ])
-                        };
-                        buff
-                    });
-                    let mut neighbor_sizes = {
-                        neighbor_sizes_in_ekf.lock().unwrap().take().unwrap_or({
-                            #[cfg(feature = "cuda")]
-                            let buff = LocatedBufferView::<usize>::alloc_neighbors_cuda(
-                                &stream,
-                                cloud_len_alloc,
-                            );
-                            #[cfg(not(feature = "cuda"))]
-                            let buff =
-                                LocatedBufferView::from_vec_cpu(vec![0usize; cloud_len_alloc]);
-
-                            buff
-                        })
-                    };
-
-                    // Perf: should never be larger than k because k never changes. add 20% extra room to avoid triggering with small upward changes.
-                    if neighbors.len() < cloud.len() * k {
-                        #[cfg(feature = "cuda")]
-                        let v = LocatedBufferView::alloc_points_cuda(&stream, cloud_len_alloc * k);
-                        #[cfg(not(feature = "cuda"))]
-                        let v = LocatedBufferView::from_vec_cpu(vec![
-                            PointXYZ::default();
-                            cloud_len_alloc * k
-                        ]);
-                        neighbors = v;
-                    }
-
                     let mut eval = eval_cb.write().unwrap();
 
                     eval.start("planes").unwrap();
                     #[cfg(feature = "cuda")]
                     let planes = {
-                        let neighbors = match &mut neighbors {
-                            LocatedBufferView::Ram(_) => {
-                                panic!("neighbors not allocated on GPU")
-                            }
-                            LocatedBufferView::Cuda { buffer: cloud } => cloud,
-                        };
-
-                        let neighbor_sizes = match &mut neighbor_sizes {
-                            LocatedBufferView::Ram(_) => {
-                                panic!("neighbor_sizes not allocated on GPU")
-                            }
-                            LocatedBufferView::Cuda { buffer } => buffer,
-                        };
-
                         let cloud = match cloud {
                             LocatedBufferView::Ram(_) => {
                                 panic!("cloud not allocated on GPU")
@@ -490,8 +414,6 @@ impl crate::Registration for RegistrationState {
                         // call to cuda kernel
                         cuda::planes_cuda(
                             &stream,
-                            neighbors,
-                            neighbor_sizes,
                             cloud,
                             &cuda::Vector3::new(
                                 ekf_state.pose.translation().x,
@@ -506,12 +428,8 @@ impl crate::Registration for RegistrationState {
                             ),
                             &ekf_state.offset_r_l_i.matrix().into(),
                             k,
-                            neighbor_max_range,
-                            PLANE_POINT_ERROR_THRESHOLD,
-                            first_it_local,
                             &mut planes,
                             &mut planes_gpu,
-                            converged,
                         );
 
                         planes
@@ -527,43 +445,18 @@ impl crate::Registration for RegistrationState {
                             }
                         };
                         let iter = {
-                            let neighbor_sizes = match &mut neighbor_sizes {
-                                LocatedBufferView::Ram(point_xyzs) => point_xyzs.as_mut_slice(),
-                                #[cfg(feature = "cuda")]
-                                LocatedBufferView::Cuda { buffer: _ } => {
-                                    panic!("cuda buffer in cpu task")
-                                }
-                            };
-                            let neighbors = match &mut neighbors {
-                                LocatedBufferView::Ram(point_xyzs) => point_xyzs.as_mut_slice(),
-                                #[cfg(feature = "cuda")]
-                                LocatedBufferView::Cuda { buffer: _ } => {
-                                    panic!("cuda buffer in cpu task")
-                                }
-                            };
-
                             #[cfg(feature = "parallel")]
                             {
-                                cloud
-                                    .par_iter()
-                                    .zip(neighbor_sizes.par_iter_mut())
-                                    .zip(neighbors.par_chunks_exact_mut(k))
+                                cloud.par_iter()
                             }
                             #[cfg(not(feature = "parallel"))]
                             {
-                                cloud
-                                    .iter()
-                                    .zip(neighbor_sizes.iter_mut())
-                                    .zip(neighbors.chunks_exact_mut(k))
+                                cloud.iter()
                             }
                         };
 
-                        let mut lr_part = 0;
-                        let mut lr2_part = 0;
-                        let mut total_returned = 0;
-
                         let planes: Vec<PointXYZINormal> = iter
-                            .filter_map(|((point_local, neighbor_size), curr_point_neighbors)| {
+                            .filter_map(|point_local| {
                                 // Global in IMU frame
                                 let point_imu = ekf_state.offset_r_l_i.matrix()
                                     * point_local.xyz_f64()
@@ -576,10 +469,9 @@ impl crate::Registration for RegistrationState {
                                     point_global.z as f32,
                                 );
 
-                                let mut winning_factor = None;
+                                // let mut winning_factor = None;
 
                                 let n1 = {
-                                    *neighbor_size = 0;
                                     let plane = map.plane_fit_from_distributions(&query_point)?;
                                     let pd2 = plane[0] * point_global.x as f32
                                         + plane[1] * point_global.y as f32
@@ -592,7 +484,7 @@ impl crate::Registration for RegistrationState {
                                     if s <= 0.9 {
                                         None
                                     } else {
-                                        winning_factor = Some((pd2, 0));
+                                        // winning_factor = Some((pd2, 0));
 
                                         Some(PointXYZINormal::new(
                                             point_local.x,
@@ -671,36 +563,27 @@ impl crate::Registration for RegistrationState {
                                 //         total_returned += 1;
                                 //         n1
                                 //     }
-                                //     1 => {
-                                //         total_returned += 1;
-                                //         lr_part += 1;
-                                //         n2
-                                //     }
-                                //     // 2 => {
+                                //     // 1 => {
                                 //     //     total_returned += 1;
-                                //     //     lr2_part += 1;
-                                //     //     n3
+                                //     //     lr_part += 1;
+                                //     //     n2
                                 //     // }
+                                //     2 => {
+                                //         total_returned += 1;
+                                //         lr2_part += 1;
+                                //         n3
+                                //     }
                                 //     _ => panic!("winner has not been implemented"),
                                 // }
                             })
                             .collect::<Vec<_>>();
 
-                        let tp = lr_part as f32 / total_returned as f32;
-                        let tp2 = lr2_part as f32 / total_returned as f32;
-                        dbg!(tp, tp2, total_returned);
+                        // let tp = lr_part as f32 / total_returned as f32;
+                        // let tp2 = lr2_part as f32 / total_returned as f32;
+                        // dbg!(tp, tp2, total_returned);
                         planes
                     };
                     eval.stop("planes").unwrap();
-
-                    // put neighbors back
-                    {
-                        neighbors_cloud_in_ekf.lock().unwrap().replace(neighbors);
-                        neighbor_sizes_in_ekf
-                            .lock()
-                            .unwrap()
-                            .replace(neighbor_sizes);
-                    }
 
                     *first_it.lock().unwrap() = false;
 
@@ -748,8 +631,6 @@ impl crate::Registration for RegistrationState {
                                     &(ekf_state.pose.rotation().matrix() * v.coords
                                         + ekf_state.pose.translation()),
                                 );
-                            // if current_scan_count > 11 {
-                            //     warn!("not standing still anymore");
                             // Rotation Jacobian
                             h_x_row[0] = a.x;
                             h_x_row[1] = a.y;
@@ -773,10 +654,6 @@ impl crate::Registration for RegistrationState {
                             h_x_row[16] = 0.0;
                             h_x_row[17] = 0.0;
                             h_row[0] = -nearest_plane[3];
-                            // } else {
-                            //     h_x_row.fill(0.000000000001);
-                            //     h_row[0] = 0.000000000001;
-                            // }
                         });
                     eval.stop("jacobian").unwrap();
                 },

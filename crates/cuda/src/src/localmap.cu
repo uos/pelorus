@@ -164,9 +164,99 @@ __device__ void VoxelDistribution::unlock() {
   atomicExch(&this->lock_flag, 0);
 }
 
-__device__ void VoxelDistribution::update(const rm::Vector3f &new_point,
-                                          float sensitivity, float min_dist,
+__device__ void VoxelDistribution::update(const VoxelDistribution &other,
+                                          float sensitivity,
                                           size_t current_scan_number) {
+  if (other.point_count == 0) {
+    return;
+  }
+
+  this->last_updated_at_scan = current_scan_number;
+
+  if (this->point_count == 0) {
+    this->point_count = other.point_count;
+    this->mean = other.mean;
+    this->covariance = other.covariance;
+    this->transform = other.transform;
+    return;
+  }
+
+  const rm::Vector3f mean_diff = this->mean - other.mean;
+
+  const float regularization_factor = 1e-6f;
+  rm::Matrix3x3f id;
+  id.setIdentity();
+  const rm::Matrix3x3f regularized_cov =
+      this->covariance + id * regularization_factor;
+
+  // Squared Mahalanobis distance: D^2 = (μ₁ - μ₂)^T * Σ⁻¹ * (μ₁ - μ₂)
+  float mahalanobis_sq;
+  rm::Matrix3x3f L; // Cholesky factor
+  if (cholesky_3x3(regularized_cov, L)) {
+    // A robust way to compute x^T * A⁻¹ * x is to solve Ay=x and then compute
+    // x^T * y
+    rm::Vector3f sol = cholesky_solve_3x3(L, mean_diff);
+    mahalanobis_sq = mean_diff.dot(sol);
+  } else {
+    // Fallback to squared Euclidean distance if Cholesky decomposition fails
+    // (e.g., singular matrix).
+    mahalanobis_sq = mean_diff.l2normSquared();
+  }
+
+  // As the distribution matures (gains points), it becomes less sensitive to
+  // new updates.
+  const float maturity_decay =
+      fmaxf(1.0f, logf(static_cast<float>(this->point_count)));
+  const float effective_sensitivity = sensitivity / maturity_decay;
+
+  // The weight `alpha` is calculated using a Gaussian-like kernel.
+  // A large Mahalanobis distance results in a weight close to 0.
+  const float alpha = expf(-mahalanobis_sq / (2.0f * effective_sensitivity));
+
+  // If alpha is negligible, skip the update to save computation.
+  if (alpha < 1e-5f) {
+    return;
+  }
+
+  // The new mean is a weighted average (convex combination) of the two original
+  // means.
+  const rm::Vector3f new_mean =
+      this->mean * (1.0f - alpha) + other.mean * alpha;
+
+  // The new covariance is fused using a formula analogous to the parallel axis
+  // theorem.
+  const float d_v[3] = {mean_diff.x, mean_diff.y, mean_diff.z};
+  rm::Matrix3x3f outer_product_mean_diff;
+  for (int j = 0; j < 3; ++j) {
+    for (int i = 0; i < 3; ++i) {
+      outer_product_mean_diff.at(i, j) = d_v[i] * d_v[j];
+    }
+  }
+
+  const rm::Matrix3x3f new_covariance =
+      this->covariance * (1.0f - alpha) + other.covariance * alpha +
+      outer_product_mean_diff * (alpha * (1.0f - alpha));
+
+  this->mean = new_mean;
+  this->covariance = new_covariance;
+  this->point_count += other.point_count; // Aggregate point counts
+
+  // Re-calculate the Cholesky factor 'L' for the newly fused covariance,
+  // to be used for future sampling or distance calculations.
+  if (!cholesky_3x3(this->covariance, this->transform)) {
+    // If Cholesky fails, fallback to a diagonal matrix from eigenvalues.
+    rm::Vector3f eigenvalues = symmetric_eigen_3x3(this->covariance);
+    this->transform = rm::Matrix3x3f{}; // Zero out the matrix
+    this->transform(0, 0) = sqrtf(fmaxf(0.0f, eigenvalues.x));
+    this->transform(1, 1) = sqrtf(fmaxf(0.0f, eigenvalues.y));
+    this->transform(2, 2) = sqrtf(fmaxf(0.0f, eigenvalues.z));
+  }
+}
+
+__device__ void
+VoxelDistribution::update_from_point(const rm::Vector3f &new_point,
+                                     float sensitivity, float min_dist,
+                                     size_t current_scan_number) {
   this->last_updated_at_scan = current_scan_number;
 
   if (this->point_count < 2) {
@@ -356,20 +446,15 @@ voxel_krnl(const int32_t *unique_keys,
                          global_transform.position.z);
   rm::Isometry3f global_pose{ekf_rot, ekf_trans};
 
+  VoxelDistribution scan_voxel(original_points, sorted_indices, start_offset,
+                               end_offset - start_offset, global_pose,
+                               scan_number);
+
   if (found_existing) {
-    VoxelDistribution &voxel = buffer[buffer_idx].second;
-    voxel.lock();
-
-    for (uint32_t i = start_offset; i < end_offset; ++i) {
-      uint32_t point_original_idx = sorted_indices[i];
-      Point point_raw = original_points[point_original_idx];
-      rm::Pointf point_local =
-          rm::Pointf(point_raw.x, point_raw.y, point_raw.z);
-      rm::Pointf point_global = global_pose * point_local;
-      voxel.update(point_global, sensitivity, min_dist, scan_number);
-    }
-    voxel.unlock();
-
+    VoxelDistribution &map_voxel = buffer[buffer_idx].second;
+    map_voxel.lock();
+    map_voxel.update(scan_voxel, sensitivity, scan_number);
+    map_voxel.unlock();
   } else {
     uint32_t claimed_idx = atomicAdd(add_cursor, 1);
     if (claimed_idx < capacity) {
@@ -387,18 +472,7 @@ voxel_krnl(const int32_t *unique_keys,
         rm::Pointf(first_point_raw.x, first_point_raw.y, first_point_raw.z);
     rm::Pointf first_point_global = global_pose * first_point_local;
 
-    buffer[buffer_idx] =
-        thrust::make_pair(key, VoxelDistribution(first_point_global));
-
-    for (uint32_t i = start_offset + 1; i < end_offset; ++i) {
-      uint32_t point_original_idx = sorted_indices[i];
-      Point point_raw = original_points[point_original_idx];
-      rm::Pointf point_local =
-          rm::Pointf(point_raw.x, point_raw.y, point_raw.z);
-      rm::Pointf point_global = global_pose * point_local;
-      buffer[buffer_idx].second.update(point_global, sensitivity, min_dist,
-                                       scan_number);
-    }
+    buffer[buffer_idx] = thrust::make_pair(key, scan_voxel);
   }
 }
 
@@ -458,8 +532,7 @@ void Localmap::add(Point *points, uint32_t point_size, uint32_t scan_number,
   this->d_run_starts[0] = 0;
   thrust::transform(thrust::device.on(stream.handle()),
                     this->d_run_ends.begin(), this->d_run_ends.end() - 1,
-                    this->d_run_starts.begin() + 1,
-                    thrust::identity<uint32_t>());
+                    this->d_run_starts.begin() + 1, cuda::std::identity());
 
   blocks_per_grid =
       (unique_key_count + threads_per_block - 1) / threads_per_block;
@@ -760,7 +833,7 @@ __device__ void sample_from_distribution(const VoxelDistribution &dist,
 
 __device__ bool
 k_nearest_neighbor_query(const rm::Pointf &query, uint32_t k, NearbyType nbtype,
-                         float max_range, KeyValuePair *map, uint32_t capacity,
+                         KeyValuePair *map, uint32_t capacity,
                          thrust::pair<uint32_t, VoxelDistribution> *buffer,
                          float resolution, rm::Pointf *result,
                          uint32_t &out_size, time_t time, int thread_id) {
@@ -807,7 +880,6 @@ k_nearest_neighbor_query(const rm::Pointf &query, uint32_t k, NearbyType nbtype,
   curand_init(time, thread_id, 0, &rng);
 
   rm::Pointf sampled_out[MAX_NEIGHBORS];
-  auto sq_max_range = max_range * max_range;
   for (uint32_t i = 0; i < num_cached; i++) {
     if (current_found_count >= k) {
       break;
@@ -831,11 +903,9 @@ k_nearest_neighbor_query(const rm::Pointf &query, uint32_t k, NearbyType nbtype,
     for (uint32_t i = 0; i < sample_count; i++) {
       auto p = sampled_out[i];
       auto dist = (query - p).l2normSquared();
-      if (dist < sq_max_range) {
-        result[current_found_count++] = p;
-        if (current_found_count >= k) {
-          break;
-        }
+      result[current_found_count++] = p;
+      if (current_found_count >= k) {
+        break;
       }
     }
   }
@@ -973,21 +1043,222 @@ __device__ void normalize_safe(rm::Vector3f &v) {
   }
 }
 
-/**
- * @brief Fits a plane to a point cloud using Principal Component Analysis (PCA)
- * via robust eigen-decomposition.
- *
- * This method calculates the covariance matrix of the points, finds its
- * eigenvalues and eigenvectors. The eigenvector corresponding to the smallest
- * eigenvalue is the normal of the best-fit plane.
- *
- * @param cluster Pointer to the array of 3D points.
- * @param n Number of points in the cluster.
- * @param normal_threshold The maximum distance a point can be from the
- * fitted plane for the fit to be considered successful.
- * @param plane_equation Output reference to a float4 representing the plane.
- * @return True if a stable plane was found, false otherwise.
- */
+__device__ VoxelDistribution::VoxelDistribution(
+    const Point *original_points, const uint32_t *sorted_indices,
+    uint32_t start_offset, uint32_t count, const rm::Isometry3f &global_pose,
+    uint32_t scan_number) {
+  if (count == 0) {
+    this->point_count = 0;
+    this->mean = rm::Vector3f(0.0f, 0.0f, 0.0f);
+    this->covariance.setZeros();
+    this->transform.setZeros();
+    this->lock_flag = 0;
+    this->last_updated_at_scan = 0;
+    return;
+  }
+
+  rm::Vector3f sum_of_points(0.0f, 0.0f, 0.0f);
+  for (uint32_t i = 0; i < count; ++i) {
+    uint32_t point_original_idx = sorted_indices[start_offset + i];
+    Point point_raw = original_points[point_original_idx];
+    rm::Pointf point_local = rm::Pointf(point_raw.x, point_raw.y, point_raw.z);
+    rm::Pointf point_global = global_pose * point_local;
+
+    sum_of_points += point_global;
+  }
+  const rm::Vector3f calculated_mean =
+      sum_of_points / static_cast<float>(count);
+
+  rm::Matrix3x3f calculated_covariance;
+  calculated_covariance.setZeros();
+  for (uint32_t i = 0; i < count; ++i) {
+    uint32_t point_original_idx = sorted_indices[start_offset + i];
+    Point point_raw = original_points[point_original_idx];
+    rm::Pointf point_local = rm::Pointf(point_raw.x, point_raw.y, point_raw.z);
+    rm::Pointf point_global = global_pose * point_local;
+
+    const rm::Vector3f diff = point_global - calculated_mean;
+    const float d[3] = {diff.x, diff.y, diff.z};
+
+    for (int row = 0; row < 3; ++row) {
+      for (int col = 0; col < 3; ++col) {
+        calculated_covariance.at(row, col) += d[row] * d[col];
+      }
+    }
+  }
+
+  if (count > 0) {
+    calculated_covariance /= static_cast<float>(count);
+  }
+
+  this->point_count = count;
+  this->mean = calculated_mean;
+  this->covariance = calculated_covariance;
+  this->last_updated_at_scan = scan_number;
+  this->lock_flag = 0;
+
+  if (!cholesky_3x3(this->covariance, this->transform)) {
+    rm::Vector3f eigenvalues = symmetric_eigen_3x3(this->covariance);
+    this->transform = rm::Matrix3x3f{};
+    this->transform(0, 0) = sqrtf(fmaxf(0.0f, eigenvalues.x));
+    this->transform(1, 1) = sqrtf(fmaxf(0.0f, eigenvalues.y));
+    this->transform(2, 2) = sqrtf(fmaxf(0.0f, eigenvalues.z));
+  }
+}
+
+__device__ void VoxelDistribution::pool(const VoxelDistribution &other) {
+  if (other.point_count == 0) {
+    return;
+  }
+
+  if (this->point_count == 0) {
+    this->point_count = other.point_count;
+    this->mean = other.mean;
+    this->covariance = other.covariance;
+    return;
+  }
+
+  const uint64_t new_point_count = this->point_count + other.point_count;
+  const float n1 = static_cast<float>(this->point_count);
+  const float n2 = static_cast<float>(other.point_count);
+  const float n_total = static_cast<float>(new_point_count);
+
+  // If the combined distribution has too few points, covariance is not
+  // well-defined.
+  if (n_total <= 1.0f) {
+    this->mean = (this->mean * n1 + other.mean * n2) / n_total;
+    this->point_count = new_point_count;
+    this->covariance.setZeros();
+    return;
+  }
+
+  const rm::Vector3f delta = other.mean - this->mean;
+  const rm::Vector3f new_mean = this->mean + delta * (n2 / n_total);
+
+  // Combine scatter matrices (covariance * (n-1)) for numerical stability
+  const rm::Matrix3x3f S1 = this->covariance * (n1 > 1.0f ? (n1 - 1.0f) : 0.0f);
+  const rm::Matrix3x3f S2 = other.covariance * (n2 > 1.0f ? (n2 - 1.0f) : 0.0f);
+
+  rm::Matrix3x3f delta_outer_product;
+  const float d[3] = {delta.x, delta.y, delta.z};
+  for (int j = 0; j < 3; ++j) {
+    for (int i = 0; i < 3; ++i) {
+      delta_outer_product.at(i, j) = d[i] * d[j];
+    }
+  }
+
+  const rm::Matrix3x3f new_scatter =
+      S1 + S2 + delta_outer_product * (n1 * n2 / n_total);
+  const rm::Matrix3x3f new_covariance = new_scatter * (1.0f / (n_total - 1.0f));
+
+  this->point_count = new_point_count;
+  this->mean = new_mean;
+  this->covariance = new_covariance;
+}
+
+__device__ bool plane_fit_from_distributions(
+    const rm::Pointf &query, const KeyValuePair *map, uint32_t table_capacity,
+    const thrust::pair<uint32_t, VoxelDistribution> *buffer, float resolution,
+    float sphericity_threshold, float4 &plane_equation) {
+  VoxelDistribution merged_dist;
+
+  const rm::Vector3i grid = pos2grid(resolution, query);
+
+  // TODO switch on nbtype? use smaller nbtypes for other res
+  const Neighbors27 neighbor_grids = nearby_26(grid);
+
+  for (int i = 0; i < 27; ++i) {
+    const int32_t k = hash_grid(neighbor_grids.data[i]);
+
+    uint32_t slot = hash_function(k) & (table_capacity - 1);
+    while (true) {
+      if (map[slot].key == k) {
+        const uint32_t buffer_idx = map[slot].value;
+        merged_dist.pool(buffer[buffer_idx].second);
+        break;
+      }
+      if (map[slot].key == EMPTY_KEY) {
+        break;
+      }
+      slot = (slot + 1) & (table_capacity - 1); // Linear probe
+    }
+  }
+
+  if (merged_dist.point_count < 3) {
+    return false;
+  }
+
+  const rm::Vector3f eigenvalues = symmetric_eigen_3x3(merged_dist.covariance);
+
+  float val1 = eigenvalues.x, val2 = eigenvalues.y, val3 = eigenvalues.z;
+  if (val1 > val2) {
+    float tmp = val1;
+    val1 = val2;
+    val2 = tmp;
+  }
+  if (val2 > val3) {
+    float tmp = val2;
+    val2 = val3;
+    val3 = tmp;
+  }
+  if (val1 > val2) {
+    float tmp = val1;
+    val1 = val2;
+    val2 = tmp;
+  }
+  const float lambda_0 = val1; // Smallest eigenvalue
+  const float lambda_2 = val3; // Largest eigenvalue
+
+  if (lambda_2 < 1e-9f) {
+    return false;
+  }
+
+  const float sphericity = lambda_0 / lambda_2;
+
+  if (sphericity > sphericity_threshold) {
+    return false;
+  }
+
+  const float min_eigenvalue = lambda_0;
+
+  rm::Matrix3x3f M = merged_dist.covariance;
+  M.at(0, 0) -= min_eigenvalue;
+  M.at(1, 1) -= min_eigenvalue;
+  M.at(2, 2) -= min_eigenvalue;
+
+  const rm::Vector3f row0(M.at(0, 0), M.at(0, 1), M.at(0, 2));
+  const rm::Vector3f row1(M.at(1, 0), M.at(1, 1), M.at(1, 2));
+  const rm::Vector3f row2(M.at(2, 0), M.at(2, 1), M.at(2, 2));
+
+  const rm::Vector3f v1 = row0.cross(row1);
+  const rm::Vector3f v2 = row1.cross(row2);
+  const rm::Vector3f v3 = row2.cross(row0);
+
+  const float mag1_sq = v1.dot(v1);
+  const float mag2_sq = v2.dot(v2);
+  const float mag3_sq = v3.dot(v3);
+
+  rm::Vector3f normal_vec;
+  if (mag1_sq > mag2_sq && mag1_sq > mag3_sq) {
+    normal_vec = v1;
+  } else if (mag2_sq > mag3_sq) {
+    normal_vec = v2;
+  } else {
+    normal_vec = v3;
+  }
+
+  normalize_safe(normal_vec);
+
+  // If the normal vector is zero, it's a degenerate case
+  if (normal_vec.l2normSquared() < 1e-9f) {
+    return false;
+  }
+
+  plane_equation = plane_from_point_and_normal(merged_dist.mean, normal_vec);
+
+  return true;
+}
+
 __device__ bool pca_eigen(const rm::Vector3f *cluster, uint32_t n,
                           float normal_threshold, float4 &plane_equation) {
   if (n < 3) {
