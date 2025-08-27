@@ -6,7 +6,7 @@ use nalgebra::*;
 use prelio::{LocatedBufferView, timing::RuntimeEvaluator};
 #[cfg(all(feature = "parallel", not(feature = "cuda")))]
 use rayon::prelude::*;
-use ros_pointcloud2::points::{PointXYZ, PointXYZINormal};
+use ros_pointcloud2::points::{PointXYZ, PointXYZI, PointXYZINormal};
 
 use sophus_lie::traits::IsTranslationProductGroup;
 pub use spole::IVoxNearbyType;
@@ -51,7 +51,7 @@ impl RegistrationState {
     }
 
     #[cfg(not(feature = "cuda"))]
-    fn add_to_map(&mut self, cloud: &LocatedBufferView<PointXYZ>, pose: Isometry3<f64>) {
+    fn add_to_map(&mut self, cloud: &LocatedBufferView<PointXYZI>, pose: Isometry3<f64>) {
         let cloud = match cloud {
             LocatedBufferView::Ram(items) => items,
             #[cfg(feature = "cuda")]
@@ -181,7 +181,6 @@ impl RegistrationState {
         for p in points_iter {
             let distance = (normal.dot(&p) + d).abs();
             if distance > error_threshold {
-                dbg!(distance, error_threshold);
                 return None;
             }
         }
@@ -286,9 +285,9 @@ impl crate::Registration for RegistrationState {
         last_cloud_end_time: f64,
         cloud_begin_time: f64,
         cloud_end_time: f64,
-        cloud: &[prelio::PointXYZT],
+        cloud: &[prelio::PointXYZIT],
         lidar_vendor: Option<prelio::LidarVendor>,
-    ) -> Vec<PointXYZ> {
+    ) -> Vec<PointXYZI> {
         // cloud.iter().map(|p| PointXYZ::new(p.x, p.y, p.z)).collect() // bypass
         self.imu_processing.undistort(
             &mut self.ekf,
@@ -326,7 +325,7 @@ impl crate::Registration for RegistrationState {
     fn register_and_map(
         &mut self,
         map_only: bool,
-        cloud: &LocatedBufferView<PointXYZ>,
+        cloud: &LocatedBufferView<PointXYZI>,
         ready_for_next: Option<&std::sync::mpsc::Sender<()>>,
         eval: &mut RuntimeEvaluator,
         #[cfg(feature = "cuda")] stream: &cuda::Stream,
@@ -596,7 +595,7 @@ impl crate::Registration for RegistrationState {
                         return;
                     }
 
-                    dbg!(planes.len());
+                    // dbg!(planes.len());
 
                     if planes.len() > h.nrows() {
                         *h = DVector::<f64>::zeros(planes.len());

@@ -119,7 +119,7 @@ pub struct VelodynePoint {
 
 impl prelio::PointXYZITimestamp<6> for VelodynePoint {
     fn intensity(&self) -> f32 {
-        self.intensity
+        self.intensity / 255.0
     }
 
     fn timestamp(&self) -> f64 {
@@ -564,7 +564,7 @@ impl From<crate::Qos> for QosProfile {
 
 #[derive(Debug)]
 pub struct Tick {
-    pub deskewed_cloud: Vec<PointXYZ>,
+    pub deskewed_cloud: Vec<PointXYZI>,
     pub map_only: bool,
     pub cloud_header: HeaderMsg,
     pub odom_time: TimeMsg,

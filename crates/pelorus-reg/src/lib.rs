@@ -47,7 +47,7 @@ pub trait Registration {
     fn register_and_map(
         &mut self,
         map_only: bool,
-        cloud: &LocatedBufferView<PointXYZ>,
+        cloud: &LocatedBufferView<PointXYZI>,
         ready_for_next: Option<&std::sync::mpsc::Sender<()>>,
         eval: &mut RuntimeEvaluator,
         #[cfg(feature = "cuda")] stream: &cuda::Stream,
@@ -63,7 +63,7 @@ pub trait Registration {
         last_cloud_end_time: f64,
         cloud_begin_time: f64,
         cloud_end_time: f64,
-        cloud: &[prelio::PointXYZT],
+        cloud: &[prelio::PointXYZIT],
         lidar_vendor: Option<prelio::LidarVendor>,
-    ) -> Vec<PointXYZ>;
+    ) -> Vec<PointXYZI>;
 }

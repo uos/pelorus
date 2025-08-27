@@ -37,6 +37,7 @@ sophus_lie = { workspace = true, optional = true }
 plotters = { workspace = true, optional = true }
 petname = { workspace = true, optional = true }
 image = { workspace = true, optional = true }
+colorous = "1.0"
 
 [features]
 default = ["mimalloc", "downsample"]

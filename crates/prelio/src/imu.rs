@@ -6,9 +6,9 @@ use sophus_lie::traits::IsTranslationProductGroup;
 
 use nalgebra::*;
 
-use crate::{MeasureGroup, PointXYZT, config, timestamp_to_secs};
+use crate::{MeasureGroup, PointXYZIT, config, timestamp_to_secs};
 
-use ros_pointcloud2::{points::PointXYZ, ros::TimeMsg};
+use ros_pointcloud2::{points::PointXYZI, ros::TimeMsg};
 
 #[derive(Debug, Clone, Default)]
 pub struct ImuMsg {
@@ -239,7 +239,7 @@ fn quaternion_to_so3_exp(q: &UnitQuaternion<f64>) -> SO3 {
 
 #[derive(Debug)]
 pub struct ImuProcessedCloud<'a> {
-    pub cloud: Vec<ros_pointcloud2::points::PointXYZ>,
+    pub cloud: Vec<ros_pointcloud2::points::PointXYZI>,
     pub last_covariance: [f64; 36],
     pub last_twist: [f64; 6],
     pub integrated_covariance: [f64; 36],
@@ -371,8 +371,8 @@ impl ImuProcess {
                 f64,
                 f64,
                 f64,
-                &[PointXYZT],
-            ) -> Either<crate::ImuPosePrediction, (Isometry3<f64>, Vec<PointXYZ>)>,
+                &[PointXYZIT],
+            ) -> Either<crate::ImuPosePrediction, (Isometry3<f64>, Vec<PointXYZI>)>,
         >,
     ) -> Option<ImuProcessedCloud<'_>> {
         debug_assert!(!meas.imu_buffer.is_empty());
@@ -415,8 +415,8 @@ impl ImuProcess {
                 Isometry3::identity(),
                 meas.cloud
                     .iter()
-                    .map(|p| PointXYZ::new(p.x, p.y, p.z))
-                    .collect(),
+                    .map(|p| PointXYZI::new(p.x, p.y, p.z, p.intensity))
+                    .collect::<Vec<PointXYZI>>(),
             ), // TODO wtf
         };
 
@@ -463,10 +463,10 @@ impl ImuProcess {
 
     pub fn undistort_cloud_livox(
         &self,
-        cloud_in_out: Vec<PointXYZT>,
+        cloud_in_out: Vec<PointXYZIT>,
         delta_time: f64,
         pose_end_of_frame: SE3,
-    ) -> Vec<ros_pointcloud2::points::PointXYZ> {
+    ) -> Vec<ros_pointcloud2::points::PointXYZI> {
         let tbe = pose_end_of_frame.translation();
         let rso3_be = pose_end_of_frame.rotation().log();
         let iter = {
@@ -491,10 +491,11 @@ impl ImuProcess {
             let tie = ratio_ie * tbe;
             let v_pt_i = Vector3::new(p.x as f64, p.y as f64, p.z as f64);
             let v_pt_comp_e = rie.inverse().matrix() * (v_pt_i - tie);
-            ros_pointcloud2::points::PointXYZ::new(
+            ros_pointcloud2::points::PointXYZI::new(
                 v_pt_comp_e.x as f32,
                 v_pt_comp_e.y as f32,
                 v_pt_comp_e.z as f32,
+                p.intensity,
             )
         })
         .collect()
