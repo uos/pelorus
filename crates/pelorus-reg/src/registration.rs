@@ -369,7 +369,11 @@ impl crate::Registration for RegistrationState {
         if !map_empty {
             #[cfg(not(feature = "cuda"))]
             let map = &mut self.map;
-
+            #[cfg(feature = "cuda")]
+            let cloud_len_alloc = {
+                const EXTRA: f32 = if cfg!(feature = "cuda") { 1.3 } else { 1.2 };
+                (EXTRA * cloud.len() as f32).ceil() as usize
+            };
             {
                 eval_outer.write().unwrap().start("ekf correct").unwrap();
             }
@@ -426,7 +430,7 @@ impl crate::Registration for RegistrationState {
                                 ekf_state.offset_t_l_i.z,
                             ),
                             &ekf_state.offset_r_l_i.matrix().into(),
-                            k,
+                            5, // TODO remove
                             &mut planes,
                             &mut planes_gpu,
                         );

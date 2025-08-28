@@ -227,7 +227,7 @@ impl<T> LocatedBufferView<T> {
     #[cfg(feature = "cuda")]
     pub fn alloc_points_cuda(stream: &cuda::Stream, len: usize) -> Self {
         Self::Cuda {
-            buffer: CudaBuffer::new(stream, 4 * size_of::<f32>(), len),
+            buffer: CudaBuffer::new(stream, size_of::<PointXYZI>(), len),
         }
     }
     #[cfg(feature = "cuda")]
@@ -240,7 +240,7 @@ impl<T> LocatedBufferView<T> {
         Self::Ram(src)
     }
     #[cfg(feature = "cuda")]
-    pub fn copy_from_slice_cuda(stream: &cuda::Stream, src: &[PointXYZ]) -> Self {
+    pub fn copy_from_slice_cuda(stream: &cuda::Stream, src: &[PointXYZI]) -> Self {
         Self::Cuda {
             buffer: CudaBuffer::from_cloud(&stream, src),
         }

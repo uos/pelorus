@@ -30,6 +30,7 @@ typedef struct MY_ALIGN(16) {
   float x;
   float y;
   float z;
+  float i;
 } Point;
 
 typedef struct MY_ALIGN(16) {
