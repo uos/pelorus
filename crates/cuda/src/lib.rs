@@ -3,7 +3,7 @@
 use std::fmt::Debug;
 
 use ffi::Point;
-use ros_pointcloud2::points::{PointXYZ, PointXYZINormal};
+use ros_pointcloud2::points::{PointXYZ, PointXYZI, PointXYZINormal};
 
 mod ffi;
 
@@ -134,8 +134,8 @@ impl CudaBuffer {
         }
     }
 
-    pub fn from_cloud(stream: &Stream, vec: &[PointXYZ]) -> Self {
-        let element_size = size_of::<f32>() * 4;
+    pub fn from_cloud(stream: &Stream, vec: &[PointXYZI]) -> Self {
+        let element_size = size_of::<PointXYZI>();
         let gpu_ptr = unsafe {
             ffi::cupcl_create_buffer(
                 stream.stream,
@@ -151,7 +151,7 @@ impl CudaBuffer {
         }
     }
 
-    pub fn into_cloud(&self, stream: &Stream) -> Vec<PointXYZ> {
+    pub fn into_cloud(&self, stream: &Stream) -> Vec<PointXYZI> {
         let cpu_buff = self.download(stream);
         stream.sync();
         cpu_buff
@@ -269,9 +269,9 @@ mod tests {
     fn cloud_gpu_roundtrip() {
         let stream = Stream::new();
         let cloud = vec![
-            PointXYZ::new(1.0, 0.0, 1.5),
-            PointXYZ::new(2.0, 0.0, 1.5),
-            PointXYZ::new(3.0, 0.0, 1.5),
+            PointXYZI::new(1.0, 0.0, 1.5, 0.0),
+            PointXYZI::new(2.0, 0.0, 1.5, 0.0),
+            PointXYZI::new(3.0, 0.0, 1.5, 0.0),
         ];
         let gpu = CudaBuffer::from_cloud(&stream, &cloud);
         let cpu = gpu.into_cloud(&stream);
