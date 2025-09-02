@@ -9,28 +9,33 @@
 Efficient Lidar Inertial Odometry with optional Cuda acceleration.
 </p>
 
-## Usage (ROS2)
+## Usage with ROS 2 (Humble/Jazzy)
 
 Install [Rust](https://www.rust-lang.org/tools/install) first if not done already.
 
-Pelorus integrates seamlessly with your standard **ROS2 CMake** build system.
+Pelorus integrates seamlessly with your standard **ROS 2 CMake** build system.
 
 ```sh
 cd ~/ros2_ws/src
 git clone https://github.com/stelzo/pelorus
 cd ..
 
+rosdep install --from-paths src -y --ignore-src
+
 colcon build
 ```
 
+Building might take a while 
+
 💡 Tip: Pelorus offers various configurations at compile time. You can set them with CMake arguments via uppercasing and setting the prefix `PELORUS_` like so:
 ```sh
-colcon build --cmake-args -D PELORUS_RERUN=ON -D PELORUS_CUDA=ON
+colcon build --cmake-args -D PELORUS_CUDA=ON -D PELORUS_RERUN=ON
 ```
 
-Available flags for the ROS2 version are:
+Available flags for the ROS 2 version are:
 
 - `downsample` (enabled by default)
+- `parallel` (enabled by default)
 - `cuda`
 - `rerun`
 - `rat`
