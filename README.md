@@ -1,11 +1,13 @@
-# Pelorus
 <h1 align="center">
+  Pelorus<br>
   <a href="https://github.com/stelzo/pelorus/blob/main/LICENSE-MIT">    <img alt="MIT"            src="https://img.shields.io/badge/license-MIT-blue.svg">                        </a>
   <a href="https://github.com/stelzo/pelorus/blob/main/LICENSE-APACHE"> <img alt="Apache"         src="https://img.shields.io/badge/license-Apache-blue.svg">                     </a>
   <a href="https://www.rust-lang.org">                                  <img alt="Rust"         src="https://img.shields.io/badge/rust-1.85+-blue.svg">                         </a>
 </h1>
 
+<p align="center">
 Efficient Lidar Inertial Odometry with optional Cuda acceleration.
+</p>
 
 ## Usage (ROS2)
 
