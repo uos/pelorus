@@ -1,16 +1,18 @@
 # Pelorus
+<h1 align="center">
+  <a href="https://github.com/stelzo/pelorus/blob/main/LICENSE-MIT">    <img alt="MIT"            src="https://img.shields.io/badge/license-MIT-blue.svg">                        </a>
+  <a href="https://github.com/stelzo/pelorus/blob/main/LICENSE-APACHE"> <img alt="Apache"         src="https://img.shields.io/badge/license-Apache-blue.svg">                     </a>
+  <a href="https://www.rust-lang.org">                                  <img alt="Rust"         src="https://img.shields.io/badge/rust-1.85+-blue.svg">                         </a>
+</h1>
 
 Efficient Lidar Inertial Odometry with optional Cuda acceleration.
 
-## Usage
+## Usage (ROS2)
 
 Install [Rust](https://www.rust-lang.org/tools/install) first if not done already.
 
-### ROS2
+Pelorus integrates seamlessly with your standard **ROS2 CMake** build system.
 
-Integrates with your typical ROS2 CMake build system.
-
-Build.
 ```sh
 cd ~/ros2_ws/src
 git clone https://github.com/stelzo/pelorus
@@ -19,63 +21,66 @@ cd ..
 colcon build
 ```
 
-Pelorus provides configurations at compile time. You can set them with CMake arguments.
-
-- downsample (enabled by default)
-- cuda
-- rerun
-- rat
-- mapping
-- map
-- trajectory
-- mimalloc
-
-Explanations for all flags are available in the [Cargo.toml](./crates/pelorus/Cargo.toml) under [features].
-
-You can enable or disable them by uppercase like this:
+💡 Tip: Pelorus offers various configurations at compile time. You can set them with CMake arguments via uppercasing and setting the prefix `PELORUS_` like so:
 ```sh
-colcon build --cmake-args -D RERUN=ON -D CUDA=ON
+colcon build --cmake-args -D PELORUS_RERUN=ON -D PELORUS_CUDA=ON
 ```
 
-When running the first time, create a configuration with defaults to override them.
+Available flags for the ROS2 version are:
+
+- `downsample` (enabled by default)
+- `cuda`
+- `rerun`
+- `rat`
+- `mapping`
+- `map`
+- `trajectory`
+- `mimalloc`
+
+Explanations for all flags are available in the [Cargo.toml](./crates/pelorus/Cargo.toml) under `[features]`.
+
+## ⚙️ Configuration
+
+When running for the first time, generate a configuration file with default settings to customize them later.
 ```sh
 ros2 run pelorus pelorus config init > pelorus.rl
 ```
-Open pelorus.rl in a text editor and adapt to your use case. You can also delete any line where you want to keep the defaults.
+Open `pelorus.rl` in your preferred text editor and adjust the parameters for your specific use case. You can even delete lines where you're happy with the default values.
 
-Typical parameters to change are:
+Typical parameters to modify are:
 
-- lidar.topic
-- lidar.vendor
-- imu.topic
-- preprocessing.downsample.resolution
-- registration.map.resolution
+- `lidar.topic`
+- `lidar.vendor`
+- `imu.topic`
+- `preprocessing.downsample.resolution`
+- `registration.map.resolution`
 
-For basics of the configuration language itself visit [Ratslang](https://github.com/stelzo/ratslang).
+For basics of the configuration language itself visit the [Ratslang](https://github.com/stelzo/ratslang) project.
 
-Now source and run with the config.
+Once configured, source your workspace and run the node with your new config file:
 ```sh
 ros2 run pelorus pelorus run -c pelorus.rl
 ```
 
-## Development
+## 🔧 Development
 
-We use mask to save some time typing out usual commands.
+We use `mask` to simplify common development commands and save you some typing.
 ```sh
 cargo install mask
 ```
 
-In the project directory, where the `./maskfile.md` lives:
+In the project directory (where `./maskfile.md` is located), you can see all available commands:
 ```sh
 mask --help
 ```
 
-Dev uses rerun for proper visualisations. Run it in background.
+For proper visualisations, the development environment uses `rerun`. It's recommended to run it in the background.
 ```sh
 cargo install rerun
 
 tmux new -s rerun
 rerun # then detach
 ```
-For remote rerun instances, set the `RERUN_SERVER_ADDR` environment variable. The default is `127.0.0.1:9876`.
+
+If you're using a remote `rerun` instance, simply set the `RERUN_SERVER_ADDR` environment variable. The default is `127.0.0.1:9876`.
 
