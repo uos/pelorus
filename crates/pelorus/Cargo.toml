@@ -40,7 +40,7 @@ image = { workspace = true, optional = true }
 colorous = "1.0"
 
 [features]
-default = ["mimalloc", "downsample"]
+# default = ["mimalloc"]
 # default = ["dev"] # toggled in development
 
 # -#-#-#-#-#- Sensor Communication -#-#-#-#-#-
@@ -121,13 +121,3 @@ ros2-client = [
 
 # Use rclc bindings as pub/sub system
 r2r = ["dep:r2r", "ros_pointcloud2/r2r_msg", "prelio-ros2/r2r"]
-
-[profile.release]
-lto = true          # Link Time Optimization
-codegen-units = 1   # Slower compile times but compiler sees all generated code and can optimize over everything across modules. Also decreases binary size.
-strip = "debuginfo" # Significantly reduce binary size
-opt-level = 3
-panic = "abort"
-
-[profile.dev.package.backtrace]
-opt-level = 3

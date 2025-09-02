@@ -7,7 +7,7 @@ members = [
   "crates/prelio-ros2",
   "crates/spole",
 ]
-resolver = "2"
+resolver = "3"
 
 [workspace.package]
 edition = "2024"
@@ -16,6 +16,7 @@ keywords = ["robotics"]
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/stelzo/pelorus/"
 version = "0.1.0"
+rust-version = "1.85"
 
 [workspace.dependencies]
 pelorus = { path = "crates/pelorus", version = "0.1.0" }
@@ -93,3 +94,17 @@ image = "0.25.6"
 # [patch."https://github.com/uos/minot"]
 # ratpub = { path = "../minot/ratpub" }
 # rat = { path = "../minot/rat" }
+
+[profile.release]
+lto = true          # Link Time Optimization
+codegen-units = 1   # Slower compile times but compiler sees all generated code and can optimize over everything across modules. Also decreases binary size.
+strip = "debuginfo" # Significantly reduce binary size
+opt-level = 3
+panic = "abort"
+
+[profile.colcon]
+inherits = "release"
+incremental = false  # Devs are not expected to use the colcon pipeline for incremental development
+
+[profile.dev.package.backtrace]
+opt-level = 3
