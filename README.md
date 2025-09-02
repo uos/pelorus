@@ -9,9 +9,8 @@
 Efficient Lidar Inertial Odometry with optional Cuda acceleration.
 </p>
 
-## Usage with ROS 2 (Humble/Jazzy)
-
-Install [Rust](https://www.rust-lang.org/tools/install) first if not done already.
+## ROS 2 (Humble/Jazzy)
+First, install **[Rust](https://www.rust-lang.org/tools/install)** if you haven't already.
 
 Pelorus integrates seamlessly with your standard **ROS 2 CMake** build system.
 
