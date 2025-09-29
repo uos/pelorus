@@ -100,7 +100,7 @@ lto = true          # Link Time Optimization
 codegen-units = 1   # Slower compile times but compiler sees all generated code and can optimize over everything across modules. Also decreases binary size.
 strip = "debuginfo" # Significantly reduce binary size
 opt-level = 3
-panic = "abort"
+# panic = "abort"
 
 [profile.colcon]
 inherits = "release"

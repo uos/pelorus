@@ -24,12 +24,13 @@ rosdep install --from-paths src -y --ignore-src
 colcon build
 ```
 
-Building might take a while 
+Building might take a while.
 
-💡 Tip: Pelorus offers various configurations at compile time. You can set them with CMake arguments via uppercasing and setting the prefix `PELORUS_` like so:
-```sh
-colcon build --cmake-args -D PELORUS_CUDA=ON -D PELORUS_RERUN=ON
-```
+> [!TIP]
+> Pelorus offers various configurations at compile time. You can set them with CMake arguments via uppercasing and setting the prefix `PELORUS_` like so:
+> ```sh
+> colcon build --cmake-args -D PELORUS_CUDA=ON
+> ```
 
 Available flags for the ROS 2 version are:
 
