@@ -13,6 +13,39 @@ use uom::si::time::{millisecond, second};
 
 use crate::LioConfig;
 
+// fn ros_param_to_rhs(p: ParameterValue) -> anyhow::Result<Rhs> {
+//     Ok(match p {
+//         ParameterValue::Bool(v) => Rhs::Val(Val::BoolVal(v)),
+//         ParameterValue::Integer(v) => Rhs::Val(Val::NumVal(NumVal::Integer(v))),
+//         ParameterValue::Double(v) => Rhs::Val(Val::NumVal(NumVal::Floating(v))),
+//         ParameterValue::String(v) => Rhs::Val(Val::StringVal(v)),
+//         ParameterValue::BoolArray(v) => Rhs::Array(
+//             v.into_iter()
+//                 .map(|val| Box::new(Rhs::Val(Val::BoolVal(val))))
+//                 .collect(),
+//         ),
+//         ParameterValue::IntegerArray(v) => Rhs::Array(
+//             v.into_iter()
+//                 .map(|val| Box::new(Rhs::Val(Val::NumVal(NumVal::Integer(val)))))
+//                 .collect(),
+//         ),
+//         ParameterValue::DoubleArray(v) => Rhs::Array(
+//             v.into_iter()
+//                 .map(|val| Box::new(Rhs::Val(Val::NumVal(NumVal::Floating(val)))))
+//                 .collect(),
+//         ),
+//         ParameterValue::StringArray(v) => Rhs::Array(
+//             v.into_iter()
+//                 .map(|val| Box::new(Rhs::Val(Val::StringVal(val))))
+//                 .collect(),
+//         ),
+//         ParameterValue::ByteArray(_) => {
+//             return Err(anyhow!("ByteArray ROS parameters are not supported."))
+//         }
+//         _ => return Err(anyhow!("Unsupported or unset ROS parameter type.")),
+//     })
+// }
+
 //================================================================================
 //  Helper Macros
 //================================================================================
