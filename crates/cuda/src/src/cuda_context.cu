@@ -24,7 +24,11 @@ CudaContext::CudaContext(int device_id) {
   std::cout << "[Pelorus - CudaContext] Construct context on device "
             << device_id << " - " << info.name << " " << info.luid << std::endl;
 
+#if CUDA_VERSION >= 13000
+  cuCtxCreate(&m_context, 0, 0, device_id);
+#else
   cuCtxCreate(&m_context, 0, device_id);
+#endif
 }
 
 CudaContext::CudaContext(CUcontext ctx) : m_context(ctx) {}
