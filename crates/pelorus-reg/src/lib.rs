@@ -47,11 +47,12 @@ pub trait Registration {
     fn register_and_map(
         &mut self,
         map_only: bool,
+        imu_transform: Isometry3<f64>,
         cloud: &LocatedBufferView<PointXYZI>,
         ready_for_next: Option<&std::sync::mpsc::Sender<()>>,
         eval: &mut RuntimeEvaluator,
         #[cfg(feature = "cuda")] stream: &cuda::Stream,
-    ) -> Result<CloudRegisterResult>;
+    ) -> Result<Option<CloudRegisterResult>>;
     fn requested_register_and_map_cloud_type(&self) -> LocatedBufferView<PointXYZ>;
 
     fn imu_ekf_predict(&mut self, acc: [f64; 3], gyro: [f64; 3], dt: f64) -> ImuEkfPrediction;
