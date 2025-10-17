@@ -72,10 +72,6 @@ Source your workspace and run the node. If your configuration file, (e.g. `pelor
 ros2 run pelorus pelorus run --config-path pelorus.rl
 ```
 
-Or start the node normally:
-```sh
-```
-
 ## 🔧 Development
 
 We use `mask` to simplify common development commands and save you some typing.
