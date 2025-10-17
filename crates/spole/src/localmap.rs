@@ -75,7 +75,7 @@ impl Livodish {
             }
             None => {
                 let value = Value((hash, dist));
-                if self.add_cursor > self.capacity {
+                if self.add_cursor >= self.capacity {
                     // full but new, make space
                     if self.lru_cursor > self.capacity {
                         log::warn!(

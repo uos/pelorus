@@ -10,7 +10,6 @@ use either::Either;
 use imu_fusion::FusionAhrs;
 use log::{debug, error, info, warn};
 use nalgebra::*;
-// use rand::Rng;
 use serde::{Deserialize, Serialize};
 use std::thread;
 use timing::RuntimeEvaluator;
@@ -321,7 +320,6 @@ fn filter_downsample<const N: usize, P: PointXYZITimestamp<N>>(
     let voxel_size = lifis_params.downsample.voxel_size;
     #[cfg(feature = "parallel")]
     const PAR_SORT_BOUNDARY: usize = 1; // When tested on an M3, par sort was always faster, no matter the size. TODO test on other platforms
-    // let offset = 2i32.pow(20); // A large offset to handle negative coordinates)
     let iter = {
         #[cfg(feature = "parallel")]
         {

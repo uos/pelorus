@@ -30,7 +30,7 @@ use r2r::{
 #[cfg(feature = "ratpub")]
 use ratpub::Node;
 #[cfg(feature = "rerun")]
-use rerun::{default_flush_timeout, external::glam};
+use rerun::external::glam;
 #[cfg(feature = "ros2-client")]
 use ros2_client::{NodeName, NodeOptions};
 #[cfg(feature = "ros2-client")]
@@ -280,10 +280,8 @@ fn lio(config: LioConfig) -> Result<(), Box<dyn std::error::Error>> {
         let rerun_server_addr =
             std::env::var("RERUN_SERVER_ADDR").unwrap_or("127.0.0.1:9876".to_string());
         let rec = Arc::new(
-            rerun::RecordingStreamBuilder::new("pelorus").connect_grpc_opts(
-                format!("rerun+http://{}/proxy", rerun_server_addr),
-                default_flush_timeout(),
-            )?,
+            rerun::RecordingStreamBuilder::new("pelorus")
+                .connect_grpc_opts(format!("rerun+http://{}/proxy", rerun_server_addr))?,
         );
         rec
     };
@@ -723,13 +721,15 @@ fn lio(config: LioConfig) -> Result<(), Box<dyn std::error::Error>> {
                 #[cfg(not(feature = "gicp"))]
                 match map.register_and_map(
                     lifis_tick.map_only,
+                    ext,
                     &cloud,
                     Some(&ready_for_next_tx),
                     &mut eval,
                     #[cfg(feature = "cuda")]
                     &cuda_stream,
                 ) {
-                    Ok(pose) => (pose, map.get_state()),
+                    Ok(Some(pose)) => (pose, map.get_state()),
+                    Ok(None) => continue, // skip outputting trivial solutions on initialization
                     Err(err) => {
                         error!("{err}");
                         continue;
@@ -916,64 +916,6 @@ fn lio(config: LioConfig) -> Result<(), Box<dyn std::error::Error>> {
                 eval.stop("pub_localmap").unwrap();
             }
 
-            #[cfg(feature = "rerun")]
-            {
-                let pose = rerun::Transform3D::from_translation(glam::Vec3::new(
-                    map_to_lidar_transform.translation.x,
-                    map_to_lidar_transform.translation.y,
-                    map_to_lidar_transform.translation.z,
-                ))
-                .with_quaternion(glam::Quat::from_xyzw(
-                    map_to_lidar_transform.rotation.quaternion().i,
-                    map_to_lidar_transform.rotation.quaternion().j,
-                    map_to_lidar_transform.rotation.quaternion().k,
-                    map_to_lidar_transform.rotation.quaternion().w,
-                ));
-
-                if let Err(err) = rec.log("world/lidar", &pose) {
-                    error!("Error sending to rerun {err}");
-                }
-
-                {
-                    const DECAY: bool = true;
-
-                    let ps: ros_pointcloud2::PointCloud2Msg = cloud.clone().into();
-                    let gradient = colorous::TURBO;
-                    let (positions, colors): (Vec<_>, Vec<_>) = ps
-                        .try_into_iter()
-                        .unwrap()
-                        .map(|v: PointXYZI| {
-                            let color = gradient.eval_continuous(v.intensity as f64);
-                            let v = if DECAY {
-                                map_to_lidar_transform.transform_point(&v.xyz_f32().cast())
-                            } else {
-                                v.xyz_f32()
-                            };
-                            let pos = glam::Vec3::new(v.x as f32, v.y as f32, v.z as f32);
-                            let color_rgb = [color.r, color.g, color.b];
-
-                            (pos, color_rgb)
-                        })
-                        .unzip();
-
-                    let topic = if DECAY {
-                        format!("undistorted_{:?}", current_cloud_time)
-                    } else {
-                        "world/lidar/undistorted".to_string()
-                    };
-
-                    if let Err(err) = rec.log(
-                        topic,
-                        &rerun::Points3D::update_fields()
-                            .with_positions(positions)
-                            .with_colors(colors)
-                            .with_radii([rerun::Radius::new_scene_units(0.025)]),
-                    ) {
-                        error!("Error sending to rerun {err}");
-                    }
-                }
-            }
-
             // -- TF --
             let tf = TransformStamped {
                 header: Header {
@@ -1016,6 +958,25 @@ fn lio(config: LioConfig) -> Result<(), Box<dyn std::error::Error>> {
                 .expect("Failed to send transform");
             // -- --
 
+            #[cfg(feature = "rerun")]
+            {
+                let pose = rerun::Transform3D::from_translation(glam::Vec3::new(
+                    map_to_lidar_transform.translation.x,
+                    map_to_lidar_transform.translation.y,
+                    map_to_lidar_transform.translation.z,
+                ))
+                .with_quaternion(glam::Quat::from_xyzw(
+                    map_to_lidar_transform.rotation.quaternion().i,
+                    map_to_lidar_transform.rotation.quaternion().j,
+                    map_to_lidar_transform.rotation.quaternion().k,
+                    map_to_lidar_transform.rotation.quaternion().w,
+                ));
+
+                if let Err(err) = rec.log("world/lidar", &pose) {
+                    error!("Error sending to rerun {err}");
+                }
+            }
+
             #[cfg(feature = "mapping")]
             {
                 let ps: ros_pointcloud2::PointCloud2Msg = cloud.clone().into();
@@ -1041,6 +1002,46 @@ fn lio(config: LioConfig) -> Result<(), Box<dyn std::error::Error>> {
                 pose: imu_odom.pose.pose.clone(),
                 header: imu_odom.header.clone(),
             });
+
+            #[cfg(feature = "rerun")]
+            {
+                const DECAY: bool = false;
+
+                let ps: ros_pointcloud2::PointCloud2Msg = cloud.clone().into();
+                let gradient = colorous::TURBO;
+                let (positions, colors): (Vec<_>, Vec<_>) = ps
+                    .try_into_iter()
+                    .unwrap()
+                    .map(|v: PointXYZI| {
+                        let color = gradient.eval_continuous(v.intensity as f64);
+                        let v = if DECAY {
+                            map_to_lidar_transform.transform_point(&v.xyz_f32().cast())
+                        } else {
+                            v.xyz_f32()
+                        };
+                        let pos = glam::Vec3::new(v.x as f32, v.y as f32, v.z as f32);
+                        let color_rgb = [color.r, color.g, color.b];
+
+                        (pos, color_rgb)
+                    })
+                    .unzip();
+
+                let topic = if DECAY {
+                    format!("undistorted_{:?}", current_cloud_time)
+                } else {
+                    "world/lidar/undistorted".to_string()
+                };
+
+                if let Err(err) = rec.log(
+                    topic,
+                    &rerun::Points3D::update_fields()
+                        .with_positions(positions)
+                        .with_colors(colors)
+                        .with_radii([rerun::Radius::new_ui_points(1.25)]), // for video scene_points: 0.025
+                ) {
+                    error!("Error sending to rerun {err}");
+                }
+            }
 
             #[cfg(all(not(feature = "no-viz"), feature = "ratpub"))]
             rt.block_on(async {

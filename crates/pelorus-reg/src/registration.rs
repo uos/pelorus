@@ -325,11 +325,12 @@ impl crate::Registration for RegistrationState {
     fn register_and_map(
         &mut self,
         map_only: bool,
+        imu_transform: Isometry3<f64>,
         cloud: &LocatedBufferView<PointXYZI>,
         ready_for_next: Option<&std::sync::mpsc::Sender<()>>,
         eval: &mut RuntimeEvaluator,
         #[cfg(feature = "cuda")] stream: &cuda::Stream,
-    ) -> anyhow::Result<crate::CloudRegisterResult> {
+    ) -> anyhow::Result<Option<crate::CloudRegisterResult>> {
         let first_it = Arc::new(Mutex::new(true));
         let eval_outer = std::sync::Arc::new(std::sync::RwLock::new(eval));
         #[cfg(feature = "cuda")]
@@ -337,7 +338,7 @@ impl crate::Registration for RegistrationState {
 
         if map_only {
             #[cfg(not(feature = "cuda"))]
-            self.add_to_map(&cloud, Isometry3::identity());
+            self.add_to_map(&cloud, imu_transform);
             #[cfg(feature = "cuda")]
             {
                 let cloud = match cloud {
@@ -345,23 +346,13 @@ impl crate::Registration for RegistrationState {
                     LocatedBufferView::Cuda { buffer } => buffer,
                 };
 
-                let rotmat = Isometry3::identity()
-                    .rotation
-                    .to_rotation_matrix()
-                    .matrix()
-                    .clone();
-                cuda::add_to_map(
-                    &stream,
-                    cloud,
-                    &Isometry3::identity().translation.vector.into(),
-                    &rotmat.into(),
-                );
+                let transl = &imu_transform.translation.vector.into();
+
+                let rotmat = imu_transform.rotation.to_rotation_matrix().matrix().clone();
+                cuda::add_to_map(&stream, cloud, &transl, &rotmat.into());
             }
 
-            return Ok(crate::CloudRegisterResult {
-                pose: Isometry3::identity(),
-                avg_iterations: None,
-            });
+            return Ok(None);
         }
 
         #[cfg(not(feature = "cuda"))]
@@ -664,6 +655,7 @@ impl crate::Registration for RegistrationState {
             eval_outer.write().unwrap().stop("ekf correct").unwrap();
         };
 
+        // TODO imu_t now static
         let imu_t = Isometry3::from_parts(
             Translation3::from(self.ekf.state.offset_t_l_i),
             UnitQuaternion::from_rotation_matrix(&Rotation3::from_matrix(
@@ -710,10 +702,10 @@ impl crate::Registration for RegistrationState {
             eval_outer.write().unwrap().stop("map update").unwrap();
         }
 
-        Ok(crate::CloudRegisterResult {
+        Ok(Some(crate::CloudRegisterResult {
             pose: global_pose,
             avg_iterations: None,
-        })
+        }))
     }
 
     fn imu_ekf_predict(

@@ -31,13 +31,14 @@ Building might take a while.
 > ```sh
 > colcon build --cmake-args -D PELORUS_CUDA=ON
 > ```
+> Building with CUDA acceleration needs the `CUDA_HOME` environment variable to be set. Some installation do this already. If not, add `export CUDA_HOME=/usr/local/cuda` to your `~/.bashrc`, `~/.zshrc` etc.
 
 Available flags for the ROS 2 version are:
 
 - `downsample` (enabled by default)
 - `parallel` (enabled by default)
-- `cuda`
-- `rerun`
+- `cuda` (requires `CUDA_HOME` environment variable)
+- `rerun` (set `RERUN_SERVER_ADDR` for remote instances, e.g. `127.0.0.1:9876`.)
 - `rat`
 - `mapping`
 - `map`
@@ -64,9 +65,15 @@ Typical parameters to modify are:
 
 For basics of the configuration language itself visit the [Ratslang](https://github.com/stelzo/ratslang) project.
 
-Once configured, source your workspace and run the node with your new config file:
+## 🚀 Launching
+
+Source your workspace and run the node. If your configuration file, (e.g. `pelorus.rl`) file is in the same directory where you are running the command, you can use a relative path:
 ```sh
-ros2 run pelorus pelorus run -c pelorus.rl
+ros2 run pelorus pelorus run --config-path pelorus.rl
+```
+
+Or start the node normally:
+```sh
 ```
 
 ## 🔧 Development
@@ -88,6 +95,4 @@ cargo install rerun
 tmux new -s rerun
 rerun # then detach
 ```
-
-If you're using a remote `rerun` instance, simply set the `RERUN_SERVER_ADDR` environment variable. The default is `127.0.0.1:9876`.
 
