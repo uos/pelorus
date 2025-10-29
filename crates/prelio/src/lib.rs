@@ -11,7 +11,7 @@ use imu_fusion::FusionAhrs;
 use log::{debug, error, info, warn};
 use nalgebra::*;
 use serde::{Deserialize, Serialize};
-use std::thread;
+use std::{sync::Arc, thread};
 use timing::RuntimeEvaluator;
 
 use anyhow::Result;
@@ -486,7 +486,7 @@ fn filter_downsample<const N: usize, P: PointXYZITimestamp<N>>(
     }
 
     let (first, last) = match (&downsampled_cloud.first(), &downsampled_cloud.last()) {
-        (Some(first), Some(last)) => (first.timestamp, last.timestamp),
+        (Some(first), Some(last)) if last.timestamp >= 0.0 => (first.timestamp, last.timestamp),
         _ => return Ok(None),
     };
 
