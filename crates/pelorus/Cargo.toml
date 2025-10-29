@@ -103,7 +103,7 @@ trajectory = ["dep:petname", "dep:sophus_lie", "dep:plotters", "dep:image"]
 # -#-#-#-#-#- Low level -#-#-#-#-#-
 
 # Toggle tooling typically used for development
-dev = ["offline", "downsample", "rerun", "map"]
+dev = ["offline", "downsample", "rerun", "map", "parallel"]
 
 # Use variable syncing for triggers
 rat = ["dep:rat", "dep:tokio"]

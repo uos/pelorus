@@ -363,9 +363,9 @@ fn lio(config: LioConfig) -> Result<(), Box<dyn std::error::Error>> {
                     prelio_ros2::prelio::ImuPosePrediction {
                         pose: ekfstate.pose,
                         linear_velocity: ekfstate.linear_velocity,
-                        angular_velocity: nalgebra::Vector3::default(),
-                        // lidar_imu_extrinsic_rotation: nalgebra::Matrix3::identity(),
-                        // lidar_imu_extrinsic_translation: nalgebra::Vector3::default(),
+                        angular_velocity: nalgebra::Vector3::default(), // TODO add ang vel
+                                                                        // lidar_imu_extrinsic_rotation: nalgebra::Matrix3::identity(),
+                                                                        // lidar_imu_extrinsic_translation: nalgebra::Vector3::default(),
                     }
                 },
             ))
