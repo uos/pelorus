@@ -958,7 +958,6 @@ impl Prelio {
         while let Ok(((cloud, lidar_begin_time, lidar_end_time, lidar_header), prelio_eval)) =
             lidar_receiver.recv()
         {
-            dbg!(lidar_end_time);
             eval.merge(&prelio_eval);
             let lidar_time = timestamp_to_secs(&lidar_header.stamp);
             let abs_lidar_end =
