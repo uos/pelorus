@@ -11,7 +11,7 @@ use imu_fusion::FusionAhrs;
 use log::{debug, error, info, warn};
 use nalgebra::*;
 use serde::{Deserialize, Serialize};
-use std::{sync::Arc, thread};
+use std::thread;
 use timing::RuntimeEvaluator;
 
 use anyhow::Result;
