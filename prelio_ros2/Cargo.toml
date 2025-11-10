@@ -1,0 +1,47 @@
+[package]
+name = "prelio_ros2"
+description = "IO layer for prelio"
+
+version.workspace = true
+edition.workspace = true
+repository.workspace = true
+license.workspace = true
+keywords.workspace = true
+include.workspace = true
+
+[dependencies]
+pelorus_core.workspace = true
+ros_pointcloud2.workspace = true
+anyhow.workspace = true
+nalgebra.workspace = true
+futures-lite.workspace = true
+prelio.workspace = true
+log.workspace = true
+env_logger.workspace = true
+ros2-client = { workspace = true, optional = true }
+ros2-interfaces-jazzy-serde = { workspace = true, optional = true }
+thiserror.workspace = true
+r2r = { workspace = true, optional = true }
+rerun = { workspace = true, optional = true }
+ratpub = { workspace = true, optional = true }
+tokio = { workspace = true, optional = true }
+ros2-interfaces-jazzy-rkyv = { workspace = true, optional = true }
+
+[features]
+downsample = ["prelio/downsample"]
+cuda = ["prelio/cuda"]
+parallel = ["prelio/parallel"]
+no-imu-sync = ["prelio/no-imu-sync"]
+rerun = ["dep:rerun"]
+ratpub = [
+  "dep:ratpub",
+  "dep:tokio",
+  "dep:ros2-interfaces-jazzy-rkyv",
+  "ros_pointcloud2/ros2-interfaces-jazzy-rkyv",
+]
+ros2-client = [
+  "dep:ros2-client",
+  "dep:ros2-interfaces-jazzy-serde",
+  "ros_pointcloud2/ros2-interfaces-jazzy-serde",
+]
+r2r = ["dep:r2r", "ros_pointcloud2/r2r_msg"]

@@ -1,0 +1,18 @@
+[package]
+name = "pelorus_core"
+edition.workspace = true
+include.workspace = true
+keywords.workspace = true
+license.workspace = true
+repository.workspace = true
+version.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+nalgebra.workspace = true
+ratslang.workspace = true
+uom.workspace = true
+either.workspace = true
+ros_pointcloud2.workspace = true
+serde.workspace = true

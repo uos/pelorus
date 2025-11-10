@@ -6,3 +6,4 @@ lio/icp/build
 **/.DS_Store
 pelorus.rl
 pelorus_trajectory*
+pelorus_c/examples/basic_usage

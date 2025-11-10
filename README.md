@@ -6,10 +6,16 @@
 </h1>
 
 <p align="center">
-Efficient Lidar Inertial Odometry with optional Cuda acceleration.
+Ressource-aware 3D Lidar-based Odometry for robots.
 </p>
 
-## ROS 2 (Humble/Jazzy)
+Supporting various 3D Lidar sensors, IMUs, odometry sources and kinematic models, Pelorus provides real-time performance on embedded hardware while exceeding State-of-the-Art accuracy.
+
+Scale your compute down to single-core CPUs or up to full parallel compute on CPU and GPU with CUDA acceleration.
+
+
+## 🤖 ROS 2 Support
+
 First, install **[Rust](https://www.rust-lang.org/tools/install)** if you haven't already.
 
 Pelorus integrates seamlessly with your standard **ROS 2 CMake** build system.
@@ -37,17 +43,17 @@ Available flags for the ROS 2 version are:
 
 - `downsample` (enabled by default)
 - `parallel` (enabled by default)
+- `mimalloc` (enabled by default)
 - `cuda` (requires `CUDA_HOME` environment variable)
 - `rerun` (set `RERUN_SERVER_ADDR` for remote instances, e.g. `127.0.0.1:9876`.)
 - `rat`
 - `mapping`
 - `map`
 - `evaluation`
-- `mimalloc`
 
-Explanations for all flags are available in the [Cargo.toml](./crates/pelorus/Cargo.toml) under `[features]`.
+Explanations for all flags are available in the [Cargo.toml](./pelorus/Cargo.toml) under `[features]`.
 
-## ⚙️ Configuration
+### ⚙️ Configuration
 
 When running for the first time, generate a configuration file with default settings to customize them later.
 ```sh
@@ -60,23 +66,54 @@ Typical parameters to modify are:
 - `lidar.topic`
 - `lidar.vendor`
 - `imu.topic`
+- `wheel.kinematic_model`
 - `preprocessing.downsample.resolution`
 - `registration.map.resolution`
 
 For basics of the configuration language itself visit the [Ratslang](https://github.com/stelzo/ratslang) project.
 
-## 🚀 Launching
+### 🚀 Launching
 
 Source your workspace and run the node. If your configuration file, (e.g. `pelorus.rl`) file is in the same directory where you are running the command, you can use a relative path:
 ```sh
 ros2 run pelorus pelorus run online --config-path pelorus.rl
 ```
 
+## Offline Bagfiles
+
+TODO minot, export tum format usage
+
+You can also run Pelorus on recorded bagfiles for offline evaluation:
+```sh
+ros2 run pelorus pelorus run offline --config-path pelorus.rl --bag-path /path/to/my_bagfile.bag
+```
+
+## C Bindings
+
+Pelorus provides a C library for using the system outside of ROS pipelines.
+
+TODO examples
+
+### Configuration
+
+Both libraries use `.rl` configuration files (same format as the ROS2 version):
+- Pass `NULL` to use default configuration from `default.rl`
+- Pass a path to load custom configuration
+
+Generate a default config file:
+```bash
+pelorus config init > my_config.rl
+```
+
+All parameters are configurable: map resolution, IMU covariances, LiDAR vendor, filtering options, etc.
+
+See the library [README](./pelorus_c/README.md) for more detail.
+
 ## 🔧 Development
 
 We use `mask` to simplify common development commands and save you some typing.
 ```sh
-cargo install mask cargo-mommy
+cargo install mask cargo-mommy # ;)
 ```
 
 In the project directory (where `./maskfile.md` is located), you can see all available commands:

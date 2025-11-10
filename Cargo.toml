@@ -1,11 +1,11 @@
 [workspace]
-members = [
-  "crates/cuda",
-  "crates/pelorus",
-  "crates/pelorus-reg",
-  "crates/prelio",
-  "crates/prelio-ros2",
-  "crates/spole",
+members = ["pelorus_core",
+  "pelorus_cuda",
+  "pelorus", "pelorus_c",
+  "pelorus_reg",
+  "prelio",
+  "prelio_ros2",
+  "spole",
 ]
 resolver = "3"
 
@@ -19,12 +19,13 @@ version = "0.1.0-beta"
 rust-version = "1.85"
 
 [workspace.dependencies]
-pelorus = { path = "crates/pelorus", version = "0.1.0-beta" }
-pelorus-reg = { path = "crates/pelorus-reg", version = "0.1.0-beta" }
-prelio = { path = "crates/prelio", version = "0.1.0-beta" }
-prelio-ros2 = { path = "crates/prelio-ros2", version = "0.1.0-beta" }
-spole = { path = "crates/spole", version = "0.1.0-beta" }
-cuda = { path = "crates/cuda", version = "0.1.0-beta" }
+pelorus = { path = "pelorus", version = "0.1.0-beta" }
+pelorus_core = { path = "pelorus_core", version = "0.1.0-beta" }
+pelorus_reg = { path = "pelorus_reg", version = "0.1.0-beta" }
+prelio = { path = "prelio", version = "0.1.0-beta" }
+prelio_ros2 = { path = "prelio_ros2", version = "0.1.0-beta" }
+spole = { path = "spole", version = "0.1.0-beta" }
+pelorus_cuda = { path = "pelorus_cuda", version = "0.1.0-beta" }
 
 uom = { version = "0.37.0", default-features = false, features = [
   "usize",
@@ -60,11 +61,12 @@ ros2-interfaces-jazzy-rkyv = { version = "0.0.5", features = [
   "tf2_msgs",
   "builtin_interfaces",
 ] }
-ratpub = "0.3.0"
-mt_rat = "0.3.0"
+ratpub = "0.3"
+mt_rat = "0.3"
 anyhow = "1"
 sophus_lie = "0.9"
 rayon = "1"
+thiserror = "2"
 dashmap = { version = "6", features = ["rayon", "inline"] }
 imu-fusion = "0.2"
 imu-calib = "0.1"
