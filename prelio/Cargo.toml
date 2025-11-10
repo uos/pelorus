@@ -1,0 +1,32 @@
+[package]
+name = "prelio"
+description = "LiDAR and IMU Filtering and Synchronization"
+
+version.workspace = true
+edition.workspace = true
+repository.workspace = true
+license.workspace = true
+keywords.workspace = true
+include.workspace = true
+
+[dependencies]
+pelorus_core.workspace = true
+pelorus_cuda = { optional = true, workspace = true }
+ros_pointcloud2.workspace = true
+log.workspace = true
+anyhow.workspace = true
+nalgebra.workspace = true
+sophus_lie.workspace = true
+rayon.workspace = true
+either.workspace = true
+rand.workspace = true
+imu-fusion.workspace = true
+imu-calib.workspace = true
+morton-encoding.workspace = true
+
+[features]
+parallel = []
+downsample = []
+cuda = ["dep:pelorus_cuda", "pelorus_cuda/cuda_available", "pelorus_cuda/cuda_enable"]
+no-imu-sync = []
+default = []

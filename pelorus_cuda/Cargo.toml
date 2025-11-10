@@ -1,0 +1,22 @@
+[package]
+name = "pelorus_cuda"
+edition.workspace = true
+include.workspace = true
+keywords.workspace = true
+license.workspace = true
+repository.workspace = true
+version.workspace = true
+
+[dependencies]
+nalgebra.workspace = true
+ros_pointcloud2.workspace = true
+log.workspace = true
+
+[build-dependencies]
+bindgen = "0.72"
+walkdir = "2"
+rayon = "1"
+
+[features]
+cuda_available = []
+cuda_enable = []

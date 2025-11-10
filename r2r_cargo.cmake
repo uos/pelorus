@@ -87,10 +87,15 @@ function(r2r_cargo)
   if(NOT DEFINED PELORUS_DOWNSAMPLE OR PELORUS_DOWNSAMPLE)
     list(APPEND FEATURES "downsample")
   endif()
+
   if(NOT DEFINED PELORUS_PARALLEL OR PELORUS_PARALLEL)
     list(APPEND FEATURES "parallel")
   endif()
-  
+
+  if(NOT DEFINED PELORUS_MIMALLOC OR PELORUS_MIMALLOC)
+    list(APPEND FEATURES "mimalloc")
+  endif()
+
   if(PELORUS_CUDA)
     list(APPEND FEATURES "cuda")
   endif()
@@ -108,9 +113,6 @@ function(r2r_cargo)
   endif()
   if(PELORUS_EVALUATION)
     list(APPEND FEATURES "evaluation")
-  endif()
-  if(PELORUS_MIMALLOC)
-    list(APPEND FEATURES "mimalloc")
   endif()
 
   string(JOIN "," FEATURES_STR ${FEATURES})

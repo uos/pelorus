@@ -1,0 +1,28 @@
+# Configuration for cbindgen to generate C header files for Pelorus
+
+language = "C"
+header = "/* Pelorus C Library */"
+include_guard = "PELORUS_H"
+autogen_warning = "/* Warning: This file is auto-generated. Do not edit manually. */"
+pragma_once = true
+cpp_compat = true
+no_includes = false
+sys_includes = ["stdarg.h", "stdbool.h", "stdint.h", "stdlib.h"]
+
+[export]
+include = []
+exclude = []
+
+[export.rename]
+
+[enum]
+rename_variants = "None"
+
+[fn]
+
+[struct]
+
+[parse]
+parse_deps = false
+include = []
+extra_bindings = []
