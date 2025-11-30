@@ -1,8 +1,13 @@
 [package]
 name = "pelorus"
 description = "Lidar Inertial Odometry"
-version = "0.1.0"
-edition = "2021"
+
+edition.workspace = true
+include.workspace = true
+keywords.workspace = true
+license.workspace = true
+repository.workspace = true
+version.workspace = true
 
 [dependencies]
 ros_pointcloud2.workspace = true
@@ -35,13 +40,15 @@ ratslang.workspace = true
 uom.workspace = true
 sophus_lie = { workspace = true, optional = true }
 plotters = { workspace = true, optional = true }
-petname = { workspace = true, optional = true }
+petname.workspace = true
 image = { workspace = true, optional = true }
 colorous = "1.0"
+ratatui = "0.29"
+crossterm = "0.28"
 
 [features]
-# default = ["mimalloc"]
-default = ["dev"] # toggled in development
+default = ["mimalloc", "rat", "parallel", "downsample"]
+# default = ["dev"] # toggled in development
 
 # -#-#-#-#-#- Sensor Communication -#-#-#-#-#-
 
@@ -97,8 +104,8 @@ map = []
 # Skips publishing any visualizations that take too much compute resources (e.g. iterating a point cloud)
 no-viz = []
 
-# Export the trajectory to the TUM format and enable the visualization tools (`evaluate` subcommand) for comparing against ground truths.
-trajectory = ["dep:petname", "dep:sophus_lie", "dep:plotters", "dep:image"]
+# Enable the visualization tools (`evaluate` subcommand) for comparing against ground truths.
+evaluate = ["dep:sophus_lie", "dep:plotters", "dep:image"]
 
 # -#-#-#-#-#- Low level -#-#-#-#-#-
 

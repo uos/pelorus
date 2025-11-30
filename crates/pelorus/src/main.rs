@@ -1,17 +1,24 @@
-use anyhow::anyhow;
 #[allow(unused_imports)]
 use anyhow::Error;
+use anyhow::anyhow;
 #[cfg(feature = "mimalloc")]
 use mimalloc::MiMalloc;
+#[cfg(feature = "rat")]
+use std::fs;
+#[cfg(feature = "rat")]
+use std::process::{Command as ProcessCommand, Stdio};
 
 #[global_allocator]
 #[cfg(feature = "mimalloc")]
 static GLOBAL: MiMalloc = MiMalloc;
 
 mod config;
+#[cfg(feature = "evaluate")]
+mod evaluate;
 mod mapping;
-mod trajectory;
-use clap::{command, Parser, Subcommand};
+#[cfg(feature = "rat")]
+mod output_tui;
+use clap::{Parser, Subcommand};
 #[allow(unused_imports)]
 use futures_lite::future;
 use log::{error, info};
@@ -19,13 +26,13 @@ use nalgebra::{Isometry3, Translation3, UnitQuaternion};
 #[cfg(feature = "r2r")]
 #[allow(unused_imports)]
 use r2r::{
+    QosProfile,
     builtin_interfaces::msg::Time,
     geometry_msgs::msg::{Point, PoseStamped, Quaternion, Transform, TransformStamped, Vector3},
     nav_msgs::msg::{Odometry, Path},
     sensor_msgs::msg::PointCloud2,
     std_msgs::msg::Header,
     visualization_msgs::msg::Marker,
-    QosProfile,
 };
 #[cfg(feature = "ratpub")]
 use ratpub::Node;
@@ -64,15 +71,18 @@ use prelio_ros2::tf_lh::TfBroadcaster;
 #[cfg(feature = "r2r")]
 use prelio_ros2::tf_r2r::TfBroadcaster;
 use prelio_ros2::{
-    prelio::{config::LifisParameters, LocatedBufferView},
     LifisNodeParameters,
+    prelio::{LocatedBufferView, config::LifisParameters},
 };
 
-use pelorus_reg::{registration::RegistrationState, Registration};
-use prelio_ros2::{prelio::imu::ImuMsg, PrelioNode};
+use pelorus_reg::{Registration, registration::RegistrationState};
+use prelio_ros2::{PrelioNode, prelio::imu::ImuMsg};
 //use small_gicp_sys::*;
 use ros_pointcloud2::prelude::*;
-use std::sync::{Arc, Mutex};
+use std::{
+    path::PathBuf,
+    sync::{Arc, Mutex},
+};
 
 pub fn timestamp_to_secs(t: &TimeMsg) -> f64 {
     t.sec as f64 + t.nanosec as f64 / 1_000_000_000.0
@@ -162,22 +172,61 @@ struct Args {
 #[derive(Debug, Clone, Subcommand)]
 #[command()]
 pub enum Command {
-    /// Run the main Lidar-Inertial Odometry process.
-    Run(ConfigArgs),
+    /// Run the Lidar-Inertial Odometry process
+    #[command(subcommand)]
+    Run(RunArgs),
 
-    /// Manage configuration files.
+    /// Manage configuration files
     #[command(subcommand)]
     Config(ConfigCommand),
 
+    #[cfg(feature = "evaluate")]
     Evaluate(EvalArgs),
 }
 
 #[derive(Debug, Clone, Parser)]
-pub struct ConfigArgs {
+#[command()]
+pub enum RunArgs {
+    /// Spawn the server process and wait for input
+    Online(ConfigArgs),
+    /// Use a Bagfile directly and run synchronously
+    #[cfg(feature = "rat")]
+    Offline(OfflineArgs),
+}
+
+#[derive(Debug, Clone, Parser)]
+pub struct OfflineArgs {
     /// Optional path to a custom '.rl' configuration file.
-    /// If not provided, only the default configuration will be used.
+    /// If not provided, only the default configuration will be used
     #[arg(short, long)]
-    pub config_path: Option<String>,
+    pub config_path: Option<PathBuf>,
+
+    /// Path to the Bagfile (directory) as input. The Bagfile must be use the MCAP storage backend
+    pub bagfile_path: PathBuf,
+
+    /// Path to the Minot binary
+    #[arg(short, long, default_value = "minot")]
+    pub minot_path: PathBuf,
+
+    /// Export a TUM trajectory file.
+    #[arg(short, long)]
+    pub export_trajectory: bool,
+}
+
+#[derive(Debug, Clone, Parser)]
+pub struct ConfigArgs {
+    /// Optional path to a custom '.rl' configuration file to overwrite defaults.
+    /// If not provided, only the default configuration will be used
+    #[arg(short, long)]
+    pub config_path: Option<PathBuf>,
+
+    /// Export a TUM trajectory file.
+    #[arg(short, long)]
+    pub export_trajectory: bool,
+
+    /// Publish tick_end checkpoint using ratlib from Minot.
+    #[arg(short, long)]
+    pub rat: bool,
 }
 
 #[derive(Debug, Clone, Subcommand)]
@@ -185,21 +234,21 @@ pub enum ConfigCommand {
     /// Prints the default configuration to standard output.
     /// You can redirect this to a file, e.g., `pelorus config init > my_config.rl`
     Init,
-    /// Compiles and validates a given configuration file against the defaults.
+    /// Compiles and validates a given configuration file against the defaults
     Test(TestArgs),
 }
 
 #[derive(Debug, Clone, Parser)]
 pub struct EvalArgs {
-    pub estimated_file: String,
-    pub ground_truth_file: String,
+    pub estimated_file: PathBuf,
+    pub ground_truth_file: PathBuf,
 }
 
 #[derive(Debug, Clone, Parser)]
 pub struct TestArgs {
-    /// The path of the configuration file to test.
+    /// The path of the configuration file to test
     #[arg(default_value = "pelorus.rl")]
-    pub config_path: String,
+    pub config_path: PathBuf,
 }
 
 #[derive(Debug)]
@@ -210,19 +259,38 @@ struct RegisteredCloud {
     timestamp: f64,
 }
 
-fn lio(config: LioConfig) -> Result<(), Box<dyn std::error::Error>> {
-    // TODO add logging file
-    // log4rs::init_file("examples/async_listener/log4rs.yaml", Default::default()).unwrap();
+fn lio(
+    config: LioConfig,
+    export_trajectory: bool,
+    synchronous_mode: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
+    lio_with_ready_signal(config, None, export_trajectory, synchronous_mode)
+}
+
+fn lio_with_ready_signal(
+    config: LioConfig,
+    ready_signal: Option<std::sync::mpsc::Sender<()>>,
+    export_trajectory: bool,
+    synchronous_mode: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
     #[cfg(any(feature = "ratpub", feature = "rat"))]
-    let rt = Arc::new(
-        tokio::runtime::Builder::new_multi_thread()
-            .enable_all()
-            .build()
-            .unwrap(),
-    );
+    let rt = if cfg!(feature = "ratpub") || (synchronous_mode && cfg!(feature = "rat")) {
+        Some(Arc::new(
+            tokio::runtime::Builder::new_multi_thread()
+                .enable_all()
+                .build()
+                .unwrap(),
+        ))
+    } else {
+        None
+    };
 
     #[cfg(feature = "rat")]
-    rat::init("pelorus", None, Some(Arc::clone(&rt))).unwrap();
+    if synchronous_mode {
+        if let Some(rt) = rt.as_ref() {
+            rat::init("pelorus", None, Some(Arc::clone(&rt))).unwrap();
+        }
+    }
 
     #[cfg(not(feature = "ratpub"))]
     #[allow(unused_variables)]
@@ -235,8 +303,12 @@ fn lio(config: LioConfig) -> Result<(), Box<dyn std::error::Error>> {
         NodeOptions::new().enable_rosout(true),
     )?;
     #[cfg(feature = "ratpub")]
-    let node =
-        Arc::new(rt.block_on(async { Node::create("pelorus_node".to_owned()).await.unwrap() }));
+    let node = Arc::new(
+        rt.as_ref()
+            .expect("rt always exists with ratpub feat")
+            .block_on(async { Node::create("pelorus_node".to_owned()).await.unwrap() }),
+    );
+
     #[cfg(feature = "r2r")]
     let ctx = r2r::Context::create()?;
     #[cfg(feature = "r2r")]
@@ -245,7 +317,12 @@ fn lio(config: LioConfig) -> Result<(), Box<dyn std::error::Error>> {
     #[cfg(not(feature = "ratpub"))]
     let tf_broadcaster = TfBroadcaster::new(&mut node);
     #[cfg(feature = "ratpub")]
-    let tf_broadcaster = Arc::new(TfBroadcaster::new(&node, rt.clone()));
+    let tf_broadcaster = Arc::new(TfBroadcaster::new(
+        &node,
+        rt.as_ref()
+            .expect("rt always exists with ratpub feat")
+            .clone(),
+    ));
 
     let ext = Isometry3::from_parts(
         nalgebra::Translation3::new(
@@ -296,7 +373,9 @@ fn lio(config: LioConfig) -> Result<(), Box<dyn std::error::Error>> {
         #[cfg(feature = "ratpub")]
         &node,
         #[cfg(feature = "ratpub")]
-        rt.clone(),
+        rt.as_ref()
+            .expect("rt always exists with ratpub feat")
+            .clone(),
         &config.prelio_params,
         &config.prelio_node_params,
         #[cfg(not(feature = "gicp"))]
@@ -493,45 +572,60 @@ fn lio(config: LioConfig) -> Result<(), Box<dyn std::error::Error>> {
     let cloud_publisher =
         node.create_publisher::<PointCloud2>("registered", config.registered_cloud_qos.into())?;
     #[cfg(feature = "ratpub")]
-    let cloud_publisher = rt.block_on(async {
-        node.create_publisher::<PointCloud2>("registered".to_owned())
-            .await
-            .unwrap()
-    });
+    let cloud_publisher = rt
+        .as_ref()
+        .expect("rt always exists with ratpub feat")
+        .block_on(async {
+            node.create_publisher::<PointCloud2>("registered".to_owned())
+                .await
+                .unwrap()
+        });
     #[cfg(all(not(feature = "no-viz"), feature = "r2r"))]
     let odom_publisher = node.create_publisher::<Odometry>("odom", config.odom_qos.into())?;
     #[cfg(all(not(feature = "no-viz"), feature = "ratpub"))]
-    let odom_publisher = rt.block_on(async {
-        node.create_publisher::<Odometry>("odom".to_owned())
-            .await
-            .unwrap()
-    });
+    let odom_publisher = rt
+        .as_ref()
+        .expect("rt always exists with ratpub feat")
+        .block_on(async {
+            node.create_publisher::<Odometry>("odom".to_owned())
+                .await
+                .unwrap()
+        });
     #[cfg(all(not(feature = "no-viz"), feature = "r2r"))]
     let lidar_path_publisher = node.create_publisher::<Path>("path", config.path_qos.into())?;
     #[cfg(all(not(feature = "no-viz"), feature = "ratpub"))]
-    let lidar_path_publisher = rt.block_on(async {
-        node.create_publisher::<Path>("path".to_owned())
-            .await
-            .unwrap()
-    });
+    let lidar_path_publisher = rt
+        .as_ref()
+        .expect("rt always exists with ratpub feat")
+        .block_on(async {
+            node.create_publisher::<Path>("path".to_owned())
+                .await
+                .unwrap()
+        });
     #[cfg(all(not(feature = "no-viz"), feature = "r2r"))]
     let imu_odom_publisher =
         node.create_publisher::<Odometry>("imu_odom", config.imu_odom_qos.into())?;
     #[cfg(all(not(feature = "no-viz"), feature = "ratpub"))]
-    let imu_odom_publisher = rt.block_on(async {
-        node.create_publisher::<Odometry>("imu_odom".to_owned())
-            .await
-            .unwrap()
-    });
+    let imu_odom_publisher = rt
+        .as_ref()
+        .expect("rt always exists with ratpub feat")
+        .block_on(async {
+            node.create_publisher::<Odometry>("imu_odom".to_owned())
+                .await
+                .unwrap()
+        });
     #[cfg(all(not(feature = "no-viz"), feature = "r2r"))]
     let imu_path_publisher =
         node.create_publisher::<Path>("imu_path", config.imu_path_qos.into())?;
     #[cfg(all(not(feature = "no-viz"), feature = "ratpub"))]
-    let imu_path_publisher = rt.block_on(async {
-        node.create_publisher::<Path>("imu_path".to_owned())
-            .await
-            .unwrap()
-    });
+    let imu_path_publisher = rt
+        .as_ref()
+        .expect("rt always exists with ratpub feat")
+        .block_on(async {
+            node.create_publisher::<Path>("imu_path".to_owned())
+                .await
+                .unwrap()
+        });
     // #[cfg(all(
     //     not(feature = "no-viz"),
     //     feature = "map",
@@ -633,13 +727,20 @@ fn lio(config: LioConfig) -> Result<(), Box<dyn std::error::Error>> {
             cuda::NeighborType::Neighbor26,
         );
 
-        #[cfg(feature = "trajectory")]
         let mut trajectory_file = {
-            let name = petname::petname(2, "_").unwrap();
-            let filename = format!("pelorus_trajectory_{}.txt", name);
-            println!("Saving trajectory to {}", &filename);
-            std::fs::File::create(&filename).unwrap()
+            if export_trajectory {
+                let name = petname::petname(2, "_").unwrap();
+                let filename = format!("pelorus_trajectory_{}.txt", name);
+                println!("Saving trajectory to {}", &filename);
+                Some(std::fs::File::create(&filename).unwrap())
+            } else {
+                None
+            }
         };
+
+        if let Some(signal) = ready_signal {
+            let _ = signal.send(());
+        }
 
         while let Ok(lifis_tick) = synced_rx.recv() {
             eval.merge(&lifis_tick.runtime_eval);
@@ -851,8 +952,7 @@ fn lio(config: LioConfig) -> Result<(), Box<dyn std::error::Error>> {
             };
             let map_to_lidar_transform = t_world_lidar.clone().cast::<f32>();
             cloud.header.frame_id = orig_frame.clone();
-            #[cfg(feature = "trajectory")]
-            {
+            if let Some(mut trajectory_file) = trajectory_file.as_mut() {
                 let time = timestamp_to_secs(&lifis_tick.cloud_header.stamp);
                 let t = &map_to_lidar_transform.translation.vector;
                 let q = map_to_lidar_transform.rotation.quaternion();
@@ -1044,17 +1144,19 @@ fn lio(config: LioConfig) -> Result<(), Box<dyn std::error::Error>> {
             }
 
             #[cfg(all(not(feature = "no-viz"), feature = "ratpub"))]
-            rt.block_on(async {
-                cloud_publisher
-                    .publish(&cloud)
-                    .await
-                    .expect("Failed to publish cloud");
+            rt.as_ref()
+                .expect("rt always exists with ratpub feat")
+                .block_on(async {
+                    cloud_publisher
+                        .publish(&cloud)
+                        .await
+                        .expect("Failed to publish cloud");
 
-                odom_publisher
-                    .publish(&lidar_odom)
-                    .await
-                    .expect("Failed to publish odom");
-            });
+                    odom_publisher
+                        .publish(&lidar_odom)
+                        .await
+                        .expect("Failed to publish odom");
+                });
             #[cfg(not(feature = "ratpub"))]
             {
                 cloud_publisher
@@ -1103,22 +1205,24 @@ fn lio(config: LioConfig) -> Result<(), Box<dyn std::error::Error>> {
             #[cfg(all(not(feature = "no-viz"), feature = "ratpub"))]
             let pub_imu_path = imu_path.clone();
             #[cfg(all(not(feature = "no-viz"), feature = "ratpub"))]
-            rt.block_on(async {
-                lidar_path_publisher
-                    .publish(&pub_lidar_path)
-                    .await
-                    .expect("Failed to publish path");
+            rt.as_ref()
+                .expect("rt always exists with ratpub feat")
+                .block_on(async {
+                    lidar_path_publisher
+                        .publish(&pub_lidar_path)
+                        .await
+                        .expect("Failed to publish path");
 
-                imu_odom_publisher
-                    .publish(&imu_odom)
-                    .await
-                    .expect("Failed to publish imu odom");
+                    imu_odom_publisher
+                        .publish(&imu_odom)
+                        .await
+                        .expect("Failed to publish imu odom");
 
-                imu_path_publisher
-                    .publish(&pub_imu_path)
-                    .await
-                    .expect("Failed to publish imu path"); // TODO this will spam a lot, maybe also throttle like lidar_path
-            });
+                    imu_path_publisher
+                        .publish(&pub_imu_path)
+                        .await
+                        .expect("Failed to publish imu path"); // TODO this will spam a lot, maybe also throttle like lidar_path
+                });
             #[cfg(feature = "rerun")]
             {
                 let imu_path = rerun::LineStrip3D::from_iter(imu_path.poses.iter().map(|p| {
@@ -1192,34 +1296,327 @@ fn lio(config: LioConfig) -> Result<(), Box<dyn std::error::Error>> {
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    env_logger::init();
     let args = Args::parse();
 
     const DEFAULT_CONFIG_STR: &str = include_str!("../../../default.rl");
 
     match args.command {
         Command::Run(args) => {
-            let default_ast = ratslang::compile_code(DEFAULT_CONFIG_STR)
-                .map_err(|e| anyhow!("Failed to compile embedded default config: {}", e))?;
+            match args {
+                RunArgs::Online(config_args) => {
+                    env_logger::init();
 
-            let user_ast = if let Some(config_path) = args.config_path {
-                let path = std::path::Path::new(&config_path);
-                if !path.exists() {
-                    return Err(anyhow!(
-                        "Error: Configuration file not found at '{}'",
-                        config_path
-                    )
-                    .into());
+                    let default_ast = ratslang::compile_code(DEFAULT_CONFIG_STR)
+                        .map_err(|e| anyhow!("Failed to compile embedded default config: {}", e))?;
+
+                    let user_ast = if let Some(config_path) = config_args.config_path {
+                        let path = std::path::Path::new(&config_path);
+                        if !path.exists() {
+                            return Err(anyhow!(
+                                "Error: Configuration file not found at '{}'",
+                                config_path.to_string_lossy()
+                            )
+                            .into());
+                        }
+                        ratslang::compile_file(&path.to_path_buf(), None, None).map_err(|e| {
+                            anyhow!(
+                                "Failed to compile user config '{}': {}",
+                                config_path.to_string_lossy(),
+                                e
+                            )
+                        })?
+                    } else {
+                        ratslang::compile_code("")?
+                    };
+
+                    let config = config::ast_to_config(default_ast, user_ast)?;
+                    lio(config, config_args.export_trajectory, config_args.rat)
                 }
-                ratslang::compile_file(&path.to_path_buf(), None, None).map_err(|e| {
-                    anyhow!("Failed to compile user config '{}': {}", config_path, e)
-                })?
-            } else {
-                ratslang::compile_code("")?
-            };
+                #[cfg(feature = "rat")]
+                RunArgs::Offline(offline_args) => {
+                    // TODO check minot version and if features are correct, else install using script to use one more feature so we can talk to it. Use our stdin/stdout for the script and start TUI when minot is ok.
+                    let output_capture = std::sync::Arc::new(output_tui::OutputCapture::new());
+                    let capture_for_minot_stdout = output_capture.clone();
+                    let capture_for_minot_stderr = output_capture.clone();
+                    let capture_for_tui = output_capture.clone();
 
-            let config = config::ast_to_config(default_ast, user_ast)?;
-            lio(config)
+                    let logger = output_tui::CaptureLogger::new(output_capture.clone());
+                    log::set_boxed_logger(Box::new(logger))
+                        .map_err(|e| anyhow!("Failed to set logger: {}", e))?;
+                    log::set_max_level(log::LevelFilter::Info);
+
+                    let default_ast = ratslang::compile_code(DEFAULT_CONFIG_STR)
+                        .map_err(|e| anyhow!("Failed to compile embedded default config: {}", e))?;
+
+                    let user_ast = if let Some(config_path) = offline_args.config_path {
+                        let path = std::path::Path::new(&config_path);
+                        if !path.exists() {
+                            return Err(anyhow!(
+                                "Error: Configuration file not found at '{}'",
+                                config_path.to_string_lossy()
+                            )
+                            .into());
+                        }
+                        ratslang::compile_file(&path.to_path_buf(), None, None).map_err(|e| {
+                            anyhow!(
+                                "Failed to compile user config '{}': {}",
+                                config_path.to_string_lossy(),
+                                e
+                            )
+                        })?
+                    } else {
+                        ratslang::compile_code("")?
+                    };
+
+                    let config = {
+                        let mut config = config::ast_to_config(default_ast, user_ast)?;
+                        config.feedback_fps = 0; // disable feedback for offline
+                        config
+                    };
+
+                    let lidar_topic = &config.prelio_node_params.cloud_src_topic;
+                    let imu_topic = &config.prelio_node_params.imu_src_topic;
+                    let imu_init_time_ms =
+                        (config.prelio_node_params.imu_predictor_init_time_sec * 1000.0) as u64;
+                    let imu_init_samples = config.prelio_params.initial_scan_accumulate;
+                    let bagfile_path_canon = offline_args.bagfile_path.canonicalize().unwrap();
+                    let bagfile_path = bagfile_path_canon.clone().to_string_lossy().to_string();
+
+                    let mt_content = format!(
+                        r#"
+_bag.{{
+  cloud.{{
+    _topic = "{lidar_topic}"
+    _short = "l"
+    _type = Cloud
+  }}
+  imu.{{
+    _topic = "{imu_topic}"
+    _short = "i"
+    _type = Imu
+  }}
+}}
+_start_locked = false
+
+pf! [i, l], l 1 tick_end
+pf! l 1 tick_end
+pf! i 1 tick_end
+
+reset! {bagfile_path}
+
+# imu init
+pf! i 1 1.
+pf! [i,l] {imu_init_time_ms}ms 1.
+
+# padding
+pf! [i,l] 100ms 1.
+
+# initial aggregate
+pf! [i, l], l {imu_init_samples} 1.
+
+# main loop
+loop 3 {{
+  pf! [i, l], l 1
+  pf! l 1
+  pf! i 1
+}}
+"#
+                    );
+
+                    let mt_file_path = std::env::temp_dir().join("pelorus_offline.mt");
+                    fs::write(&mt_file_path, mt_content)
+                        .map_err(|e| anyhow!("Failed to write .mt file: {}", e))?;
+
+                    info!("Generated .mt file at: {:?}", mt_file_path);
+
+                    // Spawn minot in headless mode with --sync
+                    let mut minot_child = ProcessCommand::new(&offline_args.minot_path)
+                        .arg("headless")
+                        .arg(&mt_file_path)
+                        .arg("--sync")
+                        .stdin(Stdio::piped())
+                        .stdout(Stdio::piped())
+                        .stderr(Stdio::piped())
+                        .spawn()
+                        .map_err(|e| anyhow!("Failed to spawn minot: {}", e))?;
+
+                    info!("Spawned minot process with PID: {}", minot_child.id());
+
+                    let mut minot_stdin = minot_child
+                        .stdin
+                        .take()
+                        .ok_or_else(|| anyhow!("Failed to open minot stdin"))?;
+                    let minot_stdout = minot_child
+                        .stdout
+                        .take()
+                        .ok_or_else(|| anyhow!("Failed to open minot stdout"))?;
+                    let minot_stderr = minot_child
+                        .stderr
+                        .take()
+                        .ok_or_else(|| anyhow!("Failed to open minot stderr"))?;
+
+                    info!("Waiting for minot to be ready...");
+                    use std::io::{BufRead, BufReader};
+
+                    let (ready_tx, ready_rx) = std::sync::mpsc::channel();
+                    let _ready_tx_guard = ready_tx.clone();
+                    let (exit_tx, exit_rx) = std::sync::mpsc::channel();
+
+                    // Thread for stdout
+                    let exit_tx_clone = exit_tx.clone();
+                    let ready_tx_clone = ready_tx.clone();
+                    std::thread::spawn(move || {
+                        let reader = BufReader::new(minot_stdout);
+                        for line in reader.lines() {
+                            match line {
+                                Ok(line) => {
+                                    capture_for_minot_stdout.add_minot_line(line.clone());
+
+                                    // detect end of bagfile
+                                    if line.to_lowercase().contains("end of bagfile") {
+                                        let _ = exit_tx_clone.send(());
+                                    }
+                                    if line.contains("--sync")
+                                        || line.to_lowercase().contains("waiting for input")
+                                        || line.to_lowercase().contains("press enter")
+                                        || line.to_lowercase().contains("stdin")
+                                    {
+                                        let _ = ready_tx_clone.send(true);
+                                    }
+                                }
+                                Err(e) => {
+                                    capture_for_minot_stdout
+                                        .add_minot_line(format!("Error reading stdout: {}", e));
+                                    break;
+                                }
+                            }
+                        }
+                    });
+
+                    // Thread for stderr
+                    std::thread::spawn(move || {
+                        let reader = BufReader::new(minot_stderr);
+                        for line in reader.lines() {
+                            match line {
+                                Ok(line) => {
+                                    capture_for_minot_stderr.add_minot_line(line.clone());
+
+                                    // detect readiness on stderr
+                                    if line.contains(
+                                        "Waiting for input on stdin before execution (--sync mode)",
+                                    ) || line.to_lowercase().contains("waiting for input")
+                                        || line.to_lowercase().contains("press enter")
+                                        || line.to_lowercase().contains("stdin")
+                                    {
+                                        let _ = ready_tx.send(true);
+                                    }
+                                }
+                                Err(e) => {
+                                    capture_for_minot_stderr
+                                        .add_minot_line(format!("Error reading stderr: {}", e));
+                                    break;
+                                }
+                            }
+                        }
+                    });
+
+                    let got_ready = ready_rx
+                        .recv_timeout(std::time::Duration::from_secs(30))
+                        .is_ok();
+                    if !got_ready {
+                        info!("Did not receive explicit Minot ready; proceeding as fallback");
+                    }
+
+                    info!("Minot is ready, starting pelorus offline processing...");
+
+                    let (pelorus_ready_tx, pelorus_ready_rx) = std::sync::mpsc::channel();
+
+                    // start LIO in thread
+                    let lio_handle = std::thread::spawn(move || {
+                        if let Err(e) = lio_with_ready_signal(
+                            config,
+                            Some(pelorus_ready_tx),
+                            offline_args.export_trajectory,
+                            true,
+                        ) {
+                            error!("LIO failed: {}", e);
+                            return Err(format!("LIO failed: {}", e));
+                        }
+                        Ok(())
+                    });
+
+                    info!("Waiting for pelorus to initialize...");
+                    match pelorus_ready_rx.recv_timeout(std::time::Duration::from_secs(5)) {
+                        Ok(_) => info!("Pelorus is ready!"),
+                        Err(_) => info!(
+                            "Pelorus ready not received in 5s; proceeding to trigger minot anyway"
+                        ),
+                    }
+                    info!("Triggering minot to start processing...");
+
+                    use std::io::Write;
+                    minot_stdin
+                        .write_all(b"\n")
+                        .map_err(|e| anyhow!("Failed to write to minot stdin: {}", e))?;
+                    minot_stdin
+                        .flush()
+                        .map_err(|e| anyhow!("Failed to flush minot stdin: {}", e))?;
+
+                    // start TUI in thread
+                    let (tui_stop_tx, tui_stop_rx) = std::sync::mpsc::channel();
+                    let (shutdown_tx, shutdown_rx) = std::sync::mpsc::channel();
+                    let tui_thread = std::thread::spawn(move || {
+                        let mut tui = output_tui::OutputTui::new(
+                            capture_for_tui,
+                            bagfile_path_canon
+                                .file_name()
+                                .unwrap()
+                                .to_string_lossy()
+                                .to_string(),
+                        )
+                        .with_stop_receiver(tui_stop_rx)
+                        .with_shutdown_sender(shutdown_tx);
+                        let _ = tui.run();
+                    });
+
+                    // wait for end, TODO use different function to handle generating output after end
+                    let lio_finished =
+                        std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+                    let lio_finished_clone = lio_finished.clone();
+
+                    std::thread::spawn(move || {
+                        let _ = lio_handle.join();
+                        lio_finished_clone.store(true, std::sync::atomic::Ordering::SeqCst);
+                    });
+
+                    // wait loop
+                    loop {
+                        if exit_rx.try_recv().is_ok() {
+                            break;
+                        }
+                        if lio_finished.load(std::sync::atomic::Ordering::SeqCst) {
+                            break;
+                        }
+                        if shutdown_rx.try_recv().is_ok() {
+                            break;
+                        }
+                        std::thread::sleep(std::time::Duration::from_millis(100));
+                    }
+
+                    // stop TUI thread gracefully to restore terminal state
+                    let _ = tui_stop_tx.send(());
+                    let _ = tui_thread.join();
+
+                    if exit_rx.try_recv().is_err()
+                        && !lio_finished.load(std::sync::atomic::Ordering::SeqCst)
+                    {
+                        let _ = minot_child.kill();
+                        std::process::exit(130); // "Command terminated by user."
+                    }
+
+                    Ok(())
+                }
+            }
         }
         Command::Config(cmd) => match cmd {
             ConfigCommand::Init => {
@@ -1227,7 +1624,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 Ok(())
             }
             ConfigCommand::Test(args) => {
-                println!("Testing configuration file: {}", args.config_path);
+                println!(
+                    "Testing configuration file: {}",
+                    args.config_path.to_string_lossy()
+                );
 
                 let default_ast = ratslang::compile_code(DEFAULT_CONFIG_STR)
                     .map_err(|e| anyhow!("Failed to compile embedded default config: {}", e))?;
@@ -1236,7 +1636,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 if !path.exists() {
                     return Err(anyhow!(
                         "Error: Configuration file not found at '{}'",
-                        args.config_path
+                        args.config_path.to_string_lossy()
                     )
                     .into());
                 }
@@ -1244,26 +1644,24 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     ratslang::compile_file(&path.to_path_buf(), None, None).map_err(|e| {
                         anyhow!(
                             "Failed to compile user config '{}': {}",
-                            args.config_path,
+                            args.config_path.to_string_lossy(),
                             e
                         )
                     })?;
 
                 let _ = config::ast_to_config(default_ast, user_ast)?;
-                println!("Configuration file at '{}' is valid.", args.config_path);
+                println!(
+                    "Configuration file at '{}' is valid.",
+                    args.config_path.to_string_lossy()
+                );
                 Ok(())
             }
         },
-        #[allow(unused_variables)]
+        #[cfg(feature = "evaluate")]
         Command::Evaluate(paths) => {
-            #[cfg(feature = "trajectory")]
-            {
-                let estimated_path = std::path::PathBuf::from(&paths.estimated_file);
-                let ground_truth_path = std::path::PathBuf::from(&paths.ground_truth_file);
-                trajectory::visualize_results(&estimated_path, &ground_truth_path)?;
-            }
-            #[cfg(not(feature = "trajectory"))]
-            eprintln!("Please enable the trajectory feature for this command. `--features [..,]trajectory` ");
+            let estimated_path = std::path::PathBuf::from(&paths.estimated_file);
+            let ground_truth_path = std::path::PathBuf::from(&paths.ground_truth_file);
+            trajectory::visualize_results(&estimated_path, &ground_truth_path)?;
             Ok(())
         }
     }

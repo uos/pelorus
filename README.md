@@ -42,7 +42,7 @@ Available flags for the ROS 2 version are:
 - `rat`
 - `mapping`
 - `map`
-- `trajectory`
+- `evaluation`
 - `mimalloc`
 
 Explanations for all flags are available in the [Cargo.toml](./crates/pelorus/Cargo.toml) under `[features]`.
@@ -69,7 +69,7 @@ For basics of the configuration language itself visit the [Ratslang](https://git
 
 Source your workspace and run the node. If your configuration file, (e.g. `pelorus.rl`) file is in the same directory where you are running the command, you can use a relative path:
 ```sh
-ros2 run pelorus pelorus run --config-path pelorus.rl
+ros2 run pelorus pelorus run online --config-path pelorus.rl
 ```
 
 ## 🔧 Development
