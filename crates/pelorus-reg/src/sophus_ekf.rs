@@ -80,12 +80,12 @@ fn get_f(s: &StateIKFom, inp: &InputIKFom) -> SMatrix<f64, 18, 1> {
     res
 }
 
-/// Given a vector `q = [x, y, z]`, the skew-symmetric matrix is:
-/// ```
-/// [  0, -z,  y ]
-/// [  z,  0, -x ]
-/// [ -y,  x,  0 ]
-/// ```
+// Given a vector `q = [x, y, z]`, the skew-symmetric matrix is:
+// ```
+// [  0, -z,  y ]
+// [  z,  0, -x ]
+// [ -y,  x,  0 ]
+// ```
 pub fn skew_symmetric<T>(q: &Vector3<T>) -> Matrix3<T>
 where
     T: nalgebra::Scalar + Copy + From<f64> + std::ops::Neg<Output = T>,
