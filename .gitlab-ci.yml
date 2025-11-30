@@ -1,48 +1,50 @@
-# image: ubuntu:latest
+# yaml-language-server: $schema=https://gitlab.com/gitlab-org/gitlab/-/raw/master/app/assets/javascripts/editor/schema/ci.json
 
-# variables:
-#   CARGO_INCREMENTAL: "0"
-#   RUST_BACKTRACE: "full"
+image: ubuntu:latest
 
-# stages:
-#   - build
-#   - snapshot
+variables:
+  CARGO_INCREMENTAL: "0"
+  RUST_BACKTRACE: "full"
 
-# before_script:
-#   - apt-get update
-#   - apt-get install -y curl git clang gcc-aarch64-linux-gnu gcc-riscv64-linux-gnu musl-tools libc6-dev-riscv64-cross gcc-arm-linux-gnueabihf
-#   - curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
-#   - source "$HOME/.cargo/env"
-#   - rustup default stable
+stages:
+  - build
+  - snapshot
 
-# rust-stable:
-#   stage: build
-#   script:
-#     - rustup default stable
-#     - cargo build --verbose
-#     - cargo test --verbose
-#   rules:
-#     - if: '$CI_COMMIT_BRANCH == "dev"'
-#     - if: '$CI_PIPELINE_SOURCE == "schedule"'
-#       when: never
+before_script:
+  - apt-get update
+  - apt-get install -y curl git clang gcc-aarch64-linux-gnu gcc-riscv64-linux-gnu musl-tools libc6-dev-riscv64-cross gcc-arm-linux-gnueabihf
+  - curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+  - source "$HOME/.cargo/env"
+  - rustup default stable
 
-# rust-nightly:
-#   stage: build
-#   script:
-#     - rustup default nightly
-#     - cargo build --verbose
-#     - cargo test --verbose
-#   allow_failure: true
-#   rules:
-#     - if: '$CI_PIPELINE_SOURCE == "schedule"'
-#     - if: '$CI_COMMIT_BRANCH == "dev"'
+rust-stable:
+  stage: build
+  script:
+    - rustup default stable
+    - cargo build --features ratpub --verbose
+    - cargo test --features ratpub --verbose
+  rules:
+    # - if: '$CI_COMMIT_BRANCH == "dev"'
+    - if: '$CI_PIPELINE_SOURCE == "schedule"'
+      when: never
+
+rust-nightly:
+  stage: build
+  script:
+    - rustup default nightly
+    - cargo build --features ratpub --verbose
+    - cargo test --features ratpub --verbose
+  allow_failure: true
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "schedule"'
+    # - if: '$CI_COMMIT_BRANCH == "dev"'
 
 # .build_template: &build_defaults
 #   stage: snapshot
 #   script:
 #     - rustup default stable
 #     - rustup target add $RUST_TARGET
-#     - RUSTFLAGS="-C target-feature=+crt-static" cargo build --no-default-features --target $RUST_TARGET --features ros2-client,mimalloc --release
+#     - RUSTFLAGS="-C target-feature=+crt-static" cargo build --target $RUST_TARGET --features ros2-client,mimalloc --release
 #     - mv target/$RUST_TARGET/release/pelorus pelorus-$TRIPLE
 #   artifacts:
 #     paths:
