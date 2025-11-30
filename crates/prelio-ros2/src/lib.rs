@@ -677,9 +677,15 @@ impl PrelioNode {
         let state = Arc::new(std::sync::Mutex::new(state));
 
         #[cfg(not(feature = "no-imu-sync"))]
-        let imu_init_time_counter = Arc::new(Mutex::new(None));
+        struct ImuInitState {
+            start_time: Option<f64>,
+            buffer: Option<Vec<ImuMsg>>,
+        }
         #[cfg(not(feature = "no-imu-sync"))]
-        let imu_init_buffer = Arc::new(Mutex::new(Some(Vec::new())));
+        let imu_init_state = Arc::new(Mutex::new(ImuInitState {
+            start_time: None,
+            buffer: Some(Vec::new()),
+        }));
 
         #[cfg(any(feature = "ros2-client", feature = "ratpub", feature = "r2r"))]
         let tf_listener_clone = tf_listener.clone();
@@ -854,8 +860,7 @@ impl PrelioNode {
                             .lock()
                             .unwrap()
                             .get_or_insert(msg.header.frame_id.clone());
-                        let imu_init_time_counter = imu_init_time_counter.clone();
-                        let imu_init_buffer = imu_init_buffer.clone();
+                        let imu_init_state = imu_init_state.clone();
 
                         let imu_lifis = imu_to_lifis(msg.clone());
                         let curr_stamp = timestamp_to_secs(&imu_lifis.stamp);
@@ -863,23 +868,24 @@ impl PrelioNode {
                         if let Some(imu_pose_predictor_init) = imu_pose_predictor_init.as_ref() {
                             let mut imu_pose_predictor_init =
                                 imu_pose_predictor_init.lock().unwrap();
-                            let mut imu_init_time_counter = imu_init_time_counter.lock().unwrap();
-                            if imu_init_time_counter.is_none() {
-                                *imu_init_time_counter = Some(curr_stamp);
+                            let mut init_state = imu_init_state.lock().unwrap();
+
+                            if init_state.start_time.is_none() {
+                                init_state.start_time = Some(curr_stamp);
                             }
-                            if let Some(init_time) = imu_init_time_counter.as_ref() {
-                                let mut imu_init_buffer = imu_init_buffer.lock().unwrap();
+
+                            if let Some(init_time) = init_state.start_time {
                                 let delta = curr_stamp - init_time;
                                 if delta < init_imu_time {
-                                    if let Some(imu_init_buffer) = imu_init_buffer.as_mut() {
-                                        imu_init_buffer.push(imu_lifis);
+                                    if let Some(ref mut buffer) = init_state.buffer {
+                                        buffer.push(imu_lifis);
                                         continue; // skip adding to lifis if we are still in the init phase
                                     }
                                     // we are only here, if there was an initial buffer, but it was already consumed so skip init and continue with normal processing
                                 } else {
                                     // apply the init buffer
-                                    if let Some(imu_init_buffer) = imu_init_buffer.take() {
-                                        imu_pose_predictor_init(&imu_init_buffer);
+                                    if let Some(buffer) = init_state.buffer.take() {
+                                        imu_pose_predictor_init(&buffer);
                                         info!("EKF: Imu initialized");
                                     }
                                 }
@@ -914,7 +920,7 @@ impl PrelioNode {
                     .unwrap()
             });
 
-            let imu_imu_init_buffer = imu_init_buffer.clone();
+            let imu_imu_init_state = imu_init_state.clone();
             std::thread::spawn(move || {
                 let imu_pose_predictor_init = imu_pose_predictor_init.clone();
                 imu_sub_rt.block_on(async {
@@ -928,8 +934,7 @@ impl PrelioNode {
                                 .unwrap()
                                 .get_or_insert(msg.header.frame_id.clone());
                         }
-                        let imu_init_time_counter = imu_init_time_counter.clone();
-                        let imu_init_buffer = imu_imu_init_buffer.clone();
+                        let imu_init_state = imu_imu_init_state.clone();
 
                         let imu_lifis = imu_to_lifis(msg.clone());
                         let curr_stamp = timestamp_to_secs(&imu_lifis.stamp);
@@ -937,23 +942,24 @@ impl PrelioNode {
                         if let Some(imu_pose_predictor_init) = imu_pose_predictor_init.as_ref() {
                             let mut imu_pose_predictor_init =
                                 imu_pose_predictor_init.lock().unwrap();
-                            let mut imu_init_time_counter = imu_init_time_counter.lock().unwrap();
-                            if imu_init_time_counter.is_none() {
-                                *imu_init_time_counter = Some(curr_stamp);
+                            let mut init_state = imu_init_state.lock().unwrap();
+
+                            if init_state.start_time.is_none() {
+                                init_state.start_time = Some(curr_stamp);
                             }
-                            if let Some(init_time) = imu_init_time_counter.as_ref() {
-                                let mut imu_init_buffer = imu_init_buffer.lock().unwrap();
+
+                            if let Some(init_time) = init_state.start_time {
                                 let delta = curr_stamp - init_time;
                                 if delta < init_imu_time {
-                                    if let Some(imu_init_buffer) = imu_init_buffer.as_mut() {
-                                        imu_init_buffer.push(imu_lifis);
+                                    if let Some(ref mut buffer) = init_state.buffer {
+                                        buffer.push(imu_lifis);
                                         continue; // skip adding to lifis if we are still in the init phase
                                     }
                                     // we are only here, if there was an initial buffer, but it was already consumed so skip init and continue with normal processing
                                 } else {
                                     // apply the init buffer
-                                    if let Some(imu_init_buffer) = imu_init_buffer.take() {
-                                        imu_pose_predictor_init(&imu_init_buffer);
+                                    if let Some(buffer) = init_state.buffer.take() {
+                                        imu_pose_predictor_init(&buffer);
                                         info!("EKF: Imu initialized");
                                     }
                                 }
@@ -996,8 +1002,7 @@ impl PrelioNode {
                             .lock()
                             .unwrap()
                             .get_or_insert(msg.header.frame_id.clone());
-                        let imu_init_time_counter = imu_init_time_counter.clone();
-                        let imu_init_buffer = imu_init_buffer.clone();
+                        let imu_init_state = imu_init_state.clone();
 
                         let imu_lifis = imu_to_lifis(msg.clone());
                         let curr_stamp = timestamp_to_secs(&imu_lifis.stamp);
@@ -1005,23 +1010,25 @@ impl PrelioNode {
                         if let Some(imu_pose_predictor_init) = imu_pose_predictor_init.as_ref() {
                             let mut imu_pose_predictor_init =
                                 imu_pose_predictor_init.lock().unwrap();
-                            let mut imu_init_time_counter = imu_init_time_counter.lock().unwrap();
-                            if imu_init_time_counter.is_none() {
-                                *imu_init_time_counter = Some(curr_stamp);
+                            let mut init_state = imu_init_state.lock().unwrap();
+
+                            if init_state.start_time.is_none() {
+                                init_state.start_time = Some(curr_stamp);
                             }
-                            if let Some(init_time) = imu_init_time_counter.as_ref() {
-                                let mut imu_init_buffer = imu_init_buffer.lock().unwrap();
+
+                            if let Some(init_time) = init_state.start_time {
                                 let delta = curr_stamp - init_time;
                                 if delta < init_imu_time {
-                                    if let Some(imu_init_buffer) = imu_init_buffer.as_mut() {
-                                        imu_init_buffer.push(imu_lifis);
+                                    if let Some(ref mut buffer) = init_state.buffer {
+                                        buffer.push(imu_lifis);
                                         return; // skip adding to lifis if we are still in the init phase
                                     }
                                     // we are only here, if there was an initial buffer, but it was already consumed so skip init and continue with normal processing
                                 } else {
                                     // apply the init buffer
-                                    if let Some(imu_init_buffer) = imu_init_buffer.take() {
-                                        imu_pose_predictor_init(&imu_init_buffer);
+                                    if let Some(buffer) = init_state.buffer.take() {
+                                        imu_pose_predictor_init(&buffer);
+                                        info!("EKF: Imu initialized");
                                     }
                                 }
                             }

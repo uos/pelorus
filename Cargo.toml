@@ -15,16 +15,16 @@ include = ["**/*.rs", "**/*.md", "**/Cargo.toml"]
 keywords = ["robotics"]
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/stelzo/pelorus/"
-version = "0.1.0"
+version = "0.1.0-beta"
 rust-version = "1.85"
 
 [workspace.dependencies]
-pelorus = { path = "crates/pelorus", version = "0.1.0" }
-pelorus-reg = { path = "crates/pelorus-reg", version = "0.1.0" }
-prelio = { path = "crates/prelio", version = "0.1.0" }
-prelio-ros2 = { path = "crates/prelio-ros2", version = "0.1.0" }
-spole = { path = "crates/spole", version = "0.1.0" }
-cuda = { path = "crates/cuda", version = "0.1.0" }
+pelorus = { path = "crates/pelorus", version = "0.1.0-beta" }
+pelorus-reg = { path = "crates/pelorus-reg", version = "0.1.0-beta" }
+prelio = { path = "crates/prelio", version = "0.1.0-beta" }
+prelio-ros2 = { path = "crates/prelio-ros2", version = "0.1.0-beta" }
+spole = { path = "crates/spole", version = "0.1.0-beta" }
+cuda = { path = "crates/cuda", version = "0.1.0-beta" }
 
 uom = { version = "0.37.0", default-features = false, features = [
   "usize",
@@ -32,7 +32,7 @@ uom = { version = "0.37.0", default-features = false, features = [
   "f64",
   "f32",
 ] }
-ratslang = { version = "0.1.0-alpha.3", git = "https://github.com/stelzo/ratslang", branch = "main" }
+ratslang = "0.1.0"
 ros_pointcloud2 = { version = "0.5.3", features = [
   "nalgebra",
   "rayon",
@@ -61,8 +61,8 @@ ros2-interfaces-jazzy-rkyv = { version = "0.0.4", features = [
   "tf2_msgs",
   "builtin_interfaces",
 ], git = "https://github.com/stelzo/ros2-interfaces-jazzy-rkyv.git", branch = "main" }
-ratpub = { version = "0.1.0-rc.4", git = "https://github.com/uos/minot", branch = "fixwait" }
-rat = { version = "0.1.0-rc.4", git = "https://github.com/uos/minot", branch = "fixwait" }
+ratpub = { version = "0.1.0", git = "https://github.com/uos/minot", tag = "v0.1.0" }
+rat = { version = "0.1.0", git = "https://github.com/uos/minot", tag = "v0.1.0" }
 small_gicp-sys = { version = "0.1.0", git = "https://github.com/stelzo/small_gicp-sys", rev = "30da271" }
 gtsam-sys = { version = "0.1.0", git = "https://github.com/stelzo/gtsam-sys.git", branch = "main" }
 anyhow = "1"
@@ -96,10 +96,11 @@ image = "0.25.6"
 # rat = { path = "../minot/rat" }
 
 [profile.release]
-lto = true          # Link Time Optimization
+lto = "fat"         # Link Time Optimization
 codegen-units = 1   # Slower compile times but compiler sees all generated code and can optimize over everything across modules. Also decreases binary size.
-strip = "debuginfo" # Significantly reduce binary size
+strip = "symbols"   # Significantly reduce binary size
 opt-level = 3
+debug = 0
 # panic = "abort"
 
 [profile.dbg-release]
