@@ -91,10 +91,6 @@ image = "0.25.6"
 # [patch."ssh://git@github.com/stelzo/small_gicp-sys.git"]
 # small_gicp-sys = { path = "../small_gicp-rs" }
 
-# [patch."https://github.com/uos/minot"]
-# ratpub = { path = "../minot/ratpub" }
-# rat = { path = "../minot/rat" }
-
 [profile.release]
 lto = "fat"         # Link Time Optimization
 codegen-units = 1   # Slower compile times but compiler sees all generated code and can optimize over everything across modules. Also decreases binary size.
