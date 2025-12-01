@@ -696,12 +696,14 @@ fn lio_with_ready_signal(
                 }
 
                 #[cfg(feature = "rat")]
-                rat::bacon(
-                    "tick_end",
-                    &mut "".to_string(),
-                    rat::VariableType::StaticOnly,
-                )
-                .unwrap();
+                if synchronous_mode {
+                    rat::bacon(
+                        "tick_end",
+                        &mut "".to_string(),
+                        rat::VariableType::StaticOnly,
+                    )
+                    .unwrap();
+                }
             }
         });
     }
@@ -1258,12 +1260,14 @@ fn lio_with_ready_signal(
 
             // mark to send new data
             #[cfg(all(feature = "rat", not(feature = "mapping")))]
-            rat::bacon(
-                "tick_end",
-                &mut "".to_string(),
-                rat::VariableType::StaticOnly,
-            )
-            .unwrap();
+            if synchronous_mode {
+                rat::bacon(
+                    "tick_end",
+                    &mut "".to_string(),
+                    rat::VariableType::StaticOnly,
+                )
+                .unwrap();
+            }
         }
         info!("--- END lifis tick ---");
     });
