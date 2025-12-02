@@ -1,5 +1,3 @@
-// #![cfg(feature = "evaluate")]
-
 use nalgebra::{Matrix3, Quaternion, SVD, Translation3, UnitQuaternion};
 use plotters::prelude::*;
 use plotters::style::full_palette::GREY;

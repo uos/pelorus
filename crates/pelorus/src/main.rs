@@ -7,6 +7,7 @@ use mimalloc::MiMalloc;
 use std::fs;
 #[cfg(feature = "rat")]
 use std::process::{Command as ProcessCommand, Stdio};
+use std::time::UNIX_EPOCH;
 
 #[global_allocator]
 #[cfg(feature = "mimalloc")]
@@ -732,7 +733,14 @@ fn lio_with_ready_signal(
         let mut trajectory_file = {
             if export_trajectory {
                 let name = petname::petname(2, "_").unwrap();
-                let filename = format!("pelorus_trajectory_{}.txt", name);
+                let filename = format!(
+                    "pelorus_trajectory_{}_{}.txt",
+                    std::time::SystemTime::now()
+                        .duration_since(UNIX_EPOCH)
+                        .expect("time goes forward")
+                        .as_secs(),
+                    name
+                );
                 println!("Saving trajectory to {}", &filename);
                 Some(std::fs::File::create(&filename).unwrap())
             } else {
