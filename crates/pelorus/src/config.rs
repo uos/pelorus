@@ -3,7 +3,7 @@ use nalgebra::{Matrix3, Point2, Vector2, Vector3};
 use prelio_ros2::prelio::config::{
     DownsampleParameters, ImuCalibrationParameters, ImuParameters, LifisParameters,
 };
-use prelio_ros2::prelio::{config::PassthroughFilterParameters, LidarVendor, MadgwickSetting};
+use prelio_ros2::prelio::{LidarVendor, MadgwickSetting, config::PassthroughFilterParameters};
 use prelio_ros2::{LifisNodeParameters, Qos, Reliability};
 use ratslang::{Evaluated, NumVal, Rhs, Unit, UnitVal, Val, VariableHistory};
 use uom::si::angle::{degree, radian};

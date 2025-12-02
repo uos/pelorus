@@ -1378,7 +1378,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     let imu_topic = &config.prelio_node_params.imu_src_topic;
                     let imu_init_time_ms =
                         (config.prelio_node_params.imu_predictor_init_time_sec * 1000.0) as u64;
-                    let imu_init_samples = config.prelio_params.initial_scan_accumulate;
+                    let scan_init_samples = config.prelio_params.initial_scan_accumulate;
                     let bagfile_path_canon = offline_args.bagfile_path.canonicalize().unwrap();
                     let bagfile_path = bagfile_path_canon.clone().to_string_lossy().to_string();
 
@@ -1405,21 +1405,12 @@ pf! i 1 tick_end
 reset! {bagfile_path}
 
 # imu init
-pf! i 1 1.
-pf! [i,l] {imu_init_time_ms}ms 1.
+pf! i 1 
+pf! [i,l] {imu_init_time_ms}ms
+pf! i 1 
 
-# padding
-pf! [i,l] 100ms 1.
-
-# initial aggregate
-pf! [i, l], l {imu_init_samples} 1.
-
-# main loop
-loop 3 {{
-  pf! [i, l], l 1
-  pf! l 1
-  pf! i 1
-}}
+# initial aggregate, starting loop
+pf! [i, l], l {scan_init_samples}
 "#
                     );
 

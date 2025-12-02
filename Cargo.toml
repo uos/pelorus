@@ -42,7 +42,7 @@ nalgebra = { version = "0.33", features = ["serde-serialize"] }
 r2r = { version = "0.9.5" }
 ros2-client = { version = "0.7.6" }
 tokio = { version = "1", features = ["full"] }
-rerun = { version = "0.26" }
+rerun = { version = "0.27" }
 ros2-interfaces-jazzy = { version = "0.0.4", features = [
   "std_msgs",
   "geometry_msgs",
@@ -61,8 +61,8 @@ ros2-interfaces-jazzy-rkyv = { version = "0.0.4", features = [
   "tf2_msgs",
   "builtin_interfaces",
 ], git = "https://github.com/stelzo/ros2-interfaces-jazzy-rkyv.git", branch = "main" }
-ratpub = { version = "0.1.0", git = "https://github.com/uos/minot", tag = "v0.1.0" }
-rat = { version = "0.1.0", git = "https://github.com/uos/minot", tag = "v0.1.0" }
+ratpub = { version = "0.1.1", git = "https://github.com/uos/minot", tag = "v0.1.1" }
+rat = { version = "0.1.1", git = "https://github.com/uos/minot", tag = "v0.1.1" }
 small_gicp-sys = { version = "0.1.0", git = "https://github.com/stelzo/small_gicp-sys", rev = "30da271" }
 gtsam-sys = { version = "0.1.0", git = "https://github.com/stelzo/gtsam-sys.git", branch = "main" }
 anyhow = "1"
@@ -92,8 +92,8 @@ image = "0.25.6"
 # small_gicp-sys = { path = "../small_gicp-rs" }
 
 # [patch."https://github.com/uos/minot"]
-# ratpub = { path = "../minot/ratpub" }
-# rat = { path = "../minot/rat" }
+# ratpub = { path = "../minot-zenoh/ratpub" }
+# rat = { path = "../minot-zenoh/rat" }
 
 [profile.release]
 lto = "fat"         # Link Time Optimization
@@ -106,6 +106,8 @@ debug = 0
 [profile.dbg-release]
 inherits = "dev"
 opt-level = 3
+lto = false
+debug = 1
 
 [profile.colcon]
 inherits = "release"
