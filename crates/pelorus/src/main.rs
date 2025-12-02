@@ -1423,6 +1423,8 @@ pf! i 1
 
 # initial aggregate, starting loop
 pf! [i, l], l {scan_init_samples}
+pf! l 1
+pf! i 1
 "#
                     );
 
