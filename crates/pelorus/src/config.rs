@@ -250,6 +250,7 @@ pub fn ast_to_config(defaults: Evaluated, user: Evaluated) -> anyhow::Result<Lio
             "velodyne" => LidarVendor::Velodyne,
             "ouster" => LidarVendor::Ouster,
             "livox" => LidarVendor::Livox,
+            "livoxmid360" => LidarVendor::LivoxMid360,
             "robosense" => LidarVendor::Robosense,
             "skip" => LidarVendor::Skip,
             _ => return Err(anyhow!("Unknown Lidar vendor.")),
@@ -267,10 +268,6 @@ pub fn ast_to_config(defaults: Evaluated, user: Evaluated) -> anyhow::Result<Lio
             _ => Err(anyhow!("Unknown AHRS filtering method: {}", s)),
         }
     }
-
-    //================================================================================
-    //  1. Parse all values into local variables
-    //================================================================================
 
     // --- Registration Configuration ---
     let (k_neighbors, neighbor_max_range, map_resolution, map_capacity, dist_update_sensitivity) = {
@@ -518,9 +515,6 @@ pub fn ast_to_config(defaults: Evaluated, user: Evaluated) -> anyhow::Result<Lio
         )
     };
 
-    //================================================================================
-    //  2. Construct the final LioConfig struct
-    //================================================================================
     let final_config = LioConfig {
         k_neighbors,
         neighbor_max_range,
