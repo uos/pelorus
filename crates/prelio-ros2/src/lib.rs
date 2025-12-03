@@ -155,6 +155,29 @@ impl prelio::PointXYZITimestamp<5> for LivoxPoint {
 }
 
 #[derive(Debug, Clone, Default, PointConvertible, Copy)]
+pub struct LivoxMid360Point {
+    pub x: f32,
+    pub y: f32,
+    pub z: f32,
+    pub intensity: f32,
+    pub timestamp: f64,
+}
+
+impl prelio::PointXYZITimestamp<5> for LivoxMid360Point {
+    fn intensity(&self) -> f32 {
+        self.intensity / 255.0
+    }
+
+    fn timestamp(&self) -> f64 {
+        self.timestamp as f64 * 1e-9
+    }
+
+    fn xyz(&self) -> nalgebra::Point3<f32> {
+        nalgebra::Point3::new(self.x, self.y, self.z)
+    }
+}
+
+#[derive(Debug, Clone, Default, PointConvertible, Copy)]
 pub struct OusterPoint {
     pub x: f32,
     pub y: f32,
@@ -220,6 +243,18 @@ impl State {
                 }
                 prelio::LidarVendor::Livox => {
                     Arc::new(Mutex::new(prelio::Prelio::create::<5, LivoxPoint>(
+                        config.imu.gravity,
+                        config.imu.madgwick_setting,
+                        &config.imu.calibration,
+                        &config, // TODO more specific
+                        imu_pose_prediction_undistort,
+                        imu_pose_prediction_init_guess,
+                        Some(config.lidar_vendor),
+                        ready_for_next,
+                    )?))
+                }
+                prelio::LidarVendor::LivoxMid360 => {
+                    Arc::new(Mutex::new(prelio::Prelio::create::<5, LivoxMid360Point>(
                         config.imu.gravity,
                         config.imu.madgwick_setting,
                         &config.imu.calibration,

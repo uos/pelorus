@@ -35,6 +35,7 @@ pub type ImuPredictorUndistort = dyn for<'a> Fn(
 pub enum LidarVendor {
     Velodyne,
     Livox,
+    LivoxMid360,
     #[default]
     Ouster,
     /// microseconds?
@@ -336,6 +337,14 @@ fn filter_downsample<const N: usize, P: PointXYZITimestamp<N>>(
     #[cfg(not(feature = "downsample"))]
     type PointsFiltered = PointXYZIT;
 
+    // NOTE: prepared start for when other lidar vendors get ideas of doing absolute timestamps...
+    let (_, end_t) = match lifis_params.lidar_vendor {
+        LidarVendor::Velodyne | LidarVendor::LivoxMid360 => {
+            (None, Some(timestamp_to_secs(&header.stamp)))
+        }
+        _ => (Some(timestamp_to_secs(&header.stamp)), None),
+    };
+
     #[allow(unused_mut)]
     let mut keyed_points: Vec<PointsFiltered> = iter
         .filter_map(|point: P| {
@@ -403,6 +412,14 @@ fn filter_downsample<const N: usize, P: PointXYZITimestamp<N>>(
             if ts.is_nan() {
                 return None;
             }
+
+            // absolute to relative ts
+            let ts = if matches!(lifis_params.lidar_vendor, LidarVendor::LivoxMid360) {
+                let scan_end_t = end_t.expect("vendor match out of date");
+                (ts - scan_end_t).max(0.0) // handle driver inaccuracies
+            } else {
+                ts
+            };
 
             let point_raw = point.xyz();
             #[cfg(feature = "downsample")]
@@ -990,14 +1007,11 @@ impl Prelio {
             }
 
             // Handle relative vs absolute timestamps
-            let (lidar_begin_time, imu_span_end_time) =
-                if matches!(lidar_vendor, Some(LidarVendor::Robosense)) {
-                    (lidar_begin_time, lidar_end_time)
-                } else {
-                    (lidar_begin_time + lidar_time, lidar_end_time + lidar_time)
-                };
-
-            debug!("Lidar as sync received");
+            let (lidar_begin_time, imu_span_end_time) = match lidar_vendor {
+                Some(LidarVendor::Robosense) => (lidar_begin_time, lidar_end_time),
+                Some(LidarVendor::LivoxMid360) => (lidar_time - lidar_end_time, lidar_time),
+                None | Some(_) => (lidar_begin_time + lidar_time, lidar_end_time + lidar_time),
+            };
 
             // Use 0 as start if there was no last lidar frame which we can use as start for our time range
             let imu_span_start_time = if *prev_lidar_end_time > 0.0 {

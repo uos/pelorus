@@ -178,21 +178,6 @@ impl ImuProcessing {
         s
     }
 
-    /*pub fn set_extrinsic(&mut self, t: &SMatrix<f64, 4, 4>) {
-        self.lidar_t_wrt_imu = Vector3::new(t[(0, 3)], t[(1, 3)], t[(2, 3)]);
-        self.lidar_r_wrt_imu = Matrix3::new(
-            t[(0, 0)],
-            t[(0, 1)],
-            t[(0, 2)],
-            t[(1, 0)],
-            t[(1, 1)],
-            t[(1, 2)],
-            t[(2, 0)],
-            t[(2, 1)],
-            t[(2, 2)],
-        );
-    }*/
-
     pub fn initialize(
         &mut self,
         msgs: &[crate::ImuMsg],
@@ -266,7 +251,6 @@ impl ImuProcessing {
             cloud_end_time += cloud_begin_time;
         }
 
-        // dbg!(self.lidar_t_wrt_imu, self.lidar_r_wrt_imu);
         const GRAVITY: f64 = 9.81; // TODO PARAM
 
         let mean_acc = self.mean_acc.norm();
@@ -369,6 +353,9 @@ impl ImuProcessing {
                 let head = &imu_poses[i - 1];
                 let tail = &imu_poses[i];
 
+                // if it_pcl > 0 {
+                //     dbg!(cloud[it_pcl - 1].timestamp, head.offset_time);
+                // }
                 while it_pcl > 0 && cloud[it_pcl - 1].timestamp > head.offset_time {
                     it_pcl -= 1;
                     let pcl_point = &cloud[it_pcl];
