@@ -32,7 +32,7 @@ uom = { version = "0.37.0", default-features = false, features = [
   "f64",
   "f32",
 ] }
-ratslang = "0.1.0"
+ratslang = "0.2.0"
 ros_pointcloud2 = { version = "0.5.3", features = [
   "nalgebra",
   "rayon",

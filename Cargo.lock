@@ -7928,15 +7928,16 @@ dependencies = [
 
 [[package]]
 name = "ratslang"
-version = "0.1.0"
+version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3c99f44f9df7bd79dbe58acefd60f8ee4628004844adf587dd0497f7b83a082b"
+checksum = "255c73a8dc5ad84c6d0e3c235c409da578907f1d174f4d016cf2d8e57de6511c"
 dependencies = [
  "anyhow",
  "ariadne",
  "chumsky 0.11.2",
  "log",
  "logos",
+ "uom",
 ]
 
 [[package]]
