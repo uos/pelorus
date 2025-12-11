@@ -31,8 +31,8 @@ use ratpub::Node;
 use ros_pointcloud2::prelude::*;
 #[cfg(feature = "ros2-client")]
 use ros2_client::ros2;
-#[cfg(feature = "ros2-client")]
-use ros2_interfaces_jazzy::{
+#[cfg(feature = "ratpub")]
+use ros2_interfaces_jazzy_rkyv::{
     builtin_interfaces::msg::Time,
     geometry_msgs::msg::{
         Point, Pose, PoseWithCovariance, Quaternion, Twist, TwistWithCovariance, Vector3,
@@ -41,8 +41,8 @@ use ros2_interfaces_jazzy::{
     sensor_msgs::msg::{Imu, PointCloud2},
     std_msgs::msg::Header,
 };
-#[cfg(feature = "ratpub")]
-use ros2_interfaces_jazzy_rkyv::{
+#[cfg(feature = "ros2-client")]
+use ros2_interfaces_jazzy_serde::{
     builtin_interfaces::msg::Time,
     geometry_msgs::msg::{
         Point, Pose, PoseWithCovariance, Quaternion, Twist, TwistWithCovariance, Vector3,

@@ -26,13 +26,10 @@ imu-fusion.workspace = true
 imu-calib.workspace = true
 morton-encoding.workspace = true
 
-gtsam-sys = { git = "https://github.com/stelzo/gtsam-sys.git", optional = true }
-
 [features]
 # TODO rayon optional
 parallel = []
 downsample = []
 cuda = ["dep:cuda", "cuda/cuda_available", "cuda/cuda_enable"]
-gtsam = ["dep:gtsam-sys"]
 no-imu-sync = []
 default = []

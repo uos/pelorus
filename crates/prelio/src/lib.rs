@@ -1150,25 +1150,12 @@ impl Prelio {
                             let estimated_pose = if imu_intrinsic_calibration_given {
                                 eval.start("preint imu").unwrap();
                                 // given a calibration, we trust the IMU data and use it for the pose
-                                #[cfg(feature = "gtsam")]
-                                {
-                                    ImuProcess::integrate_imu_gtsam(
-                                        &imu_data,
-                                        *prev_lidar_end_time,
-                                        Some(&params.undistort),
-                                        params.imu.clone(), // TODO maybe not clone but changes inside the function?
-                                    )
-                                }
-
-                                #[cfg(not(feature = "gtsam"))]
-                                {
-                                    naive_preint_eth::integrate_imu(
-                                        &imu_data,
-                                        *prev_lidar_end_time,
-                                        false, // TODO check ahrs orientation via config or if enabled
-                                        gravity,
-                                    )
-                                }
+                                naive_preint_eth::integrate_imu(
+                                    &imu_data,
+                                    *prev_lidar_end_time,
+                                    false, // TODO check ahrs orientation via config or if enabled
+                                    gravity,
+                                )
                             } else {
                                 // no calibration, gyro is used for rotation but nothing else
                                 Isometry3::from_parts(
