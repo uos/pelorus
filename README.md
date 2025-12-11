@@ -76,7 +76,7 @@ ros2 run pelorus pelorus run online --config-path pelorus.rl
 
 We use `mask` to simplify common development commands and save you some typing.
 ```sh
-cargo install mask
+cargo install mask cargo-mommy
 ```
 
 In the project directory (where `./maskfile.md` is located), you can see all available commands:

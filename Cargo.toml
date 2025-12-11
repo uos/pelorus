@@ -60,8 +60,8 @@ ros2-interfaces-jazzy-rkyv = { version = "0.0.5", features = [
   "tf2_msgs",
   "builtin_interfaces",
 ] }
-ratpub = "0.2.1"
-mt_rat = "0.2.1"
+ratpub = "0.3.0"
+mt_rat = "0.3.0"
 anyhow = "1"
 sophus_lie = "0.9"
 rayon = "1"
@@ -104,3 +104,8 @@ incremental = false  # Devs are not expected to use the colcon pipeline for incr
 
 [profile.dev.package.backtrace]
 opt-level = 3
+
+# Odom patch
+# [patch.crates-io]
+# ratpub = { git = "ssh://git@gitlabti.informatik.uni-osnabrueck.de/chsieh/minot.git", branch = "odom" }
+# mt_rat = { git = "ssh://git@gitlabti.informatik.uni-osnabrueck.de/chsieh/minot.git", branch = "odom" }

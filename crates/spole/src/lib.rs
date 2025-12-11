@@ -44,6 +44,12 @@ pub struct VoxelDistribution {
     pub last_updated_at_scan: usize,
 }
 
+impl Default for VoxelDistribution {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl VoxelDistribution {
     pub fn from_point(first_point: &Point3<f32>) -> Self {
         VoxelDistribution {
@@ -172,7 +178,7 @@ impl VoxelDistribution {
             self.point_count = other.point_count;
             self.mean = other.mean;
             self.covariance = other.covariance;
-            self.transform = other.transform.clone();
+            self.transform = other.transform;
             return;
         }
 
@@ -303,7 +309,7 @@ impl VoxelDistribution {
 
         let new_mean = ((1.0 - alpha) * self.mean.coords + alpha * new_point.coords).into();
 
-        let new_cov_sample = (1.0 - alpha) * &diff_from_old_mean;
+        let new_cov_sample = (1.0 - alpha) * diff_from_old_mean;
         self.covariance =
             (1.0 - alpha) * self.covariance + alpha * (new_cov_sample * new_cov_sample.transpose());
         self.mean = new_mean;
@@ -433,7 +439,7 @@ fn hash(point: &Point3<f32>, voxel_size: f32) -> i32 {
 impl IVoxHashMap {
     pub fn new(resolution: f32, capacity: usize, nbtype: IVoxNearbyType, sensitivity: f32) -> Self {
         Self {
-            nearby_type: nbtype.clone(),
+            nearby_type: nbtype,
             inverse_resolution: 1.0 / resolution,
             resolution,
             scan_number: 0,
@@ -603,9 +609,9 @@ impl IVoxHashMap {
                 .for_each(|group_slice| {
                     let dist = VoxelDistribution::from_points(group_slice, current_scan_number);
                     let grid = self.pos2grid(&PointXYZ {
-                        x: dist.mean.x as f32,
-                        y: dist.mean.y as f32,
-                        z: dist.mean.z as f32,
+                        x: dist.mean.x,
+                        y: dist.mean.y,
+                        z: dist.mean.z,
                     });
                     let voxel_key = Self::hash_grid(&grid);
                     self.livodish.add(dist, voxel_key, self.scan_number);
@@ -665,12 +671,13 @@ impl IVoxHashMap {
         let mut cache_and_sum_density = |grids: &[(i32, i32, i32)]| {
             for g in grids {
                 let k = Self::hash_grid(g);
-                if let Some(dist) = self.livodish.find(&k) {
-                    if dist.point_count > 0 && num_cached < MAX_NEIGHBORS {
-                        cached_neighbors[num_cached] = Some(dist);
-                        total_density += dist.point_count;
-                        num_cached += 1;
-                    }
+                if let Some(dist) = self.livodish.find(&k)
+                    && dist.point_count > 0
+                    && num_cached < MAX_NEIGHBORS
+                {
+                    cached_neighbors[num_cached] = Some(dist);
+                    total_density += dist.point_count;
+                    num_cached += 1;
                 }
             }
         };
@@ -891,7 +898,7 @@ impl IVoxHashMap {
         let neighbor_grids = Self::nearby_26(lr_grid); // Or any other nearby type
 
         for g in neighbor_grids.iter() {
-            if let Some(dist) = lower_res_voxel(&g) {
+            if let Some(dist) = lower_res_voxel(g) {
                 merged_dist.pool(dist);
             }
         }
@@ -1002,12 +1009,13 @@ impl IVoxHashMap {
 
         let mut cache_and_sum_density = |grids: &[(i32, i32, i32)]| {
             for g in grids {
-                if let Some(dist) = lower_res_voxel(g) {
-                    if dist.point_count > 0 && num_cached < MAX_NEIGHBORS {
-                        cached_neighbors[num_cached] = Some(dist);
-                        total_density += dist.point_count;
-                        num_cached += 1;
-                    }
+                if let Some(dist) = lower_res_voxel(g)
+                    && dist.point_count > 0
+                    && num_cached < MAX_NEIGHBORS
+                {
+                    cached_neighbors[num_cached] = Some(dist);
+                    total_density += dist.point_count;
+                    num_cached += 1;
                 }
             }
         };
@@ -1253,7 +1261,7 @@ mod tests {
             &mut result,
             out_size,
         );
-        assert!(res == true);
+        assert!(res);
         assert_eq!(result.len(), 1);
     }
 

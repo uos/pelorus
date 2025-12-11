@@ -8,7 +8,7 @@ pub mod timing;
 use cuda::CudaBuffer;
 use either::Either;
 use imu_fusion::FusionAhrs;
-use log::{debug, error, info, warn};
+use log::{error, info, warn};
 use nalgebra::*;
 use serde::{Deserialize, Serialize};
 use std::thread;
@@ -16,14 +16,18 @@ use timing::RuntimeEvaluator;
 
 use anyhow::Result;
 use ros_pointcloud2::prelude::*;
+pub use ros_pointcloud2::ros::TimeMsg;
 
 use imu::*;
 
 pub type ImuPredictor =
     dyn for<'a> Fn(&'a [imu::ImuMsg], f64, f64, f64) -> ImuPosePrediction + Send;
 
-pub type ImuPredictorUndistort = dyn for<'a> Fn(
+pub type OdomCorrection = dyn Fn(OdomMsg) + Send;
+
+pub type ImuPredictorUndistort = dyn for<'a, 'b> Fn(
         &'a [imu::ImuMsg],
+        &'b [imu::OdomMsg],
         f64,
         f64,
         f64,
@@ -40,7 +44,7 @@ pub enum LidarVendor {
     Ouster,
     /// microseconds?
     Robosense,
-    Skip,
+    // Skip, // TODO add later and rename to <Any> but do not use timestamps for undistortion
 }
 
 #[derive(Debug, Clone)]
@@ -192,6 +196,7 @@ pub struct MeasureGroup {
     lidar_start_stamp: f64,
     lidar_end_stamp: f64,
     imu_buffer: Vec<ImuMsg>,
+    odom_buffer: Vec<OdomMsg>,
 }
 
 #[derive(Debug, Clone, Default, Copy)]
@@ -401,7 +406,7 @@ fn filter_downsample<const N: usize, P: PointXYZITimestamp<N>>(
                     } else {
                         point_inside_polygon_winding_number(p_t, polygon, polygon.len())
                     };
-                    polygon.len() != 0 && is_within_polygon
+                    !polygon.is_empty() && is_within_polygon
                 }
             };
             if !is_within_polygon {
@@ -425,7 +430,7 @@ fn filter_downsample<const N: usize, P: PointXYZITimestamp<N>>(
             #[cfg(feature = "downsample")]
             {
                 let key = hash(&point_raw, voxel_size);
-                return Some((key, PointXYZIT::from_p(point_raw, point.intensity(), ts)));
+                Some((key, PointXYZIT::from_p(point_raw, point.intensity(), ts)))
             }
             #[cfg(not(feature = "downsample"))]
             return Some(PointXYZIT::from_p(point_raw, point.intensity(), ts));
@@ -472,7 +477,7 @@ fn filter_downsample<const N: usize, P: PointXYZITimestamp<N>>(
             // {
             keyed_points
                 .chunk_by(|a, b| a.0 == b.0)
-                .map(|group_slice| find_medoid_in_slice(group_slice))
+                .map(find_medoid_in_slice)
                 .collect()
             // }
         };
@@ -564,6 +569,7 @@ pub enum MadgwickSetting {
 pub struct Prelio {
     preproc_sender: std::sync::mpsc::Sender<PointCloud2Msg>,
     imu_sender: std::sync::mpsc::Sender<ImuMsg>,
+    odom_sender: std::sync::mpsc::Sender<OdomMsg>,
     synced_receiver: Option<std::sync::mpsc::Receiver<PrelioProcessedCloud>>,
     last_cloud_time: f64,
     imu_filter_fusion: ImuMadgwick,
@@ -758,6 +764,10 @@ impl Prelio {
 
         let (preproc_tx, preproc_rx) = std::sync::mpsc::channel();
         let (imu_tx, imu_rx) = std::sync::mpsc::channel();
+        let (odom_tx, odom_rx): (
+            std::sync::mpsc::Sender<OdomMsg>,
+            std::sync::mpsc::Receiver<OdomMsg>,
+        ) = std::sync::mpsc::channel();
         let (filtered_cloud_tx, filtered_cloud_rx) = std::sync::mpsc::channel();
         let (synced_cloud_imu_tx, synced_cloud_imu_rx) = std::sync::mpsc::channel();
 
@@ -788,12 +798,13 @@ impl Prelio {
                 gravity,
                 filtered_cloud_rx,
                 imu_rx,
+                odom_rx,
                 &synced_cloud_imu_tx,
                 intrinsic_given,
                 imu_process,
                 imu_pose_prediction_undistort,
                 imu_pose_prediction_init_guess,
-                lidar_vendor.clone(),
+                lidar_vendor,
                 ready_for_next,
             )
         });
@@ -830,6 +841,7 @@ impl Prelio {
 
         Ok(Prelio {
             imu_sender: imu_tx,
+            odom_sender: odom_tx,
             synced_receiver: Some(synced_cloud_imu_rx),
             preproc_sender: preproc_tx,
             last_cloud_time: 0.0,
@@ -904,8 +916,8 @@ impl Prelio {
         // apply calibration if available
         if let Some(imu_calib) = &mut self.imu_calibration_apply {
             let calibrated = imu_calib.imu_callback(imu_calib::ImuMsg::new(&accel, &gyro))?;
-            accel = calibrated.linear_acceleration.clone();
-            gyro = calibrated.angular_velocity.clone();
+            accel = calibrated.linear_acceleration;
+            gyro = calibrated.angular_velocity;
         }
 
         // Madgwick filter for global orientation
@@ -950,8 +962,18 @@ impl Prelio {
         Some(imu)
     }
 
-    /// Syncs lidar and imu data by using the timestamps from the headers and timestamps in the lidar message.
-    /// A lidar message is therefore mapped to multiple imu messages that happened in between the previous end stamp and end stamp of the last point in the lidar message.
+    /// Add an odometry message to the buffer for synchronization with lidar.
+    pub fn add_odom(&mut self, odom: OdomMsg) {
+        match self.odom_sender.send(odom) {
+            Ok(_) => {}
+            Err(e) => {
+                log::error!("Error while sending odom message to sync worker: {e}");
+            }
+        }
+    }
+
+    /// Syncs lidar, imu, and odometry data by using the timestamps from the headers and timestamps in the lidar message.
+    /// A lidar message is therefore mapped to multiple imu/odometry messages that happened in between the previous end stamp and end stamp of the last point in the lidar message.
     pub fn sync_lidar_imu_worker(
         initial_scan_accumulate: usize,
         prev_lidar_end_time: &mut f64,
@@ -961,6 +983,7 @@ impl Prelio {
             RuntimeEvaluator,
         )>,
         imu_receiver: Option<std::sync::mpsc::Receiver<ImuMsg>>,
+        odom_receiver: std::sync::mpsc::Receiver<OdomMsg>,
         synced_sender: &std::sync::mpsc::Sender<PrelioProcessedCloud>,
         imu_intrinsic_calibration_given: bool,
         mut imu_process: ImuProcess,
@@ -1021,6 +1044,7 @@ impl Prelio {
             };
 
             let mut imu_data = Vec::with_capacity(100);
+            let mut odom_data = Vec::with_capacity(100);
 
             // Get last IMU message that was destructively taken
             if let Some(last_imu_extra) = to_next.take() {
@@ -1077,15 +1101,43 @@ impl Prelio {
                 }
             }
 
-            // Sort IMU buffer with timestamp to ensure correct order (handles out-of-order publishing from ROS)
+            // Populate Odometry with buffered (non-blocking)
+            loop {
+                match odom_receiver.try_recv() {
+                    Ok(odom) => {
+                        let odom_time = timestamp_to_secs(&odom.stamp);
+                        if odom_time < imu_span_start_time {
+                            warn!("Odom msg too early, skipped.");
+                            continue;
+                        }
+                        if odom_time > imu_span_end_time {
+                            warn!("Odom msg too late, will be picked up in next frame.");
+                            continue;
+                        }
+                        odom_data.push(odom);
+                    }
+                    Err(std::sync::mpsc::TryRecvError::Empty) => break,
+                    Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                        error!("Odom receiver closed");
+                        return;
+                    }
+                }
+            }
+
+            // Sort buffers with timestamp to ensure correct order
             imu_data.sort_by(|a, b| {
+                timestamp_to_secs(&a.stamp)
+                    .partial_cmp(&timestamp_to_secs(&b.stamp))
+                    .unwrap()
+            });
+            odom_data.sort_by(|a, b| {
                 timestamp_to_secs(&a.stamp)
                     .partial_cmp(&timestamp_to_secs(&b.stamp))
                     .unwrap()
             });
 
             // - data synced -
-            debug!("data synced");
+            // debug!("data synced");
 
             let meas = MeasureGroup {
                 cloud,
@@ -1093,6 +1145,7 @@ impl Prelio {
                 lidar_start_stamp: lidar_begin_time,
                 lidar_end_stamp: lidar_end_time,
                 imu_buffer: imu_data.clone(),
+                odom_buffer: odom_data.clone(),
             };
 
             if meas.imu_buffer.is_empty() {
@@ -1124,7 +1177,7 @@ impl Prelio {
             } else {
                 // Waiting for sync signal. Needed for cases where undistortion uses an EKF state that predicts forward and the correction must be made first before predicting further.
                 if let Some(wait_for_next) = ready_for_next.as_ref() {
-                    let _ = wait_for_next.recv().unwrap();
+                    wait_for_next.recv().unwrap();
                 }
 
                 let imu_frame = meas
@@ -1185,7 +1238,7 @@ impl Prelio {
                         imu_frame,
                         header: lidar_header,
                         end_of_frame_guess: imu_int.pose,
-                        end_of_frame_time: imu_data.last().unwrap().stamp.clone(),
+                        end_of_frame_time: imu_data.last().unwrap().stamp,
                         pose_covariance: imu_cloud.integrated_covariance,
                         twist_covariance: imu_cloud.last_covariance,
                         end_of_frame_twist: Twist {

@@ -1,5 +1,7 @@
 use log::warn;
 use nalgebra::*;
+use prelio::timestamp_to_secs;
+use serde::{Deserialize, Serialize};
 use sophus_lie::traits::IsTranslationProductGroup;
 
 pub type SO3 = sophus_lie::Rotation3<f64, 1>;
@@ -7,6 +9,18 @@ pub type SE3 = sophus_lie::Isometry3<f64, 1>;
 
 // TODO use config, needs some refactor
 const GRAVITY_DEFAULT: f64 = 9.81;
+
+#[derive(Clone, Debug, PartialEq, Copy, Serialize, Deserialize)]
+pub enum KinematicModel {
+    /// No kinematic constraints are applied (full 3D motion)
+    Full3D,
+    /// 2D constraints for a differential drive (on-plane, no side-slip)
+    Differential,
+    /// 2D holonomic motion (can move in any direction on-plane)
+    Holonomic2D,
+    /// Ackermann steering model (car-like)
+    Ackermann { imu_to_rear_axle: Vector3<f64> },
+}
 
 #[derive(Clone, Debug)]
 pub struct StateIKFom {
@@ -122,21 +136,21 @@ pub fn df_dx(s: &StateIKFom, inp: &InputIKFom, dt: f64) -> SMatrix<f64, 18, 18> 
     cov.fixed_view_mut::<3, 3>(3, 6)
         .copy_from(&(Matrix3::identity() * dt));
     cov.fixed_view_mut::<3, 3>(3, 9).copy_from(
-        &(-dt * skew_symmetric(&(s.pose.translation() + &s.vel * dt)) * s.pose.rotation().matrix()),
+        &(-dt * skew_symmetric(&(s.pose.translation() + s.vel * dt)) * s.pose.rotation().matrix()),
     );
 
     // vel
     cov.fixed_view_mut::<3, 3>(6, 0).copy_from(
         &(dt * s.pose.rotation().matrix() * skew_symmetric(&s.ba)
-            - skew_symmetric(&(dt * s.pose.rotation().matrix() * &inp.acc))
+            - skew_symmetric(&(dt * s.pose.rotation().matrix() * inp.acc))
             + skew_symmetric(&s.vel) * s.pose.rotation().matrix() * skew_symmetric(&s.bg)
-            + skew_symmetric(&((s.pose.rotation().matrix() * (&inp.acc - &s.ba) + &s.grav) * dt))
+            + skew_symmetric(&((s.pose.rotation().matrix() * (inp.acc - s.ba) + s.grav) * dt))
                 * (Matrix3::identity() + s.pose.rotation().matrix() * skew_symmetric(&s.bg))),
     );
     cov.fixed_view_mut::<3, 3>(6, 9).copy_from(
         &(-dt
             * skew_symmetric(
-                &(&s.vel + (s.pose.rotation().matrix() * (&inp.acc - s.ba) + &s.grav) * dt),
+                &(s.vel + (s.pose.rotation().matrix() * (inp.acc - s.ba) + s.grav) * dt),
             )
             * s.pose.rotation().matrix()),
     );
@@ -164,7 +178,7 @@ pub fn df_dx(s: &StateIKFom, inp: &InputIKFom, dt: f64) -> SMatrix<f64, 18, 18> 
     cov.fixed_view_mut::<3, 3>(15, 9)
         .copy_from(&(-dt * skew_symmetric(&s.grav) * s.pose.rotation().matrix()));
 
-    return cov;
+    cov
 }
 
 /// Get the Jacobian of the state transition function f(x, u) with respect to w. w is the noise
@@ -177,13 +191,13 @@ pub fn df_dw(s: &StateIKFom, inp: &InputIKFom, dt: f64) -> SMatrix<f64, 18, 12> 
 
     // pos
     cov.fixed_view_mut::<3, 3>(3, 0).copy_from(
-        &(-skew_symmetric(&(s.pose.translation() + &s.vel * dt)) * s.pose.rotation().matrix()),
+        &(-skew_symmetric(&(s.pose.translation() + s.vel * dt)) * s.pose.rotation().matrix()),
     );
 
     // vel
     cov.fixed_view_mut::<3, 3>(6, 0).copy_from(
         &(-skew_symmetric(
-            &(&s.vel + (s.pose.rotation().matrix() * (&inp.acc - &s.ba) + &s.grav) * dt),
+            &(s.vel + (s.pose.rotation().matrix() * (inp.acc - s.ba) + s.grav) * dt),
         ) * s.pose.rotation().matrix()),
     );
     cov.fixed_view_mut::<3, 3>(6, 3)
@@ -205,12 +219,14 @@ pub fn df_dw(s: &StateIKFom, inp: &InputIKFom, dt: f64) -> SMatrix<f64, 18, 12> 
     cov.fixed_view_mut::<3, 3>(15, 0)
         .copy_from(&(-skew_symmetric(&s.grav) * s.pose.rotation().matrix()));
 
-    return cov;
+    cov
 }
 
-pub struct Esekf {
+pub struct Iekf {
     pub state: StateIKFom,
     pub cov: SMatrix<f64, 18, 18>,
+    pub initialized: bool,
+    pub last_time: f64,
 }
 
 /// Adding the state and the perturbation, stay on the manifold
@@ -220,7 +236,7 @@ fn box_plus(x: &StateIKFom, f: &SMatrix<f64, 18, 1>) -> StateIKFom {
     let delta_rot_vec = f.fixed_rows::<3>(0);
     let delta_pos = f.fixed_rows::<3>(3);
     x_r.pose
-        .set_translation(&(x.pose.translation() + &delta_pos));
+        .set_translation(&(x.pose.translation() + delta_pos));
     x_r.pose.set_rotation(
         &x.pose
             .rotation()
@@ -258,15 +274,19 @@ fn box_minus(x1: &StateIKFom, x2: &StateIKFom) -> SMatrix<f64, 18, 1> {
     x_r
 }
 
-impl Esekf {
+impl Iekf {
     pub fn new(g: f64) -> Self {
         Self {
             state: StateIKFom::new(g),
             cov: SMatrix::<f64, 18, 18>::identity(),
+            initialized: false,
+            last_time: 0.0,
         }
     }
 
     pub fn predict(&mut self, dt: f64, q: &SMatrix<f64, 12, 12>, i_in: &InputIKFom) {
+        self.last_time += dt;
+
         let f = get_f(&self.state, i_in);
         let f_x = df_dx(&self.state, i_in, dt);
         let f_w = df_dw(&self.state, i_in, dt);
@@ -280,17 +300,208 @@ impl Esekf {
         self.cov = f_x * self.cov * f_x.transpose() + dt * dt * f_w * q * f_w.transpose();
     }
 
+    pub fn correct_with_body_velocities(
+        &mut self,
+        odom: prelio::imu::OdomMsg,
+        kinematic: KinematicModel,
+        cov_override: Option<f64>,
+    ) {
+        if !self.initialized {
+            return;
+        }
+
+        let t = timestamp_to_secs(&odom.stamp);
+        let dt_gap = t - self.last_time;
+        if dt_gap < 0.0 {
+            warn!(
+                "Odometry message time {} is older than filter time {}. Skipping.",
+                t, self.last_time
+            );
+            return;
+        }
+        self.last_time = t;
+
+        let base_cov = cov_override.unwrap_or_else(|| {
+            let cov_x = odom.twist_cov[0];
+            let cov_y = odom.twist_cov[4];
+            let cov_z = odom.twist_cov[8];
+            cov_x.max(cov_y).max(cov_z).max(0.001)
+        });
+
+        let adjusted_base_cov = base_cov * (1.0 + dt_gap * 5.0);
+        let r_wb = self.state.pose.rotation().matrix();
+        let r_bw = r_wb.transpose();
+
+        let v_meas_world = r_bw * odom.twist_linear;
+
+        match kinematic {
+            KinematicModel::Differential | KinematicModel::Ackermann { .. } => {
+                self.correct_velocity_component(0, v_meas_world.x, adjusted_base_cov);
+            }
+
+            KinematicModel::Holonomic2D => {
+                self.correct_velocity_component(0, v_meas_world.x, adjusted_base_cov);
+                self.correct_velocity_component(1, v_meas_world.y, adjusted_base_cov);
+            }
+
+            KinematicModel::Full3D => {
+                self.correct_velocity_component(0, v_meas_world.x, adjusted_base_cov);
+                self.correct_velocity_component(1, v_meas_world.y, adjusted_base_cov);
+                self.correct_velocity_component(2, v_meas_world.z, adjusted_base_cov);
+            }
+        }
+    }
+
+    fn apply_scalar_constraint(&mut self, h: SVector<f64, 18>, residual: f64, r_var: f64) {
+        let s = (h.transpose() * self.cov * h)[0] + r_var;
+        if !s.is_finite() || s <= 0.0 {
+            warn!("Invalid innovation variance in kinematic constraint");
+            return;
+        }
+
+        let mut k = (self.cov * h) / s;
+
+        // zero out parts that must never be changed by this measurement
+        // (rotation and translation live in the first 6 entries)
+        k.fixed_rows_mut::<3>(0).fill(0.0); // rotation
+        k.fixed_rows_mut::<3>(3).fill(0.0); // translation
+
+        // automatic damping
+        // cap the norm of the gain (prevents gigantic jumps)
+        const K_MAX: f64 = 0.8;
+        let gain_norm = k.norm();
+        if gain_norm > K_MAX {
+            let scale = K_MAX / gain_norm;
+            k *= scale;
+        }
+
+        let dx = k * residual;
+        self.state = box_plus(&self.state, &dx);
+
+        let i_kh = SMatrix::<f64, 18, 18>::identity() - k * h.transpose();
+        self.cov = i_kh * self.cov * i_kh.transpose() + k * r_var * k.transpose();
+    }
+
+    fn correct_velocity_component(
+        &mut self,
+        component: usize,
+        measured_value: f64,
+        noise_cov: f64,
+    ) {
+        if component > 2 {
+            return;
+        }
+
+        let residual = measured_value - self.state.vel[component];
+
+        let p_comp = self.cov[(6 + component, 6 + component)];
+        let innovation_var = p_comp + noise_cov;
+
+        if !innovation_var.is_finite() || innovation_var <= 0.0 {
+            warn!(
+                "Invalid innovation variance in velocity[{}] correction",
+                component
+            );
+            return;
+        }
+
+        let gain_scalar = p_comp / innovation_var;
+
+        let mut kalman_gain = SVector::<f64, 18>::zeros();
+        for i in 0..18 {
+            kalman_gain[i] = self.cov[(i, 6 + component)] * gain_scalar;
+        }
+        let delta_v = gain_scalar * residual;
+
+        if !delta_v.is_finite() {
+            warn!("NaN in velocity[{}] update", component);
+            return;
+        }
+
+        self.state.vel[component] += delta_v;
+
+        for i in 0..18 {
+            for j in 0..18 {
+                self.cov[(i, j)] -= kalman_gain[i] * self.cov[(6 + component, j)];
+            }
+        }
+    }
+
+    pub fn correct_kinematics(
+        &mut self,
+        model_type: KinematicModel,
+        gyro_measurement: Vector3<f64>,
+        constraint_noise_std: f64,
+    ) {
+        if let KinematicModel::Full3D = model_type {
+            return;
+        }
+
+        let r_w_i = self.state.pose.rotation().matrix();
+        let r_i_w = r_w_i.transpose();
+        let v_body = r_i_w * self.state.vel;
+        let r_var = constraint_noise_std * constraint_noise_std;
+
+        match model_type {
+            KinematicModel::Differential => {
+                // lateral (y) constraint
+                let mut h_lat = SVector::<f64, 18>::zeros();
+                for j in 0..3 {
+                    h_lat[6 + j] = r_i_w[(1, j)];
+                }
+                self.apply_scalar_constraint(h_lat, -v_body.y, r_var);
+
+                // vertical (z) constraint
+                let mut h_vert = SVector::<f64, 18>::zeros();
+                for j in 0..3 {
+                    h_vert[6 + j] = r_i_w[(2, j)];
+                }
+                self.apply_scalar_constraint(h_vert, -v_body.z, r_var);
+            }
+            KinematicModel::Holonomic2D => {
+                // Only vertical (z) constraint: robot stays on ground
+                let mut h_vert = SVector::<f64, 18>::zeros();
+                for j in 0..3 {
+                    h_vert[6 + j] = r_i_w[(2, j)];
+                }
+                self.apply_scalar_constraint(h_vert, -v_body.z, r_var);
+            }
+
+            KinematicModel::Ackermann { imu_to_rear_axle } => {
+                // rear‑axle lateral constraint
+                let v_rear = v_body + gyro_measurement.cross(&imu_to_rear_axle);
+                let mut h_lat = SVector::<f64, 18>::zeros();
+                for j in 0..3 {
+                    h_lat[6 + j] = r_i_w[(1, j)];
+                }
+                self.apply_scalar_constraint(h_lat, -v_rear.y, r_var);
+
+                // vertical constraint
+                let mut h_vert = SVector::<f64, 18>::zeros();
+                for j in 0..3 {
+                    h_vert[6 + j] = r_i_w[(2, j)];
+                }
+                self.apply_scalar_constraint(h_vert, -v_body.z, r_var);
+            }
+
+            KinematicModel::Full3D => {}
+        }
+    }
+
     pub fn correct(
         &mut self,
         measurement_noise_cov: f64,
+        measurement_time: f64,
         // TODO check change to FN
         mut model: impl FnMut(&StateIKFom, &mut bool, bool, &mut DVector<f64>, &mut DMatrix<f64>),
     ) {
+        self.last_time = measurement_time;
+
         let converge = true;
         let mut h = DVector::<f64>::default();
         let mut h_x = DMatrix::<f64>::default();
         let state_propagated = self.state.clone(); // state x
-        let p_propagated = self.cov.clone();
+        let p_propagated = self.cov;
 
         let mut valid = true;
 
@@ -314,15 +525,15 @@ impl Esekf {
         s.fixed_view_mut::<3, 3>(0, 0)
             .copy_from(&skew_symmetric(&kh.fixed_view::<3, 1>(0, 0).xyz()));
         s.fixed_view_mut::<3, 1>(0, 3)
-            .copy_from(&(&kh.fixed_view::<3, 1>(3, 0).xyz()));
+            .copy_from(&kh.fixed_view::<3, 1>(3, 0).xyz());
         s.fixed_view_mut::<3, 1>(0, 4)
-            .copy_from(&(&kh.fixed_view::<3, 1>(6, 0).xyz()));
+            .copy_from(&kh.fixed_view::<3, 1>(6, 0).xyz());
         s.fixed_view_mut::<3, 1>(0, 5)
-            .copy_from(&(&kh.fixed_view::<3, 1>(9, 0).xyz()));
+            .copy_from(&kh.fixed_view::<3, 1>(9, 0).xyz());
         s.fixed_view_mut::<3, 1>(0, 6)
-            .copy_from(&(&kh.fixed_view::<3, 1>(12, 0).xyz()));
+            .copy_from(&kh.fixed_view::<3, 1>(12, 0).xyz());
         s.fixed_view_mut::<3, 1>(0, 7)
-            .copy_from(&(&kh.fixed_view::<3, 1>(15, 0).xyz()));
+            .copy_from(&kh.fixed_view::<3, 1>(15, 0).xyz());
 
         let exps = nalgebra::SMatrix::<f64, 8, 8>::identity()
             + s
@@ -350,12 +561,24 @@ impl Esekf {
             .copy_from(&(state_propagated.grav));
 
         let new_state = exps * x_mat;
-        // self.state.pose.set_rotation(
-        //     &SO3::try_from_mat(&new_state.fixed_view::<3, 3>(0, 0).into_owned()).unwrap(),
-        // );
+
+        // Check for NaNs in the new state
+        if !new_state.iter().all(|x| x.is_finite()) {
+            warn!("NaN detected in lidar measurement state update");
+            self.cov = p_propagated;
+            return;
+        }
+
         let new_rot_matrix = new_state.fixed_view::<3, 3>(0, 0).into_owned();
         let new_quat = UnitQuaternion::from_matrix(&new_rot_matrix);
-        let new_so3 = SO3::try_from_mat(&new_quat.to_rotation_matrix().matrix()).unwrap();
+        let new_so3 = match SO3::try_from_mat(new_quat.to_rotation_matrix().matrix()) {
+            Some(so3) => so3,
+            None => {
+                warn!("Failed to convert to SO3 in lidar correction");
+                self.cov = p_propagated;
+                return;
+            }
+        };
         self.state.pose.set_rotation(&new_so3);
         self.state
             .pose

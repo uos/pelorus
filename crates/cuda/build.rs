@@ -6,7 +6,7 @@ use std::process::Command;
 use walkdir::WalkDir;
 
 fn main() {
-    if let Ok(_) = env::var("CARGO_FEATURE_CUDA_ENABLE") {
+    if env::var("CARGO_FEATURE_CUDA_ENABLE").is_ok() {
         let out_dir = PathBuf::from(env::var("OUT_DIR").unwrap());
 
         if let Ok(cuda_path) = env::var("CUDA_HOME") {
@@ -37,7 +37,7 @@ fn main() {
             let cuda_lib_path = PathBuf::from(&cuda_path).join("lib64");
 
             // let gencode = format!("arch={},code={}", compute, arch);
-            let gencode = format!("-arch=native");
+            let gencode = "-arch=native".to_string();
 
             for path in source_files.iter() {
                 println!("cargo:rerun-if-changed={}", path);
@@ -46,12 +46,11 @@ fn main() {
             let header_extensions = ["h", "hh", "hpp", "cuh"];
             for path in &include_paths {
                 for entry in WalkDir::new(path).into_iter().filter_map(|e| e.ok()) {
-                    if entry.file_type().is_file() {
-                        if let Some(extension) = entry.path().extension().and_then(|s| s.to_str()) {
-                            if header_extensions.contains(&extension) {
-                                println!("cargo:rerun-if-changed={}", entry.path().display());
-                            }
-                        }
+                    if entry.file_type().is_file()
+                        && let Some(extension) = entry.path().extension().and_then(|s| s.to_str())
+                        && header_extensions.contains(&extension)
+                    {
+                        println!("cargo:rerun-if-changed={}", entry.path().display());
                     }
                 }
             }

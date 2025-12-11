@@ -42,7 +42,7 @@ RUSTFLAGS="-C target-cpu=native -C llvm-args=-cost-kind=latency" cargo run --rel
 > Run within Minot toolchain as fast as possible.
 
 ~~~sh
-RUSTFLAGS="-C target-cpu=native -C llvm-args=-cost-kind=latency" cargo run --release --features offline,parallel -- run -c pelorus.rl
+RUSTFLAGS="-C target-cpu=native -C llvm-args=-cost-kind=latency" cargo run --release --features offline,parallel -- run online -c pelorus.rl
 ~~~
 
 ## opt-ros2
@@ -58,6 +58,6 @@ RUSTFLAGS="-C target-cpu=native -C llvm-args=-cost-kind=latency" cargo run --rel
 > Start with development flags and logging.
 
 ~~~sh
-RUST_BACKTRACE=1 RUST_LOG=debug,lighthouse=off,tracing=off,sea=off,h2=off,hyper_util=off,re_sdk=off,re_chunk=off,tower=off,ratpub=off,tonic=off,tonic_web=off cargo mommy run --profile dbg-release --no-default-features --features dev -- run -c pelorus.rl
+RUST_BACKTRACE=1 RUST_LOG=debug,minot=off,rat=off,tracing=off,mt_sea=off,h2=off,hyper_util=off,re_sdk=off,re_chunk=off,tower=off,ratpub=off,tonic=off,tonic_web=off cargo mommy run --profile dbg-release --no-default-features --features dev -- run online -rc pelorus.rl
 ~~~
 

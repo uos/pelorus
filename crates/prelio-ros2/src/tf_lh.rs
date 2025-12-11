@@ -19,8 +19,8 @@ use thiserror::Error;
 pub struct TfBroadcaster {
     publisher: Option<Publisher<TFMessage>>,
 }
-const TF_STATIC_TOPIC: &'static str = "/tf_static";
-const TF_TOPIC: &'static str = "/tf";
+const TF_STATIC_TOPIC: &str = "/tf_static";
+const TF_TOPIC: &str = "/tf";
 
 impl TfBroadcaster {
     /// Create a new TfBroadcaster
@@ -112,16 +112,16 @@ impl TfIndividualTransformChain {
             .unwrap_or_else(|index| index);
         self.transform_chain.insert(index, msg.clone());
 
-        if let Some(newest_stamp) = self.newest_stamp() {
-            if is_time_later(
+        if let Some(newest_stamp) = self.newest_stamp()
+            && is_time_later(
                 &newest_stamp,
                 &add_time_and_duration(&time_from_nanosec(0), &self.cache_duration),
-            ) {
-                let time_to_keep = sub_duration_from_time(&newest_stamp, &self.cache_duration);
-                let index =
-                    binary_search_time(&self.transform_chain, &time_to_keep).unwrap_or_else(|x| x);
-                self.transform_chain.drain(..index);
-            }
+            )
+        {
+            let time_to_keep = sub_duration_from_time(&newest_stamp, &self.cache_duration);
+            let index =
+                binary_search_time(&self.transform_chain, &time_to_keep).unwrap_or_else(|x| x);
+            self.transform_chain.drain(..index);
         }
     }
 
@@ -136,7 +136,7 @@ impl TfIndividualTransformChain {
         }
 
         match binary_search_time(&self.transform_chain, time) {
-            Ok(x) => return Ok(self.transform_chain.get(x).unwrap().clone()),
+            Ok(x) => Ok(self.transform_chain.get(x).unwrap().clone()),
             Err(x) => {
                 if x == 0 {
                     return Err(TfError::AttemptedLookupInPast(
@@ -575,7 +575,7 @@ impl TfBuffer {
                             child: v.clone(),
                             parent: current_node.clone(),
                         })
-                        .map_or(false, |chain| chain.has_valid_transform(time))
+                        .is_some_and(|chain| chain.has_valid_transform(time))
                     {
                         parents.insert(v.to_string(), current_node.clone());
                         frontier.push_front(v.to_string());

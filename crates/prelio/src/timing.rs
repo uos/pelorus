@@ -38,7 +38,7 @@ where
         self.mean +=
             (*self.buffer.back().unwrap() - *self.buffer.front().unwrap()) / self.window_size;
         self.buffer.pop_front();
-        return self.mean;
+        self.mean
     }
 }
 
@@ -231,7 +231,7 @@ impl RuntimeEvaluator {
         self.pause();
 
         const FIELD_COUNT: usize = 7;
-        let table = vec!["task", "count", "last", "min", "max", "avg", "run_avg"];
+        let table = ["task", "count", "last", "min", "max", "avg", "run_avg"];
 
         let mut width = 0;
         for ef in self.evaluations.iter() {
@@ -242,11 +242,11 @@ impl RuntimeEvaluator {
         }
 
         let mut ss = String::new();
-        ss.push_str("\n");
+        ss.push('\n');
         for i in 0..FIELD_COUNT {
             ss.push_str(&format!("{:width$}", table[i], width = width));
             if i == FIELD_COUNT - 1 {
-                ss.push_str("\n");
+                ss.push('\n');
             } else {
                 ss.push_str(" | ");
             }
@@ -281,7 +281,7 @@ impl RuntimeEvaluator {
                     width = width
                 ));
                 if i == FIELD_COUNT - 3 {
-                    ss.push_str("\n");
+                    ss.push('\n');
                 } else {
                     ss.push_str(" | ");
                 }
@@ -307,7 +307,7 @@ impl RuntimeEvaluator {
                     / form.num_measurements as f64)
                     .ceil() as usize;
                 ss.push_str(&format!(": {}", "=".repeat(count)));
-                ss.push_str("\n");
+                ss.push('\n');
             }
         }
 
