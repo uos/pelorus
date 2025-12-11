@@ -50,7 +50,6 @@ pub fn integrate_imu(
     }
 
     let translation = Translation3::from(position);
-    let pose = Isometry3::from_parts(translation, pose.rotation);
 
-    pose
+    Isometry3::from_parts(translation, pose.rotation)
 }

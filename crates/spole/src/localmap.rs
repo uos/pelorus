@@ -83,7 +83,7 @@ impl Livodish {
                         );
                         return;
                     }
-                    let lru_never_run = self.lru_mapping.first().is_none();
+                    let lru_never_run = self.lru_mapping.is_empty();
                     if lru_never_run {
                         self.build(scan_number);
                     }
@@ -131,7 +131,7 @@ impl Livodish {
     }
 
     pub fn find(&self, key: &i32) -> Option<VoxelDistribution> {
-        let idx = self.lookup.get(&key)?;
+        let idx = self.lookup.get(key)?;
         unsafe { self.buffer.get_unchecked(*idx).as_ref() }.map(|v| v.0.1)
     }
 

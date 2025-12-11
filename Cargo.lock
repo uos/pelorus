@@ -5840,9 +5840,9 @@ checksum = "96a1fe2275b68991faded2c80aa4a33dba398b77d276038b8f50701a22e55918"
 
 [[package]]
 name = "mt_net"
-version = "0.2.1"
+version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9b8fca9cc9b5f33bf5df9590e5369d7aa35dd8364281e4d8c6f6974a4febbc6d"
+checksum = "01c7b65e881dd82c9b86c78f2a1b12239c3bc1ec3d337819d740bde0c3e16238"
 dependencies = [
  "anyhow",
  "rkyv",
@@ -5853,9 +5853,9 @@ dependencies = [
 
 [[package]]
 name = "mt_rat"
-version = "0.2.1"
+version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d2be63613b33e0857f24ffc1da23dbba4efc2d67ee12b0d1ec28bd03c1f25545"
+checksum = "b45ec7b3270466e8efcf10b988470e9ef803b746558e07b4cce0ba6397b06a6b"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -5870,9 +5870,9 @@ dependencies = [
 
 [[package]]
 name = "mt_sea"
-version = "0.2.1"
+version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "92be84f972797b89845247941a9d304045d51ba597a69af3e9f9895927db7c71"
+checksum = "b76b212025be218bb76c261928186f370fe96aa599de9bbdf74ae0eb1598b6cb"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -8039,9 +8039,9 @@ dependencies = [
 
 [[package]]
 name = "ratpub"
-version = "0.2.1"
+version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "21c07586d149ddc3facdf47fd10926604855a64fd1442d69aa986d0ccccea0e6"
+checksum = "8bbd338d02aee02f62e29a98d121a16349863d9ccc7dcd0f688993bb30d9350e"
 dependencies = [
  "anyhow",
  "async-trait",

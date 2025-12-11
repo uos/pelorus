@@ -8,7 +8,9 @@ use ros_pointcloud2::points::PointXYZI;
 use serde::{Deserialize, Serialize};
 use sophus_lie::traits::IsTranslationProductGroup;
 
-use crate::sophus_ekf::Esekf;
+use crate::sophus_ekf::{Iekf, KinematicModel};
+use prelio::imu::OdomMsg;
+use prelio::timestamp_to_secs;
 
 pub type SE3 = sophus_lie::Isometry3<f64, 1>;
 
@@ -39,6 +41,7 @@ pub struct ImuProcessing {
     pub ekf_cov_acc_bias: Matrix3<f64>,
     pub ekf_cov_acc: Matrix3<f64>,
     pub ekf_cov_gyr: Matrix3<f64>,
+    pub wheel_odom_cov_override: Option<f64>,
 }
 
 impl Default for ImuProcessing {
@@ -64,6 +67,7 @@ impl Default for ImuProcessing {
             ekf_cov_acc_bias: Matrix3::zeros(),
             ekf_cov_acc: Matrix3::zeros(),
             ekf_cov_gyr: Matrix3::zeros(),
+            wheel_odom_cov_override: None,
             cov_acc_bias: Vector3::new(
                 COV_IMU_BIAS_DEFAULT,
                 COV_IMU_BIAS_DEFAULT,
@@ -89,6 +93,9 @@ pub struct ImuParameters {
     pub cov_acc_bias: Vector3<f64>,
     pub initial_translation_lidar_to_imu: Vector3<f64>,
     pub initial_rotation_lidar_to_imu: Matrix3<f64>,
+    pub kinematic_constraint_std: f64,
+    pub kinematic_model: KinematicModel,
+    pub wheel_odom_cov_override: Option<f64>,
 }
 
 impl Default for ImuParameters {
@@ -116,6 +123,9 @@ impl Default for ImuParameters {
             ),
             initial_translation_lidar_to_imu: Vector3::default(),
             initial_rotation_lidar_to_imu: Matrix3::identity(),
+            kinematic_constraint_std: 0.05,
+            kinematic_model: KinematicModel::Differential,
+            wheel_odom_cov_override: None,
         }
     }
 }
@@ -171,6 +181,8 @@ impl ImuProcessing {
         s.cov_gyr = params.cov_gyr;
         s.cov_gyr_bias = params.cov_gyr_bias;
         s.cov_acc_bias = params.cov_acc_bias;
+        s.wheel_odom_cov_override = params.wheel_odom_cov_override;
+        s.wheel_odom_cov_override = params.wheel_odom_cov_override;
 
         s.lidar_r_wrt_imu = *lidar_imu_extr.rotation.to_rotation_matrix().matrix();
         s.lidar_t_wrt_imu = lidar_imu_extr.translation.vector;
@@ -181,7 +193,7 @@ impl ImuProcessing {
     pub fn initialize(
         &mut self,
         msgs: &[crate::ImuMsg],
-        ekf: &mut crate::sophus_ekf::Esekf,
+        ekf: &mut crate::sophus_ekf::Iekf,
     ) -> Vector3<f64> {
         let mut n = 1.0;
         self.last_imu = crate::ImuMsg::default();
@@ -192,8 +204,8 @@ impl ImuProcessing {
             let cur_acc = msg.linear_acceleration;
             let cur_gyr = msg.angular_velocity;
 
-            self.mean_acc += (cur_acc - self.mean_acc) / (n as f64);
-            self.mean_gyr += (cur_gyr - self.mean_gyr) / (n as f64);
+            self.mean_acc += (cur_acc - self.mean_acc) / n;
+            self.mean_gyr += (cur_gyr - self.mean_gyr) / n;
 
             self.cov_acc = self.cov_acc * (n - 1.0) / n
                 + (cur_acc - self.mean_acc).component_mul(&(cur_acc - self.mean_acc)) * (n - 1.0)
@@ -228,14 +240,18 @@ impl ImuProcessing {
         self.last_imu = msgs[msgs.len() - 1].clone();
 
         self.ekf_inited = true;
+        ekf.initialized = true;
 
         self.mean_acc
     }
 
     pub fn undistort(
         &mut self,
-        ekf: &mut Esekf,
+        ekf: &mut Iekf,
         imu_msgs: &[crate::ImuMsg],
+        odom_msgs: &[OdomMsg],
+        kinematic: KinematicModel,
+        constraint_std: f64,
         last_cloud_end_time: f64,
         cloud_begin_time: f64,
         mut cloud_end_time: f64,
@@ -262,7 +278,7 @@ impl ImuProcessing {
             self.acc_s_last,
             self.angvel_last,
             ekf.state.vel,
-            ekf.state.pose.clone(),
+            ekf.state.pose,
         )];
 
         let mut angvel_avr_x = 0.0;
@@ -281,7 +297,11 @@ impl ImuProcessing {
             return vec![];
         };
 
-        while let Some(tail) = all_imus.next() {
+        // Keep odometry corrections in lockstep with IMU prediction.
+        ekf.last_time = last_cloud_end_time;
+        let mut odom_iter = odom_msgs.iter().peekable();
+
+        for tail in all_imus {
             let head_stamp = head.timestamp_sec;
             let tail_stamp = tail.timestamp_sec;
 
@@ -304,17 +324,51 @@ impl ImuProcessing {
             acc_avr_z = (head.linear_acceleration[2] + tail.linear_acceleration[2]) * 0.5 * GRAVITY
                 / mean_acc;
 
+            let avr_x = [acc_avr_x, acc_avr_y, acc_avr_z];
+            let angvel_avr = [angvel_avr_x, angvel_avr_y, angvel_avr_z];
+
+            // Calculate dt to this IMU message. If the message arrives before last_cloud_end_time,
+            // we predict from last_cloud_end_time (to account for the gap). Otherwise predict from head.
             let dt = if head_stamp < last_cloud_end_time {
                 tail_stamp - last_cloud_end_time
             } else {
                 tail_stamp - head_stamp
             };
 
-            assert!(dt > 0.0); // TODO does this need > only? predict 0 ok? first ever dt is 0
+            if dt > 0.0 {
+                _ = self.predict(ekf, avr_x, angvel_avr, dt);
+                // Enforce kinematic constraints after prediction
+                ekf.correct_kinematics(kinematic, tail.angular_velocity, constraint_std);
+            }
 
-            let avr_x = [acc_avr_x, acc_avr_y, acc_avr_z];
-            let angvel_avr = [angvel_avr_x, angvel_avr_y, angvel_avr_z];
-            _ = self.predict(ekf, avr_x, angvel_avr, dt);
+            // Inject odometry corrections that fall inside this IMU interval.
+            while let Some(odom) = odom_iter.peek() {
+                let odom_time = timestamp_to_secs(&odom.stamp);
+                if odom_time > tail_stamp {
+                    break;
+                }
+
+                let dt_pred = odom_time - ekf.last_time;
+                if dt_pred > 0.0 {
+                    _ = self.predict(ekf, avr_x, angvel_avr, dt_pred);
+                    // Enforce kinematic constraints after prediction segment
+                    ekf.correct_kinematics(kinematic, tail.angular_velocity, constraint_std);
+                } else if dt_pred < 0.0 {
+                    warn!("Skipping odom fusion with non-positive dt: {dt_pred:.6}");
+                }
+
+                ekf.correct_with_body_velocities(*(*odom), kinematic, self.wheel_odom_cov_override);
+                odom_iter.next();
+            }
+
+            // Finish prediction to the tail timestamp.
+            let dt_to_tail = tail_stamp - ekf.last_time;
+            if dt_to_tail > 0.0 {
+                _ = self.predict(ekf, avr_x, angvel_avr, dt_to_tail);
+                // Enforce kinematic constraints after final prediction
+                ekf.correct_kinematics(kinematic, tail.angular_velocity, constraint_std);
+            }
+
             self.imu_state = ekf.state.clone();
 
             self.angvel_last = tail.angular_velocity.xyz() - self.imu_state.bg;
@@ -327,20 +381,44 @@ impl ImuProcessing {
                 self.acc_s_last,
                 self.angvel_last,
                 self.imu_state.vel,
-                self.imu_state.pose.clone(),
+                self.imu_state.pose,
             ));
 
             head = tail;
         }
 
-        // Integrate to end of cloud
+        // Integrate remaining odometry and advance to end of cloud
         self.last_imu = imu_msgs[imu_msgs.len() - 1].clone();
-        let dt = cloud_end_time - self.last_imu.timestamp_sec;
-        assert!(dt >= 0.0);
 
         let avr_x = [acc_avr_x, acc_avr_y, acc_avr_z];
         let angvel_avr = [angvel_avr_x, angvel_avr_y, angvel_avr_z];
+
+        while let Some(odom) = odom_iter.peek() {
+            let odom_time = timestamp_to_secs(&odom.stamp);
+            if odom_time > cloud_end_time {
+                break;
+            }
+
+            let dt_pred = odom_time - ekf.last_time;
+            if dt_pred > 0.0 {
+                _ = self.predict(ekf, avr_x, angvel_avr, dt_pred);
+                // Enforce kinematic constraints after prediction segment
+                let gyro = Vector3::new(angvel_avr_x, angvel_avr_y, angvel_avr_z);
+                ekf.correct_kinematics(kinematic, gyro, constraint_std);
+            } else if dt_pred < 0.0 {
+                warn!("Skipping odom fusion with non-positive dt: {dt_pred:.6}");
+            }
+
+            ekf.correct_with_body_velocities(*(*odom), kinematic, self.wheel_odom_cov_override);
+            odom_iter.next();
+        }
+
+        let dt = cloud_end_time - ekf.last_time;
+        assert!(dt >= 0.0);
         let _ = self.predict(ekf, avr_x, angvel_avr, dt);
+        // Enforce kinematic constraints after final prediction to cloud end
+        let gyro = Vector3::new(angvel_avr_x, angvel_avr_y, angvel_avr_z);
+        ekf.correct_kinematics(kinematic, gyro, constraint_std);
         self.imu_state = ekf.state.clone();
 
         // TODO perf this alloc could be optimized out by changing the undistort closure return to be a mut& Vec. then it could be resized here to avoid new allocs for the cloud
@@ -452,7 +530,7 @@ impl ImuProcessing {
 
     pub fn predict(
         &self,
-        ekf: &mut Esekf,
+        ekf: &mut Iekf,
         acc: [f64; 3],
         gyro: [f64; 3],
         dt: f64,

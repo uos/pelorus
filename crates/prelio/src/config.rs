@@ -12,6 +12,9 @@ pub struct LifisParameters {
     pub global_zero_frame: String,
     pub map_frame: String,
     pub initial_scan_accumulate: usize,
+    pub wheel_odom_cov: Option<f64>,
+    pub wheel_imu_tf_override: bool,
+    pub wheel_to_imu_rotation: nalgebra::Matrix3<f64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]

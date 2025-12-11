@@ -105,7 +105,7 @@ evaluate = ["dep:sophus_lie", "dep:plotters", "dep:image"]
 # -#-#-#-#-#- Low level -#-#-#-#-#-
 
 # Toggle tooling typically used for development
-dev = ["offline", "downsample", "rerun", "map", "parallel"]
+dev = ["offline", "downsample", "rerun", "map"]
 
 # Use variable syncing for triggers
 rat = ["dep:mt_rat", "dep:tokio"]

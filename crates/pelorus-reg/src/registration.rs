@@ -3,7 +3,7 @@ use std::sync::{Arc, Mutex};
 #[cfg(feature = "cuda")]
 use cuda::CudaBuffer;
 use nalgebra::*;
-use prelio::{LocatedBufferView, timing::RuntimeEvaluator};
+use prelio::{LocatedBufferView, imu::OdomMsg, timing::RuntimeEvaluator};
 #[cfg(all(feature = "parallel", not(feature = "cuda")))]
 use rayon::prelude::*;
 use ros_pointcloud2::points::{PointXYZ, PointXYZI, PointXYZINormal};
@@ -11,10 +11,10 @@ use ros_pointcloud2::points::{PointXYZ, PointXYZI, PointXYZINormal};
 use sophus_lie::traits::IsTranslationProductGroup;
 pub use spole::IVoxNearbyType;
 
-use crate::sophus_ekf::skew_symmetric;
+use crate::sophus_ekf::{KinematicModel, skew_symmetric};
 
 pub struct RegistrationState {
-    ekf: crate::sophus_ekf::Esekf,
+    ekf: crate::sophus_ekf::Iekf,
     imu_processing: crate::imu::ImuProcessing,
     pub map: spole::IVoxHashMap,
     laser_point_noise_cov: f64,
@@ -40,7 +40,7 @@ impl RegistrationState {
         );
 
         Self {
-            ekf: crate::sophus_ekf::Esekf::new(g),
+            ekf: crate::sophus_ekf::Iekf::new(g),
             imu_processing: crate::imu::ImuProcessing::new(
                 imu_params,
                 &initial_extrinsic_calibration,
@@ -52,13 +52,7 @@ impl RegistrationState {
 
     #[cfg(not(feature = "cuda"))]
     fn add_to_map(&mut self, cloud: &LocatedBufferView<PointXYZI>, pose: Isometry3<f64>) {
-        let cloud = match cloud {
-            LocatedBufferView::Ram(items) => items,
-            #[cfg(feature = "cuda")]
-            LocatedBufferView::Cuda { buffer: _ } => {
-                panic!("cuda versions needs stream, so is outside this function")
-            }
-        };
+        let LocatedBufferView::Ram(cloud) = cloud;
 
         #[cfg(feature = "nn_kdt")]
         {
@@ -202,9 +196,9 @@ impl RegistrationState {
 
         let mut sum = Vector3::new(0.0, 0.0, 0.0);
         for p in points.iter() {
-            sum = sum + Vector3::new(p.x, p.y, p.z);
+            sum += Vector3::new(p.x, p.y, p.z);
         }
-        let centroid = &sum * (1.0 / (n as f64));
+        let centroid = sum * (1.0 / (n as f64));
 
         // Calculate full 3x3 covariance matrix, excluding symmetries:
         let mut xx = 0.0;
@@ -240,7 +234,7 @@ impl RegistrationState {
             if weighted_dir.dot(&axis_dir) < 0.0 {
                 weight = -weight;
             }
-            weighted_dir += &axis_dir * weight;
+            weighted_dir += axis_dir * weight;
         }
 
         {
@@ -250,7 +244,7 @@ impl RegistrationState {
             if weighted_dir.dot(&axis_dir) < 0.0 {
                 weight = -weight;
             }
-            weighted_dir += &axis_dir * weight;
+            weighted_dir += axis_dir * weight;
         }
 
         {
@@ -260,15 +254,14 @@ impl RegistrationState {
             if weighted_dir.dot(&axis_dir) < 0.0 {
                 weight = -weight;
             }
-            weighted_dir += &axis_dir * weight;
+            weighted_dir += axis_dir * weight;
         }
 
         let normal = &weighted_dir.normalize();
         if normal.iter().all(|x| x.is_finite()) {
             let d = -normal.dot(&centroid);
             for p in points {
-                let error =
-                    normal.x * p.x as f64 + normal.y * p.y as f64 + normal.z * p.z as f64 + d;
+                let error = normal.x * p.x + normal.y * p.y + normal.z * p.z + d;
                 if error.abs() > error_threshold {
                     return None;
                 }
@@ -285,6 +278,9 @@ impl crate::Registration for RegistrationState {
     fn undistort(
         &mut self,
         imu_msgs: &[crate::ImuMsg],
+        odom_msgs: &[OdomMsg],
+        kinematic: KinematicModel,
+        constraint_std: f64,
         last_cloud_end_time: f64,
         cloud_begin_time: f64,
         cloud_end_time: f64,
@@ -295,6 +291,9 @@ impl crate::Registration for RegistrationState {
         self.imu_processing.undistort(
             &mut self.ekf,
             imu_msgs,
+            odom_msgs,
+            kinematic,
+            constraint_std,
             last_cloud_end_time,
             cloud_begin_time,
             cloud_end_time,
@@ -304,7 +303,7 @@ impl crate::Registration for RegistrationState {
     }
 
     fn requested_register_and_map_cloud_type(&self) -> LocatedBufferView<PointXYZ> {
-        return crate::LocatedBufferView::Ram(Vec::new());
+        crate::LocatedBufferView::Ram(Vec::new())
     }
 
     fn get_state(&self) -> crate::ImuEkfPrediction {
@@ -330,6 +329,7 @@ impl crate::Registration for RegistrationState {
         map_only: bool,
         imu_transform: Isometry3<f64>,
         cloud: &LocatedBufferView<PointXYZI>,
+        lidar_timestamp: f64,
         ready_for_next: Option<&std::sync::mpsc::Sender<()>>,
         eval: &mut RuntimeEvaluator,
         #[cfg(feature = "cuda")] stream: &cuda::Stream,
@@ -341,7 +341,7 @@ impl crate::Registration for RegistrationState {
 
         if map_only {
             #[cfg(not(feature = "cuda"))]
-            self.add_to_map(&cloud, imu_transform);
+            self.add_to_map(cloud, imu_transform);
             #[cfg(feature = "cuda")]
             {
                 let cloud = match cloud {
@@ -384,6 +384,7 @@ impl crate::Registration for RegistrationState {
 
             self.ekf.correct(
                 self.laser_point_noise_cov,
+                lidar_timestamp,
                 move |ekf_state: &crate::sophus_ekf::StateIKFom,
                       valid: &mut bool,
                       _converged: bool,
@@ -434,13 +435,7 @@ impl crate::Registration for RegistrationState {
 
                     #[cfg(not(feature = "cuda"))]
                     let planes = {
-                        let cloud = match cloud {
-                            LocatedBufferView::Ram(point_xyzs) => point_xyzs,
-                            #[cfg(feature = "cuda")]
-                            LocatedBufferView::Cuda { buffer: _ } => {
-                                panic!("cuda buffer in cpu task")
-                            }
-                        };
+                        let LocatedBufferView::Ram(cloud) = cloud;
                         let iter = {
                             #[cfg(feature = "parallel")]
                             {
@@ -472,42 +467,6 @@ impl crate::Registration for RegistrationState {
                                 );
 
                                 // let mut winning_factor = None;
-
-                                let n1 = {
-                                    let plane = map.plane_fit_from_distributions(&query_point)?;
-                                    let pd2 = plane[0] * point_global.x as f32
-                                        + plane[1] * point_global.y as f32
-                                        + plane[2] * point_global.z as f32
-                                        + plane[3];
-                                    let s = 1.0
-                                        - 0.9 * pd2.abs()
-                                            / nalgebra::Point3::new(
-                                                point_local.x,
-                                                point_local.y,
-                                                point_local.z,
-                                            )
-                                            .cast::<f64>()
-                                            .coords
-                                            .norm()
-                                            .sqrt()
-                                                as f32;
-
-                                    if s <= 0.9 {
-                                        None
-                                    } else {
-                                        // winning_factor = Some((pd2, 0));
-
-                                        Some(PointXYZINormal::new(
-                                            point_local.x,
-                                            point_local.y,
-                                            point_local.z,
-                                            pd2 as f32,
-                                            plane[0] as f32,
-                                            plane[1] as f32,
-                                            plane[2] as f32,
-                                        ))
-                                    }
-                                };
 
                                 // let n2 = {
                                 //     *neighbor_size = 0;
@@ -567,7 +526,41 @@ impl crate::Registration for RegistrationState {
                                 //     }
                                 // };
 
-                                n1
+                                {
+                                    let plane = map.plane_fit_from_distributions(&query_point)?;
+                                    let pd2 = plane[0] * point_global.x as f32
+                                        + plane[1] * point_global.y as f32
+                                        + plane[2] * point_global.z as f32
+                                        + plane[3];
+                                    let s = 1.0
+                                        - 0.9 * pd2.abs()
+                                            / nalgebra::Point3::new(
+                                                point_local.x,
+                                                point_local.y,
+                                                point_local.z,
+                                            )
+                                            .cast::<f64>()
+                                            .coords
+                                            .norm()
+                                            .sqrt()
+                                                as f32;
+
+                                    if s <= 0.9 {
+                                        None
+                                    } else {
+                                        // winning_factor = Some((pd2, 0));
+
+                                        Some(PointXYZINormal::new(
+                                            point_local.x,
+                                            point_local.y,
+                                            point_local.z,
+                                            pd2,
+                                            plane[0],
+                                            plane[1],
+                                            plane[2],
+                                        ))
+                                    }
+                                }
 
                                 // match winning_factor?.1 {
                                 //     0 => {
@@ -641,22 +634,25 @@ impl crate::Registration for RegistrationState {
                             let norm =
                                 Vector3::new(nearest_plane[0], nearest_plane[1], nearest_plane[2]);
 
-                            let a = -1.0
-                                * norm.transpose()
-                                * skew_symmetric(
-                                    &(ekf_state.pose.rotation().matrix() * v.coords
-                                        + ekf_state.pose.translation()),
-                                );
+                            // Rotation perturbation
+                            let p_imu_global = ekf_state.pose.rotation().matrix() * v.coords;
+                            let a = -1.0 * norm.transpose() * skew_symmetric(&p_imu_global);
+
+                            // Position perturbation
+                            // derivative of plane equation wrt global position
+                            let pos_jacobian = norm;
+
                             // Rotation Jacobian
                             h_x_row[0] = a.x;
                             h_x_row[1] = a.y;
                             h_x_row[2] = a.z;
 
                             // Position Jacobian
-                            h_x_row[3] = norm.x;
-                            h_x_row[4] = norm.y;
-                            h_x_row[5] = norm.z;
+                            h_x_row[3] = pos_jacobian.x;
+                            h_x_row[4] = pos_jacobian.y;
+                            h_x_row[5] = pos_jacobian.z;
 
+                            // Velocity, gyro bias, accel bias, gravity: no influence on measurement
                             h_x_row[6] = 0.0;
                             h_x_row[7] = 0.0;
                             h_x_row[8] = 0.0;
@@ -704,7 +700,7 @@ impl crate::Registration for RegistrationState {
         }
 
         #[cfg(not(feature = "cuda"))]
-        self.add_to_map(&cloud, global_pose);
+        self.add_to_map(cloud, global_pose);
         #[cfg(feature = "cuda")]
         {
             let cloud = match cloud {

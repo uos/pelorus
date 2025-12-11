@@ -1,5 +1,5 @@
 use nalgebra::*;
-use prelio::{LocatedBufferView, timing::RuntimeEvaluator};
+use prelio::{LocatedBufferView, imu::OdomMsg, timing::RuntimeEvaluator};
 use ros_pointcloud2::prelude::*;
 
 pub mod imu;
@@ -7,6 +7,8 @@ pub mod registration;
 pub mod sophus_ekf;
 use anyhow::Result;
 pub use spole::*;
+
+use crate::sophus_ekf::KinematicModel;
 
 #[derive(Clone, Default, Debug)]
 pub struct CloudRegisterResult {
@@ -49,6 +51,7 @@ pub trait Registration {
         map_only: bool,
         imu_transform: Isometry3<f64>,
         cloud: &LocatedBufferView<PointXYZI>,
+        lidar_timestamp: f64,
         ready_for_next: Option<&std::sync::mpsc::Sender<()>>,
         eval: &mut RuntimeEvaluator,
         #[cfg(feature = "cuda")] stream: &cuda::Stream,
@@ -61,6 +64,9 @@ pub trait Registration {
     fn undistort(
         &mut self,
         imu_msgs: &[ImuMsg],
+        odom_msgs: &[OdomMsg],
+        kinematic: KinematicModel,
+        constraint_std: f64,
         last_cloud_end_time: f64,
         cloud_begin_time: f64,
         cloud_end_time: f64,

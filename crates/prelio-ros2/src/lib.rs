@@ -15,6 +15,7 @@ use anyhow::anyhow;
 use prelio::config::LifisParameters;
 use prelio::imu::ImuMsg;
 use prelio::timestamp_to_secs;
+
 #[cfg(feature = "r2r")]
 use r2r::{
     QosProfile,
@@ -54,34 +55,34 @@ use ros2_interfaces_jazzy_serde::{
 use serde::{Deserialize, Serialize};
 use std::sync::{Arc, Mutex};
 
-#[derive(Debug, Clone, Default, PointConvertible, Copy)]
-pub struct SkipPoint {
-    pub x: f32,
-    pub y: f32,
-    pub z: f32,
-}
-
 const N_NTH_SCAN: usize = 1; // TODO to config
 
-impl prelio::PointXYZITimestamp<3> for SkipPoint {
-    fn intensity(&self) -> f32 {
-        -1.0
-    }
+// #[derive(Debug, Clone, Default, PointConvertible, Copy)]
+// pub struct SkipPoint {
+//     pub x: f32,
+//     pub y: f32,
+//     pub z: f32,
+// }
 
-    fn timestamp(&self) -> f64 {
-        -1.0
-    }
+// impl prelio::PointXYZITimestamp<3> for SkipPoint {
+//     fn intensity(&self) -> f32 {
+//         -1.0
+//     }
 
-    fn xyz(&self) -> nalgebra::Point3<f32> {
-        nalgebra::Point3::new(self.x, self.y, self.z)
-    }
-}
+//     fn timestamp(&self) -> f64 {
+//         -1.0
+//     }
 
-impl SkipPoint {
-    pub fn new(x: f32, y: f32, z: f32) -> Self {
-        SkipPoint { x, y, z }
-    }
-}
+//     fn xyz(&self) -> nalgebra::Point3<f32> {
+//         nalgebra::Point3::new(self.x, self.y, self.z)
+//     }
+// }
+
+// impl SkipPoint {
+//     pub fn new(x: f32, y: f32, z: f32) -> Self {
+//         SkipPoint { x, y, z }
+//     }
+// }
 
 #[derive(Debug, Clone, Default, PointConvertible, Copy)]
 pub struct RobosensePoint {
@@ -169,7 +170,7 @@ impl prelio::PointXYZITimestamp<5> for LivoxMid360Point {
     }
 
     fn timestamp(&self) -> f64 {
-        self.timestamp as f64 * 1e-9
+        self.timestamp * 1e-9
     }
 
     fn xyz(&self) -> nalgebra::Point3<f32> {
@@ -234,7 +235,7 @@ impl State {
                         config.imu.gravity,
                         config.imu.madgwick_setting,
                         &config.imu.calibration,
-                        &config, // TODO more specific
+                        config, // TODO more specific
                         imu_pose_prediction_undistort,
                         imu_pose_prediction_init_guess,
                         Some(config.lidar_vendor),
@@ -246,7 +247,7 @@ impl State {
                         config.imu.gravity,
                         config.imu.madgwick_setting,
                         &config.imu.calibration,
-                        &config, // TODO more specific
+                        config, // TODO more specific
                         imu_pose_prediction_undistort,
                         imu_pose_prediction_init_guess,
                         Some(config.lidar_vendor),
@@ -258,7 +259,7 @@ impl State {
                         config.imu.gravity,
                         config.imu.madgwick_setting,
                         &config.imu.calibration,
-                        &config, // TODO more specific
+                        config, // TODO more specific
                         imu_pose_prediction_undistort,
                         imu_pose_prediction_init_guess,
                         Some(config.lidar_vendor),
@@ -270,7 +271,7 @@ impl State {
                         config.imu.gravity,
                         config.imu.madgwick_setting,
                         &config.imu.calibration,
-                        &config, // TODO more specific
+                        config, // TODO more specific
                         imu_pose_prediction_undistort,
                         imu_pose_prediction_init_guess,
                         Some(config.lidar_vendor),
@@ -282,25 +283,24 @@ impl State {
                         config.imu.gravity,
                         config.imu.madgwick_setting,
                         &config.imu.calibration,
-                        &config, // TODO more specific
+                        config, // TODO more specific
                         imu_pose_prediction_undistort,
                         imu_pose_prediction_init_guess,
                         Some(config.lidar_vendor),
                         ready_for_next,
                     )?))
-                }
-                prelio::LidarVendor::Skip => {
-                    Arc::new(Mutex::new(prelio::Prelio::create::<3, SkipPoint>(
-                        config.imu.gravity,
-                        config.imu.madgwick_setting,
-                        &config.imu.calibration,
-                        &config, // TODO more specific
-                        imu_pose_prediction_undistort,
-                        imu_pose_prediction_init_guess,
-                        Some(config.lidar_vendor),
-                        ready_for_next,
-                    )?))
-                }
+                } // prelio::LidarVendor::Skip => {
+                  //     Arc::new(Mutex::new(prelio::Prelio::create::<3, SkipPoint>(
+                  //         config.imu.gravity,
+                  //         config.imu.madgwick_setting,
+                  //         &config.imu.calibration,
+                  //         &config, // TODO more specific
+                  //         imu_pose_prediction_undistort,
+                  //         imu_pose_prediction_init_guess,
+                  //         Some(config.lidar_vendor),
+                  //         ready_for_next,
+                  //     )?))
+                  // }
             },
             lifis_params: config.clone(),
             take_nth_scan: N_NTH_SCAN,
@@ -344,7 +344,7 @@ fn cloud_callback(
                     state.lifis_params.imu_lidar_tf_override,
                     state.lifis_params.global_zero_frame.clone(),
                     state.lifis_params.map_frame.clone(),
-                    state.sensor_tf.clone(),
+                    state.sensor_tf,
                 )
             };
 
@@ -514,12 +514,14 @@ pub struct PrelioNode {
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct LifisNodeParameters {
+    pub wheel_src_topic: String,
     pub cloud_src_topic: String,
     pub imu_src_topic: String,
     pub logger_prefix: String,
     pub imu_filtered_topic: String,
     pub imu_predictor_init_time_sec: f64,
     pub cloud_qos: Qos,
+    pub wheel_qos: Qos,
     pub imu_qos: Qos,
     pub imu_filtered_qos: Qos,
 }
@@ -655,7 +657,7 @@ impl PrelioNode {
         let tf_listener = Arc::new(tf_lh::TfListener::new(node, rt.clone()));
 
         let state = State::new(
-            &params,
+            params,
             imu_pose_prediction_undistort,
             imu_pose_prediction_init_guess,
             #[cfg(feature = "rerun")]
@@ -704,6 +706,17 @@ impl PrelioNode {
         #[cfg(feature = "ratpub")]
         let mut cloud_subscriber = rt.block_on(async {
             node.create_subscriber::<PointCloud2>(node_params.cloud_src_topic.clone(), 10)
+                .await
+                .unwrap()
+        });
+
+        #[cfg(feature = "r2r")]
+        let wheel_subscriber =
+            node.subscribe::<Odometry>(&node_params.wheel_src_topic, node_params.wheel_qos.into())?;
+
+        #[cfg(feature = "ratpub")]
+        let mut wheel_subscriber = rt.block_on(async {
+            node.create_subscriber::<Odometry>(node_params.wheel_src_topic.clone(), 10)
                 .await
                 .unwrap()
         });
@@ -785,6 +798,49 @@ impl PrelioNode {
                     .await;
             })
         });
+
+        #[cfg(feature = "ratpub")]
+        {
+            let wheel_sub_rt = Arc::clone(&rt);
+            let state_wheel = state.clone();
+            let ext = nalgebra::Isometry3::from_parts(
+                nalgebra::Translation3::new(0.0, 0.0, 0.0),
+                nalgebra::UnitQuaternion::from_matrix(&params.wheel_to_imu_rotation),
+            );
+            std::thread::spawn(move || {
+                wheel_sub_rt.block_on(async {
+                    while let Some(msg) = wheel_subscriber.next().await {
+                        // Transform odom to IMU frame and send to prelio for sync'd processing
+                        let v = nalgebra::Vector3::new(
+                            msg.twist.twist.linear.x,
+                            msg.twist.twist.linear.y,
+                            msg.twist.twist.linear.z,
+                        );
+                        let t = ext.transform_vector(&v);
+
+                        let odom_msg = prelio::imu::OdomMsg {
+                            twist_linear: t,
+                            twist_angular: nalgebra::Vector3::new(
+                                msg.twist.twist.angular.x,
+                                msg.twist.twist.angular.y,
+                                msg.twist.twist.angular.z,
+                            ),
+                            twist_cov: msg.twist.covariance,
+                            stamp: prelio::TimeMsg {
+                                sec: msg.header.stamp.sec,
+                                nanosec: msg.header.stamp.nanosec,
+                            },
+                        };
+
+                        // Send to prelio's sync worker for synchronized lidar-imu-odom processing
+                        let state_lock = state_wheel.lock().unwrap();
+                        state_lock.lifis.lock().unwrap().add_odom(odom_msg);
+                    }
+                })
+            });
+        }
+        // let state_clone = state.clone();
+
         #[cfg(feature = "ratpub")]
         {
             let cloud_sub_rt = Arc::clone(&rt);
@@ -1116,7 +1172,7 @@ impl PrelioNode {
                         w: synced_data.end_of_frame_guess.rotation.quaternion().w,
                     },
                 },
-                covariance: synced_data.pose_covariance.into(),
+                covariance: synced_data.pose_covariance,
             };
 
             let twist = TwistWithCovariance {
@@ -1132,7 +1188,7 @@ impl PrelioNode {
                         z: synced_data.end_of_frame_twist.angular.z,
                     },
                 },
-                covariance: synced_data.twist_covariance.into(),
+                covariance: synced_data.twist_covariance,
             };
 
             let odom = Odometry {

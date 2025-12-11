@@ -31,6 +31,15 @@ pub fn time_msg_from_secs(secs: f64) -> crate::TimeMsg {
 type SO3 = sophus_lie::Rotation3<f64, 1>;
 type SE3 = sophus_lie::Isometry3<f64, 1>;
 
+#[derive(Debug, Clone, Copy)]
+pub struct OdomMsg {
+    pub twist_linear: nalgebra::Vector3<f64>,
+    pub twist_angular: nalgebra::Vector3<f64>,
+    pub twist_cov: [f64; 36],
+
+    pub stamp: crate::TimeMsg,
+}
+
 #[derive(Debug)]
 pub struct GyrInt {
     start_stamp: f64,
@@ -71,6 +80,12 @@ fn imu_msg_to_twist(msg: &ImuMsg) -> [f64; 6] {
     twist
 }
 
+impl Default for GyrInt {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl GyrInt {
     pub fn new() -> Self {
         Self {
@@ -94,14 +109,14 @@ impl GyrInt {
 
     pub fn get_pose(&self) -> SE3 {
         match self.v_se3.last() {
-            Some(pose) => pose.clone(),
+            Some(pose) => *pose,
             None => SE3::identity(),
         }
     }
 
     pub fn get_rot(&self) -> SO3 {
         match self.v_rot.last() {
-            Some(rot) => rot.clone(),
+            Some(rot) => *rot,
             None => SO3::identity(),
         }
     }
@@ -156,8 +171,8 @@ impl GyrInt {
             self.v_imu.push(imu_interpolated);
         }
 
-        let rot_last = self.v_rot.last().unwrap().clone();
-        let pose_last = self.v_se3.last().unwrap().clone();
+        let rot_last = *self.v_rot.last().unwrap();
+        let pose_last = *self.v_se3.last().unwrap();
         let imu_msg_last = self.v_imu.last().unwrap().clone();
         let time_last = timestamp_to_secs(&imu_msg_last.stamp);
         let gyr_last = Vector3::new(
@@ -267,7 +282,7 @@ impl ImuProcess {
         start_time: f64,
         config: Option<&config::UndistortParameters>,
     ) -> (Isometry3<f64>, SE3) {
-        self.integrate_gyr(&imu_data, start_time);
+        self.integrate_gyr(imu_data, start_time);
 
         // only use translation in integration if we have calibration
         /*let mut t_l_be = if self.intrinsic_calibration_given {
@@ -308,6 +323,7 @@ impl ImuProcess {
         imu_pose_prediction: &Option<
             impl Fn(
                 &[ImuMsg],
+                &[OdomMsg],
                 f64,
                 f64,
                 f64,
@@ -320,10 +336,10 @@ impl ImuProcess {
 
         self.runtime_eval.start("deskew").unwrap();
 
-        // TODO add prediction for undistortion from lio since it needs the predictions to further the state
         let (estimated_pose, deskewed_cloud) = match imu_pose_prediction.as_ref().map(|f| {
             f(
                 &meas.imu_buffer,
+                &meas.odom_buffer,
                 meas.last_lidar_end_stamp,
                 meas.lidar_start_stamp,
                 meas.lidar_end_stamp,
@@ -331,9 +347,9 @@ impl ImuProcess {
             )
         }) {
             Some(Left(pose)) => {
-                let rot = Rotation3::from_matrix(&pose.pose.rotation.to_rotation_matrix().matrix());
+                let rot = Rotation3::from_matrix(pose.pose.rotation.to_rotation_matrix().matrix());
                 let quat = UnitQuaternion::from_rotation_matrix(&rot);
-                let iso = Isometry3::from_parts(pose.pose.translation.into(), quat);
+                let iso = Isometry3::from_parts(pose.pose.translation, quat);
                 let sophus = SE3::from_translation_and_rotation(
                     &pose.pose.translation.vector,
                     &quaternion_to_so3_exp(&quat),

@@ -73,7 +73,7 @@ use prelio_ros2::tf_lh::TfBroadcaster;
 use prelio_ros2::tf_r2r::TfBroadcaster;
 use prelio_ros2::{
     LifisNodeParameters,
-    prelio::{LocatedBufferView, config::LifisParameters},
+    prelio::{LocatedBufferView, config::LifisParameters, imu::OdomMsg},
 };
 
 use pelorus_reg::{Registration, registration::RegistrationState};
@@ -276,10 +276,8 @@ fn lio_with_ready_signal(
     };
 
     #[cfg(feature = "rat")]
-    if synchronous_mode {
-        if let Some(rt) = rt.as_ref() {
-            rat::init("pelorus", None, Some(Arc::clone(&rt))).unwrap();
-        }
+    if synchronous_mode && let Some(rt) = rt.as_ref() {
+        rat::init("pelorus", None, Some(Arc::clone(rt))).unwrap();
     }
 
     #[cfg(not(feature = "ratpub"))]
@@ -336,6 +334,11 @@ fn lio_with_ready_signal(
         config.dist_update_sensitivity,
     )));
 
+    let _odom_ext = Isometry3::from_parts(
+        nalgebra::Translation3::new(0.0, 0.0, 0.0),
+        UnitQuaternion::from_matrix(&config.prelio_params.wheel_to_imu_rotation),
+    );
+
     let mean_acc = Arc::new(Mutex::new(None));
 
     #[cfg(feature = "rerun")]
@@ -350,7 +353,8 @@ fn lio_with_ready_signal(
     };
     // let rec = Arc::new(rerun::RecordingStreamBuilder::new("pelorus").spawn()?);
 
-    let lidar_vendor = config.prelio_params.lidar_vendor.clone();
+    let lidar_vendor = config.prelio_params.lidar_vendor;
+    let kinematic_model = config.imu_params.kinematic_model;
 
     let (ready_for_next_tx, ready_for_next_rx) = std::sync::mpsc::channel();
     let (_lifis_node, synced_rx) = PrelioNode::new(
@@ -369,7 +373,7 @@ fn lio_with_ready_signal(
             let mean_acc = mean_acc.clone();
             Arc::new(Mutex::new(move |msg: &[ImuMsg]| {
                 let msg: Vec<pelorus_reg::ImuMsg> =
-                    msg.iter().map(|m| imu_msg_to_pelorus_reg(m)).collect();
+                    msg.iter().map(imu_msg_to_pelorus_reg).collect();
                 let mut map = map.lock().unwrap();
                 let init_mean_acc = map.init_imu_ekf(&msg);
                 let mut mean_acc = mean_acc.lock().expect("only user");
@@ -380,7 +384,8 @@ fn lio_with_ready_signal(
             let map = map.clone();
 
             Some(Box::new(
-                move |imu_msgs: &[prelio_ros2::prelio::imu::ImuMsg],
+                move |imu_msgs: &[ImuMsg],
+                      odom_msgs: &[OdomMsg],
                       last_cloud_end_time,
                       cloud_begin_time,
                       cloud_end_time,
@@ -391,12 +396,15 @@ fn lio_with_ready_signal(
                     debug_assert!(cloud_end_time > 0.0);
 
                     // TODO why even use different ImuMsg types?
-                    let imus = imu_msgs.iter().map(|m| imu_msg_to_pelorus_reg(m));
+                    let imus = imu_msgs.iter().map(imu_msg_to_pelorus_reg);
                     let imus_vec = imus.collect::<Vec<_>>();
 
                     let mut map = map.lock().unwrap();
                     let cloud_undistorted = map.undistort(
                         &imus_vec,
+                        odom_msgs,
+                        kinematic_model,
+                        config.imu_params.kinematic_constraint_std,
                         last_cloud_end_time,
                         cloud_begin_time,
                         cloud_end_time,
@@ -404,7 +412,7 @@ fn lio_with_ready_signal(
                         Some(lidar_vendor),
                     );
 
-                    let pose = map.get_state().pose.clone();
+                    let pose = map.get_state().pose;
 
                     Right((pose, cloud_undistorted))
                 },
@@ -732,17 +740,17 @@ fn lio_with_ready_signal(
             let cloud = LocatedBufferView::Ram(lifis_tick.deskewed_cloud);
 
             let orig_frame = lifis_tick.cloud_header.frame_id.clone();
-            let orig_time = lifis_tick.cloud_header.stamp.clone();
+            let orig_time = lifis_tick.cloud_header.stamp;
             let current_cloud_time = timestamp_to_secs(&lifis_tick.odom_time);
-            if let Some(existing_last_scan_time) = last_scan_time {
-                if current_cloud_time < existing_last_scan_time {
-                    let mut map = map.lock().unwrap();
-                    map.clear_localmap();
+            if let Some(existing_last_scan_time) = last_scan_time
+                && current_cloud_time < existing_last_scan_time
+            {
+                let mut map = map.lock().unwrap();
+                map.clear_localmap();
 
-                    info!("Resetting map");
-                    t_world_lidar = nalgebra::Isometry3::identity();
-                    t_last_current = nalgebra::Isometry3::identity();
-                }
+                info!("Resetting map");
+                t_world_lidar = nalgebra::Isometry3::identity();
+                t_last_current = nalgebra::Isometry3::identity();
             }
 
             last_scan_time = Some(timestamp_to_secs(&orig_time));
@@ -761,7 +769,7 @@ fn lio_with_ready_signal(
                     t_last_current
                 } else {
                     // there is an orientation calculated by lifis for undeskewing the cloud, so we can use that
-                    let initial_guess_translation = t_last_current.translation.clone();
+                    let initial_guess_translation = t_last_current.translation;
                     let initial_guess_rotation =
                         nalgebra::UnitQuaternion::from_quaternion(nalgebra::Quaternion::new(
                             lifis_tick.imu_odom.pose.pose.orientation.w,
@@ -800,6 +808,7 @@ fn lio_with_ready_signal(
                     lifis_tick.map_only,
                     ext,
                     &cloud,
+                    current_cloud_time,
                     Some(&ready_for_next_tx),
                     &mut eval,
                     #[cfg(feature = "cuda")]
@@ -814,7 +823,7 @@ fn lio_with_ready_signal(
                 }
             };
 
-            log::debug!("Got a new registration");
+            // log::debug!("Got a new registration");
 
             #[cfg(feature = "rerun")]
             rec.set_timestamp_secs_since_epoch("sensor", current_cloud_time);
@@ -900,7 +909,7 @@ fn lio_with_ready_signal(
                     }
                 }
             };
-            let map_to_lidar_transform = t_world_lidar.clone().cast::<f32>();
+            let map_to_lidar_transform = t_world_lidar.cast::<f32>();
             cloud.header.frame_id = orig_frame.clone();
             if let Some(mut trajectory_file) = trajectory_file.as_mut() {
                 let time = timestamp_to_secs(&lifis_tick.cloud_header.stamp);
@@ -1187,17 +1196,17 @@ fn lio_with_ready_signal(
 
             let name = "Lidar Inertial Odometry";
 
-            if let Some(render_interval) = render_interval {
-                if last_render.elapsed() > render_interval {
-                    last_render = std::time::Instant::now();
-                    println!(
-                        "{}[2J{}[1;L{}\n{}",
-                        27 as char,
-                        27 as char,
-                        &name,
-                        eval.render()
-                    );
-                }
+            if let Some(render_interval) = render_interval
+                && last_render.elapsed() > render_interval
+            {
+                last_render = std::time::Instant::now();
+                println!(
+                    "{}[2J{}[1;L{}\n{}",
+                    27 as char,
+                    27 as char,
+                    &name,
+                    eval.render()
+                );
             }
 
             // mark to send new data

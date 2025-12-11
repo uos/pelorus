@@ -99,6 +99,31 @@ imu {
 
 }
 
+wheel {
+  topic = "/odom"
+  qos.reliability = Reliable # Reliable | BestEffort | SystemDefault
+
+  to_imu_transform {
+    use_tf_tree = false # Ignore the next manual translation and use the TF tree instead. The lookup will be once with receiving the first odom message.
+
+    # Rotation Matrix Wheel_to_IMU
+    rotation = [ [1.0, 0.0, 0.0],
+                 [0.0, 1.0, 0.0],
+                 [0.0, 0.0, 1.0] ]
+  }
+
+  # covariance = 0.001 # Weight for Odometry correction in the IEKF. If not given, the covariance provided in the Odometry message will be used.
+
+  kinematic_constraint_std = 0.05 # Standard deviation for kinematic constraints in undistortion (lower = stronger constraints)
+
+  kinematic_model = Full3D # Full3D | Differential | Holonomic2D | Ackermann. Applies kinematic constraints on the IEKF.
+  
+  # Ackermann steering configuration (only used when kinematic_model = Ackermann)
+  ackermann {
+    imu_to_rear_axle = [0.0m, 0.0m, 0.0m] # Offset from IMU to rear axle center in imu frame
+  }
+}
+
 output {
 
   terminal {
