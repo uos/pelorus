@@ -41,22 +41,22 @@ use ratpub::Node;
 use rerun::external::glam;
 #[cfg(feature = "ros2-client")]
 use ros2_client::{NodeName, NodeOptions};
-#[cfg(feature = "ros2-client")]
-#[allow(unused_imports)]
-use ros2_interfaces_jazzy::{
-    builtin_interfaces::msg::Time,
-    geometry_msgs::msg::{Point, PoseStamped, Quaternion, Transform, TransformStamped, Vector3},
-    nav_msgs::msg::Path,
-    sensor_msgs::msg::PointCloud2,
-    std_msgs::msg::Header,
-    visualization_msgs::msg::Marker,
-};
 #[cfg(feature = "ratpub")]
 #[allow(unused_imports)]
 use ros2_interfaces_jazzy_rkyv::{
     builtin_interfaces::msg::Time,
     geometry_msgs::msg::{Point, PoseStamped, Quaternion, Transform, TransformStamped, Vector3},
     nav_msgs::msg::{Odometry, Path},
+    sensor_msgs::msg::PointCloud2,
+    std_msgs::msg::Header,
+    visualization_msgs::msg::Marker,
+};
+#[cfg(feature = "ros2-client")]
+#[allow(unused_imports)]
+use ros2_interfaces_jazzy_serde::{
+    builtin_interfaces::msg::Time,
+    geometry_msgs::msg::{Point, PoseStamped, Quaternion, Transform, TransformStamped, Vector3},
+    nav_msgs::msg::Path,
     sensor_msgs::msg::PointCloud2,
     std_msgs::msg::Header,
     visualization_msgs::msg::Marker,
@@ -78,7 +78,6 @@ use prelio_ros2::{
 
 use pelorus_reg::{Registration, registration::RegistrationState};
 use prelio_ros2::{PrelioNode, prelio::imu::ImuMsg};
-//use small_gicp_sys::*;
 use ros_pointcloud2::prelude::*;
 use std::{
     path::PathBuf,
@@ -94,16 +93,6 @@ pub fn rpcl2_time_to_r2r_time(t: &ros_pointcloud2::ros::TimeMsg) -> TimeMsg {
         sec: t.sec,
         nanosec: t.nanosec,
     }
-}
-
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub enum LioMethod {
-    SmallGICPCPU,
-
-    #[default]
-    SFasterLioCPU,
-
-    JlioGPU,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -272,7 +261,7 @@ fn lio_with_ready_signal(
     config: LioConfig,
     ready_signal: Option<std::sync::mpsc::Sender<()>>,
     export_trajectory: bool,
-    synchronous_mode: bool,
+    #[allow(unused_variables)] synchronous_mode: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     #[cfg(any(feature = "ratpub", feature = "rat"))]
     let rt = if cfg!(feature = "ratpub") || (synchronous_mode && cfg!(feature = "rat")) {
@@ -334,9 +323,6 @@ fn lio_with_ready_signal(
         UnitQuaternion::from_matrix(&config.imu_params.initial_rotation_lidar_to_imu),
     );
 
-    #[cfg(feature = "gicp")]
-    let map = Arc::new(Mutex::new(small_gicp_sys::Map::new(config.map_resolution)));
-    #[cfg(not(feature = "gicp"))]
     let map = Arc::new(Mutex::new(RegistrationState::new(
         config.map_resolution,
         config.map_capacity,
@@ -350,7 +336,6 @@ fn lio_with_ready_signal(
         config.dist_update_sensitivity,
     )));
 
-    #[cfg(not(feature = "gicp"))]
     let mean_acc = Arc::new(Mutex::new(None));
 
     #[cfg(feature = "rerun")]
@@ -379,7 +364,6 @@ fn lio_with_ready_signal(
             .clone(),
         &config.prelio_params,
         &config.prelio_node_params,
-        #[cfg(not(feature = "gicp"))]
         Some({
             let map = map.clone();
             let mean_acc = mean_acc.clone();
@@ -392,9 +376,6 @@ fn lio_with_ready_signal(
                 *mean_acc = Some(init_mean_acc);
             }))
         }),
-        #[cfg(feature = "gicp")]
-        None,
-        #[cfg(not(feature = "gicp"))]
         {
             let map = map.clone();
 
@@ -429,9 +410,6 @@ fn lio_with_ready_signal(
                 },
             ))
         },
-        #[cfg(feature = "gicp")]
-        None,
-        #[cfg(not(feature = "gicp"))]
         {
             let map = map.clone();
             Some(Box::new(
@@ -450,13 +428,8 @@ fn lio_with_ready_signal(
                 },
             ))
         },
-        #[cfg(feature = "gicp")]
-        None,
         #[cfg(feature = "rerun")]
         Arc::clone(&rec),
-        #[cfg(feature = "gicp")]
-        None,
-        #[cfg(not(feature = "gicp"))]
         Some(ready_for_next_rx),
     )?;
 
@@ -682,7 +655,7 @@ fn lio_with_ready_signal(
             let mut total_map = mapping::VoxelGrid::new(mapping_resolution);
             while let Ok(reg) = out_chan_receiver.recv() {
                 reg.cloud.try_into_iter().unwrap().for_each(|p: PointXYZ| {
-                    let p = p.xyz_f32();
+                    let p = nalgebra::Point3::new(p.x, p.y, p.z);
                     let p = reg.registration.transform_point(&p);
                     total_map.insert(p);
                 });
@@ -710,9 +683,6 @@ fn lio_with_ready_signal(
     }
 
     std::thread::spawn(move || {
-        #[cfg(feature = "gicp")]
-        let mut first_scan = true;
-
         // Initialize Prelio prediction
         ready_for_next_tx.send(()).unwrap();
 
@@ -767,10 +737,7 @@ fn lio_with_ready_signal(
             if let Some(existing_last_scan_time) = last_scan_time {
                 if current_cloud_time < existing_last_scan_time {
                     let mut map = map.lock().unwrap();
-                    #[cfg(not(feature = "gicp"))]
                     map.clear_localmap();
-                    #[cfg(feature = "gicp")]
-                    map.reset(config.map_resolution);
 
                     info!("Resetting map");
                     t_world_lidar = nalgebra::Isometry3::identity();
@@ -829,7 +796,6 @@ fn lio_with_ready_signal(
 
             let (register_pose, ekf_state) = {
                 let mut map = map.lock().unwrap();
-                #[cfg(not(feature = "gicp"))]
                 match map.register_and_map(
                     lifis_tick.map_only,
                     ext,
@@ -844,32 +810,6 @@ fn lio_with_ready_signal(
                     Err(err) => {
                         error!("{err}");
                         continue;
-                    }
-                }
-                #[cfg(feature = "gicp")]
-                {
-                    if first_scan {
-                        eval.start("map update").unwrap();
-                        map.add(&cloud, None);
-                        eval.stop("map update").unwrap();
-                        first_scan = false;
-
-                        pelorus_reg::CloudRegisterResult {
-                            pose: Isometry3::identity(),
-                            avg_iterations: None,
-                        }
-                    } else {
-                        eval.start("reg").unwrap();
-                        let res = map.register(&cloud, &init_guess_world);
-                        eval.stop("reg").unwrap();
-                        eval.start("map update").unwrap();
-                        map.add(&cloud, Some(res.transform_target_to_source));
-                        eval.stop("map update").unwrap();
-
-                        pelorus_reg::CloudRegisterResult {
-                            pose: res.transform_target_to_source,
-                            avg_iterations: Some(res.num_iterations as u32),
-                        }
                     }
                 }
             };
@@ -947,14 +887,14 @@ fn lio_with_ready_signal(
             let mut cloud: PointCloud2 = {
                 match cloud {
                     LocatedBufferView::Ram(items) => {
-                        ros_pointcloud2::PointCloud2Msg::try_from_vec(items)
+                        ros_pointcloud2::PointCloud2Msg::try_from_vec(&items)
                             .unwrap()
                             .into()
                     }
                     #[cfg(feature = "cuda")]
                     LocatedBufferView::Cuda { buffer: cloud } => {
                         let buff = cloud.into_cloud(&cuda_stream);
-                        ros_pointcloud2::PointCloud2Msg::try_from_vec(buff)
+                        ros_pointcloud2::PointCloud2Msg::try_from_vec(&buff)
                             .unwrap()
                             .into()
                     }
@@ -978,11 +918,7 @@ fn lio_with_ready_signal(
                     .unwrap();
             }
 
-            #[cfg(all(
-                not(feature = "gicp"),
-                feature = "map",
-                all(feature = "rerun", feature = "ratpub")
-            ))]
+            #[cfg(all(feature = "map", all(feature = "rerun", feature = "ratpub")))]
             {
                 eval.start("pub_localmap").unwrap();
                 #[cfg(not(feature = "cuda"))]
@@ -1125,9 +1061,10 @@ fn lio_with_ready_signal(
                     .map(|v: PointXYZI| {
                         let color = gradient.eval_continuous(v.intensity as f64);
                         let v = if DECAY {
-                            map_to_lidar_transform.transform_point(&v.xyz_f32().cast())
+                            map_to_lidar_transform
+                                .transform_point(&nalgebra::Point3::new(v.x, v.y, v.z).cast())
                         } else {
-                            v.xyz_f32()
+                            nalgebra::Point3::new(v.x, v.y, v.z)
                         };
                         let pos = glam::Vec3::new(v.x as f32, v.y as f32, v.z as f32);
                         let color_rgb = [color.r, color.g, color.b];
@@ -1248,9 +1185,6 @@ fn lio_with_ready_signal(
                 }
             }
 
-            #[cfg(feature = "gicp")]
-            let name = "Lidar Odometry (GICP)";
-            #[cfg(not(feature = "gicp"))]
             let name = "Lidar Inertial Odometry";
 
             if let Some(render_interval) = render_interval {
@@ -1423,6 +1357,10 @@ pf! i 1
 
 # initial aggregate, starting loop
 pf! [i, l], l {scan_init_samples}
+pf! l 1
+pf! i 1
+
+pf! [i, l], l 1
 pf! l 1
 pf! i 1
 "#

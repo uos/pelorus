@@ -302,66 +302,6 @@ impl ImuProcess {
         (Isometry3::from_parts(trans, quat), t_l_be)
     }
 
-    /// Integrates IMU data using Lie algebra for smoothing.
-    /// Returns the estimated pose in the lidar frame.
-    #[cfg(feature = "gtsam")]
-    pub fn integrate_imu_gtsam(
-        imu_data: &Vec<ImuMsg>,
-        start_time: f64,
-        undistort_params: Option<&config::UndistortParameters>,
-        mut imu_params: config::ImuParameters,
-    ) -> Isometry3<f64> {
-        // update noise parameters with imu covariance, assuming constant noise. could be improved by averaging over all imu data
-        if let Some(first_imu_entry) = imu_data.first() {
-            imu_params.gyro_noise = first_imu_entry.angular_velocity_covariance[0];
-            imu_params.accel_noise = first_imu_entry.linear_acceleration_covariance[0];
-        } else {
-            return Isometry3::identity(); // no imu data here
-        }
-
-        let mut gtsam_imu = gtsam_sys::ImuIntegration::new(&imu_params);
-        gtsam_imu.reset_state(Isometry3::identity(), Vector3::zeros(), Vector3::zeros());
-
-        /*self.gtsam_imu
-        .reset_bias(Vector3::new(0.0, 0.0, 0.0), Vector3::new(0.0, 0.0, 0.0));*/
-        // TODO Find real bias
-
-        for imu in imu_data {
-            let dt = timestamp_to_secs(&imu.stamp) - start_time;
-            if dt < 0.0 {
-                continue;
-            }
-            gtsam_imu.add_imu(
-                dt,
-                Vector3::new(
-                    imu.linear_acceleration[0],
-                    imu.linear_acceleration[1],
-                    imu.linear_acceleration[2],
-                ),
-                Vector3::new(
-                    imu.angular_velocity[0],
-                    imu.angular_velocity[1],
-                    imu.angular_velocity[2],
-                ),
-            )
-        }
-
-        let integrated = gtsam_imu.get_state();
-        let integrated_pose = Isometry3::from_parts(
-            Translation3::from(integrated.translation),
-            integrated.rotation,
-        );
-
-        // to lidar frame
-        if let Some(config) = undistort_params {
-            let lidar_frame_guess =
-                config.lidar_to_imu.inverse() * integrated_pose * config.lidar_to_imu;
-            lidar_frame_guess
-        } else {
-            integrated_pose
-        }
-    }
-
     pub fn process(
         &'_ mut self,
         meas: MeasureGroup,

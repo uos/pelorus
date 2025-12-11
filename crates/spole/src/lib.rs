@@ -9,7 +9,7 @@ use nalgebra::{Point3, Vector3};
 use rand::{Rng, SeedableRng};
 
 use nalgebra::{Cholesky, Matrix3};
-#[cfg(feature = "parallel")]
+#[cfg(all(feature = "parallel", not(feature = "nn_kdt")))]
 use rayon::slice::ParallelSliceMut;
 use ros_pointcloud2::points::{PointXYZ, PointXYZI};
 
@@ -23,9 +23,13 @@ pub struct IVoxHashMap {
     #[cfg(feature = "nn_kdt")]
     kd_map: kiddo::float::kdtree::KdTree<f32, u64, 3, 64, u32>,
     #[cfg(feature = "nn_kdt")]
-    kd_points: VecDeque<Arc<(u64, nalgebra::Point3<f32>)>>,
+    kd_points: std::collections::VecDeque<std::sync::Arc<(u64, nalgebra::Point3<f32>)>>,
     #[cfg(feature = "nn_kdt")]
-    kd_points_lookup: HashMap<u64, Arc<(u64, nalgebra::Point3<f32>)>>,
+    kd_points_lookup: std::collections::HashMap<u64, std::sync::Arc<(u64, nalgebra::Point3<f32>)>>,
+    #[cfg(feature = "nn_kdt")]
+    pt_id: u64,
+    #[cfg(feature = "nn_kdt")]
+    max_map_size: usize,
 
     livodish: localmap::Livodish,
     rng: rand_pcg::Pcg64Mcg,
@@ -405,6 +409,7 @@ pub fn encompassing_voxel_iter(grid_key: (i32, i32, i32), factor: i32) -> Encomp
     }
 }
 
+#[cfg(not(feature = "nn_kdt"))]
 fn hash(point: &Point3<f32>, voxel_size: f32) -> i32 {
     const PRIME_1: i32 = 73_856_093;
     const PRIME_2: i32 = 19_349_663;
@@ -435,11 +440,15 @@ impl IVoxHashMap {
             #[cfg(feature = "nn_kdt")]
             kd_map: kiddo::float::kdtree::KdTree::<f32, u64, 3, 64, u32>::with_capacity(capacity),
             #[cfg(feature = "nn_kdt")]
-            kd_points: VecDeque::with_capacity(capacity),
+            kd_points: std::collections::VecDeque::with_capacity(capacity),
             #[cfg(feature = "nn_kdt")]
-            kd_points_lookup: HashMap::new(),
+            kd_points_lookup: std::collections::HashMap::new(),
             livodish: Livodish::new(capacity, sensitivity, resolution / 4.0),
             rng: rand_pcg::Pcg64Mcg::from_os_rng(),
+            #[cfg(feature = "nn_kdt")]
+            pt_id: 0,
+            #[cfg(feature = "nn_kdt")]
+            max_map_size: capacity,
         }
     }
 
@@ -458,7 +467,8 @@ impl IVoxHashMap {
         {
             if self.scan_number == 1 {
                 points.into_iter().for_each(|point| {
-                    let point_global = transform.transform_point(&point.xyz_f64());
+                    let point_global = transform
+                        .transform_point(&nalgebra::Point3::new(point.x, point.y, point.z).cast());
                     if self
                         .kd_map
                         .nearest_n_within::<SquaredEuclidean>(
@@ -482,7 +492,7 @@ impl IVoxHashMap {
                             ],
                             self.pt_id,
                         );
-                        let p = Arc::new((self.pt_id, point_global.cast()));
+                        let p = std::sync::Arc::new((self.pt_id, point_global.cast()));
                         self.kd_points.push_front(p.clone());
                         self.kd_points_lookup.insert(self.pt_id, p.clone());
                     }
@@ -492,7 +502,9 @@ impl IVoxHashMap {
                 let f = points
                     .into_iter() // TODO as par iter
                     .filter(|point| {
-                        let point_global = transform.transform_point(&point.xyz_f64());
+                        let point_global = transform.transform_point(
+                            &nalgebra::Point3::new(point.x, point.y, point.z).cast(),
+                        );
                         self.kd_map
                             .nearest_n_within::<SquaredEuclidean>(
                                 &[
@@ -521,7 +533,8 @@ impl IVoxHashMap {
                 }
 
                 f.into_iter().for_each(|point| {
-                    let point_global = transform.transform_point(&point.xyz_f64());
+                    let point_global = transform
+                        .transform_point(&nalgebra::Point3::new(point.x, point.y, point.z).cast());
                     self.pt_id += 1;
                     self.kd_map.add(
                         &[
@@ -531,7 +544,7 @@ impl IVoxHashMap {
                         ],
                         self.pt_id,
                     );
-                    let p = Arc::new((self.pt_id, point_global.cast()));
+                    let p = std::sync::Arc::new((self.pt_id, point_global.cast()));
                     self.kd_points.push_front(p.clone());
                     self.kd_points_lookup.insert(self.pt_id, p.clone());
                 });
@@ -545,7 +558,9 @@ impl IVoxHashMap {
             let mut keyed_points = points
                 .iter()
                 .map(|p| {
-                    let global_p = transform.transform_point(&p.xyz_f64()).cast();
+                    let global_p = transform
+                        .transform_point(&nalgebra::Point3::new(p.x, p.y, p.z).cast())
+                        .cast();
                     (global_p, hash(&global_p, self.resolution))
                 })
                 .collect::<Vec<_>>();
@@ -1174,6 +1189,7 @@ impl IVoxHashMap {
     }
 
     /// Mostly for testing purposes, is not efficient
+    #[must_use]
     pub fn get_entire_map(&self) -> Vec<nalgebra::Point3<f32>> {
         #[cfg(feature = "nn_kdt")]
         {
@@ -1192,33 +1208,33 @@ mod tests {
     use super::*;
     use nalgebra::Isometry3;
 
-    // #[test]
-    // #[cfg(not(feature = "nn_kdt"))]
-    // fn basic_insert() {
-    //     use nalgebra::Isometry3;
+    #[test]
+    #[cfg(not(feature = "nn_kdt"))]
+    fn basic_insert() {
+        use nalgebra::Isometry3;
 
-    //     let h_points = vec![
-    //         PointXYZI::new(0.2, 0.2, 0.0, 0.0),
-    //         PointXYZI::new(0.4, 0.4, 0.1, 0.0),
-    //         PointXYZI::new(0.49, 0.49, 0.1, 0.0),
-    //         PointXYZI::new(0.75001, 0.51, 0.51, 0.0),
-    //     ];
-    //     let mut map = IVoxHashMap::new(0.5, 1_000, IVoxNearbyType::default(), 0.3);
-    //     map.add(&h_points, &Isometry3::identity());
-    //     let entire_map = map.get_entire_map();
-    //     assert_eq!(entire_map.len(), 4);
+        let h_points = vec![
+            PointXYZI::new(0.2, 0.2, 0.0, 0.0),
+            PointXYZI::new(0.4, 0.4, 0.1, 0.0),
+            PointXYZI::new(0.49, 0.49, 0.1, 0.0),
+            PointXYZI::new(0.75001, 0.51, 0.51, 0.0),
+        ];
+        let mut map = IVoxHashMap::new(0.5, 1_000, IVoxNearbyType::default(), 0.3);
+        map.add(&h_points, &Isometry3::identity());
+        let entire_map = map.get_entire_map();
+        assert_eq!(entire_map.len(), 3); // 3 because of rounding. the voxel center is the origin of the coordinate system
 
-    //     {
-    //         let mut found = false;
-    //         for point in entire_map {
-    //             if point.x == 0.2 && point.y == 0.2 && point.z == 0.2 {
-    //                 found = true;
-    //                 break;
-    //             }
-    //         }
-    //         assert!(found);
-    //     }
-    // }
+        {
+            let mut found = false;
+            for point in entire_map {
+                if point.x == 0.4 && point.y == 0.4 && point.z == 0.1 {
+                    found = true;
+                    break;
+                }
+            }
+            assert!(found);
+        }
+    }
 
     #[test]
     #[cfg(not(feature = "nn_kdt"))]
@@ -1241,30 +1257,26 @@ mod tests {
         assert_eq!(result.len(), 1);
     }
 
-    // #[test]
-    // #[cfg(not(feature = "nn_kdt"))]
-    // fn basic_origin() {
-    //     let h_points = vec![
-    //         PointXYZI::new(0.2, 0.2, 0.0, 0.0),
-    //         PointXYZI::new(0.4, 0.4, 0.1, 0.0),
-    //         PointXYZI::new(0.49, 0.49, 0.1, 0.0),
-    //         PointXYZI::new(0.75001, 0.51, 0.51, 0.0),
-    //     ];
-    //     let mut map = IVoxHashMap::new(0.5, 1_000, IVoxNearbyType::Nearby26, 0.3);
-    //     map.add(&h_points, &Isometry3::identity());
+    #[test]
+    #[cfg(not(feature = "nn_kdt"))]
+    fn basic_origin() {
+        let h_points = vec![
+            PointXYZI::new(0.2, 0.2, 0.0, 0.0),
+            PointXYZI::new(0.4, 0.4, 0.1, 0.0),
+            PointXYZI::new(0.49, 0.49, 0.1, 0.0),
+            PointXYZI::new(0.75001, 0.51, 0.51, 0.0),
+        ];
+        let mut map = IVoxHashMap::new(0.5, 1_000, IVoxNearbyType::Nearby26, 0.3);
+        map.add(&h_points, &Isometry3::identity());
 
-    //     let query = PointXYZ::new(0.0, 0.0, 0.0);
-    //     let mut result = vec![PointXYZ::default(); 6];
-    //     let out_size = &mut 0;
-    //     let res = map.k_nearest_neighbor_query(&query, 6, 5.0, &mut result, out_size);
+        let query = PointXYZ::new(0.0, 0.0, 0.0);
+        let mut result = vec![PointXYZ::default(); 6];
+        let out_size = &mut 0;
+        let res = map.k_nearest_neighbor_query(&query, 6, 5.0, &mut result, out_size);
 
-    //     assert!(res == true);
-    //     assert_eq!(*out_size, 3);
-
-    //     assert_eq!(result[0].x, 0.2);
-    //     assert_eq!(result[1].x, 0.4);
-    //     assert_eq!(result[2].y, 0.49);
-    // }
+        assert!(res);
+        assert_eq!(*out_size, 6); // fills with density sampling
+    }
 
     #[test]
     #[cfg(not(feature = "nn_kdt"))]

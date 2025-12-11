@@ -191,7 +191,10 @@ impl RegistrationState {
     // https://www.ilikebigbits.com/2017_09_25_plane_from_points_2.html
     #[allow(dead_code)]
     fn plane_from_points(points: &[PointXYZ], error_threshold: f64) -> Option<[f64; 4]> {
-        let points = points.iter().map(|p| p.xyz_f64()).collect::<Vec<_>>();
+        let points = points
+            .iter()
+            .map(|p| nalgebra::Point3::new(p.x, p.y, p.z).cast())
+            .collect::<Vec<_>>();
         let n = points.len();
         if n < 3 {
             return None;
@@ -453,7 +456,12 @@ impl crate::Registration for RegistrationState {
                             .filter_map(|point_local| {
                                 // Global in IMU frame
                                 let point_imu = ekf_state.offset_r_l_i.matrix()
-                                    * point_local.xyz_f64()
+                                    * nalgebra::Point3::new(
+                                        point_local.x,
+                                        point_local.y,
+                                        point_local.z,
+                                    )
+                                    .cast()
                                     + ekf_state.offset_t_l_i;
                                 let point_global = ekf_state.pose.transform(&point_imu.coords);
 
@@ -473,7 +481,16 @@ impl crate::Registration for RegistrationState {
                                         + plane[3];
                                     let s = 1.0
                                         - 0.9 * pd2.abs()
-                                            / point_local.xyz_f64().coords.norm().sqrt() as f32;
+                                            / nalgebra::Point3::new(
+                                                point_local.x,
+                                                point_local.y,
+                                                point_local.z,
+                                            )
+                                            .cast::<f64>()
+                                            .coords
+                                            .norm()
+                                            .sqrt()
+                                                as f32;
 
                                     if s <= 0.9 {
                                         None
@@ -606,7 +623,12 @@ impl crate::Registration for RegistrationState {
                         .zip(h_x.row_iter_mut())
                         .zip(h.row_iter_mut())
                         .for_each(|((normal_point, mut h_x_row), mut h_row)| {
-                            let point_local = normal_point.xyz_f64();
+                            let point_local = nalgebra::Point3::new(
+                                normal_point.x,
+                                normal_point.y,
+                                normal_point.z,
+                            )
+                            .cast::<f64>();
                             let nearest_plane = [
                                 normal_point.normal_x as f64,
                                 normal_point.normal_y as f64,

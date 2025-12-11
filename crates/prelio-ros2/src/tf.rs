@@ -5,8 +5,8 @@
 use log::error;
 use nalgebra::geometry::{Isometry3, Translation3, UnitQuaternion};
 
-use ros2_interfaces_jazzy::tf2_msgs::msg::TFMessage;
-use ros2_interfaces_jazzy::{
+use ros2_interfaces_jazzy_serde::tf2_msgs::msg::TFMessage;
+use ros2_interfaces_jazzy_serde::{
     builtin_interfaces::msg::{Duration, Time},
     geometry_msgs::msg::{Pose, Quaternion, Transform, TransformStamped, Vector3},
     std_msgs::msg::Header,

@@ -32,18 +32,17 @@ uom = { version = "0.37.0", default-features = false, features = [
   "f64",
   "f32",
 ] }
-ratslang = "0.2.0"
-ros_pointcloud2 = { version = "0.5.3", features = [
-  "nalgebra",
+ratslang = "0.2"
+ros_pointcloud2 = { version = "0.6", features = [
   "rayon",
   "derive",
-], git = "https://github.com/stelzo/ros_pointcloud2.git", branch = "rkyv" }
+] }
 nalgebra = { version = "0.33", features = ["serde-serialize"] }
 r2r = { version = "0.9.5" }
-ros2-client = { version = "0.7.6" }
+ros2-client = { version = "0.8" }
 tokio = { version = "1", features = ["full"] }
 rerun = { version = "0.27" }
-ros2-interfaces-jazzy = { version = "0.0.4", features = [
+ros2-interfaces-jazzy-serde = { version = "0.0.4", features = [
   "std_msgs",
   "geometry_msgs",
   "nav_msgs",
@@ -52,7 +51,7 @@ ros2-interfaces-jazzy = { version = "0.0.4", features = [
   "tf2_msgs",
   "builtin_interfaces",
 ] }
-ros2-interfaces-jazzy-rkyv = { version = "0.0.4", features = [
+ros2-interfaces-jazzy-rkyv = { version = "0.0.5", features = [
   "std_msgs",
   "geometry_msgs",
   "nav_msgs",
@@ -60,11 +59,9 @@ ros2-interfaces-jazzy-rkyv = { version = "0.0.4", features = [
   "visualization_msgs",
   "tf2_msgs",
   "builtin_interfaces",
-], git = "https://github.com/stelzo/ros2-interfaces-jazzy-rkyv.git", branch = "main" }
-ratpub = { version = "0.1.1", git = "https://github.com/uos/minot", tag = "v0.1.1" }
-rat = { version = "0.1.1", git = "https://github.com/uos/minot", tag = "v0.1.1" }
-small_gicp-sys = { version = "0.1.0", git = "https://github.com/stelzo/small_gicp-sys", rev = "30da271" }
-gtsam-sys = { version = "0.1.0", git = "https://github.com/stelzo/gtsam-sys.git", branch = "main" }
+] }
+ratpub = "0.2.1"
+mt_rat = "0.2.1"
 anyhow = "1"
 sophus_lie = "0.9"
 rayon = "1"
@@ -75,25 +72,17 @@ color-eyre = "0.6"
 futures-lite = "2"
 either = "1"
 log = "0.4"
-env_logger = "0.11.6"
-rand = "0.9.1"
+env_logger = "0.11.8"
+rand = "0.9.2"
 rand_pcg = "0.9"
 rand_distr = "0.5.1"
 nohash-hasher = "0.2.0"
 serde = { version = "1", features = ["derive"] }
-toml = "0.8.20"
 morton-encoding = "2.0.1"
 rustc-hash = "2.1.1"
 plotters = "0.3"
 petname = "2"
-image = "0.25.6"
-
-# [patch."ssh://git@github.com/stelzo/small_gicp-sys.git"]
-# small_gicp-sys = { path = "../small_gicp-rs" }
-
-# [patch."https://github.com/uos/minot"]
-# ratpub = { path = "../minot-zenoh/ratpub" }
-# rat = { path = "../minot-zenoh/rat" }
+image = "0.25.9"
 
 [profile.release]
 lto = "fat"         # Link Time Optimization
