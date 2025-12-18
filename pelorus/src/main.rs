@@ -70,7 +70,7 @@ use prelio_ros2::tf_r2r::TfBroadcaster;
 
 use pelorus_reg::Registration;
 use prelio_ros2::PrelioNode;
-use std::{path::PathBuf, sync::Arc};
+use std::path::PathBuf;
 
 #[cfg(feature = "evaluate")]
 use pelorus::evaluate;
@@ -200,7 +200,7 @@ fn lio_with_ready_signal(
 ) -> Result<(), Box<dyn std::error::Error>> {
     #[cfg(any(feature = "ratpub", feature = "rat"))]
     let rt = if cfg!(feature = "ratpub") || (synchronous_mode && cfg!(feature = "rat")) {
-        Some(Arc::new(
+        Some(std::sync::Arc::new(
             tokio::runtime::Builder::new_multi_thread()
                 .enable_all()
                 .build()
@@ -212,7 +212,7 @@ fn lio_with_ready_signal(
 
     #[cfg(feature = "rat")]
     if synchronous_mode && let Some(rt) = rt.as_ref() {
-        rat::init("pelorus", None, Some(Arc::clone(rt))).unwrap();
+        rat::init("pelorus", None, Some(std::sync::Arc::clone(rt))).unwrap();
     }
 
     #[cfg(not(feature = "ratpub"))]
@@ -226,7 +226,7 @@ fn lio_with_ready_signal(
         NodeOptions::new().enable_rosout(true),
     )?;
     #[cfg(feature = "ratpub")]
-    let node = Arc::new(
+    let node = std::sync::Arc::new(
         rt.as_ref()
             .expect("rt always exists with ratpub feat")
             .block_on(async { Node::create("pelorus_node".to_owned()).await.unwrap() }),
@@ -240,7 +240,7 @@ fn lio_with_ready_signal(
     #[cfg(not(feature = "ratpub"))]
     let tf_broadcaster = TfBroadcaster::new(&mut node);
     #[cfg(feature = "ratpub")]
-    let tf_broadcaster = Arc::new(TfBroadcaster::new(
+    let tf_broadcaster = std::sync::Arc::new(TfBroadcaster::new(
         &node,
         rt.as_ref()
             .expect("rt always exists with ratpub feat")
@@ -842,7 +842,7 @@ fn lio_with_ready_signal(
             };
             #[cfg(feature = "ratpub")]
             {
-                let inner_tf_broad = Arc::clone(&tf_broadcaster);
+                let inner_tf_broad = std::sync::Arc::clone(&tf_broadcaster);
                 std::thread::spawn(move || {
                     future::block_on(async move {
                         inner_tf_broad
