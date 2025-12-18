@@ -16,3 +16,8 @@ uom.workspace = true
 either.workspace = true
 ros_pointcloud2.workspace = true
 serde.workspace = true
+r2r = { workspace = true, optional = true }
+
+[features]
+# default = ["r2r"]
+r2r = ["dep:r2r"]

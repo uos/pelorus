@@ -260,6 +260,31 @@ pub struct LifisNodeParameters {
     pub imu_filtered_qos: Qos,
 }
 
+#[cfg(feature = "r2r")]
+impl From<Qos> for r2r::QosProfile {
+    fn from(value: Qos) -> Self {
+        match value {
+            Qos::Sensor(reliability) => r2r::QosProfile::parameters()
+                .durability(r2r::qos::DurabilityPolicy::Volatile)
+                .deadline(std::time::Duration::MAX)
+                .reliability(match reliability {
+                    Reliability::Reliable => r2r::qos::ReliabilityPolicy::Reliable,
+                    Reliability::BestEffort => r2r::qos::ReliabilityPolicy::BestEffort,
+                })
+                .history(r2r::qos::HistoryPolicy::KeepLast)
+                .keep_last(5)
+                .lifespan(std::time::Duration::MAX),
+            _ => r2r::QosProfile::parameters()
+                .durability(r2r::qos::DurabilityPolicy::Volatile)
+                .deadline(std::time::Duration::MAX)
+                .reliability(r2r::qos::ReliabilityPolicy::Reliable)
+                .history(r2r::qos::HistoryPolicy::KeepLast)
+                .keep_last(1)
+                .lifespan(std::time::Duration::MAX),
+        }
+    }
+}
+
 #[derive(Serialize, Deserialize, Copy, Clone, Debug, Default)]
 pub enum Reliability {
     Reliable,

@@ -10,7 +10,9 @@ use futures_lite::{StreamExt, future};
 #[allow(unused_imports)]
 use log::{debug, error, info, warn};
 use pelorus_core::{
-    ImuMsg, ImuPredictor, ImuPredictorUndistort, LidarVendor, LifisNodeParameters, LifisParameters, LivoxMid360Point, LivoxPoint, OusterPoint, PrelioProcessedCloud, RobosensePoint, VelodynePoint, timing::RuntimeEvaluator
+    ImuMsg, ImuPredictor, ImuPredictorUndistort, LidarVendor, LifisNodeParameters, LifisParameters,
+    LivoxMid360Point, LivoxPoint, OdomMsg, OusterPoint, PrelioProcessedCloud, RobosensePoint,
+    VelodynePoint, timing::RuntimeEvaluator,
 };
 pub use prelio;
 
@@ -19,7 +21,6 @@ use prelio::timestamp_to_secs;
 
 #[cfg(feature = "r2r")]
 use r2r::{
-    QosProfile,
     builtin_interfaces::msg::Time,
     geometry_msgs::msg::{
         Point, Pose, PoseWithCovariance, Quaternion, Twist, TwistWithCovariance, Vector3,
@@ -428,30 +429,6 @@ impl From<crate::Qos> for ros2::QosPolicies {
         }
     }
 }
-#[cfg(feature = "r2r")]
-impl From<crate::Qos> for QosProfile {
-    fn from(value: crate::Qos) -> Self {
-        match value {
-            Qos::Sensor(reliability) => QosProfile::parameters()
-                .durability(r2r::qos::DurabilityPolicy::Volatile)
-                .deadline(std::time::Duration::MAX)
-                .reliability(match reliability {
-                    Reliability::Reliable => r2r::qos::ReliabilityPolicy::Reliable,
-                    Reliability::BestEffort => r2r::qos::ReliabilityPolicy::BestEffort,
-                })
-                .history(r2r::qos::HistoryPolicy::KeepLast)
-                .keep_last(5)
-                .lifespan(std::time::Duration::MAX),
-            _ => QosProfile::parameters()
-                .durability(r2r::qos::DurabilityPolicy::Volatile)
-                .deadline(std::time::Duration::MAX)
-                .reliability(r2r::qos::ReliabilityPolicy::Reliable)
-                .history(r2r::qos::HistoryPolicy::KeepLast)
-                .keep_last(1)
-                .lifespan(std::time::Duration::MAX),
-        }
-    }
-}
 
 #[derive(Debug)]
 pub struct Tick {
@@ -692,6 +669,26 @@ impl PrelioNode {
                         let state_lock = state_wheel.lock().unwrap();
                         state_lock.lifis.lock().unwrap().add_odom(odom_msg);
                     }
+                })
+            });
+        }
+        #[cfg(feature = "r2r")]
+        {
+            let state_wheel = state.clone();
+            let ext = nalgebra::Isometry3::from_parts(
+                nalgebra::Translation3::new(0.0, 0.0, 0.0),
+                nalgebra::UnitQuaternion::from_matrix(&params.wheel_to_imu_rotation),
+            );
+            std::thread::spawn(move || {
+                future::block_on(async {
+                    wheel_subscriber
+                        .for_each(|msg| {
+                            let mut odom_msg = odom_to_lifis(msg);
+                            odom_msg.twist_linear = ext.transform_vector(&odom_msg.twist_linear);
+                            let state_lock = state_wheel.lock().unwrap();
+                            state_lock.lifis.lock().unwrap().add_odom(odom_msg);
+                        })
+                        .await
                 })
             });
         }
@@ -1028,7 +1025,10 @@ impl PrelioNode {
                         w: synced_data.end_of_frame_guess.rotation.quaternion().w,
                     },
                 },
+                #[cfg(not(feature = "r2r"))]
                 covariance: synced_data.pose_covariance,
+                #[cfg(feature = "r2r")]
+                covariance: synced_data.pose_covariance.to_vec(),
             };
 
             let twist = TwistWithCovariance {
@@ -1044,7 +1044,10 @@ impl PrelioNode {
                         z: synced_data.end_of_frame_twist.angular.z,
                     },
                 },
+                #[cfg(not(feature = "r2r"))]
                 covariance: synced_data.twist_covariance,
+                #[cfg(feature = "r2r")]
+                covariance: synced_data.twist_covariance.to_vec(),
             };
 
             let odom = Odometry {
@@ -1072,6 +1075,66 @@ impl PrelioNode {
             sender.send(res).expect("could not send lifis tick");
         }
     }
+}
+
+// only used with r2r
+#[allow(dead_code)]
+fn odom_to_lifis(msg: Odometry) -> OdomMsg {
+    let odom_msg = OdomMsg {
+        twist_linear: nalgebra::Vector3::new(
+            msg.twist.twist.linear.x,
+            msg.twist.twist.linear.y,
+            msg.twist.twist.linear.z,
+        ),
+        twist_angular: nalgebra::Vector3::new(
+            msg.twist.twist.angular.x,
+            msg.twist.twist.angular.y,
+            msg.twist.twist.angular.z,
+        ),
+        twist_cov: [
+            msg.twist.covariance[0],
+            msg.twist.covariance[1],
+            msg.twist.covariance[2],
+            msg.twist.covariance[3],
+            msg.twist.covariance[4],
+            msg.twist.covariance[5],
+            msg.twist.covariance[6],
+            msg.twist.covariance[7],
+            msg.twist.covariance[8],
+            msg.twist.covariance[9],
+            msg.twist.covariance[10],
+            msg.twist.covariance[11],
+            msg.twist.covariance[12],
+            msg.twist.covariance[13],
+            msg.twist.covariance[14],
+            msg.twist.covariance[15],
+            msg.twist.covariance[16],
+            msg.twist.covariance[17],
+            msg.twist.covariance[18],
+            msg.twist.covariance[19],
+            msg.twist.covariance[20],
+            msg.twist.covariance[21],
+            msg.twist.covariance[22],
+            msg.twist.covariance[23],
+            msg.twist.covariance[24],
+            msg.twist.covariance[25],
+            msg.twist.covariance[26],
+            msg.twist.covariance[27],
+            msg.twist.covariance[28],
+            msg.twist.covariance[29],
+            msg.twist.covariance[30],
+            msg.twist.covariance[31],
+            msg.twist.covariance[32],
+            msg.twist.covariance[33],
+            msg.twist.covariance[34],
+            msg.twist.covariance[35],
+        ],
+        stamp: ros_pointcloud2::ros::TimeMsg {
+            sec: msg.header.stamp.sec,
+            nanosec: msg.header.stamp.nanosec,
+        },
+    };
+    odom_msg
 }
 
 fn imu_to_lifis(msg: Imu) -> ImuMsg {

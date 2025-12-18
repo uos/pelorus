@@ -44,4 +44,4 @@ ros2-client = [
   "dep:ros2-interfaces-jazzy-serde",
   "ros_pointcloud2/ros2-interfaces-jazzy-serde",
 ]
-r2r = ["dep:r2r", "ros_pointcloud2/r2r_msg"]
+r2r = ["dep:r2r", "ros_pointcloud2/r2r_msg", "pelorus_core/r2r"]
