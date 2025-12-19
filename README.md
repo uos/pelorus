@@ -27,7 +27,7 @@ cd ..
 
 rosdep install --from-paths src -y --ignore-src
 
-colcon build
+colcon build --packages-select pelorus
 ```
 
 Building might take a while.
@@ -35,7 +35,7 @@ Building might take a while.
 > [!TIP]
 > Pelorus offers various configurations at compile time. You can set them with CMake arguments via uppercasing and setting the prefix `PELORUS_` like so:
 > ```sh
-> colcon build --cmake-args -D PELORUS_CUDA=ON
+> colcon build --packages-select pelorus --cmake-args -D PELORUS_CUDA=ON
 > ```
 > Building with CUDA acceleration needs the `CUDA_HOME` environment variable to be set. Some installation do this already. If not, add `export CUDA_HOME=/usr/local/cuda` to your `~/.bashrc`, `~/.zshrc` etc.
 
