@@ -2,8 +2,6 @@ pub mod imu;
 mod naive_preint;
 mod naive_preint_eth;
 
-#[cfg(feature = "cuda")]
-use cuda::CudaBuffer;
 use log::{error, info, warn};
 use nalgebra::*;
 use pelorus_core::{
@@ -11,6 +9,8 @@ use pelorus_core::{
     LidarVendor, LifisParameters, MadgwickSetting, OdomMsg, PointXYZIT, PointXYZITimestamp,
     PrelioProcessedCloud, Twist, time_msg_from_secs, timing::RuntimeEvaluator,
 };
+#[cfg(feature = "cuda")]
+use pelorus_cuda::CudaBuffer;
 use std::thread;
 
 use anyhow::Result;
@@ -101,19 +101,19 @@ pub enum LocatedBufferView<T> {
     Ram(Vec<T>),
     #[cfg(feature = "cuda")]
     Cuda {
-        buffer: cuda::CudaBuffer,
+        buffer: pelorus_cuda::CudaBuffer,
     },
 }
 
 impl<T> LocatedBufferView<T> {
     #[cfg(feature = "cuda")]
-    pub fn alloc_points_cuda(stream: &cuda::Stream, len: usize) -> Self {
+    pub fn alloc_points_cuda(stream: &pelorus_cuda::Stream, len: usize) -> Self {
         Self::Cuda {
             buffer: CudaBuffer::new(stream, size_of::<PointXYZI>(), len),
         }
     }
     #[cfg(feature = "cuda")]
-    pub fn alloc_neighbors_cuda(stream: &cuda::Stream, len: usize) -> Self {
+    pub fn alloc_neighbors_cuda(stream: &pelorus_cuda::Stream, len: usize) -> Self {
         Self::Cuda {
             buffer: CudaBuffer::new(stream, size_of::<usize>(), len),
         }
@@ -122,7 +122,7 @@ impl<T> LocatedBufferView<T> {
         Self::Ram(src)
     }
     #[cfg(feature = "cuda")]
-    pub fn copy_from_slice_cuda(stream: &cuda::Stream, src: &[PointXYZI]) -> Self {
+    pub fn copy_from_slice_cuda(stream: &pelorus_cuda::Stream, src: &[PointXYZI]) -> Self {
         Self::Cuda {
             buffer: CudaBuffer::from_cloud(&stream, src),
         }
