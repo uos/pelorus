@@ -5,10 +5,10 @@ use pelorus_core::{
 use prelio::LocatedBufferView;
 use ros_pointcloud2::prelude::*;
 
+pub mod iekf;
 pub mod imu;
 pub mod pipeline;
 pub mod registration;
-pub mod sophus_ekf;
 use anyhow::Result;
 pub use spole::*;
 

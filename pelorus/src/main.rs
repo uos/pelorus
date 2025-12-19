@@ -217,12 +217,12 @@ fn lio_with_ready_signal(
 
     #[cfg(not(feature = "ratpub"))]
     #[allow(unused_variables)]
-    let namespace = "/lio";
+    let namespace = "/pelorus";
     #[cfg(feature = "ros2-client")]
     let ctx = ros2_client::Context::new()?;
     #[cfg(feature = "ros2-client")]
     let mut node = ctx.new_node(
-        NodeName::new(namespace, "lio_node")?,
+        NodeName::new(namespace, "pelorus_node")?,
         NodeOptions::new().enable_rosout(true),
     )?;
     #[cfg(feature = "ratpub")]
@@ -235,7 +235,7 @@ fn lio_with_ready_signal(
     #[cfg(feature = "r2r")]
     let ctx = r2r::Context::create()?;
     #[cfg(feature = "r2r")]
-    let mut node = r2r::Node::create(ctx, "lio", "lio")?;
+    let mut node = r2r::Node::create(ctx, "pelorus", "pelorus")?;
 
     #[cfg(not(feature = "ratpub"))]
     let tf_broadcaster = TfBroadcaster::new(&mut node);
@@ -304,7 +304,7 @@ fn lio_with_ready_signal(
     //             .unwrap();
     //     }
     // }
-    #[cfg(all(not(feature = "no-viz"), feature = "ros2-client"))]
+    #[cfg(feature = "ros2-client")]
     let cloud_publisher = node
         .create_publisher(
             &node
@@ -395,7 +395,7 @@ fn lio_with_ready_signal(
     //         .await
     //         .unwrap()
     // });
-    #[cfg(all(not(feature = "no-viz"), feature = "r2r"))]
+    #[cfg(feature = "r2r")]
     let cloud_publisher =
         node.create_publisher::<PointCloud2>("registered", config.registered_cloud_qos.into())?;
     #[cfg(feature = "ratpub")]
@@ -407,9 +407,9 @@ fn lio_with_ready_signal(
                 .await
                 .unwrap()
         });
-    #[cfg(all(not(feature = "no-viz"), feature = "r2r"))]
+    #[cfg(feature = "r2r")]
     let odom_publisher = node.create_publisher::<Odometry>("odom", config.odom_qos.into())?;
-    #[cfg(all(not(feature = "no-viz"), feature = "ratpub"))]
+    #[cfg(feature = "ratpub")]
     let odom_publisher = rt
         .as_ref()
         .expect("rt always exists with ratpub feat")
@@ -481,7 +481,8 @@ fn lio_with_ready_signal(
 
     let mut last_scan_time = None;
 
-    let path_update_translate_threshold = 0.15; // default 0.15 meters - TODO config
+    #[cfg(not(feature = "no-viz"))]
+    let path_update_translate_threshold = 0.05; // default 0.15 meters - TODO config
 
     let mut eval = RuntimeEvaluator::new();
 
@@ -683,58 +684,82 @@ fn lio_with_ready_signal(
             t_last_current = t_world_lidar.inverse() * register_pose.pose;
             t_world_lidar = rev_imu_tf.cast() * register_pose.pose;
 
-            let mut lidar_odom = lifis_tick.imu_odom.clone();
-            lidar_odom.header.stamp = Time {
+            let mut pelorus_odom = lifis_tick.imu_odom.clone();
+            pelorus_odom.header.stamp = Time {
                 sec: lifis_tick.odom_time.sec,
                 nanosec: lifis_tick.odom_time.nanosec,
             };
-            lidar_odom.header.frame_id = config.prelio_params.map_frame.clone();
-            lidar_odom.child_frame_id = orig_frame.clone();
-            lidar_odom.pose.pose.position.x = t_world_lidar.translation.vector.x;
-            lidar_odom.pose.pose.position.y = t_world_lidar.translation.vector.y;
-            lidar_odom.pose.pose.position.z = t_world_lidar.translation.vector.z;
-            lidar_odom.pose.pose.orientation.x = t_world_lidar.rotation.i;
-            lidar_odom.pose.pose.orientation.y = t_world_lidar.rotation.j;
-            lidar_odom.pose.pose.orientation.z = t_world_lidar.rotation.k;
-            lidar_odom.pose.pose.orientation.w = t_world_lidar.rotation.w;
-            // TODO publish with covariances to own topic separately
+            pelorus_odom.header.frame_id = config.prelio_params.map_frame.clone();
+            pelorus_odom.child_frame_id = orig_frame.clone();
+            pelorus_odom.pose.pose.position.x = t_world_lidar.translation.vector.x;
+            pelorus_odom.pose.pose.position.y = t_world_lidar.translation.vector.y;
+            pelorus_odom.pose.pose.position.z = t_world_lidar.translation.vector.z;
+            pelorus_odom.pose.pose.orientation.x = t_world_lidar.rotation.i;
+            pelorus_odom.pose.pose.orientation.y = t_world_lidar.rotation.j;
+            pelorus_odom.pose.pose.orientation.z = t_world_lidar.rotation.k;
+            pelorus_odom.pose.pose.orientation.w = t_world_lidar.rotation.w;
+            {
+                let (pose_cov_iekf, twist_cov_iekf) = {
+                    let map = pipeline.map();
+                    let guard = map.lock().unwrap();
+                    let (pose_cov, _lv_cov_unused) = guard.get_odometry_covariances();
+                    let tw_cov = guard.get_twist_covariance_6x6();
+                    (pose_cov, tw_cov)
+                };
 
-            let lp_pose = &lidar_path.poses;
-            let changed_lidar_path = match lp_pose.last() {
-                Some(last_pose) => {
-                    let last_pose = last_pose.pose.clone();
-                    let last_pose_position = last_pose.position;
-                    let current_pose_position = lidar_odom.pose.pose.position.clone();
+                #[cfg(not(feature = "r2r"))]
+                {
+                    pelorus_odom.pose.covariance = pose_cov_iekf;
+                    pelorus_odom.twist.covariance = twist_cov_iekf;
+                }
 
-                    let distance = nalgebra::distance(
-                        &nalgebra::Point3::new(
-                            last_pose_position.x,
-                            last_pose_position.y,
-                            last_pose_position.z,
-                        ),
-                        &nalgebra::Point3::new(
-                            current_pose_position.x,
-                            current_pose_position.y,
-                            current_pose_position.z,
-                        ),
-                    );
+                #[cfg(feature = "r2r")]
+                {
+                    pelorus_odom.pose.covariance = pose_cov_iekf.to_vec();
+                    pelorus_odom.twist.covariance = twist_cov_iekf.to_vec();
+                }
+            }
 
-                    if distance > path_update_translate_threshold {
+            // publish paths but only add new poses if the robot moved enough
+            #[cfg(not(feature = "no-viz"))]
+            let changed_lidar_path = {
+                let lp_pose = &lidar_path.poses;
+                match lp_pose.last() {
+                    Some(last_pose) => {
+                        let last_pose = last_pose.pose.clone();
+                        let last_pose_position = last_pose.position;
+                        let current_pose_position = pelorus_odom.pose.pose.position.clone();
+
+                        let distance = nalgebra::distance(
+                            &nalgebra::Point3::new(
+                                last_pose_position.x,
+                                last_pose_position.y,
+                                last_pose_position.z,
+                            ),
+                            &nalgebra::Point3::new(
+                                current_pose_position.x,
+                                current_pose_position.y,
+                                current_pose_position.z,
+                            ),
+                        );
+
+                        if distance > path_update_translate_threshold {
+                            lidar_path.poses.push(PoseStamped {
+                                pose: pelorus_odom.pose.pose.clone(),
+                                header: pelorus_odom.header.clone(),
+                            });
+                            true
+                        } else {
+                            false
+                        }
+                    }
+                    None => {
                         lidar_path.poses.push(PoseStamped {
-                            pose: lidar_odom.pose.pose.clone(),
-                            header: lidar_odom.header.clone(),
+                            pose: pelorus_odom.pose.pose.clone(),
+                            header: pelorus_odom.header.clone(),
                         });
                         true
-                    } else {
-                        false
                     }
-                }
-                None => {
-                    lidar_path.poses.push(PoseStamped {
-                        pose: lidar_odom.pose.pose.clone(),
-                        header: lidar_odom.header.clone(),
-                    });
-                    true
                 }
             };
 
@@ -756,8 +781,11 @@ fn lio_with_ready_signal(
             };
             let map_to_lidar_transform = t_world_lidar.cast::<f32>();
             cloud.header.frame_id = orig_frame.clone();
+            cloud.header.stamp = Time {
+                sec: lifis_tick.odom_time.sec,
+                nanosec: lifis_tick.odom_time.nanosec,
+            };
             if let Some(mut trajectory_file) = trajectory_file.as_mut() {
-                let time = timestamp_to_secs(&lifis_tick.cloud_header.stamp);
                 let t = &map_to_lidar_transform.translation.vector;
                 let q = map_to_lidar_transform.rotation.quaternion();
 
@@ -765,7 +793,7 @@ fn lio_with_ready_signal(
                 // Format the string to write to the file
                 let content_to_write = format!(
                     "{} {} {} {} {} {} {} {}\n",
-                    time, t.x, t.y, t.z, q.i, q.j, q.k, q.w
+                    current_cloud_time, t.x, t.y, t.z, q.i, q.j, q.k, q.w
                 );
 
                 std::io::Write::write_all(&mut trajectory_file, content_to_write.as_bytes())
@@ -889,7 +917,7 @@ fn lio_with_ready_signal(
                 let _ = out_chan_sender.send(reg_out); // currently ignore res
             }
 
-            let mut imu_odom = lidar_odom.clone();
+            let mut imu_odom = pelorus_odom.clone();
             imu_odom.pose.pose.position.x = init_guess_world.translation.vector.x;
             imu_odom.pose.pose.position.y = init_guess_world.translation.vector.y;
             imu_odom.pose.pose.position.z = init_guess_world.translation.vector.z;
@@ -897,7 +925,10 @@ fn lio_with_ready_signal(
             imu_odom.pose.pose.orientation.y = init_guess_world.rotation.quaternion().j;
             imu_odom.pose.pose.orientation.z = init_guess_world.rotation.quaternion().k;
             imu_odom.pose.pose.orientation.w = init_guess_world.rotation.quaternion().w;
+            imu_odom.pose.covariance = pelorus_odom.pose.covariance.clone();
+            imu_odom.twist.covariance = pelorus_odom.twist.covariance.clone();
 
+            #[cfg(not(feature = "no-viz"))]
             imu_path.poses.push(PoseStamped {
                 pose: imu_odom.pose.pose.clone(),
                 header: imu_odom.header.clone(),
@@ -946,7 +977,7 @@ fn lio_with_ready_signal(
                 }
             }
 
-            #[cfg(all(not(feature = "no-viz"), feature = "ratpub"))]
+            #[cfg(feature = "ratpub")]
             rt.as_ref()
                 .expect("rt always exists with ratpub feat")
                 .block_on(async {
@@ -956,7 +987,7 @@ fn lio_with_ready_signal(
                         .expect("Failed to publish cloud");
 
                     odom_publisher
-                        .publish(&lidar_odom)
+                        .publish(&pelorus_odom)
                         .await
                         .expect("Failed to publish odom");
                 });
@@ -967,10 +998,11 @@ fn lio_with_ready_signal(
                     .expect("Failed to publish cloud");
 
                 odom_publisher
-                    .publish(&lidar_odom)
+                    .publish(&pelorus_odom)
                     .expect("Failed to publish odom");
             }
 
+            #[cfg(not(feature = "no-viz"))]
             if changed_lidar_path {
                 #[cfg(all(not(feature = "no-viz"), feature = "rerun"))]
                 {

@@ -41,13 +41,17 @@ Building might take a while.
 
 Available flags for the ROS 2 version are:
 
-- `downsample` (enabled by default)
-- `parallel` (enabled by default)
-- `mimalloc` (enabled by default)
+**Default flags** (enabled by default, disable all with `-D PELORUS_ALL_DEFAULTS=OFF`):
+- `downsample`
+- `parallel`
+- `mimalloc`
+- `no-viz`
+
+**Optional flags**:
 - `cuda` (requires `CUDA_HOME` environment variable)
 - `rerun` (set `RERUN_SERVER_ADDR` for remote instances, e.g. `127.0.0.1:9876`.)
 - `rat`
-- `mapping`
+- `mapping` (experimental)
 - `map`
 - `evaluation`
 
