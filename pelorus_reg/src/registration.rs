@@ -14,13 +14,17 @@ use ros_pointcloud2::points::{PointXYZ, PointXYZI, PointXYZINormal};
 use sophus_lie::traits::IsTranslationProductGroup;
 pub use spole::IVoxNearbyType;
 
-use crate::sophus_ekf::skew_symmetric;
+use crate::iekf::skew_symmetric;
 
 pub struct RegistrationState {
-    ekf: crate::sophus_ekf::Iekf,
+    ekf: crate::iekf::Iekf,
     imu_processing: crate::imu::ImuProcessing,
     pub map: spole::IVoxHashMap,
     laser_point_noise_cov: f64,
+}
+
+fn rotate_covariance(cov: &Matrix3<f64>, rot: &Matrix3<f64>) -> Matrix3<f64> {
+    rot * cov * rot.transpose()
 }
 
 impl RegistrationState {
@@ -43,7 +47,7 @@ impl RegistrationState {
         );
 
         Self {
-            ekf: crate::sophus_ekf::Iekf::new(g),
+            ekf: crate::iekf::Iekf::new(g),
             imu_processing: crate::imu::ImuProcessing::new(
                 imu_params,
                 &initial_extrinsic_calibration,
@@ -75,6 +79,93 @@ impl RegistrationState {
 
     pub fn clear_localmap(&mut self) {
         self.map.clear();
+    }
+
+    pub fn get_odometry_covariances(&self) -> ([f64; 36], [f64; 9]) {
+        // 1. Get current rotation matrix (World to Body)
+        let r_wb = self.ekf.state.pose.rotation().matrix();
+        let r_bw = r_wb.transpose(); // Body to World (and vice versa for rotation)
+
+        // --- PREPARE POSE COVARIANCE (6x6) in WORLD FRAME ---
+        // Current state:
+        // Pos (3..6) is World Frame -> OK
+        // Rot (0..3) is Body Frame  -> Needs Rotation to World
+
+        // Extract raw blocks
+        let cov_pp = self.ekf.cov.fixed_view::<3, 3>(3, 3); // Pos-Pos (World)
+        let cov_rr_body = self.ekf.cov.fixed_view::<3, 3>(0, 0); // Rot-Rot (Body)
+        let cov_pr_mixed = self.ekf.cov.fixed_view::<3, 3>(3, 0); // Pos-Rot (Row:World, Col:Body)
+
+        // Rotate Orientation block to World: R * Cov_body * R^T
+        let cov_rr_world = rotate_covariance(&cov_rr_body.into(), &r_wb);
+
+        // Rotate Cross-Correlations (Pos-Rot):
+        // Current: E[dPos_world * dRot_body^T]
+        // Target:  E[dPos_world * (R * dRot_body)^T] = E[...] * R^T
+        let cov_pr_world = cov_pr_mixed * r_wb.transpose();
+        let cov_rp_world = cov_pr_world.transpose();
+
+        let mut pose_cov6 = [0.0; 36];
+        // Populate ROS Pose Covariance (All World Frame now)
+        for i in 0..3 {
+            for j in 0..3 {
+                // Top-Left: Position (World)
+                pose_cov6[i * 6 + j] = cov_pp[(i, j)];
+                // Top-Right: Pos-Rot (World)
+                pose_cov6[i * 6 + (3 + j)] = cov_pr_world[(i, j)];
+                // Bottom-Left: Rot-Pos (World)
+                pose_cov6[(3 + i) * 6 + j] = cov_rp_world[(i, j)];
+                // Bottom-Right: Rotation (World)
+                pose_cov6[(3 + i) * 6 + (3 + j)] = cov_rr_world[(i, j)];
+            }
+        }
+
+        // --- PREPARE TWIST COVARIANCE (3x3 linear part) in BODY FRAME ---
+        // Current state: Vel (6..9) is World Frame.
+        // Target: ROS Twist Linear is Body Frame.
+        // Transform: Cov_body = R^T * Cov_world * R
+
+        let cov_vv_world = self.ekf.cov.fixed_view::<3, 3>(6, 6);
+        // Use r_bw (which is R^T) to rotate World->Body
+        let cov_vv_body = rotate_covariance(&cov_vv_world.into(), &r_bw);
+
+        let mut lv_cov3 = [0.0; 9];
+        for i in 0..3 {
+            for j in 0..3 {
+                lv_cov3[i * 3 + j] = cov_vv_body[(i, j)];
+            }
+        }
+
+        (pose_cov6, lv_cov3)
+    }
+
+    pub fn get_twist_covariance_6x6(&self) -> [f64; 36] {
+        let mut cov6 = [0.0; 36];
+
+        let r_wb = self.ekf.state.pose.rotation().matrix();
+        let r_bw = r_wb.transpose();
+
+        // 1. Linear Velocity (Indices 6..9) - Currently World Frame
+        // Needs rotation to Body Frame for ROS Twist
+        let cov_vv_world = self.ekf.cov.fixed_view::<3, 3>(6, 6);
+        let cov_vv_body = rotate_covariance(&cov_vv_world.into(), &r_bw);
+
+        // 2. Angular Velocity
+        // The IMU measurement noise/bias is usually already in Body Frame.
+        // So this part is likely fine without rotation.
+
+        for i in 0..3 {
+            for j in 0..3 {
+                // Linear Velocity (Body)
+                cov6[i * 6 + j] = cov_vv_body[(i, j)];
+
+                // Angular Velocity (Body)
+                // Assuming ekf_cov_gyr is already in sensor frame (Body)
+                cov6[(3 + i) * 6 + (3 + j)] = self.imu_processing.ekf_cov_gyr[(i, j)]
+                    + self.imu_processing.ekf_cov_gyr_bias[(i, j)];
+            }
+        }
+        cov6
     }
 
     #[allow(dead_code)]
@@ -388,7 +479,8 @@ impl crate::Registration for RegistrationState {
             self.ekf.correct(
                 self.laser_point_noise_cov,
                 lidar_timestamp,
-                move |ekf_state: &crate::sophus_ekf::StateIKFom,
+                //1, // max iterations
+                move |ekf_state: &crate::iekf::StateIKFom,
                       valid: &mut bool,
                       _converged: bool,
                       h: &mut DVector<f64>,

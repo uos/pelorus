@@ -84,16 +84,23 @@ function(r2r_cargo)
 
   set(FEATURES "ros2c")
 
-  if(NOT DEFINED PELORUS_DOWNSAMPLE OR PELORUS_DOWNSAMPLE)
-    list(APPEND FEATURES "downsample")
-  endif()
+  # Master switch to disable all defaults at once (defaults to ON)
+  if(NOT DEFINED PELORUS_ALL_DEFAULTS OR PELORUS_ALL_DEFAULTS)
+    if(NOT DEFINED PELORUS_DOWNSAMPLE OR PELORUS_DOWNSAMPLE)
+      list(APPEND FEATURES "downsample")
+    endif()
 
-  if(NOT DEFINED PELORUS_PARALLEL OR PELORUS_PARALLEL)
-    list(APPEND FEATURES "parallel")
-  endif()
+    if(NOT DEFINED PELORUS_PARALLEL OR PELORUS_PARALLEL)
+      list(APPEND FEATURES "parallel")
+    endif()
 
-  if(NOT DEFINED PELORUS_MIMALLOC OR PELORUS_MIMALLOC)
-    list(APPEND FEATURES "mimalloc")
+    if(NOT DEFINED PELORUS_MIMALLOC OR PELORUS_MIMALLOC)
+      list(APPEND FEATURES "mimalloc")
+    endif()
+
+    if(NOT DEFINED PELORUS_NO_VIZ OR PELORUS_NO_VIZ)
+      list(APPEND FEATURES "no-viz")
+    endif()
   endif()
 
   if(PELORUS_CUDA)

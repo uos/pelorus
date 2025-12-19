@@ -781,14 +781,9 @@ impl IVoxHashMap {
         Vector3::new(e1, e2, e3)
     }
 
-    pub fn plane_fit_from_distributions(
-        &self,
-        query: &PointXYZ,
-        // You might want to add an error threshold for the eigenvalue check
-    ) -> Option<[f32; 4]> {
+    pub fn plane_fit_from_distributions(&self, query: &PointXYZ) -> Option<[f32; 4]> {
         let mut merged_dist = VoxelDistribution::new();
 
-        // 1. Find and merge all neighboring distributions
         let grid = self.pos2grid(query);
         let neighbor_grids = Self::nearby_26(grid); // Or any other nearby type
 
@@ -799,7 +794,6 @@ impl IVoxHashMap {
             }
         }
 
-        // 2. Ensure we have enough data to define a plane
         if merged_dist.point_count < 3 {
             return None;
         }
@@ -808,24 +802,20 @@ impl IVoxHashMap {
         let mut eigenvalues_vec = [eigenvalues.x, eigenvalues.y, eigenvalues.z];
         eigenvalues_vec.sort_unstable_by(|a, b| a.partial_cmp(b).unwrap());
 
-        let lambda_0 = eigenvalues_vec[0]; // Smallest
-        let lambda_2 = eigenvalues_vec[2]; // Largest
+        let lambda_0 = eigenvalues_vec[0];
+        let lambda_2 = eigenvalues_vec[2];
 
-        // Ensure we don't divide by zero if the distribution is empty or a single point
         if lambda_2 < 1e-9 {
             return None;
         }
 
         let sphericity = lambda_0 / lambda_2;
 
-        // The threshold now needs to be much higher. Start with something around 0.5
-        // and adjust it based on your data. A lower threshold means you require
-        // a "flatter" distribution to consider it a plane.
         if sphericity > 0.5 {
             return None;
         }
 
-        let min_eigenvalue = lambda_0; // Use the sorted smallest eigenvalue
+        let min_eigenvalue = lambda_0;
 
         let mut m = merged_dist.covariance;
         m[(0, 0)] -= min_eigenvalue;
@@ -854,7 +844,6 @@ impl IVoxHashMap {
 
         let normal = normal_vec.try_normalize(1e-12)?;
 
-        // 4. Calculate the 'd' parameter of the plane equation using the merged mean
         let d = -normal.dot(&merged_dist.mean.coords);
 
         Some([normal.x, normal.y, normal.z, d])
