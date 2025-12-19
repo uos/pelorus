@@ -52,6 +52,8 @@ registration {
 
   k_neighborhood = 12 # How many points to get from the neighborhood. Higher values yield higher accuracy at the cost of runtime.
 
+  max_iter = 2 # Maximum IEKF correction iterations per scan.
+
   neighbors_max_range = 5m # Maximum distance to any neighbor. Default is mostly ok if you do not drastically reduce the map resolution.
 }
 

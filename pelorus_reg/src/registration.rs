@@ -21,6 +21,7 @@ pub struct RegistrationState {
     imu_processing: crate::imu::ImuProcessing,
     pub map: spole::IVoxHashMap,
     laser_point_noise_cov: f64,
+    ekf_max_iterations: usize,
 }
 
 fn rotate_covariance(cov: &Matrix3<f64>, rot: &Matrix3<f64>) -> Matrix3<f64> {
@@ -38,6 +39,7 @@ impl RegistrationState {
         initial_extrinsic_calibration: Isometry3<f64>,
         knn_nearby_voxel_search_range: IVoxNearbyType,
         update_cov_sensitivity: f32,
+        ekf_max_iterations: usize,
     ) -> Self {
         let map = spole::IVoxHashMap::new(
             map_resolution as f32,
@@ -54,6 +56,7 @@ impl RegistrationState {
             ),
             map,
             laser_point_noise_cov,
+            ekf_max_iterations,
         }
     }
 
@@ -479,7 +482,7 @@ impl crate::Registration for RegistrationState {
             self.ekf.correct(
                 self.laser_point_noise_cov,
                 lidar_timestamp,
-                //1, // max iterations
+                self.ekf_max_iterations,
                 move |ekf_state: &crate::iekf::StateIKFom,
                       valid: &mut bool,
                       _converged: bool,

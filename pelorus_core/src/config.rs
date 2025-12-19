@@ -126,10 +126,19 @@ pub fn ast_to_config(defaults: Evaluated, user: Evaluated) -> anyhow::Result<Lio
     }
 
     // --- Registration Configuration ---
-    let (k_neighbors, neighbor_max_range, map_resolution, map_capacity, dist_update_sensitivity) = {
+    let (
+        k_neighbors,
+        neighbor_max_range,
+        map_resolution,
+        map_capacity,
+        dist_update_sensitivity,
+        ekf_max_iterations,
+    ) = {
         let registration = asts.filter_ns(&["registration"]);
         let k_neighbors = resolve_var!(registration, "k_neighborhood", as usize, Rhs::Val(Val::NumVal(NumVal::Integer(i))) => {i})?;
         let neighbor_max_range = resolve_var!(registration, "neighbors_max_range", as f64, Rhs::Val(Val::UnitedVal(UnitVal::LengthVal(v))) => { v.get::<meter>() })?;
+
+        let ekf_max_iterations = resolve_var!(registration, "max_iter", as usize, Rhs::Val(Val::NumVal(NumVal::Integer(i))) => { i })?;
 
         let map = registration.filter_ns(&["map"]);
         let map_resolution = resolve_var!(map, "resolution", as f64, Rhs::Val(Val::UnitedVal(UnitVal::LengthVal(v))) => { v.get::<meter>() })?;
@@ -142,6 +151,7 @@ pub fn ast_to_config(defaults: Evaluated, user: Evaluated) -> anyhow::Result<Lio
             map_resolution,
             map_capacity,
             dist_update_sensitivity,
+            ekf_max_iterations,
         )
     };
 
@@ -438,6 +448,7 @@ pub fn ast_to_config(defaults: Evaluated, user: Evaluated) -> anyhow::Result<Lio
         map_resolution,
         map_capacity,
         dist_update_sensitivity,
+        ekf_max_iterations,
         lidar_odom_cov,
         feedback_fps,
         lidar_as_map_tf,
@@ -475,7 +486,6 @@ pub fn ast_to_config(defaults: Evaluated, user: Evaluated) -> anyhow::Result<Lio
         // TODO currently hardcoded
         registered_cloud_qos: Qos::Sensor(Reliability::Reliable),
         enable_live_extrinsic_calibration: false,
-        ekf_max_iterations: 4,
     };
 
     Ok(final_config)

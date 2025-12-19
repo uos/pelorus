@@ -54,6 +54,7 @@ impl Pipeline {
             ext_lidar_to_imu,
             IVoxNearbyType::Nearby26,
             config.dist_update_sensitivity,
+            config.ekf_max_iterations,
         );
 
         Self {
