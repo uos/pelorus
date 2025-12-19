@@ -34,7 +34,10 @@ fn main() {
             // let compute = format!("compute_{}", arch.strip_prefix("sm_").unwrap_or("87"));
 
             // CUDA Toolkit directory, TODO check jetson specific folders
-            let cuda_lib_path = PathBuf::from(&cuda_path).join("lib64");
+            let cuda_path = PathBuf::from(&cuda_path);
+            let cuda_lib_path = cuda_path.join("lib64");
+            let cuda_bin_path = cuda_path.join("bin");
+            let nvcc_bin = cuda_bin_path.join("nvcc");
 
             // let gencode = format!("arch={},code={}", compute, arch);
             let gencode = "-arch=native".to_string();
@@ -62,7 +65,7 @@ fn main() {
                     let filename = path.file_stem().unwrap().to_str().unwrap();
                     let obj_path = out_dir.join(format!("{}.o", filename));
 
-                    let mut nvcc_compile_cmd = Command::new("nvcc");
+                    let mut nvcc_compile_cmd = Command::new(nvcc_bin.to_string_lossy().to_string());
                     let profile = env::var("PROFILE").unwrap();
                     if profile == "release" {
                         nvcc_compile_cmd.arg("-O3");
@@ -99,7 +102,7 @@ fn main() {
 
             // Device link all generated object files
             let dlink_obj_path = out_dir.join("kernel.dlink.o");
-            let mut dlink_cmd = Command::new("nvcc");
+            let mut dlink_cmd = Command::new(nvcc_bin.to_string_lossy().to_string());
             dlink_cmd
                 .arg("-dlink")
                 .arg("-o")
