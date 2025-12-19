@@ -150,7 +150,7 @@ impl Pipeline {
                 None,
                 &mut eval,
                 #[cfg(feature = "cuda")]
-                &cuda::Stream::default(),
+                &pelorus_cuda::Stream::new(),
             ) {
                 Ok(Some(res)) => {
                     let state = map.get_state();

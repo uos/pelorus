@@ -540,17 +540,17 @@ fn lio_with_ready_signal(
         ready_for_next_tx.send(()).unwrap();
 
         #[cfg(feature = "cuda")]
-        let cuda_stream = cuda::Stream::new();
+        let cuda_stream = pelorus_cuda::Stream::new();
 
         // TODO avoid casting f32, maybe res needs f64?
         #[cfg(feature = "cuda")]
-        cuda::init_map(
+        pelorus_cuda::init_map(
             &cuda_stream,
             config.map_capacity,
             config.map_resolution as f32,
             config.dist_update_sensitivity,
             config.neighbor_max_range as f32,
-            cuda::NeighborType::Neighbor26,
+            pelorus_cuda::NeighborType::Neighbor26,
         );
 
         let mut trajectory_file = {

@@ -1,11 +1,11 @@
 use std::sync::{Arc, Mutex};
 
-#[cfg(feature = "cuda")]
-use cuda::CudaBuffer;
 use nalgebra::*;
 use pelorus_core::{
     ImuParameters, KinematicModel, LidarVendor, OdomMsg, PointXYZIT, timing::RuntimeEvaluator,
 };
+#[cfg(feature = "cuda")]
+use pelorus_cuda::CudaBuffer;
 use prelio::LocatedBufferView;
 #[cfg(all(feature = "parallel", not(feature = "cuda")))]
 use rayon::prelude::*;
@@ -335,12 +335,12 @@ impl crate::Registration for RegistrationState {
         lidar_timestamp: f64,
         ready_for_next: Option<&std::sync::mpsc::Sender<()>>,
         eval: &mut RuntimeEvaluator,
-        #[cfg(feature = "cuda")] stream: &cuda::Stream,
+        #[cfg(feature = "cuda")] stream: &pelorus_cuda::Stream,
     ) -> anyhow::Result<Option<crate::CloudRegisterResult>> {
         let first_it = Arc::new(Mutex::new(true));
         let eval_outer = std::sync::Arc::new(std::sync::RwLock::new(eval));
         #[cfg(feature = "cuda")]
-        let map_empty = cuda::get_map_size() == 0;
+        let map_empty = pelorus_cuda::get_map_size() == 0;
 
         if map_only {
             #[cfg(not(feature = "cuda"))]
@@ -355,7 +355,7 @@ impl crate::Registration for RegistrationState {
                 let transl = &imu_transform.translation.vector.into();
 
                 let rotmat = imu_transform.rotation.to_rotation_matrix().matrix().clone();
-                cuda::add_to_map(&stream, cloud, &transl, &rotmat.into());
+                pelorus_cuda::add_to_map(&stream, cloud, &transl, &rotmat.into());
             }
 
             return Ok(None);
@@ -413,16 +413,16 @@ impl crate::Registration for RegistrationState {
                         };
 
                         // call to cuda kernel
-                        cuda::planes_cuda(
+                        pelorus_cuda::planes_cuda(
                             &stream,
                             cloud,
-                            &cuda::Vector3::new(
+                            &pelorus_cuda::Vector3::new(
                                 ekf_state.pose.translation().x,
                                 ekf_state.pose.translation().y,
                                 ekf_state.pose.translation().z,
                             ),
                             &ekf_state.pose.rotation().matrix().into(),
-                            &cuda::Vector3::new(
+                            &pelorus_cuda::Vector3::new(
                                 ekf_state.offset_t_l_i.x,
                                 ekf_state.offset_t_l_i.y,
                                 ekf_state.offset_t_l_i.z,
@@ -712,7 +712,7 @@ impl crate::Registration for RegistrationState {
             };
 
             let rotmat = global_pose.rotation.to_rotation_matrix().matrix().clone();
-            cuda::add_to_map(
+            pelorus_cuda::add_to_map(
                 &stream,
                 cloud,
                 &global_pose.translation.vector.into(),
