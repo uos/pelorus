@@ -259,7 +259,7 @@ fn lio_with_ready_signal(
     let rec = {
         let rerun_server_addr =
             std::env::var("RERUN_SERVER_ADDR").unwrap_or("127.0.0.1:9876".to_string());
-        let rec = Arc::new(
+        let rec = std::sync::Arc::new(
             rerun::RecordingStreamBuilder::new("pelorus")
                 .connect_grpc_opts(format!("rerun+http://{}/proxy", rerun_server_addr))?,
         );
@@ -282,7 +282,7 @@ fn lio_with_ready_signal(
         Some(pipeline.build_undistort()),
         Some(pipeline.build_init_guess()),
         #[cfg(feature = "rerun")]
-        Arc::clone(&rec),
+        std::sync::Arc::clone(&rec),
         Some(ready_for_next_rx),
     )?;
 
@@ -778,7 +778,7 @@ fn lio_with_ready_signal(
                 #[cfg(not(feature = "cuda"))]
                 let total_map = map.lock().unwrap().get_entire_map();
                 #[cfg(feature = "cuda")]
-                let total_map = cuda::get_map();
+                let total_map = pelorus_cuda::get_map();
                 #[cfg(feature = "rerun")]
                 {
                     let points = total_map.iter().map(|v| {
