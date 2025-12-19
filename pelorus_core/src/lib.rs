@@ -317,7 +317,7 @@ pub struct LioConfig {
     pub prelio_node_params: LifisNodeParameters,
     pub k_neighbors: usize,
     pub neighbor_max_range: f64,
-    pub ekf_max_iterations: i8,
+    pub ekf_max_iterations: usize,
     pub dist_update_sensitivity: f32,
     pub lidar_as_map_tf: bool,
     pub mapping_resolution: f32,

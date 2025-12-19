@@ -1,4 +1,4 @@
-use log::warn;
+use log::{error, warn};
 use nalgebra::*;
 use pelorus_core::{KinematicModel, OdomMsg};
 use prelio::timestamp_to_secs;
@@ -480,102 +480,178 @@ impl Iekf {
         &mut self,
         measurement_noise_cov: f64,
         measurement_time: f64,
-        // TODO check change to FN
-        mut model: impl FnMut(&StateIKFom, &mut bool, bool, &mut DVector<f64>, &mut DMatrix<f64>),
+        max_iter: usize,
+        mut model: impl FnMut(
+            &StateIKFom,
+            &mut bool,         // valid
+            bool,              // converge
+            &mut DVector<f64>, // residual h
+            &mut DMatrix<f64>, // jacobian H
+        ),
     ) {
         self.last_time = measurement_time;
 
-        let converge = true;
-        let mut h = DVector::<f64>::default();
-        let mut h_x = DMatrix::<f64>::default();
-        let state_propagated = self.state.clone(); // state x
+        if measurement_noise_cov <= 0.0 {
+            error!("IEKF: Non‑positive measurement noise covariance, skipping update.");
+            return;
+        }
+
+        let state_propagated = self.state.clone();
         let p_propagated = self.cov;
 
-        let mut valid = true;
-
-        model(&self.state, &mut valid, converge, &mut h, &mut h_x);
-
-        if !valid {
-            warn!("iteration not valid");
-            return;
-        }
-
-        let hth = h_x.transpose() * &h_x;
-        let k = (hth / measurement_noise_cov + p_propagated.try_inverse().unwrap())
-            .try_inverse()
-            .unwrap()
-            * h_x.transpose()
-            / measurement_noise_cov;
-
-        let kh = &k * &h;
-        let kh_norm = kh.norm();
-        let mut s = nalgebra::SMatrix::<f64, 8, 8>::zeros();
-        s.fixed_view_mut::<3, 3>(0, 0)
-            .copy_from(&skew_symmetric(&kh.fixed_view::<3, 1>(0, 0).xyz()));
-        s.fixed_view_mut::<3, 1>(0, 3)
-            .copy_from(&kh.fixed_view::<3, 1>(3, 0).xyz());
-        s.fixed_view_mut::<3, 1>(0, 4)
-            .copy_from(&kh.fixed_view::<3, 1>(6, 0).xyz());
-        s.fixed_view_mut::<3, 1>(0, 5)
-            .copy_from(&kh.fixed_view::<3, 1>(9, 0).xyz());
-        s.fixed_view_mut::<3, 1>(0, 6)
-            .copy_from(&kh.fixed_view::<3, 1>(12, 0).xyz());
-        s.fixed_view_mut::<3, 1>(0, 7)
-            .copy_from(&kh.fixed_view::<3, 1>(15, 0).xyz());
-
-        let exps = nalgebra::SMatrix::<f64, 8, 8>::identity()
-            + s
-            + (1.0 - kh_norm.cos()) / (kh_norm * kh_norm) * s * s
-            + (kh_norm - kh_norm.sin()) / (kh_norm * kh_norm * kh_norm) * s * s * s;
-
-        let mut x_mat = nalgebra::SMatrix::<f64, 8, 8>::identity();
-        x_mat
-            .fixed_view_mut::<3, 3>(0, 0)
-            .copy_from(&(state_propagated.pose.rotation().matrix()));
-        x_mat
-            .fixed_view_mut::<3, 1>(0, 3)
-            .copy_from(&(state_propagated.pose.translation()));
-        x_mat
-            .fixed_view_mut::<3, 1>(0, 4)
-            .copy_from(&(state_propagated.vel));
-        x_mat
-            .fixed_view_mut::<3, 1>(0, 5)
-            .copy_from(&(state_propagated.bg));
-        x_mat
-            .fixed_view_mut::<3, 1>(0, 6)
-            .copy_from(&(state_propagated.ba));
-        x_mat
-            .fixed_view_mut::<3, 1>(0, 7)
-            .copy_from(&(state_propagated.grav));
-
-        let new_state = exps * x_mat;
-
-        // Check for NaNs in the new state
-        if !new_state.iter().all(|x| x.is_finite()) {
-            warn!("NaN detected in lidar measurement state update");
-            self.cov = p_propagated;
-            return;
-        }
-
-        let new_rot_matrix = new_state.fixed_view::<3, 3>(0, 0).into_owned();
-        let new_quat = UnitQuaternion::from_matrix(&new_rot_matrix);
-        let new_so3 = match SO3::try_from_mat(new_quat.to_rotation_matrix().matrix()) {
-            Some(so3) => so3,
+        let p_propagated_inv = match p_propagated.try_inverse() {
+            Some(inv) => inv,
             None => {
-                warn!("Failed to convert to SO3 in lidar correction");
-                self.cov = p_propagated;
+                warn!("IEKF: Propagated covariance is singular, skipping update.");
                 return;
             }
         };
-        self.state.pose.set_rotation(&new_so3);
-        self.state
-            .pose
-            .set_translation(&new_state.fixed_view::<3, 1>(0, 3).xyz());
-        self.state.vel = new_state.fixed_view::<3, 1>(0, 4).xyz();
-        self.state.bg = new_state.fixed_view::<3, 1>(0, 5).xyz();
-        self.state.ba = new_state.fixed_view::<3, 1>(0, 6).xyz();
-        self.state.grav = new_state.fixed_view::<3, 1>(0, 7).xyz();
 
-        self.cov = p_propagated - k * &h_x * p_propagated;
+        let r_inv = 1.0 / measurement_noise_cov;
+
+        let mut final_kh = SMatrix::<f64, 18, 18>::zeros();
+
+        for iter in 0..max_iter {
+            let mut valid = true;
+            let converge_flag = true;
+
+            let mut h = DVector::<f64>::zeros(0);
+            let mut h_x = DMatrix::<f64>::zeros(0, 18);
+
+            model(&self.state, &mut valid, converge_flag, &mut h, &mut h_x);
+
+            if !valid || h_x.nrows() == 0 {
+                break;
+            }
+
+            // H: m x 18,  h: m x 1
+            let h_t = h_x.transpose(); // 18 x m
+            let hth = &h_t * &h_x; // 18 x 18
+
+            let lhs = hth * r_inv + p_propagated_inv;
+
+            let lhs_inv = match lhs.try_inverse() {
+                Some(inv) => inv,
+                None => {
+                    warn!("IEKF: LHS matrix singular in iteration {}, skipping.", iter);
+                    break;
+                }
+            };
+
+            let k = &lhs_inv * &h_t * r_inv;
+
+            let kh = &k * &h;
+
+            let kh_norm = kh.norm();
+            if !kh_norm.is_finite() {
+                warn!(
+                    "IEKF: Non‑finite update norm in iteration {}, aborting.",
+                    iter
+                );
+                self.state = state_propagated;
+                self.cov = p_propagated;
+                return;
+            }
+
+            let mut s = SMatrix::<f64, 8, 8>::zeros();
+            // rotation increment
+            s.fixed_view_mut::<3, 3>(0, 0)
+                .copy_from(&skew_symmetric(&kh.fixed_rows::<3>(0).into_owned()));
+            // translation increment
+            s.fixed_view_mut::<3, 1>(0, 3)
+                .copy_from(&kh.fixed_rows::<3>(3).into_owned());
+            // velocity increment
+            s.fixed_view_mut::<3, 1>(0, 4)
+                .copy_from(&kh.fixed_rows::<3>(6).into_owned());
+            // bg increment
+            s.fixed_view_mut::<3, 1>(0, 5)
+                .copy_from(&kh.fixed_rows::<3>(9).into_owned());
+            // ba increment
+            s.fixed_view_mut::<3, 1>(0, 6)
+                .copy_from(&kh.fixed_rows::<3>(12).into_owned());
+            // grav increment
+            s.fixed_view_mut::<3, 1>(0, 7)
+                .copy_from(&kh.fixed_rows::<3>(15).into_owned());
+
+            let (a, b) = if kh_norm > 1e-6 {
+                (
+                    (1.0 - kh_norm.cos()) / (kh_norm * kh_norm),
+                    (kh_norm - kh_norm.sin()) / (kh_norm.powi(3)),
+                )
+            } else {
+                (0.5, 1.0 / 6.0)
+            };
+
+            let s2 = s * s;
+            let s3 = s2 * s;
+            let exps = SMatrix::<f64, 8, 8>::identity() + s + s2 * a + s3 * b;
+
+            let mut x_mat = SMatrix::<f64, 8, 8>::identity();
+            x_mat
+                .fixed_view_mut::<3, 3>(0, 0)
+                .copy_from(&state_propagated.pose.rotation().matrix());
+            x_mat
+                .fixed_view_mut::<3, 1>(0, 3)
+                .copy_from(&state_propagated.pose.translation());
+            x_mat
+                .fixed_view_mut::<3, 1>(0, 4)
+                .copy_from(&state_propagated.vel);
+            x_mat
+                .fixed_view_mut::<3, 1>(0, 5)
+                .copy_from(&state_propagated.bg);
+            x_mat
+                .fixed_view_mut::<3, 1>(0, 6)
+                .copy_from(&state_propagated.ba);
+            x_mat
+                .fixed_view_mut::<3, 1>(0, 7)
+                .copy_from(&state_propagated.grav);
+
+            let new_x_mat = exps * x_mat;
+
+            if !new_x_mat.iter().all(|x| x.is_finite()) {
+                warn!("IEKF: NaN detected in iteration {}, aborting.", iter);
+                self.state = state_propagated;
+                self.cov = p_propagated;
+                return;
+            }
+
+            // Extract rotation and state fields
+            let new_rot_mat = new_x_mat.fixed_view::<3, 3>(0, 0).into_owned();
+            let new_quat = UnitQuaternion::from_matrix(&new_rot_mat);
+            let new_so3 = match SO3::try_from_mat(new_quat.to_rotation_matrix().matrix()) {
+                Some(so3) => so3,
+                None => {
+                    warn!("IEKF: Invalid SO3 in iteration {}", iter);
+                    break;
+                }
+            };
+
+            self.state.pose.set_rotation(&new_so3);
+            self.state
+                .pose
+                .set_translation(&new_x_mat.fixed_view::<3, 1>(0, 3).into_owned());
+            self.state.vel = new_x_mat.fixed_view::<3, 1>(0, 4).into_owned();
+            self.state.bg = new_x_mat.fixed_view::<3, 1>(0, 5).into_owned();
+            self.state.ba = new_x_mat.fixed_view::<3, 1>(0, 6).into_owned();
+            self.state.grav = new_x_mat.fixed_view::<3, 1>(0, 7).into_owned();
+
+            // KH = K * H  (18 x m * m x 18 = 18 x 18, fixed-size)
+            let kh_mat = &k * &h_x;
+            debug_assert!(kh_mat.nrows() == 18 && kh_mat.ncols() == 18);
+            let mut kh_mat_fixed = SMatrix::<f64, 18, 18>::zeros();
+            for i in 0..18 {
+                for j in 0..18 {
+                    kh_mat_fixed[(i, j)] = kh_mat[(i, j)];
+                }
+            }
+            final_kh = kh_mat_fixed;
+
+            //dbg!(iter, kh_norm);
+            if kh_norm < 0.001 {
+                break;
+            }
+        }
+
+        self.cov = p_propagated - final_kh * p_propagated;
     }
 }
