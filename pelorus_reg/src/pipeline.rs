@@ -136,6 +136,7 @@ impl Pipeline {
     pub fn register_processed_cloud(
         &self,
         processed: PrelioProcessedCloud,
+        ready_for_next: Option<&std::sync::mpsc::Sender<()>>,
     ) -> Option<PelorusOutput> {
         let mut eval = processed.runtime_eval;
         let lidar_timestamp = prelio::timestamp_to_secs(&processed.end_of_frame_time);
@@ -148,7 +149,7 @@ impl Pipeline {
                 self.ext_lidar_to_imu,
                 &cloud_view,
                 lidar_timestamp,
-                None,
+                ready_for_next,
                 &mut eval,
                 #[cfg(feature = "cuda")]
                 &pelorus_cuda::Stream::new(),

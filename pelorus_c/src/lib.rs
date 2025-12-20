@@ -1,6 +1,6 @@
 //! C FFI bindings for Pelorus
 
-use std::ffi::{CStr, c_char};
+use std::ffi::{CStr, c_char, c_void};
 use std::path::Path;
 use std::ptr;
 use std::slice;
@@ -8,15 +8,21 @@ use std::sync::{Arc, Mutex, mpsc};
 
 use anyhow::anyhow;
 use pelorus_core::config::ast_to_config;
-use pelorus_core::{ImuMsg, LioConfig, OdomMsg, PrelioProcessedCloud};
+use pelorus_core::{ImuMsg, LidarVendor, LioConfig, OdomMsg, PrelioProcessedCloud};
 use pelorus_reg::pipeline::{PelorusOutput, Pipeline};
 use prelio::Prelio;
 use ratslang;
 use ros_pointcloud2::prelude::*;
 use ros2_interfaces_jazzy_serde::sensor_msgs::msg::PointCloud2;
+use ros2_interfaces_jazzy_serde::sensor_msgs::msg::PointField;
 use std::thread;
 
 const DEFAULT_CONFIG_STR: &str = include_str!("../../default.rl");
+
+struct ImuInitState {
+    start_time: Option<f64>,
+    buffer: Option<Vec<ImuMsg>>,
+}
 
 fn load_pelorus_config(config_path: Option<&str>) -> anyhow::Result<LioConfig> {
     let default_ast = ratslang::compile_code(DEFAULT_CONFIG_STR)
@@ -39,16 +45,38 @@ struct ProcessingThread {
     pipeline: Pipeline,
     prelio_receiver: mpsc::Receiver<PrelioProcessedCloud>,
     result_sender: mpsc::Sender<PelorusOutput>,
+    callback_info: Arc<Mutex<Option<CallbackInfo>>>,
+    ready_for_next: mpsc::Sender<()>,
 }
+
+struct CallbackInfo {
+    callback: unsafe extern "C" fn(*const pelorus_odometry, *mut c_void),
+    user_data: *mut c_void,
+}
+
+unsafe impl Send for CallbackInfo {}
+unsafe impl Sync for CallbackInfo {}
 
 pub struct PelorusHandle {
     prelio: Arc<Mutex<Prelio>>,
     result_receiver: mpsc::Receiver<PelorusOutput>,
+    callback_info: Arc<Mutex<Option<CallbackInfo>>>,
+    imu_init_cb: Option<Arc<Mutex<dyn FnMut(&[ImuMsg]) + Send + Sync>>>,
+    imu_init_state: Arc<Mutex<ImuInitState>>,
+    imu_predictor_init_time_sec: f64,
     _processing_thread: Option<thread::JoinHandle<()>>,
 }
 
+#[allow(non_camel_case_types)]
 #[repr(C)]
-pub struct CImuMsg {
+pub struct pelorus_create_options {
+    pub config_path: *const c_char,
+    pub device_specific_pointcloud2: i8,
+}
+
+#[allow(non_camel_case_types)]
+#[repr(C)]
+pub struct pelorus_imu_msg {
     pub timestamp_sec: i32,
     pub timestamp_nanosec: u32,
     pub frame_id: *const c_char,
@@ -60,29 +88,24 @@ pub struct CImuMsg {
     pub linear_acceleration_covariance: [f64; 9],
 }
 
+#[allow(non_camel_case_types)]
 #[repr(C)]
-pub struct CPointCloudHeader {
-    pub timestamp_sec: i32,
-    pub timestamp_nanosec: u32,
-    pub frame_id: *const c_char,
-}
-
-#[repr(C)]
-pub struct CPointField {
+pub struct pelorus_point_field {
     pub name: *const c_char,
     pub offset: u32,
     pub datatype: u8,
     pub count: u32,
 }
 
+#[allow(non_camel_case_types)]
 #[repr(C)]
-pub struct CPointCloud2 {
+pub struct pelorus_pointcloud2 {
     pub header_timestamp_sec: i32,
     pub header_timestamp_nanosec: u32,
     pub header_frame_id: *const c_char,
     pub height: u32,
     pub width: u32,
-    pub fields: *const CPointField,
+    pub fields: *const pelorus_point_field,
     pub fields_len: usize,
     pub is_bigendian: bool,
     pub point_step: u32,
@@ -92,16 +115,18 @@ pub struct CPointCloud2 {
     pub is_dense: bool,
 }
 
+#[allow(non_camel_case_types)]
 #[repr(C)]
-pub struct CPointXYZI {
+pub struct pelorus_point_xyzi {
     pub x: f32,
     pub y: f32,
     pub z: f32,
     pub intensity: f32,
 }
 
+#[allow(non_camel_case_types)]
 #[repr(C)]
-pub struct CPelorusOdometry {
+pub struct pelorus_odometry {
     pub timestamp_sec: i32,
     pub timestamp_nanosec: u32,
 
@@ -116,12 +141,13 @@ pub struct CPelorusOdometry {
     pub twist_covariance: [f64; 36], // 6x6 covariance matrix
 
     // Registered point cloud (optional)
-    pub points: *mut CPointXYZI,
+    pub points: *mut pelorus_point_xyzi,
     pub num_points: usize,
 }
 
+#[allow(non_camel_case_types)]
 #[repr(C)]
-pub struct COdomMsg {
+pub struct pelorus_odom_msg {
     pub timestamp_sec: i32,
     pub timestamp_nanosec: u32,
     pub twist_linear: [f64; 3],      // [vx, vy, vz] m/s
@@ -130,11 +156,98 @@ pub struct COdomMsg {
 }
 
 fn processing_thread_main(thread: ProcessingThread) {
+    let mut sent_count: usize = 0;
+
+    // Prime the ready_for_next channel once before processing, mirroring main.rs behavior
+    if let Err(e) = thread.ready_for_next.send(()) {
+        eprintln!("[pelorus_c] failed to send initial ready signal: {e}");
+    }
     while let Ok(processed) = thread.prelio_receiver.recv() {
-        if let Some(output) = thread.pipeline.register_processed_cloud(processed) {
-            let _ = thread.result_sender.send(output);
+        match thread.pipeline.register_processed_cloud(processed, Some(&thread.ready_for_next)) {
+            Some(output) => {
+                // Check if callback is set
+                let callback_info_opt = thread.callback_info.lock().ok().and_then(|guard| {
+                    guard.as_ref().map(|info| (info.callback, info.user_data))
+                });
+
+                if let Some((callback, user_data)) = callback_info_opt {
+                    // Invoke callback
+                    let c_odom = convert_to_c_odometry(&output);
+                    unsafe {
+                        callback(&c_odom, user_data);
+                    }
+                    // Free the allocated points after callback returns
+                    unsafe {
+                        if !c_odom.points.is_null() {
+                            // Reconstruct the Vec with same length and capacity (allocated with exact size)
+                            let points = Vec::from_raw_parts(
+                                c_odom.points as *mut pelorus_point_xyzi,
+                                c_odom.num_points,
+                                c_odom.num_points, // capacity = length since Vec was allocated with exact size
+                            );
+                            drop(points);
+                        }
+                    }
+                } else {
+                    // No callback set, send to channel
+                    sent_count += 1;
+                    if let Err(e) = thread.result_sender.send(output) {
+                        eprintln!("[pelorus_c] failed to send odometry #{sent_count}: {e}");
+                    }
+                }
+            }
+            None => {
+                // No output produced for this cloud.
+            }
         }
     }
+}
+
+fn convert_to_c_odometry(odom: &PelorusOutput) -> pelorus_odometry {
+    let mut result = pelorus_odometry {
+        timestamp_sec: odom.timestamp.sec,
+        timestamp_nanosec: odom.timestamp.nanosec,
+        position: [
+            odom.pose.translation.x,
+            odom.pose.translation.y,
+            odom.pose.translation.z,
+        ],
+        orientation: [0.0; 4],
+        pose_covariance: odom.pose_covariance,
+        linear_velocity: [
+            odom.linear_velocity.x,
+            odom.linear_velocity.y,
+            odom.linear_velocity.z,
+        ],
+        angular_velocity: [
+            odom.angular_velocity.x,
+            odom.angular_velocity.y,
+            odom.angular_velocity.z,
+        ],
+        twist_covariance: odom.twist_covariance,
+        points: ptr::null_mut(),
+        num_points: 0,
+    };
+
+    let q = odom.pose.rotation.quaternion();
+    result.orientation = [q.w, q.i, q.j, q.k];
+
+    let mut points_vec: Vec<pelorus_point_xyzi> = odom
+        .cloud
+        .iter()
+        .map(|p| pelorus_point_xyzi {
+            x: p.x,
+            y: p.y,
+            z: p.z,
+            intensity: p.intensity,
+        })
+        .collect();
+
+    result.num_points = points_vec.len();
+    result.points = points_vec.as_mut_ptr();
+    std::mem::forget(points_vec);
+
+    result
 }
 
 /// Create a new Pelorus instance with full LIO pipeline
@@ -149,23 +262,51 @@ fn processing_thread_main(thread: ProcessingThread) {
 /// Opaque handle to Pelorus instance, or null on error
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn pelorus_create(config_path: *const c_char) -> *mut PelorusHandle {
+    // Default behavior: device-specific PointCloud2 interpretation.
+    unsafe { pelorus_create_internal(config_path, true) }
+}
+
+/// Create a new Pelorus instance with optional creation-time flags.
+///
+/// # Safety
+/// Same as `pelorus_create`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn pelorus_create_with_options(
+    options: *const pelorus_create_options,
+) -> *mut PelorusHandle {
+    if options.is_null() {
+        return unsafe { pelorus_create_internal(ptr::null(), true) };
+    }
+
+    let opts = unsafe { &*options };
+    let device_specific_pointcloud2 = match opts.device_specific_pointcloud2 {
+        0 => false,
+        1 => true,
+        _ => true, // default
+    };
+
+    unsafe { pelorus_create_internal(opts.config_path, device_specific_pointcloud2) }
+}
+
+unsafe fn pelorus_create_internal(
+    config_path: *const c_char,
+    device_specific_pointcloud2: bool,
+) -> *mut PelorusHandle {
     // Parse config path if provided
     let config_path_opt = if config_path.is_null() {
         None
     } else {
-        unsafe {
-            match CStr::from_ptr(config_path).to_str() {
-                Ok(s) => Some(s),
-                Err(_) => {
-                    log::error!("Invalid UTF-8 in config path");
-                    return ptr::null_mut();
-                }
+        match unsafe { CStr::from_ptr(config_path) }.to_str() {
+            Ok(s) => Some(s),
+            Err(_) => {
+                log::error!("Invalid UTF-8 in config path");
+                return ptr::null_mut();
             }
         }
     };
 
     // Load configuration
-    let config = match load_pelorus_config(config_path_opt) {
+    let mut config = match load_pelorus_config(config_path_opt) {
         Ok(cfg) => cfg,
         Err(e) => {
             log::error!("Failed to load configuration: {}", e);
@@ -173,9 +314,26 @@ pub unsafe extern "C" fn pelorus_create(config_path: *const c_char) -> *mut Pelo
         }
     };
 
+    if !device_specific_pointcloud2 {
+        // For non-device-specific PointCloud2 inputs, select the generic parsing path.
+        // (Internally this uses a specific vendor mode, but we keep the public API vendor-agnostic.)
+        config.prelio_params.lidar_vendor = LidarVendor::Ouster;
+    }
+
     let pipeline = Pipeline::new(&config);
 
-    let (prelio, prelio_receiver) = match pipeline.create_prelio(None) {
+    let imu_init_cb = Some(pipeline.build_init_callback());
+    let imu_predictor_init_time_sec = config.prelio_node_params.imu_predictor_init_time_sec;
+    let imu_init_state = Arc::new(Mutex::new(ImuInitState {
+        start_time: None,
+        buffer: Some(Vec::new()),
+    }));
+
+    // Create the ready_for_next channel for synchronization
+    let (ready_tx, ready_rx) = mpsc::channel::<()>();
+    
+    // Pass the receiver to Prelio for proper synchronization
+    let (prelio, prelio_receiver) = match pipeline.create_prelio(Some(ready_rx)) {
         Ok(parts) => parts,
         Err(e) => {
             log::error!("Failed to initialize Prelio: {}", e);
@@ -185,10 +343,14 @@ pub unsafe extern "C" fn pelorus_create(config_path: *const c_char) -> *mut Pelo
 
     let (result_tx, result_rx) = mpsc::channel();
 
+    let callback_info = Arc::new(Mutex::new(None));
+
     let processing_thread = ProcessingThread {
         pipeline: pipeline.clone(),
         prelio_receiver,
         result_sender: result_tx,
+        callback_info: callback_info.clone(),
+        ready_for_next: ready_tx,
     };
 
     let thread_handle = thread::spawn(move || {
@@ -198,6 +360,10 @@ pub unsafe extern "C" fn pelorus_create(config_path: *const c_char) -> *mut Pelo
     let handle = Box::new(PelorusHandle {
         prelio: Arc::new(Mutex::new(prelio)),
         result_receiver: result_rx,
+        callback_info,
+        imu_init_cb,
+        imu_init_state,
+        imu_predictor_init_time_sec,
         _processing_thread: Some(thread_handle),
     });
 
@@ -221,12 +387,15 @@ pub unsafe extern "C" fn pelorus_destroy(handle: *mut PelorusHandle) {
 ///
 /// # Safety
 /// - `handle` must be a valid pointer returned from `pelorus_create`
-/// - `imu` must be a valid pointer to a CImuMsg
+/// - `imu` must be a valid pointer to a pelorus_imu_msg
 ///
 /// # Returns
 /// 0 on success, -1 on error
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn pelorus_add_imu(handle: *mut PelorusHandle, imu: *const CImuMsg) -> i32 {
+pub unsafe extern "C" fn pelorus_add_imu(
+    handle: *mut PelorusHandle,
+    imu: *const pelorus_imu_msg,
+) -> i32 {
     if handle.is_null() || imu.is_null() {
         return -1;
     }
@@ -259,6 +428,50 @@ pub unsafe extern "C" fn pelorus_add_imu(handle: *mut PelorusHandle, imu: *const
             linear_acceleration_covariance: imu_data.linear_acceleration_covariance,
         };
 
+        // Mirror `prelio_io`: buffer initial IMU window, initialize EKF once, then start feeding IMU into Prelio.
+        let timestamp = prelio::timestamp_to_secs(&imu_msg.stamp);
+        let mut init_buffer_to_apply: Option<Vec<ImuMsg>> = None;
+        if let Some(_cb) = handle.imu_init_cb.as_ref() {
+            if let Ok(mut init_state) = handle.imu_init_state.lock() {
+                if init_state.start_time.is_none() {
+                    init_state.start_time = Some(timestamp);
+                }
+
+                if let Some(start_time) = init_state.start_time {
+                    // Handle bag restarts / time going backwards during init.
+                    if timestamp < start_time {
+                        init_state.start_time = Some(timestamp);
+                        if let Some(buf) = init_state.buffer.as_mut() {
+                            buf.clear();
+                        }
+                    }
+
+                    let init_time = handle.imu_predictor_init_time_sec;
+                    let delta = timestamp - init_state.start_time.unwrap_or(timestamp);
+
+                    if init_time <= 0.0 {
+                        if let Some(buf) = init_state.buffer.as_mut() {
+                            buf.push(imu_msg.clone());
+                        }
+                        init_buffer_to_apply = init_state.buffer.take();
+                    } else if delta < init_time {
+                        if let Some(buf) = init_state.buffer.as_mut() {
+                            buf.push(imu_msg);
+                            return 0;
+                        }
+                    } else {
+                        init_buffer_to_apply = init_state.buffer.take();
+                    }
+                }
+            }
+        }
+
+        if let (Some(cb), Some(buffer)) = (handle.imu_init_cb.as_ref(), init_buffer_to_apply) {
+            if !buffer.is_empty() {
+                cb.lock().unwrap()(&buffer);
+            }
+        }
+
         // Process IMU (ignore filtered output for now)
         match handle.prelio.lock() {
             Ok(mut prelio) => {
@@ -274,14 +487,14 @@ pub unsafe extern "C" fn pelorus_add_imu(handle: *mut PelorusHandle, imu: *const
 ///
 /// # Safety
 /// - `handle` must be a valid pointer returned from `pelorus_create`
-/// - `odom` must be a valid pointer to a COdomMsg
+/// - `odom` must be a valid pointer to a pelorus_odom_msg
 ///
 /// # Returns
 /// 0 on success, -1 on error
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn pelorus_add_odom(
     handle: *mut PelorusHandle,
-    odom: *const COdomMsg,
+    odom: *const pelorus_odom_msg,
 ) -> i32 {
     if handle.is_null() || odom.is_null() {
         return -1;
@@ -323,15 +536,14 @@ pub unsafe extern "C" fn pelorus_add_odom(
 ///
 /// # Safety
 /// - `handle` must be a valid pointer returned from `pelorus_create`
-/// - `header` must be a valid pointer to a CPointCloudHeader
-/// - `points` must be a valid pointer to an array of `num_points` floats in XYZI format
+/// - `cloud` must be a valid pointer to a pelorus_pointcloud2
 ///
 /// # Returns
 /// 0 on success, -1 on error
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn pelorus_add_pointcloud(
     handle: *mut PelorusHandle,
-    cloud: *const CPointCloud2,
+    cloud: *const pelorus_pointcloud2,
 ) -> i32 {
     if handle.is_null() || cloud.is_null() {
         return -1;
@@ -403,6 +615,203 @@ pub unsafe extern "C" fn pelorus_add_pointcloud(
     }
 }
 
+fn make_frame_id(frame_id: *const c_char) -> Option<String> {
+    if frame_id.is_null() {
+        return Some(String::new());
+    }
+    match unsafe { CStr::from_ptr(frame_id) }.to_str() {
+        Ok(s) => Some(s.to_string()),
+        Err(_) => None,
+    }
+}
+
+fn build_cloud_xyzi_t(
+    header_timestamp_sec: i32,
+    header_timestamp_nanosec: u32,
+    frame_id: String,
+    num_points: usize,
+    mut point_at: impl FnMut(usize) -> (f32, f32, f32, f32, u32),
+) -> PointCloud2Msg {
+    // Always emit x,y,z,intensity,t.
+    // `t` is uint32 nanoseconds offset relative to the scan header timestamp.
+    let point_step: usize = 20;
+    let mut data = Vec::with_capacity(num_points * point_step);
+    for i in 0..num_points {
+        let (x, y, z, intensity, t) = point_at(i);
+        data.extend_from_slice(&x.to_le_bytes());
+        data.extend_from_slice(&y.to_le_bytes());
+        data.extend_from_slice(&z.to_le_bytes());
+        data.extend_from_slice(&intensity.to_le_bytes());
+        data.extend_from_slice(&t.to_le_bytes());
+    }
+
+    let fields = vec![
+        PointField {
+            name: "x".to_string(),
+            offset: 0,
+            datatype: 7,
+            count: 1,
+        },
+        PointField {
+            name: "y".to_string(),
+            offset: 4,
+            datatype: 7,
+            count: 1,
+        },
+        PointField {
+            name: "z".to_string(),
+            offset: 8,
+            datatype: 7,
+            count: 1,
+        },
+        PointField {
+            name: "intensity".to_string(),
+            offset: 12,
+            datatype: 7,
+            count: 1,
+        },
+        PointField {
+            name: "t".to_string(),
+            offset: 16,
+            datatype: 6,
+            count: 1,
+        },
+    ];
+
+    let cloud_msg = PointCloud2 {
+        header: ros2_interfaces_jazzy_serde::std_msgs::msg::Header {
+            stamp: ros2_interfaces_jazzy_serde::builtin_interfaces::msg::Time {
+                sec: header_timestamp_sec,
+                nanosec: header_timestamp_nanosec,
+            },
+            frame_id,
+        },
+        height: 1,
+        width: num_points as u32,
+        fields,
+        is_bigendian: false,
+        point_step: point_step as u32,
+        row_step: (num_points * point_step) as u32,
+        data,
+        is_dense: true,
+    };
+
+    cloud_msg.into()
+}
+
+/// Add raw points from a packed `float` array (Nx4): [x,y,z,t].
+///
+/// `t` is interpreted as nanoseconds offset relative to the scan header timestamp.
+/// This mirrors the Python numpy/list path which casts `t` to `uint32`.
+///
+/// # Safety
+/// - `handle` must be a valid pointer returned from `pelorus_create*`
+/// - `xyzt` must point to at least `num_points*4` floats
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn pelorus_add_points_xyzt_f32(
+    handle: *mut PelorusHandle,
+    header_timestamp_sec: i32,
+    header_timestamp_nanosec: u32,
+    frame_id: *const c_char,
+    xyzt: *const f32,
+    num_points: usize,
+) -> i32 {
+    if handle.is_null() || xyzt.is_null() {
+        return -1;
+    }
+    if num_points == 0 {
+        return 0;
+    }
+
+    let frame_id = match make_frame_id(frame_id) {
+        Some(s) => s,
+        None => return -1,
+    };
+    let xyzt = unsafe { slice::from_raw_parts(xyzt, num_points * 4) };
+
+    let cloud_msg_internal = build_cloud_xyzi_t(
+        header_timestamp_sec,
+        header_timestamp_nanosec,
+        frame_id,
+        num_points,
+        |i| {
+            let x = xyzt[i * 4 + 0];
+            let y = xyzt[i * 4 + 1];
+            let z = xyzt[i * 4 + 2];
+            let t = xyzt[i * 4 + 3] as u32;
+            (x, y, z, 0.0, t)
+        },
+    );
+
+    unsafe {
+        let handle = &mut *handle;
+        match handle.prelio.lock() {
+            Ok(mut prelio) => {
+                prelio.add_pointcloud(cloud_msg_internal);
+                0
+            }
+            Err(_) => -1,
+        }
+    }
+}
+
+/// Add raw points from a packed `float` array (Nx5): [x,y,z,intensity,t].
+///
+/// `t` is interpreted as nanoseconds offset relative to the scan header timestamp.
+/// This mirrors the Python numpy/list path which casts `t` to `uint32`.
+///
+/// # Safety
+/// - `handle` must be a valid pointer returned from `pelorus_create*`
+/// - `xyzit` must point to at least `num_points*5` floats
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn pelorus_add_points_xyzit_f32(
+    handle: *mut PelorusHandle,
+    header_timestamp_sec: i32,
+    header_timestamp_nanosec: u32,
+    frame_id: *const c_char,
+    xyzit: *const f32,
+    num_points: usize,
+) -> i32 {
+    if handle.is_null() || xyzit.is_null() {
+        return -1;
+    }
+    if num_points == 0 {
+        return 0;
+    }
+
+    let frame_id = match make_frame_id(frame_id) {
+        Some(s) => s,
+        None => return -1,
+    };
+    let xyzit = unsafe { slice::from_raw_parts(xyzit, num_points * 5) };
+
+    let cloud_msg_internal = build_cloud_xyzi_t(
+        header_timestamp_sec,
+        header_timestamp_nanosec,
+        frame_id,
+        num_points,
+        |i| {
+            let x = xyzit[i * 5 + 0];
+            let y = xyzit[i * 5 + 1];
+            let z = xyzit[i * 5 + 2];
+            let intensity = xyzit[i * 5 + 3];
+            let t = xyzit[i * 5 + 4] as u32;
+            (x, y, z, intensity, t)
+        },
+    );
+
+    unsafe {
+        let handle = &mut *handle;
+        match handle.prelio.lock() {
+            Ok(mut prelio) => {
+                prelio.add_pointcloud(cloud_msg_internal);
+                0
+            }
+            Err(_) => -1,
+        }
+    }
+}
+
 /// Try to receive odometry from Pelorus (non-blocking)
 ///
 /// This function retrieves the latest odometry estimate including:
@@ -420,7 +829,7 @@ pub unsafe extern "C" fn pelorus_add_pointcloud(
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn pelorus_try_recv(
     handle: *mut PelorusHandle,
-    result: *mut CPelorusOdometry,
+    result: *mut pelorus_odometry,
 ) -> i32 {
     if handle.is_null() || result.is_null() {
         return -1;
@@ -432,46 +841,7 @@ pub unsafe extern "C" fn pelorus_try_recv(
         match handle.result_receiver.try_recv() {
             Ok(odom) => {
                 let result_out = &mut *result;
-
-                result_out.timestamp_sec = odom.timestamp.sec;
-                result_out.timestamp_nanosec = odom.timestamp.nanosec;
-
-                result_out.position = [
-                    odom.pose.translation.x,
-                    odom.pose.translation.y,
-                    odom.pose.translation.z,
-                ];
-                let q = odom.pose.rotation.quaternion();
-                result_out.orientation = [q.w, q.i, q.j, q.k];
-                result_out.pose_covariance = odom.pose_covariance;
-
-                result_out.linear_velocity = [
-                    odom.linear_velocity.x,
-                    odom.linear_velocity.y,
-                    odom.linear_velocity.z,
-                ];
-                result_out.angular_velocity = [
-                    odom.angular_velocity.x,
-                    odom.angular_velocity.y,
-                    odom.angular_velocity.z,
-                ];
-                result_out.twist_covariance = odom.twist_covariance;
-
-                let mut points_vec: Vec<CPointXYZI> = odom
-                    .cloud
-                    .iter()
-                    .map(|p| CPointXYZI {
-                        x: p.x,
-                        y: p.y,
-                        z: p.z,
-                        intensity: p.intensity,
-                    })
-                    .collect();
-
-                result_out.num_points = points_vec.len();
-                result_out.points = points_vec.as_mut_ptr();
-                std::mem::forget(points_vec);
-
+                *result_out = convert_to_c_odometry(&odom);
                 1
             }
             Err(mpsc::TryRecvError::Empty) => 0,
@@ -480,13 +850,91 @@ pub unsafe extern "C" fn pelorus_try_recv(
     }
 }
 
+/// Blocking receive odometry from Pelorus (synchronous)
+///
+/// This function blocks until odometry data is available or an error occurs.
+/// Use this for synchronous processing where you want to wait for each result.
+///
+/// # Safety
+/// - `handle` must be a valid pointer returned from `pelorus_create`
+/// - `result` must be a valid pointer to write the result
+///
+/// # Returns
+/// 1 if odometry was received, -1 on error (e.g., channel disconnected)
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn pelorus_recv(
+    handle: *mut PelorusHandle,
+    result: *mut pelorus_odometry,
+) -> i32 {
+    if handle.is_null() || result.is_null() {
+        return -1;
+    }
+
+    unsafe {
+        let handle = &mut *handle;
+
+        match handle.result_receiver.recv() {
+            Ok(odom) => {
+                let result_out = &mut *result;
+                *result_out = convert_to_c_odometry(&odom);
+                1
+            }
+            Err(_) => -1,
+        }
+    }
+}
+
+/// Set a callback for asynchronous odometry reception
+///
+/// When a callback is set, odometry results will be delivered via the callback
+/// instead of being queued for pelorus_try_recv() or pelorus_recv().
+/// The callback is invoked from a background thread.
+///
+/// # Safety
+/// - `handle` must be a valid pointer returned from `pelorus_create`
+/// - `callback` must be a valid function pointer or NULL
+/// - `user_data` can be any pointer (including NULL) and will be passed to the callback
+///
+/// # Returns
+/// 0 on success, -1 on error
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn pelorus_set_callback(
+    handle: *mut PelorusHandle,
+    callback: Option<unsafe extern "C" fn(*const pelorus_odometry, *mut c_void)>,
+    user_data: *mut c_void,
+) -> i32 {
+    if handle.is_null() {
+        return -1;
+    }
+
+    unsafe {
+        let handle = &mut *handle;
+
+        match handle.callback_info.lock() {
+            Ok(mut guard) => {
+                if let Some(cb) = callback {
+                    *guard = Some(CallbackInfo {
+                        callback: cb,
+                        user_data,
+                    });
+                } else {
+                    *guard = None;
+                }
+                0
+            }
+            Err(_) => -1,
+        }
+    }
+}
+
 /// Free memory allocated for odometry result
 ///
 /// # Safety
-/// - `odom` must be a valid pointer to a CPelorusOdometry that was filled by `pelorus_try_recv`
+/// - `odom` must be a valid pointer to a pelorus_odometry that was filled by `pelorus_try_recv` or `pelorus_recv`
 /// - This function should only be called once per odometry result
+/// - Do NOT call this for odometry results received via callbacks (memory is freed automatically)
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn pelorus_free_odometry(odom: *mut CPelorusOdometry) {
+pub unsafe extern "C" fn pelorus_free_odometry(odom: *mut pelorus_odometry) {
     if odom.is_null() {
         return;
     }
@@ -494,6 +942,7 @@ pub unsafe extern "C" fn pelorus_free_odometry(odom: *mut CPelorusOdometry) {
     unsafe {
         let odom_data = &mut *odom;
         if !odom_data.points.is_null() {
+            // Reconstruct the Vec with same length and capacity (allocated with exact size)
             let points =
                 Vec::from_raw_parts(odom_data.points, odom_data.num_points, odom_data.num_points);
             drop(points);

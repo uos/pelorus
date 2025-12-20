@@ -18,7 +18,7 @@ pub mod output_tui;
 
 // pub fn imu_msg_to_pelorus_reg(m: &ImuMsg) -> pelorus_reg::ImuMsg {
 //     pelorus_reg::ImuMsg {
-//         timestamp_sec: prelio_ros2::prelio::timestamp_to_secs(&m.stamp),
+//         timestamp_sec: prelio_io::prelio::timestamp_to_secs(&m.stamp),
 //         orientation: UnitQuaternion::from_quaternion(nalgebra::Quaternion::new(
 //             m.orientation[0],
 //             m.orientation[1],
