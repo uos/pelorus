@@ -460,14 +460,12 @@ impl crate::Registration for RegistrationState {
         if !map_empty {
             #[cfg(not(feature = "cuda"))]
             let map = &mut self.map;
-            #[cfg(feature = "cuda")]
-            let cloud_len_alloc = {
-                const EXTRA: f32 = if cfg!(feature = "cuda") { 1.3 } else { 1.2 };
-                (EXTRA * cloud.len() as f32).ceil() as usize
-            };
+            const EXTRA: f32 = if cfg!(feature = "cuda") { 1.3 } else { 1.2 };
+            let cloud_len_alloc = (EXTRA * cloud.len() as f32).ceil() as usize;
             {
                 eval_outer.write().unwrap().start("ekf correct").unwrap();
             }
+
             let eval_cb = eval_outer.clone();
 
             #[cfg(feature = "cuda")]
@@ -564,66 +562,6 @@ impl crate::Registration for RegistrationState {
                                     point_global.z as f32,
                                 );
 
-                                // let mut winning_factor = None;
-
-                                // let n2 = {
-                                //     *neighbor_size = 0;
-                                //     let plane = map
-                                //         .plane_fit_from_distributions_lower_res(&query_point, 2)?; // TODO param?
-                                //     let pd2 = plane[0] * point_global.x as f32
-                                //         + plane[1] * point_global.y as f32
-                                //         + plane[2] * point_global.z as f32
-                                //         + plane[3];
-                                //     let s = 1.0
-                                //         - 0.9 * pd2.abs()
-                                //             / point_local.xyz_f64().coords.norm().sqrt() as f32;
-
-                                //     if s <= 0.9 {
-                                //         None
-                                //     } else {
-                                //         winning_factor = Some((pd2, 1));
-
-                                //         Some(PointXYZINormal::new(
-                                //             point_local.x,
-                                //             point_local.y,
-                                //             point_local.z,
-                                //             pd2 as f32,
-                                //             plane[0] as f32,
-                                //             plane[1] as f32,
-                                //             plane[2] as f32,
-                                //         ))
-                                //     }
-                                // };
-
-                                // let n3 = {
-                                //     *neighbor_size = 0;
-                                //     let plane = map
-                                //         .plane_fit_from_distributions_lower_res(&query_point, 3)?; // TODO param?
-                                //     let pd2 = plane[0] * point_global.x as f32
-                                //         + plane[1] * point_global.y as f32
-                                //         + plane[2] * point_global.z as f32
-                                //         + plane[3];
-                                //     let s = 1.0
-                                //         - 0.9 * pd2.abs()
-                                //             / point_local.xyz_f64().coords.norm().sqrt() as f32;
-
-                                //     if s <= 0.9 {
-                                //         None
-                                //     } else {
-                                //         winning_factor = Some((pd2, 2));
-
-                                //         Some(PointXYZINormal::new(
-                                //             point_local.x,
-                                //             point_local.y,
-                                //             point_local.z,
-                                //             pd2 as f32,
-                                //             plane[0] as f32,
-                                //             plane[1] as f32,
-                                //             plane[2] as f32,
-                                //         ))
-                                //     }
-                                // };
-
                                 {
                                     let plane = map.plane_fit_from_distributions(&query_point)?;
                                     let pd2 = plane[0] * point_global.x as f32
@@ -659,53 +597,26 @@ impl crate::Registration for RegistrationState {
                                         ))
                                     }
                                 }
-
-                                // match winning_factor?.1 {
-                                //     0 => {
-                                //         total_returned += 1;
-                                //         n1
-                                //     }
-                                //     // 1 => {
-                                //     //     total_returned += 1;
-                                //     //     lr_part += 1;
-                                //     //     n2
-                                //     // }
-                                //     2 => {
-                                //         total_returned += 1;
-                                //         lr2_part += 1;
-                                //         n3
-                                //     }
-                                //     _ => panic!("winner has not been implemented"),
-                                // }
                             })
                             .collect::<Vec<_>>();
 
-                        // let tp = lr_part as f32 / total_returned as f32;
-                        // let tp2 = lr2_part as f32 / total_returned as f32;
-                        // dbg!(tp, tp2, total_returned);
                         planes
                     };
                     eval.stop("planes").unwrap();
 
                     *first_it.lock().unwrap() = false;
 
-                    // if current_scan_count < 11 {
-                    //     planes.resize(1000, PointXYZINormal::default());
-                    // }
-
                     if planes.is_empty() {
                         *valid = false;
                         return;
                     }
 
-                    // dbg!(planes.len());
-
                     if planes.len() > h.nrows() {
-                        *h = DVector::<f64>::zeros(planes.len());
+                        *h = DVector::<f64>::zeros(cloud_len_alloc);
                     }
 
                     if planes.len() > h_x.nrows() {
-                        *h_x = DMatrix::<f64>::zeros(planes.len(), 18);
+                        *h_x = DMatrix::<f64>::zeros(cloud_len_alloc, 18);
                     }
 
                     eval.start("jacobian").unwrap();

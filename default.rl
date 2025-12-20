@@ -116,7 +116,7 @@ wheel {
 
   # covariance = 0.001 # Weight for Odometry correction in the IEKF. If not given, the covariance provided in the Odometry message will be used.
 
-  kinematic_constraint_std = 0.05 # Standard deviation for kinematic constraints in undistortion (lower = stronger constraints)
+  kinematic_constraint_std = 0.1 # Standard deviation for kinematic constraints in undistortion (lower = stronger constraints)
 
   kinematic_model = Full3D # Full3D | Differential | Holonomic2D | Ackermann. Applies kinematic constraints on the IEKF.
   

@@ -511,12 +511,12 @@ impl Iekf {
 
         let mut final_kh = SMatrix::<f64, 18, 18>::zeros();
 
+        let mut h = DVector::<f64>::zeros(0);
+        let mut h_x = DMatrix::<f64>::zeros(0, 18);
+
         for iter in 0..max_iter {
             let mut valid = true;
             let converge_flag = true;
-
-            let mut h = DVector::<f64>::zeros(0);
-            let mut h_x = DMatrix::<f64>::zeros(0, 18);
 
             model(&self.state, &mut valid, converge_flag, &mut h, &mut h_x);
 
@@ -529,11 +529,10 @@ impl Iekf {
             let hth = &h_t * &h_x; // 18 x 18
 
             let lhs = hth * r_inv + p_propagated_inv;
-
             let lhs_inv = match lhs.try_inverse() {
                 Some(inv) => inv,
                 None => {
-                    warn!("IEKF: LHS matrix singular in iteration {}, skipping.", iter);
+                    warn!("IEKF: LHS solve failed in iteration {}, skipping.", iter);
                     break;
                 }
             };
