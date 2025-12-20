@@ -7,3 +7,5 @@ lio/icp/build
 pelorus.rl
 pelorus_trajectory*
 pelorus_c/examples/basic_usage
+pelorus_c/examples/async_callback
+pelorus_c/examples/sync_blocking

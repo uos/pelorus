@@ -251,10 +251,10 @@ impl ImuProcessing {
         cloud: &[PointXYZIT],
         lidar_vendor: Option<LidarVendor>,
     ) -> Vec<PointXYZI> {
-        assert!(!imu_msgs.is_empty());
-        assert!(last_cloud_end_time > 0.0);
-        assert!(cloud_begin_time > 0.0);
-        assert!(cloud_end_time > 0.0);
+        debug_assert!(!imu_msgs.is_empty());
+        debug_assert!(last_cloud_end_time > 0.0);
+        debug_assert!(cloud_begin_time > 0.0);
+        debug_assert!(cloud_end_time > 0.0);
 
         if !matches!(lidar_vendor, Some(LidarVendor::Robosense)) {
             cloud_end_time += cloud_begin_time;
@@ -284,9 +284,7 @@ impl ImuProcessing {
 
         let mut all_imus = std::iter::once(&self.last_imu).chain(imu_msgs.iter());
 
-        // Handle the (unlikely) case of an empty iterator gracefully.
         let Some(mut head) = all_imus.next() else {
-            // This will not be reached due to the assert! above, but is robust code.
             return vec![];
         };
 
@@ -370,6 +368,10 @@ impl ImuProcessing {
             self.acc_s_last = self.imu_state.pose.rotation().matrix()
                 * ((tail_lin_acc * GRAVITY / mean_acc) - self.imu_state.ba)
                 + self.imu_state.grav;
+
+            // this could become NaN when the mean_acc becomes 0.0. this could just be the case in space when you are far away from all gravity sources that your sensor is too inaccurate and somehow measures perfect 0.0... or by forgetting the imu initialization if you are on a planet with gravity :)
+            debug_assert!(!self.acc_s_last.iter().any(|a| a.is_nan()));
+
             let offs_t = tail_stamp - cloud_begin_time;
             imu_poses.push(Pose6D::new(
                 offs_t,

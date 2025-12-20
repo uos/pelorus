@@ -1,5 +1,5 @@
 [package]
-name = "prelio_ros2"
+name = "prelio_io"
 description = "IO layer for prelio"
 
 version.workspace = true

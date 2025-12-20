@@ -1,10 +1,10 @@
 [workspace]
 members = ["pelorus_core",
   "pelorus_cuda",
-  "pelorus", "pelorus_c",
+  "pelorus", "pelorus_c", "pelorus_py",
   "pelorus_reg",
   "prelio",
-  "prelio_ros2",
+  "prelio_io",
   "spole",
 ]
 resolver = "3"
@@ -23,7 +23,7 @@ pelorus = { path = "pelorus", version = "0.1.0-beta" }
 pelorus_core = { path = "pelorus_core", version = "0.1.0-beta" }
 pelorus_reg = { path = "pelorus_reg", version = "0.1.0-beta" }
 prelio = { path = "prelio", version = "0.1.0-beta" }
-prelio_ros2 = { path = "prelio_ros2", version = "0.1.0-beta" }
+prelio_io = { path = "prelio_io", version = "0.1.0-beta" }
 spole = { path = "spole", version = "0.1.0-beta" }
 pelorus_cuda = { path = "pelorus_cuda", version = "0.1.0-beta" }
 

@@ -28,7 +28,7 @@ log.workspace = true
 ratslang.workspace = true
 
 [features]
-default = []
+default = ["downsample", "parallel"]
 downsample = ["prelio/downsample"]
 parallel = ["prelio/parallel", "pelorus_reg/parallel"]
 cuda = ["prelio/cuda", "pelorus_reg/cuda"]

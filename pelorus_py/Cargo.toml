@@ -1,0 +1,36 @@
+[package]
+name = "pelorus_py"
+description = "Python bindings for Pelorus"
+edition.workspace = true
+include.workspace = true
+keywords.workspace = true
+license.workspace = true
+repository.workspace = true
+version.workspace = true
+rust-version.workspace = true
+
+[lib]
+name = "pelorus"
+crate-type = ["cdylib"]
+
+[dependencies]
+pelorus_core.workspace = true
+pelorus_reg.workspace = true
+prelio.workspace = true
+spole.workspace = true
+ros_pointcloud2 = { workspace = true, features = ["ros2-interfaces-jazzy-serde"] }
+ros2-interfaces-jazzy-serde.workspace = true
+nalgebra.workspace = true
+anyhow.workspace = true
+log.workspace = true
+ratslang.workspace = true
+
+pyo3 = { version = "0.27", features = ["extension-module", "abi3-py38"] }
+numpy = "0.27"
+
+[features]
+default = ["downsample", "parallel"]
+downsample = ["prelio/downsample"]
+parallel = ["prelio/parallel", "pelorus_reg/parallel"]
+cuda = ["prelio/cuda", "pelorus_reg/cuda"]
+no-imu-sync = ["prelio/no-imu-sync"]
