@@ -5,8 +5,10 @@ use std::path::Path;
 use std::ptr;
 use std::slice;
 use std::sync::{Arc, Mutex, mpsc};
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use anyhow::anyhow;
+use log::{error, info, warn};
 use pelorus_core::config::ast_to_config;
 use pelorus_core::{ImuMsg, LidarVendor, LioConfig, OdomMsg, PrelioProcessedCloud};
 use pelorus_reg::pipeline::{PelorusOutput, Pipeline};
@@ -47,6 +49,7 @@ struct ProcessingThread {
     result_sender: mpsc::Sender<PelorusOutput>,
     callback_info: Arc<Mutex<Option<CallbackInfo>>>,
     ready_for_next: mpsc::Sender<()>,
+    shutdown: Arc<AtomicBool>,
 }
 
 struct CallbackInfo {
@@ -58,13 +61,31 @@ unsafe impl Send for CallbackInfo {}
 unsafe impl Sync for CallbackInfo {}
 
 pub struct PelorusHandle {
-    prelio: Arc<Mutex<Prelio>>,
+    prelio: Arc<Mutex<Option<Prelio>>>,
     result_receiver: mpsc::Receiver<PelorusOutput>,
     callback_info: Arc<Mutex<Option<CallbackInfo>>>,
     imu_init_cb: Option<Arc<Mutex<dyn FnMut(&[ImuMsg]) + Send + Sync>>>,
     imu_init_state: Arc<Mutex<ImuInitState>>,
     imu_predictor_init_time_sec: f64,
     _processing_thread: Option<thread::JoinHandle<()>>,
+    shutdown: Arc<AtomicBool>,
+}
+
+impl Drop for PelorusHandle {
+    fn drop(&mut self) {
+        self.shutdown.store(true, Ordering::Relaxed);
+
+        // Drop Prelio first (while the processing thread is still alive) so it stops producing.
+        if let Ok(mut prelio_guard) = self.prelio.lock() {
+            prelio_guard.take();
+        }
+
+        if let Some(handle) = self._processing_thread.take() {
+            if let Err(e) = handle.join() {
+                warn!("processing thread join failed: {e:?}");
+            }
+        }
+    }
 }
 
 #[allow(non_camel_case_types)]
@@ -159,10 +180,18 @@ fn processing_thread_main(thread: ProcessingThread) {
     let mut sent_count: usize = 0;
 
     // Prime the ready_for_next channel once before processing, mirroring main.rs behavior
-    if let Err(e) = thread.ready_for_next.send(()) {
-        eprintln!("[pelorus_c] failed to send initial ready signal: {e}");
+    if !thread.shutdown.load(Ordering::Relaxed) {
+        if let Err(e) = thread.ready_for_next.send(()) {
+            warn!("failed to send initial ready signal: {e}");
+        }
     }
+
     while let Ok(processed) = thread.prelio_receiver.recv() {
+        // During shutdown, keep draining Prelio output, but do not call into pelorus_reg.
+        if thread.shutdown.load(Ordering::Relaxed) {
+            continue;
+        }
+
         match thread.pipeline.register_processed_cloud(processed, Some(&thread.ready_for_next)) {
             Some(output) => {
                 // Check if callback is set
@@ -192,7 +221,7 @@ fn processing_thread_main(thread: ProcessingThread) {
                     // No callback set, send to channel
                     sent_count += 1;
                     if let Err(e) = thread.result_sender.send(output) {
-                        eprintln!("[pelorus_c] failed to send odometry #{sent_count}: {e}");
+                        warn!("failed to send odometry #{sent_count}: {e}");
                     }
                 }
             }
@@ -201,6 +230,8 @@ fn processing_thread_main(thread: ProcessingThread) {
             }
         }
     }
+
+    info!("processing thread exiting (prelio channel disconnected)");
 }
 
 fn convert_to_c_odometry(odom: &PelorusOutput) -> pelorus_odometry {
@@ -299,7 +330,7 @@ unsafe fn pelorus_create_internal(
         match unsafe { CStr::from_ptr(config_path) }.to_str() {
             Ok(s) => Some(s),
             Err(_) => {
-                log::error!("Invalid UTF-8 in config path");
+                error!("Invalid UTF-8 in config path");
                 return ptr::null_mut();
             }
         }
@@ -309,7 +340,7 @@ unsafe fn pelorus_create_internal(
     let mut config = match load_pelorus_config(config_path_opt) {
         Ok(cfg) => cfg,
         Err(e) => {
-            log::error!("Failed to load configuration: {}", e);
+            error!("Failed to load configuration: {}", e);
             return ptr::null_mut();
         }
     };
@@ -336,7 +367,7 @@ unsafe fn pelorus_create_internal(
     let (prelio, prelio_receiver) = match pipeline.create_prelio(Some(ready_rx)) {
         Ok(parts) => parts,
         Err(e) => {
-            log::error!("Failed to initialize Prelio: {}", e);
+            error!("Failed to initialize Prelio: {}", e);
             return ptr::null_mut();
         }
     };
@@ -345,12 +376,15 @@ unsafe fn pelorus_create_internal(
 
     let callback_info = Arc::new(Mutex::new(None));
 
+    let shutdown = Arc::new(AtomicBool::new(false));
+
     let processing_thread = ProcessingThread {
         pipeline: pipeline.clone(),
         prelio_receiver,
         result_sender: result_tx,
         callback_info: callback_info.clone(),
         ready_for_next: ready_tx,
+        shutdown: shutdown.clone(),
     };
 
     let thread_handle = thread::spawn(move || {
@@ -358,13 +392,14 @@ unsafe fn pelorus_create_internal(
     });
 
     let handle = Box::new(PelorusHandle {
-        prelio: Arc::new(Mutex::new(prelio)),
+        prelio: Arc::new(Mutex::new(Some(prelio))),
         result_receiver: result_rx,
         callback_info,
         imu_init_cb,
         imu_init_state,
         imu_predictor_init_time_sec,
         _processing_thread: Some(thread_handle),
+        shutdown,
     });
 
     Box::into_raw(handle)
@@ -475,8 +510,12 @@ pub unsafe extern "C" fn pelorus_add_imu(
         // Process IMU (ignore filtered output for now)
         match handle.prelio.lock() {
             Ok(mut prelio) => {
-                prelio.add_imu(imu_msg);
-                0
+                if let Some(prelio) = prelio.as_mut() {
+                    prelio.add_imu(imu_msg);
+                    0
+                } else {
+                    -1
+                }
             }
             Err(_) => -1,
         }
@@ -524,8 +563,12 @@ pub unsafe extern "C" fn pelorus_add_odom(
 
         match handle.prelio.lock() {
             Ok(mut prelio) => {
-                prelio.add_odom(odom_msg);
-                0
+                if let Some(prelio) = prelio.as_mut() {
+                    prelio.add_odom(odom_msg);
+                    0
+                } else {
+                    -1
+                }
             }
             Err(_) => -1,
         }
@@ -607,8 +650,12 @@ pub unsafe extern "C" fn pelorus_add_pointcloud(
 
         match handle.prelio.lock() {
             Ok(mut prelio) => {
-                prelio.add_pointcloud(cloud_msg_internal);
-                0
+                if let Some(prelio) = prelio.as_mut() {
+                    prelio.add_pointcloud(cloud_msg_internal);
+                    0
+                } else {
+                    -1
+                }
             }
             Err(_) => -1,
         }
@@ -747,8 +794,12 @@ pub unsafe extern "C" fn pelorus_add_points_xyzt_f32(
         let handle = &mut *handle;
         match handle.prelio.lock() {
             Ok(mut prelio) => {
-                prelio.add_pointcloud(cloud_msg_internal);
-                0
+                if let Some(prelio) = prelio.as_mut() {
+                    prelio.add_pointcloud(cloud_msg_internal);
+                    0
+                } else {
+                    -1
+                }
             }
             Err(_) => -1,
         }
@@ -804,8 +855,12 @@ pub unsafe extern "C" fn pelorus_add_points_xyzit_f32(
         let handle = &mut *handle;
         match handle.prelio.lock() {
             Ok(mut prelio) => {
-                prelio.add_pointcloud(cloud_msg_internal);
-                0
+                if let Some(prelio) = prelio.as_mut() {
+                    prelio.add_pointcloud(cloud_msg_internal);
+                    0
+                } else {
+                    -1
+                }
             }
             Err(_) => -1,
         }

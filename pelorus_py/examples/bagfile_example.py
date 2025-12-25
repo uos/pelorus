@@ -33,6 +33,9 @@ def main():
     print(f"Reading bagfile: {bagfile_path}")
     print()
 
+    # Since we have ROS2 pointcloud messages, we use the device-specific pointcloud2 option
+    # to let Pelorus handle the timestamp internally. Also, we do not have a ROS running,
+    # so the config file also indicates the static transforms.
     script_dir = Path(__file__).resolve().parent
     repo_root = script_dir
     config_path = repo_root / "velodyne.rl"
@@ -47,9 +50,24 @@ def main():
     imu_count = 0
     lidar_count = 0
     odom_count = 0
+
+    def print_odom(odom):
+        print(
+            f"  Position: [{odom['position'][0]:.3f}, {odom['position'][1]:.3f}, {odom['position'][2]:.3f}]"
+        )
+        print(
+            f"  Orientation (quat): [{odom['orientation'][0]:.3f}, {odom['orientation'][1]:.3f}, {odom['orientation'][2]:.3f}, {odom['orientation'][3]:.3f}]"
+        )
+        print(
+            f"  Linear velocity: [{odom['linear_velocity'][0]:.3f}, {odom['linear_velocity'][1]:.3f}, {odom['linear_velocity'][2]:.3f}]"
+        )
+        print(f"  Point cloud: {len(odom['points'])} points")
+        print()
     
     print(f"Processing messages from topics: {imu_topic}, {lidar_topic}")
     print()
+
+    min_odoms = 24
 
     with open(bagfile_path, "rb") as f:
         for msg in read_ros2_messages(f):
@@ -64,27 +82,28 @@ def main():
                 cloud = msg.ros_msg
                 lio.add_pointcloud2_ros(cloud)
                 lidar_count += 1
+
+                # Drain odometry as we go so we don't let the internal queue grow unbounded.
+                while True:
+                    odom = lio.try_recv()
+                    if odom is None:
+                        break
+                    if odom_count < min_odoms:
+                        odom_count += 1
+                        print_odom(odom)
+
+                if odom_count >= min_odoms:
+                    break
                 
                 if lidar_count >= 50:
                     break
 
-    # Fully synchronous receive: block until we got enough outputs.
-    # No timeouts/heuristics; this will wait as long as needed.
-    min_odoms = 24
+    # Alternatively to inner-loop draining, we can synchronous receive here.
+    # This makes sense for producer-consumer scenarios.
     while odom_count < min_odoms:
         odom = lio.recv()
         odom_count += 1
-        print(
-            f"  Position: [{odom['position'][0]:.3f}, {odom['position'][1]:.3f}, {odom['position'][2]:.3f}]"
-        )
-        print(
-            f"  Orientation (quat): [{odom['orientation'][0]:.3f}, {odom['orientation'][1]:.3f}, {odom['orientation'][2]:.3f}, {odom['orientation'][3]:.3f}]"
-        )
-        print(
-            f"  Linear velocity: [{odom['linear_velocity'][0]:.3f}, {odom['linear_velocity'][1]:.3f}, {odom['linear_velocity'][2]:.3f}]"
-        )
-        print(f"  Point cloud: {len(odom['points'])} points")
-        print()
+        print_odom(odom)
 
     print()
     print(f"Summary:")

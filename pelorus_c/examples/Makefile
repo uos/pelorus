@@ -24,7 +24,8 @@ sync_blocking: sync_blocking.c ../pelorus.h
 clean:
 	rm -f $(EXAMPLES)
 
-run: sync_blocking
+run: sync_blocking async_callback
 	./sync_blocking
+	./async_callback
 
 .PHONY: all clean run
