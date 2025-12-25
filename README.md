@@ -113,6 +113,19 @@ All parameters are configurable: map resolution, IMU covariances, LiDAR vendor, 
 
 See the library [README](./pelorus_c/README.md) for more detail.
 
+## GLIM integration
+
+Pelorus can be integrated into [GLIM](https://github.com/koide3/glim) in two ways:
+
+1. **As a GLIM extension module (constraint source)**
+  - Adds additional `BetweenFactor<Pose3>` constraints to GLIM’s odometry factor graph.
+  - Does **not** replace GLIM odometry (similar to ORB-SLAM frontend constraints in `glim_ext`).
+  - Setup guide: [pelorus_glim_frontend/README.md](./pelorus_glim_frontend/README.md)
+
+2. **As a full GLIM odometry backend**
+  - Replaces GLIM’s odometry module by implementing `glim::OdometryEstimationBase`.
+  - Setup guide: [pelorus_glim_odometry/README.md](./pelorus_glim_odometry/README.md)
+
 ## 🔧 Development
 
 We use `mask` to simplify common development commands and save you some typing.

@@ -1,0 +1,188 @@
+cmake_minimum_required(VERSION 3.12)
+project(pelorus_c VERSION 0.1.0 LANGUAGES C)
+
+if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
+    set(CMAKE_BUILD_TYPE "Release" CACHE STRING "Choose the type of build." FORCE)
+    set_property(CACHE CMAKE_BUILD_TYPE PROPERTY STRINGS "Debug" "Release" "RelWithDebInfo" "MinSizeRel")
+endif()
+
+# Options
+option(PELORUS_BUILD_SHARED "Build shared library" ON)
+option(PELORUS_BUILD_STATIC "Build static library" ON)
+option(PELORUS_BUILD_EXAMPLES "Build C examples" OFF)
+option(PELORUS_INSTALL "Install pelorus_c library and headers" ON)
+
+# Feature flags for Rust build (match pelorus_c/Cargo.toml features)
+option(PELORUS_FEATURE_DOWNSAMPLE "Enable downsampling" ON)
+option(PELORUS_FEATURE_PARALLEL "Enable parallel processing" ON)
+option(PELORUS_FEATURE_CUDA "Enable CUDA acceleration" OFF)
+option(PELORUS_FEATURE_NO_IMU_SYNC "Disable IMU synchronization" OFF)
+
+# Find Rust/Cargo
+find_program(CARGO_EXECUTABLE cargo REQUIRED)
+
+# Determine build profile
+if(CMAKE_BUILD_TYPE STREQUAL "Debug")
+    set(CARGO_BUILD_TYPE "debug")
+    set(CARGO_BUILD_FLAG "")
+    set(RUST_TARGET_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../target/debug")
+else()
+    set(CARGO_BUILD_TYPE "release")
+    set(CARGO_BUILD_FLAG "--release")
+    set(RUST_TARGET_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../target/release")
+endif()
+
+# Rust library output names (platform dependent)
+set(RUST_SHARED_LIB "${RUST_TARGET_DIR}/${CMAKE_SHARED_LIBRARY_PREFIX}pelorus${CMAKE_SHARED_LIBRARY_SUFFIX}")
+set(RUST_STATIC_LIB "${RUST_TARGET_DIR}/${CMAKE_STATIC_LIBRARY_PREFIX}pelorus${CMAKE_STATIC_LIBRARY_SUFFIX}")
+
+# Build feature list for Cargo
+set(CARGO_FEATURES "")
+if(PELORUS_FEATURE_DOWNSAMPLE)
+    list(APPEND CARGO_FEATURES "downsample")
+endif()
+if(PELORUS_FEATURE_PARALLEL)
+    list(APPEND CARGO_FEATURES "parallel")
+endif()
+if(PELORUS_FEATURE_CUDA)
+    list(APPEND CARGO_FEATURES "cuda")
+endif()
+if(PELORUS_FEATURE_NO_IMU_SYNC)
+    list(APPEND CARGO_FEATURES "no-imu-sync")
+endif()
+
+# Join features with commas
+string(REPLACE ";" "," CARGO_FEATURES_STR "${CARGO_FEATURES}")
+
+# Build the Rust library
+if(CARGO_FEATURES_STR)
+    set(FEATURES_ARG "--features" "${CARGO_FEATURES_STR}")
+else()
+    set(FEATURES_ARG "--no-default-features")
+endif()
+
+add_custom_target(pelorus_rust_build ALL
+    COMMAND ${CARGO_EXECUTABLE} build --package pelorus_c ${CARGO_BUILD_FLAG} ${FEATURES_ARG}
+    WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/..
+    COMMENT "Building pelorus_c Rust library with Cargo"
+    BYPRODUCTS 
+        ${RUST_STATIC_LIB}
+        ${RUST_SHARED_LIB}
+)
+
+# Define library targets
+if(PELORUS_BUILD_SHARED)
+    add_library(pelorus SHARED IMPORTED GLOBAL)
+    set_target_properties(pelorus PROPERTIES
+        IMPORTED_LOCATION ${RUST_SHARED_LIB}
+        INTERFACE_INCLUDE_DIRECTORIES "${CMAKE_CURRENT_SOURCE_DIR}"
+    )
+    add_dependencies(pelorus pelorus_rust_build)
+endif()
+
+if(PELORUS_BUILD_STATIC)
+    add_library(pelorus_static STATIC IMPORTED GLOBAL)
+    set_target_properties(pelorus_static PROPERTIES
+        IMPORTED_LOCATION ${RUST_STATIC_LIB}
+        INTERFACE_INCLUDE_DIRECTORIES "${CMAKE_CURRENT_SOURCE_DIR}"
+    )
+    add_dependencies(pelorus_static pelorus_rust_build)
+    
+    # Link required system libraries for static linking
+    if(UNIX AND NOT APPLE)
+        target_link_libraries(pelorus_static INTERFACE pthread dl m)
+    elseif(APPLE)
+        target_link_libraries(pelorus_static INTERFACE pthread)
+    elseif(WIN32)
+        # Windows specific libraries
+        target_link_libraries(pelorus_static INTERFACE ws2_32 userenv bcrypt ntdll)
+    endif()
+endif()
+
+# Build examples if requested
+if(PELORUS_BUILD_EXAMPLES)
+    add_subdirectory(examples)
+endif()
+
+# Installation
+if(PELORUS_INSTALL)
+    include(GNUInstallDirs)
+    
+    # Install header
+    install(FILES pelorus.h
+        DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}
+    )
+    
+    # Install C++ wrapper header
+    install(FILES pelorus.hpp
+        DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}
+    )
+    
+    # Install PCL integration header
+    install(FILES pelorus_pcl.hpp
+        DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}
+    )
+    
+    # Install Eigen3 integration header
+    install(FILES pelorus_eigen.hpp
+        DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}
+    )
+    
+    # Install libraries
+    if(PELORUS_BUILD_SHARED)
+        install(FILES ${RUST_SHARED_LIB}
+            DESTINATION ${CMAKE_INSTALL_LIBDIR}
+            PERMISSIONS OWNER_READ OWNER_WRITE OWNER_EXECUTE GROUP_READ GROUP_EXECUTE WORLD_READ WORLD_EXECUTE
+        )
+    endif()
+    
+    if(PELORUS_BUILD_STATIC)
+        install(FILES ${RUST_STATIC_LIB}
+            DESTINATION ${CMAKE_INSTALL_LIBDIR}
+        )
+    endif()
+    
+    # Generate and install CMake config files
+    include(CMakePackageConfigHelpers)
+    
+    configure_package_config_file(
+        "${CMAKE_CURRENT_SOURCE_DIR}/pelorusConfig.cmake.in"
+        "${CMAKE_CURRENT_BINARY_DIR}/pelorusConfig.cmake"
+        INSTALL_DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/pelorus
+        PATH_VARS CMAKE_INSTALL_INCLUDEDIR CMAKE_INSTALL_LIBDIR
+    )
+    
+    write_basic_package_version_file(
+        "${CMAKE_CURRENT_BINARY_DIR}/pelorusConfigVersion.cmake"
+        VERSION ${PROJECT_VERSION}
+        COMPATIBILITY AnyNewerVersion
+    )
+    
+    install(FILES
+        "${CMAKE_CURRENT_BINARY_DIR}/pelorusConfig.cmake"
+        "${CMAKE_CURRENT_BINARY_DIR}/pelorusConfigVersion.cmake"
+        DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/pelorus
+    )
+    
+    # Install pkg-config file
+    configure_file(
+        "${CMAKE_CURRENT_SOURCE_DIR}/pelorus.pc.in"
+        "${CMAKE_CURRENT_BINARY_DIR}/pelorus.pc"
+        @ONLY
+    )
+    
+    install(FILES "${CMAKE_CURRENT_BINARY_DIR}/pelorus.pc"
+        DESTINATION ${CMAKE_INSTALL_LIBDIR}/pkgconfig
+    )
+
+    # Uninstall target (uses install_manifest.txt generated by the install step)
+    configure_file(
+        "${CMAKE_CURRENT_SOURCE_DIR}/cmake_uninstall.cmake.in"
+        "${CMAKE_CURRENT_BINARY_DIR}/cmake_uninstall.cmake"
+        @ONLY
+    )
+    add_custom_target(uninstall
+        COMMAND ${CMAKE_COMMAND} -P "${CMAKE_CURRENT_BINARY_DIR}/cmake_uninstall.cmake"
+        COMMENT "Uninstalling files listed in install_manifest.txt"
+    )
+endif()
