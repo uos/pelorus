@@ -2,6 +2,147 @@
 
 C library bindings for Pelorus.
 
+## Building and Installation
+
+### Using CMake (Recommended)
+
+The library can be built and installed using CMake:
+
+```bash
+cd pelorus_c
+mkdir build && cd build
+cmake ..
+make
+sudo make install
+```
+
+#### CMake Options
+
+- `PELORUS_BUILD_SHARED` - Build shared library (default: ON)
+- `PELORUS_BUILD_STATIC` - Build static library (default: ON)
+- `PELORUS_BUILD_EXAMPLES` - Build C/C++ examples (default: OFF)
+- `PELORUS_INSTALL` - Install library and headers (default: ON)
+
+#### Feature Flags
+
+- `PELORUS_FEATURE_DOWNSAMPLE` - Enable downsampling (default: ON)
+- `PELORUS_FEATURE_PARALLEL` - Enable parallel processing (default: ON)
+- `PELORUS_FEATURE_CUDA` - Enable CUDA acceleration (default: OFF)
+- `PELORUS_FEATURE_NO_IMU_SYNC` - Disable IMU synchronization (default: OFF)
+
+Example with CUDA:
+```bash
+cmake .. -DPELORUS_FEATURE_CUDA=ON
+```
+
+### Using Cargo (Direct)
+
+You can also build directly with Cargo:
+```bash
+cargo build --package pelorus_c --release
+```
+
+## Using the Library
+
+### In CMake Projects
+
+After installation, use `find_package`:
+
+```cmake
+find_package(pelorus REQUIRED)
+add_executable(my_app main.c)
+target_link_libraries(my_app pelorus::pelorus)
+```
+
+See [examples/CMAKE_USAGE.md](examples/CMAKE_USAGE.md) for more details.
+
+### With pkg-config
+
+```bash
+gcc my_app.c $(pkg-config --cflags --libs pelorus) -o my_app
+```
+
+### C++ Wrapper
+
+A modern C++ wrapper is available in `pelorus.hpp`:
+
+```cpp
+#include <pelorus.hpp>
+
+int main() {
+    pelorus::Pelorus pelorus;  // Automatic cleanup
+    
+    // Add measurements
+    pelorus::ImuMsg imu;
+    // ... fill IMU data ...
+    pelorus.add_imu(imu);
+    
+    // Receive odometry
+    auto odom = pelorus.try_recv();
+    if (odom.valid()) {
+        std::cout << "Position: " << odom.position()[0] << "\n";
+    }
+    
+    return 0;
+}  // Automatic cleanup
+```
+
+### PCL Integration
+
+For projects using the Point Cloud Library (PCL):
+
+```cpp
+#include <pelorus.hpp>
+#include <pelorus_pcl.hpp>
+#include <pcl/point_cloud.h>
+#include <pcl/point_types.h>
+
+pcl::PointCloud<pcl::PointXYZI>::Ptr cloud = ...;
+pelorus::Pelorus pelorus;
+
+// Convert and add PCL cloud to Pelorus (per-point timestamps required)
+// Use pelorus::pcl::PointXYZIT so every point has a `t` field (ns offset).
+pcl::PointCloud<pelorus::pcl::PointXYZIT>::Ptr cloud = ...;
+pelorus::pcl::add_pointcloud(pelorus, cloud, timestamp_sec, timestamp_nsec, "lidar");
+
+// Get result and extract just the point cloud (not entire odometry)
+auto odom = pelorus.recv();
+auto result_cloud = odom.get_cloud_pcl<pcl::PointCloud<pcl::PointXYZI>::Ptr>();
+
+// Or use the standalone function
+auto result_cloud2 = pelorus::pcl::to_pcl_cloud(odom.points(), odom.num_points());
+```
+
+### Eigen3 Integration
+
+For projects using Eigen for transformations:
+
+```cpp
+#include <pelorus.hpp>
+#include <pelorus_eigen.hpp>
+
+pelorus::Pelorus pelorus;
+auto odom = pelorus.recv();
+
+// Get odometry as transformation matrix
+Eigen::Isometry3d transform = pelorus::eigen::to_transform(odom);
+// Alternative: Eigen::Isometry3d transform = pelorus::eigen::to_transform(odom);
+
+// Transform a point from sensor to world coordinates
+Eigen::Vector3d point_sensor(1.0, 0.0, 0.0);
+Eigen::Vector3d point_world = transform * point_sensor;
+
+// Get all odometry data as Eigen types
+auto state = pelorus::eigen::OdometryState::from_pelorus(odom);
+std::cout << "Position: " << state.transform.translation().transpose() << "\n";
+std::cout << "Velocity: " << state.linear_velocity.transpose() << "\n";
+
+// Extract components
+Eigen::Vector3d position = pelorus::eigen::to_position(odom.position());
+Eigen::Quaterniond orientation = pelorus::eigen::to_quaternion(odom.orientation());
+Eigen::Matrix<double, 6, 6> pose_cov = pelorus::eigen::get_pose_covariance(*odom.get());
+```
+
 ## Configuration
 
 The library uses `.rl` configuration files (same format as the ROS2 version):

@@ -134,7 +134,7 @@ fn processing_thread_main(thread: ProcessingThread) {
 }
 
 /// Python wrapper for Pelorus handle
-#[pyclass(name = "Lio")]
+#[pyclass(name = "Handle")]
 struct PelorusHandle {
     prelio: Arc<Mutex<Option<Prelio>>>,
     result_receiver: Arc<Mutex<mpsc::Receiver<PelorusOutput>>>,
@@ -319,7 +319,7 @@ impl PelorusHandle {
         let mut prelio_guard = self.prelio.lock().unwrap();
         let prelio = prelio_guard
             .as_mut()
-            .ok_or_else(|| PyRuntimeError::new_err("Lio is closed"))?;
+            .ok_or_else(|| PyRuntimeError::new_err("Handle is closed"))?;
         prelio.add_imu(imu_msg);
         Ok(())
     }
@@ -408,7 +408,7 @@ impl PelorusHandle {
         let mut prelio_guard = self.prelio.lock().unwrap();
         let prelio = prelio_guard
             .as_mut()
-            .ok_or_else(|| PyRuntimeError::new_err("Lio is closed"))?;
+            .ok_or_else(|| PyRuntimeError::new_err("Handle is closed"))?;
         prelio.add_odom(odom_msg);
         Ok(())
     }
@@ -704,7 +704,7 @@ impl PelorusHandle {
         let mut prelio_guard = self.prelio.lock().unwrap();
         let prelio = prelio_guard
             .as_mut()
-            .ok_or_else(|| PyRuntimeError::new_err("Lio is closed"))?;
+            .ok_or_else(|| PyRuntimeError::new_err("Handle is closed"))?;
         prelio.add_pointcloud(cloud_msg_internal);
         Ok(())
     }
@@ -760,7 +760,7 @@ impl PelorusHandle {
         let mut prelio_guard = self.prelio.lock().unwrap();
         let prelio = prelio_guard
             .as_mut()
-            .ok_or_else(|| PyRuntimeError::new_err("Lio is closed"))?;
+            .ok_or_else(|| PyRuntimeError::new_err("Handle is closed"))?;
         prelio.add_pointcloud(cloud_msg_internal);
         Ok(())
     }
@@ -873,7 +873,7 @@ impl PelorusHandle {
         let mut prelio_guard = self.prelio.lock().unwrap();
         let prelio = prelio_guard
             .as_mut()
-            .ok_or_else(|| PyRuntimeError::new_err("Lio is closed"))?;
+            .ok_or_else(|| PyRuntimeError::new_err("Handle is closed"))?;
         prelio.add_pointcloud(cloud_msg_internal);
         Ok(())
     }
@@ -1000,7 +1000,7 @@ impl PelorusHandle {
         let mut prelio_guard = self.prelio.lock().unwrap();
         let prelio = prelio_guard
             .as_mut()
-            .ok_or_else(|| PyRuntimeError::new_err("Lio is closed"))?;
+            .ok_or_else(|| PyRuntimeError::new_err("Handle is closed"))?;
         prelio.add_pointcloud(cloud_msg_internal);
         Ok(())
     }
@@ -1009,9 +1009,6 @@ impl PelorusHandle {
 #[pymodule]
 fn pelorus(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PelorusHandle>()?;
-    // Backwards-compatible alias for older code; remove later if desired.
-    let lio_type = m.getattr("Lio")?;
-    m.add("PelorusHandle", lio_type)?;
     m.add("__version__", env!("CARGO_PKG_VERSION"))?;
     Ok(())
 }

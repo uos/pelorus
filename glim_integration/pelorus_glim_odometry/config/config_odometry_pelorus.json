@@ -1,0 +1,13 @@
+{
+  /*** Pelorus-backed odometry estimation ***/
+  "odometry_estimation": {
+    "so_name": "libodometry_estimation_pelorus.so",
+
+    // If you want to point Pelorus at a specific .rl config:
+    // "pelorus_rl_path": "/abs/path/to/pelorus.rl",
+
+    // Controls how long we wait for Pelorus to produce an output per scan.
+    // If exceeded, we will reuse the last pose to avoid returning nullptr.
+    "max_wait_ms": 200
+  }
+}

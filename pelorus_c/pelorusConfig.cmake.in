@@ -1,0 +1,47 @@
+@PACKAGE_INIT@
+
+include(CMakeFindDependencyMacro)
+
+# Keep backwards-friendly variables for consumers that don't use targets.
+set(pelorus_INCLUDE_DIRS "${PACKAGE_PREFIX_DIR}/@PACKAGE_CMAKE_INSTALL_INCLUDEDIR@")
+
+set(_pelorus_shared "${PACKAGE_PREFIX_DIR}/@PACKAGE_CMAKE_INSTALL_LIBDIR@/${CMAKE_SHARED_LIBRARY_PREFIX}pelorus${CMAKE_SHARED_LIBRARY_SUFFIX}")
+set(_pelorus_static "${PACKAGE_PREFIX_DIR}/@PACKAGE_CMAKE_INSTALL_LIBDIR@/${CMAKE_STATIC_LIBRARY_PREFIX}pelorus${CMAKE_STATIC_LIBRARY_SUFFIX}")
+
+# Shared target (optional)
+if(EXISTS "${_pelorus_shared}" AND NOT TARGET pelorus::pelorus)
+  add_library(pelorus::pelorus SHARED IMPORTED)
+  set_target_properties(pelorus::pelorus PROPERTIES
+    IMPORTED_LOCATION "${_pelorus_shared}"
+    INTERFACE_INCLUDE_DIRECTORIES "${pelorus_INCLUDE_DIRS}"
+  )
+endif()
+
+# Static target (optional)
+if(EXISTS "${_pelorus_static}" AND NOT TARGET pelorus::pelorus_static)
+  add_library(pelorus::pelorus_static STATIC IMPORTED)
+  set_target_properties(pelorus::pelorus_static PROPERTIES
+    IMPORTED_LOCATION "${_pelorus_static}"
+    INTERFACE_INCLUDE_DIRECTORIES "${pelorus_INCLUDE_DIRS}"
+  )
+
+  # Match pelorus_c/CMakeLists.txt: link required system libs when using the static archive.
+  if(UNIX AND NOT APPLE)
+    find_dependency(Threads)
+    target_link_libraries(pelorus::pelorus_static INTERFACE Threads::Threads ${CMAKE_DL_LIBS} m)
+  elseif(APPLE)
+    find_dependency(Threads)
+    target_link_libraries(pelorus::pelorus_static INTERFACE Threads::Threads)
+  elseif(WIN32)
+    target_link_libraries(pelorus::pelorus_static INTERFACE ws2_32 userenv bcrypt ntdll)
+  endif()
+endif()
+
+# Convenience variable: prefer shared if present.
+if(TARGET pelorus::pelorus)
+  set(pelorus_LIBRARIES pelorus::pelorus)
+elseif(TARGET pelorus::pelorus_static)
+  set(pelorus_LIBRARIES pelorus::pelorus_static)
+else()
+  set(pelorus_LIBRARIES "")
+endif()

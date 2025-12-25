@@ -35,14 +35,14 @@ def main() -> None:
         print(f"Error: Bagfile not found: {bagfile_path}")
         raise SystemExit(1)
 
-    print(f"Pelorus Python Bindings v{pelorus.Lio.version()}")
+    print(f"Pelorus Python Bindings v{pelorus.Handle.version()}")
     print(f"Reading bagfile: {bagfile_path}")
     print()
 
     script_dir = Path(__file__).resolve().parent
     config_path = script_dir / "velodyne.rl"
 
-    lio = pelorus.Lio(
+    lio = pelorus.Handle(
         str(config_path),
         device_specific_pointcloud2=True,
     )

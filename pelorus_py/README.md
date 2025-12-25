@@ -28,15 +28,15 @@ import pelorus
 import numpy as np
 
 # Create Pelorus instance
-lio = pelorus.Lio()  # Uses embedded default config
+lio = pelorus.Handle()  # Uses embedded default config
 
 # Or with custom config:
-# lio = pelorus.Lio("path/to/config.rl")
+# lio = pelorus.Handle("path/to/config.rl")
 #
 # If you want to control PointCloud2 parsing (like `pelorus_create_with_options` in C):
 # - device_specific_pointcloud2=True  (default)
 # - device_specific_pointcloud2=False (generic parsing path)
-# lio = pelorus.Lio("path/to/config.rl", device_specific_pointcloud2=False)
+# lio = pelorus.Handle("path/to/config.rl", device_specific_pointcloud2=False)
 
 # Add IMU data
 lio.add_imu(
@@ -89,12 +89,12 @@ See `examples/bagfile_example.py` for a complete example using real sensor data 
 
 ## API Reference
 
-### `Lio`
+### `Handle`
 
 Main interface to the Pelorus system.
 
 #### Constructor
-- `Lio(config_path: str | None = None, device_specific_pointcloud2: bool = True)`: Create a new Pelorus instance
+- `Handle(config_path: str | None = None, device_specific_pointcloud2: bool = True)`: Create a new Pelorus instance
 
     `device_specific_pointcloud2=False` selects the generic parsing path for PointCloud2 inputs.
 
