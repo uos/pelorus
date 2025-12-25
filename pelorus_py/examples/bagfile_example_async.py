@@ -76,6 +76,7 @@ def main() -> None:
         if current >= min_odoms:
             done.set()
 
+    # Set the callback to receive odometry results asynchronously.
     lio.set_callback(on_odom)
 
     print(f"Processing messages from topics: {imu_topic}, {lidar_topic}")
@@ -100,7 +101,7 @@ def main() -> None:
                 if lidar_count >= max_lidar_scans:
                     break
 
-    # Wait until we have enough outputs (no timeouts/heuristics).
+    # Wait until we have enough outputs.
     done.wait()
 
     # Disable callback delivery before printing the summary.
@@ -110,13 +111,10 @@ def main() -> None:
         final_odom_count = odom_count
 
     print()
-    print("=" * 60)
     print("Summary:")
     print(f"  IMU messages processed: {imu_count}")
     print(f"  LiDAR scans processed: {lidar_count}")
     print(f"  Odometry results received: {final_odom_count}")
-    print("=" * 60)
-
 
 if __name__ == "__main__":
     main()

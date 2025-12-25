@@ -4,9 +4,11 @@ use numpy::PyReadonlyArray2;
 use pyo3::exceptions::{PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList};
-use std::io::Write;
 use std::sync::{Arc, Mutex, mpsc};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
+
+use log::{error, info, warn};
 
 use pelorus_core::config::ast_to_config;
 use pelorus_core::{ImuMsg, LidarVendor, LioConfig, OdomMsg, PrelioProcessedCloud};
@@ -55,6 +57,7 @@ struct ProcessingThread {
     result_sender: mpsc::Sender<PelorusOutput>,
     ready_for_next: mpsc::Sender<()>,
     odom_callback: Arc<Mutex<Option<Py<PyAny>>>>,
+    shutdown: Arc<AtomicBool>,
 }
 
 fn processing_thread_main(thread: ProcessingThread) {
@@ -63,8 +66,21 @@ fn processing_thread_main(thread: ProcessingThread) {
 
     thread.ready_for_next.send(()).unwrap();
 
-    while let Ok(processed) = thread.prelio_receiver.recv() {
+    loop {
+        let processed = match thread.prelio_receiver.recv() {
+            Ok(p) => p,
+            Err(_) => break,
+        };
+
         recv_count += 1;
+
+        // Shutdown mode: keep draining the prelio output channel so Prelio's producer thread
+        // doesn't panic on send, but DO NOT call into pelorus_reg (which would try to
+        // `ready_for_next.send(()).unwrap()` after Prelio drops its receiver).
+        if thread.shutdown.load(Ordering::Relaxed) {
+            continue;
+        }
+
         match thread
             .pipeline
             .register_processed_cloud(processed, Some(&thread.ready_for_next))
@@ -75,7 +91,7 @@ fn processing_thread_main(thread: ProcessingThread) {
                 let has_cb = thread.odom_callback.lock().unwrap().is_some();
                 if !has_cb {
                     if let Err(e) = thread.result_sender.send(output) {
-                        eprintln!("[pelorus_py] failed to send odometry #{sent_count}: {e}");
+                        warn!("failed to send odometry #{sent_count}: {e}");
                     }
                     continue;
                 }
@@ -91,22 +107,19 @@ fn processing_thread_main(thread: ProcessingThread) {
                     let Some(cb) = cb else {
                         // Callback got disabled after `has_cb` check; fall back to queue.
                         if let Err(e) = thread.result_sender.send(output) {
-                            eprintln!("[pelorus_py] failed to send odometry #{sent_count}: {e}");
+                            warn!("failed to send odometry #{sent_count}: {e}");
                         }
                         return;
                     };
 
                     let dict = PyDict::new(py);
                     if let Err(e) = PelorusHandle::fill_odom_dict(&dict, &output) {
-                        eprintln!(
-                            "[pelorus_py] failed to build odometry dict for callback #{sent_count}: {e}"
-                        );
-                        let _ = std::io::stderr().flush();
+                        error!("failed to build odometry dict for callback #{sent_count}: {e}");
                         return;
                     }
 
                     if let Err(e) = cb.bind(py).call1((dict,)) {
-                        eprintln!("[pelorus_py] odometry callback raised for #{sent_count}: {e}");
+                        error!("odometry callback raised for #{sent_count}: {e}");
                         e.print(py);
                     }
                 });
@@ -117,9 +130,7 @@ fn processing_thread_main(thread: ProcessingThread) {
         }
     }
 
-    eprintln!("[pelorus_py] prelio_receiver disconnected after {recv_count} clouds");
-
-    let _ = std::io::stderr().flush();
+    info!("prelio_receiver disconnected after {recv_count} clouds");
 }
 
 /// Python wrapper for Pelorus handle
@@ -132,6 +143,7 @@ struct PelorusHandle {
     imu_init_state: Arc<Mutex<ImuInitState>>,
     imu_predictor_init_time_sec: f64,
     _processing_thread: Option<thread::JoinHandle<()>>,
+    shutdown: Arc<AtomicBool>,
 }
 
 #[pymethods]
@@ -176,6 +188,7 @@ impl PelorusHandle {
         let (result_tx, result_rx) = mpsc::channel();
 
         let odom_callback: Arc<Mutex<Option<Py<PyAny>>>> = Arc::new(Mutex::new(None));
+        let shutdown: Arc<AtomicBool> = Arc::new(AtomicBool::new(false));
 
         let processing_thread = ProcessingThread {
             pipeline: pipeline.clone(),
@@ -183,6 +196,7 @@ impl PelorusHandle {
             result_sender: result_tx,
             ready_for_next: ready_tx,
             odom_callback: Arc::clone(&odom_callback),
+            shutdown: Arc::clone(&shutdown),
         };
 
         let thread_handle = thread::spawn(move || {
@@ -197,6 +211,7 @@ impl PelorusHandle {
             imu_init_state,
             imu_predictor_init_time_sec,
             _processing_thread: Some(thread_handle),
+            shutdown,
         })
     }
 
@@ -521,6 +536,26 @@ impl PelorusHandle {
     #[staticmethod]
     fn version() -> &'static str {
         env!("CARGO_PKG_VERSION")
+    }
+}
+
+impl Drop for PelorusHandle {
+    fn drop(&mut self) {
+        // Two-phase shutdown:
+        // 1) Tell the processing thread to stop calling into pelorus_reg (prevents
+        //    `ready_for_next.send(()).unwrap()` panics once Prelio is dropped).
+        // 2) Drop Prelio to stop its producer thread.
+        // 3) Join the processing thread (it will drain until prelio_receiver disconnects).
+        self.shutdown.store(true, Ordering::Relaxed);
+
+        // Drop Prelio while the processing thread is still alive and draining.
+        if let Ok(mut guard) = self.prelio.lock() {
+            let _ = guard.take();
+        }
+
+        if let Some(handle) = self._processing_thread.take() {
+            let _ = handle.join();
+        }
     }
 }
 
