@@ -4,8 +4,8 @@ use numpy::PyReadonlyArray2;
 use pyo3::exceptions::{PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList};
-use std::sync::{Arc, Mutex, mpsc};
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex, mpsc};
 use std::thread;
 
 use log::{error, info, warn};
@@ -155,10 +155,7 @@ impl PelorusHandle {
     /// - `config_path`: optional path to a `.rl` config file. If omitted, embedded defaults are used.
     /// - `device_specific_pointcloud2`: matches the C bindings option. When false, PointCloud2 inputs
     ///   are interpreted using the generic parsing path.
-    fn new(
-        config_path: Option<&str>,
-        device_specific_pointcloud2: bool,
-    ) -> PyResult<Self> {
+    fn new(config_path: Option<&str>, device_specific_pointcloud2: bool) -> PyResult<Self> {
         let mut config = load_pelorus_config(config_path)
             .map_err(|e| PyRuntimeError::new_err(format!("Failed to load configuration: {}", e)))?;
 
@@ -352,7 +349,8 @@ impl PelorusHandle {
             linear_any.getattr("z")?.extract::<f64>()?,
         ];
 
-        let orientation_covariance_vec: Vec<f64> = imu.getattr("orientation_covariance")?.extract()?;
+        let orientation_covariance_vec: Vec<f64> =
+            imu.getattr("orientation_covariance")?.extract()?;
         let angular_velocity_covariance_vec: Vec<f64> =
             imu.getattr("angular_velocity_covariance")?.extract()?;
         let linear_acceleration_covariance_vec: Vec<f64> =
@@ -361,12 +359,14 @@ impl PelorusHandle {
         let orientation_covariance: [f64; 9] = orientation_covariance_vec
             .try_into()
             .map_err(|_| PyValueError::new_err("orientation_covariance must have 9 elements"))?;
-        let angular_velocity_covariance: [f64; 9] = angular_velocity_covariance_vec
-            .try_into()
-            .map_err(|_| PyValueError::new_err("angular_velocity_covariance must have 9 elements"))?;
-        let linear_acceleration_covariance: [f64; 9] = linear_acceleration_covariance_vec
-            .try_into()
-            .map_err(|_| PyValueError::new_err("linear_acceleration_covariance must have 9 elements"))?;
+        let angular_velocity_covariance: [f64; 9] =
+            angular_velocity_covariance_vec.try_into().map_err(|_| {
+                PyValueError::new_err("angular_velocity_covariance must have 9 elements")
+            })?;
+        let linear_acceleration_covariance: [f64; 9] =
+            linear_acceleration_covariance_vec.try_into().map_err(|_| {
+                PyValueError::new_err("linear_acceleration_covariance must have 9 elements")
+            })?;
 
         self.add_imu(
             sec,
@@ -464,11 +464,12 @@ impl PelorusHandle {
         timestamp_sec: Option<i32>,
         timestamp_nanosec: Option<u32>,
         frame_id: &str,
-    ) -> PyResult<()> {
+    ) -> PyResult<u64> {
         // Try to determine input format
         if let Ok(dict) = cloud.cast::<PyDict>() {
             // PointCloud2 dict format
-            self.add_pointcloud_from_dict(dict)?;
+            let scan_id = self.add_pointcloud_from_dict(dict)?;
+            return Ok(scan_id);
         } else if let Ok(array) = cloud.extract::<PyReadonlyArray2<f32>>() {
             // Numpy array format
             let sec = timestamp_sec.ok_or_else(|| {
@@ -477,7 +478,8 @@ impl PelorusHandle {
             let nanosec = timestamp_nanosec.ok_or_else(|| {
                 PyValueError::new_err("timestamp_nanosec required for numpy array input")
             })?;
-            self.add_pointcloud_from_numpy(array, sec, nanosec, frame_id)?;
+            let scan_id = self.add_pointcloud_from_numpy(array, sec, nanosec, frame_id)?;
+            return Ok(scan_id);
         } else if let Ok(list) = cloud.cast::<PyList>() {
             // List of points format
             let sec = timestamp_sec
@@ -485,17 +487,18 @@ impl PelorusHandle {
             let nanosec = timestamp_nanosec.ok_or_else(|| {
                 PyValueError::new_err("timestamp_nanosec required for list input")
             })?;
-            self.add_pointcloud_from_list(list, sec, nanosec, frame_id)?;
+            let scan_id = self.add_pointcloud_from_list(list, sec, nanosec, frame_id)?;
+            return Ok(scan_id);
         } else {
             return Err(PyValueError::new_err(
                 "cloud must be a PointCloud2 dict, numpy array (Nx3/Nx4/Nx5), or list of points",
             ));
         }
-        Ok(())
+        // All branches above return; no code should reach here.
     }
 
     /// Add a ROS2 `sensor_msgs/msg/PointCloud2` Python object directly.
-    fn add_pointcloud2_ros(&mut self, cloud: &Bound<'_, PyAny>) -> PyResult<()> {
+    fn add_pointcloud2_ros(&mut self, cloud: &Bound<'_, PyAny>) -> PyResult<u64> {
         self.add_pointcloud_from_ros_msg(cloud)
     }
 
@@ -621,7 +624,7 @@ impl PelorusHandle {
     }
 
     /// Add point cloud from PointCloud2 dict
-    fn add_pointcloud_from_dict(&self, cloud_dict: &Bound<'_, PyDict>) -> PyResult<()> {
+    fn add_pointcloud_from_dict(&self, cloud_dict: &Bound<'_, PyDict>) -> PyResult<u64> {
         // Extract header - PyDict.get_item returns PyResult<Option<Bound>>
         let header = cloud_dict
             .get_item("header")?
@@ -705,11 +708,11 @@ impl PelorusHandle {
         let prelio = prelio_guard
             .as_mut()
             .ok_or_else(|| PyRuntimeError::new_err("Handle is closed"))?;
-        prelio.add_pointcloud(cloud_msg_internal);
-        Ok(())
+        let scan_id = prelio.add_pointcloud(cloud_msg_internal);
+        Ok(scan_id)
     }
 
-    fn add_pointcloud_from_ros_msg(&self, cloud_msg: &Bound<'_, PyAny>) -> PyResult<()> {
+    fn add_pointcloud_from_ros_msg(&self, cloud_msg: &Bound<'_, PyAny>) -> PyResult<u64> {
         let header = cloud_msg.getattr("header")?;
         let stamp = header.getattr("stamp")?;
         let (sec, nanosec) = Self::extract_stamp_sec_nanosec(&stamp)?;
@@ -761,8 +764,8 @@ impl PelorusHandle {
         let prelio = prelio_guard
             .as_mut()
             .ok_or_else(|| PyRuntimeError::new_err("Handle is closed"))?;
-        prelio.add_pointcloud(cloud_msg_internal);
-        Ok(())
+        let scan_id = prelio.add_pointcloud(cloud_msg_internal);
+        Ok(scan_id)
     }
 
     /// Add point cloud from numpy array (Nx3 or Nx4: x, y, z, [t])
@@ -772,7 +775,7 @@ impl PelorusHandle {
         timestamp_sec: i32,
         timestamp_nanosec: u32,
         frame_id: &str,
-    ) -> PyResult<()> {
+    ) -> PyResult<u64> {
         let array = array.as_array();
         let shape = array.shape();
 
@@ -874,8 +877,8 @@ impl PelorusHandle {
         let prelio = prelio_guard
             .as_mut()
             .ok_or_else(|| PyRuntimeError::new_err("Handle is closed"))?;
-        prelio.add_pointcloud(cloud_msg_internal);
-        Ok(())
+        let scan_id = prelio.add_pointcloud(cloud_msg_internal);
+        Ok(scan_id)
     }
 
     /// Add point cloud from list of points [[x, y, z, t], ...]
@@ -885,7 +888,7 @@ impl PelorusHandle {
         timestamp_sec: i32,
         timestamp_nanosec: u32,
         frame_id: &str,
-    ) -> PyResult<()> {
+    ) -> PyResult<u64> {
         let num_points = points_list.len();
 
         if num_points == 0 {
@@ -1001,8 +1004,8 @@ impl PelorusHandle {
         let prelio = prelio_guard
             .as_mut()
             .ok_or_else(|| PyRuntimeError::new_err("Handle is closed"))?;
-        prelio.add_pointcloud(cloud_msg_internal);
-        Ok(())
+        let scan_id = prelio.add_pointcloud(cloud_msg_internal);
+        Ok(scan_id)
     }
 }
 

@@ -19,10 +19,13 @@ pub struct Pipeline {
     map: Arc<Mutex<RegistrationState>>,
     ext_lidar_to_imu: Isometry3<f64>,
     config: LioConfig,
+    #[cfg(feature = "cuda")]
+    cuda_stream: pelorus_cuda::Stream,
 }
 
 #[derive(Debug, Clone)]
 pub struct PelorusOutput {
+    pub scan_id: u64,
     pub timestamp: ros_pointcloud2::ros::TimeMsg,
     pub pose: Isometry3<f64>,
     pub pose_covariance: [f64; 36],
@@ -61,6 +64,8 @@ impl Pipeline {
             map: Arc::new(Mutex::new(map)),
             ext_lidar_to_imu,
             config: config.clone(),
+            #[cfg(feature = "cuda")]
+            cuda_stream: pelorus_cuda::Stream::new(),
         }
     }
 
@@ -152,25 +157,28 @@ impl Pipeline {
                 ready_for_next,
                 &mut eval,
                 #[cfg(feature = "cuda")]
-                &pelorus_cuda::Stream::new(),
+                &self.cuda_stream,
             ) {
                 Ok(Some(res)) => {
                     let state = map.get_state();
-                    Some((res, state))
+                    let (pose_cov_map, _lv_unused) = map.get_odometry_covariances();
+                    let twist_cov_map = map.get_twist_covariance_6x6();
+                    Some((res, state, pose_cov_map, twist_cov_map))
                 }
                 _ => None,
             }
         }?;
 
-        let (registration, state) = register_result;
+        let (registration, state, pose_cov_map, twist_cov_map) = register_result;
 
         Some(PelorusOutput {
+            scan_id: processed.scan_id,
             timestamp: processed.end_of_frame_time,
             pose: registration.pose,
-            pose_covariance: processed.pose_covariance,
+            pose_covariance: pose_cov_map,
             linear_velocity: state.linear_velocity,
             angular_velocity: processed.end_of_frame_twist.angular,
-            twist_covariance: processed.twist_covariance,
+            twist_covariance: twist_cov_map,
             cloud: processed.cloud,
             frame_id: processed.header.frame_id,
         })

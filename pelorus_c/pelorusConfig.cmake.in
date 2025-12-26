@@ -3,22 +3,35 @@
 include(CMakeFindDependencyMacro)
 
 # Keep backwards-friendly variables for consumers that don't use targets.
-set(pelorus_INCLUDE_DIRS "${PACKAGE_PREFIX_DIR}/@PACKAGE_CMAKE_INSTALL_INCLUDEDIR@")
+# Handle both absolute and relative paths from configure_package_config_file
+if(IS_ABSOLUTE "@PACKAGE_CMAKE_INSTALL_INCLUDEDIR@")
+  set(pelorus_INCLUDE_DIRS "@PACKAGE_CMAKE_INSTALL_INCLUDEDIR@")
+else()
+  set(pelorus_INCLUDE_DIRS "${PACKAGE_PREFIX_DIR}/@PACKAGE_CMAKE_INSTALL_INCLUDEDIR@")
+endif()
 
 set(_pelorus_shared "${PACKAGE_PREFIX_DIR}/@PACKAGE_CMAKE_INSTALL_LIBDIR@/${CMAKE_SHARED_LIBRARY_PREFIX}pelorus${CMAKE_SHARED_LIBRARY_SUFFIX}")
 set(_pelorus_static "${PACKAGE_PREFIX_DIR}/@PACKAGE_CMAKE_INSTALL_LIBDIR@/${CMAKE_STATIC_LIBRARY_PREFIX}pelorus${CMAKE_STATIC_LIBRARY_SUFFIX}")
 
+# Try to find pelorus library if not at expected install locations
+find_library(_pelorus_lib NAMES pelorus HINTS "${PACKAGE_PREFIX_DIR}/@PACKAGE_CMAKE_INSTALL_LIBDIR@" NO_DEFAULT_PATH)
+if(NOT _pelorus_lib)
+  find_library(_pelorus_lib NAMES pelorus)
+endif()
+
 # Shared target (optional)
-if(EXISTS "${_pelorus_shared}" AND NOT TARGET pelorus::pelorus)
+if((EXISTS "${_pelorus_shared}" OR _pelorus_lib) AND NOT TARGET pelorus::pelorus)
   add_library(pelorus::pelorus SHARED IMPORTED)
-  set_target_properties(pelorus::pelorus PROPERTIES
-    IMPORTED_LOCATION "${_pelorus_shared}"
-    INTERFACE_INCLUDE_DIRECTORIES "${pelorus_INCLUDE_DIRS}"
-  )
+  if(EXISTS "${_pelorus_shared}")
+    set_target_properties(pelorus::pelorus PROPERTIES IMPORTED_LOCATION "${_pelorus_shared}")
+  elseif(_pelorus_lib)
+    set_target_properties(pelorus::pelorus PROPERTIES IMPORTED_LOCATION "${_pelorus_lib}")
+  endif()
+  set_target_properties(pelorus::pelorus PROPERTIES INTERFACE_INCLUDE_DIRECTORIES "${pelorus_INCLUDE_DIRS}")
 endif()
 
 # Static target (optional)
-if(EXISTS "${_pelorus_static}" AND NOT TARGET pelorus::pelorus_static)
+if((EXISTS "${_pelorus_static}") AND NOT TARGET pelorus::pelorus_static)
   add_library(pelorus::pelorus_static STATIC IMPORTED)
   set_target_properties(pelorus::pelorus_static PROPERTIES
     IMPORTED_LOCATION "${_pelorus_static}"
@@ -37,11 +50,11 @@ if(EXISTS "${_pelorus_static}" AND NOT TARGET pelorus::pelorus_static)
   endif()
 endif()
 
-# Convenience variable: prefer shared if present.
+# Convenience variable: prefer shared if present, otherwise static.
 if(TARGET pelorus::pelorus)
   set(pelorus_LIBRARIES pelorus::pelorus)
 elseif(TARGET pelorus::pelorus_static)
   set(pelorus_LIBRARIES pelorus::pelorus_static)
-else()
-  set(pelorus_LIBRARIES "")
+elseif(_pelorus_lib)
+  set(pelorus_LIBRARIES "${_pelorus_lib}")
 endif()

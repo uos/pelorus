@@ -390,6 +390,7 @@ pub struct ImuPosePrediction {
 
 #[derive(Debug)]
 pub struct PrelioProcessedCloud {
+    pub scan_id: u64,
     pub cloud: Vec<PointXYZI>,
     pub imu_frame: String,
     pub header: HeaderMsg,

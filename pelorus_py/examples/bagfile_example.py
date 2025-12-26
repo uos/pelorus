@@ -80,9 +80,9 @@ def main():
             
             elif topic == lidar_topic:
                 cloud = msg.ros_msg
-                lio.add_pointcloud2_ros(cloud)
+                _ = lio.add_pointcloud2_ros(cloud)
                 lidar_count += 1
-
+                
                 # Drain odometry as we go so we don't let the internal queue grow unbounded.
                 while True:
                     odom = lio.try_recv()

@@ -17,6 +17,12 @@ use anyhow::Result;
 use ros_pointcloud2::prelude::*;
 pub use ros_pointcloud2::ros::TimeMsg;
 
+#[derive(Clone)]
+pub struct LabeledPointCloud2Msg {
+    pub scan_id: u64,
+    pub cloud: PointCloud2Msg,
+}
+
 use imu::*;
 
 #[inline]
@@ -393,7 +399,7 @@ fn filter_downsample<const N: usize, P: PointXYZITimestamp<N>>(
 }
 
 pub struct Prelio {
-    preproc_sender: std::sync::mpsc::Sender<PointCloud2Msg>,
+    preproc_sender: std::sync::mpsc::Sender<LabeledPointCloud2Msg>,
     imu_sender: std::sync::mpsc::Sender<ImuMsg>,
     odom_sender: std::sync::mpsc::Sender<OdomMsg>,
     synced_receiver: Option<std::sync::mpsc::Receiver<PrelioProcessedCloud>>,
@@ -588,13 +594,18 @@ impl Prelio {
             None => None,
         };
 
-        let (preproc_tx, preproc_rx) = std::sync::mpsc::channel();
+        let (preproc_tx, preproc_rx) = std::sync::mpsc::channel::<LabeledPointCloud2Msg>();
         let (imu_tx, imu_rx) = std::sync::mpsc::channel();
         let (odom_tx, odom_rx): (
             std::sync::mpsc::Sender<OdomMsg>,
             std::sync::mpsc::Receiver<OdomMsg>,
         ) = std::sync::mpsc::channel();
-        let (filtered_cloud_tx, filtered_cloud_rx) = std::sync::mpsc::channel();
+        // filtered_cloud carries: (cloud_meta, scan_id, runtime_eval)
+        let (filtered_cloud_tx, filtered_cloud_rx) = std::sync::mpsc::channel::<(
+            (Vec<PointXYZIT>, f64, f64, HeaderMsg),
+            u64,
+            RuntimeEvaluator,
+        )>();
         let (synced_cloud_imu_tx, synced_cloud_imu_rx) = std::sync::mpsc::channel();
 
         // test parallel boundaries
@@ -639,17 +650,19 @@ impl Prelio {
         let params_clone = params.clone();
         thread::spawn(move || {
             let mut eval = RuntimeEvaluator::new();
-            while let Ok(cloud) = preproc_rx.recv() {
+            while let Ok(labeled) = preproc_rx.recv() {
                 let eval_name = if cfg!(feature = "downsample") {
                     "filter_downsample"
                 } else {
                     "filter"
                 };
                 eval.start(eval_name).unwrap();
-                match filter_downsample::<N, P>(cloud, &params_clone) {
+                match filter_downsample::<N, P>(labeled.cloud, &params_clone) {
                     Ok(Some(cloud_meta)) => {
                         eval.stop(eval_name).unwrap();
-                        if let Err(e) = filtered_cloud_tx.send((cloud_meta, eval.clone())) {
+                        if let Err(e) =
+                            filtered_cloud_tx.send((cloud_meta, labeled.scan_id, eval.clone()))
+                        {
                             error!("Error sending pointcloud: {}", e);
                         }
                     }
@@ -685,8 +698,8 @@ impl Prelio {
 
     // TODO: debouncing - make sure we don't get too many clouds by buffer length and only accepting every nth cloud, then every nth+1 etc after certain buffer lengths each
     // also, this should be configurable with defaults and toggleable
-    /// Add a point cloud to the buffer.
-    pub fn add_pointcloud(&mut self, cloud: PointCloud2Msg) {
+    /// Add a point cloud to the buffer. Returns a `scan_id` assigned to this cloud.
+    pub fn add_pointcloud(&mut self, cloud: PointCloud2Msg) -> u64 {
         let cloud_stamp = timestamp_to_secs(&cloud.header.stamp);
 
         // TODO handle time jumps in the past?
@@ -706,12 +719,17 @@ impl Prelio {
         // self.undistort.reset();
         // to_buffer.clear();
         self.last_cloud_time = cloud_stamp;
-        match self.preproc_sender.send(cloud) {
+        // Generate a unique scan id and send a labeled cloud into preprocessing.
+        static SCAN_ID_COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+        let scan_id = SCAN_ID_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let labeled = LabeledPointCloud2Msg { scan_id, cloud };
+        match self.preproc_sender.send(labeled) {
             Ok(_) => {}
             Err(e) => {
                 error!("Error sending pointcloud: {}", e);
             }
         };
+        scan_id
     }
 
     /// Filter raw IMU message and add to the buffer for synchronization and integration.
@@ -806,6 +824,7 @@ impl Prelio {
         gravity: f64,
         lidar_receiver: std::sync::mpsc::Receiver<(
             (Vec<PointXYZIT>, f64, f64, HeaderMsg),
+            u64,
             RuntimeEvaluator,
         )>,
         imu_receiver: Option<std::sync::mpsc::Receiver<ImuMsg>>,
@@ -821,8 +840,11 @@ impl Prelio {
         let mut eval = RuntimeEvaluator::new();
         let mut to_next: Option<ImuMsg> = None;
         let mut cloud_count: usize = 0;
-        while let Ok(((cloud, lidar_begin_time, lidar_end_time, lidar_header), prelio_eval)) =
-            lidar_receiver.recv()
+        while let Ok((
+            (cloud, lidar_begin_time, lidar_end_time, lidar_header),
+            scan_id,
+            prelio_eval,
+        )) = lidar_receiver.recv()
         {
             eval.merge(&prelio_eval);
             let lidar_time = timestamp_to_secs(&lidar_header.stamp);
@@ -832,6 +854,7 @@ impl Prelio {
             if cloud_count < initial_scan_accumulate {
                 cloud_count += 1;
                 let res = PrelioProcessedCloud {
+                    scan_id: scan_id,
                     cloud: cloud
                         .into_iter()
                         .map(|p| PointXYZI::new(p.x, p.y, p.z, p.intensity))
@@ -983,6 +1006,7 @@ impl Prelio {
                     .collect(); // TODO use iter as type in processed cloud
 
                 let res = PrelioProcessedCloud {
+                    scan_id: scan_id,
                     cloud,
                     imu_frame: "".to_string(),
                     header: lidar_header,
@@ -998,7 +1022,6 @@ impl Prelio {
                     should_map_only: false,
                     lidar_end_time_abs: abs_lidar_end,
                 };
-
                 synced_sender.send(res).unwrap();
             } else {
                 // Waiting for sync signal. Needed for cases where undistortion uses an EKF state that predicts forward and the correction must be made first before predicting further.
@@ -1060,6 +1083,7 @@ impl Prelio {
                     };
 
                     let res = PrelioProcessedCloud {
+                        scan_id: scan_id,
                         cloud: imu_cloud.cloud,
                         imu_frame,
                         header: lidar_header,
