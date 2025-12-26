@@ -46,6 +46,8 @@ The extension reads optional parameters from a config file named `config_pelorus
   "pelorus_frontend": {
     "pelorus_rl_path": "/abs/path/to/pelorus.rl",
 
+    "use_glim_config": true,
+
     "stamp_match_tolerance_sec": 0.02,
 
     "between_sigma_trans": 0.2,
@@ -58,6 +60,10 @@ The extension reads optional parameters from a config file named `config_pelorus
 
 Notes:
 - `pelorus_rl_path` may be empty to use Pelorus defaults.
+- If `use_glim_config` is `true` and `pelorus_rl_path` is empty, the module generates a temporary `.rl` file at runtime using GLIM configs:
+  - `config_sensors.json`: `sensors.T_lidar_imu` (IMU->LiDAR in GLIM; inverted to LiDAR->IMU for Pelorus)
+  - `config_preprocess.json`: `preprocess.downsample_resolution` → `preprocessing.downsample.resolution`
+  - `config_global_mapping.json` / `config_sub_mapping.json`: `submap_voxel_resolution` → `registration.map.resolution`
 - `between_sigma_*` controls how "strong" Pelorus constraints are.
 
 ## How it works
