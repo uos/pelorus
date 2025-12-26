@@ -95,9 +95,9 @@ def main() -> None:
                 imu_count += 1
 
             elif topic == lidar_topic:
-                lio.add_pointcloud2_ros(msg.ros_msg)
+                _ = lio.add_pointcloud2_ros(msg.ros_msg)
                 lidar_count += 1
-
+                
                 if lidar_count >= max_lidar_scans:
                     break
 

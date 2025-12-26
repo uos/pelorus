@@ -10,3 +10,4 @@ pelorus_c/examples/async_callback
 pelorus_c/examples/sync_blocking
 pelorus_c/examples/cpp_wrapper
 **/build/
+**/imgui.ini

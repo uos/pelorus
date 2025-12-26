@@ -81,57 +81,10 @@ make
 sudo -E make install
 
 ## minimal config
-cd ~/ros2_ws/src/pelorus/glim_integration/
-cat << 'EOF' > pelorus.rl
-registration {
-
-  map {
-    resolution = 0.5m # Voxel side length. NOTE: This will heavily affect your registration accuracy.
-    capacity = 100000 # How many Voxels of the previous defined resolution to save at any time. With Cuda enabled, the capacity will be round up to the next power of 2.
-    
-    distribution_update_sensitivity = 10.0 # Magic weighting value for handling the sensivity to new scans. The higher this value, the sensitive is it to brand new scans.
-  }
-}
-
-lidar {
-
-  vendor = Ouster # Velodyne | Ouster | Robosense | Skip (Use any 3D sensor when just Lidar Odometry is selected)
-
-  covariance = 0.001 # Weight for ICP correction in the IEKF
-}
-
-
-imu {
-  initial_setup = 0.1s
-
-  from_lidar_transform {
-    # translation = [-6.253mm, 11.775mm, 28.535mm] # Translation Vector Lidar_to_IMU
-    translation = [0.0m, 0.0m, 0m] # Translation Vector Lidar_to_IMU
-
-    # Rotation Matrix Lidar_to_IMU
-    rotation = [ [-1.0, 0.0, 0.0],
-                  [0.0, -1.0, 0.0],
-                  [0.0, 0.0, 1.0] ]
-  }
-
-  ahrs_filtering.method = FilterAccelerationAndCreateOrientation # CreateOrientationOnly | FilterAccelerationAndCreateOrientation | FilterAccelerationOnly | Disable (recommended when using on-device filtering in the driver)
-
-  covariance_gyroscope = 0.1
-  covariance_gyroscope_bias = 0.0001
-
-  covariance_acceleration = 0.1
-  covariance_acceleration_bias = 0.0001
-
-
-}
-
-preprocessing.downsample.resolution = 25cm
-EOF
-
 sudo tee /opt/ros/jazzy/share/glim/config/config_pelorus_frontend.json << EOF
 {
   "pelorus_frontend": {
-    "pelorus_rl_path": "$HOME/ros2_ws/src/pelorus/glim_integration/pelorus.rl",
+    "use_glim_config": true,
     "stamp_match_tolerance_sec": 0.02,
 
     "between_sigma_trans": 0.2,

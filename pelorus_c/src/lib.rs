@@ -4,8 +4,8 @@ use std::ffi::{CStr, c_char, c_void};
 use std::path::Path;
 use std::ptr;
 use std::slice;
-use std::sync::{Arc, Mutex, mpsc};
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex, mpsc};
 
 use anyhow::anyhow;
 use log::{error, info, warn};
@@ -192,12 +192,16 @@ fn processing_thread_main(thread: ProcessingThread) {
             continue;
         }
 
-        match thread.pipeline.register_processed_cloud(processed, Some(&thread.ready_for_next)) {
+        match thread
+            .pipeline
+            .register_processed_cloud(processed, Some(&thread.ready_for_next))
+        {
             Some(output) => {
                 // Check if callback is set
-                let callback_info_opt = thread.callback_info.lock().ok().and_then(|guard| {
-                    guard.as_ref().map(|info| (info.callback, info.user_data))
-                });
+                let callback_info_opt =
+                    thread.callback_info.lock().ok().and_then(|guard| {
+                        guard.as_ref().map(|info| (info.callback, info.user_data))
+                    });
 
                 if let Some((callback, user_data)) = callback_info_opt {
                     // Invoke callback
@@ -362,7 +366,7 @@ unsafe fn pelorus_create_internal(
 
     // Create the ready_for_next channel for synchronization
     let (ready_tx, ready_rx) = mpsc::channel::<()>();
-    
+
     // Pass the receiver to Prelio for proper synchronization
     let (prelio, prelio_receiver) = match pipeline.create_prelio(Some(ready_rx)) {
         Ok(parts) => parts,
@@ -587,9 +591,9 @@ pub unsafe extern "C" fn pelorus_add_odom(
 pub unsafe extern "C" fn pelorus_add_pointcloud(
     handle: *mut PelorusHandle,
     cloud: *const pelorus_pointcloud2,
-) -> i32 {
+) -> u64 {
     if handle.is_null() || cloud.is_null() {
-        return -1;
+        return 0;
     }
 
     unsafe {
@@ -601,7 +605,7 @@ pub unsafe extern "C" fn pelorus_add_pointcloud(
         } else {
             match CStr::from_ptr(cloud_data.header_frame_id).to_str() {
                 Ok(s) => s.to_string(),
-                Err(_) => return -1,
+                Err(_) => return 0,
             }
         };
 
@@ -651,13 +655,13 @@ pub unsafe extern "C" fn pelorus_add_pointcloud(
         match handle.prelio.lock() {
             Ok(mut prelio) => {
                 if let Some(prelio) = prelio.as_mut() {
-                    prelio.add_pointcloud(cloud_msg_internal);
-                    0
+                    let scan_id = prelio.add_pointcloud(cloud_msg_internal);
+                    scan_id
                 } else {
-                    -1
+                    0
                 }
             }
-            Err(_) => -1,
+            Err(_) => 0,
         }
     }
 }
@@ -749,7 +753,6 @@ fn build_cloud_xyzi_t(
 /// Add raw points from a packed `float` array (Nx4): [x,y,z,t].
 ///
 /// `t` is interpreted as nanoseconds offset relative to the scan header timestamp.
-/// This mirrors the Python numpy/list path which casts `t` to `uint32`.
 ///
 /// # Safety
 /// - `handle` must be a valid pointer returned from `pelorus_create*`
@@ -762,9 +765,9 @@ pub unsafe extern "C" fn pelorus_add_points_xyzt_f32(
     frame_id: *const c_char,
     xyzt: *const f32,
     num_points: usize,
-) -> i32 {
+) -> u64 {
     if handle.is_null() || xyzt.is_null() {
-        return -1;
+        return 0;
     }
     if num_points == 0 {
         return 0;
@@ -772,7 +775,7 @@ pub unsafe extern "C" fn pelorus_add_points_xyzt_f32(
 
     let frame_id = match make_frame_id(frame_id) {
         Some(s) => s,
-        None => return -1,
+        None => return 0,
     };
     let xyzt = unsafe { slice::from_raw_parts(xyzt, num_points * 4) };
 
@@ -795,13 +798,13 @@ pub unsafe extern "C" fn pelorus_add_points_xyzt_f32(
         match handle.prelio.lock() {
             Ok(mut prelio) => {
                 if let Some(prelio) = prelio.as_mut() {
-                    prelio.add_pointcloud(cloud_msg_internal);
-                    0
+                    let scan_id = prelio.add_pointcloud(cloud_msg_internal);
+                    scan_id
                 } else {
-                    -1
+                    0
                 }
             }
-            Err(_) => -1,
+            Err(_) => 0,
         }
     }
 }
@@ -809,7 +812,6 @@ pub unsafe extern "C" fn pelorus_add_points_xyzt_f32(
 /// Add raw points from a packed `float` array (Nx5): [x,y,z,intensity,t].
 ///
 /// `t` is interpreted as nanoseconds offset relative to the scan header timestamp.
-/// This mirrors the Python numpy/list path which casts `t` to `uint32`.
 ///
 /// # Safety
 /// - `handle` must be a valid pointer returned from `pelorus_create*`
@@ -822,9 +824,9 @@ pub unsafe extern "C" fn pelorus_add_points_xyzit_f32(
     frame_id: *const c_char,
     xyzit: *const f32,
     num_points: usize,
-) -> i32 {
+) -> u64 {
     if handle.is_null() || xyzit.is_null() {
-        return -1;
+        return 0;
     }
     if num_points == 0 {
         return 0;
@@ -832,7 +834,7 @@ pub unsafe extern "C" fn pelorus_add_points_xyzit_f32(
 
     let frame_id = match make_frame_id(frame_id) {
         Some(s) => s,
-        None => return -1,
+        None => return 0,
     };
     let xyzit = unsafe { slice::from_raw_parts(xyzit, num_points * 5) };
 
@@ -856,13 +858,13 @@ pub unsafe extern "C" fn pelorus_add_points_xyzit_f32(
         match handle.prelio.lock() {
             Ok(mut prelio) => {
                 if let Some(prelio) = prelio.as_mut() {
-                    prelio.add_pointcloud(cloud_msg_internal);
-                    0
+                    let scan_id = prelio.add_pointcloud(cloud_msg_internal);
+                    scan_id
                 } else {
-                    -1
+                    0
                 }
             }
-            Err(_) => -1,
+            Err(_) => 0,
         }
     }
 }

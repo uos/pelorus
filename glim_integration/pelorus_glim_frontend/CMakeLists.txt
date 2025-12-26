@@ -54,15 +54,22 @@ install(TARGETS pelorus_glim_frontend
   RUNTIME DESTINATION bin
 )
 
-# Provide `make uninstall` support when build system is generated
-if(NOT TARGET uninstall)
-  configure_file(
-    "${CMAKE_CURRENT_SOURCE_DIR}/cmake_uninstall.cmake.in"
-    "${CMAKE_CURRENT_BINARY_DIR}/cmake_uninstall.cmake"
-    IMMEDIATE @ONLY
-  )
+# Provide robust uninstall support.
+# Note: when we build pelorus from source (add_subdirectory), that subproject may
+# define an `uninstall` target first; so we always create a project-specific
+# uninstall target and then hook it into the global `uninstall` if it exists.
+configure_file(
+  "${CMAKE_CURRENT_SOURCE_DIR}/cmake_uninstall.cmake.in"
+  "${CMAKE_CURRENT_BINARY_DIR}/cmake_uninstall.cmake"
+  @ONLY
+)
 
-  add_custom_target(uninstall
-    COMMAND "${CMAKE_COMMAND}" -P "${CMAKE_CURRENT_BINARY_DIR}/cmake_uninstall.cmake"
-  )
+add_custom_target(uninstall_pelorus_glim_frontend
+  COMMAND "${CMAKE_COMMAND}" -P "${CMAKE_CURRENT_BINARY_DIR}/cmake_uninstall.cmake"
+)
+
+if(TARGET uninstall)
+  add_dependencies(uninstall uninstall_pelorus_glim_frontend)
+else()
+  add_custom_target(uninstall DEPENDS uninstall_pelorus_glim_frontend)
 endif()
