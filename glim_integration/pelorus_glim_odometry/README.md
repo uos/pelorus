@@ -9,6 +9,7 @@ This is an alternative to GLIM's built-in `odometry_estimation_cpu/gpu/ct` modul
 ### 1) Prerequisites
 
 - GLIM installed (with headers and CMake config)
+- GTSAM installed (provides `gtsam` headers/libs)
 - Pelorus installed (CMake package `pelorus`), or Rust toolchain (to build `pelorus_c` from source)
 
 ### 2) Build and install
@@ -18,7 +19,7 @@ cd pelorus/glim_integration/pelorus_glim_odometry
 mkdir build && cd build
 cmake .. -DCMAKE_INSTALL_PREFIX=/usr/local
 make
-sudo make install
+sudo -E make install
 ```
 
 Notes:

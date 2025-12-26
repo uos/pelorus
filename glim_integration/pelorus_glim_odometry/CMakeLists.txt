@@ -2,6 +2,8 @@ cmake_minimum_required(VERSION 3.16)
 project(pelorus_glim_odometry LANGUAGES CXX)
 
 find_package(glim REQUIRED)
+find_package(GTSAM 4.2 REQUIRED)
+find_package(gtsam_points 1.1.0 REQUIRED)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -14,23 +16,29 @@ endif()
 
 # Try to find installed pelorus first; fall back to building from source.
 find_package(pelorus QUIET)
-if(NOT pelorus_FOUND)
+
+if(pelorus_FOUND)
+  # When find_package(pelorus) succeeds, use the libraries it provides
+  set(PELORUS_TARGET ${pelorus_LIBRARIES})
+  message(STATUS "Found installed Pelorus: ${PELORUS_TARGET}")
+else()
+  # Fall back to building from source
   add_subdirectory(../../pelorus_c pelorus_c_build)
-endif()
+  
+  set(PELORUS_TARGET "")
+  if(TARGET pelorus::pelorus)
+    set(PELORUS_TARGET pelorus::pelorus)
+  elseif(TARGET pelorus::pelorus_static)
+    set(PELORUS_TARGET pelorus::pelorus_static)
+  elseif(TARGET pelorus)
+    set(PELORUS_TARGET pelorus)
+  elseif(TARGET pelorus_static)
+    set(PELORUS_TARGET pelorus_static)
+  endif()
 
-set(PELORUS_TARGET "")
-if(TARGET pelorus::pelorus)
-  set(PELORUS_TARGET pelorus::pelorus)
-elseif(TARGET pelorus::pelorus_static)
-  set(PELORUS_TARGET pelorus::pelorus_static)
-elseif(TARGET pelorus)
-  set(PELORUS_TARGET pelorus)
-elseif(TARGET pelorus_static)
-  set(PELORUS_TARGET pelorus_static)
-endif()
-
-if(PELORUS_TARGET STREQUAL "")
-  message(FATAL_ERROR "pelorus library not found. Install pelorus_c (find_package(pelorus)) or keep pelorus_c as a subdirectory.")
+  if(PELORUS_TARGET STREQUAL "")
+    message(FATAL_ERROR "pelorus library not found. Install pelorus_c (find_package(pelorus)) or keep pelorus_c as a subdirectory.")
+  endif()
 endif()
 
 # Name it like the built-in odometry plugins: libodometry_estimation_*.so
@@ -40,6 +48,8 @@ add_library(odometry_estimation_pelorus SHARED
 
 target_link_libraries(odometry_estimation_pelorus
   glim::glim
+  gtsam
+  gtsam_points::gtsam_points
   ${PELORUS_TARGET}
 )
 
@@ -53,3 +63,16 @@ install(TARGETS odometry_estimation_pelorus
 install(DIRECTORY config
   DESTINATION share/pelorus_glim_odometry
 )
+
+# Provide `make uninstall` support when build system is generated
+if(NOT TARGET uninstall)
+  configure_file(
+    "${CMAKE_CURRENT_SOURCE_DIR}/cmake_uninstall.cmake.in"
+    "${CMAKE_CURRENT_BINARY_DIR}/cmake_uninstall.cmake"
+    IMMEDIATE @ONLY
+  )
+
+  add_custom_target(uninstall
+    COMMAND "${CMAKE_COMMAND}" -P "${CMAKE_CURRENT_BINARY_DIR}/cmake_uninstall.cmake"
+  )
+endif()
