@@ -1,10 +1,9 @@
 **/target
 .vscode
 **/__pycache__/
-lio/icp/build
+**/pelorus.rl
 **/lio*.toml
 **/.DS_Store
-pelorus.rl
 pelorus_trajectory*
 pelorus_c/examples/basic_usage
 pelorus_c/examples/async_callback
