@@ -37,6 +37,7 @@ GLIM selects the odometry module via `global.config_odometry` → a JSON file co
   "odometry_estimation": {
     "so_name": "libodometry_estimation_pelorus.so",
     "pelorus_rl_path": "/abs/path/to/pelorus.rl",
+    "use_glim_config": true,
     "max_wait_ms": 200
   }
 }
@@ -55,6 +56,7 @@ Typical setup:
 
 - `so_name` (required): Path or name of the plugin library
 - `pelorus_rl_path` (optional): Path to Pelorus config file (empty = defaults)
+- `use_glim_config` (optional): If `true` and `pelorus_rl_path` is empty, generate a temporary Pelorus `.rl` using GLIM configs (`config_sensors`, `config_preprocess`, `config_global_mapping`/`config_sub_mapping`)
 - `max_wait_ms` (optional): Timeout when polling Pelorus (default: 200ms)
 
 Example with all options:
@@ -63,6 +65,7 @@ Example with all options:
   "odometry_estimation": {
     "so_name": "libodometry_estimation_pelorus.so",
     "pelorus_rl_path": "/path/to/pelorus.rl",
+    "use_glim_config": true,
     "max_wait_ms": 300
   }
 }
