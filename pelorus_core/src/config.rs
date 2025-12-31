@@ -318,6 +318,7 @@ pub fn ast_to_config(defaults: Evaluated, user: Evaluated) -> anyhow::Result<Lio
         imu_odom_qos,
         imu_path_qos,
         imu_filtered_qos,
+        warning_debounce,
     ) = {
         let output_ns = asts.filter_ns(&["output"]);
         let terminal_ns = output_ns.filter_ns(&["terminal"]);
@@ -328,6 +329,8 @@ pub fn ast_to_config(defaults: Evaluated, user: Evaluated) -> anyhow::Result<Lio
         } else {
             0
         };
+        let warning_debounce = resolve_var!(terminal_ns, "warning_debounce", as f64, Rhs::Val(Val::UnitedVal(UnitVal::TimeVal(v))) => { v.get::<second>() as f64 })?;
+
         let map_frame = resolve_var!(output_ns, "global_frame", as String, Rhs::Val(Val::StringVal(s)) | Rhs::Path(s) => {s})?;
         let lidar_as_map_tf = resolve_var!(output_ns, "lidar_as_map_tf_base", as bool, Rhs::Val(Val::BoolVal(b)) => {b})?;
         let logger_prefix = resolve_var!(output_ns, "logger_prefix", as String, Rhs::Val(Val::StringVal(s)) | Rhs::Path(s) => {s})?;
@@ -351,6 +354,7 @@ pub fn ast_to_config(defaults: Evaluated, user: Evaluated) -> anyhow::Result<Lio
             imu_odom_qos,
             imu_path_qos,
             imu_filtered_qos,
+            warning_debounce,
         )
     };
 
@@ -482,6 +486,7 @@ pub fn ast_to_config(defaults: Evaluated, user: Evaluated) -> anyhow::Result<Lio
             wheel_imu_tf_override: wheel_to_imu_tf_override,
             wheel_to_imu_rotation,
             wheel_odom_cov,
+            warning_debounce,
         },
         // TODO currently hardcoded
         registered_cloud_qos: Qos::Sensor(Reliability::Reliable),

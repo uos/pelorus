@@ -7,11 +7,15 @@ use pelorus_core::config::ast_to_config;
 use pelorus_core::timing::RuntimeEvaluator;
 use pelorus_core::{LioConfig, timestamp_to_secs};
 use pelorus_reg::pipeline::Pipeline;
+#[cfg(feature = "ratpub")]
+use prelio_io::impl_ros2_interfaces_jazzy_rkyv;
 #[cfg(feature = "rat")]
 use std::fs;
 #[cfg(feature = "rat")]
 use std::process::{Command as ProcessCommand, Stdio};
 use std::time::UNIX_EPOCH;
+
+use ros_pointcloud2::prelude::*;
 
 #[global_allocator]
 #[cfg(feature = "mimalloc")]
@@ -766,9 +770,15 @@ fn lio_with_ready_signal(
             let mut cloud: PointCloud2 = {
                 match cloud {
                     LocatedBufferView::Ram(items) => {
-                        ros_pointcloud2::PointCloud2Msg::try_from_vec(&items)
-                            .unwrap()
-                            .into()
+                        let msg = PointCloud2Msg::try_from_vec(items).expect("msg");
+                        #[cfg(feature = "ros2-client")]
+                        let out = impl_ros2_interfaces_jazzy_serde::from_pointcloud2_msg(msg);
+                        #[cfg(feature = "ratpub")]
+                        let out = impl_ros2_interfaces_jazzy_rkyv::from_pointcloud2_msg(msg);
+                        #[cfg(feature = "r2r")]
+                        let out = impl_r2r::from_pointcloud2_msg(msg);
+
+                        out
                     }
                     #[cfg(feature = "cuda")]
                     LocatedBufferView::Cuda { buffer: cloud } => {
@@ -936,11 +946,15 @@ fn lio_with_ready_signal(
 
             #[cfg(feature = "rerun")]
             {
-                use ros_pointcloud2::points::PointXYZI;
-
                 const DECAY: bool = false;
 
-                let ps: ros_pointcloud2::PointCloud2Msg = cloud.clone().into();
+                #[cfg(feature = "ros2-client")]
+                let ps = impl_ros2_interfaces_jazzy_serde::to_pointcloud2_msg(cloud.clone());
+                #[cfg(feature = "ratpub")]
+                let ps = impl_ros2_interfaces_jazzy_rkyv::to_pointcloud2_msg(cloud.clone());
+                #[cfg(feature = "r2r")]
+                let ps = impl_r2r::to_pointcloud2_msg(cloud.clone());
+
                 let gradient = colorous::TURBO;
                 let (positions, colors): (Vec<_>, Vec<_>) = ps
                     .try_into_iter()

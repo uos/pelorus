@@ -10,7 +10,7 @@ version.workspace = true
 rust-version.workspace = true
 
 [lib]
-name = "pelorus"
+name = "pelorus_py"
 crate-type = ["cdylib"]
 
 [dependencies]
@@ -18,7 +18,7 @@ pelorus_core.workspace = true
 pelorus_reg.workspace = true
 prelio.workspace = true
 spole.workspace = true
-ros_pointcloud2 = { workspace = true, features = ["ros2-interfaces-jazzy-serde"] }
+ros_pointcloud2.workspace = true
 ros2-interfaces-jazzy-serde.workspace = true
 nalgebra.workspace = true
 anyhow.workspace = true

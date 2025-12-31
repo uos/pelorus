@@ -6,14 +6,15 @@ use pelorus_core::{
     COV_IMU_BIAS_DEFAULT, COV_IMU_RAW_DEFAULT, ImuMsg, ImuParameters, KinematicModel, LidarVendor,
     OdomMsg, PointXYZIT, timestamp_to_secs,
 };
+use pelorus_core::log_debouncer::should_log_once_default;
 #[cfg(feature = "parallel")]
 use rayon::prelude::*;
 use ros_pointcloud2::points::PointXYZI;
-use sophus_lie::traits::IsTranslationProductGroup;
+use sophus_lie::IsAffineGroup;
 
 use crate::iekf::Iekf;
 
-pub type SE3 = sophus_lie::Isometry3<f64, 1>;
+pub type SE3 = sophus_lie::Isometry3F64;
 
 // Initial state covariance. Changes with prediction (increase) and correction (decrease)
 const COV1: f64 = 0.00001;
@@ -184,6 +185,7 @@ impl ImuProcessing {
         s.lidar_r_wrt_imu = *lidar_imu_extr.rotation.to_rotation_matrix().matrix();
         s.lidar_t_wrt_imu = lidar_imu_extr.translation.vector;
 
+
         s
     }
 
@@ -340,12 +342,14 @@ impl ImuProcessing {
                 }
 
                 let dt_pred = odom_time - ekf.last_time;
-                if dt_pred > 0.0 {
+                    if dt_pred > 0.0 {
                     _ = self.predict(ekf, avr_x, angvel_avr, dt_pred);
                     // Enforce kinematic constraints after prediction segment
                     ekf.correct_kinematics(kinematic, tail.angular_velocity.into(), constraint_std);
                 } else if dt_pred < 0.0 {
-                    warn!("Skipping odom fusion with non-positive dt: {dt_pred:.6}");
+                    if should_log_once_default("skip_odom_non_positive_dt") {
+                        warn!("Skipping odom fusion with non-positive dt: {dt_pred:.6}");
+                    }
                 }
 
                 ekf.correct_with_body_velocities(*(*odom), kinematic, self.wheel_odom_cov_override);
@@ -403,7 +407,9 @@ impl ImuProcessing {
                 let gyro = Vector3::new(angvel_avr_x, angvel_avr_y, angvel_avr_z);
                 ekf.correct_kinematics(kinematic, gyro, constraint_std);
             } else if dt_pred < 0.0 {
-                warn!("Skipping odom fusion with non-positive dt: {dt_pred:.6}");
+                if should_log_once_default("skip_odom_non_positive_dt") {
+                    warn!("Skipping odom fusion with non-positive dt: {dt_pred:.6}");
+                }
             }
 
             ekf.correct_with_body_velocities(*(*odom), kinematic, self.wheel_odom_cov_override);
@@ -448,7 +454,7 @@ impl ImuProcessing {
                     let r_i = head
                         .pose
                         .rotation()
-                        .group_mul(&crate::iekf::SO3::exp(&(tail.gyr * dt)))
+                        .group_mul(crate::iekf::SO3::exp(tail.gyr * dt))
                         .matrix();
                     let t_ei = head.pose.translation() + head.vel * dt + 0.5 * tail.acc * dt * dt
                         - self.imu_state.pose.translation();
@@ -476,6 +482,8 @@ impl ImuProcessing {
             .for_each(|(out_point, pcl_point)| {
                 // For each point, find the correct IMU pose interval.
                 // binary_search_by finds the index of the first pose with a timestamp >= the point's timestamp.
+
+                use sophus_lie::IsAffineGroup;
                 let tail_idx = imu_poses
                     .binary_search_by(|p| {
                         p.offset_time
@@ -501,7 +509,7 @@ impl ImuProcessing {
                 let r_i = head
                     .pose
                     .rotation()
-                    .group_mul(&crate::iekf::SO3::exp(&(tail.gyr * dt)))
+                    .group_mul(crate::iekf::SO3::exp(tail.gyr * dt))
                     .matrix();
 
                 let t_ei = head.pose.translation() + head.vel * dt + 0.5 * tail.acc * dt * dt

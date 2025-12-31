@@ -20,6 +20,8 @@ use ros2_interfaces_jazzy_serde::sensor_msgs::msg::{PointCloud2, PointField};
 
 const DEFAULT_CONFIG_STR: &str = include_str!("../../default.rl");
 
+impl_pointcloud2_for_ros2_interfaces_jazzy_serde!();
+
 /// Helper to convert sec/nanosec to f64 seconds
 fn sec_nanosec_to_timestamp(sec: i32, nanosec: u32) -> f64 {
     sec as f64 + (nanosec as f64 / 1e9)
@@ -703,7 +705,8 @@ impl PelorusHandle {
             is_dense,
         };
 
-        let cloud_msg_internal: PointCloud2Msg = cloud_msg.into();
+        let cloud_msg_internal: PointCloud2Msg =
+            impl_ros2_interfaces_jazzy_serde::to_pointcloud2_msg(cloud_msg);
         let mut prelio_guard = self.prelio.lock().unwrap();
         let prelio = prelio_guard
             .as_mut()
@@ -759,7 +762,8 @@ impl PelorusHandle {
             is_dense,
         };
 
-        let cloud_msg_internal: PointCloud2Msg = cloud_msg.into();
+        let cloud_msg_internal: PointCloud2Msg =
+            impl_ros2_interfaces_jazzy_serde::to_pointcloud2_msg(cloud_msg);
         let mut prelio_guard = self.prelio.lock().unwrap();
         let prelio = prelio_guard
             .as_mut()
@@ -872,7 +876,8 @@ impl PelorusHandle {
             is_dense: true,
         };
 
-        let cloud_msg_internal: PointCloud2Msg = cloud_msg.into();
+        let cloud_msg_internal: PointCloud2Msg =
+            impl_ros2_interfaces_jazzy_serde::to_pointcloud2_msg(cloud_msg);
         let mut prelio_guard = self.prelio.lock().unwrap();
         let prelio = prelio_guard
             .as_mut()
@@ -999,7 +1004,8 @@ impl PelorusHandle {
             is_dense: true,
         };
 
-        let cloud_msg_internal: PointCloud2Msg = cloud_msg.into();
+        let cloud_msg_internal: PointCloud2Msg =
+            impl_ros2_interfaces_jazzy_serde::to_pointcloud2_msg(cloud_msg);
         let mut prelio_guard = self.prelio.lock().unwrap();
         let prelio = prelio_guard
             .as_mut()

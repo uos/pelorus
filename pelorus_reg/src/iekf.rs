@@ -2,10 +2,12 @@ use log::{error, warn};
 use nalgebra::*;
 use pelorus_core::{KinematicModel, OdomMsg};
 use prelio::timestamp_to_secs;
-use sophus_lie::traits::IsTranslationProductGroup;
+use pelorus_core::log_debouncer::should_log_once_default;
 
-pub type SO3 = sophus_lie::Rotation3<f64, 1>;
-pub type SE3 = sophus_lie::Isometry3<f64, 1>;
+use sophus_lie::prelude::*;
+
+pub type SO3 = sophus_lie::Rotation3F64;
+pub type SE3 = sophus_lie::Isometry3F64;
 
 // TODO use config, needs some refactor
 const GRAVITY_DEFAULT: f64 = 9.81;
@@ -223,12 +225,11 @@ fn box_plus(x: &StateIKFom, f: &SMatrix<f64, 18, 1>) -> StateIKFom {
 
     let delta_rot_vec = f.fixed_rows::<3>(0);
     let delta_pos = f.fixed_rows::<3>(3);
-    x_r.pose
-        .set_translation(&(x.pose.translation() + delta_pos));
+    x_r.pose.set_translation(x.pose.translation() + delta_pos);
     x_r.pose.set_rotation(
-        &x.pose
+        x.pose
             .rotation()
-            .group_mul(&SO3::exp(&delta_rot_vec.clone_owned())),
+            .group_mul(SO3::exp(delta_rot_vec.clone_owned())),
     );
 
     x_r.vel = x.vel + f.fixed_rows::<3>(6);
@@ -248,7 +249,7 @@ fn box_minus(x1: &StateIKFom, x2: &StateIKFom) -> SMatrix<f64, 18, 1> {
         &x2.pose
             .rotation()
             .inverse()
-            .group_mul(&x1.pose.rotation())
+            .group_mul(x1.pose.rotation())
             .log(),
     );
     x_r.fixed_rows_mut::<3>(3)
@@ -301,10 +302,13 @@ impl Iekf {
         let t = timestamp_to_secs(&odom.stamp);
         let dt_gap = t - self.last_time;
         if dt_gap < 0.0 {
-            warn!(
-                "Odometry message time {} is older than filter time {}. Skipping.",
-                t, self.last_time
-            );
+            // use global log debouncer to avoid spamming
+            if should_log_once_default("odometry_msg_older_than_filter") {
+                warn!(
+                    "Odometry message time {} is older than filter time {}. Skipping.",
+                    t, self.last_time
+                );
+            }
             return;
         }
         self.last_time = t;
@@ -625,10 +629,10 @@ impl Iekf {
                 }
             };
 
-            self.state.pose.set_rotation(&new_so3);
+            self.state.pose.set_rotation(new_so3);
             self.state
                 .pose
-                .set_translation(&new_x_mat.fixed_view::<3, 1>(0, 3).into_owned());
+                .set_translation(new_x_mat.fixed_view::<3, 1>(0, 3).into_owned());
             self.state.vel = new_x_mat.fixed_view::<3, 1>(0, 4).into_owned();
             self.state.bg = new_x_mat.fixed_view::<3, 1>(0, 5).into_owned();
             self.state.ba = new_x_mat.fixed_view::<3, 1>(0, 6).into_owned();

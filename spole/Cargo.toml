@@ -9,7 +9,6 @@ version.workspace = true
 
 [dependencies]
 ros_pointcloud2.workspace = true
-dashmap.workspace = true
 nalgebra.workspace = true
 serde.workspace = true
 kiddo = { version = "5.2.3", optional = true }

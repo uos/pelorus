@@ -20,7 +20,7 @@ pelorus_core.workspace = true
 # prelio-ros2 = { workspace = true, features = ["ratpub"] } # ratpub is not used in the library, but a communcation feature is needed to build this crate
 pelorus_reg.workspace = true
 spole.workspace = true
-ros_pointcloud2 = { workspace = true, features = ["ros2-interfaces-jazzy-serde"] }
+ros_pointcloud2.workspace = true
 ros2-interfaces-jazzy-serde.workspace = true
 nalgebra.workspace = true
 anyhow.workspace = true

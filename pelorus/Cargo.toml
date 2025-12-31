@@ -19,7 +19,6 @@ ros_pointcloud2.workspace = true
 ros2-client = { workspace = true, optional = true }
 nalgebra.workspace = true
 anyhow.workspace = true
-color-eyre.workspace = true
 rand.workspace = true
 either.workspace = true
 env_logger.workspace = true
@@ -36,7 +35,6 @@ tokio = { workspace = true, optional = true }
 mt_rat = { workspace = true, optional = true }
 rustc-hash.workspace = true
 ratslang.workspace = true
-uom.workspace = true
 sophus_lie = { workspace = true, optional = true }
 plotters = { workspace = true, optional = true }
 petname.workspace = true
@@ -62,7 +60,6 @@ ratpub = [
   "dep:ratpub",
   "dep:tokio",
   "dep:ros2-interfaces-jazzy-rkyv",
-  "ros_pointcloud2/ros2-interfaces-jazzy-rkyv",
   "prelio_io/ratpub",
 ]
 
@@ -70,7 +67,6 @@ ratpub = [
 
 # The input scan is reduced for faster registration (resolution affects accuracy)
 downsample = ["prelio_io/downsample"]
-
 
 # Build and use CUDA accelerations
 cuda = ["prelio_io/cuda", "dep:pelorus_cuda", "pelorus_reg/cuda"]
@@ -116,9 +112,8 @@ rat = ["dep:mt_rat", "dep:tokio"]
 ros2-client = [
   "dep:ros2-client",
   "dep:ros2-interfaces-jazzy-serde",
-  "ros_pointcloud2/ros2-interfaces-jazzy-serde",
   "prelio_io/ros2-client",
 ]
 
 # Use rclc bindings as pub/sub system
-r2r = ["dep:r2r", "ros_pointcloud2/r2r_msg", "prelio_io/r2r"]
+r2r = ["dep:r2r", "prelio_io/r2r"]
