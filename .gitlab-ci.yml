@@ -21,10 +21,10 @@ rust-stable:
   stage: build
   script:
     - rustup default stable
-    - cargo build --features ratpub --verbose
-    - cargo test --features ratpub --verbose
+    - cargo build --verbose
+    - cargo test --verbose
   rules:
-    # - if: '$CI_COMMIT_BRANCH == "dev"'
+    - if: '$CI_COMMIT_BRANCH == "main"'
     - if: '$CI_PIPELINE_SOURCE == "schedule"'
       when: never
 
@@ -32,12 +32,12 @@ rust-nightly:
   stage: build
   script:
     - rustup default nightly
-    - cargo build --features ratpub --verbose
-    - cargo test --features ratpub --verbose
+    - cargo build --verbose
+    - cargo test --verbose
   allow_failure: true
   rules:
     - if: '$CI_PIPELINE_SOURCE == "schedule"'
-    # - if: '$CI_COMMIT_BRANCH == "dev"'
+    - if: '$CI_COMMIT_BRANCH == "main"'
 
 # .build_template: &build_defaults
 #   stage: snapshot

@@ -6,7 +6,8 @@ use pelorus_core::{
 };
 #[cfg(feature = "parallel")]
 use rayon::iter::{IntoParallelIterator, ParallelIterator};
-use sophus_lie::traits::IsTranslationProductGroup;
+
+use sophus_lie::prelude::*;
 
 use nalgebra::*;
 
@@ -14,8 +15,8 @@ use crate::{MeasureGroup, timestamp_to_secs};
 
 use ros_pointcloud2::{points::PointXYZI, ros::TimeMsg};
 
-type SO3 = sophus_lie::Rotation3<f64, 1>;
-type SE3 = sophus_lie::Isometry3<f64, 1>;
+type SO3 = sophus_lie::Rotation3F64;
+type SE3 = sophus_lie::Isometry3F64;
 
 pub struct ImuMadgwick {
     fusion: imu_fusion::FusionAhrs,
@@ -205,13 +206,10 @@ impl GyrInt {
             delta_angle.z,
         );
 
-        let delta_pose = SE3::exp(&xi);
-
-        let delta_r = SO3::exp(&delta_angle);
-
-        let rot = rot_last.group_mul(&delta_r);
-
-        let pose_with_accel = pose_last.group_mul(&delta_pose);
+        let delta_pose = SE3::exp(xi);
+        let delta_r = SO3::exp(delta_angle);
+        let rot = rot_last.group_mul(delta_r);
+        let pose_with_accel = pose_last.group_mul(delta_pose);
 
         self.v_rot.push(rot);
         self.v_se3.push(pose_with_accel);
@@ -246,7 +244,7 @@ fn quaternion_to_rotation_vector(q: &UnitQuaternion<f64>) -> Vector3<f64> {
 }
 
 fn quaternion_to_so3_exp(q: &UnitQuaternion<f64>) -> SO3 {
-    SO3::exp(&quaternion_to_rotation_vector(q))
+    SO3::exp(quaternion_to_rotation_vector(q))
 }
 
 #[derive(Debug)]
@@ -286,25 +284,25 @@ impl ImuProcess {
             self.gyr_int.get_pose()
         } else {*/
 
-        let mut t_l_be = SE3::from_translation_and_rotation(
-            &Vector3::new(0.0, 0.0, 0.0), // too unstable for accurate undistortion
-            &self.gyr_int.get_rot(),
+        let mut t_l_be = SE3::from_rotation_and_translation(
+            self.gyr_int.get_rot(),
+            Vector3::new(0.0, 0.0, 0.0), // too unstable for accurate undistortion
         );
 
         if let Some(config) = config {
-            let transform_imu_lidar = SE3::from_translation_and_rotation(
-                &Vector3::new(
+            let transform_imu_lidar = SE3::from_rotation_and_translation(
+                quaternion_to_so3_exp(&config.lidar_to_imu.rotation),
+                Vector3::new(
                     config.lidar_to_imu.translation.x,
                     config.lidar_to_imu.translation.y,
                     config.lidar_to_imu.translation.z,
                 ),
-                &quaternion_to_so3_exp(&config.lidar_to_imu.rotation),
             );
 
             t_l_be = transform_imu_lidar
                 .inverse()
-                .group_mul(&t_l_be)
-                .group_mul(&transform_imu_lidar)
+                .group_mul(t_l_be)
+                .group_mul(transform_imu_lidar)
         }
 
         // quat from rot mat
@@ -338,9 +336,9 @@ impl ImuProcess {
                 let rot = Rotation3::from_matrix(pose.pose.rotation.to_rotation_matrix().matrix());
                 let quat = UnitQuaternion::from_rotation_matrix(&rot);
                 let iso = Isometry3::from_parts(pose.pose.translation, quat);
-                let sophus = SE3::from_translation_and_rotation(
-                    &pose.pose.translation.vector,
-                    &quaternion_to_so3_exp(&quat),
+                let sophus = SE3::from_rotation_and_translation(
+                    quaternion_to_so3_exp(&quat),
+                    pose.pose.translation.vector,
                 );
                 let deskewed_cloud = self.undistort_cloud_livox(
                     meas.cloud,
@@ -430,7 +428,7 @@ impl ImuProcess {
             let ratio_ie = 1.0 - ratio_bi;
 
             let rso3_ie = ratio_ie * rso3_be;
-            let rie = SO3::exp(&rso3_ie);
+            let rie = SO3::exp(rso3_ie);
 
             let tie = ratio_ie * tbe;
             let v_pt_i = Vector3::new(p.x as f64, p.y as f64, p.z as f64);

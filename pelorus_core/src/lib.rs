@@ -6,6 +6,8 @@ use serde::{Deserialize, Serialize};
 pub mod config;
 pub mod timing;
 
+pub mod log_debouncer;
+
 #[derive(Debug, Clone, Default, PointConvertible, Copy)]
 pub struct RobosensePoint {
     pub x: f32,
@@ -198,6 +200,7 @@ pub struct LifisParameters {
     pub wheel_odom_cov: Option<f64>,
     pub wheel_imu_tf_override: bool,
     pub wheel_to_imu_rotation: nalgebra::Matrix3<f64>,
+    pub warning_debounce: f64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]

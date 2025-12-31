@@ -11,7 +11,7 @@ resolver = "3"
 
 [workspace.package]
 edition = "2024"
-include = ["**/*.rs", "**/*.md", "**/Cargo.toml"]
+include = ["**/*.rs", "**/*.md", "**/Cargo.toml", "**/pelorus_cuda/**"]
 keywords = ["robotics"]
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/stelzo/pelorus/"
@@ -27,22 +27,27 @@ prelio_io = { path = "prelio_io", version = "0.1.0-beta" }
 spole = { path = "spole", version = "0.1.0-beta" }
 pelorus_cuda = { path = "pelorus_cuda", version = "0.1.0-beta" }
 
+ros_pointcloud2 = { version = "1.0.0-rc.1", features = [
+  "rayon",
+  "derive",
+] }
+ratslang = "0.2"
+ratpub = "0.3"
+mt_rat = "0.3"
+imu-calib = "0.1"
+
 uom = { version = "0.37.0", default-features = false, features = [
   "usize",
   "si",
   "f64",
   "f32",
-] }
-ratslang = "0.2"
-ros_pointcloud2 = { version = "0.6", features = [
-  "rayon",
-  "derive",
-] }
+] } # TODO re-export from ratslang and use from there only
+once_cell = "1"
 nalgebra = { version = "0.33", features = ["serde-serialize"] }
 r2r = { version = "0.9.5" }
 ros2-client = { version = "0.8" }
-tokio = { version = "1", features = ["full"] }
-rerun = { version = "0.27" }
+tokio = { version = "1", default-features = false }
+rerun = { version = "0.27", default-features = false, features = ["sdk", "glam"] }
 ros2-interfaces-jazzy-serde = { version = "0.0.4", features = [
   "std_msgs",
   "geometry_msgs",
@@ -61,16 +66,11 @@ ros2-interfaces-jazzy-rkyv = { version = "0.0.5", features = [
   "tf2_msgs",
   "builtin_interfaces",
 ] }
-ratpub = "0.3"
-mt_rat = "0.3"
 anyhow = "1"
-sophus_lie = "0.9"
+sophus_lie = "0.15"
 rayon = "1"
-thiserror = "2"
-dashmap = { version = "6", features = ["rayon", "inline"] }
+thiserror = "2" # only used in tf implementations
 imu-fusion = "0.2"
-imu-calib = "0.1"
-color-eyre = "0.6"
 futures-lite = "2"
 either = "1"
 log = "0.4"
@@ -107,7 +107,3 @@ incremental = false  # Devs are not expected to use the colcon pipeline for incr
 [profile.dev.package.backtrace]
 opt-level = 3
 
-# Odom patch
-# [patch.crates-io]
-# ratpub = { git = "ssh://git@gitlabti.informatik.uni-osnabrueck.de/chsieh/minot.git", branch = "odom" }
-# mt_rat = { git = "ssh://git@gitlabti.informatik.uni-osnabrueck.de/chsieh/minot.git", branch = "odom" }

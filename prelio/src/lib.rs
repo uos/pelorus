@@ -3,6 +3,8 @@ mod naive_preint;
 mod naive_preint_eth;
 
 use log::{error, info, warn};
+
+use pelorus_core::log_debouncer::{should_log_once_default, set_default_debounce_secs};
 use nalgebra::*;
 use pelorus_core::{
     ImuCalibrationParameters, ImuMsg, ImuPosePrediction, ImuPredictor, ImuPredictorUndistort,
@@ -619,6 +621,10 @@ impl Prelio {
         // TODO move to main processing, since else predict and correct is async
         let intrinsic_given = imu_intrinsic_calibration.is_some();
         let initial_scan_accumulate = params.initial_scan_accumulate;
+        
+        // configure global default for the log debouncer from parameters
+        set_default_debounce_secs(params.warning_debounce);
+
         thread::spawn(move || {
             let mut last_lidar_frame_time = 0.0;
             let imu_process = ImuProcess::new(gravity, intrinsic_given);
@@ -956,11 +962,15 @@ impl Prelio {
                     Ok(odom) => {
                         let odom_time = timestamp_to_secs(&odom.stamp);
                         if odom_time < imu_span_start_time {
-                            warn!("Odom msg too early, skipped.");
+                            if should_log_once_default("odom_msg_too_early") {
+                                warn!("Odom msg too early, skipped.");
+                            }
                             continue;
                         }
                         if odom_time > imu_span_end_time {
-                            warn!("Odom msg too late, will be picked up in next frame.");
+                            if should_log_once_default("odom_msg_too_late") {
+                                warn!("Odom msg too late, will be picked up in next frame.");
+                            }
                             continue;
                         }
                         odom_data.push(odom);

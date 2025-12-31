@@ -11,7 +11,7 @@ use prelio::LocatedBufferView;
 use rayon::prelude::*;
 use ros_pointcloud2::points::{PointXYZ, PointXYZI, PointXYZINormal};
 
-use sophus_lie::traits::IsTranslationProductGroup;
+use sophus_lie::prelude::*;
 pub use spole::IVoxNearbyType;
 
 use crate::iekf::skew_symmetric;
@@ -48,9 +48,10 @@ impl RegistrationState {
             update_cov_sensitivity,
         );
 
+        let ekf = crate::iekf::Iekf::new(g);
+
         Self {
-            ekf: crate::iekf::Iekf::new(g),
-            imu_processing: crate::imu::ImuProcessing::new(
+            ekf,            imu_processing: crate::imu::ImuProcessing::new(
                 imu_params,
                 &initial_extrinsic_calibration,
             ),
@@ -554,7 +555,7 @@ impl crate::Registration for RegistrationState {
                                     )
                                     .cast()
                                     + ekf_state.offset_t_l_i;
-                                let point_global = ekf_state.pose.transform(&point_imu.coords);
+                                let point_global = ekf_state.pose.transform(point_imu.coords);
 
                                 let query_point = PointXYZ::new(
                                     point_global.x as f32,

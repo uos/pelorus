@@ -1,7 +1,7 @@
 use nalgebra::*;
 use pelorus_core::ImuMsg;
 
-type SO3 = sophus_lie::Rotation3<f64, 1>;
+type SO3 = sophus_lie::Rotation3F64;
 
 #[allow(dead_code)]
 pub fn integrate_imu(
@@ -50,9 +50,9 @@ pub fn integrate_imu(
         } else {
             let delta_angle = delta_time * (angular_velocity + kum_angular_velocity) / 2.0;
             let half_exp = delta_angle / 2.0;
-            let half_delta_rotation = SO3::exp(&half_exp);
+            let half_delta_rotation = SO3::exp(half_exp);
 
-            half_delta_rotation.inverse().transform(&k_gravity)
+            half_delta_rotation.inverse().transform(k_gravity)
         };
 
         kum_angular_velocity = angular_velocity;

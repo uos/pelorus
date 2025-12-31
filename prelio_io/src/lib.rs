@@ -56,34 +56,14 @@ use ros2_interfaces_jazzy_serde::{
 };
 use std::sync::{Arc, Mutex};
 
+#[cfg(feature = "ros2-client")]
+impl_pointcloud2_for_ros2_interfaces_jazzy_serde!();
+#[cfg(feature = "ratpub")]
+impl_pointcloud2_for_ros2_interfaces_jazzy_rkyv!();
+#[cfg(feature = "r2r")]
+impl_pointcloud2_for_r2r!();
+
 const N_NTH_SCAN: usize = 1; // TODO to config
-
-// #[derive(Debug, Clone, Default, PointConvertible, Copy)]
-// pub struct SkipPoint {
-//     pub x: f32,
-//     pub y: f32,
-//     pub z: f32,
-// }
-
-// impl prelio::PointXYZITimestamp<3> for SkipPoint {
-//     fn intensity(&self) -> f32 {
-//         -1.0
-//     }
-
-//     fn timestamp(&self) -> f64 {
-//         -1.0
-//     }
-
-//     fn xyz(&self) -> nalgebra::Point3<f32> {
-//         nalgebra::Point3::new(self.x, self.y, self.z)
-//     }
-// }
-
-// impl SkipPoint {
-//     pub fn new(x: f32, y: f32, z: f32) -> Self {
-//         SkipPoint { x, y, z }
-//     }
-// }
 
 pub struct State {
     pub global_polygon: Option<Vec<nalgebra::Point2<f32>>>,
@@ -203,7 +183,12 @@ fn cloud_callback(
     first_imu_tf: Option<String>,
 ) -> anyhow::Result<()> {
     let orig_header = msg.header.clone();
-    let in_msg: PointCloud2Msg = msg.into();
+    #[cfg(feature = "ros2-client")]
+    let in_msg = impl_ros2_interfaces_jazzy_serde::to_pointcloud2_msg(msg);
+    #[cfg(feature = "ratpub")]
+    let in_msg = impl_ros2_interfaces_jazzy_rkyv::to_pointcloud2_msg(msg);
+    #[cfg(feature = "r2r")]
+    let in_msg = impl_r2r::to_pointcloud2_msg(msg);
 
     let in_stamp = orig_header.stamp;
     let points_n = (in_msg.dimensions.width * in_msg.dimensions.height) as usize;

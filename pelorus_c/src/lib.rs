@@ -21,6 +21,8 @@ use std::thread;
 
 const DEFAULT_CONFIG_STR: &str = include_str!("../../default.rl");
 
+impl_pointcloud2_for_ros2_interfaces_jazzy_serde!();
+
 struct ImuInitState {
     start_time: Option<f64>,
     buffer: Option<Vec<ImuMsg>>,
@@ -650,7 +652,8 @@ pub unsafe extern "C" fn pelorus_add_pointcloud(
         };
 
         // Convert to PointCloud2Msg
-        let cloud_msg_internal: PointCloud2Msg = cloud_msg.into();
+        let cloud_msg_internal: PointCloud2Msg =
+            impl_ros2_interfaces_jazzy_serde::to_pointcloud2_msg(cloud_msg);
 
         match handle.prelio.lock() {
             Ok(mut prelio) => {
@@ -747,7 +750,7 @@ fn build_cloud_xyzi_t(
         is_dense: true,
     };
 
-    cloud_msg.into()
+    impl_ros2_interfaces_jazzy_serde::to_pointcloud2_msg(cloud_msg)
 }
 
 /// Add raw points from a packed `float` array (Nx4): [x,y,z,t].
