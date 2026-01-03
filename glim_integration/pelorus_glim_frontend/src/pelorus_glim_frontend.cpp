@@ -24,6 +24,8 @@
 #include <mutex>
 #include <sstream>
 #include <vector>
+#include <deque>
+#include <unordered_map>
 
 #include <spdlog/spdlog.h>
 
@@ -136,6 +138,7 @@ namespace glim
             ofs << "                 [" << R(2, 0) << ", " << R(2, 1) << ", " << R(2, 2) << "] ]\n";
             ofs << "  }\n";
             ofs << "}\n";
+            ofs << "lidar.as_sync = true\n";
 
             if (preprocess_downsample_resolution_m > 0.0)
             {
@@ -189,6 +192,10 @@ namespace glim
       OdometryEstimationCallbacks::on_insert_frame.add(std::bind(&PelorusGlimFrontend::on_insert_frame, this, _1));
       OdometryEstimationCallbacks::on_new_frame.add(std::bind(&PelorusGlimFrontend::on_new_frame, this, _1));
       OdometryEstimationCallbacks::on_smoother_update.add(std::bind(&PelorusGlimFrontend::on_smoother_update, this, _1, _2, _3, _4));
+
+      // Track scan_id -> frame_id mapping for exact odometry matching
+      // recent_scan_ids_ holds scan ids produced by on_insert_frame until an EstimationFrame is created
+      // and on_new_frame links the next scan_id to the produced frame id.
     }
 
     ~PelorusGlimFrontend() override = default;
@@ -202,6 +209,10 @@ namespace glim
       double stamp;
     };
 
+    // Recent scan ids waiting to be associated with created frames
+    std::mutex pelorus_scan_mutex_;
+    std::deque<uint64_t> recent_scan_ids_;
+    std::unordered_map<uint64_t, long> scanid_to_frameid_;
     static void stamp_to_sec_nsec(const double stamp, int32_t &sec, uint32_t &nsec)
     {
       // GLIM uses double timestamps (seconds). Convert conservatively.
@@ -234,6 +245,19 @@ namespace glim
       {
         return;
       }
+
+      // Associate the most recent pending scan_id (if any) with this created EstimationFrame
+      {
+        std::lock_guard<std::mutex> lk(pelorus_scan_mutex_);
+        if (!recent_scan_ids_.empty())
+        {
+          uint64_t scan_id = recent_scan_ids_.front();
+          recent_scan_ids_.pop_front();
+          scanid_to_frameid_.emplace(scan_id, frame->id);
+          spdlog::debug("[pelorus_frontend] Associated scan_id {} with frame id {}", scan_id, frame->id);
+        }
+      }
+
       std::lock_guard<std::mutex> lock(mutex_);
       frame_buffer_.push_back(FrameInfo{frame->id, frame->stamp});
       while (static_cast<int>(frame_buffer_.size()) > max_frame_buffer_)
@@ -306,7 +330,16 @@ namespace glim
         xyzit[i * 5 + 4] = static_cast<float>(t_ns);
       }
 
-      pelorus_->add_points_xyzit(xyzit.data(), n, sec, nsec, "");
+      uint64_t scan_id = pelorus_->add_points_xyzit(xyzit.data(), n, sec, nsec, "");
+      if (scan_id != 0)
+      {
+        std::lock_guard<std::mutex> lk(pelorus_scan_mutex_);
+        recent_scan_ids_.push_back(scan_id);
+      }
+      else
+      {
+        spdlog::warn("[pelorus_frontend] pelorus add_points_xyzit returned scan_id=0");
+      }
     }
 
     void on_smoother_update(
@@ -324,133 +357,206 @@ namespace glim
       pelorus::Odometry first = pelorus_->recv();
       if (first.valid())
       {
-        auto process_odom = [&](const pelorus::Odometry &odom)
+        // If the odometry result includes a scan_id and we have a mapping, use it for exact association
+        uint64_t odom_scan = first.scan_id();
+        if (odom_scan != 0)
         {
-          const double stamp = sec_nsec_to_stamp(odom.timestamp_sec(), odom.timestamp_nanosec());
-          const pelorus::eigen::OdometryState state = pelorus::eigen::OdometryState::from_pelorus(odom);
-          const Eigen::Isometry3d T_world_lidar = state.transform;
-
-          std::lock_guard<std::mutex> lock(mutex_);
-          if (!frame_buffer_.empty())
+          std::lock_guard<std::mutex> lk(pelorus_scan_mutex_);
+          auto it = scanid_to_frameid_.find(odom_scan);
+          if (it != scanid_to_frameid_.end())
           {
-            long latest_id = frame_buffer_.back().id;
-            pelorus_pose_by_id_[latest_id] = T_world_lidar;
-            matched.emplace_back(latest_id, T_world_lidar);
+            const long frame_id = it->second;
+            const pelorus::eigen::OdometryState state = pelorus::eigen::OdometryState::from_pelorus(first);
+            const Eigen::Isometry3d T_world_lidar = state.transform;
+
+            std::lock_guard<std::mutex> lock(mutex_);
+            pelorus_pose_by_id_[frame_id] = T_world_lidar;
+            matched.emplace_back(frame_id, T_world_lidar);
+            // Erase mapping to avoid repeated use
+            scanid_to_frameid_.erase(it);
           }
           else
           {
-            std::cout << "[PelorusGlimFrontend] No frames in buffer to associate odometry output." << std::endl;
+            // Fall back to older heuristic when mapping is not available
+            auto process_odom = [&](const pelorus::Odometry &odom)
+            {
+              const double stamp = sec_nsec_to_stamp(odom.timestamp_sec(), odom.timestamp_nanosec());
+              const pelorus::eigen::OdometryState state = pelorus::eigen::OdometryState::from_pelorus(odom);
+              const Eigen::Isometry3d T_world_lidar = state.transform;
+
+              std::lock_guard<std::mutex> lock(mutex_);
+              if (!frame_buffer_.empty())
+              {
+                long latest_id = frame_buffer_.back().id;
+                pelorus_pose_by_id_[latest_id] = T_world_lidar;
+                matched.emplace_back(latest_id, T_world_lidar);
+              }
+              else
+              {
+                spdlog::warn("[pelorus_frontend] No frames in buffer when odom received");
+              }
+            };
+
+            process_odom(first);
+
+            // Drain remaining outputs
+            while (true)
+            {
+              pelorus::Odometry odom = pelorus_->try_recv();
+              if (!odom.valid())
+                break;
+              process_odom(odom);
+            }
           }
-        };
-
-        process_odom(first);
-
-        // Drain remaining outputs without blocking
-        while (true)
-        {
-          pelorus::Odometry odom = pelorus_->try_recv();
-          if (!odom.valid())
-            break;
-          process_odom(odom);
-        }
-      }
-
-      // ............... TODO..............
-      // die noise ist viel zu niedrig, die odometry wird total zerrissen.
-      // entweder das muss wieder der einfache noise werden oder irg was ist falsch
-      // das merkt man aber wahrscheinlich mit dem odometry backend
-
-      // Add BetweenFactor constraints between consecutive Pelorus poses.
-      // This is the ORB-SLAM-style integration: Pelorus acts as a constraint source.
-      if (between_sigma_trans_ <= 0.0 || between_sigma_rot_rad_ <= 0.0)
-      {
-        return;
-      }
-
-      const auto noise = gtsam::noiseModel::Diagonal::Sigmas(
-          (gtsam::Vector(6) << between_sigma_rot_rad_, between_sigma_rot_rad_, between_sigma_rot_rad_,
-           between_sigma_trans_, between_sigma_trans_, between_sigma_trans_)
-              .finished());
-
-      std::sort(matched.begin(), matched.end(), [](const auto &a, const auto &b)
-                { return a.first < b.first; });
-
-      std::lock_guard<std::mutex> lock(mutex_);
-      for (const auto &[id, _T] : matched)
-      {
-        const long prev_id = id - 1;
-        if (inserted_until_id_ >= id)
-        {
-          continue;
-        }
-        const auto prev_it = pelorus_pose_by_id_.find(prev_id);
-        const auto cur_it = pelorus_pose_by_id_.find(id);
-        if (prev_it == pelorus_pose_by_id_.end() || cur_it == pelorus_pose_by_id_.end())
-        {
-          continue;
-        }
-        // Compute relative transform and build a noise covariance from the pose covariances
-        const Eigen::Isometry3d delta = prev_it->second.inverse() * cur_it->second;
-        const gtsam::Pose3 meas(delta.matrix());
-
-        // Prepare a single default diagonal covariance (sigma^2 per component)
-        Eigen::Matrix<double, 6, 6> default_diag = Eigen::Matrix<double, 6, 6>::Zero();
-        default_diag(0, 0) = between_sigma_rot_rad_ * between_sigma_rot_rad_;
-        default_diag(1, 1) = between_sigma_rot_rad_ * between_sigma_rot_rad_;
-        default_diag(2, 2) = between_sigma_rot_rad_ * between_sigma_rot_rad_;
-        default_diag(3, 3) = between_sigma_trans_ * between_sigma_trans_;
-        default_diag(4, 4) = between_sigma_trans_ * between_sigma_trans_;
-        default_diag(5, 5) = between_sigma_trans_ * between_sigma_trans_;
-
-        // Always use conservative configured diagonal (no Pelorus covariance propagation)
-        Eigen::Matrix<double, 6, 6> cov_rel = default_diag;
-
-        // Ensure symmetry and numerical stability, then construct a GTSAM noise model.
-        cov_rel = 0.5 * (cov_rel + cov_rel.transpose());
-        const double eps = 1e-9;
-        cov_rel += Eigen::Matrix<double, 6, 6>::Identity() * eps;
-
-        // Test positive-definiteness via LLT; if it fails, fall back to diagonal model
-        Eigen::LLT<Eigen::Matrix<double, 6, 6>> llt(cov_rel);
-        gtsam::SharedNoiseModel noise_model;
-        if (llt.info() == Eigen::NumericalIssue)
-        {
-          // Use the same default diagonal fallback
-          noise_model = gtsam::noiseModel::Gaussian::Covariance(gtsam::Matrix(default_diag));
         }
         else
         {
-          noise_model = gtsam::noiseModel::Gaussian::Covariance(gtsam::Matrix(cov_rel));
-        }
+          // No scan id: behave as before
+          auto process_odom = [&](const pelorus::Odometry &odom)
+          {
+            const double stamp = sec_nsec_to_stamp(odom.timestamp_sec(), odom.timestamp_nanosec());
+            const pelorus::eigen::OdometryState state = pelorus::eigen::OdometryState::from_pelorus(odom);
+            const Eigen::Isometry3d T_world_lidar = state.transform;
 
-        new_factors.emplace_shared<gtsam::BetweenFactor<gtsam::Pose3>>(
-            gtsam::symbol_shorthand::X(static_cast<std::uint64_t>(prev_id)),
-            gtsam::symbol_shorthand::X(static_cast<std::uint64_t>(id)),
-            meas,
-            noise_model);
-        inserted_until_id_ = id;
+            std::lock_guard<std::mutex> lock(mutex_);
+            if (!frame_buffer_.empty())
+            {
+              long latest_id = frame_buffer_.back().id;
+              pelorus_pose_by_id_[latest_id] = T_world_lidar;
+              matched.emplace_back(latest_id, T_world_lidar);
+            }
+            else
+            {
+              spdlog::warn("[pelorus_frontend] No frames in buffer when odom received");
+            }
+          };
+
+          process_odom(first);
+
+          // Drain remaining outputs
+          while (true)
+          {
+            pelorus::Odometry odom = pelorus_->try_recv();
+            if (!odom.valid())
+              break;
+            process_odom(odom);
+          }
+        }
       }
+      {
+        std::cout << "[PelorusGlimFrontend] No frames in buffer to associate odometry output." << std::endl;
+      }
+    };
+
+    process_odom(first);
+
+    // Drain remaining outputs without blocking
+    while (true)
+    {
+      pelorus::Odometry odom = pelorus_->try_recv();
+      if (!odom.valid())
+        break;
+      process_odom(odom);
+    }
+  }
+
+  // ............... TODO..............
+  // die noise ist viel zu niedrig, die odometry wird total zerrissen.
+  // entweder das muss wieder der einfache noise werden oder irg was ist falsch
+  // das merkt man aber wahrscheinlich mit dem odometry backend
+
+  // Add BetweenFactor constraints between consecutive Pelorus poses.
+  // This is the ORB-SLAM-style integration: Pelorus acts as a constraint source.
+  if (between_sigma_trans_ <= 0.0 || between_sigma_rot_rad_ <= 0.0)
+  {
+    return;
+  }
+
+  const auto noise = gtsam::noiseModel::Diagonal::Sigmas(
+      (gtsam::Vector(6) << between_sigma_rot_rad_, between_sigma_rot_rad_, between_sigma_rot_rad_,
+       between_sigma_trans_, between_sigma_trans_, between_sigma_trans_)
+          .finished());
+
+  std::sort(matched.begin(), matched.end(), [](const auto &a, const auto &b)
+            { return a.first < b.first; });
+
+  std::lock_guard<std::mutex> lock(mutex_);
+  for (const auto &[id, _T] : matched)
+  {
+    const long prev_id = id - 1;
+    if (inserted_until_id_ >= id)
+    {
+      continue;
+    }
+    const auto prev_it = pelorus_pose_by_id_.find(prev_id);
+    const auto cur_it = pelorus_pose_by_id_.find(id);
+    if (prev_it == pelorus_pose_by_id_.end() || cur_it == pelorus_pose_by_id_.end())
+    {
+      continue;
+    }
+    // Compute relative transform and build a noise covariance from the pose covariances
+    const Eigen::Isometry3d delta = prev_it->second.inverse() * cur_it->second;
+    const gtsam::Pose3 meas(delta.matrix());
+
+    // Prepare a single default diagonal covariance (sigma^2 per component)
+    Eigen::Matrix<double, 6, 6> default_diag = Eigen::Matrix<double, 6, 6>::Zero();
+    default_diag(0, 0) = between_sigma_rot_rad_ * between_sigma_rot_rad_;
+    default_diag(1, 1) = between_sigma_rot_rad_ * between_sigma_rot_rad_;
+    default_diag(2, 2) = between_sigma_rot_rad_ * between_sigma_rot_rad_;
+    default_diag(3, 3) = between_sigma_trans_ * between_sigma_trans_;
+    default_diag(4, 4) = between_sigma_trans_ * between_sigma_trans_;
+    default_diag(5, 5) = between_sigma_trans_ * between_sigma_trans_;
+
+    // Always use conservative configured diagonal (no Pelorus covariance propagation)
+    Eigen::Matrix<double, 6, 6> cov_rel = default_diag;
+
+    // Ensure symmetry and numerical stability, then construct a GTSAM noise model.
+    cov_rel = 0.5 * (cov_rel + cov_rel.transpose());
+    const double eps = 1e-9;
+    cov_rel += Eigen::Matrix<double, 6, 6>::Identity() * eps;
+
+    // Test positive-definiteness via LLT; if it fails, fall back to diagonal model
+    Eigen::LLT<Eigen::Matrix<double, 6, 6>> llt(cov_rel);
+    gtsam::SharedNoiseModel noise_model;
+    if (llt.info() == Eigen::NumericalIssue)
+    {
+      // Use the same default diagonal fallback
+      noise_model = gtsam::noiseModel::Gaussian::Covariance(gtsam::Matrix(default_diag));
+    }
+    else
+    {
+      noise_model = gtsam::noiseModel::Gaussian::Covariance(gtsam::Matrix(cov_rel));
     }
 
-  private:
-    std::unique_ptr<pelorus::Pelorus> pelorus_;
-    std::string generated_rl_path_;
-
-    // Matching + factor insertion state
-    std::mutex mutex_;
-    std::deque<FrameInfo> frame_buffer_;
-    std::map<long, Eigen::Isometry3d> pelorus_pose_by_id_;
-    long inserted_until_id_{-1};
-
-    double stamp_match_tolerance_sec_{0.02};
-    double between_sigma_trans_{0.2};
-    double between_sigma_rot_rad_{0.15};
-    int max_frame_buffer_{400};
-  };
-
-  extern "C" ExtensionModule *create_extension_module()
-  {
-    return new PelorusGlimFrontend();
+    new_factors.emplace_shared<gtsam::BetweenFactor<gtsam::Pose3>>(
+        gtsam::symbol_shorthand::X(static_cast<std::uint64_t>(prev_id)),
+        gtsam::symbol_shorthand::X(static_cast<std::uint64_t>(id)),
+        meas,
+        noise_model);
+    inserted_until_id_ = id;
   }
+}
+
+private:
+std::unique_ptr<pelorus::Pelorus> pelorus_;
+std::string generated_rl_path_;
+
+// Matching + factor insertion state
+std::mutex mutex_;
+std::deque<FrameInfo> frame_buffer_;
+std::map<long, Eigen::Isometry3d> pelorus_pose_by_id_;
+long inserted_until_id_{-1};
+
+double stamp_match_tolerance_sec_{0.02};
+double between_sigma_trans_{0.2};
+double between_sigma_rot_rad_{0.15};
+int max_frame_buffer_{400};
+}
+;
+
+extern "C" ExtensionModule *create_extension_module()
+{
+  return new PelorusGlimFrontend();
+}
 
 } // namespace glim

@@ -201,6 +201,7 @@ pub struct LifisParameters {
     pub wheel_imu_tf_override: bool,
     pub wheel_to_imu_rotation: nalgebra::Matrix3<f64>,
     pub warning_debounce: f64,
+    pub lidar_as_sync: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]

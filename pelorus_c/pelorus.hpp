@@ -159,6 +159,11 @@ namespace pelorus
         uint32_t timestamp_nanosec() const { return valid_ ? odom_.timestamp_nanosec : 0; }
 
         /**
+         * @brief Access scan id corresponding to the input pointcloud
+         */
+        uint64_t scan_id() const { return valid_ ? odom_.scan_id : 0; }
+
+        /**
          * @brief Access position
          */
         const double *position() const { return valid_ ? odom_.position : nullptr; }
@@ -350,6 +355,11 @@ namespace pelorus
             return Odometry();
         }
 
+        /**
+         * @brief Receive odometry for a specific scan id (blocking)
+         * @param scan_id The scan id to wait for
+         * @return Odometry object (check .valid() for success)
+         */
         /**
          * @brief Set callback for asynchronous odometry
          * @param callback Function to call when odometry is available (nullptr to disable)

@@ -63,6 +63,8 @@ lidar {
 
   qos.reliability = Reliable # Reliable | BestEffort | SystemDefault
   covariance = 0.001 # Weight for ICP correction in the IEKF
+
+  as_sync = false # When true, use incoming Lidar messages as a forced sync trigger. Note: This looses accuracy but some outer libraries work better with this mode.
 }
 
 
