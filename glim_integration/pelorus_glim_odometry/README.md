@@ -1,18 +1,17 @@
 # pelorus_glim_odometry
 
-GLIM odometry backend plugin that runs **Pelorus as the odometry estimation module** (implements `glim::OdometryEstimationBase`).
+GLIM odometry backend plugin that runs Pelorus as the odometry estimation module.
 
 This is an alternative to GLIM's built-in `odometry_estimation_cpu/gpu/ct` modules.
 
 ## Quick start
 
-### 1) Prerequisites
+You need:
 
-- GLIM installed (with headers and CMake config)
-- GTSAM installed (provides `gtsam` headers/libs)
-- Pelorus installed (CMake package `pelorus`), or Rust toolchain (to build `pelorus_c` from source)
-
-### 2) Build and install
+- gtsam
+- gtsam_points
+- glim
+- Pelorus
 
 ```sh
 cd pelorus/glim_integration/pelorus_glim_odometry
@@ -22,29 +21,11 @@ make
 sudo -E make install
 ```
 
-Notes:
-- If `find_package(pelorus)` succeeds, the build uses your installed Pelorus.
-- Otherwise it falls back to building `pelorus_c` from `../../pelorus_c` (requires Rust).
-
-This installs `libodometry_estimation_pelorus.so` (or `.dylib` on macOS) to `/usr/local/lib`.
-
 ## Enable Pelorus odometry in GLIM
 
-GLIM selects the odometry module via `global.config_odometry` → a JSON file containing:
+> ½Note: Pelorus needs the ROS communication in `config_sensors` to be set to `reliable` in order to work correctly.
 
-```json
-{
-  "odometry_estimation": {
-    "so_name": "libodometry_estimation_pelorus.so",
-    "pelorus_rl_path": "/abs/path/to/pelorus.rl",
-    "use_glim_config": true,
-    "max_wait_ms": 200
-  }
-}
-```
-
-Typical setup:
-1. Create a config file (e.g., `config_odometry_pelorus.json`) in your GLIM config root
+1. Create a config file (e.g., `config_odometry_pelorus.json`) in your GLIM config root.
 2. Set `so_name` to:
    - Linux: `libodometry_estimation_pelorus.so`
    - macOS: `libodometry_estimation_pelorus.dylib`
@@ -54,27 +35,17 @@ Typical setup:
 
 ## Configuration
 
-- `so_name` (required): Path or name of the plugin library
-- `pelorus_rl_path` (optional): Path to Pelorus config file (empty = defaults)
-- `use_glim_config` (optional): If `true` and `pelorus_rl_path` is empty, generate a temporary Pelorus `.rl` using GLIM configs (`config_sensors`, `config_preprocess`, `config_global_mapping`/`config_sub_mapping`)
-- `max_wait_ms` (optional): Timeout when polling Pelorus (default: 200ms)
 
 Example with all options:
 ```json
 {
   "odometry_estimation": {
     "so_name": "libodometry_estimation_pelorus.so",
-    "pelorus_rl_path": "/path/to/pelorus.rl",
     "use_glim_config": true,
-    "max_wait_ms": 300
   }
 }
 ```
 
-## How it works
-
-The backend:
-- Receives IMU and LiDAR frames from GLIM's preprocessing pipeline
-- Feeds them into Pelorus via `add_imu()` and `add_points_xyzit()`
-- Polls Pelorus for odometry results and populates `EstimationFrame` fields
-- Returns pose, velocity, and point cloud to GLIM for factor graph construction
+- `so_name` (required): Path or name of the plugin library
+- `pelorus_rl_path` (optional): Path to Pelorus config file (empty = defaults)
+- `use_glim_config` (optional): If `true` and `pelorus_rl_path` is empty, the plugin will generate a Pelorus config based on GLIM's settings.

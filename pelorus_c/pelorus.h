@@ -129,6 +129,7 @@ extern "C"
         double linear_velocity[3];   /**< Linear velocity [vx, vy, vz] m/s */
         double angular_velocity[3];  /**< Angular velocity [wx, wy, wz] rad/s */
         double twist_covariance[36]; /**< 6x6 twist covariance (row-major) */
+        uint64_t scan_id;            /**< Scan id assigned when the pointcloud was added */
         pelorus_point_xyzi *points;  /**< Registered point cloud (must free) */
         uintptr_t num_points;        /**< Number of points in cloud */
     } pelorus_odometry;
@@ -243,6 +244,18 @@ extern "C"
      * @return 1 if odometry received, -1 on error (e.g., channel disconnected).
      */
     int32_t pelorus_recv(PelorusHandle *handle, pelorus_odometry *result);
+
+    /**
+     * @brief Blocking receive odometry for a specific scan id.
+     *
+     * This function blocks until an odometry result with the requested `scan_id` is available.
+     * Non-matching outputs are cached for subsequent calls.
+     *
+     * @param handle The Pelorus handle.
+     * @param scan_id The scan id to wait for.
+     * @param result Pointer to store the odometry result.
+     * @return 1 if odometry for `scan_id` was received, -1 on error.
+     */
 
     /**
      * @brief Callback function type for asynchronous odometry reception.

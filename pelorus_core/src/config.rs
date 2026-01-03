@@ -156,13 +156,21 @@ pub fn ast_to_config(defaults: Evaluated, user: Evaluated) -> anyhow::Result<Lio
     };
 
     // --- Lidar Configuration ---
-    let (cloud_src_topic, cloud_qos, lidar_vendor, lidar_odom_cov) = {
+    let (cloud_src_topic, cloud_qos, lidar_vendor, lidar_odom_cov, lidar_as_sync) = {
         let lidar = asts.filter_ns(&["lidar"]);
         let cloud_src_topic = resolve_var!(lidar, "topic", as String, Rhs::Val(Val::StringVal(s)) | Rhs::Path(s) => {s})?;
         let cloud_qos = resolve_var!(lidar, "qos.reliability", as Qos, Rhs::Val(Val::StringVal(s)) | Rhs::Path(s) => {reliablility_parse(&s)?})?;
         let lidar_vendor = resolve_var!(lidar, "vendor", as LidarVendor, Rhs::Val(Val::StringVal(s)) => {lidar_vendor_parse(&s)?})?;
         let lidar_odom_cov = resolve_var!(lidar, "covariance", as f64, Rhs::Val(Val::NumVal(NumVal::Floating(f))) => {f})?;
-        (cloud_src_topic, cloud_qos, lidar_vendor, lidar_odom_cov)
+        let lidar_as_sync =
+            resolve_var!(lidar, "as_sync", as bool, Rhs::Val(Val::BoolVal(b)) => {b})?;
+        (
+            cloud_src_topic,
+            cloud_qos,
+            lidar_vendor,
+            lidar_odom_cov,
+            lidar_as_sync,
+        )
     };
 
     // --- Wheel Odometry Configuration ---
@@ -486,6 +494,7 @@ pub fn ast_to_config(defaults: Evaluated, user: Evaluated) -> anyhow::Result<Lio
             wheel_imu_tf_override: wheel_to_imu_tf_override,
             wheel_to_imu_rotation,
             wheel_odom_cov,
+            lidar_as_sync,
             warning_debounce,
         },
         // TODO currently hardcoded

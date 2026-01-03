@@ -4,8 +4,8 @@ mod naive_preint_eth;
 
 use log::{error, info, warn};
 
-use pelorus_core::log_debouncer::{should_log_once_default, set_default_debounce_secs};
 use nalgebra::*;
+use pelorus_core::log_debouncer::{set_default_debounce_secs, should_log_once_default};
 use pelorus_core::{
     ImuCalibrationParameters, ImuMsg, ImuPosePrediction, ImuPredictor, ImuPredictorUndistort,
     LidarVendor, LifisParameters, MadgwickSetting, OdomMsg, PointXYZIT, PointXYZITimestamp,
@@ -621,7 +621,8 @@ impl Prelio {
         // TODO move to main processing, since else predict and correct is async
         let intrinsic_given = imu_intrinsic_calibration.is_some();
         let initial_scan_accumulate = params.initial_scan_accumulate;
-        
+        let lidar_as_sync = params.lidar_as_sync;
+
         // configure global default for the log debouncer from parameters
         set_default_debounce_secs(params.warning_debounce);
 
@@ -648,6 +649,7 @@ impl Prelio {
                 imu_pose_prediction_undistort,
                 imu_pose_prediction_init_guess,
                 lidar_vendor,
+                lidar_as_sync,
                 ready_for_next,
             )
         });
@@ -841,6 +843,7 @@ impl Prelio {
         imu_pose_prediction_undistort: Option<Box<ImuPredictorUndistort>>,
         imu_pose_prediction_init_guess: Option<Box<ImuPredictor>>,
         lidar_vendor: Option<LidarVendor>,
+        lidar_as_sync: bool,
         ready_for_next: Option<std::sync::mpsc::Receiver<()>>,
     ) {
         let mut eval = RuntimeEvaluator::new();
@@ -917,35 +920,54 @@ impl Prelio {
             // );
             // Populate IMU with buffered
             if let Some(imu_receiver) = imu_receiver.as_ref() {
-                loop {
-                    match imu_receiver.recv() {
-                        Ok(imu) => {
-                            let imu_time = timestamp_to_secs(&imu.stamp);
+                if lidar_as_sync {
+                    loop {
+                        match imu_receiver.try_recv() {
+                            Ok(imu) => {
+                                let imu_time = timestamp_to_secs(&imu.stamp);
 
-                            // warn!("got msg");
-                            // dbg!(
-                            //     lidar_begin_time,
-                            //     lidar_time,
-                            //     imu_span_start_time,
-                            //     imu_span_end_time,
-                            //     imu_time
-                            // );
-                            if imu_time < imu_span_start_time {
-                                warn!("IMU msg too early, skipped.");
-                                continue;
+                                if imu_time < imu_span_start_time {
+                                    // skip
+                                    continue;
+                                }
+
+                                // Too late: stash for next cloud and stop draining
+                                if imu_time > imu_span_end_time {
+                                    to_next = Some(imu);
+                                    break;
+                                }
+
+                                imu_data.push(imu);
                             }
-
-                            // Too late
-                            if imu_time > imu_span_end_time {
-                                to_next = Some(imu);
-                                break;
+                            Err(std::sync::mpsc::TryRecvError::Empty) => break,
+                            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                                error!("Imu receiver closed");
+                                return;
                             }
-
-                            imu_data.push(imu);
                         }
-                        Err(e) => {
-                            error!("Imu receiver closed: {e}");
-                            return;
+                    }
+                } else {
+                    loop {
+                        match imu_receiver.recv() {
+                            Ok(imu) => {
+                                let imu_time = timestamp_to_secs(&imu.stamp);
+                                if imu_time < imu_span_start_time {
+                                    warn!("IMU msg too early, skipped.");
+                                    continue;
+                                }
+
+                                // Too late
+                                if imu_time > imu_span_end_time {
+                                    to_next = Some(imu);
+                                    break;
+                                }
+
+                                imu_data.push(imu);
+                            }
+                            Err(e) => {
+                                error!("Imu receiver closed: {e}");
+                                return;
+                            }
                         }
                     }
                 }

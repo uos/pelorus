@@ -11,6 +11,7 @@ use anyhow::anyhow;
 use log::{error, info, warn};
 use pelorus_core::config::ast_to_config;
 use pelorus_core::{ImuMsg, LidarVendor, LioConfig, OdomMsg, PrelioProcessedCloud};
+use pelorus_reg::Registration;
 use pelorus_reg::pipeline::{PelorusOutput, Pipeline};
 use prelio::Prelio;
 use ratslang;
@@ -52,6 +53,8 @@ struct ProcessingThread {
     callback_info: Arc<Mutex<Option<CallbackInfo>>>,
     ready_for_next: mpsc::Sender<()>,
     shutdown: Arc<AtomicBool>,
+    // Latest odometry produced (for synchronous retrieval during init)
+    last_output: Arc<Mutex<Option<PelorusOutput>>>,
 }
 
 struct CallbackInfo {
@@ -66,6 +69,8 @@ pub struct PelorusHandle {
     prelio: Arc<Mutex<Option<Prelio>>>,
     result_receiver: mpsc::Receiver<PelorusOutput>,
     callback_info: Arc<Mutex<Option<CallbackInfo>>>,
+    // Latest odometry produced (used when IMU initialization not yet complete)
+    last_output: Arc<Mutex<Option<PelorusOutput>>>,
     imu_init_cb: Option<Arc<Mutex<dyn FnMut(&[ImuMsg]) + Send + Sync>>>,
     imu_init_state: Arc<Mutex<ImuInitState>>,
     imu_predictor_init_time_sec: f64,
@@ -163,6 +168,9 @@ pub struct pelorus_odometry {
     pub angular_velocity: [f64; 3],  // [wx, wy, wz] in rad/s
     pub twist_covariance: [f64; 36], // 6x6 covariance matrix
 
+    // Scan id corresponding to the input pointcloud
+    pub scan_id: u64,
+
     // Registered point cloud (optional)
     pub points: *mut pelorus_point_xyzi,
     pub num_points: usize,
@@ -181,10 +189,9 @@ pub struct pelorus_odom_msg {
 fn processing_thread_main(thread: ProcessingThread) {
     let mut sent_count: usize = 0;
 
-    // Prime the ready_for_next channel once before processing, mirroring main.rs behavior
     if !thread.shutdown.load(Ordering::Relaxed) {
         if let Err(e) = thread.ready_for_next.send(()) {
-            warn!("failed to send initial ready signal: {e}");
+            error!("failed to send initial ready signal: {e}");
         }
     }
 
@@ -193,6 +200,13 @@ fn processing_thread_main(thread: ProcessingThread) {
         if thread.shutdown.load(Ordering::Relaxed) {
             continue;
         }
+
+        // Capture fallback data before moving `processed` into register_processed_cloud()
+        let fallback_scan_id = processed.scan_id;
+        let fallback_cloud = processed.cloud.clone(); // TODO avoid clone if possible
+        let fallback_frame_id = processed.header.frame_id.clone();
+        let fallback_timestamp = processed.end_of_frame_time;
+        let fallback_angular = processed.end_of_frame_twist.angular;
 
         match thread
             .pipeline
@@ -204,6 +218,11 @@ fn processing_thread_main(thread: ProcessingThread) {
                     thread.callback_info.lock().ok().and_then(|guard| {
                         guard.as_ref().map(|info| (info.callback, info.user_data))
                     });
+
+                // Store latest output for synchronous queries during IMU init
+                if let Ok(mut last) = thread.last_output.lock() {
+                    *last = Some(output.clone());
+                }
 
                 if let Some((callback, user_data)) = callback_info_opt {
                     // Invoke callback
@@ -227,12 +246,77 @@ fn processing_thread_main(thread: ProcessingThread) {
                     // No callback set, send to channel
                     sent_count += 1;
                     if let Err(e) = thread.result_sender.send(output) {
-                        warn!("failed to send odometry #{sent_count}: {e}");
+                        error!("failed to send odometry #{sent_count}: {e}");
                     }
                 }
             }
             None => {
-                // No output produced for this cloud.
+                // No output produced for this cloud. Construct a fallback odometry from the current map
+                // state so callers always receive an odom for each scan. This mirrors the behavior
+                // when registration produced an output but uses the map's current state.
+
+                let maybe_output = match thread.pipeline.map().lock() {
+                    Ok(map_guard) => {
+                        let state = map_guard.get_state();
+                        let (pose_cov_map, _lv_unused) = map_guard.get_odometry_covariances();
+                        let twist_cov_map = map_guard.get_twist_covariance_6x6();
+
+                        Some(PelorusOutput {
+                            scan_id: fallback_scan_id,
+                            timestamp: fallback_timestamp,
+                            pose: state.pose,
+                            pose_covariance: pose_cov_map,
+                            linear_velocity: state.linear_velocity,
+                            angular_velocity: fallback_angular,
+                            twist_covariance: twist_cov_map,
+                            cloud: fallback_cloud.clone(),
+                            frame_id: fallback_frame_id.clone(),
+                        })
+                    }
+                    Err(_) => None,
+                };
+
+                eprintln!(
+                    "sending fallback odometry for scan id {}, {:?}",
+                    fallback_scan_id,
+                    maybe_output.is_some()
+                );
+
+                if let Some(output) = maybe_output {
+                    // Store fallback into last_output so synchronous callers can see it
+                    if let Ok(mut last) = thread.last_output.lock() {
+                        *last = Some(output.clone());
+                    }
+
+                    // Deliver fallback odometry using the same callback/channel semantics as above
+                    let callback_info_opt = thread.callback_info.lock().ok().and_then(|guard| {
+                        guard.as_ref().map(|info| (info.callback, info.user_data))
+                    });
+
+                    if let Some((callback, user_data)) = callback_info_opt {
+                        let c_odom = convert_to_c_odometry(&output);
+                        unsafe {
+                            callback(&c_odom, user_data);
+                        }
+                        // Free the allocated points after callback returns
+                        unsafe {
+                            if !c_odom.points.is_null() {
+                                let points = Vec::from_raw_parts(
+                                    c_odom.points as *mut pelorus_point_xyzi,
+                                    c_odom.num_points,
+                                    c_odom.num_points,
+                                );
+                                drop(points);
+                            }
+                        }
+                    } else {
+                        sent_count += 1;
+                        info!("sending fallback odometry #{sent_count}");
+                        if let Err(e) = thread.result_sender.send(output) {
+                            warn!("failed to send odometry #{sent_count}: {e}");
+                        }
+                    }
+                }
             }
         }
     }
@@ -262,6 +346,7 @@ fn convert_to_c_odometry(odom: &PelorusOutput) -> pelorus_odometry {
             odom.angular_velocity.z,
         ],
         twist_covariance: odom.twist_covariance,
+        scan_id: odom.scan_id,
         points: ptr::null_mut(),
         num_points: 0,
     };
@@ -382,6 +467,9 @@ unsafe fn pelorus_create_internal(
 
     let callback_info = Arc::new(Mutex::new(None));
 
+    // Shared last-output storage for quick synchronous lookup
+    let last_output = Arc::new(Mutex::new(None));
+
     let shutdown = Arc::new(AtomicBool::new(false));
 
     let processing_thread = ProcessingThread {
@@ -391,6 +479,7 @@ unsafe fn pelorus_create_internal(
         callback_info: callback_info.clone(),
         ready_for_next: ready_tx,
         shutdown: shutdown.clone(),
+        last_output: last_output.clone(),
     };
 
     let thread_handle = thread::spawn(move || {
@@ -401,6 +490,7 @@ unsafe fn pelorus_create_internal(
         prelio: Arc::new(Mutex::new(Some(prelio))),
         result_receiver: result_rx,
         callback_info,
+        last_output: last_output.clone(),
         imu_init_cb,
         imu_init_state,
         imu_predictor_init_time_sec,
@@ -776,39 +866,27 @@ pub unsafe extern "C" fn pelorus_add_points_xyzt_f32(
         return 0;
     }
 
-    let frame_id = match make_frame_id(frame_id) {
-        Some(s) => s,
-        None => return 0,
-    };
-    let xyzt = unsafe { slice::from_raw_parts(xyzt, num_points * 4) };
+    // Convert Nx4 [x,y,z,t] to Nx5 [x,y,z,intensity,t] with intensity=0.0
+    let xyzt_slice = unsafe { slice::from_raw_parts(xyzt, num_points * 4) };
+    let mut xyzit: Vec<f32> = Vec::with_capacity(num_points * 5);
+    for i in 0..num_points {
+        xyzit.push(xyzt_slice[i * 4 + 0]);
+        xyzit.push(xyzt_slice[i * 4 + 1]);
+        xyzit.push(xyzt_slice[i * 4 + 2]);
+        xyzit.push(0.0f32); // intensity
+        xyzit.push(xyzt_slice[i * 4 + 3]);
+    }
 
-    let cloud_msg_internal = build_cloud_xyzi_t(
-        header_timestamp_sec,
-        header_timestamp_nanosec,
-        frame_id,
-        num_points,
-        |i| {
-            let x = xyzt[i * 4 + 0];
-            let y = xyzt[i * 4 + 1];
-            let z = xyzt[i * 4 + 2];
-            let t = xyzt[i * 4 + 3] as u32;
-            (x, y, z, 0.0, t)
-        },
-    );
-
+    // Delegate to the primary Nx5 implementation
     unsafe {
-        let handle = &mut *handle;
-        match handle.prelio.lock() {
-            Ok(mut prelio) => {
-                if let Some(prelio) = prelio.as_mut() {
-                    let scan_id = prelio.add_pointcloud(cloud_msg_internal);
-                    scan_id
-                } else {
-                    0
-                }
-            }
-            Err(_) => 0,
-        }
+        pelorus_add_points_xyzit_f32(
+            handle,
+            header_timestamp_sec,
+            header_timestamp_nanosec,
+            frame_id,
+            xyzit.as_ptr(),
+            num_points,
+        )
     }
 }
 
@@ -933,6 +1011,28 @@ pub unsafe extern "C" fn pelorus_recv(
     unsafe {
         let handle = &mut *handle;
 
+        // If IMU initialization hasn't completed yet (buffer still present), return last known odometry
+        if let Ok(init_state) = handle.imu_init_state.lock() {
+            if init_state.buffer.is_some() {
+                if let Ok(last) = handle.last_output.lock() {
+                    if let Some(ref odom) = *last {
+                        let result_out = &mut *result;
+                        *result_out = convert_to_c_odometry(&odom);
+                        // During IMU initialization there's no deskewed/registered cloud available.
+                        // Clear any registered cloud so the caller can attach the raw input scan instead.
+                        result_out.points = ptr::null_mut();
+                        result_out.num_points = 0;
+                        return 1;
+                    } else {
+                        // No odometry available yet
+                        return 0;
+                    }
+                } else {
+                    return -1;
+                }
+            }
+        }
+
         match handle.result_receiver.recv() {
             Ok(odom) => {
                 let result_out = &mut *result;
@@ -943,6 +1043,18 @@ pub unsafe extern "C" fn pelorus_recv(
         }
     }
 }
+
+/// Blocking receive odometry for a specific scan_id
+///
+/// This function blocks until an odometry result with the requested `scan_id` is available.
+/// Non-matching outputs are cached for subsequent calls.
+///
+/// # Safety
+/// - `handle` must be a valid pointer returned from `pelorus_create`
+/// - `result` must be a valid pointer to write the result
+///
+/// # Returns
+/// 1 if odometry for `scan_id` was received, -1 on error
 
 /// Set a callback for asynchronous odometry reception
 ///

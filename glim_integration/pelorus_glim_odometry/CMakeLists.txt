@@ -41,7 +41,6 @@ else()
   endif()
 endif()
 
-# Name it like the built-in odometry plugins: libodometry_estimation_*.so
 add_library(odometry_estimation_pelorus SHARED
   src/odometry_estimation_pelorus.cpp
 )

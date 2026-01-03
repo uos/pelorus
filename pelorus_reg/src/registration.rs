@@ -51,7 +51,8 @@ impl RegistrationState {
         let ekf = crate::iekf::Iekf::new(g);
 
         Self {
-            ekf,            imu_processing: crate::imu::ImuProcessing::new(
+            ekf,
+            imu_processing: crate::imu::ImuProcessing::new(
                 imu_params,
                 &initial_extrinsic_calibration,
             ),
