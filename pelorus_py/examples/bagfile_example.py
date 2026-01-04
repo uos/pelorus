@@ -34,7 +34,7 @@ def main():
     print()
 
     # Since we have ROS2 pointcloud messages, we use the device-specific pointcloud2 option
-    # to let Pelorus handle the timestamp internally. Also, we do not have a ROS running,
+    # to let Pelorus handle the timestamp internally. Also, we do not have ROS running with TF,
     # so the config file also indicates the static transforms.
     script_dir = Path(__file__).resolve().parent
     repo_root = script_dir
