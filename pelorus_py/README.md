@@ -87,6 +87,11 @@ lio.clear_callback()  # equivalent to lio.set_callback(None)
 
 See `examples/bagfile_example.py` for a complete example using real sensor data from an MCAP bagfile.
 
+
+```bash
+python -m pip install mcap mcap-ros2-support
+```
+
 ## API Reference
 
 ### `Handle`
