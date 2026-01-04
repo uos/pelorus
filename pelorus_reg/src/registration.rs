@@ -698,7 +698,7 @@ impl crate::Registration for RegistrationState {
             )),
         );
 
-        let global_pose = global_pose * imu_t;
+        let global_pose = global_pose * imu_t; // Pose must be in imu frame because velocity is in imu frame
 
         // Signal Prelio it can use the ekf again
         ready_for_next
