@@ -78,8 +78,9 @@ int main() {
     pelorus.add_imu(imu);
     
     // Receive odometry
-    auto odom = pelorus.try_recv();
-    if (odom.valid()) {
+    auto res = pelorus.try_recv();
+    if (res.status == pelorus::Pelorus::STATUS_OK) {
+        const auto &odom = res.odom;
         std::cout << "Position: " << odom.position()[0] << "\n";
     }
     
@@ -174,11 +175,13 @@ Use `pelorus_try_recv()` for non-blocking checks:
 ```c
 pelorus_odometry odom;
 int status = pelorus_try_recv(pelorus, &odom);
-if (status == 1) {
+if (status == PELORUS_STATUS_OK) {
     // Process odometry
     pelorus_free_odometry(&odom);
-} else if (status == 0) {
+} else if (status == PELORUS_STATUS_NO_DATA) {
     // No data available yet
+} else if (status == PELORUS_STATUS_CALLBACK_SET) {
+    // Callback mode is active; polling APIs are unavailable
 }
 ```
 
@@ -187,9 +190,11 @@ Use `pelorus_recv()` to wait for results:
 ```c
 pelorus_odometry odom;
 int status = pelorus_recv(pelorus, &odom);  // Blocks until data available
-if (status == 1) {
+if (status == PELORUS_STATUS_OK) {
     // Process odometry
     pelorus_free_odometry(&odom);
+} else if (status == PELORUS_STATUS_CALLBACK_SET) {
+    // Callback mode is active; cannot use blocking APIs
 }
 ```
 

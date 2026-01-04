@@ -7,6 +7,10 @@ use pelorus_core::config::ast_to_config;
 use pelorus_core::timing::RuntimeEvaluator;
 use pelorus_core::{LioConfig, timestamp_to_secs};
 use pelorus_reg::pipeline::Pipeline;
+#[cfg(feature = "r2r")]
+use prelio_io::impl_r2r;
+#[cfg(feature = "ros2-client")]
+use prelio_io::impl_ros2_interfaces_jazzy_jazzy;
 #[cfg(feature = "ratpub")]
 use prelio_io::impl_ros2_interfaces_jazzy_rkyv;
 #[cfg(feature = "rat")]

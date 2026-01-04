@@ -114,12 +114,13 @@ int main()
         pelorus::pcl::add_pointcloud(pelorus, scan2, base_sec + 1, 200000000, "lidar");
 
         std::cout << "Waiting for odometry (blocking)...\n\n";
-        auto odom = pelorus.recv();
-        if (!odom.valid())
+        auto recv_res = pelorus.recv();
+        if (recv_res.status != pelorus::Pelorus::STATUS_OK)
         {
-            std::cerr << "Error receiving odometry\n";
+            std::cerr << "Error receiving odometry, status: " << recv_res.status << "\n";
             return 1;
         }
+        const auto &odom = recv_res.odom;
 
         std::cout << std::fixed;
         std::cout << "  Position: [" << std::setprecision(3)

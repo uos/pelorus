@@ -118,16 +118,6 @@ if(PELORUS_INSTALL)
         DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}
     )
     
-    # Install PCL integration header
-    install(FILES pelorus_pcl.hpp
-        DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}
-    )
-    
-    # Install Eigen3 integration header
-    install(FILES pelorus_eigen.hpp
-        DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}
-    )
-    
     # Install libraries
     if(PELORUS_BUILD_SHARED)
         install(FILES ${RUST_SHARED_LIB}

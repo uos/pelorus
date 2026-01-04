@@ -26,7 +26,6 @@
 #include <spdlog/spdlog.h>
 
 #include "pelorus.hpp"
-#include "pelorus_eigen.hpp"
 
 namespace glim
 {
@@ -53,43 +52,27 @@ namespace glim
       {
         try
         {
+          // GLIM's `T_lidar_imu_` variable is IMU->Lidar per config comment:
+          // "T_lidar_imu transforms points in IMU into Lidar"
+          // Pelorus expects `from_lidar_transform` as Lidar->IMU.
+          // Therefore write the inverse here so Pelorus gets Lidar->IMU.
           const Eigen::Isometry3d T_imu_lidar = T_lidar_imu_.inverse();
           const Eigen::Vector3d t = T_imu_lidar.translation();
           const Eigen::Matrix3d R = T_imu_lidar.linear();
 
-          double preprocess_downsample_resolution_m = 0.25;
-          try
-          {
-            Config preprocess_cfg(GlobalConfig::get_config_path("config_preprocess"));
-            preprocess_downsample_resolution_m = preprocess_cfg.param<double>("preprocess", "downsample_resolution", 0.25);
-          }
-          catch (...)
-          {
-          }
-
-          double map_resolution_m = 0.0;
+          double preprocess_downsample_resolution_m = 0.5;
+          double map_resolution_m = 0.5;
           try
           {
             Config pelorus_cfg(GlobalConfig::get_config_path("config_odometry"));
-            map_resolution_m = pelorus_cfg.param<double>("odometry_estimation", "map_resolution", 0.0);
+            preprocess_downsample_resolution_m = pelorus_cfg.param<double>("odometry_estimation", "input_resolution", 0.5);
+            map_resolution_m = pelorus_cfg.param<double>("odometry_estimation", "map_resolution", 0.5);
           }
           catch (...)
           {
           }
 
-          if (map_resolution_m <= 0.0)
-          {
-            try
-            {
-              Config global_mapping_cfg(GlobalConfig::get_config_path("config_global_mapping"));
-              map_resolution_m = global_mapping_cfg.param<double>("global_mapping", "submap_voxel_resolution", 0.0);
-            }
-            catch (...)
-            {
-            }
-          }
-
-          if (map_resolution_m <= 0.0)
+          if (preprocess_downsample_resolution_m > map_resolution_m)
           {
             map_resolution_m = preprocess_downsample_resolution_m;
           }
@@ -119,7 +102,7 @@ namespace glim
               ofs << "registration.map.resolution = " << map_resolution_m << "m\n";
 
             effective_rl_path = generated_rl_path_;
-            logger->info("[odometry_estimation_pelorus] Using GLIM config override at: {}", generated_rl_path_);
+            logger->info("[odometry_estimation_pelorus] input_resolution={}m, map_resolution={}m", preprocess_downsample_resolution_m, map_resolution_m);
           }
         }
         catch (const std::exception &e)
@@ -145,11 +128,13 @@ namespace glim
         // REGISTER CALLBACK
         // We set the callback immediately. Note: 'this' is safe here because the object is constructed.
         // We must unset it in the destructor.
-        pelorus_->set_callback([this](const pelorus_odometry *odom_c)
-                               {
-          if (odom_c) {
-            this->on_odometry_callback(odom_c);
-          } });
+        {
+          pelorus_->set_callback([this](const pelorus_odometry *odom_c)
+                                 {
+            if (odom_c) {
+              this->on_odometry_callback(odom_c);
+            } });
+        }
       }
       catch (const pelorus::Exception &e)
       {
@@ -197,7 +182,7 @@ namespace glim
 
       if (!pelorus_ || !frame)
       {
-        return create_fallback_frame(frame);
+        return EstimationFrame::ConstPtr();
       }
 
       // 1. Prepare Data for Pelorus
@@ -226,17 +211,14 @@ namespace glim
         xyzit[i * 5 + 4] = static_cast<float>(t_ns);
       }
 
-      // 2. Send Points to Pelorus -> Get Unique Scan ID
-      // This call is non-blocking regarding the odometry calculation, but it accepts the data.
       uint64_t scan_id = pelorus_->add_points_xyzit(xyzit.data(), n, sec, nsec, "");
 
       if (scan_id == 0)
       {
-        logger->error("[odometry_estimation_pelorus] add_points_xyzit returned 0");
-        return create_fallback_frame(frame);
+        logger->error("[odometry_estimation_pelorus] add_points_xyzit returned an error.");
+        return EstimationFrame::ConstPtr();
       }
 
-      // 3. Prepare the Output Frame Wrapper
       EstimationFrame::Ptr out(new EstimationFrame);
       out->id = next_id_++;
       out->stamp = frame->stamp;
@@ -252,8 +234,6 @@ namespace glim
         cloud->add_times(frame->times);
       out->frame = cloud;
 
-      // 4. Critical Section: Check Cache OR Register Pending
-      // The callback could potentially fire immediately after add_points_xyzit.
       {
         std::lock_guard<std::mutex> lock(data_mutex_);
 
@@ -308,7 +288,10 @@ namespace glim
       uint64_t scan_id = odom_c->scan_id;
       CachedResult result;
 
-      // Reconstruct Pose
+      // Reconstruct Pose from Pelorus
+      // NOTE: When lidar_as_map_tf_base=true (default), C library outputs in Lidar frame.
+      //       When lidar_as_map_tf_base=false, C library outputs in IMU frame.
+      //       Since we set lidar_as_map_tf_base=true, we get Lidar frame directly.
       const double *p = odom_c->position;
       const double *q = odom_c->orientation; // w, x, y, z
 
@@ -318,51 +301,197 @@ namespace glim
       result.T_world_lidar.linear() = quat.toRotationMatrix();
       result.T_world_lidar.translation() = trans;
 
+      // result.T_world_lidar = result.T_world_lidar * T_lidar_imu_;
+
       const double *v = odom_c->linear_velocity;
       result.velocity = Eigen::Vector3d(v[0], v[1], v[2]);
 
-      // Extract Cloud manually
       result.cloud = od_to_cloud_raw(odom_c);
 
+      // Prepare holders for notifications we will perform outside the lock
       EstimationFrame::Ptr frame_to_publish = nullptr;
+      std::vector<EstimationFrame::Ptr> frames_to_publish;
+      PreprocessedFrame::ConstPtr init_update_frame;
+      Eigen::Isometry3d init_update_pose = Eigen::Isometry3d::Identity();
+      EstimationFrame::Ptr init_finished_frame;
 
-      // 2. Critical Section
       {
         std::lock_guard<std::mutex> lock(data_mutex_);
 
-        // Update last known pose (useful for fallbacks)
         last_T_world_lidar_ = result.T_world_lidar;
 
-        auto pending_it = pending_frames_.find(scan_id);
-        if (pending_it != pending_frames_.end())
+        // If Pelorus hasn't finished its own init yet, it tends to return scan_id == 1 for the pre-init scan.
+        // We use that to suppress publishing until Pelorus reports the first non-1 scan_id.
+        if (!pelorus_initialized_)
         {
-          // Found a waiting frame
-          frame_to_publish = pending_it->second;
-          apply_result_to_frame(frame_to_publish, result);
-          pending_frames_.erase(pending_it);
+          if (scan_id == 1)
+          {
+            // Still initializing
+            auto pending_it = pending_frames_.find(scan_id);
+            if (pending_it != pending_frames_.end() && pending_it->second && pending_it->second->raw_frame)
+            {
+              init_update_frame = pending_it->second->raw_frame;
+              init_update_pose = result.T_world_lidar;
+              // Drop the pending frame so it won't be published later
+              pending_frames_.erase(pending_it);
+            }
+
+            // Ensure we don't keep cached init-phase results either
+            if (cached_results_.find(scan_id) != cached_results_.end())
+            {
+              cached_results_.erase(scan_id);
+              // remove from cache_order_ if present
+              for (auto it = cache_order_.begin(); it != cache_order_.end(); ++it)
+              {
+                if (*it == scan_id)
+                {
+                  cache_order_.erase(it);
+                  break;
+                }
+              }
+            }
+
+            // Do not publish while Pelorus is initializing and do not store init-phase frames.
+            return;
+          }
+
+          // First non-1 scan id => consider Pelorus initialized now.
+          pelorus_initialized_ = true;
+
+          // Compose an estimated frame to signal 'finished' to GLIM
+          EstimationFrame::Ptr estimated(new EstimationFrame);
+          // Prefer using the pending frame's stamp if available
+          if (auto pit = pending_frames_.find(scan_id); pit != pending_frames_.end() && pit->second)
+          {
+            estimated->stamp = pit->second->stamp;
+            estimated->raw_frame = pit->second->raw_frame;
+          }
+          else
+          {
+            const double stamp = static_cast<double>(odom_c->timestamp_sec) + static_cast<double>(odom_c->timestamp_nanosec) * 1e-9;
+            estimated->stamp = stamp;
+          }
+
+          estimated->id = -1;
+          estimated->T_lidar_imu = T_lidar_imu_;
+          estimated->T_world_lidar = result.T_world_lidar;
+          estimated->T_world_imu = result.T_world_lidar * T_lidar_imu_;
+          estimated->v_world_imu = result.velocity;
+          estimated->imu_bias.setZero();
+          estimated->frame_id = FrameID::LIDAR;
+
+          init_finished_frame = estimated;
+
+          logger->info("[odometry_estimation_pelorus] Pelorus reported initialization (scan_id={}). Draining cached results.", scan_id);
+
+          // Drain cached results: for any cached result that has a pending frame, apply and publish
+          for (const uint64_t id : cache_order_)
+          {
+            auto cache_it = cached_results_.find(id);
+            if (cache_it == cached_results_.end())
+              continue;
+
+            auto pending_it2 = pending_frames_.find(id);
+            if (pending_it2 != pending_frames_.end())
+            {
+              EstimationFrame::Ptr f = pending_it2->second;
+              apply_result_to_frame(f, cache_it->second);
+              frames_to_publish.push_back(f);
+              pending_frames_.erase(pending_it2);
+              // We'll erase cached results below for processed entries.
+            }
+          }
+
+          // Remove processed cached entries (those corresponding to frames we published)
+          for (auto it = cache_order_.begin(); it != cache_order_.end();)
+          {
+            if (cached_results_.find(*it) == cached_results_.end())
+            {
+              it = cache_order_.erase(it);
+            }
+            else
+            {
+              // If this id was published above, remove it
+              bool published = false;
+              for (const auto &pf : frames_to_publish)
+              {
+                if (pf->raw_frame && pf->raw_frame == pf->raw_frame)
+                { /* no-op, keep logic clear */
+                }
+              }
+              // Erase cached entry only if we published a frame for it
+              if (std::any_of(frames_to_publish.begin(), frames_to_publish.end(), [&](const EstimationFrame::Ptr &pf)
+                              { return pf->raw_frame && cached_results_.count(*it) && (cached_results_[*it].cloud == pf->frame); }))
+              {
+                cached_results_.erase(*it);
+                it = cache_order_.erase(it);
+              }
+              else
+              {
+                ++it;
+              }
+            }
+          }
+
+          // Handle current scan's pending frame if present (ensure it's published)
+          auto pending_it_curr = pending_frames_.find(scan_id);
+          if (pending_it_curr != pending_frames_.end())
+          {
+            apply_result_to_frame(pending_it_curr->second, result);
+            frames_to_publish.push_back(pending_it_curr->second);
+            pending_frames_.erase(pending_it_curr);
+          }
+
+          // Update last pose again
+          last_T_world_lidar_ = result.T_world_lidar;
         }
         else
         {
-          // No frame waiting yet (unlikely if loop is fast, but possible), or we are ahead.
-          // Store in cache for when insert_frame is called.
-          cached_results_[scan_id] = result;
-          cache_order_.push_back(scan_id);
-
-          // Simple cache eviction
-          if (cache_order_.size() > kCacheMax)
+          // Normal behavior after initialization
+          auto pending_it = pending_frames_.find(scan_id);
+          if (pending_it != pending_frames_.end())
           {
-            uint64_t old_id = cache_order_.front();
-            cache_order_.pop_front();
-            cached_results_.erase(old_id);
+            frame_to_publish = pending_it->second;
+            apply_result_to_frame(frame_to_publish, result);
+            pending_frames_.erase(pending_it);
+          }
+          else
+          {
+            // No frame waiting yet (unlikely if loop is fast, but possible), or we are ahead.
+            // Store in cache for when insert_frame is called.
+            cached_results_[scan_id] = result;
+            cache_order_.push_back(scan_id);
+
+            // Simple cache eviction
+            if (cache_order_.size() > kCacheMax)
+            {
+              uint64_t old_id = cache_order_.front();
+              cache_order_.pop_front();
+              cached_results_.erase(old_id);
+            }
           }
         }
       }
 
-      // 3. Notify Listener
-      // We do this outside the lock to avoid deadlocks if the callback re-enters anything.
+      // Perform notifications outside the lock
+      if (init_update_frame)
+      {
+        IMUStateInitializationCallbacks::on_updated(init_update_frame, init_update_pose);
+      }
+
+      if (init_finished_frame)
+      {
+        IMUStateInitializationCallbacks::on_finished(init_finished_frame);
+      }
+
       if (frame_to_publish)
       {
         OdometryEstimationCallbacks::on_new_frame(frame_to_publish);
+      }
+
+      for (const auto &f : frames_to_publish)
+      {
+        OdometryEstimationCallbacks::on_new_frame(f);
       }
     }
 
@@ -405,32 +534,6 @@ namespace glim
       return pc;
     }
 
-    EstimationFrame::ConstPtr create_fallback_frame(const PreprocessedFrame::Ptr &frame)
-    {
-      EstimationFrame::Ptr out(new EstimationFrame);
-      out->id = next_id_++;
-      out->stamp = frame ? frame->stamp : 0.0;
-      out->T_lidar_imu = T_lidar_imu_;
-
-      out->T_world_lidar = last_T_world_lidar_;
-      out->T_world_imu = last_T_world_lidar_ * T_lidar_imu_;
-      out->v_world_imu.setZero();
-      out->imu_bias.setZero();
-      out->frame_id = FrameID::LIDAR;
-
-      if (frame)
-      {
-        out->raw_frame = frame;
-        auto cloud = std::make_shared<gtsam_points::PointCloudCPU>(frame->points);
-        if (!frame->intensities.empty())
-          cloud->add_intensities(frame->intensities.data(), static_cast<int>(frame->intensities.size()));
-        out->frame = cloud;
-      }
-
-      OdometryEstimationCallbacks::on_new_frame(out);
-      return out;
-    }
-
     static void stamp_to_sec_nsec(const double stamp, int32_t &sec, uint32_t &nsec)
     {
       const double s_floor = std::floor(stamp);
@@ -447,6 +550,8 @@ namespace glim
     long next_id_{0};
     Eigen::Isometry3d T_lidar_imu_{Eigen::Isometry3d::Identity()};
     Eigen::Isometry3d last_T_world_lidar_{Eigen::Isometry3d::Identity()};
+    // Set to true once Pelorus returns a scan_id != 1 (i.e., its internal initialization is complete)
+    bool pelorus_initialized_{false};
 
     // Shared State Data
     std::mutex data_mutex_;

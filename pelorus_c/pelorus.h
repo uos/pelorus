@@ -116,6 +116,14 @@ extern "C"
     /**
      * @brief Complete odometry output from Pelorus.
      *
+     * **Coordinate Frame:**
+     * The `position`, `orientation`, `linear_velocity`, `angular_velocity`, and `points`
+     * fields' frames depend on the `lidar_as_map_tf_base` configuration setting:
+     * - If `lidar_as_map_tf_base = true`: All data is expressed in the **Lidar frame**.
+     *   This applies the extrinsic calibration to transform from the native IMU frame.
+     * - If `lidar_as_map_tf_base = false`: All data is expressed in the **IMU frame**
+     *   (the native output frame of the registration algorithm, sensor-centric).
+     *
      * Memory for the points array is allocated by Pelorus and must be freed using
      * pelorus_free_odometry() after use.
      */
@@ -123,14 +131,14 @@ extern "C"
     {
         int32_t timestamp_sec;       /**< Timestamp seconds since epoch */
         uint32_t timestamp_nanosec;  /**< Timestamp nanoseconds part */
-        double position[3];          /**< Position [x, y, z] in meters */
-        double orientation[4];       /**< Quaternion [w, x, y, z] */
+        double position[3];          /**< Position [x, y, z] in meters (frame depends on lidar_as_map_tf_base) */
+        double orientation[4];       /**< Quaternion [w, x, y, z] (frame depends on lidar_as_map_tf_base) */
         double pose_covariance[36];  /**< 6x6 pose covariance (row-major) */
-        double linear_velocity[3];   /**< Linear velocity [vx, vy, vz] m/s */
-        double angular_velocity[3];  /**< Angular velocity [wx, wy, wz] rad/s */
+        double linear_velocity[3];   /**< Linear velocity [vx, vy, vz] m/s (frame depends on lidar_as_map_tf_base) */
+        double angular_velocity[3];  /**< Angular velocity [wx, wy, wz] rad/s (frame depends on lidar_as_map_tf_base) */
         double twist_covariance[36]; /**< 6x6 twist covariance (row-major) */
         uint64_t scan_id;            /**< Scan id assigned when the pointcloud was added */
-        pelorus_point_xyzi *points;  /**< Registered point cloud (must free) */
+        pelorus_point_xyzi *points;  /**< Registered point cloud (frame depends on lidar_as_map_tf_base, must free) */
         uintptr_t num_points;        /**< Number of points in cloud */
     } pelorus_odometry;
 
@@ -228,8 +236,25 @@ extern "C"
         uintptr_t num_points);
 
     /**
+     * @brief Status codes for Pelorus functions.
+     *
+     * Use these to interpret return values from functions that return an `int32_t` status.
+     */
+    typedef enum pelorus_status
+    {
+        PELORUS_STATUS_OK = 0,            /**< Operation succeeded and data (if applicable) is available */
+        PELORUS_STATUS_NO_DATA = 1,       /**< Non-blocking call had no data available */
+        PELORUS_STATUS_ERROR = -1,        /**< Generic error */
+        PELORUS_STATUS_CALLBACK_SET = -2, /**< Operation unavailable because callback mode is active */
+        PELORUS_STATUS_DISCONNECTED = -3, /**< Underlying channel disconnected */
+    } pelorus_status;
+
+    /**
      * @brief Try to receive odometry output (non-blocking).
-     * @return 1 if odometry received, 0 if no data, -1 on error.
+     *
+     * This function attempts to retrieve odometry without blocking. The return value is a
+     * status code from `pelorus_status`. When `PELORUS_STATUS_OK` is returned, `result` is
+     * populated and must be freed with `pelorus_free_odometry()` when no longer needed.
      */
     int32_t pelorus_try_recv(PelorusHandle *handle, pelorus_odometry *result);
 
@@ -237,11 +262,9 @@ extern "C"
      * @brief Blocking receive odometry output (synchronous).
      *
      * This function blocks until odometry data is available or an error occurs.
-     * Use this for synchronous processing where you want to wait for each result.
-     *
-     * @param handle The Pelorus handle.
-     * @param result Pointer to store the odometry result.
-     * @return 1 if odometry received, -1 on error (e.g., channel disconnected).
+     * The return value is a status code from `pelorus_status`.
+     * When `PELORUS_STATUS_OK` is returned, `result` is populated and must be freed with
+     * `pelorus_free_odometry()` when no longer needed.
      */
     int32_t pelorus_recv(PelorusHandle *handle, pelorus_odometry *result);
 
@@ -275,7 +298,7 @@ extern "C"
      * @param handle The Pelorus handle.
      * @param callback The callback function to invoke, or NULL to disable callbacks.
      * @param user_data User-provided context pointer passed to the callback.
-     * @return 0 on success, -1 on error.
+     * @return A `pelorus_status` code (e.g., `PELORUS_STATUS_OK` on success, negative on error).
      */
     int32_t pelorus_set_callback(PelorusHandle *handle,
                                  PelorusOdometryCallback callback,

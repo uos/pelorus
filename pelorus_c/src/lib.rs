@@ -55,6 +55,10 @@ struct ProcessingThread {
     shutdown: Arc<AtomicBool>,
     // Latest odometry produced (for synchronous retrieval during init)
     last_output: Arc<Mutex<Option<PelorusOutput>>>,
+    // Configuration containing lidar_as_map_tf_base setting
+    config: LioConfig,
+    // Extrinsic transform from Lidar to IMU for frame conversion
+    ext_lidar_to_imu: nalgebra::Isometry3<f64>,
 }
 
 struct CallbackInfo {
@@ -76,6 +80,10 @@ pub struct PelorusHandle {
     imu_predictor_init_time_sec: f64,
     _processing_thread: Option<thread::JoinHandle<()>>,
     shutdown: Arc<AtomicBool>,
+    // Configuration containing lidar_as_map_tf_base setting
+    config: LioConfig,
+    // Extrinsic transform from Lidar to IMU for frame conversion
+    ext_lidar_to_imu: nalgebra::Isometry3<f64>,
 }
 
 impl Drop for PelorusHandle {
@@ -159,11 +167,13 @@ pub struct pelorus_odometry {
     pub timestamp_nanosec: u32,
 
     // Pose (position + orientation)
+    // FRAME: If lidar_as_map_tf_base config is true, pose is in Lidar frame.
+    //        If lidar_as_map_tf_base is false, pose is in IMU frame (sensor-centric).
     pub position: [f64; 3],         // [x, y, z] in meters
     pub orientation: [f64; 4],      // quaternion [w, x, y, z]
     pub pose_covariance: [f64; 36], // 6x6 covariance matrix
 
-    // Velocity (linear + angular)
+    // Velocity (linear + angular) - always expressed in pose frame
     pub linear_velocity: [f64; 3],   // [vx, vy, vz] in m/s
     pub angular_velocity: [f64; 3],  // [wx, wy, wz] in rad/s
     pub twist_covariance: [f64; 36], // 6x6 covariance matrix
@@ -172,8 +182,21 @@ pub struct pelorus_odometry {
     pub scan_id: u64,
 
     // Registered point cloud (optional)
+    // FRAME: Matches pose frame - in Lidar frame if lidar_as_map_tf_base is true,
+    //        otherwise in IMU frame.
     pub points: *mut pelorus_point_xyzi,
     pub num_points: usize,
+}
+
+// Status codes used by the C API. Mirrors `pelorus_status` in the public header.
+#[allow(non_camel_case_types)]
+#[repr(i32)]
+pub enum PelorusStatus {
+    OK = 0,
+    NO_DATA = 1,
+    ERROR = -1,
+    CALLBACK_SET = -2,
+    DISCONNECTED = -3,
 }
 
 #[allow(non_camel_case_types)]
@@ -192,6 +215,8 @@ fn dispatch_output(
     result_sender: &mpsc::Sender<PelorusOutput>,
     last_output: &Arc<Mutex<Option<PelorusOutput>>>,
     sent_count: &mut usize,
+    config: &LioConfig,
+    ext_lidar_to_imu: &nalgebra::Isometry3<f64>,
 ) {
     // Store latest output for synchronous queries during IMU init
     if let Ok(mut last) = last_output.lock() {
@@ -205,7 +230,7 @@ fn dispatch_output(
         .and_then(|guard| guard.as_ref().map(|info| (info.callback, info.user_data)));
 
     if let Some((callback, user_data)) = callback_info_opt {
-        let c_odom = convert_to_c_odometry(&output);
+        let c_odom = convert_to_c_odometry(&output, config, ext_lidar_to_imu);
         unsafe {
             callback(&c_odom, user_data);
         }
@@ -256,78 +281,54 @@ fn processing_thread_main(thread: ProcessingThread) {
                     &thread.result_sender,
                     &thread.last_output,
                     &mut sent_count,
+                    &thread.config,
+                    &thread.ext_lidar_to_imu,
                 );
             }
-            None => {
-                // Build fallback from current map state (no registered cloud available)
-                if let Ok(map_guard) = thread.pipeline.map().lock() {
-                    let state = map_guard.get_state();
-                    let (pose_cov, _) = map_guard.get_odometry_covariances();
-                    let twist_cov = map_guard.get_twist_covariance_6x6();
-
-                    let fallback = PelorusOutput {
-                        scan_id,
-                        timestamp,
-                        pose: state.pose,
-                        pose_covariance: pose_cov,
-                        linear_velocity: state.linear_velocity,
-                        angular_velocity: angular,
-                        twist_covariance: twist_cov,
-                        cloud: Vec::new(),
-                        frame_id: String::new(),
-                    };
-
-                    dispatch_output(
-                        fallback,
-                        &thread.callback_info,
-                        &thread.result_sender,
-                        &thread.last_output,
-                        &mut sent_count,
-                    );
-                }
-            }
+            None => {}
         }
     }
 
     info!("processing thread exiting (prelio channel disconnected)");
 }
 
-fn convert_to_c_odometry(odom: &PelorusOutput) -> pelorus_odometry {
-    let mut result = pelorus_odometry {
-        timestamp_sec: odom.timestamp.sec,
-        timestamp_nanosec: odom.timestamp.nanosec,
-        position: [
-            odom.pose.translation.x,
-            odom.pose.translation.y,
-            odom.pose.translation.z,
-        ],
-        orientation: [0.0; 4],
-        pose_covariance: odom.pose_covariance,
-        linear_velocity: [
-            odom.linear_velocity.x,
-            odom.linear_velocity.y,
-            odom.linear_velocity.z,
-        ],
-        angular_velocity: [
-            odom.angular_velocity.x,
-            odom.angular_velocity.y,
-            odom.angular_velocity.z,
-        ],
-        twist_covariance: odom.twist_covariance,
-        scan_id: odom.scan_id,
-        points: ptr::null_mut(),
-        num_points: 0,
+fn convert_to_c_odometry(
+    odom: &PelorusOutput,
+    config: &LioConfig,
+    ext_lidar_to_imu: &nalgebra::Isometry3<f64>,
+) -> pelorus_odometry {
+    let (pose, linvel, angvel, cloud) = if config.lidar_as_map_tf {
+        (
+            odom.pose * ext_lidar_to_imu.inverse(),
+            ext_lidar_to_imu.inverse_transform_vector(&odom.linear_velocity),
+            ext_lidar_to_imu.inverse_transform_vector(&odom.angular_velocity),
+            odom.cloud
+                .iter()
+                .map(|p| {
+                    let p_vec = nalgebra::Point3::new(p.x as f64, p.y as f64, p.z as f64);
+                    let p_lidar = ext_lidar_to_imu.inverse().transform_point(&p_vec);
+                    PointXYZI {
+                        x: p_lidar.x as f32,
+                        y: p_lidar.y as f32,
+                        z: p_lidar.z as f32,
+                        intensity: p.intensity,
+                    }
+                })
+                .collect::<Vec<_>>(),
+        )
+    } else {
+        (
+            odom.pose,
+            odom.linear_velocity,
+            odom.angular_velocity,
+            odom.cloud.clone(),
+        ) // TODO rm clone
     };
 
-    let q = odom.pose.rotation.quaternion();
-    result.orientation = [q.w, q.i, q.j, q.k];
-
-    if odom.cloud.is_empty() {
-        result.points = ptr::null_mut();
-        result.num_points = 0;
+    let (pvec, pcount) = if cloud.is_empty() {
+        (ptr::null_mut(), 0)
     } else {
-        let mut points_vec: Vec<pelorus_point_xyzi> = odom
-            .cloud
+        let mut points_vec: Vec<pelorus_point_xyzi> = cloud
             .iter()
             .map(|p| pelorus_point_xyzi {
                 x: p.x,
@@ -335,14 +336,28 @@ fn convert_to_c_odometry(odom: &PelorusOutput) -> pelorus_odometry {
                 z: p.z,
                 intensity: p.intensity,
             })
-            .collect();
+            .collect(); // TODO are same type, can transmute
 
-        result.num_points = points_vec.len();
-        result.points = points_vec.as_mut_ptr();
+        let out = (points_vec.as_mut_ptr(), points_vec.len());
         std::mem::forget(points_vec);
-    }
+        out
+    };
 
-    result
+    let q = pose.rotation.quaternion();
+
+    pelorus_odometry {
+        timestamp_sec: odom.timestamp.sec,
+        timestamp_nanosec: odom.timestamp.nanosec,
+        position: [pose.translation.x, pose.translation.y, pose.translation.z],
+        orientation: [q.w, q.i, q.j, q.k],
+        pose_covariance: odom.pose_covariance,
+        linear_velocity: [linvel.x, linvel.y, linvel.z],
+        angular_velocity: [angvel.x, angvel.y, angvel.z],
+        twist_covariance: odom.twist_covariance,
+        scan_id: odom.scan_id,
+        points: pvec,
+        num_points: pcount,
+    }
 }
 
 /// Create a new Pelorus instance with full LIO pipeline
@@ -445,6 +460,9 @@ unsafe fn pelorus_create_internal(
 
     let shutdown = Arc::new(AtomicBool::new(false));
 
+    // Get extrinsic transform from pipeline
+    let ext_lidar_to_imu = pipeline.ext();
+
     let processing_thread = ProcessingThread {
         pipeline: pipeline.clone(),
         prelio_receiver,
@@ -453,6 +471,8 @@ unsafe fn pelorus_create_internal(
         ready_for_next: ready_tx,
         shutdown: shutdown.clone(),
         last_output: last_output.clone(),
+        config: config.clone(),
+        ext_lidar_to_imu,
     };
 
     let thread_handle = thread::spawn(move || {
@@ -469,6 +489,8 @@ unsafe fn pelorus_create_internal(
         imu_predictor_init_time_sec,
         _processing_thread: Some(thread_handle),
         shutdown,
+        config: config.clone(),
+        ext_lidar_to_imu,
     });
 
     Box::into_raw(handle)
@@ -943,20 +965,33 @@ pub unsafe extern "C" fn pelorus_try_recv(
     result: *mut pelorus_odometry,
 ) -> i32 {
     if handle.is_null() || result.is_null() {
-        return -1;
+        return PelorusStatus::ERROR as i32;
     }
 
     unsafe {
         let handle = &mut *handle;
 
+        // Fail fast if a callback is installed.
+        match handle.callback_info.lock() {
+            Ok(cb_guard) => {
+                if cb_guard.is_some() {
+                    return PelorusStatus::CALLBACK_SET as i32;
+                }
+            }
+            Err(_) => {
+                return PelorusStatus::ERROR as i32;
+            }
+        }
+
         match handle.result_receiver.try_recv() {
             Ok(odom) => {
                 let result_out = &mut *result;
-                *result_out = convert_to_c_odometry(&odom);
-                1
+                *result_out =
+                    convert_to_c_odometry(&odom, &handle.config, &handle.ext_lidar_to_imu);
+                PelorusStatus::OK as i32
             }
-            Err(mpsc::TryRecvError::Empty) => 0,
-            Err(mpsc::TryRecvError::Disconnected) => -1,
+            Err(mpsc::TryRecvError::Empty) => PelorusStatus::NO_DATA as i32,
+            Err(mpsc::TryRecvError::Disconnected) => PelorusStatus::DISCONNECTED as i32,
         }
     }
 }
@@ -978,30 +1013,43 @@ pub unsafe extern "C" fn pelorus_recv(
     result: *mut pelorus_odometry,
 ) -> i32 {
     if handle.is_null() || result.is_null() {
-        return -1;
+        return PelorusStatus::ERROR as i32;
     }
 
     unsafe {
         let handle = &mut *handle;
 
+        // Fail fast if a callback is installed.
+        match handle.callback_info.lock() {
+            Ok(cb_guard) => {
+                if cb_guard.is_some() {
+                    return PelorusStatus::CALLBACK_SET as i32;
+                }
+            }
+            Err(_) => {
+                return PelorusStatus::ERROR as i32;
+            }
+        }
+
         // If IMU initialization hasn't completed yet (buffer still present), return last known odometry
         if let Ok(init_state) = handle.imu_init_state.lock() {
             if init_state.buffer.is_some() {
                 if let Ok(last) = handle.last_output.lock() {
-                    if let Some(ref odom) = *last {
+                    if let Some(odom) = last.as_ref() {
                         let result_out = &mut *result;
-                        *result_out = convert_to_c_odometry(&odom);
+                        *result_out =
+                            convert_to_c_odometry(odom, &handle.config, &handle.ext_lidar_to_imu);
                         // During IMU initialization there's no deskewed/registered cloud available.
                         // Clear any registered cloud so the caller can attach the raw input scan instead.
                         result_out.points = ptr::null_mut();
                         result_out.num_points = 0;
-                        return 1;
+                        return PelorusStatus::OK as i32;
                     } else {
                         // No odometry available yet
-                        return 0;
+                        return PelorusStatus::NO_DATA as i32;
                     }
                 } else {
-                    return -1;
+                    return PelorusStatus::ERROR as i32;
                 }
             }
         }
@@ -1009,10 +1057,11 @@ pub unsafe extern "C" fn pelorus_recv(
         match handle.result_receiver.recv() {
             Ok(odom) => {
                 let result_out = &mut *result;
-                *result_out = convert_to_c_odometry(&odom);
-                1
+                *result_out =
+                    convert_to_c_odometry(&odom, &handle.config, &handle.ext_lidar_to_imu);
+                PelorusStatus::OK as i32
             }
-            Err(_) => -1,
+            Err(_) => PelorusStatus::DISCONNECTED as i32,
         }
     }
 }
@@ -1049,7 +1098,7 @@ pub unsafe extern "C" fn pelorus_set_callback(
     user_data: *mut c_void,
 ) -> i32 {
     if handle.is_null() {
-        return -1;
+        return PelorusStatus::ERROR as i32;
     }
 
     unsafe {
@@ -1058,6 +1107,9 @@ pub unsafe extern "C" fn pelorus_set_callback(
         match handle.callback_info.lock() {
             Ok(mut guard) => {
                 if let Some(cb) = callback {
+                    // Drain any queued results while holding the callback lock so there's no race
+                    // window where an output could be queued after we thought we drained.
+                    while let Ok(_) = handle.result_receiver.try_recv() {}
                     *guard = Some(CallbackInfo {
                         callback: cb,
                         user_data,
@@ -1065,9 +1117,9 @@ pub unsafe extern "C" fn pelorus_set_callback(
                 } else {
                     *guard = None;
                 }
-                0
+                PelorusStatus::OK as i32
             }
-            Err(_) => -1,
+            Err(_) => PelorusStatus::ERROR as i32,
         }
     }
 }
@@ -1105,4 +1157,44 @@ pub unsafe extern "C" fn pelorus_free_odometry(odom: *mut pelorus_odometry) {
 pub extern "C" fn pelorus_version() -> *const c_char {
     static VERSION: &str = concat!(env!("CARGO_PKG_VERSION"), "\0");
     VERSION.as_ptr() as *const c_char
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::mem;
+    use std::ptr;
+
+    unsafe extern "C" fn dummy_cb(_odom: *const pelorus_odometry, _user: *mut c_void) {}
+
+    #[test]
+    fn test_recv_fails_when_callback_set() {
+        unsafe {
+            let h = pelorus_create(ptr::null());
+            assert!(!h.is_null());
+
+            let res = pelorus_set_callback(h, Some(dummy_cb), ptr::null_mut());
+            assert_eq!(res, PelorusStatus::OK as i32);
+
+            let mut odom = mem::MaybeUninit::<pelorus_odometry>::uninit();
+            let r = pelorus_try_recv(h, odom.as_mut_ptr());
+            assert_eq!(
+                r,
+                PelorusStatus::CALLBACK_SET as i32,
+                "try_recv should fail with CALLBACK_SET when callback is set"
+            );
+
+            let r2 = pelorus_recv(h, odom.as_mut_ptr());
+            assert_eq!(
+                r2,
+                PelorusStatus::CALLBACK_SET as i32,
+                "recv should fail with CALLBACK_SET when callback is set"
+            );
+
+            // Clear callback and ensure we can destroy handle cleanly
+            let res = pelorus_set_callback(h, None, ptr::null_mut());
+            assert_eq!(res, PelorusStatus::OK as i32);
+            pelorus_destroy(h);
+        }
+    }
 }

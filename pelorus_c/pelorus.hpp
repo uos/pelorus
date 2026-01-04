@@ -334,35 +334,56 @@ namespace pelorus
         }
 
         /**
-         * @brief Try to receive odometry (non-blocking)
-         * @return Odometry object (check .valid() for availability)
+         * @brief Status codes mirror the C `pelorus_status` enum.
          */
-        Odometry try_recv()
+        enum PelorusStatus
         {
-            pelorus_odometry odom;
-            std::memset(&odom, 0, sizeof(odom));
-            int status = pelorus_try_recv(handle_.get(), &odom);
-            if (status == 1)
+            STATUS_OK = 0,
+            STATUS_NO_DATA = 1,
+            STATUS_ERROR = -1,
+            STATUS_CALLBACK_SET = -2,
+            STATUS_DISCONNECTED = -3,
+        };
+
+        /**
+         * @brief Result for recv/try_recv containing a status and (optional) Odometry.
+         */
+        struct RecvResult
+        {
+            int status;
+            Odometry odom;
+        };
+
+        /**
+         * @brief Try to receive odometry (non-blocking)
+         * @return RecvResult: check `.status` and use `.odom` when `.status == STATUS_OK`.
+         */
+        RecvResult try_recv()
+        {
+            pelorus_odometry odom_raw;
+            std::memset(&odom_raw, 0, sizeof(odom_raw));
+            int status = pelorus_try_recv(handle_.get(), &odom_raw);
+            if (status == STATUS_OK)
             {
-                return Odometry(odom);
+                return RecvResult{status, Odometry(odom_raw)};
             }
-            return Odometry();
+            return RecvResult{status, Odometry()};
         }
 
         /**
          * @brief Receive odometry (blocking)
-         * @return Odometry object (check .valid() for success)
+         * @return RecvResult: check `.status` and use `.odom` when `.status == STATUS_OK`.
          */
-        Odometry recv()
+        RecvResult recv()
         {
-            pelorus_odometry odom;
-            std::memset(&odom, 0, sizeof(odom));
-            int status = pelorus_recv(handle_.get(), &odom);
-            if (status == 1)
+            pelorus_odometry odom_raw;
+            std::memset(&odom_raw, 0, sizeof(odom_raw));
+            int status = pelorus_recv(handle_.get(), &odom_raw);
+            if (status == STATUS_OK)
             {
-                return Odometry(odom);
+                return RecvResult{status, Odometry(odom_raw)};
             }
-            return Odometry();
+            return RecvResult{status, Odometry()};
         }
 
         /**
@@ -374,7 +395,12 @@ namespace pelorus
          * @brief Set callback for asynchronous odometry
          * @param callback Function to call when odometry is available (nullptr to disable)
          */
-        void set_callback(OdometryCallback callback)
+        /**
+         * @brief Set callback for asynchronous odometry
+         * @param callback Function to call when odometry is available (nullptr to disable)
+         * @return status code (0 on success, negative on error)
+         */
+        int set_callback(OdometryCallback callback)
         {
             if (callback)
             {
@@ -391,14 +417,14 @@ namespace pelorus
                     }
                 };
 
-                pelorus_set_callback(handle_.get(), callback_wrapper_, this);
+                return pelorus_set_callback(handle_.get(), callback_wrapper_, this);
             }
             else
             {
                 // Disable callback
                 user_callback_ = nullptr;
                 callback_wrapper_ = nullptr;
-                pelorus_set_callback(handle_.get(), nullptr, nullptr);
+                return pelorus_set_callback(handle_.get(), nullptr, nullptr);
             }
         }
 

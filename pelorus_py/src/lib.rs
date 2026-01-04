@@ -270,13 +270,16 @@ impl PelorusHandle {
             }
         }
 
-        // If enabling callback, drop any already-queued results to avoid mixing the two modes.
+        // Acquire callback lock first to make enabling/disabling atomic w.r.t. the dispatcher,
+        // then drain any queued results while still holding that lock so there's no race window.
+        let mut cb_guard = self.odom_callback.lock().unwrap();
         if callback.is_some() {
             let receiver = self.result_receiver.lock().unwrap();
             while receiver.try_recv().is_ok() {}
+            *cb_guard = callback;
+        } else {
+            *cb_guard = None;
         }
-
-        *self.odom_callback.lock().unwrap() = callback;
         Ok(())
     }
 
@@ -548,6 +551,13 @@ impl PelorusHandle {
 
     /// Try to receive odometry (non-blocking)
     fn try_recv(&mut self, py: Python<'_>) -> PyResult<Option<Py<PyAny>>> {
+        // Fail fast when callback mode is enabled.
+        if self.odom_callback.lock().unwrap().is_some() {
+            return Err(PyRuntimeError::new_err(
+                "Callback is set; try_recv() unavailable. Use callback API or clear_callback() first.",
+            ));
+        }
+
         let receiver = self.result_receiver.lock().unwrap();
         match receiver.try_recv() {
             Ok(odom) => {
@@ -564,6 +574,13 @@ impl PelorusHandle {
 
     /// Blocking receive odometry
     fn recv(&mut self, py: Python<'_>) -> PyResult<Py<PyAny>> {
+        // Fail fast when callback mode is enabled.
+        if self.odom_callback.lock().unwrap().is_some() {
+            return Err(PyRuntimeError::new_err(
+                "Callback is set; recv() unavailable. Use callback API or clear_callback() first.",
+            ));
+        }
+
         // If IMU initialization hasn't completed yet (buffer still present), return last known odometry
         if let Ok(init_state) = self.imu_init_state.lock() {
             if init_state.buffer.is_some() {
