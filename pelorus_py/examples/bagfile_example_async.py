@@ -6,8 +6,7 @@ This example reads IMU and LiDAR data from an MCAP bagfile and processes it
 through Pelorus to produce odometry estimates.
 
 Unlike bagfile_example.py (blocking recv), this script uses the async callback
-API (lio.set_callback). It stops once it has received at least `min_odoms`
-odometry outputs.
+API. It stops once it has received at least `min_odoms` odometry outputs.
 
 Requirements:
     pip install pelorus mcap mcap-ros2-support
