@@ -17,6 +17,16 @@
 #include <vector>
 #include <cstring>
 
+// Feature detection: enable optional helpers when dependencies are available
+#if defined(__has_include)
+#if __has_include(<Eigen/Core>)
+#define PELORUS_HAVE_EIGEN 1
+#endif
+#if __has_include(<pcl/point_cloud.h>) && __has_include(<pcl/point_types.h>)
+#define PELORUS_HAVE_PCL 1
+#endif
+#endif
+
 namespace pelorus
 {
 
@@ -398,6 +408,237 @@ namespace pelorus
         void (*callback_wrapper_)(const pelorus_odometry *, void *);
     };
 
+    // Optional helpers (Eigen / PCL) moved below so includes are at global scope
+    // This avoids including external library headers while inside `namespace pelorus` which
+    // can cause accidental name lookup collisions with third-party headers.
+
 } // namespace pelorus
+
+// Optional helpers: enable only when dependencies are present
+#if defined(PELORUS_HAVE_EIGEN) && PELORUS_HAVE_EIGEN
+#include <Eigen/Core>
+#include <Eigen/Geometry>
+
+namespace pelorus
+{
+    namespace eigen
+    {
+
+        inline Eigen::Quaterniond to_quaternion(const double *quat)
+        {
+            return Eigen::Quaterniond(quat[0], quat[1], quat[2], quat[3]);
+        }
+
+        inline Eigen::Vector3d to_position(const double *pos)
+        {
+            return Eigen::Vector3d(pos[0], pos[1], pos[2]);
+        }
+
+        inline Eigen::Vector3d to_linear_velocity(const double *vel)
+        {
+            return Eigen::Vector3d(vel[0], vel[1], vel[2]);
+        }
+
+        inline Eigen::Vector3d to_angular_velocity(const double *vel)
+        {
+            return Eigen::Vector3d(vel[0], vel[1], vel[2]);
+        }
+
+        inline Eigen::Isometry3d to_transform(const Odometry &odom)
+        {
+            Eigen::Isometry3d transform = Eigen::Isometry3d::Identity();
+            if (!odom.valid())
+            {
+                return transform;
+            }
+            transform.translation() = to_position(odom.position());
+            transform.linear() = to_quaternion(odom.orientation()).toRotationMatrix();
+            return transform;
+        }
+
+        inline Eigen::Affine3d to_affine(const Odometry &odom)
+        {
+            Eigen::Affine3d transform = Eigen::Affine3d::Identity();
+            if (!odom.valid())
+            {
+                return transform;
+            }
+            transform.translation() = to_position(odom.position());
+            transform.linear() = to_quaternion(odom.orientation()).toRotationMatrix();
+            return transform;
+        }
+
+        inline Eigen::Matrix4d to_matrix(const Odometry &odom)
+        {
+            return to_transform(odom).matrix();
+        }
+
+        inline Eigen::Matrix<double, 6, 6> get_pose_covariance(const pelorus_odometry &odom)
+        {
+            Eigen::Matrix<double, 6, 6> cov;
+            for (int i = 0; i < 6; i++)
+            {
+                for (int j = 0; j < 6; j++)
+                {
+                    cov(i, j) = odom.pose_covariance[i * 6 + j];
+                }
+            }
+            return cov;
+        }
+
+        inline Eigen::Matrix<double, 6, 6> get_twist_covariance(const pelorus_odometry &odom)
+        {
+            Eigen::Matrix<double, 6, 6> cov;
+            for (int i = 0; i < 6; i++)
+            {
+                for (int j = 0; j < 6; j++)
+                {
+                    cov(i, j) = odom.twist_covariance[i * 6 + j];
+                }
+            }
+            return cov;
+        }
+
+        struct OdometryState
+        {
+            Eigen::Isometry3d transform;           ///< Pose as transformation matrix
+            Eigen::Vector3d linear_velocity;       ///< Linear velocity
+            Eigen::Vector3d angular_velocity;      ///< Angular velocity
+            Eigen::Matrix<double, 6, 6> pose_cov;  ///< Pose covariance
+            Eigen::Matrix<double, 6, 6> twist_cov; ///< Twist covariance
+            int32_t timestamp_sec;                 ///< Timestamp seconds
+            uint32_t timestamp_nanosec;            ///< Timestamp nanoseconds
+
+            static OdometryState from_pelorus(const Odometry &odom)
+            {
+                OdometryState state;
+                if (!odom.valid())
+                {
+                    state.transform = Eigen::Isometry3d::Identity();
+                    state.linear_velocity = Eigen::Vector3d::Zero();
+                    state.angular_velocity = Eigen::Vector3d::Zero();
+                    state.pose_cov = Eigen::Matrix<double, 6, 6>::Zero();
+                    state.twist_cov = Eigen::Matrix<double, 6, 6>::Zero();
+                    state.timestamp_sec = 0;
+                    state.timestamp_nanosec = 0;
+                    return state;
+                }
+                state.transform = to_transform(odom);
+                state.linear_velocity = to_linear_velocity(odom.linear_velocity());
+                state.angular_velocity = to_angular_velocity(odom.angular_velocity());
+                state.pose_cov = get_pose_covariance(*odom.get());
+                state.twist_cov = get_twist_covariance(*odom.get());
+                state.timestamp_sec = odom.timestamp_sec();
+                state.timestamp_nanosec = odom.timestamp_nanosec();
+                return state;
+            }
+        };
+
+    } // namespace eigen
+} // namespace pelorus
+#endif // PELORUS_HAVE_EIGEN
+
+#if defined(PELORUS_HAVE_PCL) && PELORUS_HAVE_PCL
+#include <pcl/point_cloud.h>
+#include <pcl/point_types.h>
+
+namespace pcl
+{
+    struct EIGEN_ALIGN16 PointXYZIT
+    {
+        PCL_ADD_POINT4D;
+        float intensity;
+        uint32_t t;
+        EIGEN_MAKE_ALIGNED_OPERATOR_NEW
+    };
+}
+
+POINT_CLOUD_REGISTER_POINT_STRUCT(pcl::PointXYZIT,
+                                  (float, x, x)(float, y, y)(float, z, z)(float, intensity, intensity)(uint32_t, t, t))
+
+namespace pelorus
+{
+    namespace pcl_helpers
+    {
+        inline float timestamp_to_float(uint32_t t_ns)
+        {
+            return static_cast<float>(t_ns);
+        }
+
+        inline ::pcl::PointCloud<::pcl::PointXYZI>::Ptr to_pcl_cloud(
+            const pelorus_point_xyzi *points, size_t num_points)
+        {
+            auto cloud = ::pcl::PointCloud<::pcl::PointXYZI>::Ptr(
+                new ::pcl::PointCloud<::pcl::PointXYZI>());
+
+            if (!points || num_points == 0)
+            {
+                return cloud;
+            }
+
+            cloud->points.resize(num_points);
+            cloud->width = num_points;
+            cloud->height = 1;
+            cloud->is_dense = false;
+
+            for (size_t i = 0; i < num_points; i++)
+            {
+                cloud->points[i].x = points[i].x;
+                cloud->points[i].y = points[i].y;
+                cloud->points[i].z = points[i].z;
+                cloud->points[i].intensity = points[i].intensity;
+            }
+
+            return cloud;
+        }
+
+        inline void add_pointcloud(Pelorus &pelorus,
+                                   const ::pcl::PointCloud<::pcl::PointXYZIT>::Ptr &cloud,
+                                   int32_t timestamp_sec, uint32_t timestamp_nanosec,
+                                   const char *frame_id)
+        {
+            std::vector<float> points;
+            points.reserve(cloud->size() * 5);
+            for (size_t i = 0; i < cloud->size(); i++)
+            {
+                const auto &pt = cloud->points[i];
+                points.push_back(pt.x);
+                points.push_back(pt.y);
+                points.push_back(pt.z);
+                points.push_back(pt.intensity);
+                points.push_back(timestamp_to_float(pt.t));
+            }
+
+            pelorus.add_points_xyzit(points.data(), cloud->size(),
+                                     timestamp_sec, timestamp_nanosec, frame_id);
+        }
+
+    } // namespace pcl_helpers
+
+    // Expose a friendly `pelorus::pcl` namespace with the types and helper functions
+    namespace pcl
+    {
+        using PointXYZIT = ::pcl::PointXYZIT;
+
+        inline void add_pointcloud(Pelorus &pelorus, const ::pcl::PointCloud<::pcl::PointXYZIT>::Ptr &cloud,
+                                   int32_t timestamp_sec, uint32_t timestamp_nanosec, const char *frame_id)
+        {
+            pcl_helpers::add_pointcloud(pelorus, cloud, timestamp_sec, timestamp_nanosec, frame_id);
+        }
+
+    } // namespace pcl
+
+    template <typename PointCloudPtr>
+    PointCloudPtr Odometry::get_cloud_pcl() const
+    {
+        if (!valid_)
+        {
+            return PointCloudPtr(new typename PointCloudPtr::element_type());
+        }
+        return pcl_helpers::to_pcl_cloud(odom_.points, odom_.num_points);
+    }
+
+} // namespace pelorus
+#endif // PELORUS_HAVE_PCL
 
 #endif // PELORUS_HPP
