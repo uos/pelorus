@@ -186,6 +186,47 @@ pub struct pelorus_odom_msg {
     pub twist_covariance: [f64; 36], // 6x6 covariance matrix
 }
 
+fn dispatch_output(
+    output: PelorusOutput,
+    callback_info: &Arc<Mutex<Option<CallbackInfo>>>,
+    result_sender: &mpsc::Sender<PelorusOutput>,
+    last_output: &Arc<Mutex<Option<PelorusOutput>>>,
+    sent_count: &mut usize,
+) {
+    // Store latest output for synchronous queries during IMU init
+    if let Ok(mut last) = last_output.lock() {
+        *last = Some(output.clone());
+    }
+
+    // Check if callback is set
+    let callback_info_opt = callback_info
+        .lock()
+        .ok()
+        .and_then(|guard| guard.as_ref().map(|info| (info.callback, info.user_data)));
+
+    if let Some((callback, user_data)) = callback_info_opt {
+        let c_odom = convert_to_c_odometry(&output);
+        unsafe {
+            callback(&c_odom, user_data);
+        }
+        unsafe {
+            if !c_odom.points.is_null() {
+                let points = Vec::from_raw_parts(
+                    c_odom.points as *mut pelorus_point_xyzi,
+                    c_odom.num_points,
+                    c_odom.num_points,
+                );
+                drop(points);
+            }
+        }
+    } else {
+        *sent_count += 1;
+        if let Err(e) = result_sender.send(output) {
+            error!("failed to send odometry #{sent_count}: {e}");
+        }
+    }
+}
+
 fn processing_thread_main(thread: ProcessingThread) {
     let mut sent_count: usize = 0;
 
@@ -196,126 +237,53 @@ fn processing_thread_main(thread: ProcessingThread) {
     }
 
     while let Ok(processed) = thread.prelio_receiver.recv() {
-        // During shutdown, keep draining Prelio output, but do not call into pelorus_reg.
         if thread.shutdown.load(Ordering::Relaxed) {
             continue;
         }
 
-        // Capture fallback data before moving `processed` into register_processed_cloud()
-        let fallback_scan_id = processed.scan_id;
-        let fallback_cloud = processed.cloud.clone(); // TODO avoid clone if possible
-        let fallback_frame_id = processed.header.frame_id.clone();
-        let fallback_timestamp = processed.end_of_frame_time;
-        let fallback_angular = processed.end_of_frame_twist.angular;
+        let scan_id = processed.scan_id;
+        let timestamp = processed.end_of_frame_time;
+        let angular = processed.end_of_frame_twist.angular;
 
         match thread
             .pipeline
             .register_processed_cloud(processed, Some(&thread.ready_for_next))
         {
             Some(output) => {
-                // Check if callback is set
-                let callback_info_opt =
-                    thread.callback_info.lock().ok().and_then(|guard| {
-                        guard.as_ref().map(|info| (info.callback, info.user_data))
-                    });
-
-                // Store latest output for synchronous queries during IMU init
-                if let Ok(mut last) = thread.last_output.lock() {
-                    *last = Some(output.clone());
-                }
-
-                if let Some((callback, user_data)) = callback_info_opt {
-                    // Invoke callback
-                    let c_odom = convert_to_c_odometry(&output);
-                    unsafe {
-                        callback(&c_odom, user_data);
-                    }
-                    // Free the allocated points after callback returns
-                    unsafe {
-                        if !c_odom.points.is_null() {
-                            // Reconstruct the Vec with same length and capacity (allocated with exact size)
-                            let points = Vec::from_raw_parts(
-                                c_odom.points as *mut pelorus_point_xyzi,
-                                c_odom.num_points,
-                                c_odom.num_points, // capacity = length since Vec was allocated with exact size
-                            );
-                            drop(points);
-                        }
-                    }
-                } else {
-                    // No callback set, send to channel
-                    sent_count += 1;
-                    if let Err(e) = thread.result_sender.send(output) {
-                        error!("failed to send odometry #{sent_count}: {e}");
-                    }
-                }
+                dispatch_output(
+                    output,
+                    &thread.callback_info,
+                    &thread.result_sender,
+                    &thread.last_output,
+                    &mut sent_count,
+                );
             }
             None => {
-                // No output produced for this cloud. Construct a fallback odometry from the current map
-                // state so callers always receive an odom for each scan. This mirrors the behavior
-                // when registration produced an output but uses the map's current state.
+                // Build fallback from current map state (no registered cloud available)
+                if let Ok(map_guard) = thread.pipeline.map().lock() {
+                    let state = map_guard.get_state();
+                    let (pose_cov, _) = map_guard.get_odometry_covariances();
+                    let twist_cov = map_guard.get_twist_covariance_6x6();
 
-                let maybe_output = match thread.pipeline.map().lock() {
-                    Ok(map_guard) => {
-                        let state = map_guard.get_state();
-                        let (pose_cov_map, _lv_unused) = map_guard.get_odometry_covariances();
-                        let twist_cov_map = map_guard.get_twist_covariance_6x6();
+                    let fallback = PelorusOutput {
+                        scan_id,
+                        timestamp,
+                        pose: state.pose,
+                        pose_covariance: pose_cov,
+                        linear_velocity: state.linear_velocity,
+                        angular_velocity: angular,
+                        twist_covariance: twist_cov,
+                        cloud: Vec::new(),
+                        frame_id: String::new(),
+                    };
 
-                        Some(PelorusOutput {
-                            scan_id: fallback_scan_id,
-                            timestamp: fallback_timestamp,
-                            pose: state.pose,
-                            pose_covariance: pose_cov_map,
-                            linear_velocity: state.linear_velocity,
-                            angular_velocity: fallback_angular,
-                            twist_covariance: twist_cov_map,
-                            cloud: fallback_cloud.clone(),
-                            frame_id: fallback_frame_id.clone(),
-                        })
-                    }
-                    Err(_) => None,
-                };
-
-                eprintln!(
-                    "sending fallback odometry for scan id {}, {:?}",
-                    fallback_scan_id,
-                    maybe_output.is_some()
-                );
-
-                if let Some(output) = maybe_output {
-                    // Store fallback into last_output so synchronous callers can see it
-                    if let Ok(mut last) = thread.last_output.lock() {
-                        *last = Some(output.clone());
-                    }
-
-                    // Deliver fallback odometry using the same callback/channel semantics as above
-                    let callback_info_opt = thread.callback_info.lock().ok().and_then(|guard| {
-                        guard.as_ref().map(|info| (info.callback, info.user_data))
-                    });
-
-                    if let Some((callback, user_data)) = callback_info_opt {
-                        let c_odom = convert_to_c_odometry(&output);
-                        unsafe {
-                            callback(&c_odom, user_data);
-                        }
-                        // Free the allocated points after callback returns
-                        unsafe {
-                            if !c_odom.points.is_null() {
-                                let points = Vec::from_raw_parts(
-                                    c_odom.points as *mut pelorus_point_xyzi,
-                                    c_odom.num_points,
-                                    c_odom.num_points,
-                                );
-                                drop(points);
-                            }
-                        }
-                    } else {
-                        sent_count += 1;
-                        info!("sending fallback odometry #{sent_count}");
-                        if let Err(e) = thread.result_sender.send(output) {
-                            warn!("failed to send odometry #{sent_count}: {e}");
-                        }
-                    }
+                    dispatch_output(
+                        fallback,
+                        &thread.callback_info,
+                        &thread.result_sender,
+                        &thread.last_output,
+                        &mut sent_count,
+                    );
                 }
             }
         }
@@ -354,20 +322,25 @@ fn convert_to_c_odometry(odom: &PelorusOutput) -> pelorus_odometry {
     let q = odom.pose.rotation.quaternion();
     result.orientation = [q.w, q.i, q.j, q.k];
 
-    let mut points_vec: Vec<pelorus_point_xyzi> = odom
-        .cloud
-        .iter()
-        .map(|p| pelorus_point_xyzi {
-            x: p.x,
-            y: p.y,
-            z: p.z,
-            intensity: p.intensity,
-        })
-        .collect();
+    if odom.cloud.is_empty() {
+        result.points = ptr::null_mut();
+        result.num_points = 0;
+    } else {
+        let mut points_vec: Vec<pelorus_point_xyzi> = odom
+            .cloud
+            .iter()
+            .map(|p| pelorus_point_xyzi {
+                x: p.x,
+                y: p.y,
+                z: p.z,
+                intensity: p.intensity,
+            })
+            .collect();
 
-    result.num_points = points_vec.len();
-    result.points = points_vec.as_mut_ptr();
-    std::mem::forget(points_vec);
+        result.num_points = points_vec.len();
+        result.points = points_vec.as_mut_ptr();
+        std::mem::forget(points_vec);
+    }
 
     result
 }

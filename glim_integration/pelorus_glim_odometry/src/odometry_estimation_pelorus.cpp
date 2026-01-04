@@ -286,8 +286,8 @@ namespace glim
         }
       }
 
-      // Return nullptr: This signals to the GLIM pipeline that we are working asynchronously.
-      // The actual frame will be pushed via on_new_frame() inside the callback later.
+      // Return nullptr: GLIM's AsyncOdometryEstimation will skip null returns (see async_odometry_estimation.cpp:132).
+      // We call OdometryEstimationCallbacks::on_new_frame() explicitly when the result is ready in on_odometry_callback().
       return EstimationFrame::ConstPtr();
     }
 

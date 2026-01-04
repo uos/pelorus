@@ -1,6 +1,7 @@
 CC ?= gcc
 CFLAGS ?= -Wall -Wextra -I..
-TARGET_DIR ?= ../../target/debug
+BUILD_TYPE ?= release
+TARGET_DIR ?= ../../target/$(BUILD_TYPE)
 LDFLAGS ?= -L$(TARGET_DIR) -lpelorus -lpthread -ldl -lm
 
 UNAME_S := $(shell uname -s)
