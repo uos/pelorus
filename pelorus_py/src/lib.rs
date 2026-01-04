@@ -8,11 +8,12 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, mpsc};
 use std::thread;
 
-use log::{error, info, warn};
+use log::{error, info};
 
 use pelorus_core::config::ast_to_config;
 use pelorus_core::{ImuMsg, LidarVendor, LioConfig, OdomMsg, PrelioProcessedCloud};
 use pelorus_reg::pipeline::{PelorusOutput, Pipeline};
+use pelorus_reg::Registration;
 use prelio::Prelio;
 use ratslang;
 use ros_pointcloud2::prelude::*;
@@ -60,79 +61,115 @@ struct ProcessingThread {
     ready_for_next: mpsc::Sender<()>,
     odom_callback: Arc<Mutex<Option<Py<PyAny>>>>,
     shutdown: Arc<AtomicBool>,
+    // Latest odometry produced (for synchronous retrieval during init)
+    last_output: Arc<Mutex<Option<PelorusOutput>>>,
+}
+
+fn dispatch_output(
+    output: PelorusOutput,
+    odom_callback: &Arc<Mutex<Option<Py<PyAny>>>>,
+    result_sender: &mpsc::Sender<PelorusOutput>,
+    last_output: &Arc<Mutex<Option<PelorusOutput>>>,
+    sent_count: &mut usize,
+) {
+    // Store latest output for synchronous queries during IMU init
+    if let Ok(mut last) = last_output.lock() {
+        *last = Some(output.clone());
+    }
+
+    // Check if callback is set
+    let cb_opt = odom_callback.lock().ok().and_then(|guard| {
+        guard.as_ref().map(|cb| {
+            Python::attach(|py| cb.clone_ref(py))
+        })
+    });
+
+    if let Some(cb) = cb_opt {
+        Python::attach(|py| {
+            let dict = PyDict::new(py);
+            if let Err(e) = PelorusHandle::fill_odom_dict(&dict, &output) {
+                error!("failed to build odometry dict for callback #{sent_count}: {e}");
+                return;
+            }
+
+            if let Err(e) = cb.bind(py).call1((dict,)) {
+                error!("odometry callback raised for #{sent_count}: {e}");
+                e.print(py);
+            }
+        });
+    } else {
+        *sent_count += 1;
+        if let Err(e) = result_sender.send(output) {
+            error!("failed to send odometry #{sent_count}: {e}");
+        }
+    }
 }
 
 fn processing_thread_main(thread: ProcessingThread) {
-    let mut recv_count: usize = 0;
     let mut sent_count: usize = 0;
 
-    thread.ready_for_next.send(()).unwrap();
+    if let Err(e) = thread.ready_for_next.send(()) {
+        error!("failed to send initial ready signal: {e}");
+    }
 
-    loop {
-        let processed = match thread.prelio_receiver.recv() {
-            Ok(p) => p,
-            Err(_) => break,
-        };
-
-        recv_count += 1;
+    while let Ok(processed) = thread.prelio_receiver.recv() {
 
         // Shutdown mode: keep draining the prelio output channel so Prelio's producer thread
         // doesn't panic on send, but DO NOT call into pelorus_reg (which would try to
-        // `ready_for_next.send(()).unwrap()` after Prelio drops its receiver).
+        // `ready_for_next.send(())` after Prelio drops its receiver).
         if thread.shutdown.load(Ordering::Relaxed) {
             continue;
         }
+
+        let scan_id = processed.scan_id;
+        let timestamp = processed.end_of_frame_time;
+        let angular = processed.end_of_frame_twist.angular;
 
         match thread
             .pipeline
             .register_processed_cloud(processed, Some(&thread.ready_for_next))
         {
             Some(output) => {
-                sent_count += 1;
-                // Fast path: avoid acquiring the GIL if no callback is set.
-                let has_cb = thread.odom_callback.lock().unwrap().is_some();
-                if !has_cb {
-                    if let Err(e) = thread.result_sender.send(output) {
-                        warn!("failed to send odometry #{sent_count}: {e}");
-                    }
-                    continue;
-                }
-
-                // Callback path: acquire the GIL, clone the callback ref, then call without
-                // holding the callback mutex.
-                Python::attach(|py| {
-                    let cb = {
-                        let guard = thread.odom_callback.lock().unwrap();
-                        guard.as_ref().map(|cb| cb.clone_ref(py))
-                    };
-
-                    let Some(cb) = cb else {
-                        // Callback got disabled after `has_cb` check; fall back to queue.
-                        if let Err(e) = thread.result_sender.send(output) {
-                            warn!("failed to send odometry #{sent_count}: {e}");
-                        }
-                        return;
-                    };
-
-                    let dict = PyDict::new(py);
-                    if let Err(e) = PelorusHandle::fill_odom_dict(&dict, &output) {
-                        error!("failed to build odometry dict for callback #{sent_count}: {e}");
-                        return;
-                    }
-
-                    if let Err(e) = cb.bind(py).call1((dict,)) {
-                        error!("odometry callback raised for #{sent_count}: {e}");
-                        e.print(py);
-                    }
-                });
+                dispatch_output(
+                    output,
+                    &thread.odom_callback,
+                    &thread.result_sender,
+                    &thread.last_output,
+                    &mut sent_count,
+                );
             }
             None => {
-                // No output produced for this cloud.
+                // Build fallback from current map state (no registered cloud available)
+                if let Ok(map_guard) = thread.pipeline.map().lock() {
+                    let state = map_guard.get_state();
+                    let (pose_cov, _) = map_guard.get_odometry_covariances();
+                    let twist_cov = map_guard.get_twist_covariance_6x6();
+
+                    let fallback = PelorusOutput {
+                        scan_id,
+                        timestamp,
+                        pose: state.pose,
+                        pose_covariance: pose_cov,
+                        linear_velocity: state.linear_velocity,
+                        angular_velocity: angular,
+                        twist_covariance: twist_cov,
+                        cloud: Vec::new(),
+                        frame_id: String::new(),
+                    };
+
+                    dispatch_output(
+                        fallback,
+                        &thread.odom_callback,
+                        &thread.result_sender,
+                        &thread.last_output,
+                        &mut sent_count,
+                    );
+                }
             }
         }
     }
 
-    info!("prelio_receiver disconnected after {recv_count} clouds");
+    info!("processing thread exiting (prelio channel disconnected)");
 }
 
 /// Python wrapper for Pelorus handle
@@ -141,6 +178,8 @@ struct PelorusHandle {
     prelio: Arc<Mutex<Option<Prelio>>>,
     result_receiver: Arc<Mutex<mpsc::Receiver<PelorusOutput>>>,
     odom_callback: Arc<Mutex<Option<Py<PyAny>>>>,
+    // Latest odometry produced (used when IMU initialization not yet complete)
+    last_output: Arc<Mutex<Option<PelorusOutput>>>,
     imu_init_cb: Option<Arc<Mutex<dyn FnMut(&[ImuMsg]) + Send + Sync>>>,
     imu_init_state: Arc<Mutex<ImuInitState>>,
     imu_predictor_init_time_sec: f64,
@@ -188,6 +227,7 @@ impl PelorusHandle {
 
         let odom_callback: Arc<Mutex<Option<Py<PyAny>>>> = Arc::new(Mutex::new(None));
         let shutdown: Arc<AtomicBool> = Arc::new(AtomicBool::new(false));
+        let last_output: Arc<Mutex<Option<PelorusOutput>>> = Arc::new(Mutex::new(None));
 
         let processing_thread = ProcessingThread {
             pipeline: pipeline.clone(),
@@ -196,6 +236,7 @@ impl PelorusHandle {
             ready_for_next: ready_tx,
             odom_callback: Arc::clone(&odom_callback),
             shutdown: Arc::clone(&shutdown),
+            last_output: Arc::clone(&last_output),
         };
 
         let thread_handle = thread::spawn(move || {
@@ -206,6 +247,7 @@ impl PelorusHandle {
             prelio: Arc::new(Mutex::new(Some(prelio))),
             result_receiver: Arc::new(Mutex::new(result_rx)),
             odom_callback,
+            last_output,
             imu_init_cb,
             imu_init_state,
             imu_predictor_init_time_sec,
@@ -522,9 +564,24 @@ impl PelorusHandle {
 
     /// Blocking receive odometry
     fn recv(&mut self, py: Python<'_>) -> PyResult<Py<PyAny>> {
+        // If IMU initialization hasn't completed yet (buffer still present), return last known odometry
+        if let Ok(init_state) = self.imu_init_state.lock() {
+            if init_state.buffer.is_some() {
+                // Still initializing; check if we have any odometry yet
+                if let Ok(last) = self.last_output.lock() {
+                    if let Some(odom) = last.as_ref() {
+                        let dict = PyDict::new(py);
+                        Self::fill_odom_dict(&dict, odom)?;
+                        return Ok(dict.into());
+                    }
+                }
+                // No odometry yet during init; block until we get one
+            }
+        }
+
         let receiver_arc = Arc::clone(&self.result_receiver);
 
-        // Release GIL while waiting - move the Arc into the closure
+        // Release GIL while waiting
         let odom = py
             .detach(move || {
                 let receiver = receiver_arc.lock().unwrap();
