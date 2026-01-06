@@ -23,11 +23,18 @@ pub struct Pipeline {
     cuda_stream: pelorus_cuda::Stream,
 }
 
+/// Result from cloud registration and mapping
+///
+/// # Frame Conventions
+/// - **World Frame (W)**: Fixed global reference frame, aligned with IMU orientation at
+///   initialization. Z-axis points upward (anti-gravity).
+/// - **IMU Frame (I)**: Body-fixed frame attached to the IMU sensor
+/// - **Lidar Frame (L)**: Sensor-fixed frame attached to the LiDAR
 #[derive(Debug, Clone)]
 pub struct PelorusOutput {
     pub scan_id: u64,
     pub timestamp: ros_pointcloud2::ros::TimeMsg,
-    pub pose: Isometry3<f64>,
+    pub pose: Isometry3<f64>, // in
     pub pose_covariance: [f64; 36],
     pub linear_velocity: nalgebra::Vector3<f64>,
     pub angular_velocity: nalgebra::Vector3<f64>,

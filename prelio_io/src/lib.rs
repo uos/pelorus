@@ -152,18 +152,7 @@ impl State {
                         Some(config.lidar_vendor),
                         ready_for_next,
                     )?))
-                } // prelio::LidarVendor::Skip => {
-                  //     Arc::new(Mutex::new(prelio::Prelio::create::<3, SkipPoint>(
-                  //         config.imu.gravity,
-                  //         config.imu.madgwick_setting,
-                  //         &config.imu.calibration,
-                  //         &config, // TODO more specific
-                  //         imu_pose_prediction_undistort,
-                  //         imu_pose_prediction_init_guess,
-                  //         Some(config.lidar_vendor),
-                  //         ready_for_next,
-                  //     )?))
-                  // }
+                }
             },
             lifis_params: config.clone(),
             take_nth_scan: N_NTH_SCAN,

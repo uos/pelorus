@@ -325,6 +325,7 @@ pub struct LioConfig {
     pub dist_update_sensitivity: f32,
     pub lidar_as_map_tf: bool,
     pub mapping_resolution: f32,
+    pub rerun_undistorted_static_world: bool,
 }
 
 pub fn timestamp_to_secs(t: &TimeMsg) -> f64 {
@@ -342,8 +343,14 @@ pub trait PointXYZITimestamp<const N: usize>:
     PointConvertible<N> + Send + Sync + Sized + Copy
 {
     fn xyz(&self) -> Point3<f32>;
+
+    /// Normalize to real 0..1 scale for filtering.
+    /// When setting back the point, it will be converted to 0..255 (f32).
     fn intensity(&self) -> f32;
-    fn timestamp(&self) -> f64; // in seconds
+
+    /// Normalize vendor specific timestamps to seconds.
+    /// The semantics of the per-point timestamp are handled elsewhere.
+    fn timestamp(&self) -> f64;
 }
 
 #[derive(Debug, Clone, Default)]

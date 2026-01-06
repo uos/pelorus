@@ -12,17 +12,34 @@ pub mod registration;
 use anyhow::Result;
 pub use spole::*;
 
+/// Result from cloud registration and mapping
+///
+/// # Frame Conventions
+/// - **World Frame (W)**: Fixed global reference frame, aligned with IMU orientation at
+///   initialization. Z-axis points upward (anti-gravity).
+/// - **IMU Frame (I)**: Body-fixed frame attached to the IMU sensor
+/// - **Lidar Frame (L)**: Sensor-fixed frame attached to the LiDAR
 #[derive(Clone, Default, Debug)]
 pub struct CloudRegisterResult {
+    /// Pose of the lidar in world frame (T_W_I)
     pub pose: Isometry3<f64>,
     pub avg_iterations: Option<u32>,
-    // pub registered_cloud: Option<Vec<PointXYZINormal>>,
 }
 
+/// IMU-based EKF state prediction
+///
+/// # Frame Conventions
+/// - **World Frame (W)**: Fixed global reference frame, aligned with IMU at initialization,
+///   Z-axis points upward (anti-gravity)
+/// - **IMU Frame (I)**: Body-fixed frame attached to the IMU sensor
+/// - **Lidar Frame (L)**: Sensor-fixed frame attached to the LiDAR
 #[derive(Clone, Debug, PartialEq)]
 pub struct ImuEkfPrediction {
+    /// Pose of the IMU in world frame
     pub pose: Isometry3<f64>,
+    /// Linear velocity in world frame
     pub linear_velocity: Vector3<f64>,
+    /// Extrinsic calibration from lidar to IMU (T_I_L)
     pub lidar_imu_extrinsic: Isometry3<f64>,
 }
 

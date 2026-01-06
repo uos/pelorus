@@ -9,12 +9,16 @@ use pelorus_cuda::CudaBuffer;
 use prelio::LocatedBufferView;
 #[cfg(all(feature = "parallel", not(feature = "cuda")))]
 use rayon::prelude::*;
-use ros_pointcloud2::points::{PointXYZ, PointXYZI, PointXYZINormal};
+use ros_pointcloud2::{
+    impl_pointxyz_for_nalgebra,
+    points::{PointXYZ, PointXYZI, PointXYZINormal},
+};
+impl_pointxyz_for_nalgebra!();
 
 use sophus_lie::prelude::*;
 pub use spole::IVoxNearbyType;
 
-use crate::iekf::skew_symmetric;
+use crate::{iekf::skew_symmetric, registration::impl_nalgebra::AsNalgebra};
 
 pub struct RegistrationState {
     ekf: crate::iekf::Iekf,
@@ -36,7 +40,7 @@ impl RegistrationState {
         imu_params: &ImuParameters,
         laser_point_noise_cov: f64,
         _neighbor_max_range: f64,
-        initial_extrinsic_calibration: Isometry3<f64>,
+        lidar_to_imu: Isometry3<f64>,
         knn_nearby_voxel_search_range: IVoxNearbyType,
         update_cov_sensitivity: f32,
         ekf_max_iterations: usize,
@@ -52,10 +56,7 @@ impl RegistrationState {
 
         Self {
             ekf,
-            imu_processing: crate::imu::ImuProcessing::new(
-                imu_params,
-                &initial_extrinsic_calibration,
-            ),
+            imu_processing: crate::imu::ImuProcessing::new(imu_params, &lidar_to_imu),
             map,
             laser_point_noise_cov,
             ekf_max_iterations,
@@ -415,9 +416,9 @@ impl crate::Registration for RegistrationState {
             ),
             linear_velocity: self.ekf.state.vel,
             lidar_imu_extrinsic: Isometry3::from_parts(
-                Translation3::from(self.ekf.state.offset_t_l_i),
+                Translation3::from(self.ekf.state.lidar_to_imu_t),
                 UnitQuaternion::from_rotation_matrix(&Rotation3::from_matrix(
-                    &self.ekf.state.offset_r_l_i.matrix(),
+                    &self.ekf.state.lidar_to_imu_r.matrix(),
                 )),
             ),
         }
@@ -547,28 +548,22 @@ impl crate::Registration for RegistrationState {
 
                         let planes: Vec<PointXYZINormal> = iter
                             .filter_map(|point_local| {
-                                // Global in IMU frame
-                                let point_imu = ekf_state.offset_r_l_i.matrix()
-                                    * nalgebra::Point3::new(
-                                        point_local.x,
-                                        point_local.y,
-                                        point_local.z,
-                                    )
-                                    .cast()
-                                    + ekf_state.offset_t_l_i;
-                                let point_global = ekf_state.pose.transform(point_imu.coords);
+                                let p_l = point_local.xyz();
+                                let p_imu = ekf_state.lidar_to_imu_r.matrix() * p_l.cast()
+                                    + ekf_state.lidar_to_imu_t;
+                                let p_world = ekf_state.pose.transform(p_imu.coords);
 
                                 let query_point = PointXYZ::new(
-                                    point_global.x as f32,
-                                    point_global.y as f32,
-                                    point_global.z as f32,
+                                    p_world.x as f32,
+                                    p_world.y as f32,
+                                    p_world.z as f32,
                                 );
 
                                 {
                                     let plane = map.plane_fit_from_distributions(&query_point)?;
-                                    let pd2 = plane[0] * point_global.x as f32
-                                        + plane[1] * point_global.y as f32
-                                        + plane[2] * point_global.z as f32
+                                    let pd2 = plane[0] * p_world.x as f32
+                                        + plane[1] * p_world.y as f32
+                                        + plane[2] * p_world.z as f32
                                         + plane[3];
                                     let s = 1.0
                                         - 0.9 * pd2.abs()
@@ -627,20 +622,15 @@ impl crate::Registration for RegistrationState {
                         .zip(h_x.row_iter_mut())
                         .zip(h.row_iter_mut())
                         .for_each(|((normal_point, mut h_x_row), mut h_row)| {
-                            let point_local = nalgebra::Point3::new(
-                                normal_point.x,
-                                normal_point.y,
-                                normal_point.z,
-                            )
-                            .cast::<f64>();
+                            let point_local = normal_point.xyz().cast::<f64>();
                             let nearest_plane = [
                                 normal_point.normal_x as f64,
                                 normal_point.normal_y as f64,
                                 normal_point.normal_z as f64,
                                 normal_point.intensity as f64,
                             ];
-                            let v = ekf_state.offset_r_l_i.matrix() * point_local
-                                + ekf_state.offset_t_l_i;
+                            let v = ekf_state.lidar_to_imu_r.matrix() * point_local
+                                + ekf_state.lidar_to_imu_t;
 
                             let norm =
                                 Vector3::new(nearest_plane[0], nearest_plane[1], nearest_plane[2]);
@@ -684,23 +674,35 @@ impl crate::Registration for RegistrationState {
             eval_outer.write().unwrap().stop("ekf correct").unwrap();
         };
 
-        // TODO imu_t now static
-        let imu_t = Isometry3::from_parts(
-            Translation3::from(self.ekf.state.offset_t_l_i),
+        // Prepare transform from lidar -> imu frame.
+        // This is the lidar pose in imu coordinate system, so we can lidar -> imu or imu -> lidar with invert.
+        let t_i_l = Isometry3::from_parts(
+            Translation3::from(self.ekf.state.lidar_to_imu_t),
             UnitQuaternion::from_rotation_matrix(&Rotation3::from_matrix(
-                &self.ekf.state.offset_r_l_i.matrix(),
+                &self.ekf.state.lidar_to_imu_r.matrix(),
             )),
         );
-        let global_pose = Isometry3::from_parts(
+
+        // Transform from world frame to imu frame (IEKF coordinate system).
+        // The original state.pose is in imu frame relative to the world, so we can imu -> world.
+        let t_w_i = Isometry3::from_parts(
             Translation3::from(self.ekf.state.pose.translation()),
             UnitQuaternion::from_rotation_matrix(&Rotation3::from_matrix(
                 &self.ekf.state.pose.rotation().matrix(),
             )),
         );
 
-        let global_pose = global_pose * imu_t; // Pose must be in imu frame because velocity is in imu frame
+        // world -> lidar (TODO I wanted that BUUUUT it is actually imu coordinates and I can not find out why)
+        //  (world <- IMU) then (IMU then LiDAR)
+        let t_w_l = t_w_i * t_i_l;
 
-        // Signal Prelio it can use the ekf again
+        // lidar -> world
+        // let t_l_w = t_i_l * t_w_i.inverse();
+
+        // imu -> world
+        // let t_i_w = t_w_i.inverse();
+
+        // Signal prelio it can use the ekf again
         ready_for_next
             .expect("we need ready_for_next!")
             .send(())
@@ -711,7 +713,7 @@ impl crate::Registration for RegistrationState {
         }
 
         #[cfg(not(feature = "cuda"))]
-        self.add_to_map(cloud, global_pose);
+        self.add_to_map(cloud, t_w_l);
         #[cfg(feature = "cuda")]
         {
             let cloud = match cloud {
@@ -732,7 +734,7 @@ impl crate::Registration for RegistrationState {
         }
 
         Ok(Some(crate::CloudRegisterResult {
-            pose: global_pose,
+            pose: t_w_l,
             avg_iterations: None,
         }))
     }

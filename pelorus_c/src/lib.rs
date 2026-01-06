@@ -1,6 +1,8 @@
 //! C FFI bindings for Pelorus
 
+use core::panic;
 use std::ffi::{CStr, c_char, c_void};
+use std::mem::transmute;
 use std::path::Path;
 use std::ptr;
 use std::slice;
@@ -8,10 +10,9 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, mpsc};
 
 use anyhow::anyhow;
-use log::{error, info, warn};
+use log::{error, warn};
 use pelorus_core::config::ast_to_config;
 use pelorus_core::{ImuMsg, LidarVendor, LioConfig, OdomMsg, PrelioProcessedCloud};
-use pelorus_reg::Registration;
 use pelorus_reg::pipeline::{PelorusOutput, Pipeline};
 use prelio::Prelio;
 use ratslang;
@@ -157,7 +158,7 @@ pub struct pelorus_point_xyzi {
     pub x: f32,
     pub y: f32,
     pub z: f32,
-    pub intensity: f32,
+    pub intensity: f32, // expected 0..255 in float
 }
 
 #[allow(non_camel_case_types)]
@@ -167,23 +168,22 @@ pub struct pelorus_odometry {
     pub timestamp_nanosec: u32,
 
     // Pose (position + orientation)
-    // FRAME: If lidar_as_map_tf_base config is true, pose is in Lidar frame.
-    //        If lidar_as_map_tf_base is false, pose is in IMU frame (sensor-centric).
+    // FRAME: Pose is in Lidar World frame.
     pub position: [f64; 3],         // [x, y, z] in meters
     pub orientation: [f64; 4],      // quaternion [w, x, y, z]
-    pub pose_covariance: [f64; 36], // 6x6 covariance matrix
+    pub pose_covariance: [f64; 36], // 6x6 covariance matrix, in IMU World frame
 
-    // Velocity (linear + angular) - always expressed in pose frame
+    // Velocity (linear + angular)
+    // FRAME: Velocities and covariances are in Lidar World frame.
     pub linear_velocity: [f64; 3],   // [vx, vy, vz] in m/s
     pub angular_velocity: [f64; 3],  // [wx, wy, wz] in rad/s
-    pub twist_covariance: [f64; 36], // 6x6 covariance matrix
+    pub twist_covariance: [f64; 36], // 6x6 covariance matrix, in IMU World frame
 
     // Scan id corresponding to the input pointcloud
     pub scan_id: u64,
 
     // Registered point cloud (optional)
-    // FRAME: Matches pose frame - in Lidar frame if lidar_as_map_tf_base is true,
-    //        otherwise in IMU frame.
+    // FRAME: In Lidar World frame
     pub points: *mut pelorus_point_xyzi,
     pub num_points: usize,
 }
@@ -266,10 +266,6 @@ fn processing_thread_main(thread: ProcessingThread) {
             continue;
         }
 
-        let scan_id = processed.scan_id;
-        let timestamp = processed.end_of_frame_time;
-        let angular = processed.end_of_frame_twist.angular;
-
         match thread
             .pipeline
             .register_processed_cloud(processed, Some(&thread.ready_for_next))
@@ -288,8 +284,6 @@ fn processing_thread_main(thread: ProcessingThread) {
             None => {}
         }
     }
-
-    info!("processing thread exiting (prelio channel disconnected)");
 }
 
 fn convert_to_c_odometry(
@@ -299,44 +293,20 @@ fn convert_to_c_odometry(
 ) -> pelorus_odometry {
     let (pose, linvel, angvel, cloud) = if config.lidar_as_map_tf {
         (
-            odom.pose * ext_lidar_to_imu.inverse(),
-            ext_lidar_to_imu.inverse_transform_vector(&odom.linear_velocity),
-            ext_lidar_to_imu.inverse_transform_vector(&odom.angular_velocity),
-            odom.cloud
-                .iter()
-                .map(|p| {
-                    let p_vec = nalgebra::Point3::new(p.x as f64, p.y as f64, p.z as f64);
-                    let p_lidar = ext_lidar_to_imu.inverse().transform_point(&p_vec);
-                    PointXYZI {
-                        x: p_lidar.x as f32,
-                        y: p_lidar.y as f32,
-                        z: p_lidar.z as f32,
-                        intensity: p.intensity,
-                    }
-                })
-                .collect::<Vec<_>>(),
+            ext_lidar_to_imu.inverse() * odom.pose, // TODO this is wrong. the order does not make sense. something is fishy. I think somehwere in the jacobians there is a flipped matmul order
+            ext_lidar_to_imu.inverse() * odom.linear_velocity,
+            ext_lidar_to_imu.inverse() * odom.angular_velocity,
+            odom.cloud.clone(),
         )
     } else {
-        (
-            odom.pose,
-            odom.linear_velocity,
-            odom.angular_velocity,
-            odom.cloud.clone(),
-        ) // TODO rm clone
+        panic!("not publishing as lidar frame is not supported at the moment")
     };
 
     let (pvec, pcount) = if cloud.is_empty() {
         (ptr::null_mut(), 0)
     } else {
-        let mut points_vec: Vec<pelorus_point_xyzi> = cloud
-            .iter()
-            .map(|p| pelorus_point_xyzi {
-                x: p.x,
-                y: p.y,
-                z: p.z,
-                intensity: p.intensity,
-            })
-            .collect(); // TODO are same type, can transmute
+        // Safety: C point and PointXYZI from ros_pointcloud2 are both C-Repr.
+        let mut points_vec: Vec<pelorus_point_xyzi> = unsafe { transmute(cloud) };
 
         let out = (points_vec.as_mut_ptr(), points_vec.len());
         std::mem::forget(points_vec);

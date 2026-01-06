@@ -1,18 +1,16 @@
 # pelorus_glim_frontend
 
+> [!WARNING]
+> This module does not work correctly at the moment because of some internal differences with transforms. The problem is related to the untested behavior when the IMU extrinsic rotation matrix is not orthogonal.
+
 GLIM extension module that feeds Pelorus and injects **additional odometry constraints** into GLIM's odometry factor graph (similar to `orb_slam_frontend` in `glim_ext`).
 
 This **does not replace** GLIM odometry. It only adds extra `BetweenFactor<Pose3>` constraints.
 
 ## Quick start
 
-### 1) Prerequisites
 
-- GLIM installed (with headers and CMake config)
-- GTSAM installed (provides `gtsam` headers/libs)
-- Pelorus installed (CMake package `pelorus`), or Rust toolchain (to build `pelorus_c` from source)
-
-### 2) Build and install
+### Build and install
 
 ```sh
 cd pelorus/glim_integration/pelorus_glim_frontend
@@ -22,53 +20,27 @@ make
 sudo -E make install
 ```
 
-Notes:
-- If `find_package(pelorus)` succeeds, the build uses your installed Pelorus.
-- Otherwise it falls back to building `pelorus_c` from `../../pelorus_c` (requires Rust).
+### Enable the extension in GLIM
 
-This installs `libpelorus_glim_frontend.so` (or `.dylib` on macOS) to `/usr/local/lib`.
-
-### 3) Enable the extension in GLIM
-
-Add the plugin library name to `glim_ros.extension_modules` (in your GLIM config):
-
-- Linux: `libpelorus_glim_frontend.so`
-- macOS: `libpelorus_glim_frontend.dylib`
-
-Then run GLIM as usual.
+Add the plugin library name to `glim_ros.extension_modules` (in your GLIM config): `libpelorus_glim_frontend.so`
 
 ## Configuration
 
-The extension reads optional parameters from a config file named `config_pelorus_frontend.json` in your GLIM config root:
+The extension reads parameters from a config file named `config_pelorus_frontend.json` in your GLIM config root:
 
 ```json
 {
   "pelorus_frontend": {
+    // optional
     "pelorus_rl_path": "/abs/path/to/pelorus.rl",
-
+    // if config not set
     "use_glim_config": true,
 
+    // untested, see above warning
     "stamp_match_tolerance_sec": 0.02,
-
     "between_sigma_trans": 0.2,
     "between_sigma_rot_rad": 0.15,
-
     "max_frame_buffer": 400
   }
 }
 ```
-
-Notes:
-- `pelorus_rl_path` may be empty to use Pelorus defaults.
-- If `use_glim_config` is `true` and `pelorus_rl_path` is empty, the module generates a temporary `.rl` file at runtime using GLIM configs:
-  - `config_sensors.json`: `sensors.T_lidar_imu` (IMU->LiDAR in GLIM; inverted to LiDAR->IMU for Pelorus)
-  - `config_preprocess.json`: `preprocess.downsample_resolution` → `preprocessing.downsample.resolution`
-  - `config_global_mapping.json` / `config_sub_mapping.json`: `submap_voxel_resolution` → `registration.map.resolution`
-- `between_sigma_*` controls how "strong" Pelorus constraints are.
-
-## How it works
-
-- The module subscribes to GLIM odometry callbacks (`on_insert_imu`, `on_insert_frame`, `on_new_frame`).
-- It feeds IMU + points into Pelorus via `add_imu()` and `add_points_xyzit()`.
-- When Pelorus emits an odometry estimate, it is matched to the closest GLIM frame timestamp.
-- For consecutive matched frames, a `BetweenFactor<Pose3>` is added to GLIM's odometry graph.

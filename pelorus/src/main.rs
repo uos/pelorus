@@ -470,7 +470,7 @@ fn lio_with_ready_signal(
     // let registered_visual_publisher =
     // node.create_publisher::<Marker>("registered_viz", r2r::QosProfile::default())?;
 
-    let mut t_world_lidar = nalgebra::Isometry3::identity();
+    let mut t_world = nalgebra::Isometry3::identity();
     let mut t_last_current = nalgebra::Isometry3::identity();
 
     let mut lidar_path = Path {
@@ -491,6 +491,8 @@ fn lio_with_ready_signal(
 
     #[cfg(not(feature = "no-viz"))]
     let path_update_translate_threshold = 0.05; // default 0.15 meters - TODO config
+    #[cfg(not(feature = "no-viz"))]
+    let path_update_rotate_threshold = 0.1; // radians (~5.7 degrees) - TODO config
 
     let mut eval = RuntimeEvaluator::new();
 
@@ -603,7 +605,7 @@ fn lio_with_ready_signal(
                 map.clear_localmap();
 
                 info!("Resetting map");
-                t_world_lidar = nalgebra::Isometry3::identity();
+                t_world = nalgebra::Isometry3::identity();
                 t_last_current = nalgebra::Isometry3::identity();
             }
 
@@ -654,7 +656,7 @@ fn lio_with_ready_signal(
                 nalgebra::Isometry3::from_parts(initial_guess_translation, initial_guess_rotation)
             };
 
-            let init_guess_world = t_world_lidar * init_guess;
+            let init_guess_world = t_world * init_guess;
 
             let (register_pose, ekf_state) = {
                 let mut map = map.lock().unwrap();
@@ -677,36 +679,44 @@ fn lio_with_ready_signal(
                 }
             };
 
-            // log::debug!("Got a new registration");
-
+            // --- Adapting Coordinate Systems ---
             #[cfg(feature = "rerun")]
             rec.set_timestamp_secs_since_epoch("sensor", current_cloud_time);
 
-            let rev_imu_tf = if config.lidar_as_map_tf {
-                ekf_state.lidar_imu_extrinsic.inverse().cast::<f32>()
+            #[cfg(feature = "rerun")]
+            let ros_to_rerun = Isometry3::<f64>::identity(); // placeholder for other visualizations if needed
+
+            let old_t_world = t_world;
+
+            // TODO maybe not inverse when not transpose the same result
+            t_world = if config.lidar_as_map_tf {
+                ekf_state.lidar_imu_extrinsic.inverse() * register_pose.pose
             } else {
-                Isometry3::identity()
+                register_pose.pose
             };
 
-            // Transformation from the last pose to the current pose in the local frame.
-            t_last_current = t_world_lidar.inverse() * register_pose.pose;
-            t_world_lidar = rev_imu_tf.cast() * register_pose.pose;
+            // optional transform from global_lidar to global_imu
+            // t_world = corr_t_l_i.cast() * register_pose.pose;
 
-            let mut pelorus_odom = lifis_tick.imu_odom.clone();
+            // transformation from the last pose to the current pose in the local frame
+            t_last_current = old_t_world.inverse() * t_world;
+
+            let mut pelorus_odom = Odometry::default();
             pelorus_odom.header.stamp = Time {
                 sec: lifis_tick.odom_time.sec,
                 nanosec: lifis_tick.odom_time.nanosec,
             };
             pelorus_odom.header.frame_id = config.prelio_params.map_frame.clone();
             pelorus_odom.child_frame_id = orig_frame.clone();
-            pelorus_odom.pose.pose.position.x = t_world_lidar.translation.vector.x;
-            pelorus_odom.pose.pose.position.y = t_world_lidar.translation.vector.y;
-            pelorus_odom.pose.pose.position.z = t_world_lidar.translation.vector.z;
-            pelorus_odom.pose.pose.orientation.x = t_world_lidar.rotation.i;
-            pelorus_odom.pose.pose.orientation.y = t_world_lidar.rotation.j;
-            pelorus_odom.pose.pose.orientation.z = t_world_lidar.rotation.k;
-            pelorus_odom.pose.pose.orientation.w = t_world_lidar.rotation.w;
+            pelorus_odom.pose.pose.position.x = t_world.translation.vector.x;
+            pelorus_odom.pose.pose.position.y = t_world.translation.vector.y;
+            pelorus_odom.pose.pose.position.z = t_world.translation.vector.z;
+            pelorus_odom.pose.pose.orientation.x = t_world.rotation.i;
+            pelorus_odom.pose.pose.orientation.y = t_world.rotation.j;
+            pelorus_odom.pose.pose.orientation.z = t_world.rotation.k;
+            pelorus_odom.pose.pose.orientation.w = t_world.rotation.w;
             {
+                // TODO covariances probably not in the right frame right now and ignores extrinsic rotation
                 let (pose_cov_iekf, twist_cov_iekf) = {
                     let map = pipeline.map();
                     let guard = map.lock().unwrap();
@@ -751,7 +761,25 @@ fn lio_with_ready_signal(
                             ),
                         );
 
-                        if distance > path_update_translate_threshold {
+                        // Check rotational difference
+                        let last_quat = UnitQuaternion::from_quaternion(nalgebra::Quaternion::new(
+                            last_pose.orientation.w,
+                            last_pose.orientation.x,
+                            last_pose.orientation.y,
+                            last_pose.orientation.z,
+                        ));
+                        let current_quat =
+                            UnitQuaternion::from_quaternion(nalgebra::Quaternion::new(
+                                pelorus_odom.pose.pose.orientation.w,
+                                pelorus_odom.pose.pose.orientation.x,
+                                pelorus_odom.pose.pose.orientation.y,
+                                pelorus_odom.pose.pose.orientation.z,
+                            ));
+                        let rotation_angle = last_quat.angle_to(&current_quat);
+
+                        if distance > path_update_translate_threshold
+                            || rotation_angle > path_update_rotate_threshold
+                        {
                             lidar_path.poses.push(PoseStamped {
                                 pose: pelorus_odom.pose.pose.clone(),
                                 header: pelorus_odom.header.clone(),
@@ -793,15 +821,15 @@ fn lio_with_ready_signal(
                     }
                 }
             };
-            let map_to_lidar_transform = t_world_lidar.cast::<f32>();
+
             cloud.header.frame_id = orig_frame.clone();
             cloud.header.stamp = Time {
                 sec: lifis_tick.odom_time.sec,
                 nanosec: lifis_tick.odom_time.nanosec,
             };
             if let Some(mut trajectory_file) = trajectory_file.as_mut() {
-                let t = &map_to_lidar_transform.translation.vector;
-                let q = map_to_lidar_transform.rotation.quaternion();
+                let t = &t_world.translation.vector;
+                let q = t_world.rotation.quaternion();
 
                 // <time in seconds> <translation_x> <translation_y> <translation_z> <quaternion_x> <quaternion_y> <quaternion_z> <quaternion_w>
                 // Format the string to write to the file
@@ -824,7 +852,13 @@ fn lio_with_ready_signal(
                 #[cfg(feature = "rerun")]
                 {
                     let points = total_map.iter().map(|v| {
-                        let v = rev_imu_tf.transform_point(&v);
+                        // TODO maybe not inverse(), see above in lidar_as_map_tf
+                        let v = ros_to_rerun.cast()
+                            * ekf_state
+                                .lidar_imu_extrinsic
+                                .inverse()
+                                .cast()
+                                .transform_point(v);
                         glam::Vec3::new(v.x, v.y, v.z)
                     });
 
@@ -845,7 +879,7 @@ fn lio_with_ready_signal(
                         total_map
                             .iter()
                             .map(|p| {
-                                let p = rev_imu_tf.transform_point(&p);
+                                let p = corr_t_l_i.transform_point(&p);
                                 PointXYZ::new(p.x, p.y, p.z)
                             })
                             .collect(),
@@ -870,15 +904,15 @@ fn lio_with_ready_signal(
                 child_frame_id: orig_frame,
                 transform: Transform {
                     translation: Vector3 {
-                        x: map_to_lidar_transform.translation.vector.x as f64,
-                        y: map_to_lidar_transform.translation.vector.y as f64,
-                        z: map_to_lidar_transform.translation.vector.z as f64,
+                        x: t_world.translation.vector.x as f64,
+                        y: t_world.translation.vector.y as f64,
+                        z: t_world.translation.vector.z as f64,
                     },
                     rotation: Quaternion {
-                        x: map_to_lidar_transform.rotation.quaternion().i as f64,
-                        y: map_to_lidar_transform.rotation.quaternion().j as f64,
-                        z: map_to_lidar_transform.rotation.quaternion().k as f64,
-                        w: map_to_lidar_transform.rotation.quaternion().w as f64,
+                        x: t_world.rotation.quaternion().i as f64,
+                        y: t_world.rotation.quaternion().j as f64,
+                        z: t_world.rotation.quaternion().k as f64,
+                        w: t_world.rotation.quaternion().w as f64,
                     },
                 },
             };
@@ -902,16 +936,17 @@ fn lio_with_ready_signal(
 
             #[cfg(feature = "rerun")]
             {
+                let t_world_rerun = ros_to_rerun.cast() * t_world;
                 let pose = rerun::Transform3D::from_translation(glam::Vec3::new(
-                    map_to_lidar_transform.translation.x,
-                    map_to_lidar_transform.translation.y,
-                    map_to_lidar_transform.translation.z,
+                    t_world_rerun.translation.x as f32,
+                    t_world_rerun.translation.y as f32,
+                    t_world_rerun.translation.z as f32,
                 ))
                 .with_quaternion(glam::Quat::from_xyzw(
-                    map_to_lidar_transform.rotation.quaternion().i,
-                    map_to_lidar_transform.rotation.quaternion().j,
-                    map_to_lidar_transform.rotation.quaternion().k,
-                    map_to_lidar_transform.rotation.quaternion().w,
+                    t_world_rerun.rotation.quaternion().i as f32,
+                    t_world_rerun.rotation.quaternion().j as f32,
+                    t_world_rerun.rotation.quaternion().k as f32,
+                    t_world_rerun.rotation.quaternion().w as f32,
                 ));
 
                 if let Err(err) = rec.log("world/lidar", &pose) {
@@ -950,8 +985,6 @@ fn lio_with_ready_signal(
 
             #[cfg(feature = "rerun")]
             {
-                const DECAY: bool = false;
-
                 #[cfg(feature = "ros2-client")]
                 let ps = impl_ros2_interfaces_jazzy_serde::to_pointcloud2_msg(cloud.clone());
                 #[cfg(feature = "ratpub")]
@@ -964,10 +997,9 @@ fn lio_with_ready_signal(
                     .try_into_iter()
                     .unwrap()
                     .map(|v: PointXYZI| {
-                        let color = gradient.eval_continuous(v.intensity as f64);
-                        let v = if DECAY {
-                            map_to_lidar_transform
-                                .transform_point(&nalgebra::Point3::new(v.x, v.y, v.z).cast())
+                        let color = gradient.eval_continuous(v.intensity as f64 / 255.0);
+                        let v = if config.rerun_undistorted_static_world {
+                            t_world.cast() * nalgebra::Point3::new(v.x, v.y, v.z)
                         } else {
                             nalgebra::Point3::new(v.x, v.y, v.z)
                         };
@@ -978,7 +1010,7 @@ fn lio_with_ready_signal(
                     })
                     .unzip();
 
-                let topic = if DECAY {
+                let topic = if config.rerun_undistorted_static_world {
                     format!("undistorted_{:?}", current_cloud_time)
                 } else {
                     "world/lidar/undistorted".to_string()
@@ -1024,16 +1056,41 @@ fn lio_with_ready_signal(
             if changed_lidar_path {
                 #[cfg(all(not(feature = "no-viz"), feature = "rerun"))]
                 {
-                    let lidar_path =
-                        rerun::LineStrip3D::from_iter(lidar_path.poses.iter().map(|p| {
-                            glam::Vec3::new(
-                                p.pose.position.x as f32,
-                                p.pose.position.y as f32,
-                                p.pose.position.z as f32,
-                            )
-                        }));
-                    let lidar_path_strips = rerun::LineStrips3D::new(std::iter::once(lidar_path));
-                    if let Err(err) = rec.log("world", &lidar_path_strips) {
+                    // Log orientation axes as children of world/lidar
+                    // They will automatically follow the lidar's current transform
+                    const AXIS_LENGTH: f32 = 0.5;
+                    const AXIS_RADIUS: f32 = 0.02;
+
+                    // X-axis (red)
+                    let x_capsule =
+                        rerun::Capsules3D::from_lengths_and_radii([AXIS_LENGTH], [AXIS_RADIUS])
+                            .with_rotation_axis_angles([rerun::RotationAxisAngle::new(
+                                glam::Vec3::Y,
+                                std::f32::consts::FRAC_PI_2,
+                            )])
+                            .with_colors([rerun::Color::from_rgb(255, 0, 0)]);
+
+                    // Y-axis (green)
+                    let y_capsule =
+                        rerun::Capsules3D::from_lengths_and_radii([AXIS_LENGTH], [AXIS_RADIUS])
+                            .with_rotation_axis_angles([rerun::RotationAxisAngle::new(
+                                glam::Vec3::X,
+                                -std::f32::consts::FRAC_PI_2,
+                            )])
+                            .with_colors([rerun::Color::from_rgb(0, 255, 0)]);
+
+                    // Z-axis (blue)
+                    let z_capsule =
+                        rerun::Capsules3D::from_lengths_and_radii([AXIS_LENGTH], [AXIS_RADIUS])
+                            .with_colors([rerun::Color::from_rgb(0, 0, 255)]);
+
+                    if let Err(err) = rec.log("world/lidar/axis_x", &x_capsule) {
+                        error!("Error sending to rerun {err}");
+                    }
+                    if let Err(err) = rec.log("world/lidar/axis_y", &y_capsule) {
+                        error!("Error sending to rerun {err}");
+                    }
+                    if let Err(err) = rec.log("world/lidar/axis_z", &z_capsule) {
                         error!("Error sending to rerun {err}");
                     }
                 }
@@ -1078,14 +1135,15 @@ fn lio_with_ready_signal(
                 });
             #[cfg(feature = "rerun")]
             {
-                let imu_path = rerun::LineStrip3D::from_iter(imu_path.poses.iter().map(|p| {
-                    glam::Vec3::new(
-                        p.pose.position.x as f32,
-                        p.pose.position.y as f32,
-                        p.pose.position.z as f32,
-                    )
-                }));
-                let imu_path_strips = rerun::LineStrips3D::new(std::iter::once(imu_path));
+                let imu_path_strip =
+                    rerun::LineStrip3D::from_iter(imu_path.poses.iter().map(|p| {
+                        glam::Vec3::new(
+                            p.pose.position.x as f32,
+                            p.pose.position.y as f32,
+                            p.pose.position.z as f32,
+                        )
+                    }));
+                let imu_path_strips = rerun::LineStrips3D::new(std::iter::once(imu_path_strip));
                 if let Err(err) = rec.log("imu_path", &imu_path_strips) {
                     error!("Error sending to rerun {err}");
                 }
