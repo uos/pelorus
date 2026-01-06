@@ -1,8 +1,7 @@
 use log::{error, warn};
 use nalgebra::*;
-use pelorus_core::{KinematicModel, OdomMsg};
+use pelorus_core::{KinematicModel, OdomMsg, log_debouncer::should_log_once_default};
 use prelio::timestamp_to_secs;
-use pelorus_core::log_debouncer::should_log_once_default;
 
 use sophus_lie::prelude::*;
 
@@ -14,21 +13,21 @@ const GRAVITY_DEFAULT: f64 = 9.81;
 
 #[derive(Clone, Debug)]
 pub struct StateIKFom {
-    pub pose: SE3,
-    pub offset_r_l_i: SO3,
-    pub offset_t_l_i: Vector3<f64>,
-    pub vel: Vector3<f64>,
-    pub bg: Vector3<f64>,   // estimated gyro bias
-    pub ba: Vector3<f64>,   // accelerometer bias (TODO never set)
-    pub grav: Vector3<f64>, // gravity vector
+    pub pose: SE3,                    // T_W_I: world frame pose of IMU
+    pub lidar_to_imu_r: SO3,          // R_I_L: lidar to IMU rotation (extrinsic calibration)
+    pub lidar_to_imu_t: Vector3<f64>, // t_I_L: lidar to IMU translation (extrinsic calibration)
+    pub vel: Vector3<f64>,            // velocity in world frame
+    pub bg: Vector3<f64>,             // estimated gyro bias
+    pub ba: Vector3<f64>,             // accelerometer bias
+    pub grav: Vector3<f64>,           // gravity vector in world frame
 }
 
 impl StateIKFom {
     pub fn new(gravity: f64) -> Self {
         StateIKFom {
             pose: SE3::identity(),
-            offset_r_l_i: SO3::identity(),
-            offset_t_l_i: Vector3::zeros(),
+            lidar_to_imu_r: SO3::identity(),
+            lidar_to_imu_t: Vector3::zeros(),
             vel: Vector3::zeros(),
             bg: Vector3::zeros(),
             ba: Vector3::zeros(),
@@ -41,8 +40,8 @@ impl Default for StateIKFom {
     fn default() -> Self {
         StateIKFom {
             pose: SE3::identity(),
-            offset_r_l_i: SO3::identity(),
-            offset_t_l_i: Vector3::zeros(),
+            lidar_to_imu_r: SO3::identity(),
+            lidar_to_imu_t: Vector3::zeros(),
             vel: Vector3::zeros(),
             bg: Vector3::zeros(),
             ba: Vector3::zeros(),

@@ -1,3 +1,5 @@
+eval
+glim_integration/glim
 **/target
 .vscode
 **/__pycache__/

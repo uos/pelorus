@@ -2,17 +2,6 @@
 
 GLIM odometry backend plugin that runs Pelorus as the odometry estimation module.
 
-This is an alternative to GLIM's built-in `odometry_estimation_cpu/gpu/ct` modules.
-
-## Quick start
-
-You need:
-
-- gtsam
-- gtsam_points
-- glim
-- Pelorus
-
 ```sh
 cd pelorus/glim_integration/pelorus_glim_odometry
 mkdir build && cd build
@@ -25,27 +14,24 @@ sudo -E make install
 
 > ½Note: Pelorus needs the ROS communication in `config_sensors` to be set to `reliable` in order to work correctly.
 
-1. Create a config file (e.g., `config_odometry_pelorus.json`) in your GLIM config root.
-2. Set `so_name` to:
-   - Linux: `libodometry_estimation_pelorus.so`
-   - macOS: `libodometry_estimation_pelorus.dylib`
-3. In GLIM's `config.json`, set:
-   - `"config_odometry": "config_odometry_pelorus.json"`
-4. Run GLIM as usual
+In GLIM's `config.json`, set:
+ - `"config_odometry": "config_odometry_pelorus.json"`
 
-## Configuration
+Create the config file in your GLIM config root:
 
-
-Example with all options:
 ```json
 {
   "odometry_estimation": {
     "so_name": "libodometry_estimation_pelorus.so",
     "use_glim_config": true,
+
+    // optional, overrides all glim configs
+    //"pelorus_rl_path": "path/to/your/pelorus.rl",
+
+    "input_resolution": 0.2,
+    "map_resolution": 0.5
   }
 }
 ```
 
-- `so_name` (required): Path or name of the plugin library
-- `pelorus_rl_path` (optional): Path to Pelorus config file (empty = defaults)
-- `use_glim_config` (optional): If `true` and `pelorus_rl_path` is empty, the plugin will generate a Pelorus config based on GLIM's settings.
+Now run GLIM as usual.

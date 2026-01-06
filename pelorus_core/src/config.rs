@@ -327,6 +327,7 @@ pub fn ast_to_config(defaults: Evaluated, user: Evaluated) -> anyhow::Result<Lio
         imu_path_qos,
         imu_filtered_qos,
         warning_debounce,
+        undistorted_static_world,
     ) = {
         let output_ns = asts.filter_ns(&["output"]);
         let terminal_ns = output_ns.filter_ns(&["terminal"]);
@@ -338,6 +339,8 @@ pub fn ast_to_config(defaults: Evaluated, user: Evaluated) -> anyhow::Result<Lio
             0
         };
         let warning_debounce = resolve_var!(terminal_ns, "warning_debounce", as f64, Rhs::Val(Val::UnitedVal(UnitVal::TimeVal(v))) => { v.get::<second>() as f64 })?;
+        let rerun_ns = output_ns.filter_ns(&["rerun"]);
+        let undistorted_static_world = resolve_var!(rerun_ns, "undistorted_static_world", as bool, Rhs::Val(Val::BoolVal(b)) => {b})?;
 
         let map_frame = resolve_var!(output_ns, "global_frame", as String, Rhs::Val(Val::StringVal(s)) | Rhs::Path(s) => {s})?;
         let lidar_as_map_tf = resolve_var!(output_ns, "lidar_as_map_tf_base", as bool, Rhs::Val(Val::BoolVal(b)) => {b})?;
@@ -363,6 +366,7 @@ pub fn ast_to_config(defaults: Evaluated, user: Evaluated) -> anyhow::Result<Lio
             imu_path_qos,
             imu_filtered_qos,
             warning_debounce,
+            undistorted_static_world,
         )
     };
 
@@ -455,6 +459,7 @@ pub fn ast_to_config(defaults: Evaluated, user: Evaluated) -> anyhow::Result<Lio
     };
 
     let final_config = LioConfig {
+        rerun_undistorted_static_world: undistorted_static_world,
         k_neighbors,
         neighbor_max_range,
         map_resolution,

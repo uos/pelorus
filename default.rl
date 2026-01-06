@@ -1,6 +1,6 @@
 preprocessing {
 
-  downsample.resolution = 10cm # "downsample" feature flag needs to be enabled in crates/pelorus/Cargo.toml.
+  downsample.resolution = 25cm # "downsample" feature flag needs to be enabled in crates/pelorus/Cargo.toml.
 
   initial_scan_accumulate = 1 # Assume the first n scans are recorded while standing still. This can help with non-repetitive patterns because this method heavily depends on spatial resolution.
 
@@ -44,7 +44,7 @@ preprocessing {
 registration {
 
   map {
-    resolution = 25cm # Voxel side length. NOTE: This will heavily affect your registration accuracy.
+    resolution = 50cm # Voxel side length. NOTE: This will heavily affect your registration accuracy.
     capacity = 120000 # How many Voxels of the previous defined resolution to save at any time. With Cuda enabled, the capacity will be round up to the next power of 2.
    
     distribution_update_sensitivity = 10.0 # Magic weighting value for handling the sensivity to new scans. The higher this value, the sensitive is it to brand new scans.
@@ -77,11 +77,10 @@ imu {
   from_lidar_transform {
     use_tf_tree = false # Ignore the next manual translation and use the TF tree instead. The lookup will be once with receiving the first IMU message.
 
-    translation = [0.0m, 0.0m, 0.0m] # Translation Vector Lidar_to_IMU
-
-    # Rotation Matrix Lidar_to_IMU
-    rotation = [ [1.0, 0.0, 0.0],
-                 [0.0, 1.0, 0.0],
+    # lidar -> imu
+    translation = [-6.253mm, 11.775mm, 28.535mm]
+    rotation = [ [-1.0, 0.0, 0.0],
+                 [0.0, -1.0, 0.0],
                  [0.0, 0.0, 1.0] ]
   }
 
@@ -142,6 +141,10 @@ output {
 
   mapping {
     resolution = 20cm # When "mapping" flag is enabled, this defines the resolution of the global map.
+  }
+
+  rerun {
+    undistorted_static_world = false # Logs the registered clouds static in world coordinates so they do not vanish
   }
 
   lio_odometry_msg_qos = SystemDefault # Reliable | BestEffort | SystemDefault

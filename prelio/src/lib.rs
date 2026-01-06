@@ -315,10 +315,13 @@ fn filter_downsample<const N: usize, P: PointXYZITimestamp<N>>(
             #[cfg(feature = "downsample")]
             {
                 let key = hash(&point_raw, voxel_size);
-                Some((key, PointXYZIT::from_p(point_raw, point.intensity(), ts)))
+                Some((
+                    key,
+                    PointXYZIT::from_p(point_raw, point.intensity() * 255.0, ts),
+                ))
             }
             #[cfg(not(feature = "downsample"))]
-            return Some(PointXYZIT::from_p(point_raw, point.intensity(), ts));
+            return Some(PointXYZIT::from_p(point_raw, point.intensity() * 255.0, ts));
         })
         .collect::<Vec<_>>();
 
