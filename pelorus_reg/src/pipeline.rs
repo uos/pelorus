@@ -17,7 +17,7 @@ use crate::{Registration, registration::RegistrationState};
 pub struct Pipeline {
     map: Arc<Mutex<RegistrationState>>,
     ext_lidar_to_imu: Isometry3<f64>,
-    config: LioConfig,
+    pub config: LioConfig,
     #[cfg(feature = "cuda")]
     cuda_stream: pelorus_cuda::Stream,
 }

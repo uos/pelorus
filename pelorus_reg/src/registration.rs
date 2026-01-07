@@ -24,6 +24,12 @@ pub struct RegistrationState {
     pub map: spole::IVoxHashMap,
     laser_point_noise_cov: f64,
     ekf_max_iterations: usize,
+    #[cfg(feature = "cuda")]
+    planes_cpu_buffer: Vec<PointXYZINormal>,
+    #[cfg(feature = "cuda")]
+    planes_gpu_buffer: Option<CudaBuffer>,
+    #[cfg(not(feature = "cuda"))]
+    planes_buffer: Vec<PointXYZINormal>,
 }
 
 fn rotate_covariance(cov: &Matrix3<f64>, rot: &Matrix3<f64>) -> Matrix3<f64> {
@@ -58,6 +64,12 @@ impl RegistrationState {
             map,
             laser_point_noise_cov,
             ekf_max_iterations,
+            #[cfg(feature = "cuda")]
+            planes_cpu_buffer: Vec::new(),
+            #[cfg(feature = "cuda")]
+            planes_gpu_buffer: None,
+            #[cfg(not(feature = "cuda"))]
+            planes_buffer: Vec::new(),
         }
     }
 
@@ -460,42 +472,71 @@ impl crate::Registration for RegistrationState {
         if !map_empty {
             #[cfg(not(feature = "cuda"))]
             let map = &mut self.map;
-            const EXTRA: f32 = if cfg!(feature = "cuda") { 1.3 } else { 1.2 };
+            const EXTRA: f32 = if cfg!(feature = "cuda") { 1.7 } else { 1.5 };
             let cloud_len_alloc = (EXTRA * cloud.len() as f32).ceil() as usize;
             {
-                eval_outer.write().unwrap().start("ekf correct").unwrap();
+                eval_outer.write().unwrap().start("ekf_correct").unwrap();
             }
 
             let eval_cb = eval_outer.clone();
 
             #[cfg(feature = "cuda")]
-            let planes_cpu_buffer = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+            {
+                if self.planes_cpu_buffer.capacity() < cloud.len() {
+                    self.planes_cpu_buffer
+                        .reserve(cloud_len_alloc - self.planes_cpu_buffer.capacity());
+                }
+
+                if self.planes_gpu_buffer.is_none()
+                    || self.planes_gpu_buffer.as_ref().unwrap().n < cloud.len()
+                {
+                    self.planes_gpu_buffer = Some(CudaBuffer::new(
+                        stream,
+                        size_of::<PointXYZINormal>(),
+                        cloud_len_alloc,
+                    ));
+                }
+            }
+
+            #[cfg(not(feature = "cuda"))]
+            {
+                if self.planes_buffer.capacity() < cloud.len() {
+                    self.planes_buffer
+                        .reserve(cloud_len_alloc - self.planes_buffer.capacity());
+                }
+            }
+
             #[cfg(feature = "cuda")]
-            let planes_gpu_buffer = std::sync::Arc::new(std::sync::Mutex::new(CudaBuffer::new(
-                stream,
-                size_of::<PointXYZINormal>(),
-                cloud_len_alloc,
-            )));
+            let planes_cpu_buffer = std::ptr::addr_of_mut!(self.planes_cpu_buffer);
+            #[cfg(feature = "cuda")]
+            let planes_gpu_buffer = std::ptr::addr_of_mut!(self.planes_gpu_buffer);
+
+            #[cfg(not(feature = "cuda"))]
+            let planes_buffer = std::ptr::addr_of_mut!(self.planes_buffer);
 
             self.ekf.correct(
                 self.laser_point_noise_cov,
                 lidar_timestamp,
                 self.ekf_max_iterations,
+                eval_cb.clone(),
                 move |ekf_state: &crate::iekf::StateIKFom,
                       valid: &mut bool,
                       _converged: bool,
                       h: &mut DVector<f64>,
                       h_x: &mut DMatrix<f64>| {
-                    #[cfg(feature = "cuda")]
-                    let mut planes = planes_cpu_buffer.lock().unwrap();
-                    #[cfg(feature = "cuda")]
-                    planes.resize_with(cloud_len_alloc, || PointXYZINormal::default());
-                    #[cfg(feature = "cuda")]
-                    let mut planes_gpu = planes_gpu_buffer.lock().unwrap();
-
                     let mut eval = eval_cb.write().unwrap();
+                    eval.start("ekf_correct/model/planes").unwrap();
 
-                    eval.start("planes").unwrap();
+                    #[cfg(feature = "cuda")]
+                    let planes = unsafe { &mut *planes_cpu_buffer };
+                    #[cfg(feature = "cuda")]
+                    {
+                        planes.clear();
+                        unsafe { planes.set_len(cloud.len()) };
+                    }
+                    #[cfg(feature = "cuda")]
+                    let planes_gpu = unsafe { (*planes_gpu_buffer).as_mut().unwrap() };
+
                     #[cfg(feature = "cuda")]
                     let planes = {
                         let cloud = match cloud {
@@ -521,8 +562,8 @@ impl crate::Registration for RegistrationState {
                                 ekf_state.lidar_to_imu_t.z,
                             ),
                             &ekf_state.lidar_to_imu_r.matrix().into(),
-                            &mut planes,
-                            &mut planes_gpu,
+                            planes,
+                            planes_gpu,
                         );
 
                         planes
@@ -531,6 +572,10 @@ impl crate::Registration for RegistrationState {
                     #[cfg(not(feature = "cuda"))]
                     let planes = {
                         let LocatedBufferView::Ram(cloud) = cloud;
+
+                        let planes_buf: &mut Vec<PointXYZINormal> = unsafe { &mut *planes_buffer };
+                        planes_buf.clear();
+
                         let iter = {
                             #[cfg(feature = "parallel")]
                             {
@@ -542,8 +587,11 @@ impl crate::Registration for RegistrationState {
                             }
                         };
 
-                        let planes: Vec<PointXYZINormal> = iter
-                            .filter_map(|point_local| {
+                        #[cfg(feature = "parallel")]
+                        {
+                            let pm = iter.flat_map(|point_local| {
+                                // let filtered: Vec<PointXYZINormal> = iter
+                                // .filter_map(|point_local| {
                                 let p_l = point_local.xyz();
                                 let p_imu = ekf_state.lidar_to_imu_r.matrix() * p_l.cast()
                                     + ekf_state.lidar_to_imu_t;
@@ -577,8 +625,6 @@ impl crate::Registration for RegistrationState {
                                     if s <= 0.9 {
                                         None
                                     } else {
-                                        // winning_factor = Some((pd2, 0));
-
                                         Some(PointXYZINormal::new(
                                             point_local.x,
                                             point_local.y,
@@ -590,17 +636,69 @@ impl crate::Registration for RegistrationState {
                                         ))
                                     }
                                 }
-                            })
-                            .collect::<Vec<_>>();
+                            });
 
-                        planes
+                            planes_buf.par_extend(pm);
+                        }
+
+                        #[cfg(not(feature = "parallel"))]
+                        {
+                            for point_local in iter {
+                                let p_l = point_local.xyz();
+                                let p_imu = ekf_state.lidar_to_imu_r.matrix() * p_l.cast()
+                                    + ekf_state.lidar_to_imu_t;
+                                let p_world = ekf_state.pose.transform(p_imu.coords);
+
+                                let query_point = PointXYZ::new(
+                                    p_world.x as f32,
+                                    p_world.y as f32,
+                                    p_world.z as f32,
+                                );
+
+                                if let Some(plane) = map.plane_fit_from_distributions(&query_point)
+                                {
+                                    let pd2 = plane[0] * p_world.x as f32
+                                        + plane[1] * p_world.y as f32
+                                        + plane[2] * p_world.z as f32
+                                        + plane[3];
+                                    let s = 1.0
+                                        - 0.9 * pd2.abs()
+                                            / nalgebra::Point3::new(
+                                                point_local.x,
+                                                point_local.y,
+                                                point_local.z,
+                                            )
+                                            .cast::<f64>()
+                                            .coords
+                                            .norm()
+                                            .sqrt()
+                                                as f32;
+
+                                    if s > 0.9 {
+                                        planes_buf.push(PointXYZINormal::new(
+                                            point_local.x,
+                                            point_local.y,
+                                            point_local.z,
+                                            pd2,
+                                            plane[0],
+                                            plane[1],
+                                            plane[2],
+                                        ));
+                                    }
+                                }
+                            }
+                        }
+
+                        planes_buf
                     };
-                    eval.stop("planes").unwrap();
+                    eval.stop("ekf_correct/model/planes").unwrap();
 
                     if planes.is_empty() {
                         *valid = false;
                         return;
                     }
+
+                    eval.start("ekf_correct/model/jacobian").unwrap();
 
                     if planes.len() > h.nrows() {
                         *h = DVector::<f64>::zeros(cloud_len_alloc);
@@ -610,7 +708,6 @@ impl crate::Registration for RegistrationState {
                         *h_x = DMatrix::<f64>::zeros(cloud_len_alloc, 18);
                     }
 
-                    eval.start("jacobian").unwrap();
                     planes
                         .iter()
                         .zip(h_x.row_iter_mut())
@@ -662,10 +759,10 @@ impl crate::Registration for RegistrationState {
                             h_x_row[17] = 0.0;
                             h_row[0] = -nearest_plane[3];
                         });
-                    eval.stop("jacobian").unwrap();
+                    eval.stop("ekf_correct/model/jacobian").unwrap();
                 },
             );
-            eval_outer.write().unwrap().stop("ekf correct").unwrap();
+            eval_outer.write().unwrap().stop("ekf_correct").unwrap();
         };
 
         // Prepare transform from lidar -> imu frame.
@@ -703,7 +800,7 @@ impl crate::Registration for RegistrationState {
             .unwrap();
 
         {
-            eval_outer.write().unwrap().start("map update").unwrap();
+            eval_outer.write().unwrap().start("map_update").unwrap();
         }
 
         #[cfg(not(feature = "cuda"))]
@@ -724,7 +821,7 @@ impl crate::Registration for RegistrationState {
             );
         }
         {
-            eval_outer.write().unwrap().stop("map update").unwrap();
+            eval_outer.write().unwrap().stop("map_update").unwrap();
         }
 
         Ok(Some(crate::CloudRegisterResult {

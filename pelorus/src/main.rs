@@ -1220,8 +1220,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         Command::Run(args) => {
             match args {
                 RunArgs::Online(config_args) => {
-                    env_logger::init();
-
                     let default_ast = ratslang::compile_code(DEFAULT_CONFIG_STR)
                         .map_err(|e| anyhow!("Failed to compile embedded default config: {}", e))?;
 
@@ -1246,6 +1244,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     };
 
                     let config = ast_to_config(default_ast, user_ast)?;
+                    env_logger::init();
                     lio(config, config_args.export_trajectory, config_args.rat)
                 }
                 #[cfg(feature = "rat")]
@@ -1255,11 +1254,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     let capture_for_minot_stdout = output_capture.clone();
                     let capture_for_minot_stderr = output_capture.clone();
                     let capture_for_tui = output_capture.clone();
-
-                    let logger = output_tui::CaptureLogger::new(output_capture.clone());
-                    log::set_boxed_logger(Box::new(logger))
-                        .map_err(|e| anyhow!("Failed to set logger: {}", e))?;
-                    log::set_max_level(log::LevelFilter::Info);
 
                     let default_ast = ratslang::compile_code(DEFAULT_CONFIG_STR)
                         .map_err(|e| anyhow!("Failed to compile embedded default config: {}", e))?;
@@ -1289,6 +1283,27 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         config.feedback_fps = 0; // disable feedback for offline
                         config
                     };
+
+                    let logger = output_tui::CaptureLogger::new(output_capture.clone());
+                    log::set_boxed_logger(Box::new(logger))
+                        .map_err(|e| anyhow!("Failed to set logger: {}", e))?;
+
+                    let rl = std::env::var("RUST_LOG").unwrap_or_else(|_| "info".to_string());
+                    let rl_lc = rl.to_lowercase();
+                    let level_filter = if rl_lc.contains("trace") {
+                        log::LevelFilter::Trace
+                    } else if rl_lc.contains("debug") {
+                        log::LevelFilter::Debug
+                    } else if rl_lc.contains("info") {
+                        log::LevelFilter::Info
+                    } else if rl_lc.contains("warn") {
+                        log::LevelFilter::Warn
+                    } else if rl_lc.contains("error") {
+                        log::LevelFilter::Error
+                    } else {
+                        log::LevelFilter::Info
+                    };
+                    log::set_max_level(level_filter);
 
                     let lidar_topic = &config.prelio_node_params.cloud_src_topic;
                     let imu_topic = &config.prelio_node_params.imu_src_topic;
@@ -1444,7 +1459,7 @@ pf! i 1
 
                     let (pelorus_ready_tx, pelorus_ready_rx) = std::sync::mpsc::channel();
 
-                    // start LIO in thread
+                    // start Odometry in thread
                     let lio_handle = std::thread::spawn(move || {
                         if let Err(e) = lio_with_ready_signal(
                             config,
@@ -1452,8 +1467,8 @@ pf! i 1
                             offline_args.export_trajectory,
                             true,
                         ) {
-                            error!("LIO failed: {}", e);
-                            return Err(format!("LIO failed: {}", e));
+                            error!("Odometry failed: {}", e);
+                            return Err(format!("Odometry failed: {}", e));
                         }
                         Ok(())
                     });

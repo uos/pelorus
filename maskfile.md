@@ -42,7 +42,7 @@ RUSTFLAGS="-C target-cpu=native -C llvm-args=-cost-kind=latency" cargo run --rel
 > Run within Minot toolchain as fast as possible.
 
 ~~~sh
-RUSTFLAGS="-C target-cpu=native -C llvm-args=-cost-kind=latency" cargo run --release --features offline,parallel -- run online -c pelorus.rl
+RUSTFLAGS="-C target-cpu=native -C llvm-args=-cost-kind=latency" cargo run --release --no-default-features --features mimalloc,offline,parallel -- run online -rc pelorus.rl
 ~~~
 
 ## opt-ros2
@@ -50,7 +50,7 @@ RUSTFLAGS="-C target-cpu=native -C llvm-args=-cost-kind=latency" cargo run --rel
 > Maximum speed using default flags.
 
 ~~~sh
-RUSTFLAGS="-C target-cpu=native -C llvm-args=-cost-kind=latency" cargo run --release --features offline -- run -c pelorus.rl
+RUSTFLAGS="-C target-cpu=native -C llvm-args=-cost-kind=latency" cargo run --release --no-default-features --features mimalloc,parallel,downsample,ros2 -- run -c pelorus.rl
 ~~~
 
 ## dev

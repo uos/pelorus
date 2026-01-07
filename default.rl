@@ -133,6 +133,9 @@ output {
     ui = true # Show terminal outputs like timings or other metrics.
     fps = 1 # Refresh rate for rendering to the terminal in frames per second
     warning_debounce = 1s # Debounce time for specific warnings
+     
+    # Log level (accepted: trace, debug, info, warn, error).
+    log_level = "error"
   }
 
   global_frame = "lio_init" # Which frame to publish the TF messages to
