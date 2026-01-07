@@ -11,11 +11,13 @@ rust-version.workspace = true
 [dependencies]
 anyhow.workspace = true
 nalgebra.workspace = true
+faer.workspace = true
 ratslang.workspace = true
 uom.workspace = true
 either.workspace = true
 ros_pointcloud2.workspace = true
 serde.workspace = true
+log.workspace = true
 r2r = { workspace = true, optional = true }
 once_cell.workspace = true
 

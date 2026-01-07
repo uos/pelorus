@@ -1,6 +1,6 @@
 [package]
 name = "pelorus_reg"
-description = "LiDAR Odometry Registration"
+description = "Registration for Pelorus Odometry."
 
 version.workspace = true
 edition.workspace = true
@@ -16,6 +16,8 @@ pelorus_cuda = { workspace = true, optional = true }
 ros_pointcloud2.workspace = true
 anyhow.workspace = true
 nalgebra.workspace = true
+faer.workspace = true
+faer-ext.workspace = true
 sophus_lie.workspace = true
 rayon.workspace = true
 spole.workspace = true
