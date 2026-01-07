@@ -815,9 +815,15 @@ fn lio_with_ready_signal(
                     #[cfg(feature = "cuda")]
                     LocatedBufferView::Cuda { buffer: cloud } => {
                         let buff = cloud.into_cloud(&cuda_stream);
-                        ros_pointcloud2::PointCloud2Msg::try_from_vec(&buff)
-                            .unwrap()
-                            .into()
+                        let msg = ros_pointcloud2::PointCloud2Msg::try_from_vec(buff).unwrap();
+                        #[cfg(feature = "ros2-client")]
+                        let out = impl_ros2_interfaces_jazzy_serde::from_pointcloud2_msg(msg);
+                        #[cfg(feature = "ratpub")]
+                        let out = impl_ros2_interfaces_jazzy_rkyv::from_pointcloud2_msg(msg);
+                        #[cfg(feature = "r2r")]
+                        let out = impl_r2r::from_pointcloud2_msg(msg);
+
+                        out
                     }
                 }
             };

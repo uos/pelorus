@@ -1,5 +1,3 @@
-use std::sync::{Arc, Mutex};
-
 use nalgebra::*;
 use pelorus_core::{
     ImuParameters, KinematicModel, LidarVendor, OdomMsg, PointXYZIT, timing::RuntimeEvaluator,
@@ -434,7 +432,6 @@ impl crate::Registration for RegistrationState {
         eval: &mut RuntimeEvaluator,
         #[cfg(feature = "cuda")] stream: &pelorus_cuda::Stream,
     ) -> anyhow::Result<Option<crate::CloudRegisterResult>> {
-        let first_it = Arc::new(Mutex::new(true));
         let eval_outer = std::sync::Arc::new(std::sync::RwLock::new(eval));
         #[cfg(feature = "cuda")]
         let map_empty = pelorus_cuda::get_map_size() == 0;
@@ -472,9 +469,9 @@ impl crate::Registration for RegistrationState {
             let eval_cb = eval_outer.clone();
 
             #[cfg(feature = "cuda")]
-            let planes_cpu_buffer = Arc::new(Mutex::new(Vec::new()));
+            let planes_cpu_buffer = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
             #[cfg(feature = "cuda")]
-            let planes_gpu_buffer = Arc::new(Mutex::new(CudaBuffer::new(
+            let planes_gpu_buffer = std::sync::Arc::new(std::sync::Mutex::new(CudaBuffer::new(
                 stream,
                 size_of::<PointXYZINormal>(),
                 cloud_len_alloc,
@@ -519,12 +516,11 @@ impl crate::Registration for RegistrationState {
                             ),
                             &ekf_state.pose.rotation().matrix().into(),
                             &pelorus_cuda::Vector3::new(
-                                ekf_state.offset_t_l_i.x,
-                                ekf_state.offset_t_l_i.y,
-                                ekf_state.offset_t_l_i.z,
+                                ekf_state.lidar_to_imu_t.x,
+                                ekf_state.lidar_to_imu_t.y,
+                                ekf_state.lidar_to_imu_t.z,
                             ),
-                            &ekf_state.offset_r_l_i.matrix().into(),
-                            5, // TODO remove
+                            &ekf_state.lidar_to_imu_r.matrix().into(),
                             &mut planes,
                             &mut planes_gpu,
                         );
@@ -600,8 +596,6 @@ impl crate::Registration for RegistrationState {
                         planes
                     };
                     eval.stop("planes").unwrap();
-
-                    *first_it.lock().unwrap() = false;
 
                     if planes.is_empty() {
                         *valid = false;
@@ -721,11 +715,11 @@ impl crate::Registration for RegistrationState {
                 LocatedBufferView::Cuda { buffer } => buffer,
             };
 
-            let rotmat = global_pose.rotation.to_rotation_matrix().matrix().clone();
+            let rotmat = t_w_l.rotation.to_rotation_matrix().matrix().clone();
             pelorus_cuda::add_to_map(
                 &stream,
                 cloud,
-                &global_pose.translation.vector.into(),
+                &t_w_l.translation.vector.into(),
                 &rotmat.into(),
             );
         }
