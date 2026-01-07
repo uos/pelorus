@@ -1,6 +1,8 @@
 use log::{error, warn};
 use nalgebra::*;
-use pelorus_core::{KinematicModel, OdomMsg, log_debouncer::should_log_once_default};
+use pelorus_core::{
+    KinematicModel, OdomMsg, log_debouncer::should_log_once_default, timing::RuntimeEvaluator,
+};
 use prelio::timestamp_to_secs;
 
 use sophus_lie::prelude::*;
@@ -216,6 +218,8 @@ pub struct Iekf {
     pub cov: SMatrix<f64, 18, 18>,
     pub initialized: bool,
     pub last_time: f64,
+    pub h: DVector<f64>,
+    pub h_x: DMatrix<f64>,
 }
 
 /// Adding the state and the perturbation, stay on the manifold
@@ -269,6 +273,8 @@ impl Iekf {
             cov: SMatrix::<f64, 18, 18>::identity(),
             initialized: false,
             last_time: 0.0,
+            h: DVector::<f64>::zeros(0),
+            h_x: DMatrix::<f64>::zeros(0, 18),
         }
     }
 
@@ -484,6 +490,7 @@ impl Iekf {
         measurement_noise_cov: f64,
         measurement_time: f64,
         max_iter: usize,
+        eval: std::sync::Arc<std::sync::RwLock<&mut RuntimeEvaluator>>,
         mut model: impl FnMut(
             &StateIKFom,
             &mut bool,         // valid
@@ -514,22 +521,35 @@ impl Iekf {
 
         let mut final_kh = SMatrix::<f64, 18, 18>::zeros();
 
-        let mut h = DVector::<f64>::zeros(0);
-        let mut h_x = DMatrix::<f64>::zeros(0, 18);
-
         for iter in 0..max_iter {
             let mut valid = true;
             let converge_flag = true;
 
-            model(&self.state, &mut valid, converge_flag, &mut h, &mut h_x);
+            {
+                let mut eval = eval.write().unwrap();
+                eval.start("ekf_correct/model").unwrap();
+            }
 
-            if !valid || h_x.nrows() == 0 {
+            model(
+                &self.state,
+                &mut valid,
+                converge_flag,
+                &mut self.h,
+                &mut self.h_x,
+            );
+
+            let mut eval = eval.write().unwrap();
+            eval.stop("ekf_correct/model").unwrap();
+
+            if !valid || self.h_x.nrows() == 0 {
                 break;
             }
 
+            eval.start("ekf_correct/info_mat").unwrap();
             // H: m x 18,  h: m x 1
-            let h_t = h_x.transpose(); // 18 x m
-            let hth = &h_t * &h_x; // 18 x 18
+            let h_t = self.h_x.transpose(); // 18 x m
+            let hth = &h_t * &self.h_x; // 18 x 18
+            eval.stop("ekf_correct/info_mat").unwrap();
 
             let lhs = hth * r_inv + p_propagated_inv;
             let lhs_inv = match lhs.try_inverse() {
@@ -540,9 +560,10 @@ impl Iekf {
                 }
             };
 
+            eval.start("ekf_correct/gain").unwrap();
             let k = &lhs_inv * &h_t * r_inv;
 
-            let kh = &k * &h;
+            let kh = &k * &self.h;
 
             let kh_norm = kh.norm();
             if !kh_norm.is_finite() {
@@ -552,8 +573,11 @@ impl Iekf {
                 );
                 self.state = state_propagated;
                 self.cov = p_propagated;
+                eval.stop("ekf_correct/gain").unwrap();
                 return;
             }
+            eval.stop("ekf_correct/gain").unwrap();
+            eval.start("ekf_correct/state").unwrap();
 
             let mut s = SMatrix::<f64, 8, 8>::zeros();
             // rotation increment
@@ -614,6 +638,7 @@ impl Iekf {
                 warn!("IEKF: NaN detected in iteration {}, aborting.", iter);
                 self.state = state_propagated;
                 self.cov = p_propagated;
+                eval.stop("ekf_correct/state").unwrap();
                 return;
             }
 
@@ -638,7 +663,7 @@ impl Iekf {
             self.state.grav = new_x_mat.fixed_view::<3, 1>(0, 7).into_owned();
 
             // KH = K * H  (18 x m * m x 18 = 18 x 18, fixed-size)
-            let kh_mat = &k * &h_x;
+            let kh_mat = &k * &self.h_x;
             debug_assert!(kh_mat.nrows() == 18 && kh_mat.ncols() == 18);
             let mut kh_mat_fixed = SMatrix::<f64, 18, 18>::zeros();
             for i in 0..18 {
@@ -648,6 +673,7 @@ impl Iekf {
             }
             final_kh = kh_mat_fixed;
 
+            eval.stop("ekf_correct/state").unwrap();
             //dbg!(iter, kh_norm);
             if kh_norm < 0.001 {
                 break;

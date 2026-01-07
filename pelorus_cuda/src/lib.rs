@@ -57,6 +57,8 @@ impl Drop for CudaBuffer {
     }
 }
 
+unsafe impl Send for CudaBuffer {}
+
 impl CudaBuffer {
     pub fn new(stream: &Stream, element_size: usize, n: usize) -> Self {
         let my_stream = stream.stream.lock().unwrap();
@@ -118,7 +120,7 @@ impl CudaBuffer {
     pub fn download_into<T: Default + Clone>(&self, stream: &Stream, dst: &mut [T]) {
         assert!(size_of::<T>() == self.element_size, "Wrong alignment of T");
         assert!(
-            dst.len() >= self.n,
+            dst.len() <= self.n,
             "Destination buffer on CPU is too small"
         );
         let my_stream = stream.stream.lock().unwrap();

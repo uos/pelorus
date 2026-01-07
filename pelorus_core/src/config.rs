@@ -339,6 +339,17 @@ pub fn ast_to_config(defaults: Evaluated, user: Evaluated) -> anyhow::Result<Lio
             0
         };
         let warning_debounce = resolve_var!(terminal_ns, "warning_debounce", as f64, Rhs::Val(Val::UnitedVal(UnitVal::TimeVal(v))) => { v.get::<second>() as f64 })?;
+        // optional log level for terminal/logger
+        let log_level: Option<String> = match resolve_var!(terminal_ns, "log_level", as String, Rhs::Val(Val::StringVal(s)) | Rhs::Path(s) => {s})
+        {
+            Ok(s) => Some(s),
+            Err(_) => None,
+        };
+        if let Some(ref lvl) = log_level {
+            unsafe {
+                std::env::set_var("RUST_LOG", lvl.as_str());
+            }
+        }
         let rerun_ns = output_ns.filter_ns(&["rerun"]);
         let undistorted_static_world = resolve_var!(rerun_ns, "undistorted_static_world", as bool, Rhs::Val(Val::BoolVal(b)) => {b})?;
 
