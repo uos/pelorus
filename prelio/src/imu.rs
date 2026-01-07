@@ -13,7 +13,7 @@ use nalgebra::*;
 
 use crate::{MeasureGroup, timestamp_to_secs};
 
-use ros_pointcloud2::{points::PointXYZI, ros::TimeMsg};
+use ros_pointcloud2::ros::TimeMsg;
 
 type SO3 = sophus_lie::Rotation3F64;
 type SE3 = sophus_lie::Isometry3F64;
@@ -249,7 +249,7 @@ fn quaternion_to_so3_exp(q: &UnitQuaternion<f64>) -> SO3 {
 
 #[derive(Debug)]
 pub struct ImuProcessedCloud<'a> {
-    pub cloud: Vec<ros_pointcloud2::points::PointXYZI>,
+    pub cloud: Vec<PointXYZIT>,
     pub last_covariance: [f64; 36],
     pub last_twist: [f64; 6],
     pub integrated_covariance: [f64; 36],
@@ -314,7 +314,7 @@ impl ImuProcess {
 
     pub fn process(
         &'_ mut self,
-        meas: MeasureGroup,
+        mut meas: MeasureGroup,
         imu_pose_prediction: &Option<Box<ImuPredictorUndistort>>,
     ) -> Option<ImuProcessedCloud<'_>> {
         debug_assert!(!meas.imu_buffer.is_empty());
@@ -322,45 +322,41 @@ impl ImuProcess {
 
         self.runtime_eval.start("deskew").unwrap();
 
-        let (estimated_pose, deskewed_cloud) = match imu_pose_prediction.as_ref().map(|f| {
+        let estimated_pose = match imu_pose_prediction.as_ref().map(|f| {
             f(
                 &meas.imu_buffer,
                 &meas.odom_buffer,
                 meas.last_lidar_end_stamp,
                 meas.lidar_start_stamp,
                 meas.lidar_end_stamp,
-                meas.cloud.as_slice(),
+                &mut meas.cloud,
             )
         }) {
             Some(Left(pose)) => {
                 let rot = Rotation3::from_matrix(pose.pose.rotation.to_rotation_matrix().matrix());
                 let quat = UnitQuaternion::from_rotation_matrix(&rot);
                 let iso = Isometry3::from_parts(pose.pose.translation, quat);
-                let sophus = SE3::from_rotation_and_translation(
-                    quaternion_to_so3_exp(&quat),
-                    pose.pose.translation.vector,
-                );
-                let deskewed_cloud = self.undistort_cloud_livox(
-                    meas.cloud,
-                    meas.lidar_end_stamp - meas.lidar_start_stamp,
-                    sophus,
-                );
-                (iso, deskewed_cloud)
+                // let sophus = SE3::from_rotation_and_translation(
+                //     quaternion_to_so3_exp(&quat),
+                //     pose.pose.translation.vector,
+                // );
+                // let deskewed_cloud = self.undistort_cloud_livox(
+                //     meas.cloud,
+                //     meas.lidar_end_stamp - meas.lidar_start_stamp,
+                //     sophus,
+                // );
+                iso
             }
-            Some(Right((pose, cloud))) => (pose, cloud),
+            Some(Right(pose)) => pose,
             /*None => self.integrate_imu_for_undistortion(
                 &meas.imu_buffer,
                 meas.lidar_start_stamp,
                 Some(&config),
             ),*/
-            None => (
-                Isometry3::identity(),
-                meas.cloud
-                    .iter()
-                    .map(|p| PointXYZI::new(p.x, p.y, p.z, p.intensity))
-                    .collect::<Vec<PointXYZI>>(),
-            ), // TODO wtf
+            None => Isometry3::identity(),
         };
+
+        let deskewed_cloud = meas.cloud;
 
         let n_last_imu = meas.imu_buffer.last().unwrap().clone();
 
@@ -423,16 +419,16 @@ impl ImuProcess {
         };
         iter.map(|p| {
             let ring = p.timestamp.floor() as i64;
-            let dt_bi = p.timestamp - ring as f64;
-            let ratio_bi = dt_bi / delta_time;
+            let dt_bi = p.timestamp - ring as f32;
+            let ratio_bi = dt_bi / delta_time as f32;
             let ratio_ie = 1.0 - ratio_bi;
 
-            let rso3_ie = ratio_ie * rso3_be;
-            let rie = SO3::exp(rso3_ie);
+            let rso3_ie = ratio_ie * rso3_be.cast();
+            let rie = SO3::exp(rso3_ie.cast());
 
-            let tie = ratio_ie * tbe;
+            let tie = ratio_ie * tbe.cast();
             let v_pt_i = Vector3::new(p.x as f64, p.y as f64, p.z as f64);
-            let v_pt_comp_e = rie.inverse().matrix() * (v_pt_i - tie);
+            let v_pt_comp_e = rie.inverse().matrix() * (v_pt_i - tie.cast());
             ros_pointcloud2::points::PointXYZI::new(
                 v_pt_comp_e.x as f32,
                 v_pt_comp_e.y as f32,

@@ -363,17 +363,17 @@ pub struct MeasureGroup {
     pub odom_buffer: Vec<OdomMsg>,
 }
 
-#[derive(Debug, Clone, Default, Copy)]
+#[derive(Debug, Clone, Default, Copy, PointConvertible)]
 pub struct PointXYZIT {
     pub x: f32,
     pub y: f32,
     pub z: f32,
     pub intensity: f32,
-    pub timestamp: f64,
+    pub timestamp: f32,
 }
 
 impl PointXYZIT {
-    pub fn from_p(point: Point3<f32>, intensity: f32, timestamp: f64) -> Self {
+    pub fn from_p(point: Point3<f32>, intensity: f32, timestamp: f32) -> Self {
         Self {
             x: point.x,
             y: point.y,
@@ -402,7 +402,7 @@ pub struct ImuPosePrediction {
 #[derive(Debug)]
 pub struct PrelioProcessedCloud {
     pub scan_id: u64,
-    pub cloud: Vec<PointXYZI>,
+    pub cloud: Vec<PointXYZIT>,
     pub imu_frame: String,
     pub header: HeaderMsg,
     pub end_of_frame_guess: Isometry3<f64>,
@@ -446,8 +446,8 @@ pub type ImuPredictorUndistort = dyn for<'a, 'b> Fn(
         f64,
         f64,
         f64,
-        &[PointXYZIT],
-    ) -> Either<ImuPosePrediction, (Isometry3<f64>, Vec<PointXYZI>)>
+        &mut Vec<PointXYZIT>,
+    ) -> Either<ImuPosePrediction, Isometry3<f64>>
     + Send;
 
 pub fn imu_msg_to_cov(msg: &ImuMsg) -> [f64; 36] {

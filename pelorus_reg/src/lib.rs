@@ -58,7 +58,7 @@ pub trait Registration {
         &mut self,
         map_only: bool,
         imu_transform: Isometry3<f64>,
-        cloud: &LocatedBufferView<PointXYZI>,
+        cloud: &LocatedBufferView<PointXYZIT>,
         lidar_timestamp: f64,
         ready_for_next: Option<&std::sync::mpsc::Sender<()>>,
         eval: &mut RuntimeEvaluator,
@@ -78,7 +78,7 @@ pub trait Registration {
         last_cloud_end_time: f64,
         cloud_begin_time: f64,
         cloud_end_time: f64,
-        cloud: &[PointXYZIT],
+        cloud: &mut Vec<PointXYZIT>,
         lidar_vendor: Option<LidarVendor>,
-    ) -> Vec<PointXYZI>;
+    );
 }

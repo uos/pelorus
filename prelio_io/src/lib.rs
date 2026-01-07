@@ -11,8 +11,8 @@ use futures_lite::{StreamExt, future};
 use log::{debug, error, info, warn};
 use pelorus_core::{
     ImuMsg, ImuPredictor, ImuPredictorUndistort, LidarVendor, LifisNodeParameters, LifisParameters,
-    LivoxMid360Point, LivoxPoint, OdomMsg, OusterPoint, PrelioProcessedCloud, RobosensePoint,
-    VelodynePoint, timing::RuntimeEvaluator,
+    LivoxMid360Point, LivoxPoint, OdomMsg, OusterPoint, PointXYZIT, PrelioProcessedCloud,
+    RobosensePoint, VelodynePoint, timing::RuntimeEvaluator,
 };
 pub use prelio;
 
@@ -406,7 +406,7 @@ impl From<crate::Qos> for ros2::QosPolicies {
 
 #[derive(Debug)]
 pub struct Tick {
-    pub deskewed_cloud: Vec<PointXYZI>,
+    pub deskewed_cloud: Vec<PointXYZIT>,
     pub map_only: bool,
     pub cloud_header: HeaderMsg,
     pub odom_time: TimeMsg,

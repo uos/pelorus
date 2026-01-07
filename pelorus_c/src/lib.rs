@@ -159,6 +159,7 @@ pub struct pelorus_point_xyzi {
     pub y: f32,
     pub z: f32,
     pub intensity: f32, // expected 0..255 in float
+    pub timestamp: f32, // in seconds, TODO change in original to f64 again?
 }
 
 #[allow(non_camel_case_types)]
