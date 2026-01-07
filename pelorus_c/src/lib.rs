@@ -434,7 +434,7 @@ unsafe fn pelorus_create_internal(
     let ext_lidar_to_imu = pipeline.ext();
 
     let processing_thread = ProcessingThread {
-        pipeline: pipeline.clone(),
+        pipeline: pipeline,
         prelio_receiver,
         result_sender: result_tx,
         callback_info: callback_info.clone(),

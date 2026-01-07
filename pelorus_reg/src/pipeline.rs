@@ -14,7 +14,6 @@ use spole::IVoxNearbyType;
 
 use crate::{Registration, registration::RegistrationState};
 
-#[derive(Clone)]
 pub struct Pipeline {
     map: Arc<Mutex<RegistrationState>>,
     ext_lidar_to_imu: Isometry3<f64>,

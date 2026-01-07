@@ -12,8 +12,8 @@ use log::{error, info};
 
 use pelorus_core::config::ast_to_config;
 use pelorus_core::{ImuMsg, LidarVendor, LioConfig, OdomMsg, PrelioProcessedCloud};
-use pelorus_reg::pipeline::{PelorusOutput, Pipeline};
 use pelorus_reg::Registration;
+use pelorus_reg::pipeline::{PelorusOutput, Pipeline};
 use prelio::Prelio;
 use ratslang;
 use ros_pointcloud2::prelude::*;
@@ -79,9 +79,9 @@ fn dispatch_output(
 
     // Check if callback is set
     let cb_opt = odom_callback.lock().ok().and_then(|guard| {
-        guard.as_ref().map(|cb| {
-            Python::attach(|py| cb.clone_ref(py))
-        })
+        guard
+            .as_ref()
+            .map(|cb| Python::attach(|py| cb.clone_ref(py)))
     });
 
     if let Some(cb) = cb_opt {
@@ -113,7 +113,6 @@ fn processing_thread_main(thread: ProcessingThread) {
     }
 
     while let Ok(processed) = thread.prelio_receiver.recv() {
-
         // Shutdown mode: keep draining the prelio output channel so Prelio's producer thread
         // doesn't panic on send, but DO NOT call into pelorus_reg (which would try to
         // `ready_for_next.send(())` after Prelio drops its receiver).
@@ -230,7 +229,7 @@ impl PelorusHandle {
         let last_output: Arc<Mutex<Option<PelorusOutput>>> = Arc::new(Mutex::new(None));
 
         let processing_thread = ProcessingThread {
-            pipeline: pipeline.clone(),
+            pipeline: pipeline,
             prelio_receiver,
             result_sender: result_tx,
             ready_for_next: ready_tx,

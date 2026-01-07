@@ -85,8 +85,7 @@ void cupcl_copy_buffer(void *stream, void *src, void *target,
                        unsigned int element_size, unsigned int n);
 
 u_int32_t planes(void *stream, Point *cloud, uint32_t cloud_size,
-                 Pose ekf_lidar_to_imu, Pose ekf_pose, uint32_t k,
-                 PointNormal *out_buff);
+                 Pose ekf_lidar_to_imu, Pose ekf_pose, PointNormal *out_buff);
 
 void add_to_map(void *stream, Point *points, u_int32_t size,
                 Pose registered_pose);

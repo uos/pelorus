@@ -236,7 +236,7 @@ uint32_t get_map_capacity() { return state->localmap.capacity; }
 uint32_t get_map_size() { return state->localmap.size(); }
 
 __global__ void plane_krnl(Point *cloud, uint32_t cloud_size,
-                           Pose ekf_lidar_to_imu, Pose ekf_pose, uint32_t k,
+                           Pose ekf_lidar_to_imu, Pose ekf_pose,
                            KeyValuePair *map, uint32_t capacity,
                            thrust::pair<uint32_t, VoxelDistribution> *buffer,
                            float map_resolution, time_t time, NearbyType nbtype,
@@ -295,8 +295,7 @@ __global__ void plane_krnl(Point *cloud, uint32_t cloud_size,
 
 // returns: size of out_buff, out_buff is on gpu and has enough space
 u_int32_t planes(void *stream, Point *cloud, uint32_t cloud_size,
-                 Pose ekf_lidar_to_imu, Pose ekf_pose, uint32_t k,
-                 PointNormal *out_buff) {
+                 Pose ekf_lidar_to_imu, Pose ekf_pose, PointNormal *out_buff) {
   try {
     rm::CudaStream *stream_ = (rm::CudaStream *)stream;
     rm::Memory<uint32_t, rmagine::RAM> out_size_cpu(1);
@@ -307,7 +306,7 @@ u_int32_t planes(void *stream, Point *cloud, uint32_t cloud_size,
     int blocks_per_grid =
         (cloud_size + threads_per_block - 1) / threads_per_block;
     plane_krnl<<<blocks_per_grid, threads_per_block, 0, stream_->handle()>>>(
-        cloud, cloud_size, ekf_lidar_to_imu, ekf_pose, k,
+        cloud, cloud_size, ekf_lidar_to_imu, ekf_pose,
         thrust::raw_pointer_cast(state->localmap.lookup->d_table.data()),
         state->localmap.lookup->capacity,
         thrust::raw_pointer_cast(state->localmap.buffer.data()),
