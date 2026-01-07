@@ -550,17 +550,19 @@ impl Iekf {
             let h_t = self.h_x.transpose(); // 18 x m
             let hth = &h_t * &self.h_x; // 18 x 18
             eval.stop("ekf_correct/info_mat").unwrap();
-
+            eval.start("ekf_correct/gain").unwrap();
+            
             let lhs = hth * r_inv + p_propagated_inv;
             let lhs_inv = match lhs.try_inverse() {
                 Some(inv) => inv,
                 None => {
                     warn!("IEKF: LHS solve failed in iteration {}, skipping.", iter);
+                    eval.stop("ekf_correct/gain").unwrap();
                     break;
                 }
             };
 
-            eval.start("ekf_correct/gain").unwrap();
+            
             let k = &lhs_inv * &h_t * r_inv;
 
             let kh = &k * &self.h;
