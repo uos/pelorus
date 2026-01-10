@@ -1,10 +1,10 @@
 use once_cell::sync::Lazy;
 use std::collections::HashMap;
-use std::time::{Duration, Instant};
-use std::sync::Mutex;
 use std::collections::hash_map::DefaultHasher;
 use std::hash::Hasher;
+use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{Duration, Instant};
 
 static DEBOUNCER: Lazy<Mutex<HashMap<u64, Instant>>> = Lazy::new(|| Mutex::new(HashMap::new()));
 static DEFAULT_DEBOUNCE_NANOS: AtomicU64 = AtomicU64::new(1_000_000_000); // 1 second
