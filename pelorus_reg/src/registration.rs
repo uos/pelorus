@@ -17,7 +17,7 @@ impl_pointxyz_for_nalgebra!();
 use sophus_lie::prelude::*;
 pub use spole::IVoxNearbyType;
 
-use crate::{iekf::skew_symmetric, registration::impl_nalgebra::AsNalgebra};
+use crate::{iekf::skew_symmetric_na, registration::impl_nalgebra::AsNalgebra};
 
 pub struct RegistrationState {
     ekf: crate::iekf::Iekf,
@@ -38,17 +38,6 @@ fn extract_3x3_block(mat: &FaerMat<f64>, row_offset: usize, col_offset: usize) -
     for i in 0..3 {
         for j in 0..3 {
             result[(i, j)] = mat[(row_offset + i, col_offset + j)];
-        }
-    }
-    result
-}
-
-fn faer_mat3_to_nalgebra(mat: &FaerMat<f64>) -> Matrix3<f64> {
-    debug_assert!(mat.nrows() == 3 && mat.ncols() == 3);
-    let mut result = Matrix3::zeros();
-    for i in 0..3 {
-        for j in 0..3 {
-            result[(i, j)] = mat[(i, j)];
         }
     }
     result
@@ -756,7 +745,7 @@ impl crate::Registration for RegistrationState {
 
                         // Rotation perturbation
                         let p_imu_global = ekf_state.pose.rotation().matrix() * v.coords;
-                        let skew_mat = faer_mat3_to_nalgebra(&skew_symmetric(&p_imu_global));
+                        let skew_mat = skew_symmetric_na(&p_imu_global);
                         let a = -1.0 * norm.transpose() * skew_mat;
 
                         // Position perturbation

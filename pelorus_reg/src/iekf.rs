@@ -126,6 +126,23 @@ pub fn skew_symmetric(q: &Vector3<f64>) -> Mat<f64> {
     m
 }
 
+pub fn skew_symmetric_na<T>(q: &Vector3<T>) -> nalgebra::Matrix3<T>
+where
+    T: nalgebra::Scalar + Copy + From<f64> + std::ops::Neg<Output = T>,
+{
+    nalgebra::Matrix3::new(
+        T::from(0.0),
+        -q[2],
+        q[1],
+        q[2],
+        T::from(0.0),
+        -q[0],
+        -q[1],
+        q[0],
+        T::from(0.0),
+    )
+}
+
 /// Get the Jacobian of the state transition function f(x, u) with respect to x. x is the state
 pub fn df_dx(s: &StateIKFom, inp: &InputIKFom, dt: f64) -> Mat<f64> {
     let mut cov = Mat::<f64>::identity(18, 18);

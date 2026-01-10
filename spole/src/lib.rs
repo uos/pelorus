@@ -594,17 +594,32 @@ impl IVoxHashMap {
             // TODO chunk by seems extremely fast on M3 Pro
             // #[cfg(feature = "parallel")]
             // {
-            //     if keyed_points.len() > PAR_SORT_BOUNDARY {
-            //         keyed_points
-            //             .par_chunk_by(|a, b| a.0 == b.0)
-            //             .map(|group_slice| find_medoid_in_slice(group_slice))
-            //             .collect()
-            //     } else {
-            //         keyed_points
-            //             .chunk_by(|a, b| a.0 == b.0)
-            //             .map(|group_slice| find_medoid_in_slice(group_slice))
-            //             .collect()
-            //     }
+            // if keyed_points.len() > PAR_SORT_BOUNDARY {
+
+            // use rayon::{iter::ParallelIterator, slice::ParallelSlice};
+            // keyed_points
+            //     .par_chunk_by(|a, b| a.0 == b.0)
+            //     .map(|group_slice| {
+            //         let dist = VoxelDistribution::from_points(group_slice, current_scan_number);
+            //         let grid = self.pos2grid(&PointXYZ {
+            //             x: dist.mean.x,
+            //             y: dist.mean.y,
+            //             z: dist.mean.z,
+            //         });
+            //         let voxel_key = Self::hash_grid(&grid);
+            //         (dist, voxel_key)
+            //     })
+            //     .collect::<Vec<_>>()
+            //     .into_iter()
+            //     .for_each(|(dist, voxel_key)| {
+            //         self.livodish.add(dist, voxel_key, self.scan_number);
+            //     });
+            // } else {
+            //     keyed_points
+            //         .chunk_by(|a, b| a.0 == b.0)
+            //         .map(|group_slice| find_medoid_in_slice(group_slice))
+            //         .collect()
+            // }
             // }
             // #[cfg(not(feature = "parallel"))]
             // {
@@ -621,6 +636,8 @@ impl IVoxHashMap {
                     self.livodish.add(dist, voxel_key, self.scan_number);
                 });
             // }
+
+            // Re-arranges the map to be ready for new inserts.
             self.livodish.build(self.scan_number);
         }
     }
