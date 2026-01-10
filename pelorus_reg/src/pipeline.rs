@@ -5,11 +5,10 @@ use either::Either;
 use nalgebra::{Isometry3, Translation3, UnitQuaternion};
 use pelorus_core::{
     ImuMsg, ImuPosePrediction, ImuPredictor, ImuPredictorUndistort, KinematicModel, LidarVendor,
-    LioConfig, LivoxMid360Point, LivoxPoint, OdomMsg, OusterPoint, PrelioProcessedCloud,
-    RobosensePoint, VelodynePoint,
+    LioConfig, LivoxMid360Point, LivoxPoint, OdomMsg, OusterPoint, PointXYZIT,
+    PrelioProcessedCloud, RobosensePoint, VelodynePoint,
 };
 use prelio::Prelio;
-use ros_pointcloud2::points::PointXYZI;
 use spole::IVoxNearbyType;
 
 use crate::{Registration, registration::RegistrationState};
@@ -38,7 +37,7 @@ pub struct PelorusOutput {
     pub linear_velocity: nalgebra::Vector3<f64>,
     pub angular_velocity: nalgebra::Vector3<f64>,
     pub twist_covariance: [f64; 36],
-    pub cloud: Vec<PointXYZI>,
+    pub cloud: Vec<PointXYZIT>,
     pub frame_id: String,
 }
 
@@ -113,7 +112,7 @@ impl Pipeline {
                   cloud_end_time,
                   cloud| {
                 let mut map = map.lock().unwrap();
-                let cloud_undistorted = map.undistort(
+                map.undistort(
                     &imu_msgs,
                     odom_msgs,
                     kinematic_model,
@@ -126,7 +125,7 @@ impl Pipeline {
                 );
                 let pose = map.get_state().pose;
 
-                Either::Right((pose, cloud_undistorted))
+                Either::Right(pose)
             },
         )
     }

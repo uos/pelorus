@@ -9,7 +9,6 @@ use pelorus_core::{
 };
 #[cfg(feature = "parallel")]
 use rayon::prelude::*;
-use ros_pointcloud2::points::PointXYZI;
 use sophus_lie::IsAffineGroup;
 
 use crate::iekf::Iekf;
@@ -217,7 +216,7 @@ impl ImuProcessing {
         ekf.state.lidar_to_imu_r =
             sophus_lie::Rotation3::try_from_mat(&self.lidar_to_imu_r).unwrap();
 
-        ekf.cov = nalgebra::SMatrix::<f64, 18, 18>::identity();
+        ekf.cov = faer::Mat::<f64>::identity(18, 18);
 
         ekf.cov[(9, 9)] = COV2;
         ekf.cov[(10, 10)] = COV2;
@@ -249,9 +248,9 @@ impl ImuProcessing {
         last_cloud_end_time: f64,
         cloud_begin_time: f64,
         mut cloud_end_time: f64,
-        cloud: &[PointXYZIT],
+        cloud: &mut Vec<PointXYZIT>,
         lidar_vendor: Option<LidarVendor>,
-    ) -> Vec<PointXYZI> {
+    ) {
         debug_assert!(!imu_msgs.is_empty());
         debug_assert!(last_cloud_end_time > 0.0);
         debug_assert!(cloud_begin_time > 0.0);
@@ -265,7 +264,7 @@ impl ImuProcessing {
 
         let mean_acc = self.mean_acc.norm();
 
-        self.imu_state = ekf.state.clone();
+        self.imu_state = ekf.state;
 
         let mut imu_poses = vec![Pose6D::new(
             0.0,
@@ -286,7 +285,7 @@ impl ImuProcessing {
         let mut all_imus = std::iter::once(&self.last_imu).chain(imu_msgs.iter());
 
         let Some(mut head) = all_imus.next() else {
-            return vec![];
+            return;
         };
 
         // Keep odometry corrections in lockstep with IMU prediction.
@@ -303,7 +302,7 @@ impl ImuProcessing {
                 continue;
             }
 
-            assert!(head_stamp < tail_stamp);
+            debug_assert!(head_stamp < tail_stamp);
 
             angvel_avr_x = (head.angular_velocity[0] + tail.angular_velocity[0]) * 0.5;
             angvel_avr_y = (head.angular_velocity[1] + tail.angular_velocity[1]) * 0.5;
@@ -350,7 +349,6 @@ impl ImuProcessing {
                         warn!("Skipping odom fusion with non-positive dt: {dt_pred:.6}");
                     }
                 }
-
                 ekf.correct_with_body_velocities(*(*odom), kinematic, self.wheel_odom_cov_override);
                 odom_iter.next();
             }
@@ -363,7 +361,7 @@ impl ImuProcessing {
                 ekf.correct_kinematics(kinematic, tail.angular_velocity.into(), constraint_std);
             }
 
-            self.imu_state = ekf.state.clone();
+            self.imu_state = ekf.state;
 
             let tail_ang_vel: Vector3<f64> = tail.angular_velocity.into();
             let tail_lin_acc: Vector3<f64> = tail.linear_acceleration.into();
@@ -421,10 +419,7 @@ impl ImuProcessing {
         // Enforce kinematic constraints after final prediction to cloud end
         let gyro = Vector3::new(angvel_avr_x, angvel_avr_y, angvel_avr_z);
         ekf.correct_kinematics(kinematic, gyro, constraint_std);
-        self.imu_state = ekf.state.clone();
-
-        // TODO perf this alloc could be optimized out by changing the undistort closure return to be a mut& Vec. then it could be resized here to avoid new allocs for the cloud
-        let mut out_cloud = vec![PointXYZI::default(); cloud.len()];
+        self.imu_state = ekf.state;
 
         #[cfg(not(feature = "parallel"))]
         {
@@ -436,11 +431,11 @@ impl ImuProcessing {
                 // if it_pcl > 0 {
                 //     dbg!(cloud[it_pcl - 1].timestamp, head.offset_time);
                 // }
-                while it_pcl > 0 && cloud[it_pcl - 1].timestamp > head.offset_time {
+                while it_pcl > 0 && cloud[it_pcl - 1].timestamp as f64 > head.offset_time {
                     it_pcl -= 1;
                     let pcl_point = &cloud[it_pcl];
 
-                    let mut dt = pcl_point.timestamp - head.offset_time;
+                    let mut dt = pcl_point.timestamp as f64 - head.offset_time;
                     if dt < 0.0 {
                         // This can happen due to floating point inaccuracies if the point is very close
                         // to the head time. We can treat it as having zero offset.
@@ -466,70 +461,62 @@ impl ImuProcessing {
                             * (r_i * p_imu_frame + t_ei)
                             - self.imu_state.lidar_to_imu_t);
 
-                    out_cloud[it_pcl].x = p_compensate.x as f32;
-                    out_cloud[it_pcl].y = p_compensate.y as f32;
-                    out_cloud[it_pcl].z = p_compensate.z as f32;
-                    out_cloud[it_pcl].intensity = pcl_point.intensity;
+                    cloud[it_pcl].x = p_compensate.x as f32;
+                    cloud[it_pcl].y = p_compensate.y as f32;
+                    cloud[it_pcl].z = p_compensate.z as f32;
                 }
             }
         }
 
         #[cfg(feature = "parallel")]
-        out_cloud
-            .par_iter_mut()
-            .zip(cloud.par_iter())
-            .for_each(|(out_point, pcl_point)| {
-                // For each point, find the correct IMU pose interval.
-                // binary_search_by finds the index of the first pose with a timestamp >= the point's timestamp.
+        cloud.par_iter_mut().for_each(|point| {
+            // For each point, find the correct IMU pose interval.
+            // binary_search_by finds the index of the first pose with a timestamp >= the point's timestamp.
 
-                use sophus_lie::IsAffineGroup;
-                let tail_idx = imu_poses
-                    .binary_search_by(|p| {
-                        p.offset_time
-                            .partial_cmp(&pcl_point.timestamp)
-                            .unwrap_or(std::cmp::Ordering::Less)
-                    })
-                    .unwrap_or_else(|e| e);
+            let tail_idx = imu_poses
+                .binary_search_by(|p| {
+                    p.offset_time
+                        .partial_cmp(&(point.timestamp as f64))
+                        .unwrap_or(std::cmp::Ordering::Less)
+                })
+                .unwrap_or_else(|e| e);
 
-                if tail_idx == 0 || tail_idx >= imu_poses.len() {
-                    // point is before the first pose or after the last.
-                    return;
-                }
-                let head_idx = tail_idx - 1;
+            if tail_idx == 0 || tail_idx >= imu_poses.len() {
+                // point is before the first pose or after the last.
+                return;
+            }
+            let head_idx = tail_idx - 1;
 
-                let head = &imu_poses[head_idx];
-                let tail = &imu_poses[tail_idx];
+            let head = &imu_poses[head_idx];
+            let tail = &imu_poses[tail_idx];
 
-                let mut dt = pcl_point.timestamp - head.offset_time;
-                if dt < 0.0 {
-                    dt = 0.0;
-                }
+            let mut dt = point.timestamp as f64 - head.offset_time;
+            if dt < 0.0 {
+                dt = 0.0;
+            }
 
-                let r_i = head
-                    .pose
-                    .rotation()
-                    .group_mul(crate::iekf::SO3::exp(tail.gyr * dt))
-                    .matrix();
+            let r_i = head
+                .pose
+                .rotation()
+                .group_mul(crate::iekf::SO3::exp(tail.gyr * dt))
+                .matrix();
 
-                let t_ei = head.pose.translation() + head.vel * dt + 0.5 * tail.acc * dt * dt
-                    - self.imu_state.pose.translation();
+            let t_ei = head.pose.translation() + head.vel * dt + 0.5 * tail.acc * dt * dt
+                - self.imu_state.pose.translation();
 
-                let p_imu_frame = self.imu_state.lidar_to_imu_r.matrix()
-                    * Vector3::new(pcl_point.x as f64, pcl_point.y as f64, pcl_point.z as f64)
-                    + self.imu_state.lidar_to_imu_t;
+            let p_imu_frame = self.imu_state.lidar_to_imu_r.matrix()
+                * Vector3::new(point.x as f64, point.y as f64, point.z as f64)
+                + self.imu_state.lidar_to_imu_t;
 
-                let p_compensate = self.imu_state.lidar_to_imu_r.matrix().transpose()
-                    * (self.imu_state.pose.rotation().matrix().transpose()
-                        * (r_i * p_imu_frame + t_ei)
-                        - self.imu_state.lidar_to_imu_t);
+            let p_compensate = self.imu_state.lidar_to_imu_r.matrix().transpose()
+                * (self.imu_state.pose.rotation().matrix().transpose()
+                    * (r_i * p_imu_frame + t_ei)
+                    - self.imu_state.lidar_to_imu_t);
 
-                out_point.x = p_compensate.x as f32;
-                out_point.y = p_compensate.y as f32;
-                out_point.z = p_compensate.z as f32;
-                out_point.intensity = pcl_point.intensity;
-            });
-
-        out_cloud
+            point.x = p_compensate.x as f32;
+            point.y = p_compensate.y as f32;
+            point.z = p_compensate.z as f32;
+        });
     }
 
     pub fn predict(
@@ -545,13 +532,31 @@ impl ImuProcessing {
         };
 
         let q = {
-            let mut q = SMatrix::<f64, 12, 12>::zeros();
-            q.fixed_view_mut::<3, 3>(0, 0).copy_from(&self.ekf_cov_gyr);
-            q.fixed_view_mut::<3, 3>(3, 3).copy_from(&self.ekf_cov_acc);
-            q.fixed_view_mut::<3, 3>(6, 6)
-                .copy_from(&self.ekf_cov_gyr_bias);
-            q.fixed_view_mut::<3, 3>(9, 9)
-                .copy_from(&self.ekf_cov_acc_bias);
+            let mut q = faer::Mat::<f64>::zeros(12, 12);
+            // Copy ekf_cov_gyr to block (0, 0)
+            for i in 0..3 {
+                for j in 0..3 {
+                    q[(i, j)] = self.ekf_cov_gyr[(i, j)];
+                }
+            }
+            // Copy ekf_cov_acc to block (3, 3)
+            for i in 0..3 {
+                for j in 0..3 {
+                    q[(3 + i, 3 + j)] = self.ekf_cov_acc[(i, j)];
+                }
+            }
+            // Copy ekf_cov_gyr_bias to block (6, 6)
+            for i in 0..3 {
+                for j in 0..3 {
+                    q[(6 + i, 6 + j)] = self.ekf_cov_gyr_bias[(i, j)];
+                }
+            }
+            // Copy ekf_cov_acc_bias to block (9, 9)
+            for i in 0..3 {
+                for j in 0..3 {
+                    q[(9 + i, 9 + j)] = self.ekf_cov_acc_bias[(i, j)];
+                }
+            }
 
             q
         };

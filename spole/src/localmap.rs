@@ -1,11 +1,24 @@
 #[cfg(feature = "parallel")]
-use rayon::slice::ParallelSliceMut;
+use rayon::{
+    iter::{
+        IndexedParallelIterator, IntoParallelRefIterator, IntoParallelRefMutIterator,
+        ParallelIterator,
+    },
+    slice::ParallelSliceMut,
+};
 
 use crate::VoxelDistribution;
 
 // Saving the hash to know what to delete
 #[derive(Clone)]
 struct Value((i32, VoxelDistribution));
+
+#[derive(Copy, Clone, Default)]
+struct SortKey {
+    index: usize,
+    temporal_dist: u64, // Numerator
+    point_count: u64,   // Denominator
+}
 
 // LeastRecentlyUsedCacheIncrementalVoxelDistributionHashmap
 pub struct Livodish {
@@ -16,6 +29,7 @@ pub struct Livodish {
     // on removal, it always deletes the next idx from lru_cursor by setting it to none.
     // the indexes are built from the sorting
     lru_mapping: Vec<Option<usize>>,
+    lru_mapping_keys: Vec<SortKey>,
     lru_cursor: usize,
     // lookup for hash to voxel idx in buffer
     lookup: rustc_hash::FxHashMap<i32, usize>,
@@ -35,6 +49,7 @@ impl Livodish {
             capacity,
             sensitivity,
             min_dist,
+            lru_mapping_keys: vec![Default::default(); capacity],
         }
     }
 
@@ -137,39 +152,76 @@ impl Livodish {
 
     /// Re-arranges the map to be ready for new inserts.
     pub fn build(&mut self, scan_number: usize) {
-        if self.add_cursor >= self.capacity {
-            self.lru_cursor = 0;
-            let cmp = |lh: &Option<usize>, rh: &Option<usize>| match (lh, rh) {
-                (None, None) => std::cmp::Ordering::Equal,
-                (None, Some(_)) => std::cmp::Ordering::Less,
-                (Some(_), None) => std::cmp::Ordering::Greater,
-                (Some(l), Some(r)) => {
-                    let l = &self.buffer[*l].as_ref().expect("unresolved ref").0.1;
-                    let r = &self.buffer[*r].as_ref().expect("unresolved ref").0.1;
-
-                    let calculate_score = |last_updated_at_scan: usize, point_count: u64| -> f64 {
-                        if point_count == 0 {
-                            return f64::INFINITY;
-                        }
-                        let temporal_dist = scan_number.saturating_sub(last_updated_at_scan);
-                        (temporal_dist as f64) / (point_count as f64)
-                    };
-
-                    let score_l = calculate_score(l.last_updated_at_scan, l.point_count);
-                    let score_r = calculate_score(r.last_updated_at_scan, r.point_count);
-                    score_r
-                        .partial_cmp(&score_l)
-                        .unwrap_or(std::cmp::Ordering::Equal)
-                }
-            };
-            #[cfg(feature = "parallel")]
-            {
-                self.lru_mapping.par_sort_unstable_by(cmp);
-            }
-            #[cfg(not(feature = "parallel"))]
-            {
-                self.lru_mapping.sort_unstable_by(cmp);
-            }
+        if self.add_cursor < self.capacity {
+            return;
         }
+        self.lru_cursor = 0;
+
+        #[cfg(feature = "parallel")]
+        let iter = self.lru_mapping.par_iter();
+        #[cfg(not(feature = "parallel"))]
+        let iter = self.lru_mapping.iter();
+
+        #[cfg(feature = "parallel")]
+        let keys_iter = self.lru_mapping_keys.par_iter_mut();
+        #[cfg(not(feature = "parallel"))]
+        let keys_iter = self.lru_mapping_keys.iter_mut();
+
+        iter.zip(keys_iter)
+            .filter_map(|(&opt_idx, key)| opt_idx.and_then(|idx| Some((idx, key))))
+            .for_each(|(idx, key)| {
+                // SAFETY: safe because of the first line of this function.
+                let item = unsafe {
+                    &self
+                        .buffer
+                        .get_unchecked(idx)
+                        .as_ref()
+                        .unwrap_unchecked()
+                        .0
+                        .1
+                };
+
+                let temporal_dist = (scan_number.saturating_sub(item.last_updated_at_scan)) as u64;
+
+                *key = SortKey {
+                    index: idx,
+                    temporal_dist,
+                    point_count: item.point_count,
+                };
+            });
+
+        let cmp = |a: &SortKey, b: &SortKey| {
+            if a.point_count == 0 && b.point_count == 0 {
+                return std::cmp::Ordering::Equal;
+            }
+            if a.point_count == 0 {
+                return std::cmp::Ordering::Less; // a is Infinite -> comes first
+            }
+            if b.point_count == 0 {
+                return std::cmp::Ordering::Greater;
+            }
+
+            // prevent overflow
+            let left_val = (a.temporal_dist as u128) * (b.point_count as u128);
+            let right_val = (b.temporal_dist as u128) * (a.point_count as u128);
+
+            // descending sort
+            right_val.cmp(&left_val)
+        };
+
+        // let kl = keys.len();
+        #[cfg(feature = "parallel")]
+        self.lru_mapping_keys.par_sort_unstable_by(cmp);
+        #[cfg(not(feature = "parallel"))]
+        self.lru_mapping_keys.sort_unstable_by(cmp);
+
+        for (i, key) in self.lru_mapping_keys.iter().enumerate() {
+            unsafe { *self.lru_mapping.get_unchecked_mut(i) = Some(key.index) };
+        }
+
+        // for i in kl..self.lru_mapping.len() {
+        //     panic!("should never happen");
+        //     self.lru_mapping[i] = None;
+        // }
     }
 }

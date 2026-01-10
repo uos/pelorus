@@ -44,6 +44,8 @@ uom = { version = "0.37.0", default-features = false, features = [
 ] } # TODO re-export from ratslang and use from there only
 once_cell = "1"
 nalgebra = { version = "0.33", features = ["serde-serialize"] }
+faer = { version = "0.23", default-features = false, features = ["std", "rayon", "sparse-linalg"] }
+faer-ext = { version = "0.7", features = ["nalgebra"] }
 r2r = { version = "0.9.5" }
 ros2-client = { version = "0.8" }
 tokio = { version = "1", default-features = false }

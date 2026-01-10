@@ -317,7 +317,7 @@ fn filter_downsample<const N: usize, P: PointXYZITimestamp<N>>(
                 let key = hash(&point_raw, voxel_size);
                 Some((
                     key,
-                    PointXYZIT::from_p(point_raw, point.intensity() * 255.0, ts),
+                    PointXYZIT::from_p(point_raw, point.intensity() * 255.0, ts as f32),
                 ))
             }
             #[cfg(not(feature = "downsample"))]
@@ -400,7 +400,8 @@ fn filter_downsample<const N: usize, P: PointXYZITimestamp<N>>(
         _ => return Ok(None),
     };
 
-    Ok(Some((downsampled_cloud, first, last, header)))
+    // TODO back to keeping the timestamp f64, only testing right now because of artefacts
+    Ok(Some((downsampled_cloud, first as f64, last as f64, header)))
 }
 
 pub struct Prelio {
@@ -867,10 +868,7 @@ impl Prelio {
                 cloud_count += 1;
                 let res = PrelioProcessedCloud {
                     scan_id: scan_id,
-                    cloud: cloud
-                        .into_iter()
-                        .map(|p| PointXYZI::new(p.x, p.y, p.z, p.intensity))
-                        .collect(),
+                    cloud,
                     imu_frame: "".to_string(),
                     header: lidar_header,
                     end_of_frame_guess: Isometry3::identity(),
@@ -1034,11 +1032,7 @@ impl Prelio {
 
             if meas.imu_buffer.is_empty() {
                 // Passthrough when lidar only
-                let cloud = meas
-                    .cloud
-                    .into_iter()
-                    .map(|p| PointXYZI::new(p.x, p.y, p.z, p.intensity))
-                    .collect(); // TODO use iter as type in processed cloud
+                let cloud = meas.cloud;
 
                 let res = PrelioProcessedCloud {
                     scan_id: scan_id,

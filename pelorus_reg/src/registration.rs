@@ -1,3 +1,4 @@
+use faer::Mat as FaerMat;
 use nalgebra::*;
 use pelorus_core::{
     ImuParameters, KinematicModel, LidarVendor, OdomMsg, PointXYZIT, timing::RuntimeEvaluator,
@@ -9,14 +10,14 @@ use prelio::LocatedBufferView;
 use rayon::prelude::*;
 use ros_pointcloud2::{
     impl_pointxyz_for_nalgebra,
-    points::{PointXYZ, PointXYZI, PointXYZINormal},
+    points::{PointXYZ, PointXYZINormal},
 };
 impl_pointxyz_for_nalgebra!();
 
 use sophus_lie::prelude::*;
 pub use spole::IVoxNearbyType;
 
-use crate::{iekf::skew_symmetric, registration::impl_nalgebra::AsNalgebra};
+use crate::{iekf::skew_symmetric_na, registration::impl_nalgebra::AsNalgebra};
 
 pub struct RegistrationState {
     ekf: crate::iekf::Iekf,
@@ -30,6 +31,16 @@ pub struct RegistrationState {
     planes_gpu_buffer: Option<CudaBuffer>,
     #[cfg(not(feature = "cuda"))]
     planes_buffer: Vec<PointXYZINormal>,
+}
+
+fn extract_3x3_block(mat: &FaerMat<f64>, row_offset: usize, col_offset: usize) -> Matrix3<f64> {
+    let mut result = Matrix3::zeros();
+    for i in 0..3 {
+        for j in 0..3 {
+            result[(i, j)] = mat[(row_offset + i, col_offset + j)];
+        }
+    }
+    result
 }
 
 fn rotate_covariance(cov: &Matrix3<f64>, rot: &Matrix3<f64>) -> Matrix3<f64> {
@@ -74,7 +85,7 @@ impl RegistrationState {
     }
 
     #[cfg(not(feature = "cuda"))]
-    fn add_to_map(&mut self, cloud: &LocatedBufferView<PointXYZI>, pose: Isometry3<f64>) {
+    fn add_to_map(&mut self, cloud: &LocatedBufferView<PointXYZIT>, pose: Isometry3<f64>) {
         let LocatedBufferView::Ram(cloud) = cloud;
 
         #[cfg(feature = "nn_kdt")]
@@ -107,13 +118,13 @@ impl RegistrationState {
         // Pos (3..6) is World Frame -> OK
         // Rot (0..3) is Body Frame  -> Needs Rotation to World
 
-        // Extract raw blocks
-        let cov_pp = self.ekf.cov.fixed_view::<3, 3>(3, 3); // Pos-Pos (World)
-        let cov_rr_body = self.ekf.cov.fixed_view::<3, 3>(0, 0); // Rot-Rot (Body)
-        let cov_pr_mixed = self.ekf.cov.fixed_view::<3, 3>(3, 0); // Pos-Rot (Row:World, Col:Body)
+        // Extract raw blocks from faer Mat
+        let cov_pp = extract_3x3_block(&self.ekf.cov, 3, 3); // Pos-Pos (World)
+        let cov_rr_body = extract_3x3_block(&self.ekf.cov, 0, 0); // Rot-Rot (Body)
+        let cov_pr_mixed = extract_3x3_block(&self.ekf.cov, 3, 0); // Pos-Rot (Row:World, Col:Body)
 
         // Rotate Orientation block to World: R * Cov_body * R^T
-        let cov_rr_world = rotate_covariance(&cov_rr_body.into(), &r_wb);
+        let cov_rr_world = rotate_covariance(&cov_rr_body, &r_wb);
 
         // Rotate Cross-Correlations (Pos-Rot):
         // Current: E[dPos_world * dRot_body^T]
@@ -141,9 +152,9 @@ impl RegistrationState {
         // Target: ROS Twist Linear is Body Frame.
         // Transform: Cov_body = R^T * Cov_world * R
 
-        let cov_vv_world = self.ekf.cov.fixed_view::<3, 3>(6, 6);
+        let cov_vv_world = extract_3x3_block(&self.ekf.cov, 6, 6);
         // Use r_bw (which is R^T) to rotate World->Body
-        let cov_vv_body = rotate_covariance(&cov_vv_world.into(), &r_bw);
+        let cov_vv_body = rotate_covariance(&cov_vv_world, &r_bw);
 
         let mut lv_cov3 = [0.0; 9];
         for i in 0..3 {
@@ -163,8 +174,8 @@ impl RegistrationState {
 
         // 1. Linear Velocity (Indices 6..9) - Currently World Frame
         // Needs rotation to Body Frame for ROS Twist
-        let cov_vv_world = self.ekf.cov.fixed_view::<3, 3>(6, 6);
-        let cov_vv_body = rotate_covariance(&cov_vv_world.into(), &r_bw);
+        let cov_vv_world = extract_3x3_block(&self.ekf.cov, 6, 6);
+        let cov_vv_body = rotate_covariance(&cov_vv_world, &r_bw);
 
         // 2. Angular Velocity
         // The IMU measurement noise/bias is usually already in Body Frame.
@@ -394,9 +405,9 @@ impl crate::Registration for RegistrationState {
         last_cloud_end_time: f64,
         cloud_begin_time: f64,
         cloud_end_time: f64,
-        cloud: &[PointXYZIT],
+        cloud: &mut Vec<PointXYZIT>,
         lidar_vendor: Option<LidarVendor>,
-    ) -> Vec<PointXYZI> {
+    ) {
         // cloud.iter().map(|p| PointXYZ::new(p.x, p.y, p.z)).collect() // bypass
         self.imu_processing.undistort(
             &mut self.ekf,
@@ -438,7 +449,7 @@ impl crate::Registration for RegistrationState {
         &mut self,
         map_only: bool,
         imu_transform: Isometry3<f64>,
-        cloud: &LocatedBufferView<PointXYZI>,
+        cloud: &LocatedBufferView<PointXYZIT>,
         lidar_timestamp: f64,
         ready_for_next: Option<&std::sync::mpsc::Sender<()>>,
         eval: &mut RuntimeEvaluator,
@@ -522,8 +533,8 @@ impl crate::Registration for RegistrationState {
                 move |ekf_state: &crate::iekf::StateIKFom,
                       valid: &mut bool,
                       _converged: bool,
-                      h: &mut DVector<f64>,
-                      h_x: &mut DMatrix<f64>| {
+                      h: &mut faer::Col<f64>,
+                      h_x: &mut faer::Mat<f64>| {
                     let mut eval = eval_cb.write().unwrap();
                     eval.start("ekf_correct/model/planes").unwrap();
 
@@ -592,7 +603,11 @@ impl crate::Registration for RegistrationState {
                             let pm = iter.flat_map(|point_local| {
                                 // let filtered: Vec<PointXYZINormal> = iter
                                 // .filter_map(|point_local| {
-                                let p_l = point_local.xyz();
+                                let p_l = nalgebra::Point3::new(
+                                    point_local.x,
+                                    point_local.y,
+                                    point_local.z,
+                                );
                                 let p_imu = ekf_state.lidar_to_imu_r.matrix() * p_l.cast()
                                     + ekf_state.lidar_to_imu_t;
                                 let p_world = ekf_state.pose.transform(p_imu.coords);
@@ -644,7 +659,11 @@ impl crate::Registration for RegistrationState {
                         #[cfg(not(feature = "parallel"))]
                         {
                             for point_local in iter {
-                                let p_l = point_local.xyz();
+                                let p_l = nalgebra::Point3::new(
+                                    point_local.x,
+                                    point_local.y,
+                                    point_local.z,
+                                );
                                 let p_imu = ekf_state.lidar_to_imu_r.matrix() * p_l.cast()
                                     + ekf_state.lidar_to_imu_t;
                                 let p_world = ekf_state.pose.transform(p_imu.coords);
@@ -700,65 +719,56 @@ impl crate::Registration for RegistrationState {
 
                     eval.start("ekf_correct/model/jacobian").unwrap();
 
+                    // Resize h and h_x if needed using faer API
                     if planes.len() > h.nrows() {
-                        *h = DVector::<f64>::zeros(cloud_len_alloc);
+                        *h = faer::Col::<f64>::zeros(cloud_len_alloc);
                     }
 
                     if planes.len() > h_x.nrows() {
-                        *h_x = DMatrix::<f64>::zeros(cloud_len_alloc, 18);
+                        *h_x = faer::Mat::<f64>::zeros(cloud_len_alloc, 18);
                     }
 
-                    planes
-                        .iter()
-                        .zip(h_x.row_iter_mut())
-                        .zip(h.row_iter_mut())
-                        .for_each(|((normal_point, mut h_x_row), mut h_row)| {
-                            let point_local = normal_point.xyz().cast::<f64>();
-                            let nearest_plane = [
-                                normal_point.normal_x as f64,
-                                normal_point.normal_y as f64,
-                                normal_point.normal_z as f64,
-                                normal_point.intensity as f64,
-                            ];
-                            let v = ekf_state.lidar_to_imu_r.matrix() * point_local
-                                + ekf_state.lidar_to_imu_t;
+                    // Process each plane
+                    for (i, normal_point) in planes.iter().enumerate() {
+                        let point_local = normal_point.xyz().cast::<f64>();
+                        let nearest_plane = [
+                            normal_point.normal_x as f64,
+                            normal_point.normal_y as f64,
+                            normal_point.normal_z as f64,
+                            normal_point.intensity as f64,
+                        ];
+                        let v = ekf_state.lidar_to_imu_r.matrix() * point_local
+                            + ekf_state.lidar_to_imu_t;
 
-                            let norm =
-                                Vector3::new(nearest_plane[0], nearest_plane[1], nearest_plane[2]);
+                        let norm =
+                            Vector3::new(nearest_plane[0], nearest_plane[1], nearest_plane[2]);
 
-                            // Rotation perturbation
-                            let p_imu_global = ekf_state.pose.rotation().matrix() * v.coords;
-                            let a = -1.0 * norm.transpose() * skew_symmetric(&p_imu_global);
+                        // Rotation perturbation
+                        let p_imu_global = ekf_state.pose.rotation().matrix() * v.coords;
+                        let skew_mat = skew_symmetric_na(&p_imu_global);
+                        let a = -1.0 * norm.transpose() * skew_mat;
 
-                            // Position perturbation
-                            // derivative of plane equation wrt global position
-                            let pos_jacobian = norm;
+                        // Position perturbation
+                        // derivative of plane equation wrt global position
+                        let pos_jacobian = norm;
 
-                            // Rotation Jacobian
-                            h_x_row[0] = a.x;
-                            h_x_row[1] = a.y;
-                            h_x_row[2] = a.z;
+                        // Rotation Jacobian
+                        h_x[(i, 0)] = a.x;
+                        h_x[(i, 1)] = a.y;
+                        h_x[(i, 2)] = a.z;
 
-                            // Position Jacobian
-                            h_x_row[3] = pos_jacobian.x;
-                            h_x_row[4] = pos_jacobian.y;
-                            h_x_row[5] = pos_jacobian.z;
+                        // Position Jacobian
+                        h_x[(i, 3)] = pos_jacobian.x;
+                        h_x[(i, 4)] = pos_jacobian.y;
+                        h_x[(i, 5)] = pos_jacobian.z;
 
-                            // Velocity, gyro bias, accel bias, gravity: no influence on measurement
-                            h_x_row[6] = 0.0;
-                            h_x_row[7] = 0.0;
-                            h_x_row[8] = 0.0;
-                            h_x_row[9] = 0.0;
-                            h_x_row[10] = 0.0;
-                            h_x_row[11] = 0.0;
-                            h_x_row[12] = 0.0;
-                            h_x_row[13] = 0.0;
-                            h_x_row[14] = 0.0;
-                            h_x_row[15] = 0.0;
-                            h_x_row[16] = 0.0;
-                            h_x_row[17] = 0.0;
-                            h_row[0] = -nearest_plane[3];
-                        });
+                        // Velocity, gyro bias, accel bias, gravity: no influence on measurement
+                        for j in 6..18 {
+                            h_x[(i, j)] = 0.0;
+                        }
+
+                        h[i] = -nearest_plane[3];
+                    }
                     eval.stop("ekf_correct/model/jacobian").unwrap();
                 },
             );
