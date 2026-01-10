@@ -106,18 +106,19 @@ int main(void)
     }
 
     // Scan 2 (slightly moved)
-    float scan2_data[NUM_POINTS * 4];
+    float scan2_data[NUM_POINTS * 5]; // Nx5: x,y,z,intensity,t
     for (int i = 0; i < NUM_POINTS; i++)
     {
-        float angle = (float)i / NUM_POINTS * 6.28318f + 0.05f;
+        float angle = (float)i / NUM_POINTS * 6.28318f + 0.1f;
         float range = 5.0f + 0.5f * (i % 8) + 0.05f;
 
-        scan2_data[i * 4 + 0] = range * cosf(angle);
-        scan2_data[i * 4 + 1] = range * sinf(angle);
-        scan2_data[i * 4 + 2] = 0.2f * sinf(angle * 3);
-        scan2_data[i * 4 + 3] = (float)i / NUM_POINTS * 100000000.0f;
+        scan2_data[i * 5 + 0] = range * cosf(angle);
+        scan2_data[i * 5 + 1] = range * sinf(angle);
+        scan2_data[i * 5 + 2] = 0.2f * sinf(angle * 3);
+        scan2_data[i * 5 + 3] = 0.0f; // intensity
+        scan2_data[i * 5 + 4] = (float)i / NUM_POINTS * 100000000.0f;
     }
-    uint64_t scan2_id = pelorus_add_points_xyzt_f32(
+    uint64_t scan2_id = pelorus_add_points_xyzit_f32(
         pelorus,
         base_sec + 1,
         200000000,
@@ -136,33 +137,61 @@ int main(void)
     // Now block waiting for an odometry result.
     printf("Waiting for odometry (blocking)...\n\n");
 
-    pelorus_odometry odom = {0};
-    const int recv_status = pelorus_recv(pelorus, &odom);
-    if (recv_status == 1)
+    /* Wait until we receive an odometry result that matches `scan2_id`. */
+    printf("Waiting for odometry for scan id %llu (blocking)...\n\n", (unsigned long long)scan2_id);
+    while (1)
     {
-        printf("  Position: [%.3f, %.3f, %.3f]\n",
-               odom.position[0], odom.position[1], odom.position[2]);
-        printf("  Orientation: [%.3f, %.3f, %.3f, %.3f]\n",
-               odom.orientation[0], odom.orientation[1],
-               odom.orientation[2], odom.orientation[3]);
-        printf("  Linear velocity: [%.3f, %.3f, %.3f]\n",
-               odom.linear_velocity[0], odom.linear_velocity[1], odom.linear_velocity[2]);
-        printf("  Angular velocity: [%.3f, %.3f, %.3f]\n",
-               odom.angular_velocity[0], odom.angular_velocity[1], odom.angular_velocity[2]);
-        printf("  Point cloud: %zu points\n", odom.num_points);
-
-        for (size_t j = 0; j < odom.num_points && j < 3; j++)
+        pelorus_odometry odom = {0};
+        const int recv_status = pelorus_recv(pelorus, &odom);
+        if (recv_status == PELORUS_STATUS_OK)
         {
-            const pelorus_point_xyzi *p = &odom.points[j];
-            printf("    Point %zu: [%.2f, %.2f, %.2f] I=%.1f\n",
-                   j, p->x, p->y, p->z, p->intensity);
-        }
+            if (odom.scan_id == scan2_id)
+            {
+                printf("  Position: [%.3f, %.3f, %.3f] (scan_id=%llu)\n",
+                       odom.position[0], odom.position[1], odom.position[2], (unsigned long long)odom.scan_id);
+                printf("  Orientation: [%.3f, %.3f, %.3f, %.3f]\n",
+                       odom.orientation[0], odom.orientation[1],
+                       odom.orientation[2], odom.orientation[3]);
+                printf("  Linear velocity: [%.3f, %.3f, %.3f]\n",
+                       odom.linear_velocity[0], odom.linear_velocity[1], odom.linear_velocity[2]);
+                printf("  Angular velocity: [%.3f, %.3f, %.3f]\n",
+                       odom.angular_velocity[0], odom.angular_velocity[1], odom.angular_velocity[2]);
+                printf("  Point cloud: %zu points\n", odom.num_points);
 
-        pelorus_free_odometry(&odom);
-    }
-    else
-    {
-        fprintf(stderr, "Error receiving odometry (status: %d)\n", recv_status);
+                if (getenv("PELORUS_DUMP_ALL_POINTS") != NULL)
+                {
+                    for (size_t j = 0; j < odom.num_points; j++)
+                    {
+                        const pelorus_point_xyzit *p = &odom.points[j];
+                        printf("    Point %zu: [%.6g, %.6g, %.6g] I=%.6g t=%.6g\n",
+                               j, p->x, p->y, p->z, p->intensity, p->timestamp);
+                    }
+                }
+                else
+                {
+                    for (size_t j = 0; j < odom.num_points && j < 3; j++)
+                    {
+                        const pelorus_point_xyzit *p = &odom.points[j];
+                        printf("    Point %zu: [%.2f, %.2f, %.2f] I=%.1f t=%.6f\n",
+                               j, p->x, p->y, p->z, p->intensity, p->timestamp);
+                    }
+                }
+
+                pelorus_free_odometry(&odom);
+                break;
+            }
+            else
+            {
+                /* Not the scan we were waiting for; free and continue waiting. */
+                pelorus_free_odometry(&odom);
+                continue;
+            }
+        }
+        else
+        {
+            fprintf(stderr, "Error receiving odometry (status: %d)\n", recv_status);
+            break;
+        }
     }
 
     // Clean up

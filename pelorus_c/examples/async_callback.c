@@ -17,15 +17,26 @@ static void fill_identity_cov(double *cov, double diag)
 typedef struct
 {
     int count;
+    uint64_t scan2_id; // 0 until set by the main thread
 } UserContext;
 
 // Callback function that gets invoked when odometry is available
 void odometry_callback(const pelorus_odometry *odom, void *user_data)
 {
     UserContext *ctx = (UserContext *)user_data;
+
+    // If scan2_id is set, only react to odometry matching that scan id.
+    if (ctx->scan2_id != 0)
+    {
+        if (odom->scan_id != ctx->scan2_id)
+        {
+            return; // ignore unrelated odometry
+        }
+    }
+
     ctx->count++;
 
-    printf("Callback invoked! Odometry #%d received\n", ctx->count);
+    printf("Callback invoked! Odometry #%d received (scan_id=%llu)\n", ctx->count, (unsigned long long)odom->scan_id);
     printf("  Timestamp: %d.%09u\n", odom->timestamp_sec, odom->timestamp_nanosec);
     printf("  Position: [%.3f, %.3f, %.3f]\n",
            odom->position[0], odom->position[1], odom->position[2]);
@@ -33,12 +44,24 @@ void odometry_callback(const pelorus_odometry *odom, void *user_data)
            odom->linear_velocity[0], odom->linear_velocity[1], odom->linear_velocity[2]);
     printf("  Point cloud: %zu points\n", odom->num_points);
 
-    // Print first few points
-    for (size_t i = 0; i < odom->num_points && i < 3; i++)
+    // Print points. When PELORUS_DUMP_ALL_POINTS=1, dump full cloud (for regression tests)
+    if (getenv("PELORUS_DUMP_ALL_POINTS") != NULL)
     {
-        const pelorus_point_xyzi *p = &odom->points[i];
-        printf("    Point %zu: [%.2f, %.2f, %.2f] I=%.1f\n",
-               i, p->x, p->y, p->z, p->intensity);
+        for (size_t i = 0; i < odom->num_points; i++)
+        {
+            const pelorus_point_xyzit *p = &odom->points[i];
+            printf("    Point %zu: [%.6g, %.6g, %.6g] I=%.6g t=%.6g\n",
+                   i, p->x, p->y, p->z, p->intensity, p->timestamp);
+        }
+    }
+    else
+    {
+        for (size_t i = 0; i < odom->num_points && i < 3; i++)
+        {
+            const pelorus_point_xyzit *p = &odom->points[i];
+            printf("    Point %zu: [%.2f, %.2f, %.2f] I=%.1f t=%.6f\n",
+                   i, p->x, p->y, p->z, p->intensity, p->timestamp);
+        }
     }
     printf("\n");
 }
@@ -172,7 +195,7 @@ int main(void)
     printf("Added 100 more IMU samples\n");
 
     // Create second scan (slightly different to enable registration)
-    float scan2_data[NUM_POINTS_SCAN * 4];
+    float scan2_data[NUM_POINTS_SCAN * 5]; // Nx5: x,y,z,intensity,t
 
     printf("Generating second scan with %d points...\n", NUM_POINTS_SCAN);
     for (int i = 0; i < NUM_POINTS_SCAN; i++)
@@ -180,13 +203,14 @@ int main(void)
         float angle = (float)i / NUM_POINTS_SCAN * 6.28318f + 0.1f; // Slight rotation
         float range = 5.0f + 0.5f * (i % 8) + 0.05f;                // Slight movement
 
-        scan2_data[i * 4 + 0] = range * cosf(angle);
-        scan2_data[i * 4 + 1] = range * sinf(angle);
-        scan2_data[i * 4 + 2] = 0.2f * sinf(angle * 3);
-        scan2_data[i * 4 + 3] = (float)i / NUM_POINTS_SCAN * 100000000.0f;
+        scan2_data[i * 5 + 0] = range * cosf(angle);
+        scan2_data[i * 5 + 1] = range * sinf(angle);
+        scan2_data[i * 5 + 2] = 0.2f * sinf(angle * 3);
+        scan2_data[i * 5 + 3] = 0.0f; // intensity
+        scan2_data[i * 5 + 4] = (float)i / NUM_POINTS_SCAN * 100000000.0f;
     }
 
-    uint64_t scan2_id = pelorus_add_points_xyzt_f32(
+    uint64_t scan2_id = pelorus_add_points_xyzit_f32(
         pelorus,
         base_sec + 1, // 1.2 seconds from start
         200000000,
@@ -200,11 +224,13 @@ int main(void)
     else
     {
         printf("Added second scan id=%llu with %d points\n\n", (unsigned long long)scan2_id, NUM_POINTS_SCAN);
+        /* inform callback about the scan id we care about */
+        ctx.scan2_id = scan2_id;
     }
 
     // Wait for callbacks to be invoked (processing happens asynchronously)
-    printf("Waiting for odometry callback...\n");
-    for (int i = 0; i < 2000 && ctx.count == 0; i++)
+    printf("Waiting for second odometry callback...\n");
+    for (int i = 0; i < 2000 && ctx.count < 2; i++)
     {
         usleep(1 * 1000);
     }

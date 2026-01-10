@@ -101,7 +101,7 @@ int main()
         scan2->is_dense = false;
         for (int i = 0; i < NUM_POINTS; i++)
         {
-            const float angle = (float)i / NUM_POINTS * 6.28318f + 0.05f;
+            const float angle = (float)i / NUM_POINTS * 6.28318f + 0.1f; // match other examples
             const float range = 5.0f + 0.5f * (i % 8) + 0.05f;
 
             auto &p = scan2->points[i];
@@ -142,13 +142,28 @@ int main()
                   << odom.angular_velocity()[2] << "]\n";
         std::cout << "  Point cloud: " << odom.num_points() << " points\n";
 
-        for (size_t j = 0; j < odom.num_points() && j < 3; j++)
+        if (std::getenv("PELORUS_DUMP_ALL_POINTS") != nullptr)
         {
-            const auto *p = &odom.points()[j];
-            std::cout << "    Point " << j << ": ["
-                      << std::setprecision(3)
-                      << p->x << ", " << p->y << ", " << p->z
-                      << "] I=" << std::setprecision(3) << p->intensity << "\n";
+            for (size_t j = 0; j < odom.num_points(); j++)
+            {
+                const auto *p = &odom.points()[j];
+                std::cout << "    Point " << j << ": ["
+                          << std::setprecision(6) << p->x << ", " << p->y << ", " << p->z
+                          << "] I=" << std::setprecision(6) << p->intensity
+                          << " t=" << std::setprecision(6) << p->timestamp << "\n";
+            }
+        }
+        else
+        {
+            for (size_t j = 0; j < odom.num_points() && j < 3; j++)
+            {
+                const auto *p = &odom.points()[j];
+                std::cout << "    Point " << j << ": ["
+                          << std::setprecision(3)
+                          << p->x << ", " << p->y << ", " << p->z
+                          << "] I=" << std::setprecision(3) << p->intensity
+                          << " t=" << std::setprecision(6) << p->timestamp << "\n";
+            }
         }
 
         // Eigen demo: SE(3) transform from odometry pose and apply it to a point.

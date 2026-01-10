@@ -1,6 +1,6 @@
 [package]
 name = "pelorus_c"
-description = "C FFI bindings for Pelorus"
+description = "Pelorus Odometry Library"
 edition.workspace = true
 include.workspace = true
 keywords.workspace = true
@@ -14,10 +14,8 @@ name = "pelorus"
 crate-type = ["cdylib", "staticlib"]
 
 [dependencies]
-# pelorus.workspace = true
 prelio.workspace = true
 pelorus_core.workspace = true
-# prelio-ros2 = { workspace = true, features = ["ratpub"] } # ratpub is not used in the library, but a communcation feature is needed to build this crate
 pelorus_reg.workspace = true
 spole.workspace = true
 ros_pointcloud2.workspace = true
