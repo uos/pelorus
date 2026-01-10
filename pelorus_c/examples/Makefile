@@ -12,7 +12,8 @@ ifeq ($(UNAME_S),Darwin)
     LDFLAGS += -Wl,-rpath,$(TARGET_DIR)
 endif
 
-EXAMPLES = async_callback sync_blocking
+EXAMPLES = async_callback sync_blocking cpp_wrapper
+CPP_BUILD_DIR ?= build
 
 all: $(EXAMPLES)
 
@@ -22,11 +23,23 @@ async_callback: async_callback.c ../pelorus.h
 sync_blocking: sync_blocking.c ../pelorus.h
 	$(CC) $(CFLAGS) $< $(LDFLAGS) -o $@
 
+# Build C++ example using CMake so it can find PCL/Eigen and use proper flags
+cpp_wrapper:
+	@echo "Configuring and building cpp_wrapper with CMake (build dir: $(CPP_BUILD_DIR))"
+	cmake -S . -B $(CPP_BUILD_DIR) -DPELORUS_BUILD_TYPE=$(BUILD_TYPE)
+	cmake --build $(CPP_BUILD_DIR) --target cpp_wrapper -- -j
+
 clean:
 	rm -f $(EXAMPLES)
+	rm -rf $(CPP_BUILD_DIR)
+	rm -f cpp_wrapper
 
 run: sync_blocking async_callback
 	./sync_blocking
 	./async_callback
+
+regression: sync_blocking async_callback cpp_wrapper
+	@echo "Running regression: compare async vs sync vs cpp outputs"
+	@PELORUS_DUMP_ALL_POINTS=1 python3 compare_async_sync.py
 
 .PHONY: all clean run

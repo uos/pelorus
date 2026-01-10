@@ -154,12 +154,12 @@ pub struct pelorus_pointcloud2 {
 
 #[allow(non_camel_case_types)]
 #[repr(C)]
-pub struct pelorus_point_xyzi {
+pub struct pelorus_point_xyzit {
     pub x: f32,
     pub y: f32,
     pub z: f32,
     pub intensity: f32, // expected 0..255 in float
-    pub timestamp: f32, // in seconds, TODO change in original to f64 again?
+    pub timestamp: f32, // in seconds
 }
 
 #[allow(non_camel_case_types)]
@@ -185,7 +185,7 @@ pub struct pelorus_odometry {
 
     // Registered point cloud (optional)
     // FRAME: In Lidar World frame
-    pub points: *mut pelorus_point_xyzi,
+    pub points: *mut pelorus_point_xyzit,
     pub num_points: usize,
 }
 
@@ -238,7 +238,7 @@ fn dispatch_output(
         unsafe {
             if !c_odom.points.is_null() {
                 let points = Vec::from_raw_parts(
-                    c_odom.points as *mut pelorus_point_xyzi,
+                    c_odom.points as *mut pelorus_point_xyzit,
                     c_odom.num_points,
                     c_odom.num_points,
                 );
@@ -306,8 +306,8 @@ fn convert_to_c_odometry(
     let (pvec, pcount) = if cloud.is_empty() {
         (ptr::null_mut(), 0)
     } else {
-        // Safety: C point and PointXYZI from ros_pointcloud2 are both C-Repr.
-        let mut points_vec: Vec<pelorus_point_xyzi> = unsafe { transmute(cloud) };
+        // Safety: C point and PointXYZIT from rust are both C-Repr.
+        let mut points_vec: Vec<pelorus_point_xyzit> = unsafe { transmute(cloud) };
 
         let out = (points_vec.as_mut_ptr(), points_vec.len());
         std::mem::forget(points_vec);
@@ -735,15 +735,14 @@ fn make_frame_id(frame_id: *const c_char) -> Option<String> {
     }
 }
 
-fn build_cloud_xyzi_t(
+fn build_cloud_xyzit_t(
     header_timestamp_sec: i32,
     header_timestamp_nanosec: u32,
     frame_id: String,
     num_points: usize,
     mut point_at: impl FnMut(usize) -> (f32, f32, f32, f32, u32),
 ) -> PointCloud2Msg {
-    // Always emit x,y,z,intensity,t.
-    // `t` is uint32 nanoseconds offset relative to the scan header timestamp.
+    // Always emit x,y,z,intensity,t (t is nanoseconds offset).
     let point_step: usize = 20;
     let mut data = Vec::with_capacity(num_points * point_step);
     for i in 0..num_points {
@@ -885,7 +884,7 @@ pub unsafe extern "C" fn pelorus_add_points_xyzit_f32(
     };
     let xyzit = unsafe { slice::from_raw_parts(xyzit, num_points * 5) };
 
-    let cloud_msg_internal = build_cloud_xyzi_t(
+    let cloud_msg_internal = build_cloud_xyzit_t(
         header_timestamp_sec,
         header_timestamp_nanosec,
         frame_id,

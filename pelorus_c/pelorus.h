@@ -93,14 +93,18 @@ typedef struct pelorus_pointcloud2 {
 } pelorus_pointcloud2;
 
 /**
- * @brief Simple XYZI point structure (used in outputs).
+ * @brief Simple XYZIT point structure (used in outputs).
+ *
+ * `timestamp` is the per-point time in seconds (relative to an absolute scan
+ * header timestamp when applicable).
  */
-typedef struct pelorus_point_xyzi {
+typedef struct pelorus_point_xyzit {
   float x;         /**< X coordinate in meters */
   float y;         /**< Y coordinate in meters */
   float z;         /**< Z coordinate in meters */
-  float intensity; /**< Intensity/reflectivity value */
-} pelorus_point_xyzi;
+  float intensity; /**< Intensity/reflectivity value (0..255 scaled as float) */
+  float timestamp; /**< Per-point timestamp in seconds */
+} pelorus_point_xyzit;
 
 /**
  * @brief Complete odometry output from Pelorus.
@@ -131,8 +135,7 @@ typedef struct pelorus_odometry {
   double twist_covariance[36]; /**< 6x6 twist covariance (row-major) in IMU
                                   World frame */
   uint64_t scan_id; /**< Scan id assigned when the pointcloud was added */
-  pelorus_point_xyzi
-      *points; /**< Registered point cloud in Lidar World frame (must free) */
+  pelorus_point_xyzit *points; /**< Registered point cloud in Lidar World frame (must free when `points_memory==0`) */
   uintptr_t num_points; /**< Number of points in cloud */
 } pelorus_odometry;
 
@@ -273,7 +276,7 @@ int32_t pelorus_recv(PelorusHandle *handle, pelorus_odometry *result);
  * @param handle The Pelorus handle.
  * @param scan_id The scan id to wait for.
  * @param result Pointer to store the odometry result.
- * @return 1 if odometry for `scan_id` was received, -1 on error.
+ * @return A `pelorus_status` code (e.g., `PELORUS_STATUS_OK` on success, negative on error).
  */
 
 /**

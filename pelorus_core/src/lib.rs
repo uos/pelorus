@@ -374,6 +374,8 @@ pub struct PointXYZIT {
     pub timestamp: f32,
 }
 
+const _: [u8; 32] = [0u8; std::mem::size_of::<PointXYZIT>()];
+
 impl PointXYZIT {
     pub fn from_p(point: Point3<f32>, intensity: f32, timestamp: f32) -> Self {
         Self {

@@ -13,7 +13,7 @@ int main()
         std::cout << "Created Pelorus instance\n\n";
 
         // For demonstration, we'll create a mock odometry result
-        // In real usage, you would get this from pelorus.recv() or pelorus.try_recv()
+        // In real usage, you would get this from pelorus
 
         // Example: Creating test data
         pelorus_odometry test_odom = {0};
