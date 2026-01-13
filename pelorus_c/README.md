@@ -104,7 +104,7 @@ pelorus::Pelorus pelorus;
 // Convert and add PCL cloud to Pelorus (per-point timestamps required)
 // Use pelorus::pcl::PointXYZIT so every point has a `t` field (ns offset).
 pcl::PointCloud<pelorus::pcl::PointXYZIT>::Ptr cloud = ...;
-pelorus::pcl::add_pointcloud(pelorus, cloud, timestamp_sec, timestamp_nsec, "lidar");
+pelorus::pcl::add_pointcloud(pelorus, cloud, timestamp_sec, timestamp_nsec);
 
 // Get result and extract just the point cloud (not entire odometry)
 auto odom = pelorus.recv();

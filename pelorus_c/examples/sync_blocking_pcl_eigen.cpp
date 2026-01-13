@@ -29,7 +29,7 @@ int main()
             pelorus::ImuMsg imu;
             imu.timestamp_sec = base_sec;
             imu.timestamp_nanosec = i * 5000000; // 5ms
-            imu.frame_id = "imu";
+            imu.frame_id = "";
 
             imu.orientation[0] = 1.0; // w
             imu.angular_velocity[0] = 0.001 * (i % 3 - 1);
@@ -67,7 +67,7 @@ int main()
             p.intensity = 0.0f;
             p.t = static_cast<uint32_t>(((float)i / NUM_POINTS) * 100000000.0f);
         }
-        pelorus::pcl::add_pointcloud(pelorus, scan1, base_sec, 600000000, "lidar");
+        pelorus::pcl::add_pointcloud(pelorus, scan1, base_sec, 600000000);
 
         // Some more IMU
         for (int i = 200; i < 300; i++)
@@ -75,7 +75,7 @@ int main()
             pelorus::ImuMsg imu;
             imu.timestamp_sec = base_sec;
             imu.timestamp_nanosec = i * 5000000;
-            imu.frame_id = "imu";
+            imu.frame_id = "";
 
             imu.orientation[0] = 1.0;
             imu.angular_velocity[0] = 0.001 * (i % 3 - 1);
@@ -111,7 +111,7 @@ int main()
             p.intensity = 0.0f;
             p.t = static_cast<uint32_t>(((float)i / NUM_POINTS) * 100000000.0f);
         }
-        pelorus::pcl::add_pointcloud(pelorus, scan2, base_sec + 1, 200000000, "lidar");
+        pelorus::pcl::add_pointcloud(pelorus, scan2, base_sec + 1, 200000000);
 
         std::cout << "Waiting for odometry (blocking)...\n\n";
         auto recv_res = pelorus.recv();

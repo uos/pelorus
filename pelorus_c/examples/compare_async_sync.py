@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+import os
 import re
 import subprocess
 import sys
@@ -13,6 +14,59 @@ def run_cmd(cmd, env=None):
         print(f"Command failed: {cmd}\nstdout:\n{p.stdout.decode()}\nstderr:\n{p.stderr.decode()}")
         sys.exit(2)
     return p.stdout.decode()
+
+
+def run_cmd_allow_fail(cmd, env=None):
+    """Run a command but don't sys.exit on non-zero return; return (stdout, stderr, returncode)"""
+    p = subprocess.run(cmd, shell=True, capture_output=True, env=env)
+    return (p.stdout.decode(), p.stderr.decode(), p.returncode)
+
+
+def run_and_collect_until(cmd, env=None, sentinels=None):
+    """Run command and stream stdout until one of the sentinel regexes appears.
+    Returns (stdout, stderr, returncode). Does not use timeouts; determinism relies on the example to emit sentinel and exit."""
+    p = subprocess.Popen(cmd, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env, text=True)
+    out_lines = []
+    # Read stdout line-by-line until sentinel is matched
+    matched = False
+    try:
+        point_count = None
+        point_lines = 0
+        for ln in p.stdout:
+            out_lines.append(ln)
+            if sentinels and not matched:
+                for s in sentinels:
+                    if re.search(s, ln):
+                        matched = True
+                        break
+            if matched:
+                # look for point-cloud header to determine expected number of points
+                m_pc = re.search(r"Point cloud: (\d+) points", ln)
+                if m_pc:
+                    try:
+                        point_count = int(m_pc.group(1))
+                    except Exception:
+                        point_count = None
+                # count point lines
+                m_point = POINT_RE.match(ln)
+                if m_point:
+                    point_lines += 1
+                    if point_count is not None and point_lines >= point_count:
+                        # collected all points for the registered odom; we're done
+                        break
+        # capture any remaining output after process exits
+        try:
+            rest_out, rest_err = p.communicate()
+        except Exception:
+            rest_out, rest_err = ("", "")
+        if rest_out:
+            out_lines.append(rest_out)
+        stderr = rest_err if rest_err else ""
+    finally:
+        # Wait for process to exit if it hasn't; we avoid timeouts to keep deterministic behavior
+        if p.poll() is None:
+            p.wait()
+    return ("".join(out_lines), stderr, p.returncode)
 
 
 def parse_points(output):
@@ -41,48 +95,208 @@ def parse_points(output):
     return pts
 
 
+def parse_registered_scan(output):
+    """Extract the registered scan's scan_id and timestamp from output.
+
+    Returns (scan_id (int or None), timestamp (float or None)).
+    """
+    if output is None:
+        return (None, None)
+
+    lines = output.splitlines()
+
+    # 1) Try Python DEBUG lines: DEBUG: on_odom called (scan_id=2, pts=64, ts=1001.294999999)
+    for ln in lines:
+        if 'DEBUG: on_odom called' in ln and 'ts=' in ln and 'pts=' in ln:
+            try:
+                pts_idx = ln.index('pts=') + 4
+                pts_rest = ln[pts_idx:]
+                pts_str = pts_rest.split(',')[0]
+                pts = int(pts_str.strip())
+                if pts > 0:
+                    # scan id
+                    sid_idx = ln.index('scan_id=') + len('scan_id=')
+                    sid_rest = ln[sid_idx:]
+                    sid = int(sid_rest.split(',')[0])
+                    idx = ln.index('ts=') + 3
+                    rest = ln[idx:]
+                    rest = rest.split(')')[0]
+                    ts = float(rest)
+                    return (sid, ts)
+            except Exception:
+                continue
+
+    # 2) Try C callback: look for 'Callback invoked' line with scan_id and then 'Timestamp:' after it
+    for i, ln in enumerate(lines):
+        if 'Callback invoked' in ln and 'scan_id=' in ln:
+            try:
+                sid_idx = ln.index('scan_id=') + len('scan_id=')
+                sid_rest = ln[sid_idx:]
+                sid = int(sid_rest.split(')')[0].strip().strip(','))
+            except Exception:
+                sid = None
+            # scan forward for Timestamp line
+            for j in range(i + 1, min(i + 6, len(lines))):
+                if 'Timestamp:' in lines[j]:
+                    try:
+                        parts = lines[j].split('Timestamp:')[1].strip()
+                        ts_val = float(parts.split()[0])
+                        return (sid, ts_val)
+                    except Exception:
+                        continue
+
+    # 3) Fallback: find any 'Timestamp:' with a following 'Point cloud: N' where N > 0
+    for i, ln in enumerate(lines):
+        if 'Timestamp:' in ln:
+            try:
+                parts = ln.split('Timestamp:')[1].strip()
+                ts_val = float(parts.split()[0])
+            except Exception:
+                continue
+            for j in range(i + 1, min(i + 8, len(lines))):
+                if 'Point cloud:' in lines[j]:
+                    try:
+                        n = int(lines[j].split('Point cloud:')[1].split()[0])
+                        if n > 0:
+                            # attempt to find a scan id nearby
+                            sid = None
+                            # search nearby lines for '(scan_id=' pattern (either before or after timestamp)
+                            for k in range(max(0, i-3), min(len(lines), i+8)):
+                                if 'scan_id=' in lines[k]:
+                                    try:
+                                        sid_idx = lines[k].index('scan_id=') + len('scan_id=')
+                                        sid_rest = lines[k][sid_idx:]
+                                        # strip ')' and ',' and whitespace
+                                        sid = int(sid_rest.split(')')[0].split()[0].strip().strip(',').strip('()'))
+                                        break
+                                    except Exception:
+                                        sid = None
+                            return (sid, ts_val)
+                    except Exception:
+                        pass
+    return (None, None)
+
+
 def main():
+    # Ensure we're running in the script's directory (so Makefile is available)
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    os.chdir(script_dir)
+
     # Build examples first
     print("Building examples...")
-    subprocess.check_call(["make", "-C", "."])
+    # Build C examples and C++ example; deterministically run until make finishes
+    try:
+        subprocess.check_call(["make", "-C", "."])
+    except subprocess.CalledProcessError as e:
+        print(f"Build failed: {e}")
+        sys.exit(2)
 
     env = dict(**subprocess.os.environ)
     env['PELORUS_DUMP_ALL_POINTS'] = '1'
 
     print("Running async_callback...")
-    out_async = run_cmd("./async_callback", env=env)
+    out_async, err_async, rc_async = run_and_collect_until("./async_callback", env=env, sentinels=[r"Callback invoked! Odometry #\d+ received \(scan_id=\d+\)"])
 
     print("Running sync_blocking...")
-    out_sync = run_cmd("./sync_blocking", env=env)
+    out_sync, err_sync, rc_sync = run_and_collect_until("./sync_blocking", env=env, sentinels=[r"Point cloud: \d+ points"]) 
 
     # Build and run cpp_wrapper using CMake if possible; if it's not available, skip it.
-    print("Attempting to build cpp_wrapper via CMake (may be skipped if PCL/Eigen missing)...")
+    print("Attempting to build cpp_wrapper via CMake")
     cpp_built = False
     try:
-        # allow make to fail without aborting the whole script
         subprocess.run("make cpp_wrapper", shell=True, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         if subprocess.os.path.exists("build/cpp_wrapper"):
             print("Running cpp_wrapper (build/cpp_wrapper)...")
             out_cpp = run_cmd("./build/cpp_wrapper", env=env)
             cpp_built = True
-        else:
-            out_cpp = None
     except subprocess.CalledProcessError:
-        print("cpp_wrapper build skipped or failed; continuing with async/sync comparison")
-        out_cpp = None
+        print("Error: cpp_wrapper build failed")
+        sys.exit(2)
+
+    print("Running python async example...")
+    # Try to ensure Python bindings are importable; if not, try to install the local package (best-effort)
+    can_run_py = True
+    try:
+        subprocess.run("python3 -c \"import pelorus\"", shell=True, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    except subprocess.CalledProcessError:
+        print("Python pelorus bindings not importable; attempting to install local package (may require maturin)...")
+        try:
+            subprocess.run("python3 -m pip install -e ../../pelorus_py", shell=True, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            subprocess.run("python3 -c \"import pelorus\"", shell=True, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        except subprocess.CalledProcessError:
+            print("Error: Failed to install/import pelorus Python bindings")
+            sys.exit(2)
+
+    pts_py = None
+    py_returncode = None
+    py_stdout = None
+    py_stderr = None
+    if can_run_py:
+        try:
+            # Run python example deterministically until it prints matched odom
+            py_stdout, py_stderr, py_returncode = run_and_collect_until("python3 ../../pelorus_py/examples/async_callback.py", env=env, sentinels=[r"Matched odom:", r"Callback invoked! Odometry #\d+ received \(scan_id=\d+\)"])
+            if py_stdout is None:
+                pts_py = None
+            else:
+                pts_py = parse_points(py_stdout)
+        except Exception:
+            pts_py = None
+            py_stdout = None
+            py_stderr = None
+            py_returncode = None
+
 
     pts_async = parse_points(out_async)
     pts_sync = parse_points(out_sync)
     pts_cpp = parse_points(out_cpp) if out_cpp is not None else None
 
+    # pts_py may be None if the python example failed
+    pts_py = pts_py if 'pts_py' in locals() else None
+
     if not pts_async:
-        print("No points parsed from async output")
         print(out_async)
+        print("Error: No points parsed from async output")
         sys.exit(2)
     if not pts_sync:
-        print("No points parsed from sync output")
         print(out_sync)
+        print("Error: No points parsed from sync output")
         sys.exit(2)
+
+    # parse registered scan info (scan id + timestamp) for each output
+    sid_async, ts_async = parse_registered_scan(out_async)
+    sid_sync, ts_sync = parse_registered_scan(out_sync)
+    sid_py, ts_py = parse_registered_scan(py_stdout) if py_stdout is not None else (None, None)
+
+    # debug: show parsed values to aid deterministic parsing
+    print(f"DEBUG PARSE: sid_async={sid_async} ts_async={ts_async}")
+    print(f"DEBUG PARSE: sid_sync={sid_sync} ts_sync={ts_sync}")
+    print(f"DEBUG PARSE: sid_py={sid_py} ts_py={ts_py}")
+
+    if sid_async is None or sid_sync is None:
+        print("Error: could not identify registered scan id from async/sync outputs")
+        print("--- async output start ---")
+        print(out_async)
+        print("--- async output end ---")
+        print("--- sync output start ---")
+        print(out_sync)
+        print("--- sync output end ---")
+        sys.exit(1)
+
+    # Expect async and sync to report the same scan id and timestamp
+    if sid_async != sid_sync:
+        print(f"Error: async and sync reported different scan ids: async={sid_async} sync={sid_sync}")
+        sys.exit(1)
+    if ts_async is None or ts_sync is None:
+        print("Error: could not parse timestamps from async/sync outputs")
+        sys.exit(1)
+    if abs(ts_async - ts_sync) > 1e-6:
+        print(f"Timestamp mismatch between async and sync: async={ts_async} sync={ts_sync}")
+        sys.exit(1)
+
+    # If python run produced output but returncode != 0, fail immediately (we want deterministic regression)
+    if py_returncode is not None and py_returncode != 0:
+        print(f"Error: python example exited with code {py_returncode}. stdout/stderr follow:\n{py_stdout}\n{py_stderr}")
+        sys.exit(1)
 
     if len(pts_async) != len(pts_sync):
         print(f"Different point counts: async={len(pts_async)} sync={len(pts_sync)}")
@@ -97,13 +311,41 @@ def main():
 
     print("SUCCESS: async and sync point clouds match exactly within tolerance")
 
+    if pts_py is not None:
+        if not pts_py:
+            print("python example produced no points; failing")
+            print(py_stdout)
+            sys.exit(2)
+        if len(pts_py) != len(pts_async):
+            print(f"Different point counts: async={len(pts_async)} python={len(pts_py)}")
+            sys.exit(1)
+        for i, (a, p) in enumerate(zip(pts_async, pts_py)):
+            for k in range(5):
+                if not isclose(a[k], p[k], rel_tol=1e-6, abs_tol=eps):
+                    print(f"Point {i} differs between async and python at element {k}: async={a[k]} python={p[k]}")
+                    sys.exit(1)
+        # Timestamp check: python timestamp must equal async timestamp within float tol
+        if ts_async is not None and ts_py is not None:
+            if abs(ts_async - ts_py) > 1e-6:
+                print(py_stdout)
+                print(f"Error: Timestamp differs: async={ts_async} python={ts_py}")
+                sys.exit(1)
+        else:
+            print(py_stdout)
+            print("Error: could not parse timestamp from python output; failing")
+            sys.exit(1)
+
+        print("SUCCESS: python example matches async/sync point clouds and timestamps")
+    else:
+        print("python example not run or failed; skipped python comparison")
+
     if cpp_built:
         if not pts_cpp:
-            print("cpp_wrapper produced no points; failing")
             print(out_cpp)
+            print("Error: cpp_wrapper produced no points; failing")
             sys.exit(2)
         if len(pts_cpp) != len(pts_async):
-            print(f"Different point counts: async={len(pts_async)} cpp={len(pts_cpp)}")
+            print(f" Error: Different point counts: async={len(pts_async)} cpp={len(pts_cpp)}")
             sys.exit(1)
         for i, (a, c) in enumerate(zip(pts_async, pts_cpp)):
             for k in range(5):
@@ -115,16 +357,16 @@ def main():
         print("cpp_wrapper not built; skipped cpp comparison")
 
     if not pts_async:
-        print("No points parsed from async output")
         print(out_async)
+        print("Error: No points parsed from async output")
         sys.exit(2)
     if not pts_sync:
-        print("No points parsed from sync output")
         print(out_sync)
+        print("Error: No points parsed from sync output")
         sys.exit(2)
 
     if len(pts_async) != len(pts_sync):
-        print(f"Different point counts: async={len(pts_async)} sync={len(pts_sync)}")
+        print(f"Error: Different point counts: async={len(pts_async)} sync={len(pts_sync)}")
         sys.exit(1)
 
     eps = 1e-4

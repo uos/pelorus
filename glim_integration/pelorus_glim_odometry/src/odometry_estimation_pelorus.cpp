@@ -212,7 +212,7 @@ public:
     }
 
     uint64_t scan_id =
-        pelorus_->add_points_xyzit(xyzit.data(), n, sec, nsec, "");
+        pelorus_->add_points_xyzit(xyzit.data(), n, sec, nsec);
 
     if (scan_id == 0) {
       logger->error(

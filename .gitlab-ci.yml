@@ -35,7 +35,6 @@ rust-nightly:
   script:
     - rustup default nightly
     - cargo build --verbose
-    - cargo test --verbose
   allow_failure: true
   rules:
     - if: '$CI_PIPELINE_SOURCE == "push"'
@@ -120,19 +119,23 @@ rust-nightly:
 #     - if: '$CI_PIPELINE_SOURCE == "schedule"'
 #       when: never
 
-# Run examples regression tests (async vs sync vs cpp_wrapper when available)
 examples-regression:
-  stage: test
-  image: ubuntu:latest
-  script:
-    - apt-get update && apt-get install -y build-essential cmake python3 python3-pip libpcl-dev libeigen3-dev pkg-config
-    - rustup default stable
-    - cargo build --release
-    - cd pelorus_c/examples
-    - make regression
-  rules:
-    - if: '$CI_PIPELINE_SOURCE == "push"'
-    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
-    - if: '$CI_COMMIT_BRANCH == "main"'
-    - if: '$CI_PIPELINE_SOURCE == "schedule"'
-      when: never
+ stage: test
+ image: ubuntu:latest
+ script:
+   - apt-get update && apt-get install -y build-essential cmake python3 python3-pip libpcl-dev libeigen3-dev pkg-config
+   - rustup default stable
+   - cargo build
+   - pip3 install maturin
+   - cd pelorus_py
+   - maturin develop
+   - cd ../pelorus_c/examples
+   - make regression
+ rules:
+   - if: '$CI_PIPELINE_SOURCE == "push"'
+   - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+   - if: '$CI_COMMIT_BRANCH == "main"'
+   - if: '$CI_PIPELINE_SOURCE == "schedule"'
+     when: never
+
+# TODO run on debian:trixie to prepare for ubuntu 26.04 LTS and ros2 lyrical

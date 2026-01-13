@@ -1,13 +1,13 @@
 [package]
 name = "pelorus"
-description = "Efficient Robot Odometry"
-
+description = "Highly efficient odometry from Lidar and IMU using CUDA acceleration."
 edition.workspace = true
 include.workspace = true
 keywords.workspace = true
 license.workspace = true
 repository.workspace = true
 version.workspace = true
+rust-version = "1.87"
 
 [dependencies]
 pelorus_core.workspace = true

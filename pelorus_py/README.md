@@ -42,7 +42,6 @@ lio = pelorus.Handle()  # Uses embedded default config
 lio.add_imu(
     timestamp_sec=1000,
     timestamp_nanosec=0,
-    frame_id="imu",
     orientation=[1.0, 0.0, 0.0, 0.0],  # w, x, y, z
     orientation_covariance=[0.01] + [0.0]*8,
     angular_velocity=[0.0, 0.0, 0.0],
@@ -60,7 +59,7 @@ lio.add_imu(
 # - Nx4: [x,y,z,t] where t is uint32 nanosecond offset
 # - Nx5: [x,y,z,intensity,t]
 # For numpy/list inputs, you must also provide the scan header timestamp:
-# lio.add_pointcloud(points_np, timestamp_sec=..., timestamp_nanosec=..., frame_id="lidar")
+# lio.add_pointcloud(points_np, timestamp_sec=..., timestamp_nanosec=...)
 
 # Try to receive odometry (non-blocking)
 odom = lio.try_recv()
@@ -107,7 +106,7 @@ Main interface to the Pelorus system.
 - `add_imu(...)`: Add an IMU measurement
 - `add_odom(...)`: Add an odometry measurement  
 - `add_pointcloud(cloud_dict)`: Add a point cloud (PointCloud2 format)
-- `add_pointcloud(cloud_np, timestamp_sec=..., timestamp_nanosec=..., frame_id="lidar")`: Add a point cloud from numpy
+- `add_pointcloud(cloud_np, timestamp_sec=..., timestamp_nanosec=...)`: Add a point cloud from numpy
 - `add_pointcloud2_ros(cloud_msg)`: Add a ROS2 `sensor_msgs/msg/PointCloud2` message directly
 - `try_recv()`: Try to receive odometry (non-blocking), returns `None` if no data
 - `recv()`: Receive odometry (blocks until available)

@@ -307,14 +307,12 @@ namespace pelorus
          * @param num_points Number of points
          * @param timestamp_sec Header timestamp seconds
          * @param timestamp_nanosec Header timestamp nanoseconds
-         * @param frame_id Frame ID string
          */
         uint64_t add_points_xyzt(const float *points, size_t num_points,
-                                 int32_t timestamp_sec, uint32_t timestamp_nanosec,
-                                 const char *frame_id)
+                                 int32_t timestamp_sec, uint32_t timestamp_nanosec)
         {
             return pelorus_add_points_xyzt_f32(handle_.get(), timestamp_sec, timestamp_nanosec,
-                                               frame_id, points, num_points);
+                                               nullptr, points, num_points);
         }
 
         /**
@@ -323,14 +321,12 @@ namespace pelorus
          * @param num_points Number of points
          * @param timestamp_sec Header timestamp seconds
          * @param timestamp_nanosec Header timestamp nanoseconds
-         * @param frame_id Frame ID string
-         */
+        */
         uint64_t add_points_xyzit(const float *points, size_t num_points,
-                                  int32_t timestamp_sec, uint32_t timestamp_nanosec,
-                                  const char *frame_id)
+                                  int32_t timestamp_sec, uint32_t timestamp_nanosec)
         {
             return pelorus_add_points_xyzit_f32(handle_.get(), timestamp_sec, timestamp_nanosec,
-                                                frame_id, points, num_points);
+                                                nullptr, points, num_points);
         }
 
         /**
@@ -620,8 +616,7 @@ namespace pelorus
 
         inline void add_pointcloud(Pelorus &pelorus,
                                    const ::pcl::PointCloud<::pcl::PointXYZIT>::Ptr &cloud,
-                                   int32_t timestamp_sec, uint32_t timestamp_nanosec,
-                                   const char *frame_id)
+                                   int32_t timestamp_sec, uint32_t timestamp_nanosec)
         {
             std::vector<float> points;
             points.reserve(cloud->size() * 5);
@@ -636,7 +631,7 @@ namespace pelorus
             }
 
             pelorus.add_points_xyzit(points.data(), cloud->size(),
-                                     timestamp_sec, timestamp_nanosec, frame_id);
+                                     timestamp_sec, timestamp_nanosec);
         }
 
     } // namespace pcl_helpers
@@ -647,9 +642,9 @@ namespace pelorus
         using PointXYZIT = ::pcl::PointXYZIT;
 
         inline void add_pointcloud(Pelorus &pelorus, const ::pcl::PointCloud<::pcl::PointXYZIT>::Ptr &cloud,
-                                   int32_t timestamp_sec, uint32_t timestamp_nanosec, const char *frame_id)
+                                   int32_t timestamp_sec, uint32_t timestamp_nanosec)
         {
-            pcl_helpers::add_pointcloud(pelorus, cloud, timestamp_sec, timestamp_nanosec, frame_id);
+            pcl_helpers::add_pointcloud(pelorus, cloud, timestamp_sec, timestamp_nanosec);
         }
 
     } // namespace pcl

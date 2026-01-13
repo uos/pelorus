@@ -1,6 +1,6 @@
 [package]
 name = "pelorus_reg"
-description = "Registration for Pelorus Odometry."
+description = "Lidar Scan Registration Module for Pelorus Odometry Library."
 
 version.workspace = true
 edition.workspace = true
