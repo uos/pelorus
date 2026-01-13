@@ -27,7 +27,7 @@ prelio_io = { path = "prelio_io", version = "0.1.0-beta" }
 spole = { path = "spole", version = "0.1.0-beta" }
 pelorus_cuda = { path = "pelorus_cuda", version = "0.1.0-beta" }
 
-ros_pointcloud2 = { version = "1.0.0-rc.1", features = [
+ros_pointcloud2 = { version = "1.0.0-rc.2", features = [
   "rayon",
   "derive",
 ] }

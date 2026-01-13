@@ -1,6 +1,6 @@
 [package]
 name = "pelorus_py"
-description = "Python bindings for Pelorus"
+description = "Python bindings for Pelorus Odometry."
 edition.workspace = true
 include.workspace = true
 keywords.workspace = true
@@ -23,6 +23,7 @@ ros2-interfaces-jazzy-serde.workspace = true
 nalgebra.workspace = true
 anyhow.workspace = true
 log.workspace = true
+env_logger.workspace = true
 ratslang.workspace = true
 
 pyo3 = { version = "0.27", features = ["extension-module", "abi3-py38"] }

@@ -27,7 +27,7 @@ typedef struct PelorusHandle PelorusHandle;
 typedef struct pelorus_imu_msg {
   int32_t timestamp_sec;            /**< Timestamp seconds since epoch */
   uint32_t timestamp_nanosec;       /**< Timestamp nanoseconds part */
-  const char *frame_id;             /**< Frame ID (sensor name) */
+  const char *frame_id;             /**< Frame ID (sensor name) - optional (may be NULL) */
   double orientation[4];            /**< Quaternion [w, x, y, z] */
   double orientation_covariance[9]; /**< 3x3 covariance matrix (row-major) */
   double angular_velocity[3];       /**< Angular velocity [x, y, z] rad/s */

@@ -1,5 +1,6 @@
 [package]
 name = "pelorus_core"
+description = "Core Data Structures and Utilities for Pelorus Odometry."
 edition.workspace = true
 include.workspace = true
 keywords.workspace = true

@@ -169,11 +169,6 @@ public:
         std::bind(&PelorusGlimFrontend::on_new_frame, this, _1));
     OdometryEstimationCallbacks::on_smoother_update.add(std::bind(
         &PelorusGlimFrontend::on_smoother_update, this, _1, _2, _3, _4));
-
-    // Track scan_id -> frame_id mapping for exact odometry matching
-    // recent_scan_ids_ holds scan ids produced by on_insert_frame until an
-    // EstimationFrame is created and on_new_frame links the next scan_id to the
-    // produced frame id.
   }
 
   bool ok() const override { return true; }

@@ -38,7 +38,7 @@ int main(void)
         pelorus_imu_msg imu = {0};
         imu.timestamp_sec = base_sec;
         imu.timestamp_nanosec = i * 5000000; // 5ms intervals
-        imu.frame_id = "imu";
+        imu.frame_id = NULL;
 
         imu.orientation[0] = 1.0;
         imu.angular_velocity[0] = 0.001 * (i % 3 - 1);
@@ -91,7 +91,7 @@ int main(void)
         pelorus_imu_msg imu = {0};
         imu.timestamp_sec = base_sec;
         imu.timestamp_nanosec = i * 5000000;
-        imu.frame_id = "imu";
+        imu.frame_id = NULL;
         imu.orientation[0] = 1.0;
         imu.angular_velocity[0] = 0.001 * (i % 3 - 1);
         imu.angular_velocity[1] = 0.001 * ((i + 1) % 3 - 1);
@@ -122,7 +122,7 @@ int main(void)
         pelorus,
         base_sec + 1,
         200000000,
-        "lidar",
+        NULL,
         scan2_data,
         NUM_POINTS);
     if (scan2_id == 0)
@@ -147,6 +147,7 @@ int main(void)
         {
             if (odom.scan_id == scan2_id)
             {
+                printf("  Timestamp: %d.%09u\n", odom.timestamp_sec, odom.timestamp_nanosec);
                 printf("  Position: [%.3f, %.3f, %.3f] (scan_id=%llu)\n",
                        odom.position[0], odom.position[1], odom.position[2], (unsigned long long)odom.scan_id);
                 printf("  Orientation: [%.3f, %.3f, %.3f, %.3f]\n",

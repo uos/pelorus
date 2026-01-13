@@ -228,6 +228,9 @@ impl PelorusHandle {
             config.prelio_params.lidar_vendor = LidarVendor::Ouster;
         }
 
+        // Ensure Rust logging works when used from Python (RUST_LOG env var)
+        let _ = env_logger::try_init();
+
         let pipeline = Pipeline::new(&config);
 
         let imu_init_cb = Some(pipeline.build_init_callback());
@@ -314,12 +317,11 @@ impl PelorusHandle {
     }
 
     /// Add an IMU message
-    #[pyo3(signature = (timestamp_sec, timestamp_nanosec, frame_id, orientation, orientation_covariance, angular_velocity, angular_velocity_covariance, linear_acceleration, linear_acceleration_covariance))]
+    #[pyo3(signature = (timestamp_sec, timestamp_nanosec, orientation, orientation_covariance, angular_velocity, angular_velocity_covariance, linear_acceleration, linear_acceleration_covariance))]
     fn add_imu(
         &self,
         timestamp_sec: i32,
         timestamp_nanosec: u32,
-        frame_id: String,
         orientation: [f64; 4],
         orientation_covariance: [f64; 9],
         angular_velocity: [f64; 3],
@@ -333,7 +335,7 @@ impl PelorusHandle {
                 sec: timestamp_sec,
                 nanosec: timestamp_nanosec,
             },
-            frame_id,
+            frame_id: String::new(),
             orientation,
             orientation_covariance,
             angular_velocity,
@@ -396,7 +398,7 @@ impl PelorusHandle {
     ///
     /// Works with messages coming from `mcap_ros2` or `rclpy`.
     fn add_imu_ros(&self, imu: &Bound<'_, PyAny>) -> PyResult<()> {
-        let (sec, nanosec, frame_id) = Self::extract_header_stamp_frame_id(imu)?;
+        let (sec, nanosec, _frame_id) = Self::extract_header_stamp_frame_id(imu)?;
 
         let orientation_any = imu.getattr("orientation")?;
         let orientation = [
@@ -442,7 +444,6 @@ impl PelorusHandle {
         self.add_imu(
             sec,
             nanosec,
-            frame_id,
             orientation,
             orientation_covariance,
             angular_velocity,
@@ -528,13 +529,12 @@ impl PelorusHandle {
     /// - For numpy/list inputs: you must provide `timestamp_sec`/`timestamp_nanosec` which become the
     ///   scan header timestamp (absolute), and optional per-point `t` values are interpreted as
     ///   nanoseconds offset relative to that header time.
-    #[pyo3(signature = (cloud, timestamp_sec=None, timestamp_nanosec=None, frame_id="lidar"))]
+    #[pyo3(signature = (cloud, timestamp_sec=None, timestamp_nanosec=None))]
     fn add_pointcloud(
         &mut self,
         cloud: &Bound<'_, PyAny>,
         timestamp_sec: Option<i32>,
         timestamp_nanosec: Option<u32>,
-        frame_id: &str,
     ) -> PyResult<u64> {
         if let Ok(dict) = cloud.cast::<PyDict>() {
             let scan_id = self.add_pointcloud_from_dict(dict)?;
@@ -546,7 +546,7 @@ impl PelorusHandle {
             let nanosec = timestamp_nanosec.ok_or_else(|| {
                 PyValueError::new_err("timestamp_nanosec required for numpy array input")
             })?;
-            let scan_id = self.add_pointcloud_from_numpy(array, sec, nanosec, frame_id)?;
+            let scan_id = self.add_pointcloud_from_numpy(array, sec, nanosec)?;
             return Ok(scan_id);
         } else if let Ok(list) = cloud.cast::<PyList>() {
             let sec = timestamp_sec
@@ -554,7 +554,7 @@ impl PelorusHandle {
             let nanosec = timestamp_nanosec.ok_or_else(|| {
                 PyValueError::new_err("timestamp_nanosec required for list input")
             })?;
-            let scan_id = self.add_pointcloud_from_list(list, sec, nanosec, frame_id)?;
+            let scan_id = self.add_pointcloud_from_list(list, sec, nanosec)?;
             return Ok(scan_id);
         } else {
             return Err(PyValueError::new_err(
@@ -724,9 +724,11 @@ impl PelorusHandle {
         // TODO output numpy arrays
         let mut points = Vec::with_capacity(odom.cloud.len());
         for p in &odom.cloud {
-            points.push(vec![p.x, p.y, p.z, p.intensity]);
+            // include per-point timestamp (seconds) for regression outputs: [x, y, z, intensity, timestamp]
+            points.push(vec![p.x, p.y, p.z, p.intensity, p.timestamp]);
         }
         dict.set_item("points", points)?;
+        dict.set_item("scan_id", odom.scan_id)?;
 
         Ok(())
     }
@@ -884,7 +886,6 @@ impl PelorusHandle {
         array: PyReadonlyArray2<f32>,
         timestamp_sec: i32,
         timestamp_nanosec: u32,
-        frame_id: &str,
     ) -> PyResult<u64> {
         let array = array.as_array();
         let shape = array.shape();
@@ -970,7 +971,7 @@ impl PelorusHandle {
                     sec: timestamp_sec,
                     nanosec: timestamp_nanosec,
                 },
-                frame_id: frame_id.to_string(),
+                frame_id: "".to_string(),
             },
             height: 1,
             width: num_points as u32,
@@ -998,7 +999,6 @@ impl PelorusHandle {
         points_list: &Bound<'_, PyList>,
         timestamp_sec: i32,
         timestamp_nanosec: u32,
-        frame_id: &str,
     ) -> PyResult<u64> {
         let num_points = points_list.len();
 
@@ -1098,7 +1098,7 @@ impl PelorusHandle {
                     sec: timestamp_sec,
                     nanosec: timestamp_nanosec,
                 },
-                frame_id: frame_id.to_string(),
+                frame_id: "".to_string(),
             },
             height: 1,
             width: num_points as u32,

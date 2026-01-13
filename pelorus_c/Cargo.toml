@@ -1,6 +1,6 @@
 [package]
 name = "pelorus_c"
-description = "Pelorus Odometry Library"
+description = "Pelorus Odometry as a C library."
 edition.workspace = true
 include.workspace = true
 keywords.workspace = true

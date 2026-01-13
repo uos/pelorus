@@ -3,6 +3,7 @@
 #include <string.h>
 #include <unistd.h>
 #include <math.h>
+#include <pthread.h>
 #include "../pelorus.h"
 
 static void fill_identity_cov(double *cov, double diag)
@@ -18,6 +19,8 @@ typedef struct
 {
     int count;
     uint64_t scan2_id; // 0 until set by the main thread
+    pthread_mutex_t mutex;
+    pthread_cond_t cond;
 } UserContext;
 
 // Callback function that gets invoked when odometry is available
@@ -34,7 +37,11 @@ void odometry_callback(const pelorus_odometry *odom, void *user_data)
         }
     }
 
+    // We will update count and notify the main thread.
+    pthread_mutex_lock(&ctx->mutex);
     ctx->count++;
+    pthread_cond_signal(&ctx->cond);
+    pthread_mutex_unlock(&ctx->mutex);
 
     printf("Callback invoked! Odometry #%d received (scan_id=%llu)\n", ctx->count, (unsigned long long)odom->scan_id);
     printf("  Timestamp: %d.%09u\n", odom->timestamp_sec, odom->timestamp_nanosec);
@@ -82,6 +89,10 @@ int main(void)
     // Set up user context
     UserContext ctx = {.count = 0};
 
+    // Initialize synchronization primitives
+    pthread_mutex_init(&ctx.mutex, NULL);
+    pthread_cond_init(&ctx.cond, NULL);
+
     // Register callback for asynchronous odometry reception
     if (pelorus_set_callback(pelorus, odometry_callback, &ctx) != 0)
     {
@@ -105,7 +116,7 @@ int main(void)
         // IMU at ~200Hz (5ms intervals)
         imu.timestamp_sec = base_sec;
         imu.timestamp_nanosec = i * 5000000; // 5ms intervals
-        imu.frame_id = "imu";
+        imu.frame_id = NULL;
 
         // Stationary orientation (identity quaternion)
         imu.orientation[0] = 1.0; // w
@@ -157,7 +168,7 @@ int main(void)
         pelorus,
         base_sec,
         600000000, // 600ms - after 500ms initialization
-        "lidar",
+        NULL,
         scan1_data,
         NUM_POINTS_SCAN);
     if (scan1_id == 0)
@@ -176,7 +187,7 @@ int main(void)
         pelorus_imu_msg imu = {0};
         imu.timestamp_sec = base_sec;
         imu.timestamp_nanosec = i * 5000000;
-        imu.frame_id = "imu";
+        imu.frame_id = NULL;
 
         imu.orientation[0] = 1.0;
         imu.angular_velocity[0] = 0.001 * (i % 3 - 1);
@@ -214,7 +225,7 @@ int main(void)
         pelorus,
         base_sec + 1, // 1.2 seconds from start
         200000000,
-        "lidar",
+        NULL,
         scan2_data,
         NUM_POINTS_SCAN);
     if (scan2_id == 0)
@@ -228,15 +239,21 @@ int main(void)
         ctx.scan2_id = scan2_id;
     }
 
-    // Wait for callbacks to be invoked (processing happens asynchronously)
-    printf("Waiting for second odometry callback...\n");
-    for (int i = 0; i < 2000 && ctx.count < 2; i++)
+    // Wait for the registered scan odometry (signal from callback)
+    printf("Waiting for registered odometry callback (scan id %llu)...\n", (unsigned long long)ctx.scan2_id);
+    pthread_mutex_lock(&ctx.mutex);
+    while (ctx.count < 1)
     {
-        usleep(1 * 1000);
+        pthread_cond_wait(&ctx.cond, &ctx.mutex);
     }
+    pthread_mutex_unlock(&ctx.mutex);
 
     // Disable callback before destroying
     pelorus_set_callback(pelorus, NULL, NULL);
+
+    // Clean up synchronization primitives
+    pthread_cond_destroy(&ctx.cond);
+    pthread_mutex_destroy(&ctx.mutex);
 
     // Clean up
     pelorus_destroy(pelorus);

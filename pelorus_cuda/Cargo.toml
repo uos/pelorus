@@ -1,5 +1,6 @@
 [package]
 name = "pelorus_cuda"
+description = "CUDA Accelerated Components for Pelorus Odometry."
 edition.workspace = true
 include.workspace = true
 keywords.workspace = true
