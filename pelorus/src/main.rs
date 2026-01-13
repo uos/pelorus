@@ -593,7 +593,9 @@ fn lio_with_ready_signal(
             let cloud =
                 LocatedBufferView::copy_from_slice_cuda(&cuda_stream, &lifis_tick.deskewed_cloud);
             #[cfg(not(feature = "cuda"))]
-            let cloud = LocatedBufferView::Ram(lifis_tick.deskewed_cloud);
+            let cloud_for_reg = LocatedBufferView::Ram(lifis_tick.deskewed_cloud);
+
+            let cloud_out = lifis_tick.deskewed_cloud_passthrough;
 
             let orig_frame = lifis_tick.cloud_header.frame_id.clone();
             let orig_time = lifis_tick.cloud_header.stamp;
@@ -663,7 +665,7 @@ fn lio_with_ready_signal(
                 match map.register_and_map(
                     lifis_tick.map_only,
                     ext,
-                    &cloud,
+                    &cloud_for_reg,
                     current_cloud_time,
                     Some(&ready_for_next_tx),
                     &mut eval,
@@ -800,8 +802,20 @@ fn lio_with_ready_signal(
             };
 
             let mut cloud: PointCloud2 = {
-                match cloud {
-                    LocatedBufferView::Ram(items) => {
+                match (cloud_out, cloud_for_reg) {
+                    (None, LocatedBufferView::Ram(items)) => {
+                        let msg = PointCloud2Msg::try_from_vec(items).expect("msg");
+                        #[cfg(feature = "ros2-client")]
+                        let out = impl_ros2_interfaces_jazzy_serde::from_pointcloud2_msg(msg);
+                        #[cfg(feature = "ratpub")]
+                        let out = impl_ros2_interfaces_jazzy_rkyv::from_pointcloud2_msg(msg);
+                        #[cfg(feature = "r2r")]
+                        let out = impl_r2r::from_pointcloud2_msg(msg);
+
+                        out
+                    }
+                    // ignore downsampled one if we have the raw
+                    (Some(items), _) => {
                         let msg = PointCloud2Msg::try_from_vec(items).expect("msg");
                         #[cfg(feature = "ros2-client")]
                         let out = impl_ros2_interfaces_jazzy_serde::from_pointcloud2_msg(msg);
@@ -813,8 +827,8 @@ fn lio_with_ready_signal(
                         out
                     }
                     #[cfg(feature = "cuda")]
-                    LocatedBufferView::Cuda { buffer: cloud } => {
-                        let buff = cloud.into_cloud(&cuda_stream);
+                    (None, LocatedBufferView::Cuda { buffer: cloud }) => {
+                        let buff = cloud_for_reg.into_cloud(&cuda_stream);
                         let msg = ros_pointcloud2::PointCloud2Msg::try_from_vec(buff).unwrap();
                         #[cfg(feature = "ros2-client")]
                         let out = impl_ros2_interfaces_jazzy_serde::from_pointcloud2_msg(msg);

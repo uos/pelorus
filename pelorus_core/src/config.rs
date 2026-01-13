@@ -382,10 +382,17 @@ pub fn ast_to_config(defaults: Evaluated, user: Evaluated) -> anyhow::Result<Lio
     };
 
     // --- Preprocessing Configuration ---
-    let (initial_scan_accumulate, voxel_size, passthrough_filter, global_zero_frame) = {
+    let (
+        initial_scan_accumulate,
+        voxel_size,
+        bypass_output_downsample,
+        passthrough_filter,
+        global_zero_frame,
+    ) = {
         let preproc_ns = asts.filter_ns(&["preprocessing"]);
         let initial_scan_accumulate = resolve_var!(preproc_ns, "initial_scan_accumulate", as usize, Rhs::Val(Val::NumVal(NumVal::Integer(i))) => { i })?;
         let downsample_ns = preproc_ns.filter_ns(&["downsample"]);
+        let bypass_output_downsample = resolve_var!(downsample_ns, "bypass_output_downsample", as bool, Rhs::Val(Val::BoolVal(b)) => { b })?;
         let voxel_size = resolve_var!(downsample_ns, "resolution", as f32, Rhs::Val(Val::UnitedVal(UnitVal::LengthVal(v))) => { v.get::<meter>() as f32 })?;
 
         let filter_ns = preproc_ns.filter_ns(&["filter"]);
@@ -464,6 +471,7 @@ pub fn ast_to_config(defaults: Evaluated, user: Evaluated) -> anyhow::Result<Lio
         (
             initial_scan_accumulate,
             voxel_size,
+            bypass_output_downsample,
             passthrough_filter,
             global_zero_frame,
         )
@@ -503,7 +511,10 @@ pub fn ast_to_config(defaults: Evaluated, user: Evaluated) -> anyhow::Result<Lio
             imu_lidar_tf_override: imu_node_params.3,
             map_frame,
             imu: imu_prelio_params,
-            downsample: DownsampleParameters { voxel_size },
+            downsample: DownsampleParameters {
+                voxel_size,
+                bypass_output_downsample,
+            },
             passthrough_filter,
             global_zero_frame,
             initial_scan_accumulate,

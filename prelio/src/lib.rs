@@ -98,6 +98,7 @@ pub fn secs_to_timestamp(secs: f64) -> TimeMsg {
 #[derive(Debug, Clone, Default)]
 pub struct MeasureGroup {
     cloud: Vec<PointXYZIT>,
+    cloud_passthrough: Option<Vec<PointXYZIT>>,
     last_lidar_end_stamp: f64,
     lidar_start_stamp: f64,
     lidar_end_stamp: f64,
@@ -205,22 +206,19 @@ fn find_medoid_in_slice(points: &[(i32, PointXYZIT)]) -> PointXYZIT {
 fn filter_downsample<const N: usize, P: PointXYZITimestamp<N>>(
     cloud: PointCloud2Msg,
     lifis_params: &LifisParameters,
-) -> Result<Option<(Vec<PointXYZIT>, f64, f64, HeaderMsg)>> {
+) -> Result<
+    Option<(
+        Vec<PointXYZIT>,
+        Option<Vec<PointXYZIT>>,
+        f64,
+        f64,
+        HeaderMsg,
+    )>,
+> {
+    let bypass_output_downsample = lifis_params.downsample.bypass_output_downsample;
     let header = cloud.header.clone();
     #[cfg(feature = "downsample")]
     let voxel_size = lifis_params.downsample.voxel_size;
-    #[cfg(feature = "parallel")]
-    const PAR_SORT_BOUNDARY: usize = 1; // When tested on an M3, par sort was always faster, no matter the size. TODO test on other platforms
-    let iter = {
-        #[cfg(feature = "parallel")]
-        {
-            cloud.try_into_par_iter()?
-        }
-        #[cfg(not(feature = "parallel"))]
-        {
-            cloud.try_into_iter()?
-        }
-    };
 
     #[cfg(feature = "downsample")]
     type PointsFiltered = (i32, PointXYZIT);
@@ -235,173 +233,208 @@ fn filter_downsample<const N: usize, P: PointXYZITimestamp<N>>(
         _ => (Some(timestamp_to_secs(&header.stamp)), None),
     };
 
-    #[allow(unused_mut)]
-    let mut keyed_points: Vec<PointsFiltered> = iter
-        .filter_map(|point: P| {
-            let params = &lifis_params.passthrough_filter;
-            let p_t = params.filter_frame_transform * point.xyz();
+    // --- Mapping and Filtering functions ---
 
-            let dist = p_t.coords.norm_squared();
-            let is_within_range = if params.invert_distance {
-                dist < params.min_dist.powi(2) || dist > params.max_dist.powi(2)
-            } else {
-                dist >= params.min_dist.powi(2) && dist <= params.max_dist.powi(2)
-            };
-            if !is_within_range {
-                return None;
-            }
+    let filter = |point: PointXYZIT| -> Option<PointXYZIT> {
+        let params = &lifis_params.passthrough_filter;
+        let p_t = params.filter_frame_transform * nalgebra::Point3::new(point.x, point.y, point.z);
 
-            let is_within_intensity = if params.invert_intensity {
-                point.intensity() < params.min_intensity || point.intensity() > params.max_intensity
-            } else {
-                point.intensity() >= params.min_intensity
-                    && point.intensity() <= params.max_intensity
-            };
-            if !is_within_intensity {
-                return None;
-            }
-
-            let is_within_box = if params.invert_bounding_box {
-                !inside_box(p_t, params.min, params.max)
-            } else {
-                inside_box(p_t, params.min, params.max)
-            };
-            if !is_within_box {
-                return None;
-            }
-
-            let is_within_fov = if params.enable_horizontal_fov {
-                if params.invert_fov {
-                    !inside_horizontal_fov(p_t, params.fov_right, params.fov_left, params.forward)
-                } else {
-                    inside_horizontal_fov(p_t, params.fov_right, params.fov_left, params.forward)
-                }
-            } else {
-                true
-            };
-            if !is_within_fov {
-                return None;
-            }
-
-            let is_within_polygon = match &params.polygon {
-                None => true,
-                Some(polygon) => {
-                    let is_within_polygon = if params.invert_polygon {
-                        !point_inside_polygon_winding_number(p_t, polygon, polygon.len())
-                    } else {
-                        point_inside_polygon_winding_number(p_t, polygon, polygon.len())
-                    };
-                    !polygon.is_empty() && is_within_polygon
-                }
-            };
-            if !is_within_polygon {
-                return None;
-            }
-
-            let ts = point.timestamp();
-            if ts.is_nan() {
-                return None;
-            }
-
-            // absolute to relative ts
-            let ts = if matches!(lifis_params.lidar_vendor, LidarVendor::LivoxMid360) {
-                let scan_end_t = end_t.expect("vendor match out of date");
-                (ts - scan_end_t).max(0.0) // handle driver inaccuracies
-            } else {
-                ts
-            };
-
-            let point_raw = point.xyz();
-            #[cfg(feature = "downsample")]
-            {
-                let key = hash(&point_raw, voxel_size);
-                Some((
-                    key,
-                    PointXYZIT::from_p(point_raw, point.intensity() * 255.0, ts as f32),
-                ))
-            }
-            #[cfg(not(feature = "downsample"))]
-            return Some(PointXYZIT::from_p(point_raw, point.intensity() * 255.0, ts));
-        })
-        .collect::<Vec<_>>();
-
-    #[cfg(feature = "downsample")]
-    let mut downsampled_cloud = {
-        // After this, all points in the same voxel are adjacent
-        #[cfg(feature = "parallel")]
-        {
-            if keyed_points.len() > PAR_SORT_BOUNDARY {
-                keyed_points.par_sort_unstable_by_key(|(key, _)| *key);
-            } else {
-                keyed_points.sort_unstable_by_key(|(key, _)| *key);
-            }
-        }
-        #[cfg(not(feature = "parallel"))]
-        {
-            keyed_points.sort_unstable_by_key(|(key, _)| *key);
-        }
-
-        if keyed_points.is_empty() {
-            return Ok(None);
-        }
-
-        let downsampled_cloud: Vec<PointXYZIT> = {
-            // TODO chunk by seems extremely fast on M3 Pro
-            // #[cfg(feature = "parallel")]
-            // {
-            //     if keyed_points.len() > PAR_SORT_BOUNDARY {
-            //         keyed_points
-            //             .par_chunk_by(|a, b| a.0 == b.0)
-            //             .map(|group_slice| find_medoid_in_slice(group_slice))
-            //             .collect()
-            //     } else {
-            //         keyed_points
-            //             .chunk_by(|a, b| a.0 == b.0)
-            //             .map(|group_slice| find_medoid_in_slice(group_slice))
-            //             .collect()
-            //     }
-            // }
-            // #[cfg(not(feature = "parallel"))]
-            // {
-            keyed_points
-                .chunk_by(|a, b| a.0 == b.0)
-                .map(find_medoid_in_slice)
-                .collect()
-            // }
+        let dist = p_t.coords.norm_squared();
+        let is_within_range = if params.invert_distance {
+            dist < params.min_dist.powi(2) || dist > params.max_dist.powi(2)
+        } else {
+            dist >= params.min_dist.powi(2) && dist <= params.max_dist.powi(2)
         };
-        downsampled_cloud
-    };
-    #[cfg(not(feature = "downsample"))]
-    let mut downsampled_cloud = keyed_points;
+        if !is_within_range {
+            return None;
+        }
 
-    // needed for undistort
-    let cmp = |a: &PointXYZIT, b: &PointXYZIT| {
-        // if (a.timestamp - b.timestamp).abs() < 1e-6 {
-        //     a.z.partial_cmp(&b.z).unwrap()
-        // } else {
-        a.timestamp.partial_cmp(&b.timestamp).unwrap()
-        // }
+        let is_within_intensity = if params.invert_intensity {
+            point.intensity < params.min_intensity || point.intensity > params.max_intensity
+        } else {
+            point.intensity >= params.min_intensity && point.intensity <= params.max_intensity
+        };
+        if !is_within_intensity {
+            return None;
+        }
+
+        let is_within_box = if params.invert_bounding_box {
+            !inside_box(p_t, params.min, params.max)
+        } else {
+            inside_box(p_t, params.min, params.max)
+        };
+        if !is_within_box {
+            return None;
+        }
+
+        let is_within_fov = if params.enable_horizontal_fov {
+            if params.invert_fov {
+                !inside_horizontal_fov(p_t, params.fov_right, params.fov_left, params.forward)
+            } else {
+                inside_horizontal_fov(p_t, params.fov_right, params.fov_left, params.forward)
+            }
+        } else {
+            true
+        };
+        if !is_within_fov {
+            return None;
+        }
+
+        let is_within_polygon = match &params.polygon {
+            None => true,
+            Some(polygon) => {
+                let is_within_polygon = if params.invert_polygon {
+                    !point_inside_polygon_winding_number(p_t, polygon, polygon.len())
+                } else {
+                    point_inside_polygon_winding_number(p_t, polygon, polygon.len())
+                };
+                !polygon.is_empty() && is_within_polygon
+            }
+        };
+        if !is_within_polygon {
+            return None;
+        }
+
+        let ts = point.timestamp;
+        if ts.is_nan() {
+            return None;
+        }
+
+        let mut out = point.clone();
+
+        // absolute to relative ts
+        out.timestamp = if matches!(lifis_params.lidar_vendor, LidarVendor::LivoxMid360) {
+            let scan_end_t = end_t.expect("vendor match out of date");
+            (ts - scan_end_t as f32).max(0.0) // handle driver inaccuracies
+        } else {
+            ts
+        };
+
+        Some(out)
     };
+
+    let map_down_ref = |point: &PointXYZIT| {
+        #[cfg(feature = "downsample")]
+        {
+            let key = hash(
+                &nalgebra::Point3::new(point.x, point.y, point.z),
+                voxel_size,
+            );
+
+            let mut out = point.clone();
+
+            out.intensity *= 255.0;
+
+            return Some((key, out));
+        }
+        #[cfg(not(feature = "downsample"))]
+        {
+            let mut out = point.clone();
+            out.intensity *= 255.0;
+
+            return Some((key, out));
+        }
+    };
+
+    let map_down = |point: PointXYZIT| map_down_ref(&point);
+
+    let filter_map_down = |point| map_down(filter(point)?);
+
+    let filter_map_non_down = |point| {
+        let mut point = filter(point)?;
+        point.intensity *= 255.0;
+        Some(point)
+    };
+
+    let cmp = |a: &PointXYZIT, b: &PointXYZIT| a.timestamp.partial_cmp(&b.timestamp).unwrap();
+
+    let map_to_non_trait = |p: P| PointXYZIT::from_p(p.xyz(), p.intensity(), p.timestamp() as f32);
+
+    // --- Buffer ---
+
+    #[allow(unused_mut)]
+    let mut keyed_points: Vec<PointsFiltered> = Vec::with_capacity(cloud.dimensions.len());
+    let mut downsampled: Vec<PointXYZIT> = Vec::with_capacity(cloud.dimensions.len());
+
+    #[allow(unused_mut)]
+    let mut raw_out: Option<Vec<PointXYZIT>> = {
+        if bypass_output_downsample {
+            Some(Vec::with_capacity(cloud.dimensions.len()))
+        } else {
+            None
+        }
+    };
+
+    // --- Processing ---
+
     #[cfg(feature = "parallel")]
     {
-        if downsampled_cloud.len() > PAR_SORT_BOUNDARY {
-            downsampled_cloud.par_sort_unstable_by(cmp);
+        let iter = cloud.try_into_par_iter().unwrap().map(map_to_non_trait);
+
+        if let Some(bypass) = raw_out.as_mut() {
+            bypass.par_extend(iter.filter_map(filter_map_non_down));
+            bypass.par_sort_unstable_by(cmp);
+
+            // Now downsample the filtered cloud
+
+            // TODO I think we should somehow split the iterators here so we can filter and sort bypass parallel to downsampling the real
+            // processing cloud but I cloud not get it to work.
+            keyed_points.par_extend(bypass.par_iter().filter_map(map_down_ref));
         } else {
-            downsampled_cloud.sort_unstable_by(cmp);
+            keyed_points.par_extend(iter.filter_map(filter_map_down));
         }
-    }
-    #[cfg(not(feature = "parallel"))]
-    {
-        downsampled_cloud.sort_unstable_by(cmp);
+
+        keyed_points.par_sort_unstable_by_key(|(key, _)| *key); // TODO takes a long time
+
+        // Non-par because it is measured to be faster on a single core
+        downsampled.extend(
+            keyed_points
+                .chunk_by(|a, b| a.0 == b.0)
+                .map(find_medoid_in_slice),
+        );
+
+        // Sort again by timestamps because we could have merged multiple timestamps
+        downsampled.par_sort_unstable_by(cmp);
     }
 
-    let (first, last) = match (&downsampled_cloud.first(), &downsampled_cloud.last()) {
+    #[cfg(not(feature = "parallel"))]
+    {
+        let iter = cloud.try_into_iter().unwrap().map(map_to_non_trait);
+
+        if let Some(bypass) = raw_out.as_mut() {
+            bypass.extend(iter.filter_map(filter_map_non_down));
+            bypass.sort_unstable_by(cmp);
+
+            // Now downsample the filtered cloud
+
+            keyed_points.extend(bypass.iter().filter_map(map_down_ref));
+        } else {
+            keyed_points.extend(iter.filter_map(filter_map_down));
+        }
+
+        keyed_points.sort_unstable_by_key(|(key, _)| *key);
+        downsampled.extend(
+            keyed_points
+                .chunk_by(|a, b| a.0 == b.0)
+                .map(find_medoid_in_slice),
+        );
+
+        // Sort again by timestamps because we could have merged multiple timestamps
+        downsampled.sort_unstable_by(cmp);
+    }
+    let (first, last) = match (&downsampled.first(), &downsampled.last()) {
         (Some(first), Some(last)) if (last.timestamp > 0.0) => (first.timestamp, last.timestamp),
         _ => return Ok(None),
     };
 
     // TODO back to keeping the timestamp f64, only testing right now because of artefacts
-    Ok(Some((downsampled_cloud, first as f64, last as f64, header)))
+    Ok(Some((
+        downsampled,
+        raw_out,
+        first as f64,
+        last as f64,
+        header,
+    )))
 }
 
 pub struct Prelio {
@@ -606,9 +639,15 @@ impl Prelio {
             std::sync::mpsc::Sender<OdomMsg>,
             std::sync::mpsc::Receiver<OdomMsg>,
         ) = std::sync::mpsc::channel();
-        // filtered_cloud carries: (cloud_meta, scan_id, runtime_eval)
+        // filtered_cloud carries: (cloud_meta (downsampled, output, first_ts, last_ts, header), scan_id, runtime_eval)
         let (filtered_cloud_tx, filtered_cloud_rx) = std::sync::mpsc::channel::<(
-            (Vec<PointXYZIT>, f64, f64, HeaderMsg),
+            (
+                Vec<PointXYZIT>,
+                Option<Vec<PointXYZIT>>,
+                f64,
+                f64,
+                HeaderMsg,
+            ),
             u64,
             RuntimeEvaluator,
         )>();
@@ -835,7 +874,13 @@ impl Prelio {
         prev_lidar_end_time: &mut f64,
         gravity: f64,
         lidar_receiver: std::sync::mpsc::Receiver<(
-            (Vec<PointXYZIT>, f64, f64, HeaderMsg),
+            (
+                Vec<PointXYZIT>,
+                Option<Vec<PointXYZIT>>,
+                f64,
+                f64,
+                HeaderMsg,
+            ),
             u64,
             RuntimeEvaluator,
         )>,
@@ -854,7 +899,7 @@ impl Prelio {
         let mut to_next: Option<ImuMsg> = None;
         let mut cloud_count: usize = 0;
         while let Ok((
-            (cloud, lidar_begin_time, lidar_end_time, lidar_header),
+            (cloud_downsampled, cloud_output, lidar_begin_time, lidar_end_time, lidar_header),
             scan_id,
             prelio_eval,
         )) = lidar_receiver.recv()
@@ -868,7 +913,8 @@ impl Prelio {
                 cloud_count += 1;
                 let res = PrelioProcessedCloud {
                     scan_id: scan_id,
-                    cloud,
+                    cloud: cloud_downsampled,
+                    passthrough: cloud_output,
                     imu_frame: "".to_string(),
                     header: lidar_header,
                     end_of_frame_guess: Isometry3::identity(),
@@ -1021,26 +1067,17 @@ impl Prelio {
             // - data synced -
             // debug!("data synced");
 
-            let meas = MeasureGroup {
-                cloud,
-                last_lidar_end_stamp: imu_span_start_time,
-                lidar_start_stamp: lidar_begin_time,
-                lidar_end_stamp: lidar_end_time,
-                imu_buffer: imu_data.clone(),
-                odom_buffer: odom_data.clone(),
-            };
-
-            if meas.imu_buffer.is_empty() {
+            if imu_data.is_empty() {
                 // Passthrough when lidar only
-                let cloud = meas.cloud;
 
                 let res = PrelioProcessedCloud {
                     scan_id: scan_id,
-                    cloud,
+                    cloud: cloud_downsampled,
+                    passthrough: cloud_output,
                     imu_frame: "".to_string(),
                     header: lidar_header,
                     end_of_frame_guess: Isometry3::identity(),
-                    end_of_frame_time: secs_to_timestamp(meas.lidar_end_stamp),
+                    end_of_frame_time: secs_to_timestamp(lidar_end_time),
                     pose_covariance: [0.0; 36],
                     twist_covariance: [0.0; 36],
                     end_of_frame_twist: Twist {
@@ -1053,6 +1090,16 @@ impl Prelio {
                 };
                 synced_sender.send(res).unwrap();
             } else {
+                let meas = MeasureGroup {
+                    cloud: cloud_downsampled,
+                    cloud_passthrough: cloud_output,
+                    last_lidar_end_stamp: imu_span_start_time,
+                    lidar_start_stamp: lidar_begin_time,
+                    lidar_end_stamp: lidar_end_time,
+                    imu_buffer: imu_data.clone(),
+                    odom_buffer: odom_data.clone(),
+                };
+
                 // Waiting for sync signal. Needed for cases where undistortion uses an EKF state that predicts forward and the correction must be made first before predicting further.
                 if let Some(wait_for_next) = ready_for_next.as_ref() {
                     wait_for_next.recv().unwrap();
@@ -1114,6 +1161,7 @@ impl Prelio {
                     let res = PrelioProcessedCloud {
                         scan_id: scan_id,
                         cloud: imu_cloud.cloud,
+                        passthrough: imu_cloud.cloud_output,
                         imu_frame,
                         header: lidar_header,
                         end_of_frame_guess: imu_int.pose,

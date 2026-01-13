@@ -250,6 +250,7 @@ fn quaternion_to_so3_exp(q: &UnitQuaternion<f64>) -> SO3 {
 #[derive(Debug)]
 pub struct ImuProcessedCloud<'a> {
     pub cloud: Vec<PointXYZIT>,
+    pub cloud_output: Option<Vec<PointXYZIT>>,
     pub last_covariance: [f64; 36],
     pub last_twist: [f64; 6],
     pub integrated_covariance: [f64; 36],
@@ -330,6 +331,7 @@ impl ImuProcess {
                 meas.lidar_start_stamp,
                 meas.lidar_end_stamp,
                 &mut meas.cloud,
+                meas.cloud_passthrough.as_mut(),
             )
         }) {
             Some(Left(pose)) => {
@@ -357,6 +359,7 @@ impl ImuProcess {
         };
 
         let deskewed_cloud = meas.cloud;
+        let deskewed_cloud_output = meas.cloud_passthrough;
 
         let n_last_imu = meas.imu_buffer.last().unwrap().clone();
 
@@ -369,6 +372,7 @@ impl ImuProcess {
         self.last_imu = Some(n_last_imu.clone());
         Some(ImuProcessedCloud {
             cloud: deskewed_cloud,
+            cloud_output: deskewed_cloud_output,
             last_covariance: imu_msg_to_cov(&n_last_imu),
             last_twist: imu_msg_to_twist(&n_last_imu),
             integrated_covariance: self.gyr_int.get_kum_covariances(),

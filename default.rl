@@ -1,8 +1,11 @@
 preprocessing {
 
-  downsample.resolution = 25cm # "downsample" feature flag needs to be enabled in crates/pelorus/Cargo.toml.
+  downsample {
+    resolution = 25cm # "downsample" feature flag needs to be enabled in crates/pelorus/Cargo.toml. 
+    bypass_output_downsample = false # Output the full undistorted cloud while using downsampled internally for processing.
+  }
 
-  initial_scan_accumulate = 1 # Assume the first n scans are recorded while standing still. This can help with non-repetitive patterns because this method heavily depends on spatial resolution.
+  initial_scan_accumulate = 1 # Assume the first n scans are recorded while standing still. This fixes non-repetitive patterns because the method heavily depends on spatial resolution.
 
   filter {
 

@@ -79,6 +79,7 @@ pub trait Registration {
         cloud_begin_time: f64,
         cloud_end_time: f64,
         cloud: &mut Vec<PointXYZIT>,
+        cloud_passthrough: Option<&mut Vec<PointXYZIT>>,
         lidar_vendor: Option<LidarVendor>,
     );
 }
