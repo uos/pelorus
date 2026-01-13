@@ -406,6 +406,7 @@ impl crate::Registration for RegistrationState {
         cloud_begin_time: f64,
         cloud_end_time: f64,
         cloud: &mut Vec<PointXYZIT>,
+        cloud_passthrough: Option<&mut Vec<PointXYZIT>>,
         lidar_vendor: Option<LidarVendor>,
     ) {
         // cloud.iter().map(|p| PointXYZ::new(p.x, p.y, p.z)).collect() // bypass
@@ -419,6 +420,7 @@ impl crate::Registration for RegistrationState {
             cloud_begin_time,
             cloud_end_time,
             cloud,
+            cloud_passthrough,
             lidar_vendor,
         )
     }

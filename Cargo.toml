@@ -49,7 +49,7 @@ faer-ext = { version = "0.7", features = ["nalgebra"] }
 r2r = { version = "0.9.5" }
 ros2-client = { version = "0.8" }
 tokio = { version = "1", default-features = false }
-rerun = { version = "0.27", default-features = false, features = ["sdk", "glam"] }
+rerun = { version = "0.28", default-features = false, features = ["sdk", "glam"] }
 ros2-interfaces-jazzy-serde = { version = "0.0.4", features = [
   "std_msgs",
   "geometry_msgs",

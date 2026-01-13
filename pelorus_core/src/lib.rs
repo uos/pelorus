@@ -219,6 +219,7 @@ pub struct UndistortParameters {
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct DownsampleParameters {
     pub voxel_size: f32,
+    pub bypass_output_downsample: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -403,6 +404,7 @@ pub struct ImuPosePrediction {
 pub struct PrelioProcessedCloud {
     pub scan_id: u64,
     pub cloud: Vec<PointXYZIT>,
+    pub passthrough: Option<Vec<PointXYZIT>>,
     pub imu_frame: String,
     pub header: HeaderMsg,
     pub end_of_frame_guess: Isometry3<f64>,
@@ -447,6 +449,7 @@ pub type ImuPredictorUndistort = dyn for<'a, 'b> Fn(
         f64,
         f64,
         &mut Vec<PointXYZIT>,
+        Option<&mut Vec<PointXYZIT>>,
     ) -> Either<ImuPosePrediction, Isometry3<f64>>
     + Send;
 

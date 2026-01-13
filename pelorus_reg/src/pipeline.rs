@@ -110,7 +110,8 @@ impl Pipeline {
                   last_cloud_end_time,
                   cloud_begin_time,
                   cloud_end_time,
-                  cloud| {
+                  cloud,
+                  cloud_passthrough| {
                 let mut map = map.lock().unwrap();
                 map.undistort(
                     &imu_msgs,
@@ -121,6 +122,7 @@ impl Pipeline {
                     cloud_begin_time,
                     cloud_end_time,
                     cloud,
+                    cloud_passthrough,
                     Some(lidar_vendor),
                 );
                 let pose = map.get_state().pose;
@@ -150,7 +152,7 @@ impl Pipeline {
     ) -> Option<PelorusOutput> {
         let mut eval = processed.runtime_eval;
         let lidar_timestamp = prelio::timestamp_to_secs(&processed.end_of_frame_time);
-        let cloud_view = prelio::LocatedBufferView::Ram(processed.cloud.clone());
+        let cloud_view = prelio::LocatedBufferView::Ram(processed.cloud.clone()); // TODO this must somehow work without this clone
 
         let register_result = {
             let mut map = self.map.lock().unwrap();
@@ -184,7 +186,7 @@ impl Pipeline {
             linear_velocity: state.linear_velocity,
             angular_velocity: processed.end_of_frame_twist.angular,
             twist_covariance: twist_cov_map,
-            cloud: processed.cloud,
+            cloud: processed.passthrough.unwrap_or(processed.cloud),
             frame_id: processed.header.frame_id,
         })
     }

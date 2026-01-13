@@ -721,7 +721,8 @@ impl PelorusHandle {
 
         dict.set_item("twist_covariance", odom.twist_covariance.to_vec())?;
 
-        let mut points = Vec::new();
+        // TODO output numpy arrays
+        let mut points = Vec::with_capacity(odom.cloud.len());
         for p in &odom.cloud {
             points.push(vec![p.x, p.y, p.z, p.intensity]);
         }

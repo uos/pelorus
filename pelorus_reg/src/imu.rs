@@ -249,6 +249,7 @@ impl ImuProcessing {
         cloud_begin_time: f64,
         mut cloud_end_time: f64,
         cloud: &mut Vec<PointXYZIT>,
+        cloud_passthrough: Option<&mut Vec<PointXYZIT>>,
         lidar_vendor: Option<LidarVendor>,
     ) {
         debug_assert!(!imu_msgs.is_empty());
@@ -428,9 +429,6 @@ impl ImuProcessing {
                 let head = &imu_poses[i - 1];
                 let tail = &imu_poses[i];
 
-                // if it_pcl > 0 {
-                //     dbg!(cloud[it_pcl - 1].timestamp, head.offset_time);
-                // }
                 while it_pcl > 0 && cloud[it_pcl - 1].timestamp as f64 > head.offset_time {
                     it_pcl -= 1;
                     let pcl_point = &cloud[it_pcl];
@@ -466,57 +464,127 @@ impl ImuProcessing {
                     cloud[it_pcl].z = p_compensate.z as f32;
                 }
             }
+
+            // Additionally deskew the passthrough cloud. Avoid this if possible, since this blocks the thread. Rayon is here really powerful.
+            if let Some(passthrough) = cloud_passthrough {
+                let mut it_pcl = passthrough.len();
+                for i in (1..imu_poses.len()).rev() {
+                    let head = &imu_poses[i - 1];
+                    let tail = &imu_poses[i];
+
+                    while it_pcl > 0 && passthrough[it_pcl - 1].timestamp as f64 > head.offset_time
+                    {
+                        it_pcl -= 1;
+                        let pcl_point = &passthrough[it_pcl];
+
+                        let mut dt = pcl_point.timestamp as f64 - head.offset_time;
+                        if dt < 0.0 {
+                            // This can happen due to floating point inaccuracies if the point is very close
+                            // to the head time. We can treat it as having zero offset.
+                            warn!(
+                                "Point timestamp slightly before IMU head offset_time, clamping dt to 0."
+                            );
+                            dt = 0.0;
+                        }
+
+                        let r_i = head
+                            .pose
+                            .rotation()
+                            .group_mul(crate::iekf::SO3::exp(tail.gyr * dt))
+                            .matrix();
+                        let t_ei =
+                            head.pose.translation() + head.vel * dt + 0.5 * tail.acc * dt * dt
+                                - self.imu_state.pose.translation();
+
+                        let p_imu_frame = self.imu_state.lidar_to_imu_r.matrix()
+                            * Vector3::new(
+                                pcl_point.x as f64,
+                                pcl_point.y as f64,
+                                pcl_point.z as f64,
+                            )
+                            + self.imu_state.lidar_to_imu_t;
+                        let p_compensate = self.imu_state.lidar_to_imu_r.matrix().transpose()
+                            * (self.imu_state.pose.rotation().matrix().transpose()
+                                * (r_i * p_imu_frame + t_ei)
+                                - self.imu_state.lidar_to_imu_t);
+
+                        passthrough[it_pcl].x = p_compensate.x as f32;
+                        passthrough[it_pcl].y = p_compensate.y as f32;
+                        passthrough[it_pcl].z = p_compensate.z as f32;
+                    }
+                }
+            }
         }
 
         #[cfg(feature = "parallel")]
-        cloud.par_iter_mut().for_each(|point| {
-            // For each point, find the correct IMU pose interval.
-            // binary_search_by finds the index of the first pose with a timestamp >= the point's timestamp.
+        {
+            let imu_state_pose_translation = self.imu_state.pose.translation();
+            let imu_state_pose_rotation_t = self.imu_state.pose.rotation().matrix().transpose();
+            let imu_state_lidar_to_imu_t = self.imu_state.lidar_to_imu_t;
+            let imu_state_lidar_to_imu_r = self.imu_state.lidar_to_imu_r.matrix();
+            let imu_state_lidar_to_imu_r_t = imu_state_lidar_to_imu_r.transpose();
+            let imu_poses_for_downsampled = imu_poses.clone();
 
-            let tail_idx = imu_poses
-                .binary_search_by(|p| {
-                    p.offset_time
-                        .partial_cmp(&(point.timestamp as f64))
-                        .unwrap_or(std::cmp::Ordering::Less)
-                })
-                .unwrap_or_else(|e| e);
+            let deskew = |point: &mut PointXYZIT| {
+                // For each point, find the correct IMU pose interval.
+                // binary_search_by finds the index of the first pose with a timestamp >= the point's timestamp.
 
-            if tail_idx == 0 || tail_idx >= imu_poses.len() {
-                // point is before the first pose or after the last.
-                return;
-            }
-            let head_idx = tail_idx - 1;
+                let tail_idx = imu_poses_for_downsampled
+                    .binary_search_by(|p| {
+                        p.offset_time
+                            .partial_cmp(&(point.timestamp as f64))
+                            .unwrap_or(std::cmp::Ordering::Less)
+                    })
+                    .unwrap_or_else(|e| e);
 
-            let head = &imu_poses[head_idx];
-            let tail = &imu_poses[tail_idx];
+                if tail_idx == 0 || tail_idx >= imu_poses_for_downsampled.len() {
+                    // point is before the first pose or after the last.
+                    return;
+                }
+                let head_idx = tail_idx - 1;
 
-            let mut dt = point.timestamp as f64 - head.offset_time;
-            if dt < 0.0 {
-                dt = 0.0;
-            }
+                let head = &imu_poses_for_downsampled[head_idx];
+                let tail = &imu_poses_for_downsampled[tail_idx];
 
-            let r_i = head
-                .pose
-                .rotation()
-                .group_mul(crate::iekf::SO3::exp(tail.gyr * dt))
-                .matrix();
+                let mut dt = point.timestamp as f64 - head.offset_time;
+                if dt < 0.0 {
+                    dt = 0.0;
+                }
 
-            let t_ei = head.pose.translation() + head.vel * dt + 0.5 * tail.acc * dt * dt
-                - self.imu_state.pose.translation();
+                let r_i = head
+                    .pose
+                    .rotation()
+                    .group_mul(crate::iekf::SO3::exp(tail.gyr * dt))
+                    .matrix();
 
-            let p_imu_frame = self.imu_state.lidar_to_imu_r.matrix()
-                * Vector3::new(point.x as f64, point.y as f64, point.z as f64)
-                + self.imu_state.lidar_to_imu_t;
+                let t_ei = head.pose.translation() + head.vel * dt + 0.5 * tail.acc * dt * dt
+                    - imu_state_pose_translation;
 
-            let p_compensate = self.imu_state.lidar_to_imu_r.matrix().transpose()
-                * (self.imu_state.pose.rotation().matrix().transpose()
-                    * (r_i * p_imu_frame + t_ei)
-                    - self.imu_state.lidar_to_imu_t);
+                let p_imu_frame = imu_state_lidar_to_imu_r
+                    * Vector3::new(point.x as f64, point.y as f64, point.z as f64)
+                    + imu_state_lidar_to_imu_t;
 
-            point.x = p_compensate.x as f32;
-            point.y = p_compensate.y as f32;
-            point.z = p_compensate.z as f32;
-        });
+                let p_compensate = imu_state_lidar_to_imu_r_t
+                    * (imu_state_pose_rotation_t * (r_i * p_imu_frame + t_ei)
+                        - imu_state_lidar_to_imu_t);
+
+                point.x = p_compensate.x as f32;
+                point.y = p_compensate.y as f32;
+                point.z = p_compensate.z as f32;
+            };
+
+            // parallelize the clouds as well
+            rayon::scope(move |scope| {
+                scope.spawn(move |_| {
+                    cloud.par_iter_mut().for_each(deskew);
+                });
+                if let Some(passthrough) = cloud_passthrough {
+                    scope.spawn(move |_| {
+                        passthrough.par_iter_mut().for_each(deskew);
+                    });
+                }
+            });
+        }
     }
 
     pub fn predict(
