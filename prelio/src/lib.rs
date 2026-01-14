@@ -131,7 +131,7 @@ impl<T> LocatedBufferView<T> {
         Self::Ram(src)
     }
     #[cfg(feature = "cuda")]
-    pub fn copy_from_slice_cuda(stream: &pelorus_cuda::Stream, src: &[PointXYZI]) -> Self {
+    pub fn copy_from_slice_cuda(stream: &pelorus_cuda::Stream, src: &[PointXYZIT]) -> Self {
         Self::Cuda {
             buffer: CudaBuffer::from_cloud(&stream, src),
         }

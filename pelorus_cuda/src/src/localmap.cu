@@ -671,7 +671,8 @@ void Localmap::build(size_t scan_number, rm::CudaStream &stream) {
 struct GetMean {
   __host__ __device__ Point
   operator()(const thrust::pair<uint32_t, VoxelDistribution> &val) const {
-    return Point{val.second.mean.x, val.second.mean.y, val.second.mean.z};
+    return Point{val.second.mean.x, val.second.mean.y, val.second.mean.z, 0.0,
+                 0.0};
   }
 };
 

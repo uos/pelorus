@@ -24,14 +24,21 @@ fn main() {
                 "src/src/localmap.cu",
             ];
             let include_paths = vec!["src/include"];
+
             // orin: 87
             // rtx 40xx: 89
             // jetson nano: 5.3
             // jetson tx2: 6.2
             // jetson xavier: 7.2
             // jetson tegra k1/tk1: 3.2
-            // let arch = env::var("CUDA_ARCH").unwrap_or_else(|_| "sm_87".to_string());
-            // let compute = format!("compute_{}", arch.strip_prefix("sm_").unwrap_or("87"));
+
+            let arch_list =
+                env::var("CUDA_ARCHS").unwrap_or_else(|_| "70,75,80,86,87,89".to_string());
+
+            let arches: Vec<u32> = arch_list
+                .split(',')
+                .filter_map(|s| s.trim().parse::<u32>().ok())
+                .collect();
 
             // CUDA Toolkit directory, TODO check jetson specific folders
             let cuda_path = PathBuf::from(&cuda_path);
@@ -40,7 +47,23 @@ fn main() {
             let nvcc_bin = cuda_bin_path.join("nvcc");
 
             // let gencode = format!("arch={},code={}", compute, arch);
-            let gencode = "-arch=native".to_string();
+            let gencode_args = if let Ok(_) = env::var("PELORUS_CUDA_NATIVE") {
+                vec!["-arch=native".to_string()]
+            } else {
+                arches
+                    .iter()
+                    .flat_map(|arch| {
+                        let compute = format!("compute_{}", arch);
+                        #[allow(unused_variables)]
+                        let sm = format!("sm_{}", arch);
+                        vec![
+                            // format!("-gencode=arch={},code={}", compute, sm),
+                            // emit PTX only for JIT compilation of newer GPUs
+                            format!("-gencode=arch={},code={}", compute, compute),
+                        ]
+                    })
+                    .collect()
+            };
 
             for path in source_files.iter() {
                 println!("cargo:rerun-if-changed={}", path);
@@ -67,26 +90,33 @@ fn main() {
 
                     let mut nvcc_compile_cmd = Command::new(nvcc_bin.to_string_lossy().to_string());
                     let profile = env::var("PROFILE").unwrap();
-                    if profile == "release" {
+
+                    if profile == "release" || profile == "dbg-release" {
                         nvcc_compile_cmd.arg("-O3");
                     } else {
                         nvcc_compile_cmd.arg("-G").arg("-g");
                     }
+
                     for path in &include_paths {
                         nvcc_compile_cmd.arg(format!("-I{}", path));
                     }
 
-                    let output = nvcc_compile_cmd
+                    let cmd = nvcc_compile_cmd
+                        .arg("-c")
                         .arg("-Xcompiler")
                         .arg("-fPIC")
-                        .arg("-c")
                         .arg(source_file)
                         .arg("-o")
                         .arg(&obj_path)
-                        .arg("-rdc=true") // Relocatable Device Code
-                        .arg("-arch=native")
-                        .output() // Changed from .status()
-                        .expect("Failed to execute nvcc. Is it in your PATH?");
+                        .arg("-rdc=true"); // needed for device‑link later
+
+                    for g in &gencode_args {
+                        cmd.arg(g);
+                    }
+
+                    let output = cmd
+                        .output()
+                        .expect("Failed to spawn nvcc – is it on your PATH?");
 
                     if !output.status.success() {
                         return Err(format!(
@@ -107,10 +137,13 @@ fn main() {
                 .arg("-dlink")
                 .arg("-o")
                 .arg(&dlink_obj_path)
-                .arg("-arch=native")
-                .arg(&gencode)
                 .arg(format!("-L{}", cuda_lib_path.display()))
-                .arg("-lcudadevrt");
+                .arg("-lcudadevrt"); // link against the device‑runtime library
+
+            for g in &gencode_args {
+                dlink_cmd.arg(g);
+            }
+
             for obj in &object_files {
                 dlink_cmd.arg(obj);
             }

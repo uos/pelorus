@@ -364,7 +364,8 @@ pub struct MeasureGroup {
     pub odom_buffer: Vec<OdomMsg>,
 }
 
-#[derive(Debug, Clone, Default, Copy, PointConvertible)]
+#[derive(Debug, Clone, Default, Copy, PointConvertible, PartialEq, PartialOrd)]
+#[repr(align(16))]
 pub struct PointXYZIT {
     pub x: f32,
     pub y: f32,

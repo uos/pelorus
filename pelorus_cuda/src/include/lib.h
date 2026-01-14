@@ -6,14 +6,14 @@
 #include <stdint.h>
 #include <sys/types.h>
 
-#if defined(__CUDACC__) // NVCC
+#if defined(__CUDACC__)
 #define MY_ALIGN(n) __align__(n)
-#elif defined(__GNUC__) // GCC
+#elif defined(__GNUC__)
 #define MY_ALIGN(n) __attribute__((aligned(n)))
-#elif defined(_MSC_VER) // MSVC
+#elif defined(_MSC_VER)
 #define MY_ALIGN(n) __declspec(align(n))
 #else
-#error "Please provide a definition for MY_ALIGN macro for your host compiler!"
+#error "Provide MY_ALIGN"
 #endif
 
 // Use extern "C" to prevent C++ name mangling, which ensures
@@ -31,6 +31,7 @@ typedef struct MY_ALIGN(16) {
   float y;
   float z;
   float i;
+  float t;
 } Point;
 
 typedef struct MY_ALIGN(16) {
@@ -66,7 +67,7 @@ typedef struct {
 } Matrix3;
 
 void *cupcl_create_stream();
-float *cupcl_create_pointcloud(void *stream, float *point_buffer_cpu,
+float *cupcl_create_pointcloud(void *stream, Point *point_buffer_cpu,
                                unsigned int n_points);
 void *cupcl_create_buffer(void *stream, void *buffer_cpu,
                           unsigned int element_size, unsigned int n_points);
@@ -75,8 +76,8 @@ void *cupcl_create_empty_buffer(void *stream, unsigned int element_size,
 void cupcl_upload_buffer(void *stream, void *gpu_buffer, void *cpu_buffer,
                          unsigned int element_size, unsigned int n);
 void cupcl_free_buffer(void *buffer);
-float *cupcl_create_empty_pointcloud(void *stream, unsigned int n_points);
-void cupcl_free_pointcloud(float *cloud);
+Point *cupcl_create_empty_pointcloud(void *stream, unsigned int n_points);
+void cupcl_free_pointcloud(Point *cloud);
 void cupcl_sync_stream(void *stream);
 void cupcl_destroy_stream(void *stream);
 void cupcl_download_buffer(void *stream, void *cpu_buffer, void *gpu_buffer,
