@@ -2,6 +2,7 @@
 
 use core::panic;
 use std::ffi::{CStr, c_char, c_void};
+
 use std::mem::transmute;
 use std::path::Path;
 use std::ptr;
@@ -153,14 +154,25 @@ pub struct pelorus_pointcloud2 {
 }
 
 #[allow(non_camel_case_types)]
-#[repr(C)]
+#[repr(C, align(16))]
 pub struct pelorus_point_xyzit {
     pub x: f32,
     pub y: f32,
     pub z: f32,
     pub intensity: f32, // expected 0..255 in float
     pub timestamp: f32, // in seconds
+    /* Padding to match alignment and size of internal `PointXYZIT` (32 bytes) */
+    pub _pad: [u8; 12],
 }
+
+// Compile-time verification that the internal `PointXYZIT` in `pelorus_core`
+// has identical size and alignment to the C representation `pelorus_point_xyzit`.
+// If these assertions fail, the crate will not compile and the unsafe transmute
+// below would be rejected at compile time.
+const _: [u8; std::mem::size_of::<pelorus_core::PointXYZIT>()] =
+    [0u8; std::mem::size_of::<pelorus_point_xyzit>()];
+const _: [u8; std::mem::align_of::<pelorus_core::PointXYZIT>()] =
+    [0u8; std::mem::align_of::<pelorus_point_xyzit>()];
 
 #[allow(non_camel_case_types)]
 #[repr(C)]
@@ -306,9 +318,10 @@ fn convert_to_c_odometry(
     let (pvec, pcount) = if cloud.is_empty() {
         (ptr::null_mut(), 0)
     } else {
-        // Safety: C point and PointXYZIT from rust are both C-Repr.
+        // Safety: compile-time assertions above ensure that `pelorus_core::PointXYZIT`
+        // and `pelorus_point_xyzit` have identical size, alignment and field layout,
+        // therefore reinterpreting the Vec's buffer is sound and avoids a per-element copy.
         let mut points_vec: Vec<pelorus_point_xyzit> = unsafe { transmute(cloud) };
-
         let out = (points_vec.as_mut_ptr(), points_vec.len());
         std::mem::forget(points_vec);
         out
