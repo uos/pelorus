@@ -1,19 +1,31 @@
 #![cfg(feature = "cuda_available")]
 
-use std::{
-    fmt::Debug,
-    sync::{Arc, Mutex},
-};
+use std::{fmt::Debug, sync::Arc};
 
 use ffi::Point;
-use ros_pointcloud2::points::{PointXYZ, PointXYZI, PointXYZINormal};
+use pelorus_core::PointXYZIT;
+use ros_pointcloud2::points::PointXYZINormal;
 
 mod ffi;
 
 pub use ffi::{Matrix3, NeighborType, Pose, Quaternion, Vector3};
 
+#[derive(Debug)]
+struct Inner {
+    raw: *mut std::os::raw::c_void,
+}
+
+impl Drop for Inner {
+    fn drop(&mut self) {
+        // This runs exactly once when the last Arc is dropped.
+        unsafe {
+            ffi::cupcl_destroy_stream(self.raw);
+        }
+    }
+}
+
 pub struct Stream {
-    pub stream: Arc<Mutex<*mut ::std::os::raw::c_void>>,
+    stream: Arc<Inner>,
 }
 
 unsafe impl Send for Stream {}
@@ -21,24 +33,16 @@ unsafe impl Sync for Stream {}
 
 impl Stream {
     pub fn new() -> Self {
-        let stream = unsafe { ffi::cupcl_create_stream() };
+        let raw = unsafe { ffi::cupcl_create_stream() };
         Self {
-            stream: Arc::new(Mutex::new(stream)),
+            stream: Arc::new(Inner { raw }),
         }
     }
 
     pub fn sync(&self) {
-        let stream = self.stream.lock().unwrap();
-        unsafe { ffi::cupcl_sync_stream(*stream) }
-    }
-}
-
-impl Drop for Stream {
-    fn drop(&mut self) {
-        let stream = self.stream.lock().unwrap();
         unsafe {
-            ffi::cupcl_destroy_stream(*stream);
-        };
+            ffi::cupcl_sync_stream(self.stream.raw);
+        }
     }
 }
 
@@ -61,9 +65,9 @@ unsafe impl Send for CudaBuffer {}
 
 impl CudaBuffer {
     pub fn new(stream: &Stream, element_size: usize, n: usize) -> Self {
-        let my_stream = stream.stream.lock().unwrap();
+        let my_stream = stream.stream.raw;
         let gpu_ptr =
-            unsafe { ffi::cupcl_create_empty_buffer(*my_stream, element_size as u32, n as u32) };
+            unsafe { ffi::cupcl_create_empty_buffer(my_stream, element_size as u32, n as u32) };
         Self {
             gpu_ptr,
             element_size,
@@ -73,10 +77,10 @@ impl CudaBuffer {
 
     pub fn clone(&self, stream: &Stream) -> Self {
         let new = Self::new(stream, self.element_size, self.n);
-        let my_stream = stream.stream.lock().unwrap();
+        let my_stream = stream.stream.raw;
         unsafe {
             ffi::cupcl_copy_buffer(
-                *my_stream,
+                my_stream,
                 self.gpu_ptr as *mut ::std::os::raw::c_void,
                 new.gpu_ptr as *mut ::std::os::raw::c_void,
                 self.element_size as u32,
@@ -88,10 +92,10 @@ impl CudaBuffer {
 
     pub fn upload<T>(&mut self, stream: &Stream, buffer: &[T]) {
         assert!(size_of::<T>() == self.element_size, "Wrong alignment of T");
-        let my_stream = stream.stream.lock().unwrap();
+        let my_stream = stream.stream.raw;
         unsafe {
             ffi::cupcl_upload_buffer(
-                *my_stream,
+                my_stream,
                 self.gpu_ptr,
                 buffer.as_ptr() as *mut ::std::os::raw::c_void,
                 self.element_size as u32,
@@ -103,10 +107,10 @@ impl CudaBuffer {
     pub fn download<T: Default + Clone>(&self, stream: &Stream) -> Vec<T> {
         assert!(size_of::<T>() == self.element_size, "Wrong alignment of T");
         let mut v = vec![T::default(); self.n];
-        let my_stream = stream.stream.lock().unwrap();
+        let my_stream = stream.stream.raw;
         unsafe {
             ffi::cupcl_download_buffer(
-                *my_stream,
+                my_stream,
                 v.as_mut_ptr() as *mut ::std::os::raw::c_void,
                 self.gpu_ptr,
                 self.element_size as u32,
@@ -123,10 +127,10 @@ impl CudaBuffer {
             dst.len() <= self.n,
             "Destination buffer on CPU is too small"
         );
-        let my_stream = stream.stream.lock().unwrap();
+        let my_stream = stream.stream.raw;
         unsafe {
             ffi::cupcl_download_buffer(
-                *my_stream,
+                my_stream,
                 dst.as_mut_ptr() as *mut ::std::os::raw::c_void,
                 self.gpu_ptr,
                 self.element_size as u32,
@@ -136,10 +140,10 @@ impl CudaBuffer {
     }
 
     pub fn from_vec<T>(stream: &Stream, vec: Vec<T>, element_size: usize) -> Self {
-        let my_stream = stream.stream.lock().unwrap();
+        let my_stream = stream.stream.raw;
         let gpu_ptr = unsafe {
             ffi::cupcl_create_buffer(
-                *my_stream,
+                my_stream,
                 vec.as_ptr() as *mut ::std::os::raw::c_void,
                 element_size as u32,
                 vec.len() as u32,
@@ -152,12 +156,12 @@ impl CudaBuffer {
         }
     }
 
-    pub fn from_cloud(stream: &Stream, vec: &[PointXYZI]) -> Self {
-        let element_size = size_of::<PointXYZI>();
-        let my_stream = stream.stream.lock().unwrap();
+    pub fn from_cloud(stream: &Stream, vec: &[PointXYZIT]) -> Self {
+        let element_size = size_of::<PointXYZIT>();
+        let my_stream = stream.stream.raw;
         let gpu_ptr = unsafe {
             ffi::cupcl_create_buffer(
-                *my_stream,
+                my_stream,
                 vec.as_ptr() as *mut ::std::os::raw::c_void,
                 element_size as u32,
                 vec.len() as u32,
@@ -170,7 +174,7 @@ impl CudaBuffer {
         }
     }
 
-    pub fn into_cloud(&self, stream: &Stream) -> Vec<PointXYZI> {
+    pub fn into_cloud(&self, stream: &Stream) -> Vec<PointXYZIT> {
         let cpu_buff = self.download(stream);
         stream.sync();
         cpu_buff
@@ -178,7 +182,7 @@ impl CudaBuffer {
 }
 
 pub fn get_map() -> Vec<nalgebra::Point3<f32>> {
-    let mut out = vec![PointXYZ::default(); unsafe { ffi::get_map_capacity() as usize }];
+    let mut out = vec![PointXYZIT::default(); unsafe { ffi::get_map_capacity() as usize }];
     let mut actual_size: u32 = 0;
 
     unsafe {
@@ -205,10 +209,10 @@ pub fn init_map(
         (capacity & (capacity - 1)) == 0,
         "Capacity is not a power of 2"
     );
-    let my_stream = stream.stream.lock().unwrap();
+    let my_stream = stream.stream.raw;
     unsafe {
         ffi::init_map(
-            *my_stream,
+            my_stream,
             capacity as u32,
             sensitivity,
             min_dist,
@@ -224,10 +228,10 @@ pub fn add_to_map(stream: &Stream, cloud: &CudaBuffer, ekf_pose_t: &Vector3, ekf
         position: *ekf_pose_t,
         orientation: Quaternion::new(pose_r.i, pose_r.j, pose_r.k, pose_r.w),
     };
-    let my_stream = stream.stream.lock().unwrap();
+    let my_stream = stream.stream.raw;
     unsafe {
         ffi::add_to_map(
-            *my_stream,
+            my_stream,
             cloud.gpu_ptr as *mut ffi::Point,
             cloud.n as u32,
             pose,
@@ -261,14 +265,16 @@ pub fn planes_cuda(
         orientation: Quaternion::new(pose_r_quat.i, pose_r_quat.j, pose_r_quat.k, pose_r_quat.w),
     };
 
-    assert_eq!(size_of::<ffi::Point>(), size_of::<PointXYZ>());
-    assert_eq!(size_of::<ffi::PointNormal>(), size_of::<PointXYZINormal>());
+    let _ = const {
+        assert!(size_of::<ffi::Point>() == size_of::<PointXYZIT>());
+        assert!(size_of::<ffi::PointNormal>() == size_of::<PointXYZINormal>());
+    };
 
     let size = {
-        let my_stream = stream.stream.lock().unwrap();
+        let my_stream = stream.stream.raw;
         let size = unsafe {
             ffi::planes(
-                *my_stream,
+                my_stream,
                 cloud.gpu_ptr as *mut ffi::Point,
                 cloud.n as u32,
                 lidar_to_imu,
@@ -292,9 +298,27 @@ mod tests {
     fn cloud_gpu_roundtrip() {
         let stream = Stream::new();
         let cloud = vec![
-            PointXYZI::new(1.0, 0.0, 1.5, 0.0),
-            PointXYZI::new(2.0, 0.0, 1.5, 0.0),
-            PointXYZI::new(3.0, 0.0, 1.5, 0.0),
+            PointXYZIT {
+                x: 1.0,
+                y: 0.0,
+                z: 1.5,
+                intensity: 0.0,
+                timestamp: 2.0,
+            },
+            PointXYZIT {
+                x: 2.0,
+                y: 0.0,
+                z: 1.5,
+                intensity: 0.0,
+                timestamp: 3.0,
+            },
+            PointXYZIT {
+                x: 3.0,
+                y: 0.0,
+                z: 1.5,
+                intensity: 0.0,
+                timestamp: 4.0,
+            },
         ];
         let gpu = CudaBuffer::from_cloud(&stream, &cloud);
         let cpu = gpu.into_cloud(&stream);

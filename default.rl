@@ -1,7 +1,7 @@
 preprocessing {
 
   downsample {
-    resolution = 25cm # "downsample" feature flag needs to be enabled in crates/pelorus/Cargo.toml. 
+    resolution = 50cm # "downsample" feature flag needs to be enabled in crates/pelorus/Cargo.toml. 
     bypass_output_downsample = false # Output the full undistorted cloud while using downsampled internally for processing.
   }
 

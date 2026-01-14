@@ -590,8 +590,10 @@ fn lio_with_ready_signal(
             eval.merge(&lifis_tick.runtime_eval);
 
             #[cfg(feature = "cuda")]
-            let cloud =
-                LocatedBufferView::copy_from_slice_cuda(&cuda_stream, &lifis_tick.deskewed_cloud);
+            let cloud_for_reg = LocatedBufferView::copy_from_slice_cuda(
+                &cuda_stream,
+                lifis_tick.deskewed_cloud.as_slice(),
+            );
             #[cfg(not(feature = "cuda"))]
             let cloud_for_reg = LocatedBufferView::Ram(lifis_tick.deskewed_cloud);
 
@@ -827,7 +829,12 @@ fn lio_with_ready_signal(
                         out
                     }
                     #[cfg(feature = "cuda")]
-                    (None, LocatedBufferView::Cuda { buffer: cloud }) => {
+                    (
+                        None,
+                        LocatedBufferView::Cuda {
+                            buffer: cloud_for_reg,
+                        },
+                    ) => {
                         let buff = cloud_for_reg.into_cloud(&cuda_stream);
                         let msg = ros_pointcloud2::PointCloud2Msg::try_from_vec(buff).unwrap();
                         #[cfg(feature = "ros2-client")]

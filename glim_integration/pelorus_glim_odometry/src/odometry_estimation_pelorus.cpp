@@ -96,6 +96,7 @@ public:
           ofs << "}\n";
           ofs << "lidar.as_sync = true\n";
           ofs << "output.lidar_as_map_tf_base = true\n";
+          ofs << "preprocessing.downsample.bypass_output_downsample = true\n";
           if (preprocess_downsample_resolution_m > 0.0)
             ofs << "preprocessing.downsample.resolution = "
                 << preprocess_downsample_resolution_m << "m\n";
