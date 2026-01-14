@@ -92,6 +92,13 @@ typedef struct pelorus_pointcloud2 {
   bool is_dense;                     /**< True if no invalid points */
 } pelorus_pointcloud2;
 
+/* Alignment macro: use GCC/Clang attribute when available, else no-op */
+#if defined(__GNUC__)
+#define PELORUS_ALIGN16 __attribute__((aligned(16)))
+#else
+#define PELORUS_ALIGN16
+#endif
+
 /**
  * @brief Simple XYZIT point structure (used in outputs).
  *
@@ -104,7 +111,12 @@ typedef struct pelorus_point_xyzit {
   float z;         /**< Z coordinate in meters */
   float intensity; /**< Intensity/reflectivity value (0..255 scaled as float) */
   float timestamp; /**< Per-point timestamp in seconds */
-} pelorus_point_xyzit;
+  uint8_t _pad[12];
+} pelorus_point_xyzit PELORUS_ALIGN16;
+
+/* Ensure ABI matches internal expectations */
+_Static_assert(sizeof(pelorus_point_xyzit) == 32, "pelorus_point_xyzit must be 32 bytes to match internal layout");
+_Static_assert(_Alignof(pelorus_point_xyzit) == 16, "pelorus_point_xyzit alignment must be 16");
 
 /**
  * @brief Complete odometry output from Pelorus.

@@ -2,6 +2,7 @@ eval
 glim_integration/glim
 **/target
 .vscode
+wheels
 **/__pycache__/
 **/pelorus.rl
 **/lio*.toml
