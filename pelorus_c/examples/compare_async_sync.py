@@ -5,7 +5,7 @@ import subprocess
 import sys
 from math import isclose
 
-POINT_RE = re.compile(r"^\s*Point\s+(\d+):\s*\[([^]]+)\]\s*I=([0-9eE+\-\.]+)\s*t=([0-9eE+\-\.]+)")
+POINT_RE = re.compile(r"^\s*Point\s+(\d+):\s*\[([^]]+)\]\s*I=([0-9eE+\-\.]+)")
 
 
 def run_cmd(cmd, env=None):
@@ -85,8 +85,7 @@ def parse_points(output):
             coords = m.group(2).split(',')
             coords = [float(x.strip()) for x in coords]
             intensity = float(m.group(3))
-            t = float(m.group(4))
-            pts.append((coords[0], coords[1], coords[2], intensity, t))
+            pts.append((coords[0], coords[1], coords[2], intensity))
             collecting = True
         else:
             if collecting:
@@ -304,7 +303,7 @@ def main():
 
     eps = 1e-4
     for i, (a, b) in enumerate(zip(pts_async, pts_sync)):
-        for k in range(5):
+        for k in range(4):
             if not isclose(a[k], b[k], rel_tol=1e-6, abs_tol=eps):
                 print(f"Point {i} differs between async and sync at element {k}: async={a[k]} sync={b[k]}")
                 sys.exit(1)
@@ -320,7 +319,7 @@ def main():
             print(f"Different point counts: async={len(pts_async)} python={len(pts_py)}")
             sys.exit(1)
         for i, (a, p) in enumerate(zip(pts_async, pts_py)):
-            for k in range(5):
+            for k in range(4):
                 if not isclose(a[k], p[k], rel_tol=1e-6, abs_tol=eps):
                     print(f"Point {i} differs between async and python at element {k}: async={a[k]} python={p[k]}")
                     sys.exit(1)
@@ -348,18 +347,10 @@ def main():
             print(f" Error: Different point counts: async={len(pts_async)} cpp={len(pts_cpp)}")
             sys.exit(1)
         for i, (a, c) in enumerate(zip(pts_async, pts_cpp)):
-            for k in range(5):
+            for k in range(4):
                 if not isclose(a[k], c[k], rel_tol=1e-6, abs_tol=eps):
                     print(f"Point {i} differs between async and cpp at element {k}: async={a[k]} cpp={c[k]}")
                     sys.exit(1)
-        print("SUCCESS: cpp_wrapper matches async/sync point clouds within tolerance")
-    else:
-        print("cpp_wrapper not built; skipped cpp comparison")
-
-    if not pts_async:
-        print(out_async)
-        print("Error: No points parsed from async output")
-        sys.exit(2)
     if not pts_sync:
         print(out_sync)
         print("Error: No points parsed from sync output")
@@ -371,7 +362,7 @@ def main():
 
     eps = 1e-4
     for i, (a, b) in enumerate(zip(pts_async, pts_sync)):
-        for k in range(5):
+        for k in range(4):
             if not isclose(a[k], b[k], rel_tol=1e-6, abs_tol=eps):
                 print(f"Point {i} differs at element {k}: async={a[k]} sync={b[k]}")
                 sys.exit(1)

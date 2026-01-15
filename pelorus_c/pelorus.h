@@ -1,4 +1,4 @@
-/* Pelorus C Library - LiDAR-Inertial Odometry
+/* Pelorus C Library - Efficient Robot Odometry.
  *
  * Threading and async processing are handled internally.
  */
@@ -53,22 +53,25 @@ typedef struct pelorus_odom_msg {
  * @brief Point field descriptor for PointCloud2.
  */
 typedef struct pelorus_point_field {
-  const char *name; /**< Field name (e.g., "x", "y", "z", "intensity") */
+  const char *name; /**< Field name (must be non-NULL, e.g., "x", "y", "z", "intensity") */
   uint32_t offset;  /**< Byte offset from start of point data */
   uint8_t datatype; /**< Data type (7=FLOAT32, 8=FLOAT64, etc.) */
-  uint32_t count;   /**< Number of elements (usually 1) */
 } pelorus_point_field;
 
 /**
  * @brief ROS2 PointCloud2 message.
  *
- * Timestamp semantics:
- * - `header_timestamp_sec/nanosec` is an absolute reference time for the scan.
- * - If your fields include a `t` field, it is interpreted as a **non-negative**
- * (`uint32`) nanoseconds offset **forward in time** relative to the scan header
- * timestamp. (So `point_time_abs = header_time_abs + t`.)
+ * Interpretation and timestamp semantics depend on how the point cloud is parsed:
+ * - When Pelorus is configured to use *device-specific* parsing (the default; see
+ *   `device_specific_pointcloud2`), field meanings (including any `t` field) are
+ *   interpreted according to the device/vendor configuration and may **not** be a
+ *   simple header-relative nanosecond offset.
+ * - When using the *generic* parsing path (`device_specific_pointcloud2 == false`),
+ *   Pelorus expects per-point `t` to be a **non-negative** (`uint32`) nanoseconds
+ *   offset **forward in time** relative to the scan header timestamp.
+ *   (So `point_time_abs = header_time_abs + t`.)
  *
- * Recommended field layout for non-ROS point sources:
+ * Recommended field layout for generic (non-device-specific) inputs:
  * - x (FLOAT32) offset 0
  * - y (FLOAT32) offset 4
  * - z (FLOAT32) offset 8
@@ -79,44 +82,24 @@ typedef struct pelorus_point_field {
 typedef struct pelorus_pointcloud2 {
   int32_t header_timestamp_sec;      /**< Timestamp seconds since epoch */
   uint32_t header_timestamp_nanosec; /**< Timestamp nanoseconds part */
-  const char *header_frame_id;       /**< Frame ID (sensor name) */
-  uint32_t height;                   /**< Number of rows (1 for unorganized) */
-  uint32_t width;                    /**< Number of points per row */
-  const pelorus_point_field *fields; /**< Array of field descriptors */
-  uintptr_t fields_len;              /**< Number of fields */
-  bool is_bigendian;                 /**< Byte order (usually false) */
-  uint32_t point_step;               /**< Bytes per point */
-  uint32_t row_step;                 /**< Bytes per row */
+  uint32_t width;                    /**< Number of points (unstructured cloud; height is implicitly 1) */
+  const pelorus_point_field *fields; /**< Pointer to single field descriptor (must be non-NULL) */
+  uint32_t point_step;               /**< Bytes per point (recommended 20 for x,y,z,intensity,t) */
+  uint32_t row_step;                 /**< Bytes per row (point_step * width) */
   const uint8_t *data;               /**< Raw point data buffer */
   uintptr_t data_len;                /**< Length of data buffer in bytes */
   bool is_dense;                     /**< True if no invalid points */
 } pelorus_pointcloud2;
 
-/* Alignment macro: use GCC/Clang attribute when available, else no-op */
-#if defined(__GNUC__)
-#define PELORUS_ALIGN16 __attribute__((aligned(16)))
-#else
-#define PELORUS_ALIGN16
-#endif
-
 /**
- * @brief Simple XYZIT point structure (used in outputs).
- *
- * `timestamp` is the per-point time in seconds (relative to an absolute scan
- * header timestamp when applicable).
+ * @brief Simple XYZI point structure (used in outputs).
  */
-typedef struct pelorus_point_xyzit {
+typedef struct pelorus_point_xyzi {
   float x;         /**< X coordinate in meters */
   float y;         /**< Y coordinate in meters */
   float z;         /**< Z coordinate in meters */
   float intensity; /**< Intensity/reflectivity value (0..255 scaled as float) */
-  float timestamp; /**< Per-point timestamp in seconds */
-  uint8_t _pad[12];
-} pelorus_point_xyzit PELORUS_ALIGN16;
-
-/* Ensure ABI matches internal expectations */
-_Static_assert(sizeof(pelorus_point_xyzit) == 32, "pelorus_point_xyzit must be 32 bytes to match internal layout");
-_Static_assert(_Alignof(pelorus_point_xyzit) == 16, "pelorus_point_xyzit alignment must be 16");
+} pelorus_point_xyzi;
 
 /**
  * @brief Complete odometry output from Pelorus.
@@ -147,7 +130,7 @@ typedef struct pelorus_odometry {
   double twist_covariance[36]; /**< 6x6 twist covariance (row-major) in IMU
                                   World frame */
   uint64_t scan_id; /**< Scan id assigned when the pointcloud was added */
-  pelorus_point_xyzit *points; /**< Registered point cloud in Lidar World frame (must free when `points_memory==0`) */
+  pelorus_point_xyzi *points; /**< Registered point cloud in Lidar World frame (must free when `points_memory==0`) */
   uintptr_t num_points; /**< Number of points in cloud */
 } pelorus_odometry;
 

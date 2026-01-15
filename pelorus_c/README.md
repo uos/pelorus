@@ -271,7 +271,12 @@ The effective point time is:
 
 `point_time_abs = header_time_abs + (t * 1e-9)`
 
-### Recommended PointCloud2 field layout for per-point timing
+### Pelorus expects a simplified, single-row (unstructured) little-endian `PointCloud2`.
+
+Interpretation of per-point timing depends on the parsing mode:
+
+- When Pelorus uses *device-specific* parsing (the default), field meanings — including any `t` field — are interpreted according to the vendor/device configuration and may vary.
+- When using the generic parsing path (`device_specific_pointcloud2 == false`), Pelorus expects `t` to be a **non-negative** (`uint32`) nanoseconds offset relative to the scan header timestamp.
 
 Provide points as a `pelorus_pointcloud2` with:
 
@@ -281,7 +286,7 @@ Provide points as a `pelorus_pointcloud2` with:
 - `intensity` (FLOAT32) offset 12 (optional; may be ignored depending on vendor)
 - `t` (UINT32) offset 16 (nanoseconds offset)
 
-This corresponds to `point_step = 20`.
+This corresponds to `point_step = 20` and `height = 1`. The public C API expects a pointer to a single `pelorus_point_field` descriptor (the `fields` pointer must be non-NULL and describe the point layout above). Little-endian byte order is assumed.
 
 ## License
 

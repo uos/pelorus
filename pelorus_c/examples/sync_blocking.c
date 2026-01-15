@@ -163,18 +163,18 @@ int main(void)
                 {
                     for (size_t j = 0; j < odom.num_points; j++)
                     {
-                        const pelorus_point_xyzit *p = &odom.points[j];
-                        printf("    Point %zu: [%.6g, %.6g, %.6g] I=%.6g t=%.6g\n",
-                               j, p->x, p->y, p->z, p->intensity, p->timestamp);
+                const pelorus_point_xyzi *p = &odom.points[j];
+                        printf("    Point %zu: [%.6g, %.6g, %.6g] I=%.6g\n",
+                               j, p->x, p->y, p->z, p->intensity);
                     }
                 }
                 else
                 {
                     for (size_t j = 0; j < odom.num_points && j < 3; j++)
                     {
-                        const pelorus_point_xyzit *p = &odom.points[j];
-                        printf("    Point %zu: [%.2f, %.2f, %.2f] I=%.1f t=%.6f\n",
-                               j, p->x, p->y, p->z, p->intensity, p->timestamp);
+                        const pelorus_point_xyzi *p = &odom.points[j];
+                        printf("    Point %zu: [%.2f, %.2f, %.2f] I=%.1f\n",
+                               j, p->x, p->y, p->z, p->intensity);
                     }
                 }
 

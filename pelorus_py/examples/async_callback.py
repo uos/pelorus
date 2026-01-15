@@ -94,12 +94,12 @@ def on_odom(odom):
         _done_event.set()
     if DUMP_ALL:
         for i, p in enumerate(pts):
-            # p is [x, y, z, intensity, timestamp]
-            print("    Point %d: [%.6g, %.6g, %.6g] I=%.6g t=%.6g" % (i, p[0], p[1], p[2], p[3], p[4]))
+            # p is [x, y, z, intensity]
+            print("    Point %d: [%.6g, %.6g, %.6g] I=%.6g" % (i, p[0], p[1], p[2], p[3]))
     else:
         for i in range(min(3, len(pts))):
             p = pts[i]
-            print("    Point %d: [%.2f, %.2f, %.2f] I=%.1f t=%.6f" % (i, p[0], p[1], p[2], p[3], p[4]))
+            print("    Point %d: [%.2f, %.2f, %.2f] I=%.1f" % (i, p[0], p[1], p[2], p[3]))
     print()
 
 

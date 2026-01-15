@@ -201,7 +201,7 @@ namespace pelorus
         /**
          * @brief Access point cloud
          */
-        const pelorus_point_xyzit *points() const { return valid_ ? odom_.points : nullptr; }
+        const pelorus_point_xyzi *points() const { return valid_ ? odom_.points : nullptr; }
 
         /**
          * @brief Get point cloud as PCL format (requires pelorus_pcl.hpp)
@@ -588,7 +588,7 @@ namespace pelorus
         }
 
         inline ::pcl::PointCloud<::pcl::PointXYZI>::Ptr to_pcl_cloud(
-            const pelorus_point_xyzit *points, size_t num_points)
+            const pelorus_point_xyzi *points, size_t num_points)
         {
             auto cloud = ::pcl::PointCloud<::pcl::PointXYZI>::Ptr(
                 new ::pcl::PointCloud<::pcl::PointXYZI>());

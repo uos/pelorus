@@ -149,8 +149,7 @@ int main()
                 const auto *p = &odom.points()[j];
                 std::cout << "    Point " << j << ": ["
                           << std::setprecision(6) << p->x << ", " << p->y << ", " << p->z
-                          << "] I=" << std::setprecision(6) << p->intensity
-                          << " t=" << std::setprecision(6) << p->timestamp << "\n";
+                          << "] I=" << std::setprecision(6) << p->intensity << "\n";
             }
         }
         else
@@ -161,8 +160,7 @@ int main()
                 std::cout << "    Point " << j << ": ["
                           << std::setprecision(3)
                           << p->x << ", " << p->y << ", " << p->z
-                          << "] I=" << std::setprecision(3) << p->intensity
-                          << " t=" << std::setprecision(6) << p->timestamp << "\n";
+                          << "] I=" << std::setprecision(3) << p->intensity << "\n";
             }
         }
 
