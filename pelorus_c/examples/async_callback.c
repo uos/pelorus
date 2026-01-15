@@ -56,18 +56,18 @@ void odometry_callback(const pelorus_odometry *odom, void *user_data)
     {
         for (size_t i = 0; i < odom->num_points; i++)
         {
-            const pelorus_point_xyzit *p = &odom->points[i];
-            printf("    Point %zu: [%.6g, %.6g, %.6g] I=%.6g t=%.6g\n",
-                   i, p->x, p->y, p->z, p->intensity, p->timestamp);
+            const pelorus_point_xyzi *p = &odom->points[i];
+            printf("    Point %zu: [%.6g, %.6g, %.6g] I=%.6g\n",
+                   i, p->x, p->y, p->z, p->intensity);
         }
     }
     else
     {
         for (size_t i = 0; i < odom->num_points && i < 3; i++)
         {
-            const pelorus_point_xyzit *p = &odom->points[i];
-            printf("    Point %zu: [%.2f, %.2f, %.2f] I=%.1f t=%.6f\n",
-                   i, p->x, p->y, p->z, p->intensity, p->timestamp);
+            const pelorus_point_xyzi *p = &odom->points[i];
+            printf("    Point %zu: [%.2f, %.2f, %.2f] I=%.1f\n",
+                   i, p->x, p->y, p->z, p->intensity);
         }
     }
     printf("\n");

@@ -506,7 +506,7 @@ private:
     std::vector<float> ints;
     ints.reserve(odom->num_points);
 
-    const pelorus_point_xyzit *pts_ptr = odom->points;
+    const pelorus_point_xyzi *pts_ptr = odom->points;
     for (size_t i = 0; i < odom->num_points; ++i) {
       const auto &p = pts_ptr[i];
       pts.emplace_back(p.x, p.y, p.z, 0.0);

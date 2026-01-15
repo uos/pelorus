@@ -216,8 +216,10 @@ impl PelorusHandle {
     /// Create a new Pelorus instance.
     ///
     /// - `config_path`: optional path to a `.rl` config file. If omitted, embedded defaults are used.
-    /// - `device_specific_pointcloud2`: matches the C bindings option. When false, PointCloud2 inputs
-    ///   are interpreted using the generic parsing path.
+    /// - `device_specific_pointcloud2`: when true (default) Pelorus will use device-specific parsing
+    ///   for PointCloud2 inputs (field meanings and timestamps are vendor/device-dependent). When
+    ///   false, Pelorus uses the generic parsing path where per-point `t` is interpreted as a
+    ///   header-relative nanoseconds offset (see README for the recommended layout).
     fn new(config_path: Option<&str>, device_specific_pointcloud2: bool) -> PyResult<Self> {
         let mut config = load_pelorus_config(config_path)
             .map_err(|e| PyRuntimeError::new_err(format!("Failed to load configuration: {}", e)))?;
@@ -722,10 +724,10 @@ impl PelorusHandle {
         dict.set_item("twist_covariance", odom.twist_covariance.to_vec())?;
 
         // TODO output numpy arrays
+        // Only export spatial + intensity fields in Python-facing output: [x, y, z, intensity]
         let mut points = Vec::with_capacity(odom.cloud.len());
         for p in &odom.cloud {
-            // include per-point timestamp (seconds) for regression outputs: [x, y, z, intensity, timestamp]
-            points.push(vec![p.x, p.y, p.z, p.intensity, p.timestamp]);
+            points.push(vec![p.x, p.y, p.z, p.intensity]);
         }
         dict.set_item("points", points)?;
         dict.set_item("scan_id", odom.scan_id)?;
@@ -743,7 +745,7 @@ impl PelorusHandle {
         let stamp = header.get_item("stamp")?;
         let sec: i32 = stamp.get_item("sec")?.extract()?;
         let nanosec: u32 = stamp.get_item("nanosec")?.extract()?;
-        let frame_id: String = header.get_item("frame_id")?.extract()?;
+        let frame_id: String = String::new();
 
         // Extract cloud data - PyDict.get_item returns PyResult<Option<Bound>>
         let height: u32 = cloud_dict
@@ -782,12 +784,12 @@ impl PelorusHandle {
             let name: String = field.get_item("name")?.extract()?;
             let offset: u32 = field.get_item("offset")?.extract()?;
             let datatype: u8 = field.get_item("datatype")?.extract()?;
-            let count: u32 = field.get_item("count")?.extract()?;
+            // `count` is always 1 in the simplified C API
             fields.push(PointField {
                 name,
                 offset,
                 datatype,
-                count,
+                count: 1,
             });
         }
 
@@ -843,12 +845,12 @@ impl PelorusHandle {
             let name: String = field_any.getattr("name")?.extract()?;
             let offset: u32 = field_any.getattr("offset")?.extract()?;
             let datatype: u8 = field_any.getattr("datatype")?.extract()?;
-            let count: u32 = field_any.getattr("count")?.extract()?;
+            // `count` is always 1 in the simplified C API
             fields.push(PointField {
                 name,
                 offset,
                 datatype,
-                count,
+                count: 1,
             });
         }
 

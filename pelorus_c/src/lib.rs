@@ -3,7 +3,6 @@
 use core::panic;
 use std::ffi::{CStr, c_char, c_void};
 
-use std::mem::transmute;
 use std::path::Path;
 use std::ptr;
 use std::slice;
@@ -132,7 +131,6 @@ pub struct pelorus_point_field {
     pub name: *const c_char,
     pub offset: u32,
     pub datatype: u8,
-    pub count: u32,
 }
 
 #[allow(non_camel_case_types)]
@@ -140,12 +138,8 @@ pub struct pelorus_point_field {
 pub struct pelorus_pointcloud2 {
     pub header_timestamp_sec: i32,
     pub header_timestamp_nanosec: u32,
-    pub header_frame_id: *const c_char,
-    pub height: u32,
     pub width: u32,
     pub fields: *const pelorus_point_field,
-    pub fields_len: usize,
-    pub is_bigendian: bool,
     pub point_step: u32,
     pub row_step: u32,
     pub data: *const u8,
@@ -154,25 +148,13 @@ pub struct pelorus_pointcloud2 {
 }
 
 #[allow(non_camel_case_types)]
-#[repr(C, align(16))]
-pub struct pelorus_point_xyzit {
+#[repr(C)]
+pub struct pelorus_point_xyzi {
     pub x: f32,
     pub y: f32,
     pub z: f32,
     pub intensity: f32, // expected 0..255 in float
-    pub timestamp: f32, // in seconds
-    /* Padding to match alignment and size of internal `PointXYZIT` (32 bytes) */
-    pub _pad: [u8; 12],
 }
-
-// Compile-time verification that the internal `PointXYZIT` in `pelorus_core`
-// has identical size and alignment to the C representation `pelorus_point_xyzit`.
-// If these assertions fail, the crate will not compile and the unsafe transmute
-// below would be rejected at compile time.
-const _: [u8; std::mem::size_of::<pelorus_core::PointXYZIT>()] =
-    [0u8; std::mem::size_of::<pelorus_point_xyzit>()];
-const _: [u8; std::mem::align_of::<pelorus_core::PointXYZIT>()] =
-    [0u8; std::mem::align_of::<pelorus_point_xyzit>()];
 
 #[allow(non_camel_case_types)]
 #[repr(C)]
@@ -197,7 +179,7 @@ pub struct pelorus_odometry {
 
     // Registered point cloud (optional)
     // FRAME: In Lidar World frame
-    pub points: *mut pelorus_point_xyzit,
+    pub points: *mut pelorus_point_xyzi,
     pub num_points: usize,
 }
 
@@ -250,7 +232,7 @@ fn dispatch_output(
         unsafe {
             if !c_odom.points.is_null() {
                 let points = Vec::from_raw_parts(
-                    c_odom.points as *mut pelorus_point_xyzit,
+                    c_odom.points as *mut pelorus_point_xyzi,
                     c_odom.num_points,
                     c_odom.num_points,
                 );
@@ -318,10 +300,16 @@ fn convert_to_c_odometry(
     let (pvec, pcount) = if cloud.is_empty() {
         (ptr::null_mut(), 0)
     } else {
-        // Safety: compile-time assertions above ensure that `pelorus_core::PointXYZIT`
-        // and `pelorus_point_xyzit` have identical size, alignment and field layout,
-        // therefore reinterpreting the Vec's buffer is sound and avoids a per-element copy.
-        let mut points_vec: Vec<pelorus_point_xyzit> = unsafe { transmute(cloud) };
+        // Convert to output point format (drop per-point timestamp)
+        let mut points_vec: Vec<pelorus_point_xyzi> = Vec::with_capacity(cloud.len());
+        for p in cloud.iter() {
+            points_vec.push(pelorus_point_xyzi {
+                x: p.x,
+                y: p.y,
+                z: p.z,
+                intensity: p.intensity,
+            });
+        }
         let out = (points_vec.as_mut_ptr(), points_vec.len());
         std::mem::forget(points_vec);
         out
@@ -657,7 +645,7 @@ pub unsafe extern "C" fn pelorus_add_odom(
 /// - `cloud` must be a valid pointer to a pelorus_pointcloud2
 ///
 /// # Returns
-/// 0 on success, -1 on error
+/// 0 on error, >0 scan ID on success
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn pelorus_add_pointcloud(
     handle: *mut PelorusHandle,
@@ -671,37 +659,32 @@ pub unsafe extern "C" fn pelorus_add_pointcloud(
         let handle = &mut *handle;
         let cloud_data = &*cloud;
 
-        let frame_id = if cloud_data.header_frame_id.is_null() {
-            String::new()
-        } else {
-            match CStr::from_ptr(cloud_data.header_frame_id).to_str() {
-                Ok(s) => s.to_string(),
-                Err(_) => return 0,
-            }
-        };
+        // Header frame id removed from public C API: always use empty string.
+        let frame_id = String::new();
 
-        let fields_slice = slice::from_raw_parts(cloud_data.fields, cloud_data.fields_len);
-        let fields: Vec<_> = fields_slice
-            .iter()
-            .map(|f| {
-                let name = if f.name.is_null() {
-                    String::new()
-                } else {
-                    CStr::from_ptr(f.name).to_str().unwrap_or("").to_string()
-                };
-                ros2_interfaces_jazzy_serde::sensor_msgs::msg::PointField {
-                    name,
-                    offset: f.offset,
-                    datatype: f.datatype,
-                    count: f.count,
-                }
-            })
-            .collect();
+        // Expect a single non-null field descriptor (name must not be NULL)
+        if cloud_data.fields.is_null() {
+            return 0;
+        }
+        let f = &*cloud_data.fields;
+        if f.name.is_null() {
+            return 0;
+        }
+        let name = match CStr::from_ptr(f.name).to_str() {
+            Ok(s) => s.to_string(),
+            Err(_) => return 0,
+        };
+        let fields = vec![ros2_interfaces_jazzy_serde::sensor_msgs::msg::PointField {
+            name,
+            offset: f.offset,
+            datatype: f.datatype,
+            count: 1,
+        }];
 
         // Copy data buffer
         let data = slice::from_raw_parts(cloud_data.data, cloud_data.data_len).to_vec();
 
-        // Create PointCloud2 message
+        // Create PointCloud2 message (simplified: unstructured single-row cloud, little-endian)
         let cloud_msg = PointCloud2 {
             header: ros2_interfaces_jazzy_serde::std_msgs::msg::Header {
                 stamp: ros2_interfaces_jazzy_serde::builtin_interfaces::msg::Time {
@@ -710,10 +693,10 @@ pub unsafe extern "C" fn pelorus_add_pointcloud(
                 },
                 frame_id,
             },
-            height: cloud_data.height,
+            height: 1,
             width: cloud_data.width,
             fields,
-            is_bigendian: cloud_data.is_bigendian,
+            is_bigendian: false, // little-endian assumed
             point_step: cloud_data.point_step,
             row_step: cloud_data.row_step,
             data,
