@@ -14,13 +14,34 @@ pub struct RobosensePoint {
     pub y: f32,
     pub z: f32,
     pub intensity: u8,
-    pub ring: u16,
     pub timestamp: f64,
 }
 
-impl PointXYZITimestamp<6> for RobosensePoint {
+impl PointXYZITimestamp<5> for RobosensePoint {
     fn intensity(&self) -> f32 {
         self.intensity as f32 / 255.0 // TODO right?
+    }
+
+    fn timestamp(&self) -> f64 {
+        self.timestamp * 1.0
+    }
+
+    fn xyz(&self) -> nalgebra::Point3<f32> {
+        nalgebra::Point3::new(self.x, self.y, self.z)
+    }
+}
+
+#[derive(Debug, Clone, Default, PointConvertible, Copy)]
+pub struct RobosensePointNoIntensity {
+    pub x: f32,
+    pub y: f32,
+    pub z: f32,
+    pub timestamp: f64,
+}
+
+impl PointXYZITimestamp<4> for RobosensePointNoIntensity {
+    fn intensity(&self) -> f32 {
+        0.0
     }
 
     fn timestamp(&self) -> f64 {
@@ -38,17 +59,38 @@ pub struct VelodynePoint {
     pub y: f32,
     pub z: f32,
     pub intensity: f32,
-    pub ring: u16,
     pub time: f32,
 }
 
-impl PointXYZITimestamp<6> for VelodynePoint {
+impl PointXYZITimestamp<5> for VelodynePoint {
     fn intensity(&self) -> f32 {
         self.intensity / 255.0
     }
 
     fn timestamp(&self) -> f64 {
-        self.time as f64 * 1.0 // TODO wtf?
+        self.time as f64
+    }
+
+    fn xyz(&self) -> nalgebra::Point3<f32> {
+        nalgebra::Point3::new(self.x, self.y, self.z)
+    }
+}
+
+#[derive(Debug, Clone, Default, PointConvertible, Copy)]
+pub struct VelodynePointNoIntensity {
+    pub x: f32,
+    pub y: f32,
+    pub z: f32,
+    pub time: f32,
+}
+
+impl PointXYZITimestamp<4> for VelodynePointNoIntensity {
+    fn intensity(&self) -> f32 {
+        1.0
+    }
+
+    fn timestamp(&self) -> f64 {
+        self.time as f64
     }
 
     fn xyz(&self) -> nalgebra::Point3<f32> {
@@ -68,6 +110,28 @@ pub struct LivoxPoint {
 impl PointXYZITimestamp<5> for LivoxPoint {
     fn intensity(&self) -> f32 {
         self.intensity as f32 / 255.0
+    }
+
+    fn timestamp(&self) -> f64 {
+        self.t as f64 * 1e-9
+    }
+
+    fn xyz(&self) -> nalgebra::Point3<f32> {
+        nalgebra::Point3::new(self.x, self.y, self.z)
+    }
+}
+
+#[derive(Debug, Clone, Default, PointConvertible, Copy)]
+pub struct LivoxPointNoIntensity {
+    pub x: f32,
+    pub y: f32,
+    pub z: f32,
+    pub t: u32,
+}
+
+impl PointXYZITimestamp<4> for LivoxPointNoIntensity {
+    fn intensity(&self) -> f32 {
+        1.0
     }
 
     fn timestamp(&self) -> f64 {
@@ -103,18 +167,61 @@ impl PointXYZITimestamp<5> for LivoxMid360Point {
 }
 
 #[derive(Debug, Clone, Default, PointConvertible, Copy)]
+pub struct LivoxMid360PointNoIntensity {
+    pub x: f32,
+    pub y: f32,
+    pub z: f32,
+    pub timestamp: f64,
+}
+
+impl PointXYZITimestamp<4> for LivoxMid360PointNoIntensity {
+    fn intensity(&self) -> f32 {
+        1.0
+    }
+
+    fn timestamp(&self) -> f64 {
+        self.timestamp * 1e-9
+    }
+
+    fn xyz(&self) -> nalgebra::Point3<f32> {
+        nalgebra::Point3::new(self.x, self.y, self.z)
+    }
+}
+
+#[derive(Debug, Clone, Default, PointConvertible, Copy)]
 pub struct OusterPoint {
     pub x: f32,
     pub y: f32,
     pub z: f32,
-    //pub intensity: f32,
+    pub intensity: f32,
     pub t: u32,
 }
 
-impl PointXYZITimestamp<4> for OusterPoint {
+impl PointXYZITimestamp<5> for OusterPoint {
     fn intensity(&self) -> f32 {
-        //self.intensity
-        0.0
+        self.intensity / 255.0
+    }
+
+    fn timestamp(&self) -> f64 {
+        self.t as f64 * 1e-9
+    }
+
+    fn xyz(&self) -> nalgebra::Point3<f32> {
+        nalgebra::Point3::new(self.x, self.y, self.z)
+    }
+}
+
+#[derive(Debug, Clone, Default, PointConvertible, Copy)]
+pub struct OusterPointNoIntensity {
+    pub x: f32,
+    pub y: f32,
+    pub z: f32,
+    pub t: u32,
+}
+
+impl PointXYZITimestamp<4> for OusterPointNoIntensity {
+    fn intensity(&self) -> f32 {
+        1.0
     }
 
     fn timestamp(&self) -> f64 {

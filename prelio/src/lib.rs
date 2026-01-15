@@ -8,8 +8,11 @@ use nalgebra::*;
 use pelorus_core::log_debouncer::{set_default_debounce_secs, should_log_once_default};
 use pelorus_core::{
     ImuCalibrationParameters, ImuMsg, ImuPosePrediction, ImuPredictor, ImuPredictorUndistort,
-    LidarVendor, LifisParameters, MadgwickSetting, OdomMsg, PointXYZIT, PointXYZITimestamp,
-    PrelioProcessedCloud, Twist, time_msg_from_secs, timing::RuntimeEvaluator,
+    LidarVendor, LifisParameters, LivoxMid360Point, LivoxMid360PointNoIntensity, LivoxPoint,
+    LivoxPointNoIntensity, MadgwickSetting, OdomMsg, OusterPoint, OusterPointNoIntensity,
+    PointXYZIT, PointXYZITimestamp, PrelioProcessedCloud, RobosensePoint,
+    RobosensePointNoIntensity, Twist, VelodynePoint, VelodynePointNoIntensity, time_msg_from_secs,
+    timing::RuntimeEvaluator,
 };
 #[cfg(feature = "cuda")]
 use pelorus_cuda::CudaBuffer;
@@ -203,6 +206,44 @@ fn find_medoid_in_slice(points: &[(i32, PointXYZIT)]) -> PointXYZIT {
         .unwrap()
 }
 
+fn filter_downsample_with_fallback<
+    const N: usize,
+    const N_FALLBACK: usize,
+    P: PointXYZITimestamp<N>,
+    PFallback: PointXYZITimestamp<N_FALLBACK>,
+>(
+    cloud: PointCloud2Msg,
+    lifis_params: &LifisParameters,
+) -> Result<
+    Option<(
+        Vec<PointXYZIT>,
+        Option<Vec<PointXYZIT>>,
+        f64,
+        f64,
+        HeaderMsg,
+    )>,
+> {
+    let result = filter_downsample::<N, P>(cloud.clone(), lifis_params);
+
+    match result {
+        Ok(data) => Ok(data),
+        Err(e) => {
+            let error_str = format!("{:?}", e);
+            if error_str.contains("FieldsNotFound")
+                && (error_str.contains("intensity") || error_str.contains("intensity"))
+            {
+                warn!(
+                    "Failed to parse with intensity field, trying without intensity: {}",
+                    e
+                );
+                filter_downsample::<N_FALLBACK, PFallback>(cloud, lifis_params)
+            } else {
+                Err(e)
+            }
+        }
+    }
+}
+
 fn filter_downsample<const N: usize, P: PointXYZITimestamp<N>>(
     cloud: PointCloud2Msg,
     lifis_params: &LifisParameters,
@@ -369,7 +410,7 @@ fn filter_downsample<const N: usize, P: PointXYZITimestamp<N>>(
 
     #[cfg(feature = "parallel")]
     {
-        let iter = cloud.try_into_par_iter().unwrap().map(map_to_non_trait);
+        let iter = cloud.try_into_par_iter()?.map(map_to_non_trait);
 
         if let Some(bypass) = raw_out.as_mut() {
             bypass.par_extend(iter.filter_map(filter_map_non_down));
@@ -399,7 +440,7 @@ fn filter_downsample<const N: usize, P: PointXYZITimestamp<N>>(
 
     #[cfg(not(feature = "parallel"))]
     {
-        let iter = cloud.try_into_iter().unwrap().map(map_to_non_trait);
+        let iter = cloud.try_into_iter()?.map(map_to_non_trait);
 
         if let Some(bypass) = raw_out.as_mut() {
             bypass.extend(iter.filter_map(filter_map_non_down));
@@ -699,6 +740,7 @@ impl Prelio {
 
         // preprocessing worker
         let params_clone = params.clone();
+        let vendor = lidar_vendor;
         thread::spawn(move || {
             let mut eval = RuntimeEvaluator::new();
             while let Ok(labeled) = preproc_rx.recv() {
@@ -708,7 +750,51 @@ impl Prelio {
                     "filter"
                 };
                 eval.start(eval_name).unwrap();
-                match filter_downsample::<N, P>(labeled.cloud, &params_clone) {
+
+                let result = match vendor {
+                    Some(LidarVendor::Ouster) => {
+                        filter_downsample_with_fallback::<5, 4, OusterPoint, OusterPointNoIntensity>(
+                            labeled.cloud,
+                            &params_clone,
+                        )
+                    }
+                    Some(LidarVendor::Velodyne) => {
+                        filter_downsample_with_fallback::<
+                            5,
+                            4,
+                            VelodynePoint,
+                            VelodynePointNoIntensity,
+                        >(labeled.cloud, &params_clone)
+                    }
+                    Some(LidarVendor::Livox) => {
+                        filter_downsample_with_fallback::<5, 4, LivoxPoint, LivoxPointNoIntensity>(
+                            labeled.cloud,
+                            &params_clone,
+                        )
+                    }
+                    Some(LidarVendor::LivoxMid360) => {
+                        filter_downsample_with_fallback::<
+                            5,
+                            4,
+                            LivoxMid360Point,
+                            LivoxMid360PointNoIntensity,
+                        >(labeled.cloud, &params_clone)
+                    }
+                    Some(LidarVendor::Robosense) => {
+                        filter_downsample_with_fallback::<
+                            5,
+                            4,
+                            RobosensePoint,
+                            RobosensePointNoIntensity,
+                        >(labeled.cloud, &params_clone)
+                    }
+                    None => {
+                        // Fallback to generic processing with the compile-time type parameters
+                        filter_downsample::<N, P>(labeled.cloud, &params_clone)
+                    }
+                };
+
+                match result {
                     Ok(Some(cloud_meta)) => {
                         eval.stop(eval_name).unwrap();
                         if let Err(e) =
