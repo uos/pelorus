@@ -3057,96 +3057,6 @@ checksum = "e629b9b98ef3dd8afe6ca2bd0f89306cec16d43d907889945bc5d6687f2f13c7"
 
 [[package]]
 name = "glam"
-version = "0.14.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "333928d5eb103c5d4050533cec0384302db6be8ef7d3cebd30ec6a35350353da"
-
-[[package]]
-name = "glam"
-version = "0.15.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3abb554f8ee44336b72d522e0a7fe86a29e09f839a36022fa869a7dfe941a54b"
-
-[[package]]
-name = "glam"
-version = "0.16.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4126c0479ccf7e8664c36a2d719f5f2c140fbb4f9090008098d2c291fa5b3f16"
-
-[[package]]
-name = "glam"
-version = "0.17.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e01732b97afd8508eee3333a541b9f7610f454bb818669e66e90f5f57c93a776"
-
-[[package]]
-name = "glam"
-version = "0.18.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "525a3e490ba77b8e326fb67d4b44b4bd2f920f44d4cc73ccec50adc68e3bee34"
-
-[[package]]
-name = "glam"
-version = "0.19.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2b8509e6791516e81c1a630d0bd7fbac36d2fa8712a9da8662e716b52d5051ca"
-
-[[package]]
-name = "glam"
-version = "0.20.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f43e957e744be03f5801a55472f593d43fabdebf25a4585db250f04d86b1675f"
-
-[[package]]
-name = "glam"
-version = "0.21.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "518faa5064866338b013ff9b2350dc318e14cc4fcd6cb8206d7e7c9886c98815"
-
-[[package]]
-name = "glam"
-version = "0.22.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "12f597d56c1bd55a811a1be189459e8fad2bbc272616375602443bdfb37fa774"
-
-[[package]]
-name = "glam"
-version = "0.23.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8e4afd9ad95555081e109fe1d21f2a30c691b5f0919c67dfa690a2e1eb6bd51c"
-
-[[package]]
-name = "glam"
-version = "0.24.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b5418c17512bdf42730f9032c74e1ae39afc408745ebb2acf72fbc4691c17945"
-
-[[package]]
-name = "glam"
-version = "0.25.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "151665d9be52f9bb40fc7966565d39666f2d1e69233571b71b87791c7e0528b3"
-
-[[package]]
-name = "glam"
-version = "0.27.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9e05e7e6723e3455f4818c7b26e855439f7546cf617ef669d1adedb8669e5cb9"
-
-[[package]]
-name = "glam"
-version = "0.28.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "779ae4bf7e8421cf91c0b3b64e7e8b40b862fba4d393f59150042de7c4965a94"
-
-[[package]]
-name = "glam"
-version = "0.29.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8babf46d4c1c9d92deac9f7be466f76dfc4482b6452fc5024b5e8daf6ffeb3ee"
-
-[[package]]
-name = "glam"
 version = "0.30.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "bd47b05dddf0005d850e5644cae7f2b14ac3df487979dbfff3b56f20b1a6ae46"
@@ -4143,7 +4053,7 @@ version = "0.30.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4c96b82556b0d4aa25cd4771b64ef9bde7c120afb588a083fcb242bf01e4a09b"
 dependencies = [
- "glam 0.30.9",
+ "glam",
  "num-traits",
 ]
 
@@ -4370,29 +4280,28 @@ checksum = "96a1fe2275b68991faded2c80aa4a33dba398b77d276038b8f50701a22e55918"
 
 [[package]]
 name = "mt_net"
-version = "0.3.0"
+version = "0.4.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "01c7b65e881dd82c9b86c78f2a1b12239c3bc1ec3d337819d740bde0c3e16238"
+checksum = "9c8502c1832f774da31b9b6eb65b74f0ebe19e3b66f40c95acb2e073cca7e3e2"
 dependencies = [
  "anyhow",
  "rkyv",
  "ros2-interfaces-jazzy-rkyv",
- "ros_pointcloud2 0.6.0",
  "serde",
 ]
 
 [[package]]
 name = "mt_rat"
-version = "0.3.0"
+version = "0.4.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b45ec7b3270466e8efcf10b988470e9ef803b746558e07b4cce0ba6397b06a6b"
+checksum = "2d784d9c214b968f38035f9b97470c44e8080e1261bc913b80fc8d0f62bd8591"
 dependencies = [
  "anyhow",
  "async-trait",
  "env_logger",
  "log",
  "mt_sea",
- "nalgebra 0.34.1",
+ "nalgebra 0.33.2",
  "rand 0.8.5",
  "rkyv",
  "tokio",
@@ -4400,9 +4309,9 @@ dependencies = [
 
 [[package]]
 name = "mt_sea"
-version = "0.3.0"
+version = "0.4.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b76b212025be218bb76c261928186f370fe96aa599de9bbdf74ae0eb1598b6cb"
+checksum = "c8fde3c9a7cbb00f84480d140da53e5c282e5005a467775df78e087bfa18c33b"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -4410,11 +4319,10 @@ dependencies = [
  "env_logger",
  "log",
  "mt_net",
- "nalgebra 0.34.1",
+ "nalgebra 0.33.2",
  "pnet",
  "rand 0.8.5",
  "rkyv",
- "ros_pointcloud2 0.6.0",
  "socket2 0.5.10",
  "tokio",
 ]
@@ -4462,7 +4370,7 @@ dependencies = [
  "approx",
  "bytemuck",
  "matrixmultiply",
- "nalgebra-macros 0.2.2",
+ "nalgebra-macros",
  "num-complex 0.4.6",
  "num-rational 0.4.2",
  "num-traits",
@@ -4478,28 +4386,9 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c4d5b3eff5cd580f93da45e64715e8c20a3996342f1e466599cf7a267a0c2f5f"
 dependencies = [
  "approx",
- "glam 0.14.0",
- "glam 0.15.2",
- "glam 0.16.0",
- "glam 0.17.3",
- "glam 0.18.0",
- "glam 0.19.0",
- "glam 0.20.5",
- "glam 0.21.3",
- "glam 0.22.0",
- "glam 0.23.0",
- "glam 0.24.2",
- "glam 0.25.0",
- "glam 0.27.0",
- "glam 0.28.0",
- "glam 0.29.3",
- "glam 0.30.9",
- "matrixmultiply",
- "nalgebra-macros 0.3.0",
  "num-complex 0.4.6",
  "num-rational 0.4.2",
  "num-traits",
- "serde",
  "simba 0.9.1",
  "typenum",
 ]
@@ -4509,17 +4398,6 @@ name = "nalgebra-macros"
 version = "0.2.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "254a5372af8fc138e36684761d3c0cdb758a4410e938babcff1c860ce14ddbfc"
-dependencies = [
- "proc-macro2",
- "quote",
- "syn 2.0.111",
-]
-
-[[package]]
-name = "nalgebra-macros"
-version = "0.3.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "973e7178a678cfd059ccec50887658d482ce16b0aa9da3888ddeab5cd5eb4889"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -5088,7 +4966,7 @@ dependencies = [
  "ros2-client",
  "ros2-interfaces-jazzy-rkyv",
  "ros2-interfaces-jazzy-serde",
- "ros_pointcloud2 1.0.0-rc.2",
+ "ros_pointcloud2",
  "rustc-hash",
  "sophus_lie",
  "tokio",
@@ -5106,7 +4984,7 @@ dependencies = [
  "prelio",
  "ratslang",
  "ros2-interfaces-jazzy-serde",
- "ros_pointcloud2 1.0.0-rc.2",
+ "ros_pointcloud2",
  "spole",
 ]
 
@@ -5122,7 +5000,7 @@ dependencies = [
  "once_cell",
  "r2r",
  "ratslang",
- "ros_pointcloud2 1.0.0-rc.2",
+ "ros_pointcloud2",
  "serde",
  "uom",
 ]
@@ -5136,7 +5014,7 @@ dependencies = [
  "nalgebra 0.33.2",
  "pelorus_core",
  "rayon",
- "ros_pointcloud2 1.0.0-rc.2",
+ "ros_pointcloud2",
  "walkdir",
 ]
 
@@ -5155,7 +5033,7 @@ dependencies = [
  "pyo3",
  "ratslang",
  "ros2-interfaces-jazzy-serde",
- "ros_pointcloud2 1.0.0-rc.2",
+ "ros_pointcloud2",
  "spole",
 ]
 
@@ -5173,7 +5051,7 @@ dependencies = [
  "pelorus_cuda",
  "prelio",
  "rayon",
- "ros_pointcloud2 1.0.0-rc.2",
+ "ros_pointcloud2",
  "serde",
  "sophus_lie",
  "spole",
@@ -5549,7 +5427,7 @@ dependencies = [
  "pelorus_cuda",
  "rand 0.9.2",
  "rayon",
- "ros_pointcloud2 1.0.0-rc.2",
+ "ros_pointcloud2",
  "sophus_lie",
 ]
 
@@ -5570,7 +5448,7 @@ dependencies = [
  "ros2-client",
  "ros2-interfaces-jazzy-rkyv",
  "ros2-interfaces-jazzy-serde",
- "ros_pointcloud2 1.0.0-rc.2",
+ "ros_pointcloud2",
  "thiserror 2.0.17",
  "tokio",
 ]
@@ -6056,9 +5934,9 @@ dependencies = [
 
 [[package]]
 name = "ratpub"
-version = "0.3.0"
+version = "0.4.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8bbd338d02aee02f62e29a98d121a16349863d9ccc7dcd0f688993bb30d9350e"
+checksum = "3453d86fcc212b6f92e9d33dd0e302daf5104ab18c5dc61045fb2b33657ede02"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -6066,7 +5944,7 @@ dependencies = [
  "log",
  "mt_net",
  "mt_sea",
- "nalgebra 0.34.1",
+ "nalgebra 0.33.2",
  "rkyv",
  "ros2-interfaces-jazzy-rkyv",
  "tokio",
@@ -6289,7 +6167,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "fda66698abd36305b9b2720d1ba830b2387bf01fbe8a71c387d8e603c8ad751e"
 dependencies = [
  "arrow",
- "glam 0.30.9",
+ "glam",
  "half",
  "smallvec",
 ]
@@ -6774,7 +6652,7 @@ dependencies = [
  "bytemuck",
  "document-features",
  "emath",
- "glam 0.30.9",
+ "glam",
  "half",
  "indexmap 2.12.1",
  "infer",
@@ -7187,17 +7065,6 @@ dependencies = [
  "ros2-client",
  "serde",
  "serde_with",
-]
-
-[[package]]
-name = "ros_pointcloud2"
-version = "0.6.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "47d4b4f4535d869b09a91ddc6eeacc16296ae8f5ddf1fb2ccf5c4b8b0f3ec64f"
-dependencies = [
- "nalgebra 0.34.1",
- "ros2-interfaces-jazzy-serde",
- "serde",
 ]
 
 [[package]]
@@ -7869,7 +7736,7 @@ dependencies = [
  "rand_distr",
  "rand_pcg",
  "rayon",
- "ros_pointcloud2 1.0.0-rc.2",
+ "ros_pointcloud2",
  "rustc-hash",
  "serde",
 ]

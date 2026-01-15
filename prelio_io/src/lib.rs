@@ -94,7 +94,7 @@ impl State {
             imu_tf: None,
             lifis: match config.lidar_vendor {
                 LidarVendor::Velodyne => {
-                    Arc::new(Mutex::new(prelio::Prelio::create::<6, VelodynePoint>(
+                    Arc::new(Mutex::new(prelio::Prelio::create::<5, VelodynePoint>(
                         config.imu.gravity,
                         config.imu.madgwick_setting,
                         &config.imu.calibration,
@@ -130,7 +130,7 @@ impl State {
                     )?))
                 }
                 LidarVendor::Robosense => {
-                    Arc::new(Mutex::new(prelio::Prelio::create::<6, RobosensePoint>(
+                    Arc::new(Mutex::new(prelio::Prelio::create::<5, RobosensePoint>(
                         config.imu.gravity,
                         config.imu.madgwick_setting,
                         &config.imu.calibration,
@@ -142,7 +142,7 @@ impl State {
                     )?))
                 }
                 LidarVendor::Ouster => {
-                    Arc::new(Mutex::new(prelio::Prelio::create::<4, OusterPoint>(
+                    Arc::new(Mutex::new(prelio::Prelio::create::<5, OusterPoint>(
                         config.imu.gravity,
                         config.imu.madgwick_setting,
                         &config.imu.calibration,

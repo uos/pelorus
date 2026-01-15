@@ -32,8 +32,8 @@ ros_pointcloud2 = { version = "1.0.0-rc.2", features = [
   "derive",
 ] }
 ratslang = "0.2"
-ratpub = "0.3"
-mt_rat = "0.3"
+ratpub = "0.4.2"
+mt_rat = "0.4.2"
 imu-calib = "0.1"
 
 uom = { version = "0.37.0", default-features = false, features = [

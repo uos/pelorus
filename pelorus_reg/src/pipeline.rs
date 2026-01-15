@@ -203,7 +203,7 @@ impl Pipeline {
         let init_guess = Some(self.build_init_guess());
 
         let mut prelio = match params.lidar_vendor {
-            LidarVendor::Ouster => Prelio::create::<4, OusterPoint>(
+            LidarVendor::Ouster => Prelio::create::<5, OusterPoint>(
                 gravity,
                 madgwick_filter,
                 &imu_calib,
@@ -213,7 +213,7 @@ impl Pipeline {
                 Some(params.lidar_vendor),
                 ready_for_next,
             ),
-            LidarVendor::Velodyne => Prelio::create::<6, VelodynePoint>(
+            LidarVendor::Velodyne => Prelio::create::<5, VelodynePoint>(
                 gravity,
                 madgwick_filter,
                 &imu_calib,
@@ -233,7 +233,7 @@ impl Pipeline {
                 Some(params.lidar_vendor),
                 ready_for_next,
             ),
-            LidarVendor::Robosense => Prelio::create::<6, RobosensePoint>(
+            LidarVendor::Robosense => Prelio::create::<5, RobosensePoint>(
                 gravity,
                 madgwick_filter,
                 &imu_calib,
