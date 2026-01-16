@@ -223,21 +223,21 @@ fn filter_downsample_with_fallback<
         HeaderMsg,
     )>,
 > {
-    let result = filter_downsample::<N, P>(cloud.clone(), lifis_params);
+    let result = filter_downsample::<N, P>(&cloud, lifis_params);
 
     match result {
         Ok(data) => Ok(data),
         Err(e) => {
             let error_str = format!("{:?}", e);
-            if error_str.contains("FieldsNotFound")
-                && (error_str.contains("intensity") || error_str.contains("intensity"))
-            {
+            if error_str.contains("FieldsNotFound") && (error_str.contains("intensity")) {
                 warn!(
                     "Failed to parse with intensity field, trying without intensity: {}",
                     e
                 );
-                filter_downsample::<N_FALLBACK, PFallback>(cloud, lifis_params)
+                dbg!("using fallback");
+                filter_downsample::<N_FALLBACK, PFallback>(&cloud, lifis_params)
             } else {
+                dbg!("failed");
                 Err(e)
             }
         }
@@ -245,7 +245,7 @@ fn filter_downsample_with_fallback<
 }
 
 fn filter_downsample<const N: usize, P: PointXYZITimestamp<N>>(
-    cloud: PointCloud2Msg,
+    cloud: &PointCloud2Msg,
     lifis_params: &LifisParameters,
 ) -> Result<
     Option<(
@@ -398,44 +398,71 @@ fn filter_downsample<const N: usize, P: PointXYZITimestamp<N>>(
     let mut downsampled: Vec<PointXYZIT> = Vec::with_capacity(cloud.dimensions.len());
 
     #[allow(unused_mut)]
-    let mut raw_out: Option<Vec<PointXYZIT>> = {
+    #[cfg(feature = "parallel")]
+    let mut raw_out = {
         if bypass_output_downsample {
-            Some(Vec::with_capacity(cloud.dimensions.len()))
+            Some((Vec::with_capacity(cloud.dimensions.len()), cloud.clone()))
         } else {
             None
         }
     };
 
-    // --- Processing ---
+    #[allow(unused_mut)]
+    #[cfg(not(feature = "parallel"))]
+    {
+        let mut raw_out = {
+            if bypass_output_downsample {
+                Some(Vec::with_capacity(cloud.dimensions.len()))
+            } else {
+                None
+            }
+        };
+    }
 
+    // --- Processing ---
     #[cfg(feature = "parallel")]
     {
         let iter = cloud.try_into_par_iter()?.map(map_to_non_trait);
 
-        if let Some(bypass) = raw_out.as_mut() {
-            bypass.par_extend(iter.filter_map(filter_map_non_down));
-            bypass.par_sort_unstable_by(cmp);
+        if let Some((bypass, bypass_iter)) = raw_out.as_mut() {
+            let bypass_iter = bypass_iter.try_into_par_iter()?.map(map_to_non_trait);
+            rayon::scope(|scope| {
+                // spawn bypass
+                scope.spawn(|_| {
+                    bypass.par_extend(bypass_iter.filter_map(filter_map_non_down));
+                    bypass.par_sort_unstable_by(cmp);
+                });
 
-            // Now downsample the filtered cloud
+                // spawn normal downsampling
+                scope.spawn(|_| {
+                    keyed_points.par_extend(iter.filter_map(filter_map_down));
+                    keyed_points.par_sort_unstable_by_key(|(key, _)| *key); // TODO takes a long time
 
-            // TODO I think we should somehow split the iterators here so we can filter and sort bypass parallel to downsampling the real
-            // processing cloud but I cloud not get it to work.
-            keyed_points.par_extend(bypass.par_iter().filter_map(map_down_ref));
+                    // Non-par because it is measured to be faster on a single core
+                    downsampled.extend(
+                        keyed_points
+                            .chunk_by(|a, b| a.0 == b.0)
+                            .map(find_medoid_in_slice),
+                    );
+
+                    // Sort again by timestamps because we could have merged multiple timestamps
+                    downsampled.par_sort_unstable_by(cmp);
+                });
+            });
         } else {
             keyed_points.par_extend(iter.filter_map(filter_map_down));
+            keyed_points.par_sort_unstable_by_key(|(key, _)| *key); // TODO takes a long time
+
+            // Non-par because it is measured to be faster on a single core
+            downsampled.extend(
+                keyed_points
+                    .chunk_by(|a, b| a.0 == b.0)
+                    .map(find_medoid_in_slice),
+            );
+
+            // Sort again by timestamps because we could have merged multiple timestamps
+            downsampled.par_sort_unstable_by(cmp);
         }
-
-        keyed_points.par_sort_unstable_by_key(|(key, _)| *key); // TODO takes a long time
-
-        // Non-par because it is measured to be faster on a single core
-        downsampled.extend(
-            keyed_points
-                .chunk_by(|a, b| a.0 == b.0)
-                .map(find_medoid_in_slice),
-        );
-
-        // Sort again by timestamps because we could have merged multiple timestamps
-        downsampled.par_sort_unstable_by(cmp);
     }
 
     #[cfg(not(feature = "parallel"))]
@@ -467,6 +494,9 @@ fn filter_downsample<const N: usize, P: PointXYZITimestamp<N>>(
         (Some(first), Some(last)) if (last.timestamp > 0.0) => (first.timestamp, last.timestamp),
         _ => return Ok(None),
     };
+
+    #[cfg(feature = "parallel")]
+    let raw_out = raw_out.map(|r| r.0);
 
     // TODO back to keeping the timestamp f64, only testing right now because of artefacts
     Ok(Some((
@@ -744,12 +774,7 @@ impl Prelio {
         thread::spawn(move || {
             let mut eval = RuntimeEvaluator::new();
             while let Ok(labeled) = preproc_rx.recv() {
-                let eval_name = if cfg!(feature = "downsample") {
-                    "filter_downsample"
-                } else {
-                    "filter"
-                };
-                eval.start(eval_name).unwrap();
+                eval.start("filter_downsample").unwrap();
 
                 let result = match vendor {
                     Some(LidarVendor::Ouster) => {
@@ -790,13 +815,13 @@ impl Prelio {
                     }
                     None => {
                         // Fallback to generic processing with the compile-time type parameters
-                        filter_downsample::<N, P>(labeled.cloud, &params_clone)
+                        filter_downsample::<N, P>(&labeled.cloud, &params_clone)
                     }
                 };
 
                 match result {
                     Ok(Some(cloud_meta)) => {
-                        eval.stop(eval_name).unwrap();
+                        eval.stop("filter_downsample").unwrap();
                         if let Err(e) =
                             filtered_cloud_tx.send((cloud_meta, labeled.scan_id, eval.clone()))
                         {
@@ -804,11 +829,11 @@ impl Prelio {
                         }
                     }
                     Ok(None) => {
-                        eval.stop(eval_name).unwrap();
+                        eval.stop("filter_downsample").unwrap();
                         info!("Pointcloud was filtered out");
                     }
                     Err(e) => {
-                        eval.stop(eval_name).unwrap();
+                        eval.stop("filter_downsample").unwrap();
                         error!("Error processing pointcloud: {}", e);
                     }
                 }
