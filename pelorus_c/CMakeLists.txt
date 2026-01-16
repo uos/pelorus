@@ -38,9 +38,6 @@ set(RUST_STATIC_LIB "${RUST_TARGET_DIR}/${CMAKE_STATIC_LIBRARY_PREFIX}pelorus${C
 
 # Build feature list for Cargo
 set(CARGO_FEATURES "")
-if(PELORUS_FEATURE_DOWNSAMPLE)
-    list(APPEND CARGO_FEATURES "downsample")
-endif()
 if(PELORUS_FEATURE_PARALLEL)
     list(APPEND CARGO_FEATURES "parallel")
 endif()

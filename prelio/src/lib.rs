@@ -149,7 +149,6 @@ impl<T> LocatedBufferView<T> {
     }
 }
 
-#[cfg(feature = "downsample")]
 fn hash(point: &Point3<f32>, voxel_size: f32) -> i32 {
     const PRIME_1: i32 = 73_856_093;
     const PRIME_2: i32 = 19_349_663;
@@ -171,7 +170,6 @@ fn hash(point: &Point3<f32>, voxel_size: f32) -> i32 {
 }
 
 /// Helper function to find the medoid within a slice of points.
-#[cfg(feature = "downsample")]
 fn find_medoid_in_slice(points: &[(i32, PointXYZIT)]) -> PointXYZIT {
     if points.len() == 1 {
         return points[0].1;
@@ -258,13 +256,9 @@ fn filter_downsample<const N: usize, P: PointXYZITimestamp<N>>(
 > {
     let bypass_output_downsample = lifis_params.downsample.bypass_output_downsample;
     let header = cloud.header.clone();
-    #[cfg(feature = "downsample")]
     let voxel_size = lifis_params.downsample.voxel_size;
 
-    #[cfg(feature = "downsample")]
     type PointsFiltered = (i32, PointXYZIT);
-    #[cfg(not(feature = "downsample"))]
-    type PointsFiltered = PointXYZIT;
 
     // NOTE: prepared start for when other lidar vendors get ideas of doing absolute timestamps...
     let (_, end_t) = match lifis_params.lidar_vendor {
@@ -355,26 +349,16 @@ fn filter_downsample<const N: usize, P: PointXYZITimestamp<N>>(
     };
 
     let map_down_ref = |point: &PointXYZIT| {
-        #[cfg(feature = "downsample")]
-        {
-            let key = hash(
-                &nalgebra::Point3::new(point.x, point.y, point.z),
-                voxel_size,
-            );
+        let key = hash(
+            &nalgebra::Point3::new(point.x, point.y, point.z),
+            voxel_size,
+        );
 
-            let mut out = point.clone();
+        let mut out = point.clone();
 
-            out.intensity *= 255.0;
+        out.intensity *= 255.0;
 
-            return Some((key, out));
-        }
-        #[cfg(not(feature = "downsample"))]
-        {
-            let mut out = point.clone();
-            out.intensity *= 255.0;
-
-            return Some((key, out));
-        }
+        return Some((key, out));
     };
 
     let map_down = |point: PointXYZIT| map_down_ref(&point);
