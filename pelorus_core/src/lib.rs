@@ -472,7 +472,7 @@ pub struct MeasureGroup {
 }
 
 #[derive(Debug, Clone, Default, Copy, PointConvertible, PartialEq, PartialOrd)]
-#[repr(align(16))]
+#[repr(C)]
 pub struct PointXYZIT {
     pub x: f32,
     pub y: f32,
@@ -481,7 +481,7 @@ pub struct PointXYZIT {
     pub timestamp: f32,
 }
 
-const _: [u8; 32] = [0u8; std::mem::size_of::<PointXYZIT>()];
+const _: [u8; 20] = [0u8; std::mem::size_of::<PointXYZIT>()];
 
 impl PointXYZIT {
     pub fn from_p(point: Point3<f32>, intensity: f32, timestamp: f32) -> Self {

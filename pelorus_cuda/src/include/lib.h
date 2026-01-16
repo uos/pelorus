@@ -16,9 +16,6 @@
 #error "Provide MY_ALIGN"
 #endif
 
-// Use extern "C" to prevent C++ name mangling, which ensures
-// that the function name in the compiled library matches what
-// bindgen and the linker expect.
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -26,7 +23,7 @@ extern "C" {
 // ------------------- Types -------------------
 typedef enum { Center, Nearby6, Nearby18, Nearby26 } NearbyType;
 
-typedef struct MY_ALIGN(16) {
+typedef struct MY_ALIGN(4) {
   float x;
   float y;
   float z;

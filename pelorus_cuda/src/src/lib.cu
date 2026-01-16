@@ -21,7 +21,7 @@
 #include <thrust/host_vector.h>
 #include <thrust/sort.h>
 
-static_assert(sizeof(Point) % 16 == 0, "Point is not aligned properly");
+static_assert(sizeof(Point) % 4 == 0, "Point is not aligned properly");
 
 extern "C" {
 
