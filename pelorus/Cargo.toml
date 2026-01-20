@@ -7,7 +7,7 @@ keywords.workspace = true
 license.workspace = true
 repository.workspace = true
 version.workspace = true
-rust-version = "1.87"
+rust-version.workspace = true
 
 [dependencies]
 pelorus_core.workspace = true
@@ -120,3 +120,9 @@ ros2-client = [
 
 # Use rclc bindings as pub/sub system
 r2r = ["dep:r2r", "prelio_io/r2r"]
+
+[build-dependencies]
+anyhow.workspace = true
+env_logger.workspace = true
+pelorus_core = { path = "../pelorus_core" }
+ratslang.workspace = true

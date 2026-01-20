@@ -692,13 +692,13 @@ impl IVoxHashMap {
         let mut cache_and_sum_density = |grids: &[(i32, i32, i32)]| {
             for g in grids {
                 let k = Self::hash_grid(g);
-                if let Some(dist) = self.livodish.find(&k)
-                    && dist.point_count > 0
-                    && num_cached < MAX_NEIGHBORS
-                {
-                    cached_neighbors[num_cached] = Some(dist);
-                    total_density += dist.point_count;
-                    num_cached += 1;
+
+                if let Some(dist) = self.livodish.find(&k) {
+                    if dist.point_count > 0 && num_cached < MAX_NEIGHBORS {
+                        cached_neighbors[num_cached] = Some(dist);
+                        total_density += dist.point_count;
+                        num_cached += 1;
+                    }
                 }
             }
         };
@@ -1019,13 +1019,12 @@ impl IVoxHashMap {
 
         let mut cache_and_sum_density = |grids: &[(i32, i32, i32)]| {
             for g in grids {
-                if let Some(dist) = lower_res_voxel(g)
-                    && dist.point_count > 0
-                    && num_cached < MAX_NEIGHBORS
-                {
-                    cached_neighbors[num_cached] = Some(dist);
-                    total_density += dist.point_count;
-                    num_cached += 1;
+                if let Some(dist) = lower_res_voxel(g) {
+                    if dist.point_count > 0 && num_cached < MAX_NEIGHBORS {
+                        cached_neighbors[num_cached] = Some(dist);
+                        total_density += dist.point_count;
+                        num_cached += 1;
+                    }
                 }
             }
         };

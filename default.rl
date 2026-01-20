@@ -1,95 +1,147 @@
-preprocessing {
+registration {
+  map {
 
-  downsample {
-    resolution = 50cm # "downsample" feature flag needs to be enabled in crates/pelorus/Cargo.toml. 
-    bypass_output_downsample = false # Output the full undistorted cloud while using downsampled internally for processing.
+    # @minimal
+    # Feature size used for registration. NOTE: This will heavily affect your registration accuracy and runtime.
+    resolution = 50cm
+
+    # How many Voxels of the previous defined resolution to save at any time. With Cuda enabled, the capacity will be round up to the next power of 2.
+    capacity = 120000
+   
+    # Magic weighting value for handling the sensivity to new scans. The higher this value, the sensitive is it to brand new scans.
+    distribution_update_sensitivity = 10.0
   }
 
-  initial_scan_accumulate = 1 # Assume the first n scans are recorded while standing still. This fixes non-repetitive patterns because the method heavily depends on spatial resolution.
+  # Maximum IEKF correction iterations per scan.
+  max_iter = 2
+
+  # Maximum distance to any neighbor. Default is mostly ok if you do not drastically reduce the map resolution.
+  neighbors_max_range = 5m
+}
+
+preprocessing {
+  downsample {
+    # @minimal
+    # Output the full undistorted cloud on the cloud output topic.
+    bypass_output_downsample = true
+
+    # Estimated sizes of features in the incoming scan, expressed as a factor of registration.map.resolution. Expected values are between 0.0 and 1.0.
+    query_resolution_factor = 1.0
+  }
+
+  # Assume the first n scans are recorded while standing still. This fixes non-repetitive patterns because the method heavily depends on spatial resolution.
+  initial_scan_accumulate = 3
 
   filter {
-
     bounding_box {
       # The Bounding Box is built from MIN_{x, y, z} and MAX_{x, y, z}. Empty ranges mean maximum or minimum limits, so ".." is an infinitely large Bounding Box.
-      x = .. # <MIN_x>..<MAX_x>, Example 1m..3m
-      y = .. # <MIN_y>..<MAX_y>, Example 2m..
-      z = .. # <MIN_z>..<MAX_z>, Example 4cm..100m
-      invert = false # true = only accept points inside this bounding_box
+      
+      # <MIN_x>..<MAX_x>, Example 1m..3m
+      x = ..
+
+      # <MIN_y>..<MAX_y>, Example 2m..
+      y = ..
+      
+      # <MIN_z>..<MAX_z>, Example 4cm..100m
+      z = ..
+
+      # if true, we only accept points inside this bounding_box
+      invert = false
     }
 
     distance {
-      range = .. # Example ..2m (up to 2m from origin) or 1cm..4m (everything from 1cm to 4m distance)
-      invert = false # true = only accept points outside the range
+      # Example ..2m (up to 2m from origin) or 1cm..4m (everything from 1cm to 4m distance)
+      range = ..
+
+      # if true we only accept points outside the range
+      invert = false
     }
 
     horizontal_fov {
-      degrees = .. # Degrees, Example 10..42
-      forward = [1.0, 0.0] # Axis to determine where field of view ranges start and end.
       enable = false
-      invert = false # true = only accept points outside the range
+
+      # Degrees, Example 10..42
+      degrees = ..
+
+      # Axis to determine where field of view ranges start and end.
+      forward = [1.0, 0.0]
+
+      # if true we only accept points outside the range
+      invert = false
     }
 
     polygon_2d {
-      coords = [] # 2D coordinates of each vertex. Example [ [1.0m, -1.5m], [-1.0m, 1.5m], [0m, 0m] ]
-      global_zero_frame = "" # If set to a TF frame, the polygon is transformed to that frame first. This enables global scan boundaries in any global coordinate system given by TF.
-      invert = false # true = only accept points outside the polygon
+      # 2D coordinates of each vertex. Example [ [1.0m, -1.5m], [-1.0m, 1.5m], [0m, 0m] ]
+      coords = []
+
+      # If set to a TF frame, the polygon is transformed to that frame first. This enables global scan boundaries in any global coordinate system given by TF.
+      global_zero_frame = ""
+
+      # if true we only accept points outside the polygon
+      invert = false
     }
 
     intensity {
-      values = .. # Floating range normalized to 0..1.0
-      invert = false # true = only accept points outside the range
+      # Floating range normalized to 0..1.0
+      values = ..
+
+      # if true we only accept points outside the range
+      invert = false
     }
     
   }
 
 }
 
-registration {
-
-  map {
-    resolution = 50cm # Voxel side length. NOTE: This will heavily affect your registration accuracy.
-    capacity = 120000 # How many Voxels of the previous defined resolution to save at any time. With Cuda enabled, the capacity will be round up to the next power of 2.
-   
-    distribution_update_sensitivity = 10.0 # Magic weighting value for handling the sensivity to new scans. The higher this value, the sensitive is it to brand new scans.
-  }
-
-  k_neighborhood = 12 # How many points to get from the neighborhood. Higher values yield higher accuracy at the cost of runtime.
-
-  max_iter = 2 # Maximum IEKF correction iterations per scan.
-
-  neighbors_max_range = 5m # Maximum distance to any neighbor. Default is mostly ok if you do not drastically reduce the map resolution.
-}
-
 lidar {
+  # @minimal
   topic = "/ouster/points"
-  vendor = Ouster # Velodyne | Ouster | Livox | Robosense | Skip (Use any 3D sensor when just Lidar Odometry is selected)
 
-  qos.reliability = Reliable # Reliable | BestEffort | SystemDefault
-  covariance = 0.001 # Weight for ICP correction in the IEKF
+  # @minimal
+  # Velodyne | Ouster | Livox | Robosense | LivoxMid360
+  vendor = Ouster
 
-  as_sync = false # When true, use incoming Lidar messages as a forced sync trigger. Note: This looses accuracy but some outer libraries work better with this mode.
+  # @minimal
+  # Reliable | BestEffort | SystemDefault. Any other setting than Reliable is undefined behavior.
+  qos.reliability = Reliable 
+
+  # Weight for ICP correction in the IEKF
+  covariance = 0.001
+
+ # If true, use incoming Lidar messages as a forced sync trigger. Note: This looses accuracy but some outer libraries work better with this mode.
+  as_sync = false
 }
 
 
 imu {
+
+  # @minimal
   topic = "/ouster/imu"
-  qos.reliability = Reliable # Reliable | BestEffort | SystemDefault
+
+  # @minimal
+  # Reliable | BestEffort | SystemDefault. Any other setting than Reliable is undefined behavior.
+  qos.reliability = Reliable
 
   initial_setup = 500ms
 
+  # @minimal
   from_lidar_transform {
-    use_tf_tree = false # Ignore the next manual translation and use the TF tree instead. The lookup will be once with receiving the first IMU message.
+
+    # Ignore the next manual translation and use the TF tree instead. The lookup will be once with receiving the first IMU message.
+    use_tf_tree = false
 
     # lidar -> imu
     translation = [-6.253mm, 11.775mm, 28.535mm]
-    rotation = [ [-1.0, 0.0, 0.0],
-                 [0.0, -1.0, 0.0],
-                 [0.0, 0.0, 1.0] ]
+    rotation = [  [-1.0, 0.0, 0.0],
+                  [0.0, -1.0, 0.0],
+                  [0.0, 0.0, 1.0] ]
   }
 
-  ahrs_filtering.method = FilterAccelerationAndCreateOrientation # CreateOrientationOnly | FilterAccelerationAndCreateOrientation | FilterAccelerationOnly | Disable (recommended when using on-device filtering in the driver)
+  # CreateOrientationOnly | FilterAccelerationAndCreateOrientation | FilterAccelerationOnly | Disable (recommended when using on-device filtering in the driver)
+  ahrs_filtering.method = FilterAccelerationAndCreateOrientation
 
-  gravity = 9.81 # Initial guess in m/s^2 for initialization.
+  # Initial guess in m/s^2 for initialization.
+  gravity = 9.81
 
   covariance_gyroscope = 0.1
   covariance_gyroscope_bias = 0.0001
@@ -98,19 +150,28 @@ imu {
   covariance_acceleration_bias = 0.0001
 
   calibration {
-    gyroscope = true # Take a few measurements first without rotating in the beginning to smooth out rotations.
-    samples = 100 # Use this many measurements for the gyroscope
-    parameter_file = "" # Filter out static bias. Relative path "./<path>" from this config file or absolute path "/<path>" to a calibration file created by https://github.com/stelzo/imu-calib-ros.
+    # Take a few measurements first without rotating in the beginning to smooth out rotations.
+    gyroscope = true
+    
+    # Use this many measurements for the gyroscope
+    samples = 100
+
+    # Filter out static bias. Relative path "./<path>" from this config file or absolute path "/<path>" to a calibration file created by https://github.com/stelzo/imu-calib-ros.
+    parameter_file = ""
   }
 
 }
 
 wheel {
-  topic = "/odom"
-  qos.reliability = Reliable # Reliable | BestEffort | SystemDefault
+  # Processing odometry messages is not tested enough yet, thus experimental.
+  topic = "/odom_experimental"
+
+  # Reliable | BestEffort | SystemDefault
+  qos.reliability = Reliable 
 
   to_imu_transform {
-    use_tf_tree = false # Ignore the next manual translation and use the TF tree instead. The lookup will be once with receiving the first odom message.
+    # Ignore the next manual translation and use the TF tree instead. The lookup will be once with receiving the first odom message.
+    use_tf_tree = false
 
     # Rotation Matrix Wheel_to_IMU
     rotation = [ [1.0, 0.0, 0.0],
@@ -118,12 +179,17 @@ wheel {
                  [0.0, 0.0, 1.0] ]
   }
 
-  # covariance = 0.001 # Weight for Odometry correction in the IEKF. If not given, the covariance provided in the Odometry message will be used.
+  # Weight for Odometry correction in the IEKF. If not given, the covariance provided in the Odometry message will be used.
+  # covariance = 0.001
 
-  kinematic_constraint_std = 0.1 # Standard deviation for kinematic constraints in undistortion (lower = stronger constraints)
+  # Standard deviation for kinematic constraints in undistortion (lower = stronger constraints)
+  kinematic_constraint_std = 0.1
 
-  kinematic_model = Full3D # Full3D | Differential | Holonomic2D | Ackermann. Applies kinematic constraints on the IEKF.
+  # @minimal
+  # Full3D | Differential | Holonomic2D | Ackermann. Applies kinematic constraints on the IEKF.
+  kinematic_model = Full3D
   
+  # @minimal
   # Ackermann steering configuration (only used when kinematic_model = Ackermann)
   ackermann {
     imu_to_rear_axle = [0.0m, 0.0m, 0.0m] # Offset from IMU to rear axle center in imu frame
@@ -133,35 +199,56 @@ wheel {
 output {
 
   terminal {
-    ui = true # Show terminal outputs like timings or other metrics.
-    fps = 1 # Refresh rate for rendering to the terminal in frames per second
-    warning_debounce = 1s # Debounce time for specific warnings
+    # @minimal
+    # Show terminal outputs like timings or other metrics.
+    ui = false
+
+    # Refresh rate for rendering to the terminal in frames per second
+    fps = 1
+
+    # Debounce time for specific warnings
+    warning_debounce = 1s
      
-    # Log level (accepted: trace, debug, info, warn, error).
-    log_level = "error"
+  # @minimal
+    # Log level (Trace, Debug, Info, Warn, Error)
+    log_level = Warn
   }
 
-  global_frame = "lio_init" # Which frame to publish the TF messages to
+  # @minimal
+  # Which frame to publish the TF messages to
+  global_frame = "lio_init"
 
-  lidar_as_map_tf_base = true # The cloud is processed in the IMU coordinate system. With this parameter, each point that wants to be published is first transformed back to the Lidar coordinate system again.
+  # The cloud is processed in the IMU coordinate system. With this parameter, each point that wants to be published is first transformed back to the Lidar coordinate system again.
+  lidar_as_map_tf_base = true
 
   mapping {
-    resolution = 20cm # When "mapping" flag is enabled, this defines the resolution of the global map.
+    # When "mapping" flag is enabled, this defines the resolution of the global map.
+    resolution = 20cm
   }
 
   rerun {
-    undistorted_static_world = false # Logs the registered clouds static in world coordinates so they do not vanish
+    # Logs the registered clouds static in world coordinates so they do not vanish.
+    # This will kill your rerun instance very quickly but you'll get some nice visualizations for a few seconds :)
+    undistorted_static_world = false
   }
 
-  lio_odometry_msg_qos = SystemDefault # Reliable | BestEffort | SystemDefault
-  lio_path_msg_qos = SystemDefault # Reliable | BestEffort | SystemDefault
+  # Reliable | BestEffort | SystemDefault
+  lio_odometry_msg_qos = Reliable
 
-  imu_odometry_msg_qos = SystemDefault # Reliable | BestEffort | SystemDefault
-  imu_path_msg_qos = SystemDefault # Reliable | BestEffort | SystemDefault
+  # Reliable | BestEffort | SystemDefault
+  lio_path_msg_qos = SystemDefault
 
-  imu_ahrs_filtered_msg_qos = Reliable # Reliable | BestEffort | SystemDefault
+  # Reliable | BestEffort | SystemDefault
+  imu_odometry_msg_qos = SystemDefault
 
-  imu_ahrs_filtered_topic = "imu/filtered" # AHRS filtered output
+  # Reliable | BestEffort | SystemDefault
+  imu_path_msg_qos = SystemDefault
+
+  # Reliable | BestEffort | SystemDefault
+  imu_ahrs_filtered_msg_qos = Reliable
+
+  # AHRS filtered output relative to the pelorus topic namespace.
+  imu_ahrs_filtered_topic = "imu/filtered"
 
   logger_prefix = "pelorus"
 }
