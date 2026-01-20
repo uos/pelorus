@@ -72,10 +72,15 @@ fn main() {
             let header_extensions = ["h", "hh", "hpp", "cuh"];
             for path in &include_paths {
                 for entry in WalkDir::new(path).into_iter().filter_map(|e| e.ok()) {
-                    if entry.file_type().is_file()
-                        && let Some(extension) = entry.path().extension().and_then(|s| s.to_str())
-                        && header_extensions.contains(&extension)
+                    let is_file = entry.file_type().is_file();
+                    let relevant_file = if let Some(extension) =
+                        entry.path().extension().and_then(|s| s.to_str())
                     {
+                        header_extensions.contains(&extension)
+                    } else {
+                        false
+                    };
+                    if is_file && relevant_file {
                         println!("cargo:rerun-if-changed={}", entry.path().display());
                     }
                 }

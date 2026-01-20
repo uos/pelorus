@@ -26,7 +26,7 @@ classifiers = [
 ]
 
 [project.optional-dependencies]
-rerun = ["rerun-sdk>0.28.0,<0.29.0"]
+rerun = ["rerun-sdk>0.24.0,<0.25.0"]
 
 [tool.maturin]
 bindings = "bin"

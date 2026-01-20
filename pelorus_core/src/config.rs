@@ -1,13 +1,13 @@
 use anyhow::anyhow;
 use nalgebra::{Matrix3, Point2, Vector2, Vector3};
+use ratslang::uom::si::angle::{degree, radian};
+use ratslang::uom::si::f32::Angle;
+use ratslang::uom::si::length::meter;
+use ratslang::uom::si::time::second;
 use ratslang::{
     Evaluated, NumVal, Rhs, Unit, UnitVal, Val, VariableHistory, resolve_float_range,
     resolve_length_range_meters_float, resolve_var,
 };
-use uom::si::angle::{degree, radian};
-use uom::si::f32::Angle;
-use uom::si::length::meter;
-use uom::si::time::second;
 
 use crate::{
     DownsampleParameters, ImuCalibrationParameters, ImuConfigParameter, ImuParameters,
@@ -65,9 +65,32 @@ impl Asts {
     }
 }
 
+/// Validates configuration and returns usage statistics for the defaults.
+/// This is primarily intended for build-time validation.
+///
+/// Returns (config, (assigned_vars, evaluated_vars))
+#[allow(unreachable_patterns, clippy::unnecessary_fallible_conversions)]
+pub fn ast_to_config_with_usage(
+    defaults: Evaluated,
+    user: Evaluated,
+) -> anyhow::Result<(LioConfig, (Vec<String>, Vec<String>))> {
+    let config = ast_to_config_inner(defaults, user, true)?;
+    Ok(config)
+}
+
 /// Constructs an `LioConfig` by layering a user configuration over a default one.
 #[allow(unreachable_patterns, clippy::unnecessary_fallible_conversions)]
-pub fn ast_to_config(defaults: Evaluated, user: Evaluated) -> anyhow::Result<LioConfig> {
+pub fn ast_to_config(mut defaults: Evaluated, user: Evaluated) -> anyhow::Result<LioConfig> {
+    // Disable warnings for default config since we only care about user-provided config
+    defaults.vars = defaults.vars.with_drop_warning(false);
+    ast_to_config_inner(defaults, user, false).map(|(config, _)| config)
+}
+
+fn ast_to_config_inner(
+    defaults: Evaluated,
+    user: Evaluated,
+    capture_usage: bool,
+) -> anyhow::Result<(LioConfig, (Vec<String>, Vec<String>))> {
     let asts = Asts::new(defaults.vars, user.vars);
 
     // --- Helper Functions for Enum Parsing ---
@@ -87,7 +110,6 @@ pub fn ast_to_config(defaults: Evaluated, user: Evaluated) -> anyhow::Result<Lio
             "livox" => LidarVendor::Livox,
             "livoxmid360" => LidarVendor::LivoxMid360,
             "robosense" => LidarVendor::Robosense,
-            // "skip" => LidarVendor::Skip,
             _ => return Err(anyhow!("Unknown Lidar vendor.")),
         })
     }
@@ -121,13 +143,19 @@ pub fn ast_to_config(defaults: Evaluated, user: Evaluated) -> anyhow::Result<Lio
                 })?;
                 Ok(KinematicModel::Ackermann { imu_to_rear_axle })
             }
-            _ => Err(anyhow!("Unknown kinematic model: {}", s)),
+            _ => {
+                // Mark ackermann config as "used" even though we didn't resolve it
+                if let Some(ack_ns) = ackermann_ns {
+                    let _ = ack_ns.defaults.evaluate_stats_only("imu_to_rear_axle");
+                    let _ = ack_ns.user.evaluate_stats_only("imu_to_rear_axle");
+                }
+                Err(anyhow!("Unknown kinematic model: {}", s))
+            }
         }
     }
 
     // --- Registration Configuration ---
     let (
-        k_neighbors,
         neighbor_max_range,
         map_resolution,
         map_capacity,
@@ -135,7 +163,6 @@ pub fn ast_to_config(defaults: Evaluated, user: Evaluated) -> anyhow::Result<Lio
         ekf_max_iterations,
     ) = {
         let registration = asts.filter_ns(&["registration"]);
-        let k_neighbors = resolve_var!(registration, "k_neighborhood", as usize, Rhs::Val(Val::NumVal(NumVal::Integer(i))) => {i})?;
         let neighbor_max_range = resolve_var!(registration, "neighbors_max_range", as f64, Rhs::Val(Val::UnitedVal(UnitVal::LengthVal(v))) => { v.get::<meter>() })?;
 
         let ekf_max_iterations = resolve_var!(registration, "max_iter", as usize, Rhs::Val(Val::NumVal(NumVal::Integer(i))) => { i })?;
@@ -146,7 +173,6 @@ pub fn ast_to_config(defaults: Evaluated, user: Evaluated) -> anyhow::Result<Lio
         let dist_update_sensitivity = resolve_var!(map, "distribution_update_sensitivity", as f32, Rhs::Val(Val::NumVal(NumVal::Floating(i))) => {i as f32} )?;
 
         (
-            k_neighbors,
             neighbor_max_range,
             map_resolution,
             map_capacity,
@@ -199,6 +225,10 @@ pub fn ast_to_config(defaults: Evaluated, user: Evaluated) -> anyhow::Result<Lio
         let ackermann_ns = if kinematic_model_str.to_lowercase() == "ackermann" {
             Some(wheel.filter_ns(&["ackermann"]))
         } else {
+            // Mark ackermann config as "used" even when not using ackermann model
+            let ack_ns = wheel.filter_ns(&["ackermann"]);
+            let _ = ack_ns.defaults.evaluate_stats_only("imu_to_rear_axle");
+            let _ = ack_ns.user.evaluate_stats_only("imu_to_rear_axle");
             None
         };
         let wheel_kinematic_model =
@@ -336,6 +366,9 @@ pub fn ast_to_config(defaults: Evaluated, user: Evaluated) -> anyhow::Result<Lio
         let feedback_fps = if show_ui {
             resolve_var!(terminal_ns, "fps", as i32, Rhs::Val(Val::NumVal(NumVal::Integer(i))) => {i})?
         } else {
+            // Mark fps as "used" even when UI is disabled
+            let _ = terminal_ns.defaults.evaluate_stats_only("fps");
+            let _ = terminal_ns.user.evaluate_stats_only("fps");
             0
         };
         let warning_debounce = resolve_var!(terminal_ns, "warning_debounce", as f64, Rhs::Val(Val::UnitedVal(UnitVal::TimeVal(v))) => { v.get::<second>() as f64 })?;
@@ -384,7 +417,7 @@ pub fn ast_to_config(defaults: Evaluated, user: Evaluated) -> anyhow::Result<Lio
     // --- Preprocessing Configuration ---
     let (
         initial_scan_accumulate,
-        voxel_size,
+        query_resolution_factor,
         bypass_output_downsample,
         passthrough_filter,
         global_zero_frame,
@@ -393,7 +426,7 @@ pub fn ast_to_config(defaults: Evaluated, user: Evaluated) -> anyhow::Result<Lio
         let initial_scan_accumulate = resolve_var!(preproc_ns, "initial_scan_accumulate", as usize, Rhs::Val(Val::NumVal(NumVal::Integer(i))) => { i })?;
         let downsample_ns = preproc_ns.filter_ns(&["downsample"]);
         let bypass_output_downsample = resolve_var!(downsample_ns, "bypass_output_downsample", as bool, Rhs::Val(Val::BoolVal(b)) => { b })?;
-        let voxel_size = resolve_var!(downsample_ns, "resolution", as f32, Rhs::Val(Val::UnitedVal(UnitVal::LengthVal(v))) => { v.get::<meter>() as f32 })?;
+        let query_resolution_factor: f64 = resolve_var!(downsample_ns, "query_resolution_factor", as f64, Rhs::Val(Val::NumVal(NumVal::Floating(v))) => { v })?;
 
         let filter_ns = preproc_ns.filter_ns(&["filter"]);
         let bbox_ns = filter_ns.filter_ns(&["bounding_box"]);
@@ -470,7 +503,7 @@ pub fn ast_to_config(defaults: Evaluated, user: Evaluated) -> anyhow::Result<Lio
         };
         (
             initial_scan_accumulate,
-            voxel_size,
+            query_resolution_factor,
             bypass_output_downsample,
             passthrough_filter,
             global_zero_frame,
@@ -479,7 +512,6 @@ pub fn ast_to_config(defaults: Evaluated, user: Evaluated) -> anyhow::Result<Lio
 
     let final_config = LioConfig {
         rerun_undistorted_static_world: undistorted_static_world,
-        k_neighbors,
         neighbor_max_range,
         map_resolution,
         map_capacity,
@@ -512,7 +544,7 @@ pub fn ast_to_config(defaults: Evaluated, user: Evaluated) -> anyhow::Result<Lio
             map_frame,
             imu: imu_prelio_params,
             downsample: DownsampleParameters {
-                voxel_size,
+                voxel_size: (query_resolution_factor * map_resolution) as f32,
                 bypass_output_downsample,
             },
             passthrough_filter,
@@ -529,5 +561,11 @@ pub fn ast_to_config(defaults: Evaluated, user: Evaluated) -> anyhow::Result<Lio
         enable_live_extrinsic_calibration: false,
     };
 
-    Ok(final_config)
+    let usage_info = if capture_usage {
+        asts.defaults.usage_vars()
+    } else {
+        (vec![], vec![])
+    };
+
+    Ok((final_config, usage_info))
 }

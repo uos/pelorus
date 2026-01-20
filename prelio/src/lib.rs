@@ -393,15 +393,13 @@ fn filter_downsample<const N: usize, P: PointXYZITimestamp<N>>(
 
     #[allow(unused_mut)]
     #[cfg(not(feature = "parallel"))]
-    {
-        let mut raw_out = {
-            if bypass_output_downsample {
-                Some(Vec::with_capacity(cloud.dimensions.len()))
-            } else {
-                None
-            }
-        };
-    }
+    let mut raw_out = {
+        if bypass_output_downsample {
+            Some(Vec::with_capacity(cloud.dimensions.len()))
+        } else {
+            None
+        }
+    };
 
     // --- Processing ---
     #[cfg(feature = "parallel")]

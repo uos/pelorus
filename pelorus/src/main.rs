@@ -165,10 +165,12 @@ pub struct ConfigArgs {
 #[derive(Debug, Clone, Subcommand)]
 pub enum ConfigCommand {
     /// Prints the default configuration to standard output.
-    /// You can redirect this to a file, e.g., `pelorus config init > my_config.rl`
-    Init,
+    /// You can redirect this to a file, e.g., `pelorus config full > my_config.rl`
+    Full,
     /// Compiles and validates a given configuration file against the defaults
-    Test(TestArgs),
+    Verify(TestArgs),
+    /// Generates a minimal configuration containing only settings marked with @minimal annotation
+    Minimal,
 }
 
 #[derive(Debug, Clone, Parser)]
@@ -179,7 +181,7 @@ pub struct EvalArgs {
 
 #[derive(Debug, Clone, Parser)]
 pub struct TestArgs {
-    /// The path of the configuration file to test
+    /// The path of the configuration file to test. Use '-' to read from stdin
     #[arg(default_value = "pelorus.rl")]
     pub config_path: PathBuf,
 }
@@ -219,8 +221,10 @@ fn lio_with_ready_signal(
     };
 
     #[cfg(feature = "rat")]
-    if synchronous_mode && let Some(rt) = rt.as_ref() {
-        rat::init("pelorus", None, Some(std::sync::Arc::clone(rt))).unwrap();
+    if synchronous_mode {
+        if let Some(rt) = rt.as_ref() {
+            rat::init("pelorus", None, Some(std::sync::Arc::clone(rt))).unwrap();
+        }
     }
 
     #[cfg(not(feature = "ratpub"))]
@@ -602,15 +606,15 @@ fn lio_with_ready_signal(
             let orig_frame = lifis_tick.cloud_header.frame_id.clone();
             let orig_time = lifis_tick.cloud_header.stamp;
             let current_cloud_time = timestamp_to_secs(&lifis_tick.odom_time);
-            if let Some(existing_last_scan_time) = last_scan_time
-                && current_cloud_time < existing_last_scan_time
-            {
-                let mut map = map.lock().unwrap();
-                map.clear_localmap();
+            if let Some(existing_last_scan_time) = last_scan_time {
+                if current_cloud_time < existing_last_scan_time {
+                    let mut map = map.lock().unwrap();
+                    map.clear_localmap();
 
-                info!("Resetting map");
-                t_world = nalgebra::Isometry3::identity();
-                t_last_current = nalgebra::Isometry3::identity();
+                    info!("Resetting map");
+                    t_world = nalgebra::Isometry3::identity();
+                    t_last_current = nalgebra::Isometry3::identity();
+                }
             }
 
             last_scan_time = Some(timestamp_to_secs(&orig_time));
@@ -1178,17 +1182,17 @@ fn lio_with_ready_signal(
 
             let name = "Pelorus Odometry";
 
-            if let Some(render_interval) = render_interval
-                && last_render.elapsed() > render_interval
-            {
-                last_render = std::time::Instant::now();
-                println!(
-                    "{}[2J{}[1;L{}\n{}",
-                    27 as char,
-                    27 as char,
-                    &name,
-                    eval.render()
-                );
+            if let Some(render_interval) = render_interval {
+                if last_render.elapsed() > render_interval {
+                    last_render = std::time::Instant::now();
+                    println!(
+                        "{}[2J{}[1;L{}\n{}",
+                        27 as char,
+                        27 as char,
+                        &name,
+                        eval.render()
+                    );
+                }
             }
 
             // mark to send new data
@@ -1568,41 +1572,59 @@ pf! i 1
             }
         }
         Command::Config(cmd) => match cmd {
-            ConfigCommand::Init => {
+            ConfigCommand::Full => {
                 print!("{}", DEFAULT_CONFIG_STR);
                 Ok(())
             }
-            ConfigCommand::Test(args) => {
-                println!(
-                    "Testing configuration file: {}",
-                    args.config_path.to_string_lossy()
-                );
+            ConfigCommand::Minimal => {
+                let mut default_ast = ratslang::compile_code(DEFAULT_CONFIG_STR)
+                    .map_err(|e| anyhow!("Failed to compile embedded default config: {}", e))?;
 
+                // Suppress unused-variable warnings when generating minimal config
+                default_ast.vars = default_ast.vars.with_drop_warning(false);
+
+                match default_ast.to_string_filtered("minimal") {
+                    Some(minimal_config) => {
+                        print!("{}", minimal_config);
+                        Ok(())
+                    }
+                    None => Err(anyhow!(
+                        "No @minimal annotations found in the default configuration"
+                    )
+                    .into()),
+                }
+            }
+            ConfigCommand::Verify(args) => {
                 let default_ast = ratslang::compile_code(DEFAULT_CONFIG_STR)
                     .map_err(|e| anyhow!("Failed to compile embedded default config: {}", e))?;
 
-                let path = std::path::Path::new(&args.config_path);
-                if !path.exists() {
-                    return Err(anyhow!(
-                        "Error: Configuration file not found at '{}'",
-                        args.config_path.to_string_lossy()
-                    )
-                    .into());
-                }
-                let user_ast =
+                let user_ast = if args.config_path.to_str() == Some("-") {
+                    use std::io::Read;
+                    let mut buffer = String::new();
+                    std::io::stdin()
+                        .read_to_string(&mut buffer)
+                        .map_err(|e| anyhow!("Failed to read from stdin: {}", e))?;
+                    ratslang::compile_code(&buffer)
+                        .map_err(|e| anyhow!("Failed to compile config from stdin: {}", e))?
+                } else {
+                    let path = std::path::Path::new(&args.config_path);
+                    if !path.exists() {
+                        return Err(anyhow!(
+                            "Error: Configuration file not found at '{}'",
+                            args.config_path.to_string_lossy()
+                        )
+                        .into());
+                    }
                     ratslang::compile_file(&path.to_path_buf(), None, None).map_err(|e| {
                         anyhow!(
                             "Failed to compile user config '{}': {}",
                             args.config_path.to_string_lossy(),
                             e
                         )
-                    })?;
+                    })?
+                };
 
                 let _ = ast_to_config(default_ast, user_ast)?;
-                println!(
-                    "Configuration file at '{}' is valid.",
-                    args.config_path.to_string_lossy()
-                );
                 Ok(())
             }
         },

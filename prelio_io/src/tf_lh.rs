@@ -112,16 +112,16 @@ impl TfIndividualTransformChain {
             .unwrap_or_else(|index| index);
         self.transform_chain.insert(index, msg.clone());
 
-        if let Some(newest_stamp) = self.newest_stamp()
-            && is_time_later(
+        if let Some(newest_stamp) = self.newest_stamp() {
+            if is_time_later(
                 &newest_stamp,
                 &add_time_and_duration(&time_from_nanosec(0), &self.cache_duration),
-            )
-        {
-            let time_to_keep = sub_duration_from_time(&newest_stamp, &self.cache_duration);
-            let index =
-                binary_search_time(&self.transform_chain, &time_to_keep).unwrap_or_else(|x| x);
-            self.transform_chain.drain(..index);
+            ) {
+                let time_to_keep = sub_duration_from_time(&newest_stamp, &self.cache_duration);
+                let index =
+                    binary_search_time(&self.transform_chain, &time_to_keep).unwrap_or_else(|x| x);
+                self.transform_chain.drain(..index);
+            }
         }
     }
 

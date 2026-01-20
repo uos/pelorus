@@ -161,36 +161,38 @@ impl OutputTui {
             })?;
 
             // TODO do it like minot
-            if event::poll(std::time::Duration::from_millis(50))?
-                && let Event::Key(key) = event::read()?
-            {
-                match key.code {
-                    KeyCode::Char('q') | KeyCode::Esc => {
+            if event::poll(std::time::Duration::from_millis(50))? {
+                if let Event::Key(key) = event::read()? {
+                    match key.code {
+                        KeyCode::Char('q') | KeyCode::Esc => {
+                            if let Some(tx) = &self.shutdown_tx {
+                                let _ = tx.send(());
+                            }
+                            break;
+                        }
+                        KeyCode::Tab | KeyCode::Char(' ') => {
+                            self.selected_tab = (self.selected_tab + 1) % 2;
+                        }
+                        KeyCode::Char('1') => self.selected_tab = 0,
+                        KeyCode::Char('2') => self.selected_tab = 1,
+                        _ => {}
+                    }
+                    if key.code == KeyCode::Char('c')
+                        && key.modifiers.contains(KeyModifiers::CONTROL)
+                    {
                         if let Some(tx) = &self.shutdown_tx {
                             let _ = tx.send(());
                         }
                         break;
                     }
-                    KeyCode::Tab | KeyCode::Char(' ') => {
-                        self.selected_tab = (self.selected_tab + 1) % 2;
-                    }
-                    KeyCode::Char('1') => self.selected_tab = 0,
-                    KeyCode::Char('2') => self.selected_tab = 1,
-                    _ => {}
-                }
-                if key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL) {
-                    if let Some(tx) = &self.shutdown_tx {
-                        let _ = tx.send(());
-                    }
-                    break;
                 }
             }
 
             // external
-            if let Some(rx) = &self.stop_rx
-                && rx.try_recv().is_ok()
-            {
-                break;
+            if let Some(rx) = &self.stop_rx {
+                if rx.try_recv().is_ok() {
+                    break;
+                }
             }
             // TODO remove
             std::thread::sleep(std::time::Duration::from_millis(50));

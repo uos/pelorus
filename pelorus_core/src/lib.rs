@@ -427,7 +427,6 @@ pub struct LioConfig {
     pub enable_live_extrinsic_calibration: bool,
     pub prelio_params: LifisParameters,
     pub prelio_node_params: LifisNodeParameters,
-    pub k_neighbors: usize,
     pub neighbor_max_range: f64,
     pub ekf_max_iterations: usize,
     pub dist_update_sensitivity: f32,
