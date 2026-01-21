@@ -60,6 +60,7 @@ examples-regression:
      - rustup default stable
      - cargo build
      - cd pelorus_py
+     - mkdir python
      - maturin develop
      - cd ../pelorus_c/examples
      - make regression
