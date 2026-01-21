@@ -36,6 +36,7 @@ lyrical: # verify that we can build on Ubuntu 26 LTS (TODO currently Trixie)
   image: debian:trixie
   stage: build
   script:
+    - apt-get update
     - apt-get install -y cargo
     - cargo build
   rules:
@@ -54,7 +55,6 @@ msrv:
 
 examples-regression:
   stage: test
-  image: ubuntu:latest
   script:
      - apt-get install -y build-essential cmake libpcl-dev libeigen3-dev pkg-config
      - rustup default stable
