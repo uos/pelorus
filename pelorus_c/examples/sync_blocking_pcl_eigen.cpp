@@ -18,7 +18,7 @@ int main()
 
     try
     {
-        pelorus::Pelorus pelorus;
+        pelorus::Pelorus pelorus("./no-accum.rl");
         std::cout << "Created Pelorus instance with default config\n\n";
 
         const int32_t base_sec = 1000;
@@ -122,24 +122,20 @@ int main()
         }
         const auto &odom = recv_res.odom;
 
+        // Match async_callback output style
         std::cout << std::fixed;
+        std::cout << "Callback invoked! Odometry #1 received (scan_id=" << odom.scan_id() << ")\n";
+        std::cout << "  Timestamp: " << odom.timestamp_sec() << "."
+                  << std::setw(9) << std::setfill('0') << odom.timestamp_nanosec() << "\n";
+        std::cout << std::setfill(' ');
         std::cout << "  Position: [" << std::setprecision(3)
                   << odom.position()[0] << ", "
                   << odom.position()[1] << ", "
                   << odom.position()[2] << "]\n";
-        std::cout << "  Orientation [w,x,y,z]: [" << std::setprecision(3)
-                  << odom.orientation()[0] << ", "
-                  << odom.orientation()[1] << ", "
-                  << odom.orientation()[2] << ", "
-                  << odom.orientation()[3] << "]\n";
         std::cout << "  Linear velocity: [" << std::setprecision(3)
                   << odom.linear_velocity()[0] << ", "
                   << odom.linear_velocity()[1] << ", "
                   << odom.linear_velocity()[2] << "]\n";
-        std::cout << "  Angular velocity: [" << std::setprecision(3)
-                  << odom.angular_velocity()[0] << ", "
-                  << odom.angular_velocity()[1] << ", "
-                  << odom.angular_velocity()[2] << "]\n";
         std::cout << "  Point cloud: " << odom.num_points() << " points\n";
 
         if (std::getenv("PELORUS_DUMP_ALL_POINTS") != nullptr)
@@ -163,17 +159,6 @@ int main()
                           << "] I=" << std::setprecision(3) << p->intensity << "\n";
             }
         }
-
-        // Eigen demo: SE(3) transform from odometry pose and apply it to a point.
-        const Eigen::Isometry3d T_world_sensor = pelorus::eigen::to_transform(odom);
-        const Eigen::Vector3d sample_point_sensor(1.0, 0.0, 0.0);
-        const Eigen::Vector3d sample_point_world = T_world_sensor * sample_point_sensor;
-
-        std::cout << "\nEigen demo\n";
-        std::cout << "  T_world_sensor (matrix):\n"
-                  << std::setprecision(3) << T_world_sensor.matrix() << "\n";
-        std::cout << "  point_sensor: " << std::setprecision(3) << sample_point_sensor.transpose() << "\n";
-        std::cout << "  point_world:  " << std::setprecision(3) << sample_point_world.transpose() << "\n";
     }
     catch (const pelorus::Exception &e)
     {

@@ -18,7 +18,7 @@ int main(void)
     printf("Version: %s\n\n", pelorus_version());
 
     // Create Pelorus handle with default configuration.
-    PelorusHandle *pelorus = pelorus_create(NULL);
+    PelorusHandle *pelorus = pelorus_create("./no-accum.rl");
     if (!pelorus)
     {
         fprintf(stderr, "Failed to create Pelorus handle\n");
@@ -163,7 +163,7 @@ int main(void)
                 {
                     for (size_t j = 0; j < odom.num_points; j++)
                     {
-                const pelorus_point_xyzi *p = &odom.points[j];
+                        const pelorus_point_xyzi *p = &odom.points[j];
                         printf("    Point %zu: [%.6g, %.6g, %.6g] I=%.6g\n",
                                j, p->x, p->y, p->z, p->intensity);
                     }
