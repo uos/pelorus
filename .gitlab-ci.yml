@@ -61,7 +61,7 @@ examples-regression:
      - rustup default stable
      - cd pelorus_c && mkdir build && cd build && cmake ..
      - make install
-     - cd ../pelorus_py
+     - cd ../../pelorus_py
      - maturin develop
      - cd ../pelorus_c/examples
      - make regression
