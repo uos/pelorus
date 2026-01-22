@@ -78,7 +78,7 @@ int main(void)
     printf("Version: %s\n\n", pelorus_version());
 
     // Create Pelorus handle with default configuration.
-    PelorusHandle *pelorus = pelorus_create(NULL);
+    PelorusHandle *pelorus = pelorus_create("./no-accum.rl");
     if (!pelorus)
     {
         fprintf(stderr, "Failed to create Pelorus handle\n");
