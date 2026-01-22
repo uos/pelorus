@@ -1,6 +1,6 @@
 //! Python bindings for Pelorus Robot Odometry
 
-use numpy::PyReadonlyArray2;
+use numpy::{IntoPyArray, PyReadonlyArray2};
 use pyo3::exceptions::{PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList};
@@ -723,13 +723,18 @@ impl PelorusHandle {
 
         dict.set_item("twist_covariance", odom.twist_covariance.to_vec())?;
 
-        // TODO output numpy arrays
-        // Only export spatial + intensity fields in Python-facing output: [x, y, z, intensity]
-        let mut points = Vec::with_capacity(odom.cloud.len());
+        let num_points = odom.cloud.len();
+        let mut flat_data = Vec::with_capacity(num_points * 4);
         for p in &odom.cloud {
-            points.push(vec![p.x, p.y, p.z, p.intensity]);
+            flat_data.push(p.x as f64);
+            flat_data.push(p.y as f64);
+            flat_data.push(p.z as f64);
+            flat_data.push(p.intensity as f64);
         }
-        dict.set_item("points", points)?;
+        let array = ndarray::Array2::from_shape_vec((num_points, 4), flat_data)
+            .map_err(|e| PyRuntimeError::new_err(format!("Failed to create array: {}", e)))?;
+        let points_array = array.into_pyarray(dict.py());
+        dict.set_item("points", points_array)?;
         dict.set_item("scan_id", odom.scan_id)?;
 
         Ok(())

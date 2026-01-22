@@ -1139,7 +1139,7 @@ impl Prelio {
                     }
                     Err(std::sync::mpsc::TryRecvError::Empty) => break,
                     Err(std::sync::mpsc::TryRecvError::Disconnected) => {
-                        error!("Odom receiver closed");
+                        //error!("Odom receiver closed"); TODO maybe is an issue?
                         return;
                     }
                 }

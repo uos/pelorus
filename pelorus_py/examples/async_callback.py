@@ -18,21 +18,37 @@ def main():
     target_scan_id = None
 
     def on_odom(odom):
-        pts = odom.get('points', [])
+        pts = odom.get('points', None)
+        if pts is None:
+            return
+        pts = np.asarray(pts)
         if odom.get('timestamp_sec', 0) == 0 and odom.get('timestamp_nanosec', 0) == 0:
             return
-        if not pts or target_scan_id is None or odom.get('scan_id', 0) != target_scan_id:
+        if pts.size == 0 or target_scan_id is None or odom.get('scan_id', 0) != target_scan_id:
             return
+
+        pos = np.asarray(odom['position'], dtype=np.float64)
+        lv = np.asarray(odom['linear_velocity'], dtype=np.float64)
+        orient = np.asarray(odom['orientation'], dtype=np.float64)
+        av = np.asarray(odom['angular_velocity'], dtype=np.float64)
+        pts = np.asarray(pts, dtype=np.float64)
 
         print(f"Callback invoked! Odometry #1 received (scan_id={odom.get('scan_id',0)})")
         print(f"  Timestamp: {odom['timestamp_sec']}.{odom['timestamp_nanosec']:09d}")
-        pos = odom['position']
         print(f"  Position: [{pos[0]:.3f}, {pos[1]:.3f}, {pos[2]:.3f}]")
-        lv = odom['linear_velocity']
         print(f"  Linear velocity: [{lv[0]:.3f}, {lv[1]:.3f}, {lv[2]:.3f}]")
         print(f"  Point cloud: {len(pts)} points")
 
-        matched_odom['odom'] = odom
+        matched_odom['odom'] = {
+            'timestamp_sec': odom['timestamp_sec'],
+            'timestamp_nanosec': odom['timestamp_nanosec'],
+            'scan_id': odom.get('scan_id', None),
+            'position': pos,
+            'orientation': orient,
+            'linear_velocity': lv,
+            'angular_velocity': av,
+            'points': pts,
+        }
         done_event.set()
         if DUMP_ALL:
             for i, p in enumerate(pts):
