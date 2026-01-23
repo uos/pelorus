@@ -21,16 +21,17 @@ rust-stable:
       when: never
     - when: on_success
 
-rust-nightly:
-  stage: build
-  script:
-    - rustup default nightly
-    - cargo build --verbose
-  allow_failure: true
-  rules:
-    - if: '$CI_PIPELINE_SOURCE == "schedule"'
-      when: never
-    - when: on_success
+# breaks with sophus_autodiff 0.15.
+# rust-nightly:
+#   stage: build
+#   script:
+#     - rustup default nightly
+#     - cargo build --verbose
+#   allow_failure: true
+#   rules:
+#     - if: '$CI_PIPELINE_SOURCE == "schedule"'
+#       when: never
+#     - when: on_success
 
 lyrical: # verify that we can build on Ubuntu 26 LTS (TODO currently Trixie)
   image: debian:trixie
@@ -58,9 +59,9 @@ examples-regression:
   script:
      - apt-get install -y build-essential cmake libpcl-dev libeigen3-dev pkg-config
      - rustup default stable
-     - cargo build
-     - cd pelorus_py
-     - mkdir python
+     - cd pelorus_c && mkdir build && cd build && cmake ..
+     - make install
+     - cd ../../pelorus_py
      - maturin develop
      - cd ../pelorus_c/examples
      - make regression
