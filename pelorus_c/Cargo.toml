@@ -7,6 +7,7 @@ keywords.workspace = true
 license.workspace = true
 repository.workspace = true
 version.workspace = true
+authors.workspace = true
 rust-version.workspace = true
 
 [lib]
@@ -31,3 +32,12 @@ downsample = ["prelio/downsample"]
 parallel = ["prelio/parallel", "pelorus_reg/parallel"]
 cuda = ["prelio/cuda", "pelorus_reg/cuda"]
 no-imu-sync = ["prelio/no-imu-sync"]
+
+[package.metadata.deb]
+name = "libpelorus"
+section = "libs"
+priority = "optional"
+assets = [
+    ["target/release/libpelorus.so", "usr/lib/libpelorus.so", "644"],
+    ["target/release/libpelorus.a", "usr/lib/libpelorus.a", "644"],
+]

@@ -1,4 +1,4 @@
-#
+# #
 # For r2r 0.9.1
 #
 # cmake code for simple colcon integration.
@@ -103,7 +103,13 @@ function(r2r_cargo)
     endif()
   endif()
 
+  # handle cmake args and env args
   if(PELORUS_CUDA)
+    list(APPEND FEATURES "cuda")
+  elseif(DEFINED ENV{PELORUS_CUDA}
+         AND NOT "$ENV{PELORUS_CUDA}" STREQUAL ""
+         AND NOT "$ENV{PELORUS_CUDA}" STREQUAL "0"
+         AND NOT "$ENV{PELORUS_CUDA}" STREQUAL "OFF")
     list(APPEND FEATURES "cuda")
   endif()
   if(PELORUS_RERUN)
@@ -121,8 +127,8 @@ function(r2r_cargo)
 
   string(JOIN "," FEATURES_STR ${FEATURES})
 
-  # optim
-  set(ENV{RUSTFLAGS} "-C target-cpu=native -C llvm-args=-cost-kind=latency")
+  # optim, only with local builds
+  # set(ENV{RUSTFLAGS} "-C target-cpu=native -C llvm-args=-cost-kind=latency")
  
   add_custom_target(cargo_target ALL
       COMMAND ${CMAKE_COMMAND} "-E" "env" "RUSTFLAGS=$ENV{RUSTFLAGS}" "CMAKE_IDL_PACKAGES=$ENV{CMAKE_IDL_PACKAGES}" "CMAKE_INCLUDE_DIRS=$ENV{CMAKE_INCLUDE_DIRS}" "cargo" "build" "-p" "pelorus" "--profile" "colcon" "--no-default-features" "--features" "${FEATURES_STR}" "--locked"

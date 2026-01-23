@@ -1,12 +1,13 @@
 [package]
 name = "pelorus"
-description = "Highly efficient odometry from Lidar and IMU using CUDA acceleration."
+description = "Highly efficient Lidar Inertial Odometry."
 edition.workspace = true
 include.workspace = true
 keywords.workspace = true
 license.workspace = true
 repository.workspace = true
 version.workspace = true
+authors.workspace = true
 rust-version.workspace = true
 
 [dependencies]
@@ -106,7 +107,7 @@ evaluate = ["dep:sophus_lie", "dep:plotters", "dep:image", "dep:rerun"]
 # -#-#-#-#-#- Low level -#-#-#-#-#-
 
 # Toggle tooling typically used for development
-dev = ["offline", "rerun", "map", "parallel"]
+dev = ["offline", "rerun", "parallel"]
 
 # Use variable syncing for triggers
 rat = ["dep:mt_rat", "dep:tokio"]
@@ -126,3 +127,12 @@ anyhow.workspace = true
 env_logger.workspace = true
 pelorus_core = { path = "../pelorus_core" }
 ratslang.workspace = true
+
+[package.metadata.deb]
+name = "pelorus"
+section = "science"
+priority = "optional"
+assets = [
+    ["target/release/pelorus", "usr/bin/pelorus", "644"],
+]
+

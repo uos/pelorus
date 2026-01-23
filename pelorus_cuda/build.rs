@@ -32,8 +32,7 @@ fn main() {
             // jetson xavier: 7.2
             // jetson tegra k1/tk1: 3.2
 
-            let arch_list =
-                env::var("CUDA_ARCHS").unwrap_or_else(|_| "70,75,80,86,87,89".to_string());
+            let arch_list = env::var("CUDA_ARCHS").unwrap_or_else(|_| "75,80,86,87,89".to_string());
 
             let arches: Vec<u32> = arch_list
                 .split(',')
