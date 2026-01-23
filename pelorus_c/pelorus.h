@@ -1,4 +1,4 @@
-/* Pelorus C Library - Efficient Robot Odometry.
+/* Pelorus C Library - High Efficient Lidar Inertial Odometry.
  *
  * Threading and async processing are handled internally.
  */
@@ -25,10 +25,10 @@ typedef struct PelorusHandle PelorusHandle;
  * @brief IMU sensor message.
  */
 typedef struct pelorus_imu_msg {
-  int32_t timestamp_sec;            /**< Timestamp seconds since epoch */
-  uint32_t timestamp_nanosec;       /**< Timestamp nanoseconds part */
-  const char *frame_id;             /**< Frame ID (sensor name) - optional (may be NULL) */
-  double orientation[4];            /**< Quaternion [w, x, y, z] */
+  int32_t timestamp_sec;      /**< Timestamp seconds since epoch */
+  uint32_t timestamp_nanosec; /**< Timestamp nanoseconds part */
+  const char *frame_id;  /**< Frame ID (sensor name) - optional (may be NULL) */
+  double orientation[4]; /**< Quaternion [w, x, y, z] */
   double orientation_covariance[9]; /**< 3x3 covariance matrix (row-major) */
   double angular_velocity[3];       /**< Angular velocity [x, y, z] rad/s */
   double
@@ -53,7 +53,8 @@ typedef struct pelorus_odom_msg {
  * @brief Point field descriptor for PointCloud2.
  */
 typedef struct pelorus_point_field {
-  const char *name; /**< Field name (must be non-NULL, e.g., "x", "y", "z", "intensity") */
+  const char *name; /**< Field name (must be non-NULL, e.g., "x", "y", "z",
+                       "intensity") */
   uint32_t offset;  /**< Byte offset from start of point data */
   uint8_t datatype; /**< Data type (7=FLOAT32, 8=FLOAT64, etc.) */
 } pelorus_point_field;
@@ -61,14 +62,15 @@ typedef struct pelorus_point_field {
 /**
  * @brief ROS2 PointCloud2 message.
  *
- * Interpretation and timestamp semantics depend on how the point cloud is parsed:
- * - When Pelorus is configured to use *device-specific* parsing (the default; see
- *   `device_specific_pointcloud2`), field meanings (including any `t` field) are
- *   interpreted according to the device/vendor configuration and may **not** be a
- *   simple header-relative nanosecond offset.
- * - When using the *generic* parsing path (`device_specific_pointcloud2 == false`),
- *   Pelorus expects per-point `t` to be a **non-negative** (`uint32`) nanoseconds
- *   offset **forward in time** relative to the scan header timestamp.
+ * Interpretation and timestamp semantics depend on how the point cloud is
+ * parsed:
+ * - When Pelorus is configured to use *device-specific* parsing (the default;
+ * see `device_specific_pointcloud2`), field meanings (including any `t` field)
+ * are interpreted according to the device/vendor configuration and may **not**
+ * be a simple header-relative nanosecond offset.
+ * - When using the *generic* parsing path (`device_specific_pointcloud2 ==
+ * false`), Pelorus expects per-point `t` to be a **non-negative** (`uint32`)
+ * nanoseconds offset **forward in time** relative to the scan header timestamp.
  *   (So `point_time_abs = header_time_abs + t`.)
  *
  * Recommended field layout for generic (non-device-specific) inputs:
@@ -82,13 +84,16 @@ typedef struct pelorus_point_field {
 typedef struct pelorus_pointcloud2 {
   int32_t header_timestamp_sec;      /**< Timestamp seconds since epoch */
   uint32_t header_timestamp_nanosec; /**< Timestamp nanoseconds part */
-  uint32_t width;                    /**< Number of points (unstructured cloud; height is implicitly 1) */
-  const pelorus_point_field *fields; /**< Pointer to single field descriptor (must be non-NULL) */
-  uint32_t point_step;               /**< Bytes per point (recommended 20 for x,y,z,intensity,t) */
-  uint32_t row_step;                 /**< Bytes per row (point_step * width) */
-  const uint8_t *data;               /**< Raw point data buffer */
-  uintptr_t data_len;                /**< Length of data buffer in bytes */
-  bool is_dense;                     /**< True if no invalid points */
+  uint32_t width; /**< Number of points (unstructured cloud; height is
+                     implicitly 1) */
+  const pelorus_point_field
+      *fields; /**< Pointer to single field descriptor (must be non-NULL) */
+  uint32_t
+      point_step; /**< Bytes per point (recommended 20 for x,y,z,intensity,t) */
+  uint32_t row_step;   /**< Bytes per row (point_step * width) */
+  const uint8_t *data; /**< Raw point data buffer */
+  uintptr_t data_len;  /**< Length of data buffer in bytes */
+  bool is_dense;       /**< True if no invalid points */
 } pelorus_pointcloud2;
 
 /**
@@ -130,8 +135,9 @@ typedef struct pelorus_odometry {
   double twist_covariance[36]; /**< 6x6 twist covariance (row-major) in IMU
                                   World frame */
   uint64_t scan_id; /**< Scan id assigned when the pointcloud was added */
-  pelorus_point_xyzi *points; /**< Registered point cloud in Lidar World frame (must free when `points_memory==0`) */
-  uintptr_t num_points; /**< Number of points in cloud */
+  pelorus_point_xyzi *points; /**< Registered point cloud in Lidar World frame
+                                 (must free when `points_memory==0`) */
+  uintptr_t num_points;       /**< Number of points in cloud */
 } pelorus_odometry;
 
 /**
@@ -165,7 +171,7 @@ typedef struct pelorus_create_options {
  * `pelorus_create_options opts = PELORUS_CREATE_OPTIONS_DEFAULT;`
  */
 #define PELORUS_CREATE_OPTIONS_DEFAULT                                         \
-  { .config_path = NULL, .device_specific_pointcloud2 = 1 }
+  {.config_path = NULL, .device_specific_pointcloud2 = 1}
 
 /**
  * @brief Create a new Pelorus LIO instance with options.
@@ -271,7 +277,8 @@ int32_t pelorus_recv(PelorusHandle *handle, pelorus_odometry *result);
  * @param handle The Pelorus handle.
  * @param scan_id The scan id to wait for.
  * @param result Pointer to store the odometry result.
- * @return A `pelorus_status` code (e.g., `PELORUS_STATUS_OK` on success, negative on error).
+ * @return A `pelorus_status` code (e.g., `PELORUS_STATUS_OK` on success,
+ * negative on error).
  */
 
 /**

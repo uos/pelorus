@@ -1,0 +1,21 @@
+[package]
+name = "pelorus_glim_odometry"
+description = "Pelorus Odometry as a GLIM plugin."
+edition.workspace = true
+include.workspace = true
+keywords.workspace = true
+license.workspace = true
+repository.workspace = true
+version.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+
+[package.metadata.deb]
+name = "libpelorus-glim-odometry"
+depends = "libpelorus ( = $VERSION )"
+section = "libs"
+priority = "optional"
+assets = [
+    ["build/libodometry_estimation_pelorus.so", "usr/lib/libodometry_estimation_pelorus.so", "644"],
+]
+

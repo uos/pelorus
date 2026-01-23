@@ -175,8 +175,10 @@ pub enum ConfigCommand {
 
 #[derive(Debug, Clone, Parser)]
 pub struct EvalArgs {
+    /// Path in TUM format.
     pub estimated_file: PathBuf,
-    pub ground_truth_file: PathBuf,
+    /// Path in TUM format.
+    pub reference_file: PathBuf,
 }
 
 #[derive(Debug, Clone, Parser)]
@@ -272,8 +274,10 @@ fn lio_with_ready_signal(
         let rerun_server_addr =
             std::env::var("RERUN_SERVER_ADDR").unwrap_or("127.0.0.1:9876".to_string());
         let rec = std::sync::Arc::new(
-            rerun::RecordingStreamBuilder::new("pelorus")
-                .connect_grpc_opts(format!("rerun+http://{}/proxy", rerun_server_addr))?,
+            rerun::RecordingStreamBuilder::new("pelorus").connect_grpc_opts(
+                format!("rerun+http://{}/proxy", rerun_server_addr),
+                Some(std::time::Duration::from_secs(1)),
+            )?,
         );
         rec
     };
@@ -1087,42 +1091,21 @@ fn lio_with_ready_signal(
             if changed_lidar_path {
                 #[cfg(all(not(feature = "no-viz"), feature = "rerun"))]
                 {
-                    // Log orientation axes as children of world/lidar
-                    // They will automatically follow the lidar's current transform
-                    const AXIS_LENGTH: f32 = 0.5;
-                    const AXIS_RADIUS: f32 = 0.02;
+                    // Visualize the lidar path as a line strip
+                    let lidar_path_strip =
+                        rerun::LineStrip3D::from_iter(lidar_path.poses.iter().map(|p| {
+                            glam::Vec3::new(
+                                p.pose.position.x as f32,
+                                p.pose.position.y as f32,
+                                p.pose.position.z as f32,
+                            )
+                        }));
+                    let lidar_path_strips =
+                        rerun::LineStrips3D::new(std::iter::once(lidar_path_strip))
+                            .with_colors([rerun::Color::from_rgb(255, 128, 0)]); // Orange color for lidar path
 
-                    // X-axis (red)
-                    let x_capsule =
-                        rerun::Capsules3D::from_lengths_and_radii([AXIS_LENGTH], [AXIS_RADIUS])
-                            .with_rotation_axis_angles([rerun::RotationAxisAngle::new(
-                                glam::Vec3::Y,
-                                std::f32::consts::FRAC_PI_2,
-                            )])
-                            .with_colors([rerun::Color::from_rgb(255, 0, 0)]);
-
-                    // Y-axis (green)
-                    let y_capsule =
-                        rerun::Capsules3D::from_lengths_and_radii([AXIS_LENGTH], [AXIS_RADIUS])
-                            .with_rotation_axis_angles([rerun::RotationAxisAngle::new(
-                                glam::Vec3::X,
-                                -std::f32::consts::FRAC_PI_2,
-                            )])
-                            .with_colors([rerun::Color::from_rgb(0, 255, 0)]);
-
-                    // Z-axis (blue)
-                    let z_capsule =
-                        rerun::Capsules3D::from_lengths_and_radii([AXIS_LENGTH], [AXIS_RADIUS])
-                            .with_colors([rerun::Color::from_rgb(0, 0, 255)]);
-
-                    if let Err(err) = rec.log("world/lidar/axis_x", &x_capsule) {
-                        error!("Error sending to rerun {err}");
-                    }
-                    if let Err(err) = rec.log("world/lidar/axis_y", &y_capsule) {
-                        error!("Error sending to rerun {err}");
-                    }
-                    if let Err(err) = rec.log("world/lidar/axis_z", &z_capsule) {
-                        error!("Error sending to rerun {err}");
+                    if let Err(err) = rec.log("world/lidar_path", &lidar_path_strips) {
+                        error!("Error sending lidar path to rerun {err}");
                     }
                 }
                 #[cfg(all(not(feature = "no-viz"), not(feature = "ratpub")))]
@@ -1631,7 +1614,7 @@ pf! i 1
         #[cfg(feature = "evaluate")]
         Command::Evaluate(paths) => {
             let estimated_path = std::path::PathBuf::from(&paths.estimated_file);
-            let ground_truth_path = std::path::PathBuf::from(&paths.ground_truth_file);
+            let ground_truth_path = std::path::PathBuf::from(&paths.reference_file);
             evaluate::visualize_results(&estimated_path, &ground_truth_path)?;
             Ok(())
         }

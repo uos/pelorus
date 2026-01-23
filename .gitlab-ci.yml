@@ -21,6 +21,17 @@ rust-stable:
       when: never
     - when: on_success
 
+cuda-13-1:
+  stage: build
+  image: docker.io/stelzo/ubuntu-dev:noble-cu13-1
+  script:
+    - rustup default stable
+    - cargo build --features cuda
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "schedule"'
+      when: never
+    - when: on_success
+
 # breaks with sophus_autodiff 0.15.
 # rust-nightly:
 #   stage: build
@@ -45,6 +56,21 @@ lyrical: # verify that we can build on Ubuntu 26 LTS (TODO currently Trixie)
       when: never
     - when: on_success
 
+glim-odom:
+  image: docker.io/stelzo/ubuntu-dev:glim-noble
+  stage: build
+  script:
+    - cd pelorus_c && mkdir build && cd build
+    - cmake ..
+    - make && make install
+    - cd ../../glim_integration/pelorus_glim_odometry && mkdir build && cd build
+    - cmake ..
+    - make
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "schedule"'
+      when: never
+    - when: on_success
+ 
 msrv:
   stage: test
   script:

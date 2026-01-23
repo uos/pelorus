@@ -3,14 +3,14 @@ use plotters::prelude::*;
 use plotters::style::full_palette::GREY;
 use rerun as rr;
 use rerun::external::glam;
-use sophus_lie::traits::IsTranslationProductGroup;
+use sophus_lie::IsAffineGroup;
 use std::error::Error;
 use std::fs::File;
 use std::io::{BufRead, BufReader};
 use std::path::Path;
 
-type SE3 = sophus_lie::Isometry3<f64, 1>;
-type SO3 = sophus_lie::Rotation3<f64, 1>;
+pub type SE3 = sophus_lie::Isometry3F64;
+type SO3 = sophus_lie::Rotation3F64;
 
 const PLOT_WIDTH: u32 = 800;
 const PLOT_HEIGHT: u32 = 600;
@@ -75,10 +75,10 @@ fn visualize_with_rerun(
         .collect();
 
     rec.log_static(
-        "world/ground_truth_path",
+        "world/reference_path",
         &rr::LineStrips3D::new([gt_points])
             .with_colors([rr::Color::from_rgb(128, 128, 128)])
-            .with_labels(["Ground Truth"])
+            .with_labels(["Reference"])
             .with_radii([rr::Radius::new_ui_points(0.85)]),
     )?;
 
@@ -137,7 +137,7 @@ fn visualize_with_rerun(
 
         rec.set_timestamp_secs_since_epoch("timestamp", timestamp);
 
-        rec.log("world/ground_truth_pose", &pose_to_rerun_transform(gt_pose))?;
+        rec.log("world/reference_pose", &pose_to_rerun_transform(gt_pose))?;
         rec.log("world/estimated_pose", &pose_to_rerun_transform(est_pose))?;
 
         rec.log(
@@ -319,9 +319,9 @@ fn read_trajectory(path: &Path) -> Result<Vec<Pose>, Box<dyn Error>> {
 }
 
 fn pose_to_se3(pose: &Pose) -> SE3 {
-    SE3::from_translation_and_rotation(
-        &&pose.translation.vector,
-        &SO3::try_from_mat(&&pose.rotation.to_rotation_matrix().matrix()).unwrap(),
+    SE3::from_rotation_and_translation(
+        SO3::try_from_mat(pose.rotation.to_rotation_matrix().matrix()).unwrap(),
+        pose.translation.vector.into(),
     )
 }
 
@@ -335,14 +335,14 @@ fn get_plotters_color_for_error(error: f64, max_error: f64) -> RGBColor {
 fn interpolate_pose(p1: &Pose, p2: &Pose, timestamp: f64) -> Pose {
     let t = (timestamp - p1.timestamp) / (p2.timestamp - p1.timestamp);
 
-    let p1 = SE3::from_translation_and_rotation(
-        &&p1.translation.vector,
-        &SO3::try_from_mat(&&p1.rotation.to_rotation_matrix().matrix()).unwrap(),
+    let p1 = SE3::from_rotation_and_translation(
+        SO3::try_from_mat(p1.rotation.to_rotation_matrix().matrix()).unwrap(),
+        p1.translation.vector,
     );
 
-    let p2 = SE3::from_translation_and_rotation(
-        &p2.translation.vector,
-        &SO3::try_from_mat(&&p2.rotation.to_rotation_matrix().matrix()).unwrap(),
+    let p2 = SE3::from_rotation_and_translation(
+        SO3::try_from_mat(p2.rotation.to_rotation_matrix().matrix()).unwrap(),
+        p2.translation.vector,
     );
 
     let diff = p1.interpolate(&p2, t);
@@ -574,14 +574,14 @@ fn create_2d_plots(
     Ok(())
 }
 
-pub fn visualize_results(estimated_path: &Path, ground_truth_path: &Path) -> anyhow::Result<()> {
+pub fn visualize_results(estimated_path: &Path, reference_path: &Path) -> anyhow::Result<()> {
     let estimated_trajectory_raw = read_trajectory(estimated_path).unwrap();
-    let ground_truth_trajectory = read_trajectory(ground_truth_path).unwrap();
+    let reference_trajectory = read_trajectory(reference_path).unwrap();
 
     let mut interpolated_estimated_trajectory = Vec::new();
     let mut synced_gt_poses = Vec::new();
 
-    for gt_pose in &ground_truth_trajectory {
+    for gt_pose in &reference_trajectory {
         let mut p1_idx = 0;
         while p1_idx < estimated_trajectory_raw.len() - 2
             && estimated_trajectory_raw[p1_idx + 1].timestamp < gt_pose.timestamp
@@ -611,7 +611,7 @@ pub fn visualize_results(estimated_path: &Path, ground_truth_path: &Path) -> any
         .iter()
         .map(|pose| {
             let se3_pose = pose_to_se3(pose);
-            let normalized_se3 = first_gt_pose_inv.group_mul(&se3_pose);
+            let normalized_se3 = first_gt_pose_inv.group_mul(se3_pose);
             Pose {
                 timestamp: pose.timestamp,
                 translation: Translation3::from(normalized_se3.translation()),
@@ -681,10 +681,10 @@ pub fn visualize_results(estimated_path: &Path, ground_truth_path: &Path) -> any
         let gt_pose2 = pose_to_se3(&corresponding_gt_trajectory[i + delta]);
         let est_pose1 = pose_to_se3(&aligned_est_trajectory[i]);
         let est_pose2 = pose_to_se3(&aligned_est_trajectory[i + delta]);
-        let rel_gt = gt_pose1.inverse().group_mul(&gt_pose2);
-        let rel_est = est_pose1.inverse().group_mul(&est_pose2);
+        let rel_gt = gt_pose1.inverse().group_mul(gt_pose2);
+        let rel_est = est_pose1.inverse().group_mul(est_pose2);
 
-        let error_se3 = rel_gt.inverse().group_mul(&rel_est);
+        let error_se3 = rel_gt.inverse().group_mul(rel_est);
         let trans_error = error_se3.translation().norm();
         let rot_error = error_se3.rotation().log().norm(); // Angle in radians
 

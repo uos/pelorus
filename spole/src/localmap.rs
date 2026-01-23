@@ -128,8 +128,14 @@ impl Livodish {
                     // self.lru_cursor += 1; // TODO check should be wrong
                 } else {
                     // map not at capacity, clean add
-                    unsafe { self.buffer.get_unchecked_mut(self.add_cursor) }.replace(value);
-                    unsafe { self.lru_mapping.get_unchecked_mut(self.add_cursor) }
+                    // TODO use expect
+                    self.buffer
+                        .get_mut(self.add_cursor)
+                        .expect("map must have been unexpectedly cleared before")
+                        .replace(value);
+                    self.lru_mapping
+                        .get_mut(self.add_cursor)
+                        .expect("map must have been unexpectedly cleared before")
                         .replace(self.add_cursor);
                     self.lookup.insert(hash, self.add_cursor);
                     self.add_cursor += 1;

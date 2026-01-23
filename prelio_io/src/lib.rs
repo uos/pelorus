@@ -76,6 +76,8 @@ pub struct State {
     pub lidar_vendor: LidarVendor,
     #[cfg(feature = "rerun")]
     pub rec: Arc<rerun::RecordingStream>,
+
+    pub last_lidar_time: Option<f64>,
 }
 
 impl State {
@@ -157,6 +159,7 @@ impl State {
             lifis_params: config.clone(),
             take_nth_scan: N_NTH_SCAN,
             lidar_vendor: config.lidar_vendor,
+            last_lidar_time: None,
         })
     }
 }
@@ -282,6 +285,17 @@ fn cloud_callback(
 
         {
             let mut state = state.lock().unwrap();
+            let time = timestamp_to_secs(&prelio::TimeMsg {
+                sec: in_msg.header.stamp.sec,
+                nanosec: in_msg.header.stamp.nanosec,
+            });
+            if let Some(last_lidar_time) = state.last_lidar_time {
+                if time < last_lidar_time {
+                    // Skip out of order cloud
+                    return Ok(());
+                }
+            }
+            state.last_lidar_time.replace(time);
             state.sensor_tf = Some(sensor_tf);
             state.imu_tf = Some(imu_tf);
         }
