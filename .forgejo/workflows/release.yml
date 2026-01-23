@@ -1,0 +1,88 @@
+name: release
+
+on:
+  push:
+    # tags:
+    #   - v*
+  workflow_dispatch:
+
+env:
+  GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+permissions:
+  contents: write
+
+jobs:
+  sanity:
+    runs-on: ubuntu-dev-noble
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build
+        run: |
+          rustup default stable
+          cargo check
+
+  lib-rp-cli-cpu:
+    runs-on: ubuntu-latest
+    needs:
+      - sanity
+    strategy:
+      matrix:
+        image: ['docker.io/stelzo/ubuntu-dev:noble', 'docker.io/stelzo/ubuntu-dev:jammy']
+        target: ['x86_64-unknown-linux-gnu', 'aarch64-unknown-linux-gnu']
+    container:
+      image: ${{ matrix.image }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build
+        env:
+          TARGET: ${{ matrix.target }}
+        run: |
+          mkdir dist
+          rustup default stable
+          rustup add $TARGET
+
+          cargo zigbuild -p pelorus_c --release --target $TARGET
+          mv target/$TARGET/release/libpelorus.so dist/
+          mv target/$TARGET/release/libpelorus.a dist/
+
+          cargo clean
+
+          cargo zigbuild -p pelorus --release --target $TARGET
+          mv target/$TARGET/release/pelorus dist/
+
+      - uses: actions/upload-artifact@v3
+        with:
+          name: lib-rp-cli-cpu-${{ matrix.image }}-${{ matrix.target }}
+          path: dist/
+
+  lib-rp-cli-cu-arm:
+    runs-on: ubuntu-latest
+    needs:
+      - sanity
+    strategy:
+      matrix:
+        image: ['docker.io/stelzo/ubuntu-dev:noble-cu12-8', 'docker.io/stelzo/ubuntu-dev:noble-cu13-1', 'docker.io/stelzo/ubuntu-dev:jammy-cu13-1', 'docker.io/stelzo/ubuntu-dev:jammy-cu12-8']
+    container:
+      image: ${{ matrix.image }}
+      options: --platform=linux/arm64
+    env:
+        CUDA_HOME: /usr/local/cuda
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build
+        run: |
+          rustup default stable
+          cargo build -p pelorus_c --release --target --features cuda
+
+          mkdir dist
+          mv target/release/libpelorus.so dist/
+          mv target/release/libpelorus.a dist/
+
+          cargo build -p pelorus --release --features cuda
+          mv target/release/pelorus dist/
+
+      - uses: actions/upload-artifact@v3
+        with:
+          name: lib-rp-cli-cu-arm-${{ matrix.image }}
+          path: dist/
