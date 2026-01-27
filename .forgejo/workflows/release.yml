@@ -154,27 +154,71 @@ jobs:
           name: artifacts-macos
           path: dist/
 
-  rawlibs-cu12-8:
+  rawlibs-cuda:
     needs:
       - sanity
     strategy:
       matrix:
         include:
+          - image: docker.io/stelzo/ubuntu-dev:noble-cu12-6
+            arch: amd64
+            repo: noble
+            cuda: 12-6
+            runner: ubuntu-latest
+          - image: docker.io/stelzo/ubuntu-dev:noble-cu12-6
+            arch: arm64
+            repo: noble
+            cuda: 12-6
+            runner: ubuntu-latest-arm
+          - image: docker.io/stelzo/ubuntu-dev:jammy-cu12-6
+            arch: amd64
+            repo: jammy
+            cuda: 12-6
+            runner: ubuntu-latest
+          - image: docker.io/stelzo/ubuntu-dev:jammy-cu12-6
+            arch: arm64
+            repo: jammy
+            cuda: 12-6
+            runner: ubuntu-latest-arm
+          - image: docker.io/stelzo/ubuntu-dev:noble-cu13-1
+            arch: amd64
+            repo: noble
+            cuda: 13-1
+            runner: ubuntu-latest
+          - image: docker.io/stelzo/ubuntu-dev:noble-cu13-1
+            arch: arm64
+            repo: noble
+            cuda: 13-1
+            runner: ubuntu-latest-arm
+          - image: docker.io/stelzo/ubuntu-dev:jammy-cu13-1
+            arch: amd64
+            repo: jammy
+            cuda: 13-1
+            runner: ubuntu-latest
+          - image: docker.io/stelzo/ubuntu-dev:jammy-cu13-1
+            arch: arm64
+            repo: jammy
+            cuda: 13-1
+            runner: ubuntu-latest-arm
           - image: docker.io/stelzo/ubuntu-dev:noble-cu12-8
             arch: amd64
             repo: noble
+            cuda: 12-8
             runner: ubuntu-latest
           - image: docker.io/stelzo/ubuntu-dev:noble-cu12-8
             arch: arm64
             repo: noble
+            cuda: 12-8
             runner: ubuntu-latest-arm
           - image: docker.io/stelzo/ubuntu-dev:jammy-cu12-8
             arch: amd64
             repo: jammy
+            cuda: 12-8
             runner: ubuntu-latest
           - image: docker.io/stelzo/ubuntu-dev:jammy-cu12-8
             arch: arm64
             repo: jammy
+            cuda: 12-8
             runner: ubuntu-latest-arm
     runs-on: ${{ matrix.runner }}
     container:
@@ -247,104 +291,7 @@ jobs:
       - name: Upload
         uses: actions/upload-artifact@v3
         with:
-          name: artifacts-rawlibs-cu12-8-${{ matrix.repo }}
-          path: dist/
-
-  rawlibs-cu13-1:
-    needs:
-      - rawlibs-cu12-8
-    strategy:
-      matrix:
-        include:
-          - image: docker.io/stelzo/ubuntu-dev:noble-cu13-1
-            arch: amd64
-            repo: noble
-            runner: ubuntu-latest
-          - image: docker.io/stelzo/ubuntu-dev:noble-cu13-1
-            arch: arm64
-            repo: noble
-            runner: ubuntu-latest-arm
-          - image: docker.io/stelzo/ubuntu-dev:jammy-cu13-1
-            arch: amd64
-            repo: jammy
-            runner: ubuntu-latest
-          - image: docker.io/stelzo/ubuntu-dev:jammy-cu13-1
-            arch: arm64
-            repo: jammy
-            runner: ubuntu-latest-arm
-    runs-on: ${{ matrix.runner }}
-    container:
-      image: ${{ matrix.image }}
-    env:
-      CUDA_HOME: /usr/local/cuda
-    steps:
-      - uses: actions/checkout@v4
-      - name: Build
-        env:
-          IMAGE: ${{ matrix.image }}
-          ARCH: ${{ matrix.arch }}
-        run: |
-          set -euo pipefail
-          VERSION=$(toml get --raw Cargo.toml workspace.package.version)
-          # VERSION=$VERSION-1
-          rustup update
-
-          mkdir -p "dist/${ARCH}"
-           
-          # Parse cuda tag
-          IMAGE_TAG="${IMAGE##*:}"
-          CUDA_PART="${IMAGE_TAG#*-cu}"
-
-          # ------- RAW
-          cargo build -p pelorus_c --release --features cuda
-          mv target/release/libpelorus.so dist/${ARCH}/
-          mv target/release/libpelorus.a  dist/${ARCH}/
-
-          cargo build -p pelorus --release --features cuda
-          mv target/release/pelorus dist/${ARCH}/
-
-          # ------- DEB
-          # -- lib
-          updatetoml=pelorus_c/Cargo.toml
-          DEB_NAME="libpelorus-cuda${CUDA_PART}"
-          LIB_DEB=$DEB_NAME
-          tmp=$(mktemp)
-          toml set "$updatetoml" 'package.metadata.deb.name' "$DEB_NAME" >"$tmp"
-          mv "$tmp" "$updatetoml"
-
-          cargo deb --package pelorus_c
-
-          # -- dev
-          DEB_NAME="libpelorus-cuda${CUDA_PART}-dev"
-          DEV_DEB=$DEB_NAME
-          updatetoml=pelorus_c/deb-dev/Cargo.toml
-          tmp=$(mktemp)
-          toml set "$updatetoml" 'package.metadata.deb.name' "$DEB_NAME" >"$tmp"
-          mv "$tmp" "$updatetoml"
-
-          # - pin dependencies
-          tmp=$(mktemp)
-          toml set "$updatetoml" 'package.metadata.deb.depends' "${LIB_DEB} ( = ${VERSION} )" >"$tmp"
-          mv "$tmp" "$updatetoml"
-
-          cargo deb --package libpelorus-dev
-
-          # -- bin
-          DEB_NAME="pelorus-cuda${CUDA_PART}"
-          updatetoml=pelorus/Cargo.toml
-          tmp=$(mktemp)
-          toml set "$updatetoml" 'package.metadata.deb.name' "$DEB_NAME" >"$tmp"
-          mv "$tmp" "$updatetoml"
-
-          cargo deb --package pelorus
-
-          # prepare upload
-          mv target/debian/*.deb dist/${ARCH}/
-
-      - name: Upload
-        uses: actions/upload-artifact@v3
-        with:
-          name: artifacts-rawlibs-cu13-1-${{ matrix.repo }}
+          name: artifacts-rawlibs-${{ matrix.repo }}-cuda${{ matrix.cuda }}
           path: dist/
 
   ros-debs:
@@ -432,23 +379,59 @@ jobs:
           name: artifacts-cli-musl
           path: dist/
 
-  ros-debs-cu12-8:
+  ros-debs-cuda:
     needs:
       - sanity
     strategy:
       matrix:
         include:
+          - image: docker.io/stelzo/ubuntu-dev:jazzy-cu12-6
+            repo: noble
+            cuda: 12-6
+            runner: ubuntu-latest
+          - image: docker.io/stelzo/ubuntu-dev:humble-cu12-6
+            repo: jammy
+            cuda: 12-6
+            runner: ubuntu-latest
+          - image: docker.io/stelzo/ubuntu-dev:jazzy-cu12-6
+            repo: noble
+            cuda: 12-6
+            runner: ubuntu-latest-arm
+          - image: docker.io/stelzo/ubuntu-dev:humble-cu12-6
+            repo: jammy
+            cuda: 12-6
+            runner: ubuntu-latest-arm
           - image: docker.io/stelzo/ubuntu-dev:jazzy-cu12-8
             repo: noble
+            cuda: 12-8
             runner: ubuntu-latest
           - image: docker.io/stelzo/ubuntu-dev:humble-cu12-8
             repo: jammy
+            cuda: 12-8
             runner: ubuntu-latest
           - image: docker.io/stelzo/ubuntu-dev:jazzy-cu12-8
             repo: noble
+            cuda: 12-8
             runner: ubuntu-latest-arm
           - image: docker.io/stelzo/ubuntu-dev:humble-cu12-8
             repo: jammy
+            cuda: 12-8
+            runner: ubuntu-latest-arm
+          - image: docker.io/stelzo/ubuntu-dev:jazzy-cu13-1
+            repo: noble
+            cuda: 13-1
+            runner: ubuntu-latest
+          - image: docker.io/stelzo/ubuntu-dev:humble-cu13-1
+            repo: jammy
+            cuda: 13-1
+            runner: ubuntu-latest
+          - image: docker.io/stelzo/ubuntu-dev:jazzy-cu13-1
+            repo: noble
+            cuda: 13-1
+            runner: ubuntu-latest-arm
+          - image: docker.io/stelzo/ubuntu-dev:humble-cu13-1
+            repo: jammy
+            cuda: 13-1
             runner: ubuntu-latest-arm
     runs-on: ${{ matrix.runner }}
     container:
@@ -480,59 +463,7 @@ jobs:
       - name: Upload deb
         uses: actions/upload-artifact@v3
         with:
-          name: artifacts-ros-debs-cu12-8-${{ matrix.repo }}
-          path: |
-            *.deb
-
-  ros-debs-cu13-1:
-    needs:
-      - sanity
-    strategy:
-      matrix:
-        include:
-          - image: docker.io/stelzo/ubuntu-dev:jazzy-cu13-1
-            repo: noble
-            runner: ubuntu-latest
-          - image: docker.io/stelzo/ubuntu-dev:humble-cu13-1
-            repo: jammy
-            runner: ubuntu-latest
-          - image: docker.io/stelzo/ubuntu-dev:jazzy-cu13-1
-            repo: noble
-            runner: ubuntu-latest-arm
-          - image: docker.io/stelzo/ubuntu-dev:humble-cu13-1
-            repo: jammy
-            runner: ubuntu-latest-arm
-    runs-on: ${{ matrix.runner }}
-    container:
-      image: ${{ matrix.image }}
-    env:
-      CUDA_HOME: /usr/local/cuda
-    steps:
-      - uses: actions/checkout@v4
-      - name: Build
-        run: |
-          for distro in jazzy humble; do
-          if [ -f "/opt/ros/$distro/setup.bash" ]; then
-            echo "Sourcing ROS distro: $distro"
-            . "/opt/ros/$distro/setup.bash"
-            break
-          fi
-          done
-
-          if [ -z "${ROS_DISTRO:-}" ]; then
-            echo "No supported ROS distro found" >&2
-            exit 1
-          fi
-
-          rustup update
-
-          export PELORUS_CUDA=1
-          bash ./scripts/make-deb.bash
-
-      - name: Upload deb
-        uses: actions/upload-artifact@v3
-        with:
-          name: artifacts-ros-debs-cu13-1-${{ matrix.repo }}
+          name: artifacts-ros-debs-${{ matrix.repo }}-${{ matrix.cuda }}
           path: |
             *.deb
 
@@ -609,9 +540,9 @@ jobs:
           cargo deb --package pelorus_glim_odometry --no-build
           mv target/debian/*.deb dist/${ARCH}/
 
-          # ---- CUDA 12.8
+          # ---- CUDA 12.6
           # - pin dependencies
-          LIB_DEB="libpelorus-cuda12-8"
+          LIB_DEB="libpelorus-cuda12-6"
           tmp=$(mktemp)
           toml set "$updatetoml" 'package.metadata.deb.depends' "${LIB_DEB} ( = ${VERSION} )" >"$tmp"
           mv "$tmp" "$updatetoml"
