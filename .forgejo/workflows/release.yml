@@ -28,7 +28,7 @@ jobs:
       - name: Validate packaging files versions
         run: |
           set -euo pipefail
-          apt install -y cmake
+          apt-get install -y cmake
           VERSION=$(toml get --raw Cargo.toml workspace.package.version)
           echo "Workspace version: $VERSION"
           cmake -S pelorus_c -B pelorus_c/build -DCMAKE_INSTALL_PREFIX=/usr
@@ -82,6 +82,7 @@ jobs:
           ARCH: ${{ matrix.arch }}
         run: |
           set -euo pipefail
+          apt-get install -y cmake
           VERSION=$(toml get --raw Cargo.toml workspace.package.version)
           VERSION=$VERSION-1
           rustup update
@@ -262,6 +263,7 @@ jobs:
           ARCH: ${{ matrix.arch }}
         run: |
           set -euo pipefail
+          apt-get install -y cmake
           VERSION=$(toml get --raw Cargo.toml workspace.package.version)
           rustup update
 
