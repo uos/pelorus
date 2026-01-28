@@ -59,7 +59,6 @@ jobs:
           - runner: bookworm
     runs-on: ${{ matrix.runner }}
     steps:
-      - uses: actions/checkout@v4
       - name: Docker clean
         run: |
           docker system prune -af
@@ -171,7 +170,6 @@ jobs:
           - runner: bookworm
     runs-on: ${{ matrix.runner }}
     steps:
-      - uses: actions/checkout@v4
       - name: Docker clean
         run: |
           docker system prune -af
@@ -456,7 +454,6 @@ jobs:
           - runner: bookworm
     runs-on: ${{ matrix.runner }}
     steps:
-      - uses: actions/checkout@v4
       - name: Docker clean
         run: |
           docker system prune -af
@@ -556,7 +553,6 @@ jobs:
           - runner: bookworm
     runs-on: ${{ matrix.runner }}
     steps:
-      - uses: actions/checkout@v4
       - name: Docker clean
         run: |
           docker system prune -af
@@ -701,7 +697,6 @@ jobs:
           - runner: bookworm
     runs-on: ${{ matrix.runner }}
     steps:
-      - uses: actions/checkout@v4
       - name: Docker clean
         run: |
           docker system prune -af
@@ -826,7 +821,6 @@ jobs:
           - runner: bookworm
     runs-on: ${{ matrix.runner }}
     steps:
-      - uses: actions/checkout@v4
       - name: Docker clean
         run: |
           docker system prune -af
