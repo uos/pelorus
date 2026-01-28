@@ -49,9 +49,24 @@ jobs:
 
           echo "Packaging files contain correct version: $VERSION"
 
-  rawlibs:
+  clean-1:
     needs:
       - sanity
+    strategy:
+      matrix:
+        include:
+          - runner: ubuntu-latest-arm-raw
+          - runner: bookworm
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Docker clean
+        run: |
+          docker system prune -af
+
+  rawlibs:
+    needs:
+      - clean-1
     strategy:
       matrix:
         include:
@@ -146,9 +161,24 @@ jobs:
           name: artifacts-rawlibs-${{ matrix.repo }}
           path: dist/
 
+  clean-2:
+    needs:
+      - rawlibs
+    strategy:
+      matrix:
+        include:
+          - runner: ubuntu-latest-arm-raw
+          - runner: bookworm
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Docker clean
+        run: |
+          docker system prune -af
+ 
   macos:
     needs:
-      - sanity
+      - clean-2
     strategy:
       matrix:
         include:
@@ -184,9 +214,9 @@ jobs:
           name: artifacts-macos
           path: dist/
 
-  rawlibs-cuda:
+  rawlibs-cuda-12:
     needs:
-      - sanity
+      - clean-2
     strategy:
       matrix:
         include:
@@ -209,26 +239,6 @@ jobs:
             arch: arm64
             repo: jammy
             cuda: 12-6
-            runner: ubuntu-latest-arm
-          - image: docker.io/stelzo/ubuntu-dev:noble-cu13-1
-            arch: amd64
-            repo: noble
-            cuda: 13-1
-            runner: ubuntu-latest
-          - image: docker.io/stelzo/ubuntu-dev:noble-cu13-1
-            arch: arm64
-            repo: noble
-            cuda: 13-1
-            runner: ubuntu-latest-arm
-          - image: docker.io/stelzo/ubuntu-dev:jammy-cu13-1
-            arch: amd64
-            repo: jammy
-            cuda: 13-1
-            runner: ubuntu-latest
-          - image: docker.io/stelzo/ubuntu-dev:jammy-cu13-1
-            arch: arm64
-            repo: jammy
-            cuda: 13-1
             runner: ubuntu-latest-arm
           - image: docker.io/stelzo/ubuntu-dev:noble-cu12-8
             arch: amd64
@@ -330,9 +340,130 @@ jobs:
           name: artifacts-rawlibs-${{ matrix.repo }}-cuda${{ matrix.cuda }}
           path: dist/
 
+  rawlibs-cuda-13:
+    needs:
+      - rawlibs-cuda-12
+    strategy:
+      matrix:
+        include:
+          - image: docker.io/stelzo/ubuntu-dev:noble-cu13-1
+            arch: amd64
+            repo: noble
+            cuda: 13-1
+            runner: ubuntu-latest
+          - image: docker.io/stelzo/ubuntu-dev:noble-cu13-1
+            arch: arm64
+            repo: noble
+            cuda: 13-1
+            runner: ubuntu-latest-arm
+          - image: docker.io/stelzo/ubuntu-dev:jammy-cu13-1
+            arch: amd64
+            repo: jammy
+            cuda: 13-1
+            runner: ubuntu-latest
+          - image: docker.io/stelzo/ubuntu-dev:jammy-cu13-1
+            arch: arm64
+            repo: jammy
+            cuda: 13-1
+            runner: ubuntu-latest-arm
+    runs-on: ${{ matrix.runner }}
+    container:
+      image: ${{ matrix.image }}
+    env:
+      CUDA_HOME: /usr/local/cuda
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build
+        env:
+          IMAGE: ${{ matrix.image }}
+          ARCH: ${{ matrix.arch }}
+        run: |
+          set -euo pipefail
+          apt-get install -y cmake
+          VERSION=$(toml get --raw Cargo.toml workspace.package.version)
+          rustup update
+
+          mkdir -p "dist/${ARCH}"
+           
+          # Parse cuda tag
+          IMAGE_TAG="${IMAGE##*:}"
+          CUDA_PART="${IMAGE_TAG#*-cu}"
+
+          # ------- RAW
+          cargo build -p pelorus_c --release --features cuda
+          mv target/release/libpelorus.so dist/${ARCH}/
+          mv target/release/libpelorus.a  dist/${ARCH}/
+
+          cargo build -p pelorus --release --features cuda
+          mv target/release/pelorus dist/${ARCH}/
+
+          # ------- DEB
+          # -- lib
+          updatetoml=pelorus_c/Cargo.toml
+          DEB_NAME="libpelorus-cuda${CUDA_PART}"
+          LIB_DEB=$DEB_NAME
+          tmp=$(mktemp)
+          toml set "$updatetoml" 'package.metadata.deb.name' "$DEB_NAME" >"$tmp"
+          mv "$tmp" "$updatetoml"
+
+          cargo deb --package pelorus_c
+
+          # -- dev
+          DEB_NAME="libpelorus-cuda${CUDA_PART}-dev"
+          DEV_DEB=$DEB_NAME
+          updatetoml=pelorus_c/deb-dev/Cargo.toml
+          tmp=$(mktemp)
+          toml set "$updatetoml" 'package.metadata.deb.name' "$DEB_NAME" >"$tmp"
+          mv "$tmp" "$updatetoml"
+
+          # - pin dependencies
+          tmp=$(mktemp)
+          toml set "$updatetoml" 'package.metadata.deb.depends' "${LIB_DEB} ( = ${VERSION} )" >"$tmp"
+          mv "$tmp" "$updatetoml"
+
+          # Generate packaging artifacts with CMake and copy them into the dev crate
+          cmake -S pelorus_c -B pelorus_c/build -DCMAKE_INSTALL_PREFIX=/usr
+          cp pelorus_c/build/pelorus.pc pelorus_c/deb-dev/pelorus.pc
+          cp pelorus_c/build/pelorusConfig.cmake pelorus_c/deb-dev/pelorusConfig.cmake
+
+          cargo deb --package libpelorus-dev
+
+          # -- bin
+          DEB_NAME="pelorus-cuda${CUDA_PART}"
+          updatetoml=pelorus/Cargo.toml
+          tmp=$(mktemp)
+          toml set "$updatetoml" 'package.metadata.deb.name' "$DEB_NAME" >"$tmp"
+          mv "$tmp" "$updatetoml"
+
+          cargo deb --package pelorus
+
+          # prepare upload
+          mv target/debian/*.deb dist/${ARCH}/
+
+      - name: Upload
+        uses: actions/upload-artifact@v3
+        with:
+          name: artifacts-rawlibs-${{ matrix.repo }}-cuda${{ matrix.cuda }}
+          path: dist/
+
+  clean-3:
+    needs:
+      - rawlibs-cuda-13
+    strategy:
+      matrix:
+        include:
+          - runner: ubuntu-latest-arm-raw
+          - runner: bookworm
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Docker clean
+        run: |
+          docker system prune -af
+
   ros-debs:
     needs:
-      - sanity
+      - clean-3
     strategy:
       matrix:
         include:
@@ -382,7 +513,7 @@ jobs:
 
   cli-musl:
     needs:
-      - sanity
+      - ros-debs
     strategy:
       matrix:
         include:
@@ -415,9 +546,25 @@ jobs:
           name: artifacts-cli-musl
           path: dist/
 
-  ros-debs-cuda:
+  clean-4:
     needs:
-      - sanity
+      - cli-musl
+    strategy:
+      matrix:
+        include:
+          - runner: ubuntu-latest-arm-raw
+          - runner: bookworm
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Docker clean
+        run: |
+          docker system prune -af
+
+  
+  ros-debs-cuda-12:
+    needs:
+      - clean-4
     strategy:
       matrix:
         include:
@@ -453,6 +600,47 @@ jobs:
             repo: jammy
             cuda: 12-8
             runner: ubuntu-latest-arm
+    runs-on: ${{ matrix.runner }}
+    container:
+      image: ${{ matrix.image }}
+    env:
+      CUDA_HOME: /usr/local/cuda
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build
+        run: |
+          for distro in jazzy humble; do
+          if [ -f "/opt/ros/$distro/setup.bash" ]; then
+            echo "Sourcing ROS distro: $distro"
+            . "/opt/ros/$distro/setup.bash"
+            break
+          fi
+          done
+
+          if [ -z "${ROS_DISTRO:-}" ]; then
+            echo "No supported ROS distro found" >&2
+            exit 1
+          fi
+
+          rustup update
+
+          export PELORUS_CUDA=1
+          bash ./scripts/make-deb.bash
+
+      - name: Upload deb
+        uses: actions/upload-artifact@v3
+        with:
+          name: artifacts-ros-debs-${{ matrix.repo }}-${{ matrix.cuda }}
+          path: |
+            *.deb
+
+
+  ros-debs-cuda-13:
+    needs:
+      - ros-debs-cuda-12
+    strategy:
+      matrix:
+        include:
           - image: docker.io/stelzo/ubuntu-dev:jazzy-cu13-1
             repo: noble
             cuda: 13-1
@@ -503,9 +691,24 @@ jobs:
           path: |
             *.deb
 
+  clean-5:
+    needs:
+      - ros-debs-cuda-13
+    strategy:
+      matrix:
+        include:
+          - runner: ubuntu-latest-arm-raw
+          - runner: bookworm
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Docker clean
+        run: |
+          docker system prune -af
+
   glim:
     needs:
-      - rawlibs
+      - clean-5
     strategy:
       matrix:
         include:
@@ -613,10 +816,25 @@ jobs:
           path: |
             dist/*
 
+  clean-6:
+    needs:
+      - glim
+    strategy:
+      matrix:
+        include:
+          - runner: ubuntu-latest-arm-raw
+          - runner: bookworm
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Docker clean
+        run: |
+          docker system prune -af
+
   wheels:
     runs-on: ubuntu-dev-noble-arm # the ARM runner has more power and capacity
     needs:
-      - sanity
+      - clean-6
     strategy:
       matrix:
         # omitting ppc64le and s390x since they probably have other problems than running this software
