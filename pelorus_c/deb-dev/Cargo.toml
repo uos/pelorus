@@ -19,7 +19,7 @@ preserve-symlinks = false
 assets = [
     ["pelorus.h", "usr/include/pelorus/pelorus.h", "644"],
     ["pelorus.hpp", "usr/include/pelorus/pelorus.hpp", "644"],
-    ["pelorus.pc.in", "usr/lib/pkgconfig/pelorus.pc", "644"],
-    ["pelorusConfig.cmake.in", "usr/lib/cmake/pelorus/pelorusConfig.cmake", "644"],
+    ["pelorus.pc", "usr/lib/pkgconfig/pelorus.pc", "644"],
+    ["pelorusConfig.cmake", "usr/lib/cmake/pelorus/pelorusConfig.cmake", "644"],
 ]
 

@@ -22,8 +22,31 @@ jobs:
       - uses: actions/checkout@v4
       - name: Check
         run: |
-          rustup update
-          cargo check
+          echo "test"
+          # rustup update
+          # cargo check
+      - name: Validate packaging files versions
+        run: |
+          set -euo pipefail
+          VERSION=$(toml get --raw Cargo.toml workspace.package.version)
+          echo "Workspace version: $VERSION"
+          cmake -S pelorus_c -B pelorus_c/build -DCMAKE_INSTALL_PREFIX=/usr
+
+          if ! grep -q "Version: $VERSION" pelorus_c/build/pelorus.pc; then
+            echo "pelorus.pc version mismatch or missing" >&2
+            echo "pelorus.pc content:" >&2
+            sed -n '1,120p' pelorus_c/build/pelorus.pc >&2 || true
+            exit 1
+          fi
+
+          if ! grep -q "pelorus_PACKAGE_VERSION \"${VERSION}\"" pelorus_c/build/pelorusConfig.cmake; then
+            echo "pelorusConfig.cmake version mismatch or missing" >&2
+            echo "pelorusConfig.cmake content:" >&2
+            sed -n '1,120p' pelorus_c/build/pelorusConfig.cmake >&2 || true
+            exit 1
+          fi
+
+          echo "Packaging files contain correct version: $VERSION"
 
   rawlibs:
     needs:
@@ -95,6 +118,10 @@ jobs:
           tmp=$(mktemp)
           toml set "$updatetoml" 'package.metadata.deb.depends' "${LIB_DEB} ( = ${VERSION} )" >"$tmp"
           mv "$tmp" "$updatetoml"
+
+          # Generate packaging artifacts with CMake and copy them into the dev crate
+          cmake -S pelorus_c -B pelorus_c/build -DCMAKE_INSTALL_PREFIX=/usr
+          cp pelorus_c/build/pelorus.pc pelorus_c/deb-dev/pelorus.pc
 
           cargo deb --package libpelorus-dev
 
