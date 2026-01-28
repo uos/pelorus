@@ -123,6 +123,7 @@ jobs:
           # Generate packaging artifacts with CMake and copy them into the dev crate
           cmake -S pelorus_c -B pelorus_c/build -DCMAKE_INSTALL_PREFIX=/usr
           cp pelorus_c/build/pelorus.pc pelorus_c/deb-dev/pelorus.pc
+          cp pelorus_c/build/pelorusConfig.cmake pelorus_c/deb-dev/pelorusConfig.cmake
 
           cargo deb --package libpelorus-dev
 
@@ -301,6 +302,11 @@ jobs:
           tmp=$(mktemp)
           toml set "$updatetoml" 'package.metadata.deb.depends' "${LIB_DEB} ( = ${VERSION} )" >"$tmp"
           mv "$tmp" "$updatetoml"
+
+          # Generate packaging artifacts with CMake and copy them into the dev crate
+          cmake -S pelorus_c -B pelorus_c/build -DCMAKE_INSTALL_PREFIX=/usr
+          cp pelorus_c/build/pelorus.pc pelorus_c/deb-dev/pelorus.pc
+          cp pelorus_c/build/pelorusConfig.cmake pelorus_c/deb-dev/pelorusConfig.cmake
 
           cargo deb --package libpelorus-dev
 
