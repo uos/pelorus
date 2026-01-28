@@ -17,8 +17,8 @@ priority = "optional"
 depends = "libpelorus ( = $VERSION )"
 preserve-symlinks = false
 assets = [
-    ["pelorus.h", "usr/include/pelorus/pelorus.h", "644"],
-    ["pelorus.hpp", "usr/include/pelorus/pelorus.hpp", "644"],
+    ["pelorus.h", "usr/include/pelorus.h", "644"],
+    ["pelorus.hpp", "usr/include/pelorus.hpp", "644"],
     ["pelorus.pc", "usr/lib/pkgconfig/pelorus.pc", "644"],
     ["pelorusConfig.cmake", "usr/lib/cmake/pelorus/pelorusConfig.cmake", "644"],
 ]
