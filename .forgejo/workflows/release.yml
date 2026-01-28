@@ -28,7 +28,7 @@ jobs:
       - name: Validate packaging files versions
         run: |
           set -euo pipefail
-          apt install cmake
+          apt install -y cmake
           VERSION=$(toml get --raw Cargo.toml workspace.package.version)
           echo "Workspace version: $VERSION"
           cmake -S pelorus_c -B pelorus_c/build -DCMAKE_INSTALL_PREFIX=/usr
