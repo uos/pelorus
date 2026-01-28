@@ -939,6 +939,7 @@ jobs:
         run: |
           VERSION=$(toml get --raw Cargo.toml workspace.package.version)
           VERSION=$VERSION-1
+          mkdir -p dist/${ARCH}
           rustup update
 
           # - set name
