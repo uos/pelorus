@@ -14,7 +14,7 @@ permissions:
 
 jobs:
   sanity:
-    runs-on: ubuntu-dev-noble
+    runs-on: ubuntu-dev-noble-arm
     steps:
       - uses: actions/checkout@v4
       - name: Check
@@ -620,7 +620,7 @@ jobs:
       matrix:
         include:
           - target: x86_64-unknown-linux-musl
-            runner: ubuntu-dev-noble
+            runner: ubuntu-dev-noble-arm
             arch: amd64
           - target: aarch64-unknown-linux-musl
             runner: ubuntu-dev-noble-arm

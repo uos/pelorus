@@ -110,18 +110,18 @@ impl RegistrationState {
 
     pub fn get_odometry_covariances(&self) -> ([f64; 36], [f64; 9]) {
         // 1. Get current rotation matrix (World to Body)
-        let r_wb = self.ekf.state.pose.rotation().matrix();
+        let r_wb = self.ekf.state.pose().rotation().matrix();
         let r_bw = r_wb.transpose(); // Body to World (and vice versa for rotation)
 
         // --- PREPARE POSE COVARIANCE (6x6) in WORLD FRAME ---
-        // Current state:
-        // Pos (3..6) is World Frame -> OK
-        // Rot (0..3) is Body Frame  -> Needs Rotation to World
+        // 24-dim state: pos(0-2), rot(3-5), offset_R(6-8), offset_T(9-11), vel(12-14), bg(15-17), ba(18-20), grav(21-23)
+        // Pos (0..3) is World Frame -> OK
+        // Rot (3..6) is Body Frame  -> Needs Rotation to World
 
         // Extract raw blocks from faer Mat
-        let cov_pp = extract_3x3_block(&self.ekf.cov, 3, 3); // Pos-Pos (World)
-        let cov_rr_body = extract_3x3_block(&self.ekf.cov, 0, 0); // Rot-Rot (Body)
-        let cov_pr_mixed = extract_3x3_block(&self.ekf.cov, 3, 0); // Pos-Rot (Row:World, Col:Body)
+        let cov_pp = extract_3x3_block(&self.ekf.cov, 0, 0); // Pos-Pos (World)
+        let cov_rr_body = extract_3x3_block(&self.ekf.cov, 3, 3); // Rot-Rot (Body)
+        let cov_pr_mixed = extract_3x3_block(&self.ekf.cov, 0, 3); // Pos-Rot (Row:World, Col:Body)
 
         // Rotate Orientation block to World: R * Cov_body * R^T
         let cov_rr_world = rotate_covariance(&cov_rr_body, &r_wb);
@@ -169,12 +169,12 @@ impl RegistrationState {
     pub fn get_twist_covariance_6x6(&self) -> [f64; 36] {
         let mut cov6 = [0.0; 36];
 
-        let r_wb = self.ekf.state.pose.rotation().matrix();
+        let r_wb = self.ekf.state.pose().rotation().matrix();
         let r_bw = r_wb.transpose();
 
-        // 1. Linear Velocity (Indices 6..9) - Currently World Frame
+        // 1. Linear Velocity (Indices 12..15 in 24-dim state) - Currently World Frame
         // Needs rotation to Body Frame for ROS Twist
-        let cov_vv_world = extract_3x3_block(&self.ekf.cov, 6, 6);
+        let cov_vv_world = extract_3x3_block(&self.ekf.cov, 12, 12);
         let cov_vv_body = rotate_covariance(&cov_vv_world, &r_bw);
 
         // 2. Angular Velocity
@@ -432,16 +432,16 @@ impl crate::Registration for RegistrationState {
     fn get_state(&self) -> crate::ImuEkfPrediction {
         crate::ImuEkfPrediction {
             pose: Isometry3::from_parts(
-                Translation3::from(self.ekf.state.pose.translation()),
+                Translation3::from(self.ekf.state.pose().translation()),
                 UnitQuaternion::from_rotation_matrix(&Rotation3::from_matrix(
-                    &self.ekf.state.pose.rotation().matrix(),
+                    &self.ekf.state.pose().rotation().matrix(),
                 )),
             ),
             linear_velocity: self.ekf.state.vel,
             lidar_imu_extrinsic: Isometry3::from_parts(
-                Translation3::from(self.ekf.state.lidar_to_imu_t),
+                Translation3::from(self.ekf.state.offset_t_l_i),
                 UnitQuaternion::from_rotation_matrix(&Rotation3::from_matrix(
-                    &self.ekf.state.lidar_to_imu_r.matrix(),
+                    &self.ekf.state.offset_r_l_i.matrix(),
                 )),
             ),
         }
@@ -536,7 +536,8 @@ impl crate::Registration for RegistrationState {
                       valid: &mut bool,
                       _converged: bool,
                       h: &mut faer::Col<f64>,
-                      h_x: &mut faer::Mat<f64>| {
+                      h_x: &mut faer::Mat<f64>,
+                      num_measurements: &mut usize| {
                     let mut eval = eval_cb.write().unwrap();
                     eval.start("ekf_correct/model/planes").unwrap();
 
@@ -564,17 +565,17 @@ impl crate::Registration for RegistrationState {
                             &stream,
                             cloud,
                             &pelorus_cuda::Vector3::new(
-                                ekf_state.pose.translation().x,
-                                ekf_state.pose.translation().y,
-                                ekf_state.pose.translation().z,
+                                ekf_state.pose().translation().x,
+                                ekf_state.pose().translation().y,
+                                ekf_state.pose().translation().z,
                             ),
-                            &ekf_state.pose.rotation().matrix().into(),
+                            &ekf_state.pose().rotation().matrix().into(),
                             &pelorus_cuda::Vector3::new(
-                                ekf_state.lidar_to_imu_t.x,
-                                ekf_state.lidar_to_imu_t.y,
-                                ekf_state.lidar_to_imu_t.z,
+                                ekf_state.offset_t_l_i.x,
+                                ekf_state.offset_t_l_i.y,
+                                ekf_state.offset_t_l_i.z,
                             ),
-                            &ekf_state.lidar_to_imu_r.matrix().into(),
+                            &ekf_state.offset_r_l_i.matrix().into(),
                             planes,
                             planes_gpu,
                         );
@@ -610,9 +611,9 @@ impl crate::Registration for RegistrationState {
                                     point_local.y,
                                     point_local.z,
                                 );
-                                let p_imu = ekf_state.lidar_to_imu_r.matrix() * p_l.cast()
-                                    + ekf_state.lidar_to_imu_t;
-                                let p_world = ekf_state.pose.transform(p_imu.coords);
+                                let p_imu = ekf_state.offset_r_l_i.matrix() * p_l.cast()
+                                    + ekf_state.offset_t_l_i;
+                                let p_world = ekf_state.pose().transform(p_imu.coords);
 
                                 let query_point = PointXYZ::new(
                                     p_world.x as f32,
@@ -666,9 +667,9 @@ impl crate::Registration for RegistrationState {
                                     point_local.y,
                                     point_local.z,
                                 );
-                                let p_imu = ekf_state.lidar_to_imu_r.matrix() * p_l.cast()
-                                    + ekf_state.lidar_to_imu_t;
-                                let p_world = ekf_state.pose.transform(p_imu.coords);
+                                let p_imu = ekf_state.offset_r_l_i.matrix() * p_l.cast()
+                                    + ekf_state.offset_t_l_i;
+                                let p_world = ekf_state.pose().transform(p_imu.coords);
 
                                 let query_point = PointXYZ::new(
                                     p_world.x as f32,
@@ -716,8 +717,12 @@ impl crate::Registration for RegistrationState {
 
                     if planes.is_empty() {
                         *valid = false;
+                        *num_measurements = 0;
                         return;
                     }
+
+                    // Set actual number of measurements
+                    *num_measurements = planes.len();
 
                     eval.start("ekf_correct/model/jacobian").unwrap();
 
@@ -726,8 +731,11 @@ impl crate::Registration for RegistrationState {
                         *h = faer::Col::<f64>::zeros(cloud_len_alloc);
                     }
 
+                    // S-FAST_LIO uses sparse H matrix with only 12 columns:
+                    // pos(0-2), rot(3-5), offset_R_L_I(6-8), offset_T_L_I(9-11)
+                    // vel, bg, ba, grav don't affect point-to-plane measurement
                     if planes.len() > h_x.nrows() {
-                        *h_x = faer::Mat::<f64>::zeros(cloud_len_alloc, 18);
+                        *h_x = faer::Mat::<f64>::zeros(cloud_len_alloc, 12);
                     }
 
                     // Process each plane
@@ -739,33 +747,35 @@ impl crate::Registration for RegistrationState {
                             normal_point.normal_z as f64,
                             normal_point.intensity as f64,
                         ];
-                        let v = ekf_state.lidar_to_imu_r.matrix() * point_local
-                            + ekf_state.lidar_to_imu_t;
+                        // point in IMU frame (p_I)
+                        let point_imu =
+                            ekf_state.offset_r_l_i.matrix() * point_local + ekf_state.offset_t_l_i;
 
                         let norm =
                             Vector3::new(nearest_plane[0], nearest_plane[1], nearest_plane[2]);
 
-                        // Rotation perturbation
-                        let p_imu_global = ekf_state.pose.rotation().matrix() * v.coords;
-                        let skew_mat = skew_symmetric_na(&p_imu_global);
-                        let a = -1.0 * norm.transpose() * skew_mat;
+                        // Rotation perturbation - following S-FAST_LIO:
+                        // C = R^T * n
+                        // A = [p_I]× * C = [p_I]× * R^T * n
+                        // Jacobian row is A^T = n^T * R * (-[p_I]×) = -n^T * R * [p_I]×
+                        let point_imu_vec = point_imu.coords;
+                        let point_imu_skew = skew_symmetric_na(&point_imu_vec);
+                        let c = ekf_state.pose().rotation().matrix().transpose() * norm;
+                        let a_vec = point_imu_skew * c; // This is A (3x1 column vector)
 
-                        // Position perturbation
-                        // derivative of plane equation wrt global position
-                        let pos_jacobian = norm;
+                        // Position Jacobian (columns 0-2): just the normal vector
+                        h_x[(i, 0)] = norm.x;
+                        h_x[(i, 1)] = norm.y;
+                        h_x[(i, 2)] = norm.z;
 
-                        // Rotation Jacobian
-                        h_x[(i, 0)] = a.x;
-                        h_x[(i, 1)] = a.y;
-                        h_x[(i, 2)] = a.z;
+                        // Rotation Jacobian (columns 3-5): A vector (transposed in the row)
+                        h_x[(i, 3)] = a_vec.x;
+                        h_x[(i, 4)] = a_vec.y;
+                        h_x[(i, 5)] = a_vec.z;
 
-                        // Position Jacobian
-                        h_x[(i, 3)] = pos_jacobian.x;
-                        h_x[(i, 4)] = pos_jacobian.y;
-                        h_x[(i, 5)] = pos_jacobian.z;
-
-                        // Velocity, gyro bias, accel bias, gravity: no influence on measurement
-                        for j in 6..18 {
+                        // Extrinsic offset_R_L_I and offset_T_L_I (columns 6-11): zero for now
+                        // TODO: implement extrinsic estimation if needed
+                        for j in 6..12 {
                             h_x[(i, j)] = 0.0;
                         }
 
@@ -780,18 +790,18 @@ impl crate::Registration for RegistrationState {
         // Prepare transform from lidar -> imu frame.
         // This is the lidar pose in imu coordinate system, so we can lidar -> imu or imu -> lidar with invert.
         let t_i_l = Isometry3::from_parts(
-            Translation3::from(self.ekf.state.lidar_to_imu_t),
+            Translation3::from(self.ekf.state.offset_t_l_i),
             UnitQuaternion::from_rotation_matrix(&Rotation3::from_matrix(
-                &self.ekf.state.lidar_to_imu_r.matrix(),
+                &self.ekf.state.offset_r_l_i.matrix(),
             )),
         );
 
         // Transform from world frame to imu frame (IEKF coordinate system).
         // The original state.pose is in imu frame relative to the world, so we can imu -> world.
         let t_w_i = Isometry3::from_parts(
-            Translation3::from(self.ekf.state.pose.translation()),
+            Translation3::from(self.ekf.state.pose().translation()),
             UnitQuaternion::from_rotation_matrix(&Rotation3::from_matrix(
-                &self.ekf.state.pose.rotation().matrix(),
+                &self.ekf.state.pose().rotation().matrix(),
             )),
         );
 

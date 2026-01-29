@@ -23,37 +23,60 @@ fn mat3_to_faer(m: &nalgebra::Matrix3<f64>) -> Mat<f64> {
 // TODO use config, needs some refactor
 const GRAVITY_DEFAULT: f64 = 9.81;
 
+/// 24-dimensional state following S-FAST_LIO ordering:
+/// - pos (0-2): position in world frame
+/// - rot (3-5): rotation SO3 (world to IMU)
+/// - offset_R_L_I (6-8): lidar-to-IMU rotation extrinsic
+/// - offset_T_L_I (9-11): lidar-to-IMU translation extrinsic
+/// - vel (12-14): velocity in world frame
+/// - bg (15-17): gyro bias
+/// - ba (18-20): accelerometer bias
+/// - grav (21-23): gravity vector in world frame
 #[derive(Clone, Debug, Copy)]
 pub struct StateIKFom {
-    pub pose: SE3,                    // T_W_I: world frame pose of IMU
-    pub lidar_to_imu_r: SO3,          // R_I_L: lidar to IMU rotation (extrinsic calibration)
-    pub lidar_to_imu_t: Vector3<f64>, // t_I_L: lidar to IMU translation (extrinsic calibration)
-    pub vel: Vector3<f64>,            // velocity in world frame
-    pub bg: Vector3<f64>,             // estimated gyro bias
-    pub ba: Vector3<f64>,             // accelerometer bias
-    pub grav: Vector3<f64>,           // gravity vector in world frame
+    pub pos: Vector3<f64>,          // position in world frame
+    pub rot: SO3,                   // rotation: world to IMU (T_W_I rotation part)
+    pub offset_r_l_i: SO3,          // R_I_L: lidar to IMU rotation (extrinsic calibration)
+    pub offset_t_l_i: Vector3<f64>, // t_I_L: lidar to IMU translation (extrinsic calibration)
+    pub vel: Vector3<f64>,          // velocity in world frame
+    pub bg: Vector3<f64>,           // estimated gyro bias
+    pub ba: Vector3<f64>,           // accelerometer bias
+    pub grav: Vector3<f64>,         // gravity vector in world frame
 }
 
 impl StateIKFom {
     pub fn new(gravity: f64) -> Self {
         StateIKFom {
-            pose: SE3::identity(),
-            lidar_to_imu_r: SO3::identity(),
-            lidar_to_imu_t: Vector3::zeros(),
+            pos: Vector3::zeros(),
+            rot: SO3::identity(),
+            offset_r_l_i: SO3::identity(),
+            offset_t_l_i: Vector3::zeros(),
             vel: Vector3::zeros(),
             bg: Vector3::zeros(),
             ba: Vector3::zeros(),
             grav: Vector3::new(0.0, 0.0, -gravity),
         }
     }
+
+    /// Helper to get pose as SE3 (for compatibility)
+    pub fn pose(&self) -> SE3 {
+        SE3::from_rotation_and_translation(self.rot, self.pos)
+    }
+
+    /// Set pose from SE3 (for compatibility)
+    pub fn set_pose(&mut self, pose: SE3) {
+        self.pos = pose.translation();
+        self.rot = pose.rotation();
+    }
 }
 
 impl Default for StateIKFom {
     fn default() -> Self {
         StateIKFom {
-            pose: SE3::identity(),
-            lidar_to_imu_r: SO3::identity(),
-            lidar_to_imu_t: Vector3::zeros(),
+            pos: Vector3::zeros(),
+            rot: SO3::identity(),
+            offset_r_l_i: SO3::identity(),
+            offset_t_l_i: Vector3::zeros(),
             vel: Vector3::zeros(),
             bg: Vector3::zeros(),
             ba: Vector3::zeros(),
@@ -80,11 +103,19 @@ impl InputIKFom {
     }
 }
 
-/// Get the state transition function f(x, u) Matrix
+/// Get the state transition function f(x, u) Matrix (24x1)
+/// Following S-FAST_LIO use-ikfom.hpp get_f() ordering:
+/// - (0-2): vel (position derivative)
+/// - (3-5): omega (rotation derivative)
+/// - (6-8): zeros (offset_R_L_I derivative - not estimated online typically)
+/// - (9-11): zeros (offset_T_L_I derivative - not estimated online typically)
+/// - (12-14): a_inertial + grav (velocity derivative)
+/// - (15-17): zeros (bg derivative)
+/// - (18-20): zeros (ba derivative)
+/// - (21-23): zeros (grav derivative)
 fn get_f(s: &StateIKFom, inp: &InputIKFom) -> Mat<f64> {
-    let angular_vel = inp.gyro - s.bg; // bg is the estimated gyro bias
-    // Use the rotation component from the SE3 pose
-    let rot_mat = mat3_to_faer(&s.pose.rotation().matrix());
+    let omega = inp.gyro - s.bg; // angular velocity minus bias
+    let rot_mat = mat3_to_faer(&s.rot.matrix());
     let acc_diff = inp.acc - s.ba;
     // Convert to faer col for matrix multiply
     let acc_diff_col = faer::col![acc_diff.x, acc_diff.y, acc_diff.z];
@@ -92,19 +123,22 @@ fn get_f(s: &StateIKFom, inp: &InputIKFom) -> Mat<f64> {
     let grav_col = faer::col![s.grav.x, s.grav.y, s.grav.z];
     let acc_grav = &acc_inertial + &grav_col; // acceleration added gravity
 
-    let mut res = Mat::<f64>::zeros(18, 1);
-    // Copy angular_vel to rows 0-2
-    res[(0, 0)] = angular_vel.x;
-    res[(1, 0)] = angular_vel.y;
-    res[(2, 0)] = angular_vel.z;
-    // Copy vel to rows 3-5
-    res[(3, 0)] = s.vel.x;
-    res[(4, 0)] = s.vel.y;
-    res[(5, 0)] = s.vel.z;
-    // Copy acc_grav to rows 6-8
-    res[(6, 0)] = acc_grav[0];
-    res[(7, 0)] = acc_grav[1];
-    res[(8, 0)] = acc_grav[2];
+    let mut res = Mat::<f64>::zeros(24, 1);
+    // vel derivative -> position derivative (rows 0-2)
+    res[(0, 0)] = s.vel.x;
+    res[(1, 0)] = s.vel.y;
+    res[(2, 0)] = s.vel.z;
+    // omega -> rotation derivative (rows 3-5)
+    res[(3, 0)] = omega.x;
+    res[(4, 0)] = omega.y;
+    res[(5, 0)] = omega.z;
+    // offset_R_L_I derivative (rows 6-8) - zeros
+    // offset_T_L_I derivative (rows 9-11) - zeros
+    // acc_grav -> velocity derivative (rows 12-14)
+    res[(12, 0)] = acc_grav[0];
+    res[(13, 0)] = acc_grav[1];
+    res[(14, 0)] = acc_grav[2];
+    // bg, ba, grav derivatives (rows 15-23) - zeros
 
     res
 }
@@ -143,13 +177,16 @@ where
     )
 }
 
-/// Get the Jacobian of the state transition function f(x, u) with respect to x. x is the state
-pub fn df_dx(s: &StateIKFom, inp: &InputIKFom, dt: f64) -> Mat<f64> {
-    let mut cov = Mat::<f64>::identity(18, 18);
+/// Get the Jacobian of the state transition function f(x, u) with respect to x.
+/// Following S-FAST_LIO use-ikfom.hpp df_dx() - returns 24x24 matrix
+/// Note: This returns the matrix WITHOUT the identity and dt multiplication
+/// (those are applied in predict())
+pub fn df_dx(s: &StateIKFom, inp: &InputIKFom) -> Mat<f64> {
+    let mut cov = Mat::<f64>::zeros(24, 24);
 
-    // Get rotation matrix from sophus
-    let rot_mat = mat3_to_faer(&s.pose.rotation().matrix());
-    let id3 = Mat::<f64>::identity(3, 3);
+    let rot_mat = mat3_to_faer(&s.rot.matrix());
+    let acc_diff = inp.acc - s.ba;
+    let acc_skew = skew_symmetric(&acc_diff);
 
     // Helper to copy 3x3 block into larger matrix
     let copy_block = |dest: &mut Mat<f64>, row: usize, col: usize, src: &Mat<f64>| {
@@ -160,84 +197,35 @@ pub fn df_dx(s: &StateIKFom, inp: &InputIKFom, dt: f64) -> Mat<f64> {
         }
     };
 
-    // rot block (0, 0)
-    let rot_block = &id3 + &rot_mat * &skew_symmetric(&s.bg);
-    copy_block(&mut cov, 0, 0, &rot_block);
+    // d(pos)/d(vel) = I  -> (0, 12)
+    let id3 = Mat::<f64>::identity(3, 3);
+    copy_block(&mut cov, 0, 12, &id3);
 
-    // rot block (0, 9)
-    let rot_block2 = &rot_mat * (-dt);
-    copy_block(&mut cov, 0, 9, &rot_block2);
+    // d(vel)/d(rot) = -R * skew(acc - ba)  -> (12, 3)
+    let vel_rot_block = &rot_mat * &acc_skew * (-1.0);
+    copy_block(&mut cov, 12, 3, &vel_rot_block);
 
-    // pos block (3, 0)
-    let trans_vel = s.pose.translation() + s.vel * dt;
-    let pos_block = &skew_symmetric(&trans_vel) * &rot_mat * &skew_symmetric(&s.bg);
-    copy_block(&mut cov, 3, 0, &pos_block);
+    // d(vel)/d(ba) = -R  -> (12, 18)
+    let vel_ba_block = &rot_mat * (-1.0);
+    copy_block(&mut cov, 12, 18, &vel_ba_block);
 
-    // pos block (3, 6)
-    let pos_block2 = &id3 * dt;
-    copy_block(&mut cov, 3, 6, &pos_block2);
+    // d(vel)/d(grav) = I  -> (12, 21)
+    copy_block(&mut cov, 12, 21, &id3);
 
-    // pos block (3, 9)
-    let pos_block3 = &skew_symmetric(&trans_vel) * &rot_mat * (-dt);
-    copy_block(&mut cov, 3, 9, &pos_block3);
-
-    // vel blocks are more complex
-    let acc_diff = inp.acc - s.ba;
-    let rot_acc = &s.pose.rotation().matrix() * acc_diff;
-    let acc_grav_dt = (rot_acc + s.grav) * dt;
-
-    // vel block (6, 0)
-    let rot_inp_acc_dt = &s.pose.rotation().matrix() * inp.acc * dt;
-    let vel_block = &rot_mat * &skew_symmetric(&s.ba) * dt - &skew_symmetric(&rot_inp_acc_dt)
-        + &skew_symmetric(&s.vel) * &rot_mat * &skew_symmetric(&s.bg)
-        + &skew_symmetric(&acc_grav_dt) * (&id3 + &rot_mat * &skew_symmetric(&s.bg));
-    copy_block(&mut cov, 6, 0, &vel_block);
-
-    // vel block (6, 9)
-    let vel_grav = s.vel + acc_grav_dt;
-    let vel_block2 = &skew_symmetric(&vel_grav) * &rot_mat * (-dt);
-    copy_block(&mut cov, 6, 9, &vel_block2);
-
-    // vel block (6, 12)
-    let vel_block3 = &rot_mat * (-dt);
-    copy_block(&mut cov, 6, 12, &vel_block3);
-
-    // vel block (6, 15)
-    let vel_block4 = &id3 * dt;
-    copy_block(&mut cov, 6, 15, &vel_block4);
-
-    // bg block (9, 0)
-    let bg_block = &skew_symmetric(&s.bg) * &rot_mat * &skew_symmetric(&s.bg);
-    copy_block(&mut cov, 9, 0, &bg_block);
-
-    // bg block (9, 9)
-    let bg_block2 = &id3 - &skew_symmetric(&s.bg) * &rot_mat * dt;
-    copy_block(&mut cov, 9, 9, &bg_block2);
-
-    // ba block (12, 0)
-    let ba_block = &skew_symmetric(&s.ba) * &rot_mat * &skew_symmetric(&s.bg);
-    copy_block(&mut cov, 12, 0, &ba_block);
-
-    // ba block (12, 9)
-    let ba_block2 = &skew_symmetric(&s.ba) * &rot_mat * (-dt);
-    copy_block(&mut cov, 12, 9, &ba_block2);
-
-    // g block (15, 0)
-    let g_block = &skew_symmetric(&s.grav) * &rot_mat * &skew_symmetric(&s.bg);
-    copy_block(&mut cov, 15, 0, &g_block);
-
-    // g block (15, 9)
-    let g_block2 = &skew_symmetric(&s.grav) * &rot_mat * (-dt);
-    copy_block(&mut cov, 15, 9, &g_block2);
+    // d(rot)/d(bg) = -I  -> (3, 15)
+    let neg_id3 = &id3 * (-1.0);
+    copy_block(&mut cov, 3, 15, &neg_id3);
 
     cov
 }
 
-/// Get the Jacobian of the state transition function f(x, u) with respect to w. w is the noise
-pub fn df_dw(s: &StateIKFom, inp: &InputIKFom, dt: f64) -> Mat<f64> {
-    let mut cov = Mat::<f64>::zeros(18, 12);
+/// Get the Jacobian of the state transition function f(x, u) with respect to w (noise).
+/// Following S-FAST_LIO use-ikfom.hpp df_dw() - returns 24x12 matrix
+/// Note: This returns the matrix WITHOUT the dt multiplication (applied in predict())
+pub fn df_dw(s: &StateIKFom, _inp: &InputIKFom) -> Mat<f64> {
+    let mut cov = Mat::<f64>::zeros(24, 12);
 
-    let rot_mat = mat3_to_faer(&s.pose.rotation().matrix());
+    let rot_mat = mat3_to_faer(&s.rot.matrix());
     let id3 = Mat::<f64>::identity(3, 3);
 
     // Helper to copy 3x3 block
@@ -249,135 +237,133 @@ pub fn df_dw(s: &StateIKFom, inp: &InputIKFom, dt: f64) -> Mat<f64> {
         }
     };
 
-    // rot block (0, 0)
-    let rot_block = &rot_mat * (-1.0);
-    copy_block(&mut cov, 0, 0, &rot_block);
+    // d(vel)/d(n_a) = -R  -> (12, 3)
+    let vel_na_block = &rot_mat * (-1.0);
+    copy_block(&mut cov, 12, 3, &vel_na_block);
 
-    // pos block (3, 0)
-    let trans_vel = s.pose.translation() + s.vel * dt;
-    let pos_block = &skew_symmetric(&trans_vel) * &rot_mat * (-1.0);
-    copy_block(&mut cov, 3, 0, &pos_block);
+    // d(rot)/d(n_g) = -I  -> (3, 0)
+    let neg_id3 = &id3 * (-1.0);
+    copy_block(&mut cov, 3, 0, &neg_id3);
 
-    // vel block (6, 0)
-    let acc_diff = inp.acc - s.ba;
-    let rot_acc = &s.pose.rotation().matrix() * acc_diff;
-    let vel_grav_dt = s.vel + (rot_acc + s.grav) * dt;
-    let vel_block = &skew_symmetric(&vel_grav_dt) * &rot_mat * (-1.0);
-    copy_block(&mut cov, 6, 0, &vel_block);
+    // d(bg)/d(n_bg) = I  -> (15, 6)
+    copy_block(&mut cov, 15, 6, &id3);
 
-    // vel block (6, 3)
-    let vel_block2 = &rot_mat * (-1.0);
-    copy_block(&mut cov, 6, 3, &vel_block2);
-
-    // bg block (9, 0)
-    let bg_block = &skew_symmetric(&s.bg) * &rot_mat * (-1.0);
-    copy_block(&mut cov, 9, 0, &bg_block);
-
-    // bg block (9, 6)
-    copy_block(&mut cov, 9, 6, &id3);
-
-    // ba block (12, 0)
-    let ba_block = &skew_symmetric(&s.ba) * &rot_mat * (-1.0);
-    copy_block(&mut cov, 12, 0, &ba_block);
-
-    // ba block (12, 9)
-    copy_block(&mut cov, 12, 9, &id3);
-
-    // g block (15, 0)
-    let g_block = &skew_symmetric(&s.grav) * &rot_mat * (-1.0);
-    copy_block(&mut cov, 15, 0, &g_block);
+    // d(ba)/d(n_ba) = I  -> (18, 9)
+    copy_block(&mut cov, 18, 9, &id3);
 
     cov
 }
 
 pub struct Iekf {
     pub state: StateIKFom,
-    pub cov: Mat<f64>,           // 18x18 covariance matrix in faer
-    pub f_w_q_w_t_dt2: Mat<f64>, // 18x18 temporary for cov update in predict
-    pub fxtcov: Mat<f64>,        // 18x18 temporary for cov update in predict
-    pub fxcov: Mat<f64>,         // 18x18 temporary for cov update in predict
-    pub q_f_w_t: Mat<f64>,       // 12x18 temporary for cov update in predict
-    pub id: Mat<f64>,            // 18x18 temporary for cov update in scalar constraint
-    pub k_mat: Mat<f64>,         // 18x1 temporary for cov update in scalar constraint
-    pub h_t_mat: Mat<f64>,       // 1x18 temporary for cov update in scalar constraint
-    pub k_h_t: Mat<f64>,         // 18x18 temporary for cov update in scalar constraint
-    pub k_k: Mat<f64>,           // 18x18 temporary for cov update in scalar constraint
-    pub cov_i_kh: Mat<f64>,      // 18x18 temporary for cov update in scalar constraint
-    pub i_cov_i_kh: Mat<f64>,    // 18x18 temporary for cov update in scalar constraint
+    pub cov: Mat<f64>,           // 24x24 covariance matrix in faer
+    pub f_w_q_w_t_dt2: Mat<f64>, // 24x24 temporary for cov update in predict
+    pub fxtcov: Mat<f64>,        // 24x24 temporary for cov update in predict
+    pub fxcov: Mat<f64>,         // 24x24 temporary for cov update in predict
+    pub q_f_w_t: Mat<f64>,       // 12x24 temporary for cov update in predict
+    pub id: Mat<f64>,            // 24x24 temporary for cov update in scalar constraint
+    pub k_mat: Mat<f64>,         // 24x1 temporary for cov update in scalar constraint
+    pub h_t_mat: Mat<f64>,       // 1x24 temporary for cov update in scalar constraint
+    pub k_h_t: Mat<f64>,         // 24x24 temporary for cov update in scalar constraint
+    pub k_k: Mat<f64>,           // 24x24 temporary for cov update in scalar constraint
+    pub cov_i_kh: Mat<f64>,      // 24x24 temporary for cov update in scalar constraint
+    pub i_cov_i_kh: Mat<f64>,    // 24x24 temporary for cov update in scalar constraint
     pub initialized: bool,
     pub last_time: f64,
     pub h: Col<f64>,   // measurement residual vector
-    pub h_x: Mat<f64>, // measurement Jacobian matrix
-    pub k: Mat<f64>,
-    pub k_h: Mat<f64>,
+    pub h_x: Mat<f64>, // measurement Jacobian matrix (m x 12, sparse - only first 12 cols non-zero)
+    pub k: Mat<f64>,   // Kalman gain (24 x m)
+    pub k_h: Mat<f64>, // K * H (24 x 24)
+    pub hth: Mat<f64>, // H^T * H (24 x 24, but only 12x12 block is non-zero)
 }
 
 /// Adding the state and the perturbation, stay on the manifold
+/// pos(0-2), rot(3-5), offset_R_L_I(6-8), offset_T_L_I(9-11), vel(12-14), bg(15-17), ba(18-20), grav(21-23)
 fn box_plus(x: &StateIKFom, f: &Mat<f64>) -> StateIKFom {
     let mut x_r = *x;
 
-    // Extract deltas from the faer matrix (f is 18x1)
-    let delta_rot_vec = Vector3::new(f[(0, 0)], f[(1, 0)], f[(2, 0)]);
-    let delta_pos = Vector3::new(f[(3, 0)], f[(4, 0)], f[(5, 0)]);
+    // pos += delta_pos (rows 0-2)
+    let delta_pos = Vector3::new(f[(0, 0)], f[(1, 0)], f[(2, 0)]);
+    x_r.pos = x.pos + delta_pos;
 
-    x_r.pose.set_translation(x.pose.translation() + delta_pos);
-    x_r.pose
-        .set_rotation(x.pose.rotation().group_mul(SO3::exp(delta_rot_vec)));
+    // rot = rot * exp(delta_rot) (rows 3-5)
+    let delta_rot_vec = Vector3::new(f[(3, 0)], f[(4, 0)], f[(5, 0)]);
+    x_r.rot = x.rot.group_mul(SO3::exp(delta_rot_vec));
 
-    x_r.vel = x.vel + Vector3::new(f[(6, 0)], f[(7, 0)], f[(8, 0)]);
-    x_r.bg = x.bg + Vector3::new(f[(9, 0)], f[(10, 0)], f[(11, 0)]);
-    x_r.ba = x.ba + Vector3::new(f[(12, 0)], f[(13, 0)], f[(14, 0)]);
-    x_r.grav = x.grav + Vector3::new(f[(15, 0)], f[(16, 0)], f[(17, 0)]);
+    // offset_R_L_I = offset_R_L_I * exp(delta_offset_R) (rows 6-8)
+    let delta_offset_r = Vector3::new(f[(6, 0)], f[(7, 0)], f[(8, 0)]);
+    x_r.offset_r_l_i = x.offset_r_l_i.group_mul(SO3::exp(delta_offset_r));
+
+    // offset_T_L_I += delta_offset_T (rows 9-11)
+    let delta_offset_t = Vector3::new(f[(9, 0)], f[(10, 0)], f[(11, 0)]);
+    x_r.offset_t_l_i = x.offset_t_l_i + delta_offset_t;
+
+    // vel += delta_vel (rows 12-14)
+    x_r.vel = x.vel + Vector3::new(f[(12, 0)], f[(13, 0)], f[(14, 0)]);
+
+    // bg += delta_bg (rows 15-17)
+    x_r.bg = x.bg + Vector3::new(f[(15, 0)], f[(16, 0)], f[(17, 0)]);
+
+    // ba += delta_ba (rows 18-20)
+    x_r.ba = x.ba + Vector3::new(f[(18, 0)], f[(19, 0)], f[(20, 0)]);
+
+    // grav += delta_grav (rows 21-23)
+    x_r.grav = x.grav + Vector3::new(f[(21, 0)], f[(22, 0)], f[(23, 0)]);
 
     x_r
 }
 
 /// Difference between two states, stay on the manifold
-#[allow(dead_code)]
 fn box_minus(x1: &StateIKFom, x2: &StateIKFom) -> Mat<f64> {
-    let mut x_r = Mat::<f64>::zeros(18, 1);
+    let mut x_r = Mat::<f64>::zeros(24, 1);
 
-    let rot_diff = x2
-        .pose
-        .rotation()
-        .inverse()
-        .group_mul(x1.pose.rotation())
-        .log();
+    // pos difference (rows 0-2)
+    let pos_diff = x1.pos - x2.pos;
+    x_r[(0, 0)] = pos_diff.x;
+    x_r[(1, 0)] = pos_diff.y;
+    x_r[(2, 0)] = pos_diff.z;
 
-    // Copy rotation difference
-    x_r[(0, 0)] = rot_diff.x;
-    x_r[(1, 0)] = rot_diff.y;
-    x_r[(2, 0)] = rot_diff.z;
+    // rot difference: log(x2.rot^-1 * x1.rot) (rows 3-5)
+    let rot_diff = x2.rot.inverse().group_mul(x1.rot).log();
+    x_r[(3, 0)] = rot_diff.x;
+    x_r[(4, 0)] = rot_diff.y;
+    x_r[(5, 0)] = rot_diff.z;
 
-    // Position difference
-    let pos_diff = x1.pose.translation() - x2.pose.translation();
-    x_r[(3, 0)] = pos_diff.x;
-    x_r[(4, 0)] = pos_diff.y;
-    x_r[(5, 0)] = pos_diff.z;
+    // offset_R_L_I difference (rows 6-8)
+    let offset_r_diff = x2.offset_r_l_i.inverse().group_mul(x1.offset_r_l_i).log();
+    x_r[(6, 0)] = offset_r_diff.x;
+    x_r[(7, 0)] = offset_r_diff.y;
+    x_r[(8, 0)] = offset_r_diff.z;
 
-    // Velocity difference
+    // offset_T_L_I difference (rows 9-11)
+    let offset_t_diff = x1.offset_t_l_i - x2.offset_t_l_i;
+    x_r[(9, 0)] = offset_t_diff.x;
+    x_r[(10, 0)] = offset_t_diff.y;
+    x_r[(11, 0)] = offset_t_diff.z;
+
+    // vel difference (rows 12-14)
     let vel_diff = x1.vel - x2.vel;
-    x_r[(6, 0)] = vel_diff.x;
-    x_r[(7, 0)] = vel_diff.y;
-    x_r[(8, 0)] = vel_diff.z;
+    x_r[(12, 0)] = vel_diff.x;
+    x_r[(13, 0)] = vel_diff.y;
+    x_r[(14, 0)] = vel_diff.z;
 
-    // Gyro bias difference
+    // bg difference (rows 15-17)
     let bg_diff = x1.bg - x2.bg;
-    x_r[(9, 0)] = bg_diff.x;
-    x_r[(10, 0)] = bg_diff.y;
-    x_r[(11, 0)] = bg_diff.z;
+    x_r[(15, 0)] = bg_diff.x;
+    x_r[(16, 0)] = bg_diff.y;
+    x_r[(17, 0)] = bg_diff.z;
 
-    // Accelerometer bias difference
+    // ba difference (rows 18-20)
     let ba_diff = x1.ba - x2.ba;
-    x_r[(12, 0)] = ba_diff.x;
-    x_r[(13, 0)] = ba_diff.y;
-    x_r[(14, 0)] = ba_diff.z;
+    x_r[(18, 0)] = ba_diff.x;
+    x_r[(19, 0)] = ba_diff.y;
+    x_r[(20, 0)] = ba_diff.z;
 
-    // Gravity difference
+    // grav difference (rows 21-23)
     let grav_diff = x1.grav - x2.grav;
-    x_r[(15, 0)] = grav_diff.x;
-    x_r[(16, 0)] = grav_diff.y;
-    x_r[(17, 0)] = grav_diff.z;
+    x_r[(21, 0)] = grav_diff.x;
+    x_r[(22, 0)] = grav_diff.y;
+    x_r[(23, 0)] = grav_diff.z;
 
     x_r
 }
@@ -386,24 +372,25 @@ impl Iekf {
     pub fn new(g: f64) -> Self {
         Self {
             state: StateIKFom::new(g),
-            cov: Mat::<f64>::identity(18, 18),
+            cov: Mat::<f64>::identity(24, 24),
             initialized: false,
             last_time: 0.0,
             h: Col::<f64>::zeros(0),
-            h_x: Mat::<f64>::zeros(0, 18),
-            k: Mat::<f64>::zeros(18, 10000),
-            k_h: Mat::<f64>::zeros(18, 18),
-            f_w_q_w_t_dt2: Mat::<f64>::zeros(18, 18),
-            fxtcov: Mat::<f64>::zeros(18, 18),
-            fxcov: Mat::<f64>::zeros(18, 18),
-            q_f_w_t: Mat::<f64>::zeros(12, 18),
-            id: Mat::<f64>::identity(18, 18),
-            k_mat: Mat::<f64>::zeros(18, 1),
-            h_t_mat: Mat::<f64>::zeros(1, 18),
-            k_h_t: Mat::<f64>::zeros(18, 18),
-            k_k: Mat::<f64>::zeros(18, 18),
-            cov_i_kh: Mat::<f64>::zeros(18, 18),
-            i_cov_i_kh: Mat::<f64>::zeros(18, 18),
+            h_x: Mat::<f64>::zeros(0, 12), // Sparse: only first 12 cols non-zero
+            k: Mat::<f64>::zeros(24, 10000),
+            k_h: Mat::<f64>::zeros(24, 24),
+            f_w_q_w_t_dt2: Mat::<f64>::zeros(24, 24),
+            fxtcov: Mat::<f64>::zeros(24, 24),
+            fxcov: Mat::<f64>::zeros(24, 24),
+            q_f_w_t: Mat::<f64>::zeros(12, 24),
+            id: Mat::<f64>::identity(24, 24),
+            k_mat: Mat::<f64>::zeros(24, 1),
+            h_t_mat: Mat::<f64>::zeros(1, 24),
+            k_h_t: Mat::<f64>::zeros(24, 24),
+            k_k: Mat::<f64>::zeros(24, 24),
+            cov_i_kh: Mat::<f64>::zeros(24, 24),
+            i_cov_i_kh: Mat::<f64>::zeros(24, 24),
+            hth: Mat::<f64>::zeros(24, 24),
         }
     }
 
@@ -411,18 +398,22 @@ impl Iekf {
         self.last_time += dt;
 
         let f = get_f(&self.state, i_in);
-        let f_x = df_dx(&self.state, i_in, dt);
-        let f_w = df_dw(&self.state, i_in, dt);
+        let f_x_raw = df_dx(&self.state, i_in);
+        let f_w_raw = df_dw(&self.state, i_in);
 
-        // State update: f * dt
+        // State update: x = boxplus(x, f * dt)
         let f_dt = &f * dt;
-        self.state = box_plus(&self.state, &f_dt); // seems fast enough
+        self.state = box_plus(&self.state, &f_dt);
 
-        // Cov update
-        // P = F * P * F^T + dt^2 * F_w * Q * F_w^T
+        let id24 = Mat::<f64>::identity(24, 24);
+        let f_x = &id24 + &f_x_raw * dt;
         let f_x_t = f_x.transpose();
+
+        // F_w = f_w * dt
+        let f_w = &f_w_raw * dt;
         let f_w_t = f_w.transpose();
 
+        // Cov update: P = F_x * P * F_x^T + F_w * Q * F_w^T
         matmul(
             self.q_f_w_t.rb_mut(),
             faer::Accum::Replace,
@@ -436,7 +427,7 @@ impl Iekf {
             faer::Accum::Replace,
             f_w.rb(),
             self.q_f_w_t.rb(),
-            dt * dt,
+            1.0,
             faer::Par::Seq,
         );
         matmul(
@@ -455,7 +446,6 @@ impl Iekf {
             1.0,
             faer::Par::Seq,
         );
-        // self.cov = &f_x * &self.cov * &f_x_t + dt * dt * (&f_w * q * &f_w_t);
         self.cov = self.fxcov.rb() + self.f_w_q_w_t_dt2.rb();
     }
 
@@ -491,7 +481,7 @@ impl Iekf {
         });
 
         let adjusted_base_cov = base_cov * (1.0 + dt_gap * 5.0);
-        let r_wb = self.state.pose.rotation().matrix();
+        let r_wb = self.state.rot.matrix();
         let r_bw = r_wb.transpose();
 
         let v_meas_world = r_bw * odom.twist_linear;
@@ -518,10 +508,10 @@ impl Iekf {
         // Compute innovation variance: h^T * P * h + r_var
         let h_t = h.transpose();
         let cov_h = &self.cov * &h;
-        // h_t is 1x18, cov_h is Col (18x1), result is a scalar
+        // h_t is 1x24, cov_h is Col (24x1), result is a scalar
         // Compute h^T * cov_h manually
         let mut s = 0.0;
-        for i in 0..18 {
+        for i in 0..24 {
             s += h_t[i] * cov_h[i];
         }
         s += r_var;
@@ -531,16 +521,16 @@ impl Iekf {
             return;
         }
 
-        // Kalman gain: K = P * h / s (result is 18x1)
+        // Kalman gain: K = P * h / s (result is 24x1)
         let mut k = &cov_h / s;
 
         // zero out parts that must never be changed by this measurement
-        // (rotation and translation live in the first 6 entries)
+        // (pos and rotation live in the first 6 entries)
         for i in 0..3 {
-            k[i] = 0.0; // rotation
+            k[i] = 0.0; // pos
         }
         for i in 3..6 {
-            k[i] = 0.0; // translation
+            k[i] = 0.0; // rotation
         }
 
         // automatic damping - cap the norm of the gain (prevents gigantic jumps)
@@ -551,21 +541,21 @@ impl Iekf {
             k = &k * scale;
         }
 
-        // Update state: dx = k * residual (k is 18x1, result is 18x1)
+        // Update state: dx = k * residual (k is 24x1, result is 24x1)
         let dx = &k * residual;
 
         // Convert Col to Mat for box_plus
-        let mut dx_mat = Mat::<f64>::zeros(18, 1);
-        for i in 0..18 {
+        let mut dx_mat = Mat::<f64>::zeros(24, 1);
+        for i in 0..24 {
             dx_mat[(i, 0)] = dx[i];
         }
         self.state = box_plus(&self.state, &dx_mat);
 
         // Update covariance: P = (I - K*h^T) * P * (I - K*h^T)^T + K * r_var * K^T
-        for i in 0..18 {
+        for i in 0..24 {
             self.k_mat[(i, 0)] = k[i];
         }
-        for j in 0..18 {
+        for j in 0..24 {
             self.h_t_mat[(0, j)] = h_t[j];
         }
         matmul(
@@ -617,7 +607,9 @@ impl Iekf {
 
         let residual = measured_value - self.state.vel[component];
 
-        let p_comp = self.cov[(6 + component, 6 + component)];
+        // Velocity is at indices 12-14 in the 24-dim state
+        let vel_idx = 12 + component;
+        let p_comp = self.cov[(vel_idx, vel_idx)];
         let innovation_var = p_comp + noise_cov;
 
         if !innovation_var.is_finite() || innovation_var <= 0.0 {
@@ -630,9 +622,9 @@ impl Iekf {
 
         let gain_scalar = p_comp / innovation_var;
 
-        let mut kalman_gain = Col::<f64>::zeros(18);
-        for i in 0..18 {
-            kalman_gain[i] = self.cov[(i, 6 + component)] * gain_scalar;
+        let mut kalman_gain = Col::<f64>::zeros(24);
+        for i in 0..24 {
+            kalman_gain[i] = self.cov[(i, vel_idx)] * gain_scalar;
         }
         let delta_v = gain_scalar * residual;
 
@@ -644,10 +636,10 @@ impl Iekf {
         self.state.vel[component] += delta_v;
 
         // Update covariance
-        for i in 0..18 {
-            for j in 0..18 {
+        for i in 0..24 {
+            for j in 0..24 {
                 let old_val = self.cov[(i, j)];
-                let update = kalman_gain[i] * self.cov[(6 + component, j)];
+                let update = kalman_gain[i] * self.cov[(vel_idx, j)];
                 self.cov[(i, j)] = old_val - update;
             }
         }
@@ -663,32 +655,32 @@ impl Iekf {
             return;
         }
 
-        let r_w_i = self.state.pose.rotation().matrix();
+        let r_w_i = self.state.rot.matrix();
         let r_i_w = r_w_i.transpose();
         let v_body = r_i_w * self.state.vel;
         let r_var = constraint_noise_std * constraint_noise_std;
 
         match model_type {
             KinematicModel::Differential => {
-                // lateral (y) constraint
-                let mut h_lat = Col::<f64>::zeros(18);
+                // lateral (y) constraint - velocity index is 12-14 in 24-dim state
+                let mut h_lat = Col::<f64>::zeros(24);
                 for j in 0..3 {
-                    h_lat[6 + j] = r_i_w[(1, j)];
+                    h_lat[12 + j] = r_i_w[(1, j)];
                 }
                 self.apply_scalar_constraint(h_lat, -v_body.y, r_var);
 
                 // vertical (z) constraint
-                let mut h_vert = Col::<f64>::zeros(18);
+                let mut h_vert = Col::<f64>::zeros(24);
                 for j in 0..3 {
-                    h_vert[6 + j] = r_i_w[(2, j)];
+                    h_vert[12 + j] = r_i_w[(2, j)];
                 }
                 self.apply_scalar_constraint(h_vert, -v_body.z, r_var);
             }
             KinematicModel::Holonomic2D => {
                 // Only vertical (z) constraint: robot stays on ground
-                let mut h_vert = Col::<f64>::zeros(18);
+                let mut h_vert = Col::<f64>::zeros(24);
                 for j in 0..3 {
-                    h_vert[6 + j] = r_i_w[(2, j)];
+                    h_vert[12 + j] = r_i_w[(2, j)];
                 }
                 self.apply_scalar_constraint(h_vert, -v_body.z, r_var);
             }
@@ -696,16 +688,16 @@ impl Iekf {
             KinematicModel::Ackermann { imu_to_rear_axle } => {
                 // rear‑axle lateral constraint
                 let v_rear = v_body + gyro_measurement.cross(&imu_to_rear_axle);
-                let mut h_lat = Col::<f64>::zeros(18);
+                let mut h_lat = Col::<f64>::zeros(24);
                 for j in 0..3 {
-                    h_lat[6 + j] = r_i_w[(1, j)];
+                    h_lat[12 + j] = r_i_w[(1, j)];
                 }
                 self.apply_scalar_constraint(h_lat, -v_rear.y, r_var);
 
                 // vertical constraint
-                let mut h_vert = Col::<f64>::zeros(18);
+                let mut h_vert = Col::<f64>::zeros(24);
                 for j in 0..3 {
-                    h_vert[6 + j] = r_i_w[(2, j)];
+                    h_vert[12 + j] = r_i_w[(2, j)];
                 }
                 self.apply_scalar_constraint(h_vert, -v_body.z, r_var);
             }
@@ -714,6 +706,8 @@ impl Iekf {
         }
     }
 
+    /// State ordering (24-dim): pos(0-2), rot(3-5), offset_R_L_I(6-8), offset_T_L_I(9-11),
+    ///                          vel(12-14), bg(15-17), ba(18-20), grav(21-23)
     pub fn correct(
         &mut self,
         measurement_noise_cov: f64,
@@ -723,9 +717,10 @@ impl Iekf {
         mut model: impl FnMut(
             &StateIKFom,
             &mut bool,     // valid
-            bool,          // converge
-            &mut Col<f64>, // residual h (updated to faer)
-            &mut Mat<f64>, // jacobian H (updated to faer)
+            bool,          // converge (for re-searching correspondences if needed)
+            &mut Col<f64>, // residual h
+            &mut Mat<f64>, // jacobian H (m x 12, sparse)
+            &mut usize,    // num_measurements - actual number of valid measurements
         ),
     ) {
         self.last_time = measurement_time;
@@ -735,21 +730,20 @@ impl Iekf {
             return;
         }
 
+        // Save propagated state and covariance
         let state_propagated = self.state;
         let p_propagated = self.cov.clone();
 
-        let p_propagated_inv = p_propagated.partial_piv_lu().inverse();
-
         let r_inv = 1.0 / measurement_noise_cov;
 
-        let mut hth = Mat::<f64>::zeros(18, 18);
+        let mut converge_count = 0;
+        let mut converge_flag = true;
 
-        // Build 8x8 matrix s for state update
-        let mut s = Mat::<f64>::zeros(8, 8);
-
-        for iter in 0..max_iter {
+        // Iterate from -1 to max_iter (following S-FAST_LIO convention)
+        // -1 iteration is just to compute the first Jacobian
+        for iter in 0..=max_iter {
             let mut valid = true;
-            let converge_flag = true;
+            let mut num_measurements = 0usize;
 
             {
                 let mut eval = eval.write().unwrap();
@@ -762,150 +756,146 @@ impl Iekf {
                 converge_flag,
                 &mut self.h,
                 &mut self.h_x,
+                &mut num_measurements,
             );
 
             let mut eval = eval.write().unwrap();
-
             eval.stop("ekf_correct/model").unwrap();
+
+            if !valid || num_measurements == 0 {
+                continue;
+            }
+
+            // Use actual number of measurements, not buffer size
+            let m = num_measurements;
+
             eval.start("ekf_correct/info_mat").unwrap();
 
-            if !valid || self.h_x.nrows() == 0 {
-                eval.stop("ekf_correct/info_mat").unwrap();
-                break;
-            }
+            // dx_new = boxminus(x_, x_propagated) - equation (18): x^k - x^
+            let dx_new = box_minus(&self.state, &state_propagated);
 
-            // pre-allocate k if needed
-            if self.k.ncols() < self.h_x.nrows() {
-                self.k.reserve(18, self.h_x.nrows());
-            }
-            if self.k.ncols() != self.h_x.nrows() {
-                self.k.resize_with(18, self.h_x.nrows(), |_, _| 0.0);
-            }
+            // H is m x 12 (sparse - only first 12 columns non-zero)
+            // We only use the first m rows of h_x (the actual measurements)
+            // HTH is 24 x 24 but only 12x12 top-left block is non-zero
+            let h_full = &self.h_x;
+            // Create a view of only the first m rows
+            let h = h_full.subrows(0, m);
+            let h_t = h.transpose(); // 12 x m
 
-            // H: m x 18,  h: m x 1
-            let h_t = self.h_x.transpose(); // 18 x m, a view change, basically free
+            // Compute H^T * H (12 x 12)
+            let mut hth_12x12 = Mat::<f64>::zeros(12, 12);
             matmul(
-                hth.rb_mut(), // 18 x 18 mat
+                hth_12x12.rb_mut(),
                 faer::Accum::Replace,
                 h_t.rb(),
-                self.h_x.rb(),
+                h.rb(),
                 1.0,
-                faer::Par::Seq, // single thread, TODO measure when to go to par and rayon feature enabled
+                faer::Par::Seq,
             );
+
+            // Build 24x24 HTH with sparse structure
+            for i in 0..24 {
+                for j in 0..24 {
+                    self.hth[(i, j)] = 0.0;
+                }
+            }
+            for i in 0..12 {
+                for j in 0..12 {
+                    self.hth[(i, j)] = hth_12x12[(i, j)];
+                }
+            }
 
             eval.stop("ekf_correct/info_mat").unwrap();
             eval.start("ekf_correct/lhs").unwrap();
 
-            let lhs = &hth * r_inv + &p_propagated_inv; // free
-            let lhs_inv = lhs.partial_piv_lu().inverse(); // 18 x 18, free
+            // K_front = (HTH / R + P^-1)^-1
+            let p_inv = p_propagated.partial_piv_lu().inverse();
+            let lhs = &self.hth * r_inv + &p_inv;
+            let k_front = lhs.partial_piv_lu().inverse();
 
+            // K = K_front[:, 0:12] * H^T / R  (24 x m)
+            // Pre-allocate k if needed
+            if self.k.ncols() < m {
+                self.k.reserve(24, m);
+            }
+            if self.k.ncols() != m {
+                self.k.resize_with(24, m, |_, _| 0.0);
+            }
+
+            // K_front_12 = K_front[:, 0:12] (24 x 12)
+            let mut k_front_12 = Mat::<f64>::zeros(24, 12);
+            for i in 0..24 {
+                for j in 0..12 {
+                    k_front_12[(i, j)] = k_front[(i, j)];
+                }
+            }
+
+            // K = K_front_12 * H^T / R  (24 x 12 * 12 x m = 24 x m)
             matmul(
                 self.k.rb_mut(),
                 faer::Accum::Replace,
-                lhs_inv.rb(),
+                k_front_12.rb(),
                 h_t.rb(),
                 r_inv,
-                faer::Par::Seq, // single thread
+                faer::Par::Seq,
             );
-            eval.stop("ekf_correct/lhs").unwrap();
 
+            eval.stop("ekf_correct/lhs").unwrap();
             eval.start("ekf_correct/gain").unwrap();
-            let kh = &self.k * &self.h; // 18 x 18, multiplies a lot but automatically fast enough (100us)
-            let kh_norm = kh.norm_l2();
-            if !kh_norm.is_finite() {
-                warn!(
-                    "IEKF: Non‑finite update norm in iteration {}, aborting.",
-                    iter
-                );
-                self.state = state_propagated;
-                self.cov = p_propagated;
-                eval.stop("ekf_correct/gain").unwrap();
-                return;
+
+            // KH = K * H (24 x m * m x 12 = 24 x 12, but we store as 24 x 24 with zeros)
+            let mut kh_12 = Mat::<f64>::zeros(24, 12);
+            matmul(
+                kh_12.rb_mut(),
+                faer::Accum::Replace,
+                self.k.rb(),
+                h.rb(),
+                1.0,
+                faer::Par::Seq,
+            );
+
+            // Build full 24x24 KH matrix (sparse)
+            for i in 0..24 {
+                for j in 0..24 {
+                    self.k_h[(i, j)] = 0.0;
+                }
             }
+            for i in 0..24 {
+                for j in 0..12 {
+                    self.k_h[(i, j)] = kh_12[(i, j)];
+                }
+            }
+
+            // dx_ = K * h + (KH - I) * dx_new  (equation 18)
+            // K * h (24 x 1)
+            let mut kh_vec = Mat::<f64>::zeros(24, 1);
+            let h_col = Mat::from_fn(m, 1, |i, _| self.h[i]);
+            matmul(
+                kh_vec.rb_mut(),
+                faer::Accum::Replace,
+                self.k.rb(),
+                h_col.rb(),
+                1.0,
+                faer::Par::Seq,
+            );
+
+            // (KH - I) * dx_new
+            let id24 = Mat::<f64>::identity(24, 24);
+            let kh_minus_i = &self.k_h - &id24;
+            let kh_i_dx = &kh_minus_i * &dx_new;
+
+            // dx_ = K * h + (KH - I) * dx_new
+            let dx_ = &kh_vec + &kh_i_dx;
+
             eval.stop("ekf_correct/gain").unwrap();
             eval.start("ekf_correct/state").unwrap();
 
-            // Extract kh components (kh is a Col<f64>, indexed with single index)
-            let kh_rot = Vector3::new(kh[0], kh[1], kh[2]);
-            let kh_trans = Vector3::new(kh[3], kh[4], kh[5]);
-            let kh_vel = Vector3::new(kh[6], kh[7], kh[8]);
-            let kh_bg = Vector3::new(kh[9], kh[10], kh[11]);
-            let kh_ba = Vector3::new(kh[12], kh[13], kh[14]);
-            let kh_grav = Vector3::new(kh[15], kh[16], kh[17]);
-
-            // rotation increment (skew symmetric)
-            let skew_rot = skew_symmetric(&kh_rot);
-            for i in 0..3 {
-                for j in 0..3 {
-                    s[(i, j)] = skew_rot[(i, j)];
-                }
-            }
-
-            // translation increment
-            for i in 0..3 {
-                s[(i, 3)] = kh_trans[i];
-            }
-
-            // velocity increment
-            for i in 0..3 {
-                s[(i, 4)] = kh_vel[i];
-            }
-
-            // bg increment
-            for i in 0..3 {
-                s[(i, 5)] = kh_bg[i];
-            }
-
-            // ba increment
-            for i in 0..3 {
-                s[(i, 6)] = kh_ba[i];
-            }
-
-            // grav increment
-            for i in 0..3 {
-                s[(i, 7)] = kh_grav[i];
-            }
-
-            let (a, b) = if kh_norm > 1e-6 {
-                (
-                    (1.0 - kh_norm.cos()) / (kh_norm * kh_norm),
-                    (kh_norm - kh_norm.sin()) / (kh_norm.powi(3)),
-                )
-            } else {
-                (0.5, 1.0 / 6.0)
-            };
-
-            let s2 = &s * &s;
-            let s3 = &s2 * &s;
-            let id8 = Mat::<f64>::identity(8, 8);
-            let exps = &id8 + &s + &s2 * a + &s3 * b;
-
-            let mut x_mat = Mat::<f64>::identity(8, 8);
-            let rot_mat = mat3_to_faer(&state_propagated.pose.rotation().matrix());
-            for i in 0..3 {
-                for j in 0..3 {
-                    x_mat[(i, j)] = rot_mat[(i, j)];
-                }
-            }
-            let trans = state_propagated.pose.translation();
-            for i in 0..3 {
-                x_mat[(i, 3)] = trans[i];
-                x_mat[(i, 4)] = state_propagated.vel[i];
-                x_mat[(i, 5)] = state_propagated.bg[i];
-                x_mat[(i, 6)] = state_propagated.ba[i];
-                x_mat[(i, 7)] = state_propagated.grav[i];
-            }
-
-            let new_x_mat = &exps * &x_mat;
-
-            // Check for NaN - iterate over matrix elements
+            // Check for NaN
             let mut has_nan = false;
-            for i in 0..8 {
-                for j in 0..8 {
-                    if !new_x_mat[(i, j)].is_finite() {
-                        has_nan = true;
-                        break;
-                    }
+            for i in 0..24 {
+                if !dx_[(i, 0)].is_finite() {
+                    has_nan = true;
+                    break;
                 }
             }
             if has_nan {
@@ -913,53 +903,42 @@ impl Iekf {
                 self.state = state_propagated;
                 self.cov = p_propagated;
                 eval.stop("ekf_correct/state").unwrap();
-                eval.stop("ekf_correct/state/x").unwrap();
                 return;
             }
 
-            // Extract rotation and convert back to nalgebra for sophus
-            let mut new_rot_na = nalgebra::Matrix3::zeros();
-            for i in 0..3 {
-                for j in 0..3 {
-                    new_rot_na[(i, j)] = new_x_mat[(i, j)];
-                }
-            }
-            let new_quat = nalgebra::UnitQuaternion::from_matrix(&new_rot_na);
-            let new_so3 = match SO3::try_from_mat(new_quat.to_rotation_matrix().matrix()) {
-                Some(so3) => so3,
-                None => {
-                    warn!("IEKF: Invalid SO3 in iteration {}", iter);
+            // x_ = boxplus(x_, dx_)
+            self.state = box_plus(&self.state, &dx_);
+
+            // Check convergence: if all |dx_[j]| < EPSI, converged
+            converge_flag = true;
+            for j in 0..24 {
+                if dx_[(j, 0)].abs() > measurement_noise_cov {
+                    converge_flag = false;
                     break;
                 }
-            };
+            }
 
-            self.state.pose.set_rotation(new_so3);
-            self.state.pose.set_translation(Vector3::new(
-                new_x_mat[(0, 3)],
-                new_x_mat[(1, 3)],
-                new_x_mat[(2, 3)],
-            ));
-            self.state.vel = Vector3::new(new_x_mat[(0, 4)], new_x_mat[(1, 4)], new_x_mat[(2, 4)]);
-            self.state.bg = Vector3::new(new_x_mat[(0, 5)], new_x_mat[(1, 5)], new_x_mat[(2, 5)]);
-            self.state.ba = Vector3::new(new_x_mat[(0, 6)], new_x_mat[(1, 6)], new_x_mat[(2, 6)]);
-            self.state.grav = Vector3::new(new_x_mat[(0, 7)], new_x_mat[(1, 7)], new_x_mat[(2, 7)]);
+            if converge_flag {
+                converge_count += 1;
+            }
 
-            // KH = K * H  (18 x m * m x 18 = 18 x 18)
-            matmul(
-                self.k_h.rb_mut(),
-                faer::Accum::Replace,
-                self.k.rb(),
-                self.h_x.rb(),
-                1.0,
-                faer::Par::Seq,
-            );
+            // If not converged yet and this is second-to-last iteration, force converge
+            // to re-search correspondences
+            if converge_count == 0 && iter == max_iter - 1 {
+                converge_flag = true;
+            }
 
             eval.stop("ekf_correct/state").unwrap();
-            if kh_norm < 0.001 {
+
+            // Exit if converged twice or at max iteration
+            if converge_count > 1 || iter == max_iter {
                 break;
             }
         }
 
-        self.cov = &p_propagated - &self.k_h * &p_propagated;
+        // Covariance update: P = (I - KH) * P  (equation 19)
+        let id24 = Mat::<f64>::identity(24, 24);
+        let i_kh = &id24 - &self.k_h;
+        self.cov = &i_kh * &p_propagated;
     }
 }
