@@ -212,23 +212,26 @@ impl ImuProcessing {
 
         ekf.state.grav = -self.mean_acc / self.mean_acc.norm() * 9.81; // TODO PARAM
         ekf.state.bg = self.mean_gyr;
-        ekf.state.lidar_to_imu_t = self.lidar_to_imu_t;
-        ekf.state.lidar_to_imu_r =
-            sophus_lie::Rotation3::try_from_mat(&self.lidar_to_imu_r).unwrap();
+        ekf.state.offset_t_l_i = self.lidar_to_imu_t;
+        ekf.state.offset_r_l_i = sophus_lie::Rotation3::try_from_mat(&self.lidar_to_imu_r).unwrap();
 
-        ekf.cov = faer::Mat::<f64>::identity(18, 18);
+        ekf.cov = faer::Mat::<f64>::identity(24, 24);
 
-        ekf.cov[(9, 9)] = COV2;
-        ekf.cov[(10, 10)] = COV2;
-        ekf.cov[(11, 11)] = COV2;
+        // 24-dim state: pos(0-2), rot(3-5), offset_R(6-8), offset_T(9-11), vel(12-14), bg(15-17), ba(18-20), grav(21-23)
+        // bg bias covariance (15-17)
+        ekf.cov[(15, 15)] = COV2;
+        ekf.cov[(16, 16)] = COV2;
+        ekf.cov[(17, 17)] = COV2;
 
-        ekf.cov[(12, 12)] = COV3;
-        ekf.cov[(13, 13)] = COV3;
-        ekf.cov[(14, 14)] = COV3;
+        // ba bias covariance (18-20)
+        ekf.cov[(18, 18)] = COV3;
+        ekf.cov[(19, 19)] = COV3;
+        ekf.cov[(20, 20)] = COV3;
 
-        ekf.cov[(15, 15)] = COV1;
-        ekf.cov[(16, 16)] = COV1;
-        ekf.cov[(17, 17)] = COV1;
+        // grav covariance (21-23)
+        ekf.cov[(21, 21)] = COV1;
+        ekf.cov[(22, 22)] = COV1;
+        ekf.cov[(23, 23)] = COV1;
 
         self.last_imu = msgs[msgs.len() - 1].clone();
 
@@ -272,7 +275,7 @@ impl ImuProcessing {
             self.acc_s_last,
             self.angvel_last,
             ekf.state.vel,
-            ekf.state.pose,
+            ekf.state.pose(),
         )];
 
         let mut angvel_avr_x = 0.0;
@@ -367,7 +370,7 @@ impl ImuProcessing {
             let tail_ang_vel: Vector3<f64> = tail.angular_velocity.into();
             let tail_lin_acc: Vector3<f64> = tail.linear_acceleration.into();
             self.angvel_last = tail_ang_vel - self.imu_state.bg;
-            self.acc_s_last = self.imu_state.pose.rotation().matrix()
+            self.acc_s_last = self.imu_state.pose().rotation().matrix()
                 * ((tail_lin_acc * GRAVITY / mean_acc) - self.imu_state.ba)
                 + self.imu_state.grav;
 
@@ -380,7 +383,7 @@ impl ImuProcessing {
                 self.acc_s_last,
                 self.angvel_last,
                 self.imu_state.vel,
-                self.imu_state.pose,
+                self.imu_state.pose(),
             ));
 
             head = tail;
@@ -449,15 +452,15 @@ impl ImuProcessing {
                         .group_mul(crate::iekf::SO3::exp(tail.gyr * dt))
                         .matrix();
                     let t_ei = head.pose.translation() + head.vel * dt + 0.5 * tail.acc * dt * dt
-                        - self.imu_state.pose.translation();
+                        - self.imu_state.pose().translation();
 
-                    let p_imu_frame = self.imu_state.lidar_to_imu_r.matrix()
+                    let p_imu_frame = self.imu_state.offset_r_l_i.matrix()
                         * Vector3::new(pcl_point.x as f64, pcl_point.y as f64, pcl_point.z as f64)
-                        + self.imu_state.lidar_to_imu_t;
-                    let p_compensate = self.imu_state.lidar_to_imu_r.matrix().transpose()
-                        * (self.imu_state.pose.rotation().matrix().transpose()
+                        + self.imu_state.offset_t_l_i;
+                    let p_compensate = self.imu_state.offset_r_l_i.matrix().transpose()
+                        * (self.imu_state.pose().rotation().matrix().transpose()
                             * (r_i * p_imu_frame + t_ei)
-                            - self.imu_state.lidar_to_imu_t);
+                            - self.imu_state.offset_t_l_i);
 
                     cloud[it_pcl].x = p_compensate.x as f32;
                     cloud[it_pcl].y = p_compensate.y as f32;
@@ -494,19 +497,19 @@ impl ImuProcessing {
                             .matrix();
                         let t_ei =
                             head.pose.translation() + head.vel * dt + 0.5 * tail.acc * dt * dt
-                                - self.imu_state.pose.translation();
+                                - self.imu_state.pose().translation();
 
-                        let p_imu_frame = self.imu_state.lidar_to_imu_r.matrix()
+                        let p_imu_frame = self.imu_state.offset_r_l_i.matrix()
                             * Vector3::new(
                                 pcl_point.x as f64,
                                 pcl_point.y as f64,
                                 pcl_point.z as f64,
                             )
-                            + self.imu_state.lidar_to_imu_t;
-                        let p_compensate = self.imu_state.lidar_to_imu_r.matrix().transpose()
-                            * (self.imu_state.pose.rotation().matrix().transpose()
+                            + self.imu_state.offset_t_l_i;
+                        let p_compensate = self.imu_state.offset_r_l_i.matrix().transpose()
+                            * (self.imu_state.pose().rotation().matrix().transpose()
                                 * (r_i * p_imu_frame + t_ei)
-                                - self.imu_state.lidar_to_imu_t);
+                                - self.imu_state.offset_t_l_i);
 
                         passthrough[it_pcl].x = p_compensate.x as f32;
                         passthrough[it_pcl].y = p_compensate.y as f32;
@@ -518,10 +521,10 @@ impl ImuProcessing {
 
         #[cfg(feature = "parallel")]
         {
-            let imu_state_pose_translation = self.imu_state.pose.translation();
-            let imu_state_pose_rotation_t = self.imu_state.pose.rotation().matrix().transpose();
-            let imu_state_lidar_to_imu_t = self.imu_state.lidar_to_imu_t;
-            let imu_state_lidar_to_imu_r = self.imu_state.lidar_to_imu_r.matrix();
+            let imu_state_pose_translation = self.imu_state.pose().translation();
+            let imu_state_pose_rotation_t = self.imu_state.pose().rotation().matrix().transpose();
+            let imu_state_lidar_to_imu_t = self.imu_state.offset_t_l_i;
+            let imu_state_lidar_to_imu_r = self.imu_state.offset_r_l_i.matrix();
             let imu_state_lidar_to_imu_r_t = imu_state_lidar_to_imu_r.transpose();
             let imu_poses_for_downsampled = imu_poses.clone();
 
@@ -637,16 +640,16 @@ impl ImuProcessing {
 
         Ok(crate::ImuEkfPrediction {
             pose: Isometry3::from_parts(
-                Translation3::from(ekf.state.pose.translation()),
+                Translation3::from(ekf.state.pose().translation()),
                 UnitQuaternion::from_rotation_matrix(&Rotation3::from_matrix(
-                    &ekf.state.pose.rotation().matrix(),
+                    &ekf.state.pose().rotation().matrix(),
                 )),
             ),
             linear_velocity: ekf.state.vel,
             lidar_imu_extrinsic: Isometry3::from_parts(
-                Translation3::from(ekf.state.lidar_to_imu_t),
+                Translation3::from(ekf.state.offset_t_l_i),
                 UnitQuaternion::from_rotation_matrix(&Rotation3::from_matrix(
-                    &ekf.state.lidar_to_imu_r.matrix(),
+                    &ekf.state.offset_r_l_i.matrix(),
                 )),
             ),
         })
