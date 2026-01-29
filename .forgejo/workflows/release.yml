@@ -51,7 +51,6 @@ jobs:
     strategy:
       matrix:
         include:
-          - runner: ubuntu-latest-arm-raw
           - runner: bookworm
     runs-on: ${{ matrix.runner }}
     steps:
@@ -162,7 +161,6 @@ jobs:
     strategy:
       matrix:
         include:
-          - runner: ubuntu-latest-arm-raw
           - runner: bookworm
     runs-on: ${{ matrix.runner }}
     steps:
@@ -320,7 +318,6 @@ jobs:
     strategy:
       matrix:
         include:
-          - runner: ubuntu-latest-arm-raw
           - runner: bookworm
     runs-on: ${{ matrix.runner }}
     steps:
@@ -440,7 +437,6 @@ jobs:
     strategy:
       matrix:
         include:
-          - runner: ubuntu-latest-arm-raw
           - runner: bookworm
     runs-on: ${{ matrix.runner }}
     steps:
@@ -560,7 +556,6 @@ jobs:
     strategy:
       matrix:
         include:
-          - runner: ubuntu-latest-arm-raw
           - runner: bookworm
     runs-on: ${{ matrix.runner }}
     steps:
@@ -659,7 +654,6 @@ jobs:
     strategy:
       matrix:
         include:
-          - runner: ubuntu-latest-arm-raw
           - runner: bookworm
     runs-on: ${{ matrix.runner }}
     steps:
@@ -729,7 +723,6 @@ jobs:
     strategy:
       matrix:
         include:
-          - runner: ubuntu-latest-arm-raw
           - runner: bookworm
     runs-on: ${{ matrix.runner }}
     steps:
@@ -799,7 +792,6 @@ jobs:
     strategy:
       matrix:
         include:
-          - runner: ubuntu-latest-arm-raw
           - runner: bookworm
     runs-on: ${{ matrix.runner }}
     steps:
@@ -869,7 +861,6 @@ jobs:
     strategy:
       matrix:
         include:
-          - runner: ubuntu-latest-arm-raw
           - runner: bookworm
     runs-on: ${{ matrix.runner }}
     steps:
@@ -995,7 +986,6 @@ jobs:
     strategy:
       matrix:
         include:
-          - runner: ubuntu-latest-arm-raw
           - runner: bookworm
     runs-on: ${{ matrix.runner }}
     steps:
