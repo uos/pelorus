@@ -1,7 +1,7 @@
 registration {
   map {
 
-    # @minimal
+    # @recommended
     # Feature size used for registration. NOTE: This will heavily affect your registration accuracy and runtime.
     resolution = 50cm
 
@@ -13,7 +13,7 @@ registration {
   }
 
   # Maximum IEKF correction iterations per scan.
-  max_iter = 2
+  max_iter = 4
 
   # Maximum distance to any neighbor. Default is mostly ok if you do not drastically reduce the map resolution.
   neighbors_max_range = 5m
@@ -21,7 +21,7 @@ registration {
 
 preprocessing {
   downsample {
-    # @minimal
+    # @recommended
     # Output the full undistorted cloud on the cloud output topic.
     bypass_output_downsample = true
 
@@ -94,14 +94,14 @@ preprocessing {
 }
 
 lidar {
-  # @minimal
+  # @recommended
   topic = "/ouster/points"
 
-  # @minimal
+  # @recommended
   # Velodyne | Ouster | Livox | Robosense | LivoxMid360
   vendor = Ouster
 
-  # @minimal
+  # @recommended
   # Reliable | BestEffort | SystemDefault. Any other setting than Reliable is undefined behavior.
   qos.reliability = Reliable 
 
@@ -115,16 +115,16 @@ lidar {
 
 imu {
 
-  # @minimal
+  # @recommended
   topic = "/ouster/imu"
 
-  # @minimal
+  # @recommended
   # Reliable | BestEffort | SystemDefault. Any other setting than Reliable is undefined behavior.
   qos.reliability = Reliable
 
   initial_setup = 500ms
 
-  # @minimal
+  # @recommended
   from_lidar_transform {
 
     # Ignore the next manual translation and use the TF tree instead. The lookup will be once with receiving the first IMU message.
@@ -185,11 +185,11 @@ wheel {
   # Standard deviation for kinematic constraints in undistortion (lower = stronger constraints)
   kinematic_constraint_std = 0.1
 
-  # @minimal
+  # @recommended
   # Full3D | Differential | Holonomic2D | Ackermann. Applies kinematic constraints on the IEKF.
   kinematic_model = Full3D
   
-  # @minimal
+  # @recommended
   # Ackermann steering configuration (only used when kinematic_model = Ackermann)
   ackermann {
     imu_to_rear_axle = [0.0m, 0.0m, 0.0m] # Offset from IMU to rear axle center in imu frame
@@ -199,22 +199,26 @@ wheel {
 output {
 
   terminal {
-    # @minimal
-    # Show terminal outputs like timings or other metrics.
-    ui = false
+    # @recommended
+    # Show the interactive TUI with position, velocity, and performance metrics.
+    # Set to false for non-interactive sessions.
+    ui = true
 
-    # Refresh rate for rendering to the terminal in frames per second
-    fps = 1
+    # Show timing metrics and debug output in the terminal.
+    debug = false
+
+    # Refresh rate for debug terminal output in frames per second
+    debug_fps = 1
 
     # Debounce time for specific warnings
     warning_debounce = 1s
      
-  # @minimal
+    # @recommended
     # Log level (Trace, Debug, Info, Warn, Error)
     log_level = Warn
   }
 
-  # @minimal
+  # @recommended
   # Which frame to publish the TF messages to
   global_frame = "lio_init"
 

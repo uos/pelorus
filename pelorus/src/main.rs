@@ -1,9 +1,10 @@
 #[allow(unused_imports)]
 use anyhow::Error;
 use anyhow::anyhow;
+use clap::ValueEnum;
 #[cfg(feature = "mimalloc")]
 use mimalloc::MiMalloc;
-use pelorus_core::config::ast_to_config;
+use pelorus_core::config::{ast_to_config, ast_to_config_with_user_usage};
 use pelorus_core::timing::RuntimeEvaluator;
 use pelorus_core::{LioConfig, timestamp_to_secs};
 use pelorus_reg::pipeline::Pipeline;
@@ -28,7 +29,7 @@ static GLOBAL: MiMalloc = MiMalloc;
 use clap::{Parser, Subcommand};
 #[allow(unused_imports)]
 use futures_lite::future;
-use log::{error, info};
+use log::{error, info, warn};
 use nalgebra::{Isometry3, Translation3, UnitQuaternion};
 #[cfg(feature = "r2r")]
 #[allow(unused_imports)]
@@ -84,6 +85,7 @@ use std::path::PathBuf;
 use pelorus::evaluate;
 #[cfg(feature = "rat")]
 use pelorus::output_tui;
+use pelorus::stats_tui::{SharedStats, StatsTui, init_logger, update_log_level};
 
 #[allow(dead_code)]
 fn lerp_color(c1: (f32, f32, f32), c2: (f32, f32, f32), t: f32) -> (f32, f32, f32) {
@@ -164,13 +166,10 @@ pub struct ConfigArgs {
 
 #[derive(Debug, Clone, Subcommand)]
 pub enum ConfigCommand {
-    /// Prints the default configuration to standard output.
-    /// You can redirect this to a file, e.g., `pelorus config full > my_config.rl`
-    Full,
+    /// Generate a configuration. Choose 'recommended' for recommended settings or 'full' for the complete default config.
+    Generate(GenerateArgs),
     /// Compiles and validates a given configuration file against the defaults
     Verify(TestArgs),
-    /// Generates a minimal configuration containing only settings marked with @minimal annotation
-    Minimal,
 }
 
 #[derive(Debug, Clone, Parser)]
@@ -188,6 +187,19 @@ pub struct TestArgs {
     pub config_path: PathBuf,
 }
 
+#[derive(Debug, Clone, Parser)]
+pub struct GenerateArgs {
+    /// Which configuration to generate: 'recommended' or 'full'
+    #[arg(value_enum)]
+    pub kind: GenerateKind,
+}
+
+#[derive(Debug, Clone, ValueEnum)]
+pub enum GenerateKind {
+    Recommended,
+    Full,
+}
+
 #[derive(Debug)]
 #[allow(dead_code)]
 struct RegisteredCloud {
@@ -201,7 +213,7 @@ fn lio(
     export_trajectory: bool,
     synchronous_mode: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    lio_with_ready_signal(config, None, export_trajectory, synchronous_mode)
+    lio_with_ready_signal(config, None, export_trajectory, synchronous_mode, None)
 }
 
 fn lio_with_ready_signal(
@@ -209,6 +221,7 @@ fn lio_with_ready_signal(
     ready_signal: Option<std::sync::mpsc::Sender<()>>,
     export_trajectory: bool,
     #[allow(unused_variables)] synchronous_mode: bool,
+    shared_stats: Option<std::sync::Arc<SharedStats>>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     #[cfg(any(feature = "ratpub", feature = "rat"))]
     let rt = if cfg!(feature = "ratpub") || (synchronous_mode && cfg!(feature = "rat")) {
@@ -269,18 +282,63 @@ fn lio_with_ready_signal(
         UnitQuaternion::from_matrix(&config.prelio_params.wheel_to_imu_rotation),
     );
 
+    // Set lidar vendor in shared stats if present
+    if let Some(ref stats) = shared_stats {
+        stats.set_lidar_vendor(config.prelio_params.lidar_vendor);
+    }
+
     #[cfg(feature = "rerun")]
     let rec = {
-        let rerun_server_addr =
-            std::env::var("RERUN_SERVER_ADDR").unwrap_or("127.0.0.1:9876".to_string());
-        let rec = std::sync::Arc::new(
-            rerun::RecordingStreamBuilder::new("pelorus").connect_grpc_opts(
-                format!("rerun+http://{}/proxy", rerun_server_addr),
-                Some(std::time::Duration::from_secs(1)),
-            )?,
-        );
-        rec
+        let rerun_enabled = std::env::var("RERUN_ENABLED")
+            .map(|v| v != "0" && v.to_lowercase() != "false")
+            .unwrap_or(true);
+
+        if rerun_enabled {
+            let rerun_server_addr =
+                std::env::var("RERUN_SERVER_ADDR").unwrap_or("127.0.0.1:9876".to_string());
+
+            // First check if the server is reachable via TCP
+            let is_reachable = std::net::TcpStream::connect_timeout(
+                &rerun_server_addr
+                    .parse()
+                    .unwrap_or_else(|_| std::net::SocketAddr::from(([127, 0, 0, 1], 9876))),
+                std::time::Duration::from_millis(500),
+            )
+            .is_ok();
+
+            if !is_reachable {
+                info!(
+                    "Rerun server not reachable at {}. Visualization disabled.",
+                    rerun_server_addr
+                );
+                None
+            } else {
+                // Server is reachable, try to connect
+                match rerun::RecordingStreamBuilder::new("pelorus").connect_grpc_opts(
+                    format!("rerun+http://{}/proxy", rerun_server_addr),
+                    Some(std::time::Duration::from_secs(2)),
+                ) {
+                    Ok(stream) => {
+                        info!("Connected to Rerun at {}", rerun_server_addr);
+                        Some(std::sync::Arc::new(stream))
+                    }
+                    Err(e) => {
+                        warn!(
+                            "Could not connect to Rerun at {}: {}. Visualization disabled.",
+                            rerun_server_addr, e
+                        );
+                        None
+                    }
+                }
+            }
+        } else {
+            info!("Rerun disabled via RERUN_ENABLED=false");
+            None
+        }
     };
+
+    #[cfg(not(feature = "rerun"))]
+    let _rerun_not_enabled = ();
 
     let (ready_for_next_tx, ready_for_next_rx) = std::sync::mpsc::channel();
     let (_lifis_node, synced_rx) = PrelioNode::new(
@@ -298,7 +356,7 @@ fn lio_with_ready_signal(
         Some(pipeline.build_undistort()),
         Some(pipeline.build_init_guess()),
         #[cfg(feature = "rerun")]
-        std::sync::Arc::clone(&rec),
+        rec.clone(),
         Some(ready_for_next_rx),
     )?;
 
@@ -504,11 +562,11 @@ fn lio_with_ready_signal(
 
     let mut eval = RuntimeEvaluator::new();
 
-    let render_interval = if config.feedback_fps == 0 {
+    let debug_render_interval = if config.debug_fps == 0 {
         None
     } else {
         Some(std::time::Duration::from_secs_f64(
-            1.0 / config.feedback_fps as f64,
+            1.0 / config.debug_fps as f64,
         ))
     };
     let mut last_render = std::time::Instant::now();
@@ -520,7 +578,7 @@ fn lio_with_ready_signal(
     // TODO handle just mapping without rerun with fileio
     // handle mapping of the registered results
     #[cfg(all(feature = "mapping", feature = "rerun"))]
-    {
+    if let Some(ref rec) = rec {
         let mapping_rec = rec.clone();
         let mapping_resolution = config.mapping_resolution;
         std::thread::spawn(move || {
@@ -595,6 +653,14 @@ fn lio_with_ready_signal(
         }
 
         while let Ok(lifis_tick) = synced_rx.recv() {
+            // Record scan arrival for measuring actual sensor rate
+            if let Some(ref stats) = shared_stats {
+                stats.record_scan();
+            }
+
+            // Start timing this scan iteration
+            let iteration_start = std::time::Instant::now();
+
             eval.merge(&lifis_tick.runtime_eval);
 
             #[cfg(feature = "cuda")]
@@ -693,7 +759,9 @@ fn lio_with_ready_signal(
 
             // --- Adapting Coordinate Systems ---
             #[cfg(feature = "rerun")]
-            rec.set_timestamp_secs_since_epoch("sensor", current_cloud_time);
+            if let Some(ref rec) = rec {
+                rec.set_timestamp_secs_since_epoch("sensor", current_cloud_time);
+            }
 
             #[cfg(feature = "rerun")]
             let ros_to_rerun = Isometry3::<f64>::identity(); // placeholder for other visualizations if needed
@@ -885,7 +953,7 @@ fn lio_with_ready_signal(
                 #[cfg(feature = "cuda")]
                 let total_map = pelorus_cuda::get_map();
                 #[cfg(feature = "rerun")]
-                {
+                if let Some(ref rec) = rec {
                     let points = total_map.iter().map(|v| {
                         // TODO maybe not inverse(), see above in lidar_as_map_tf
                         let v = ros_to_rerun.cast()
@@ -970,7 +1038,7 @@ fn lio_with_ready_signal(
             // -- --
 
             #[cfg(feature = "rerun")]
-            {
+            if let Some(ref rec) = rec {
                 let t_world_rerun = ros_to_rerun.cast() * t_world;
                 let pose = rerun::Transform3D::from_translation(glam::Vec3::new(
                     t_world_rerun.translation.x as f32,
@@ -1019,7 +1087,7 @@ fn lio_with_ready_signal(
             });
 
             #[cfg(feature = "rerun")]
-            {
+            if let Some(ref rec) = rec {
                 #[cfg(feature = "ros2-client")]
                 let ps = impl_ros2_interfaces_jazzy_serde::to_pointcloud2_msg(cloud.clone());
                 #[cfg(feature = "ratpub")]
@@ -1090,7 +1158,7 @@ fn lio_with_ready_signal(
             #[cfg(not(feature = "no-viz"))]
             if changed_lidar_path {
                 #[cfg(all(not(feature = "no-viz"), feature = "rerun"))]
-                {
+                if let Some(ref rec) = rec {
                     // Visualize the lidar path as a line strip
                     let lidar_path_strip =
                         rerun::LineStrip3D::from_iter(lidar_path.poses.iter().map(|p| {
@@ -1148,7 +1216,7 @@ fn lio_with_ready_signal(
                         .expect("Failed to publish imu path"); // TODO this will spam a lot, maybe also throttle like lidar_path
                 });
             #[cfg(feature = "rerun")]
-            {
+            if let Some(ref rec) = rec {
                 let imu_path_strip =
                     rerun::LineStrip3D::from_iter(imu_path.poses.iter().map(|p| {
                         glam::Vec3::new(
@@ -1163,18 +1231,48 @@ fn lio_with_ready_signal(
                 }
             }
 
+            // End timing for this scan iteration
+            let iteration_time_ms = iteration_start.elapsed().as_secs_f64() * 1000.0;
+
             let name = "Pelorus Odometry";
 
-            if let Some(render_interval) = render_interval {
-                if last_render.elapsed() > render_interval {
+            // Update shared stats if TUI is active
+            if let Some(ref stats) = shared_stats {
+                let pos = t_world.translation.vector;
+                let q = t_world.rotation.quaternion();
+                let lv = ekf_state.linear_velocity;
+                let av = ekf_state.angular_velocity;
+
+                stats.update_pose(
+                    [pos.x, pos.y, pos.z],
+                    [q.w, q.i, q.j, q.k],
+                    [lv.x, lv.y, lv.z],
+                    [av.x, av.y, av.z],
+                );
+
+                // Update bias values
+                let ab = ekf_state.accel_bias;
+                let gb = ekf_state.gyro_bias;
+                stats.update_bias([ab.x, ab.y, ab.z], [gb.x, gb.y, gb.z]);
+
+                // Record computation time for this scan iteration
+                stats.record_comp_time(iteration_time_ms);
+            }
+
+            // Debug output (non-TUI timing metrics)
+            if let Some(debug_interval) = debug_render_interval {
+                if last_render.elapsed() > debug_interval {
                     last_render = std::time::Instant::now();
-                    println!(
-                        "{}[2J{}[1;L{}\n{}",
-                        27 as char,
-                        27 as char,
-                        &name,
-                        eval.render()
-                    );
+                    // Only print timing output if TUI is not active
+                    if shared_stats.is_none() {
+                        println!(
+                            "{}[2J{}[1;L{}\n{}",
+                            27 as char,
+                            27 as char,
+                            &name,
+                            eval.render()
+                        );
+                    }
                 }
             }
 
@@ -1220,6 +1318,9 @@ fn lio_with_ready_signal(
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // Initialize our custom logger that works with both TUI and console
+    init_logger();
+
     let args = Args::parse();
 
     const DEFAULT_CONFIG_STR: &str = include_str!("../../default.rl");
@@ -1252,8 +1353,68 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     };
 
                     let config = ast_to_config(default_ast, user_ast)?;
-                    env_logger::init();
-                    lio(config, config_args.export_trajectory, config_args.rat)
+
+                    // Update log level after config has set RUST_LOG
+                    update_log_level();
+
+                    // Check if TUI should be enabled
+                    let show_tui = config.show_tui;
+
+                    if show_tui {
+                        // Run with TUI
+                        let shared_stats = std::sync::Arc::new(SharedStats::new());
+                        let stats_for_tui = shared_stats.clone();
+
+                        // Pass lidar rate to TUI for real-time factor calculation
+                        shared_stats.set_target_lidar_rate(10.0); // Default 10Hz, will be updated when first scan arrives
+
+                        let (tui_stop_tx, tui_stop_rx) = std::sync::mpsc::channel();
+                        let (shutdown_tx, shutdown_rx) = std::sync::mpsc::channel();
+
+                        // Start TUI thread
+                        let tui_thread = std::thread::spawn(move || {
+                            let mut tui = StatsTui::new(stats_for_tui)
+                                .with_stop_receiver(tui_stop_rx)
+                                .with_shutdown_sender(shutdown_tx);
+                            let _ = tui.run();
+                        });
+
+                        // Start LIO in a separate thread
+                        let lio_config = config.clone();
+                        let lio_export = config_args.export_trajectory;
+                        let lio_sync = config_args.rat;
+                        let lio_stats = Some(shared_stats);
+
+                        let lio_handle = std::thread::spawn(move || -> Result<(), String> {
+                            lio_with_ready_signal(lio_config, None, lio_export, lio_sync, lio_stats)
+                                .map_err(|e| e.to_string())
+                        });
+
+                        // Wait for either TUI shutdown or LIO completion
+                        loop {
+                            if shutdown_rx.try_recv().is_ok() {
+                                break;
+                            }
+                            if lio_handle.is_finished() {
+                                break;
+                            }
+                            std::thread::sleep(std::time::Duration::from_millis(100));
+                        }
+
+                        // Stop TUI
+                        let _ = tui_stop_tx.send(());
+                        let _ = tui_thread.join();
+
+                        // Get LIO result
+                        match lio_handle.join() {
+                            Ok(Ok(())) => Ok(()),
+                            Ok(Err(e)) => Err(anyhow!("{}", e).into()),
+                            Err(_) => Err(anyhow!("LIO thread panicked").into()),
+                        }
+                    } else {
+                        // Run without TUI (original behavior)
+                        lio(config, config_args.export_trajectory, config_args.rat)
+                    }
                 }
                 #[cfg(feature = "rat")]
                 RunArgs::Offline(offline_args) => {
@@ -1288,7 +1449,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
                     let config = {
                         let mut config = ast_to_config(default_ast, user_ast)?;
-                        config.feedback_fps = 0; // disable feedback for offline
+                        config.show_tui = false; // disable TUI for offline mode (uses output_tui instead)
+                        config.debug_fps = 0; // disable debug output for offline
                         config
                     };
 
@@ -1474,6 +1636,7 @@ pf! i 1
                             Some(pelorus_ready_tx),
                             offline_args.export_trajectory,
                             true,
+                            None, // No TUI stats for offline mode (uses output_tui instead)
                         ) {
                             error!("Odometry failed: {}", e);
                             return Err(format!("Odometry failed: {}", e));
@@ -1555,26 +1718,32 @@ pf! i 1
             }
         }
         Command::Config(cmd) => match cmd {
-            ConfigCommand::Full => {
-                print!("{}", DEFAULT_CONFIG_STR);
-                Ok(())
-            }
-            ConfigCommand::Minimal => {
-                let mut default_ast = ratslang::compile_code(DEFAULT_CONFIG_STR)
-                    .map_err(|e| anyhow!("Failed to compile embedded default config: {}", e))?;
-
-                // Suppress unused-variable warnings when generating minimal config
-                default_ast.vars = default_ast.vars.with_drop_warning(false);
-
-                match default_ast.to_string_filtered("minimal") {
-                    Some(minimal_config) => {
-                        print!("{}", minimal_config);
+            ConfigCommand::Generate(args) => {
+                match args.kind {
+                    GenerateKind::Full => {
+                        print!("{}", DEFAULT_CONFIG_STR);
                         Ok(())
                     }
-                    None => Err(anyhow!(
-                        "No @minimal annotations found in the default configuration"
-                    )
-                    .into()),
+                    GenerateKind::Recommended => {
+                        let mut default_ast =
+                            ratslang::compile_code(DEFAULT_CONFIG_STR).map_err(|e| {
+                                anyhow!("Failed to compile embedded default config: {}", e)
+                            })?;
+
+                        // Suppress unused-variable warnings when generating recommended config
+                        default_ast.vars = default_ast.vars.with_drop_warning(false);
+
+                        match default_ast.to_string_filtered("recommended") {
+                            Some(recommended_config) => {
+                                print!("{}", recommended_config);
+                                Ok(())
+                            }
+                            None => Err(anyhow!(
+                                "No @recommended annotations found in the default configuration"
+                            )
+                            .into()),
+                        }
+                    }
                 }
             }
             ConfigCommand::Verify(args) => {
@@ -1607,7 +1776,22 @@ pf! i 1
                     })?
                 };
 
-                let _ = ast_to_config(default_ast, user_ast)?;
+                let (_, (assigned_vars, evaluated_vars)) =
+                    ast_to_config_with_user_usage(default_ast, user_ast)?;
+
+                // Check for unused variables in user config
+                let mut has_warnings = false;
+                for var in assigned_vars.iter() {
+                    if !evaluated_vars.contains(var) {
+                        warn!("Variable '{}' is not recognized by Pelorus", var);
+                        has_warnings = true;
+                    }
+                }
+
+                if !has_warnings {
+                    println!("Configuration is valid.");
+                }
+
                 Ok(())
             }
         },

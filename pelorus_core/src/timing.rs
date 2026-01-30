@@ -248,6 +248,15 @@ impl RuntimeEvaluator {
         Err(anyhow::anyhow!("Evaluation not found"))
     }
 
+    pub fn get_last_total_time_ms(&self) -> Option<f64> {
+        for e in self.evaluations.iter() {
+            if e.name == "total" && e.num_measurements > 0 {
+                return Some(e.last_measurement.as_micros() as f64 / 1000.0);
+            }
+        }
+        None
+    }
+
     pub fn render(&mut self) -> String {
         self.pause();
 

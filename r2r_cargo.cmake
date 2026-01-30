@@ -98,9 +98,10 @@ function(r2r_cargo)
       list(APPEND FEATURES "mimalloc")
     endif()
 
-    if(NOT DEFINED PELORUS_NO_VIZ OR PELORUS_NO_VIZ)
-      list(APPEND FEATURES "no-viz")
+    if (NOT DEFINED PELORUS_EVALUATION OR PELORUS_EVALUATION)
+      list(APPEND FEATURES "evaluate")
     endif()
+
   endif()
 
   # handle cmake args and env args
@@ -121,8 +122,8 @@ function(r2r_cargo)
   if(PELORUS_MAP)
     list(APPEND FEATURES "map")
   endif()
-  if(PELORUS_EVALUATION)
-    list(APPEND FEATURES "evaluation")
+  if (PELORUS_NO_VIZ)
+    list(APPEND FEATURES "no-viz")
   endif()
 
   string(JOIN "," FEATURES_STR ${FEATURES})

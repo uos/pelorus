@@ -35,15 +35,16 @@ Building might take a while.
 Available flags for the ROS 2 version are:
 
 **Default flags** (enabled by default, disable all with `-D PELORUS_ALL_DEFAULTS=OFF`):
-- `parallel`
-- `mimalloc`
-- `no-viz`
+- `parallel` (use all available CPU cores)
+- `mimalloc` (use mimalloc as memory allocator)
+- `evaluation` (build the `evaluation` command for comparing trajectories and generating metrics similar to the `evo` tool)
 
 **Optional flags**:
 - `cuda` (use all available CUDA accelerations; requires `CUDA_HOME` environment variable to be set to your `/usr/local/cuda` or similar)
 - `rerun` (visualization with timeline; set `RERUN_SERVER_ADDR` for remote instances, e.g. `127.0.0.1:9876`. Requires v0.24)
 - `map` (publish localmap; only meant for debug purposes)
-- `evaluation` (build the `evaluation` command for comparing trajectories and generating metrics similar to the `evo` tool)
+- `no-viz` (avoid any visualization code; useful for headless systems)
+
 
 After building and sourcing, you can use Pelorus as a ROS node.
 
@@ -61,10 +62,10 @@ Generate a minimal configuration with typical required parameters for robots or 
 
 ```sh
 # typical settings that often change
-pelorus config minimal > pelorus.rl
+pelorus config generate recommended > pelorus.rl
 
 # alternatively, output all settings
-pelorus config full > pelorus.rl
+pelorus config generate full > pelorus.rl
 ```
 
 Adapt the values and validate the config to check you did everything correctly:

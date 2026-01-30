@@ -75,7 +75,7 @@ pub struct State {
     take_nth_scan: usize,
     pub lidar_vendor: LidarVendor,
     #[cfg(feature = "rerun")]
-    pub rec: Arc<rerun::RecordingStream>,
+    pub rec: Option<Arc<rerun::RecordingStream>>,
 
     pub last_lidar_time: Option<f64>,
 }
@@ -85,7 +85,7 @@ impl State {
         config: &LifisParameters,
         imu_pose_prediction_undistort: Option<Box<ImuPredictorUndistort>>,
         imu_pose_prediction_init_guess: Option<Box<ImuPredictor>>,
-        #[cfg(feature = "rerun")] rec: Arc<rerun::RecordingStream>,
+        #[cfg(feature = "rerun")] rec: Option<Arc<rerun::RecordingStream>>,
         ready_for_next: Option<std::sync::mpsc::Receiver<()>>,
     ) -> anyhow::Result<Self> {
         Ok(State {
@@ -464,7 +464,7 @@ impl PrelioNode {
         imu_pose_predictor_init: Option<Arc<Mutex<dyn FnMut(&[ImuMsg]) + Send + Sync>>>,
         imu_pose_prediction_undistort: Option<Box<ImuPredictorUndistort>>,
         imu_pose_prediction_init_guess: Option<Box<ImuPredictor>>,
-        #[cfg(feature = "rerun")] rec: Arc<rerun::RecordingStream>,
+        #[cfg(feature = "rerun")] rec: Option<Arc<rerun::RecordingStream>>,
         ready_for_next: Option<std::sync::mpsc::Receiver<()>>,
     ) -> anyhow::Result<(Self, std::sync::mpsc::Receiver<Tick>)> {
         #[cfg(feature = "ros2-client")]
@@ -481,7 +481,7 @@ impl PrelioNode {
             imu_pose_prediction_undistort,
             imu_pose_prediction_init_guess,
             #[cfg(feature = "rerun")]
-            Arc::clone(&rec),
+            rec.clone(),
             ready_for_next,
         )?;
 

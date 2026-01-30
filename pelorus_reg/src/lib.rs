@@ -39,8 +39,14 @@ pub struct ImuEkfPrediction {
     pub pose: Isometry3<f64>,
     /// Linear velocity in world frame
     pub linear_velocity: Vector3<f64>,
+    /// Angular velocity (bias-corrected) in body frame
+    pub angular_velocity: Vector3<f64>,
     /// Extrinsic calibration from lidar to IMU (T_I_L)
     pub lidar_imu_extrinsic: Isometry3<f64>,
+    /// Accelerometer bias estimate
+    pub accel_bias: Vector3<f64>,
+    /// Gyroscope bias estimate
+    pub gyro_bias: Vector3<f64>,
 }
 
 impl Default for ImuEkfPrediction {
@@ -48,7 +54,10 @@ impl Default for ImuEkfPrediction {
         ImuEkfPrediction {
             pose: Isometry3::identity(),
             linear_velocity: Vector3::zeros(),
+            angular_velocity: Vector3::zeros(),
             lidar_imu_extrinsic: Isometry3::identity(),
+            accel_bias: Vector3::zeros(),
+            gyro_bias: Vector3::zeros(),
         }
     }
 }

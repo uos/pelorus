@@ -8,6 +8,7 @@ pub mod evaluate;
 pub mod mapping;
 #[cfg(feature = "rat")]
 pub mod output_tui;
+pub mod stats_tui;
 
 // pub fn rpcl2_time_to_r2r_time(t: &ros_pointcloud2::ros::TimeMsg) -> TimeMsg {
 //     TimeMsg {
