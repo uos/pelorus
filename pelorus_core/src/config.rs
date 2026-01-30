@@ -93,14 +93,8 @@ pub fn ast_to_config(mut defaults: Evaluated, user: Evaluated) -> anyhow::Result
     // Disable warnings for default config since we only care about user-provided config
     defaults.vars = defaults.vars.with_drop_warning(false);
 
-    // Capture user usage information so we can warn about unrecognized variables
-    let (config, _default_usage, user_usage) = ast_to_config_inner(defaults, user, false, true)?;
-    let (assigned_vars, evaluated_vars) = user_usage;
-    for var in assigned_vars.iter() {
-        if !evaluated_vars.contains(var) {
-            log::warn!("Variable '{}' is not recognized by Pelorus", var);
-        }
-    }
+    // Usage info is printed by ratslang internally; we can ignore it here
+    let (config, _default_usage, _user_usage) = ast_to_config_inner(defaults, user, false, true)?;
 
     Ok(config)
 }
