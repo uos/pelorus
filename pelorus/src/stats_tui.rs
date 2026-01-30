@@ -847,11 +847,10 @@ impl StatsTui {
     }
 
     fn render_tabs(&self, f: &mut ratatui::Frame, area: Rect) {
-        let log_count = self.log_buffer.lock().map(|b| b.len()).unwrap_or(0);
         let titles = vec![
             Line::from(" 1 Stats "),
             Line::from(" 2 Trajectory "),
-            Line::from(format!(" 3 Logs ({}) ", log_count)),
+            Line::from(" 3 Logs "),
         ];
 
         let selected = match self.current_tab {
