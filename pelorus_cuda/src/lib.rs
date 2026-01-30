@@ -209,6 +209,10 @@ pub fn init_map(
         (capacity & (capacity - 1)) == 0,
         "Capacity is not a power of 2"
     );
+
+    // Register cleanup hook on first init
+    ensure_cleanup_registered();
+
     let my_stream = stream.stream.raw;
     unsafe {
         ffi::init_map(
@@ -240,6 +244,25 @@ pub fn add_to_map(stream: &Stream, cloud: &CudaBuffer, ekf_pose_t: &Vector3, ekf
 }
 pub fn get_map_size() -> u32 {
     unsafe { ffi::get_map_size() }
+}
+
+pub fn cleanup_map() {
+    unsafe { ffi::cleanup_map() }
+}
+
+// Global guard to ensure cleanup happens before CUDA teardown
+static CLEANUP_GUARD: std::sync::Once = std::sync::Once::new();
+
+fn ensure_cleanup_registered() {
+    CLEANUP_GUARD.call_once(|| {
+        // Register cleanup to run at program exit, before global destructors
+        extern "C" fn cleanup_at_exit() {
+            unsafe { ffi::cleanup_map() }
+        }
+        unsafe {
+            libc::atexit(cleanup_at_exit);
+        }
+    });
 }
 
 pub fn planes_cuda(

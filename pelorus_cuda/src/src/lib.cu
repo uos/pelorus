@@ -115,7 +115,11 @@ void *cupcl_create_buffer(void *stream, void *buffer_cpu,
 void cupcl_free_buffer(void *buffer) {
   try {
     if (buffer != NULL) {
-      cudaFree(buffer);
+      cudaError_t err = cudaFree(buffer);
+      // Ignore errors during CUDA shutdown - this is expected during process exit
+      if (err != cudaSuccess && err != cudaErrorCudartUnloading) {
+        std::cerr << "CUDA free failed: " << cudaGetErrorString(err) << std::endl;
+      }
       buffer = NULL;
     }
   } catch (const std::exception &e) {
@@ -236,6 +240,14 @@ void get_map(Point *points, uint32_t *points_size) {
 
 uint32_t get_map_capacity() { return state->localmap.capacity; }
 uint32_t get_map_size() { return state->localmap.size(); }
+
+void cleanup_map() {
+  // Explicitly destroy the map state before CUDA shutdown
+  // This prevents thrust::device_vector destructors from running after CUDA teardown
+  if (state) {
+    state.reset();
+  }
+}
 
 __global__ void plane_krnl(Point *cloud, uint32_t cloud_size,
                            Pose ekf_lidar_to_imu, Pose ekf_pose,

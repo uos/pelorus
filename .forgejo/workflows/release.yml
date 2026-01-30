@@ -12,6 +12,9 @@ on:
 permissions:
   contents: write
 
+env:
+  RUST_FONTCONFIG_DLOPEN: 1
+
 jobs:
   sanity:
     runs-on: ubuntu-dev-noble-arm
@@ -24,7 +27,7 @@ jobs:
       - name: Validate packaging files versions
         run: |
           set -euo pipefail
-          apt-get install -y cmake pkg-config
+          apt-get install -y cmake
           VERSION=$(toml get --raw Cargo.toml workspace.package.version)
           echo "Workspace version: $VERSION"
           cmake -S pelorus_c -B pelorus_c/build -DCMAKE_INSTALL_PREFIX=/usr
@@ -91,7 +94,7 @@ jobs:
           ARCH: ${{ matrix.arch }}
         run: |
           set -euo pipefail
-          apt-get install -y cmake pkg-config
+          apt-get install -y cmake
           VERSION=$(toml get --raw Cargo.toml workspace.package.version)
           VERSION=$VERSION-1
           rustup update
@@ -187,7 +190,6 @@ jobs:
       - uses: actions/checkout@v4
       - name: Build
         run: |
-          apt-get install -y pkg-config
           rustup update
           rustup target add $TARGET
 
@@ -246,7 +248,7 @@ jobs:
           ARCH: ${{ matrix.arch }}
         run: |
           set -euo pipefail
-          apt-get install -y cmake pkg-config
+          apt-get install -y cmake
           VERSION=$(toml get --raw Cargo.toml workspace.package.version)
           rustup update
 
@@ -365,7 +367,7 @@ jobs:
           ARCH: ${{ matrix.arch }}
         run: |
           set -euo pipefail
-          apt-get install -y cmake pkg-config
+          apt-get install -y cmake
           VERSION=$(toml get --raw Cargo.toml workspace.package.version)
           rustup update
 
@@ -484,7 +486,7 @@ jobs:
           ARCH: ${{ matrix.arch }}
         run: |
           set -euo pipefail
-          apt-get install -y cmake pkg-config
+          apt-get install -y cmake
           VERSION=$(toml get --raw Cargo.toml workspace.package.version)
           rustup update
 
@@ -589,7 +591,6 @@ jobs:
       - uses: actions/checkout@v4
       - name: Build
         run: |
-          apt-get install -y pkg-config
           rustup update
 
           for distro in jazzy humble; do
@@ -635,7 +636,6 @@ jobs:
           TARGET: ${{ matrix.target }}
           ARCH: ${{ matrix.arch }}
         run: |
-          apt-get install -y pkg-config
           rustup update
           rustup target add $TARGET
 
@@ -695,7 +695,6 @@ jobs:
       - uses: actions/checkout@v4
       - name: Build
         run: |
-          apt-get install -y pkg-config
           for distro in jazzy humble; do
           if [ -f "/opt/ros/$distro/setup.bash" ]; then
             echo "Sourcing ROS distro: $distro"
@@ -765,7 +764,6 @@ jobs:
       - uses: actions/checkout@v4
       - name: Build
         run: |
-          apt-get install -y pkg-config
           for distro in jazzy humble; do
           if [ -f "/opt/ros/$distro/setup.bash" ]; then
             echo "Sourcing ROS distro: $distro"
@@ -835,7 +833,6 @@ jobs:
       - uses: actions/checkout@v4
       - name: Build
         run: |
-          apt-get install -y pkg-config
           for distro in jazzy humble; do
           if [ -f "/opt/ros/$distro/setup.bash" ]; then
             echo "Sourcing ROS distro: $distro"
@@ -917,7 +914,6 @@ jobs:
           dpkg -i "./deb-artifacts/$ARCH/libpelorus-dev_${VERSION}_${ARCH}.deb"
       - name: Build
         run: |
-          apt-get install -y pkg-config
           VERSION=$(toml get --raw Cargo.toml workspace.package.version)
           VERSION=$VERSION-1
           mkdir -p dist/${ARCH}
@@ -1021,7 +1017,6 @@ jobs:
       - uses: actions/checkout@v4
       - name: Build wheels
         run: |
-          apt-get install -y pkg-config
           rustup update
           rustup target add "$TARGET"
 

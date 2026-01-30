@@ -15,6 +15,7 @@ nalgebra.workspace = true
 ros_pointcloud2.workspace = true
 pelorus_core.workspace = true
 log.workspace = true
+libc.workspace = true
 
 [build-dependencies]
 bindgen = "0.72"
