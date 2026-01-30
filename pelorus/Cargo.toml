@@ -39,7 +39,6 @@ ratslang.workspace = true
 sophus_lie = { workspace = true, optional = true }
 plotters = { workspace = true, optional = true }
 petname.workspace = true
-image = { workspace = true, optional = true }
 colorous = "1.0"
 ratatui = "0.29"
 crossterm = "0.28"
@@ -47,7 +46,7 @@ num_cpus = "1.16"
 libc = "0.2"
 
 [features]
-default = ["rat", "ratpub", "evaluate"]
+default = ["offline", "evaluate", "rerun"]
 # default = ["dev"] # toggled in development
 
 # -#-#-#-#-#- Sensor Communication -#-#-#-#-#-
@@ -104,7 +103,7 @@ map = []
 no-viz = []
 
 # Enable the visualization tools (`evaluate` subcommand) for comparing against ground truths.
-evaluate = ["dep:sophus_lie", "dep:plotters", "dep:image", "dep:rerun"]
+evaluate = ["dep:sophus_lie", "dep:plotters", "dep:rerun"]
 
 # -#-#-#-#-#- Low level -#-#-#-#-#-
 

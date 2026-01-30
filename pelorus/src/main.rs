@@ -1301,7 +1301,6 @@ fn lio_with_ready_signal(
             if let Some(debug_interval) = debug_render_interval {
                 if last_render.elapsed() > debug_interval {
                     last_render = std::time::Instant::now();
-                    // Only print timing output if TUI is not active
                     if shared_stats.is_none() {
                         println!(
                             "{}[2J{}[1;L{}\n{}",

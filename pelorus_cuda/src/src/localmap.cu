@@ -354,7 +354,37 @@ Localmap::Localmap(size_t capacity, float sensitivity, float min_dist,
   stream.synchronize();
 }
 
-Localmap::~Localmap() { destroy_map(this->lookup); }
+Localmap::~Localmap() {
+  destroy_map(this->lookup);
+  
+  // Manually clear thrust::device_vectors to catch and suppress shutdown errors
+  // This prevents crashes when global objects are destroyed after CUDA cleanup
+  try {
+    buffer.clear();
+    buffer.shrink_to_fit();
+    lru_mapping.clear();
+    lru_mapping.shrink_to_fit();
+    d_unique_keys.clear();
+    d_unique_keys.shrink_to_fit();
+    d_run_counts.clear();
+    d_run_counts.shrink_to_fit();
+    d_keys.clear();
+    d_keys.shrink_to_fit();
+    d_indices.clear();
+    d_indices.shrink_to_fit();
+    d_run_starts.clear();
+    d_run_starts.shrink_to_fit();
+    d_run_ends.clear();
+    d_run_ends.shrink_to_fit();
+  } catch (const thrust::system_error &e) {
+    // Suppress CUDA shutdown errors - expected during process exit
+    if (e.code().value() != cudaErrorCudartUnloading) {
+      std::cerr << "Thrust error in ~Localmap: " << e.what() << std::endl;
+    }
+  } catch (...) {
+    // Suppress any other exceptions during shutdown
+  }
+}
 
 void Localmap::clear() {
   add_cursor = 0;

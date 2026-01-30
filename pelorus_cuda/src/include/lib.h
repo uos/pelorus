@@ -95,6 +95,8 @@ uint32_t get_map_size();
 void init_map(void *stream, uint32_t map_capacity, float sensitivity,
               float min_dist, float map_resolution, NearbyType nbtype);
 
+void cleanup_map();
+
 #ifdef __cplusplus
 }
 #endif
