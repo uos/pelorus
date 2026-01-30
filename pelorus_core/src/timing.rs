@@ -257,6 +257,16 @@ impl RuntimeEvaluator {
         None
     }
 
+    pub fn get_sum_of_top_level_times_ms(&self) -> f64 {
+        let mut total_micros = 0.0;
+        for e in self.evaluations.iter() {
+            if !e.name.contains('/') && e.num_measurements > 0 {
+                total_micros += e.filter.mean;
+            }
+        }
+        total_micros / 1000.0 // Convert to ms
+    }
+
     pub fn render(&mut self) -> String {
         self.pause();
 

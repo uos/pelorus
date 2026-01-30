@@ -20,6 +20,8 @@ use std::fs;
 use std::process::{Command as ProcessCommand, Stdio};
 use std::time::UNIX_EPOCH;
 
+const PATH_LIMIT: usize = 10_000;
+
 use ros_pointcloud2::prelude::*;
 
 #[global_allocator]
@@ -68,6 +70,7 @@ use ros2_interfaces_jazzy_serde::{
     std_msgs::msg::Header,
     visualization_msgs::msg::Marker,
 };
+use std::collections::VecDeque;
 
 use prelio_io::prelio::LocatedBufferView;
 #[cfg(feature = "ros2-client")]
@@ -548,19 +551,12 @@ fn lio_with_ready_signal(
     let mut t_world = nalgebra::Isometry3::identity();
     let mut t_last_current = nalgebra::Isometry3::identity();
 
-    let mut lidar_path = Path {
-        header: Default::default(),
-        poses: vec![],
-    };
+    // Use VecDeque for efficient removal from front (O(1) instead of O(n))
+    let mut lidar_path_poses: VecDeque<PoseStamped> = VecDeque::new();
+    let lidar_path_frame_id = config.prelio_params.map_frame.clone();
 
-    lidar_path.header.frame_id = config.prelio_params.map_frame.clone();
-
-    let mut imu_path = Path {
-        header: Default::default(),
-        poses: vec![],
-    };
-
-    imu_path.header.frame_id = config.prelio_params.map_frame.clone();
+    let mut imu_path_poses: VecDeque<PoseStamped> = VecDeque::new();
+    let imu_path_frame_id = config.prelio_params.map_frame.clone();
 
     let mut last_scan_time = None;
 
@@ -580,14 +576,26 @@ fn lio_with_ready_signal(
     };
     let mut last_render = std::time::Instant::now();
 
-    #[cfg(feature = "mapping")]
+    // Only create mapping channel if we will actually use it (mapping + rerun both enabled AND rerun is connected)
+    #[cfg(all(feature = "mapping", feature = "rerun"))]
+    let mapping_channel = if rec.is_some() {
+        Some(std::sync::mpsc::channel::<RegisteredCloud>())
+    } else {
+        None
+    };
+
+    #[cfg(all(feature = "mapping", feature = "rerun"))]
     #[allow(unused_variables)]
-    let (out_chan_sender, out_chan_receiver) = std::sync::mpsc::channel::<RegisteredCloud>();
+    let (out_chan_sender, out_chan_receiver) = if let Some((tx, rx)) = mapping_channel {
+        (Some(tx), Some(rx))
+    } else {
+        (None, None)
+    };
 
     // TODO handle just mapping without rerun with fileio
     // handle mapping of the registered results
     #[cfg(all(feature = "mapping", feature = "rerun"))]
-    if let Some(ref rec) = rec {
+    if let (Some(out_chan_receiver), Some(ref rec)) = (out_chan_receiver, &rec) {
         let mapping_rec = rec.clone();
         let mapping_resolution = config.mapping_resolution;
         std::thread::spawn(move || {
@@ -695,9 +703,6 @@ fn lio_with_ready_signal(
             if let Some(ref stats) = shared_stats {
                 stats.record_scan();
             }
-
-            // Start timing this scan iteration
-            let iteration_start = std::time::Instant::now();
 
             eval.merge(&lifis_tick.runtime_eval);
 
@@ -859,8 +864,7 @@ fn lio_with_ready_signal(
             // publish paths but only add new poses if the robot moved enough
             #[cfg(not(feature = "no-viz"))]
             let changed_lidar_path = {
-                let lp_pose = &lidar_path.poses;
-                match lp_pose.last() {
+                match lidar_path_poses.back() {
                     Some(last_pose) => {
                         let last_pose = last_pose.pose.clone();
                         let last_pose_position = last_pose.position;
@@ -898,20 +902,26 @@ fn lio_with_ready_signal(
                         if distance > path_update_translate_threshold
                             || rotation_angle > path_update_rotate_threshold
                         {
-                            lidar_path.poses.push(PoseStamped {
+                            lidar_path_poses.push_back(PoseStamped {
                                 pose: pelorus_odom.pose.pose.clone(),
                                 header: pelorus_odom.header.clone(),
                             });
+                            if lidar_path_poses.len() > PATH_LIMIT {
+                                lidar_path_poses.pop_front();
+                            }
                             true
                         } else {
                             false
                         }
                     }
                     None => {
-                        lidar_path.poses.push(PoseStamped {
+                        lidar_path_poses.push_back(PoseStamped {
                             pose: pelorus_odom.pose.pose.clone(),
                             header: pelorus_odom.header.clone(),
                         });
+                        if lidar_path_poses.len() > PATH_LIMIT {
+                            lidar_path_poses.pop_front();
+                        }
                         true
                     }
                 }
@@ -1095,8 +1105,8 @@ fn lio_with_ready_signal(
                 }
             }
 
-            #[cfg(feature = "mapping")]
-            {
+            #[cfg(all(feature = "mapping", feature = "rerun"))]
+            if let Some(ref sender) = out_chan_sender {
                 let ps: ros_pointcloud2::PointCloud2Msg = cloud.clone().into();
                 let reg_out = RegisteredCloud {
                     cloud: ps,
@@ -1104,7 +1114,7 @@ fn lio_with_ready_signal(
                     timestamp: current_cloud_time,
                 };
 
-                let _ = out_chan_sender.send(reg_out); // currently ignore res
+                let _ = sender.send(reg_out); // currently ignore res
             }
 
             let mut imu_odom = pelorus_odom.clone();
@@ -1119,10 +1129,14 @@ fn lio_with_ready_signal(
             imu_odom.twist.covariance = pelorus_odom.twist.covariance.clone();
 
             #[cfg(not(feature = "no-viz"))]
-            imu_path.poses.push(PoseStamped {
+            imu_path_poses.push_back(PoseStamped {
                 pose: imu_odom.pose.pose.clone(),
                 header: imu_odom.header.clone(),
             });
+            #[cfg(not(feature = "no-viz"))]
+            if imu_path_poses.len() > PATH_LIMIT {
+                imu_path_poses.pop_front();
+            }
 
             #[cfg(feature = "rerun")]
             if let Some(ref rec) = rec {
@@ -1199,7 +1213,7 @@ fn lio_with_ready_signal(
                 if let Some(ref rec) = rec {
                     // Visualize the lidar path as a line strip
                     let lidar_path_strip =
-                        rerun::LineStrip3D::from_iter(lidar_path.poses.iter().map(|p| {
+                        rerun::LineStrip3D::from_iter(lidar_path_poses.iter().map(|p| {
                             glam::Vec3::new(
                                 p.pose.position.x as f32,
                                 p.pose.position.y as f32,
@@ -1215,9 +1229,18 @@ fn lio_with_ready_signal(
                     }
                 }
                 #[cfg(all(not(feature = "no-viz"), not(feature = "ratpub")))]
-                lidar_path_publisher
-                    .publish(&lidar_path)
-                    .expect("Failed to publish path");
+                {
+                    let lidar_path = Path {
+                        header: Header {
+                            frame_id: lidar_path_frame_id.clone(),
+                            stamp: pelorus_odom.header.stamp.clone(),
+                        },
+                        poses: lidar_path_poses.iter().cloned().collect(),
+                    };
+                    lidar_path_publisher
+                        .publish(&lidar_path)
+                        .expect("Failed to publish path");
+                }
             }
 
             #[cfg(all(not(feature = "no-viz"), not(feature = "ratpub")))]
@@ -1231,9 +1254,21 @@ fn lio_with_ready_signal(
                 .expect("Failed to publish imu path"); // TODO this will spam a lot, maybe also throttle like lidar_path
 
             #[cfg(all(not(feature = "no-viz"), feature = "ratpub"))]
-            let pub_lidar_path = lidar_path.clone();
+            let pub_lidar_path = Path {
+                header: Header {
+                    frame_id: lidar_path_frame_id.clone(),
+                    stamp: pelorus_odom.header.stamp.clone(),
+                },
+                poses: lidar_path_poses.iter().cloned().collect(),
+            };
             #[cfg(all(not(feature = "no-viz"), feature = "ratpub"))]
-            let pub_imu_path = imu_path.clone();
+            let pub_imu_path = Path {
+                header: Header {
+                    frame_id: imu_path_frame_id.clone(),
+                    stamp: imu_odom.header.stamp.clone(),
+                },
+                poses: imu_path_poses.iter().cloned().collect(),
+            };
             #[cfg(all(not(feature = "no-viz"), feature = "ratpub"))]
             rt.as_ref()
                 .expect("rt always exists with ratpub feat")
@@ -1256,7 +1291,7 @@ fn lio_with_ready_signal(
             #[cfg(feature = "rerun")]
             if let Some(ref rec) = rec {
                 let imu_path_strip =
-                    rerun::LineStrip3D::from_iter(imu_path.poses.iter().map(|p| {
+                    rerun::LineStrip3D::from_iter(imu_path_poses.iter().map(|p| {
                         glam::Vec3::new(
                             p.pose.position.x as f32,
                             p.pose.position.y as f32,
@@ -1269,10 +1304,9 @@ fn lio_with_ready_signal(
                 }
             }
 
-            // End timing for this scan iteration
-            let iteration_time_ms = iteration_start.elapsed().as_secs_f64() * 1000.0;
+            let iteration_time_ms = eval.get_sum_of_top_level_times_ms();
 
-            let name = "Pelorus Odometry";
+            const NAME: &str = "Pelorus";
 
             // Update shared stats if TUI is active
             if let Some(ref stats) = shared_stats {
@@ -1306,7 +1340,7 @@ fn lio_with_ready_signal(
                             "{}[2J{}[1;L{}\n{}",
                             27 as char,
                             27 as char,
-                            &name,
+                            &NAME,
                             eval.render()
                         );
                     }
