@@ -227,15 +227,9 @@ fn filter_downsample_with_fallback<
         Ok(data) => Ok(data),
         Err(e) => {
             let error_str = format!("{:?}", e);
-            if error_str.contains("FieldsNotFound") && (error_str.contains("intensity")) {
-                warn!(
-                    "Failed to parse with intensity field, trying without intensity: {}",
-                    e
-                );
-                dbg!("using fallback");
+            if error_str.contains("Some fields") && (error_str.contains("intensity")) {
                 filter_downsample::<N_FALLBACK, PFallback>(&cloud, lifis_params)
             } else {
-                dbg!("failed");
                 Err(e)
             }
         }
