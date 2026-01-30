@@ -807,7 +807,8 @@ impl Prelio {
                         if let Err(e) =
                             filtered_cloud_tx.send((cloud_meta, labeled.scan_id, eval.clone()))
                         {
-                            error!("Error sending pointcloud: {}", e);
+                            info!("Closing filtering Thread: {}", e);
+                            return;
                         }
                     }
                     Ok(None) => {
@@ -880,9 +881,6 @@ impl Prelio {
     /// Returns the filtered IMU message for republishing.
     pub fn add_imu(&mut self, mut imu: ImuMsg) -> Option<ImuMsg> {
         let imu_time = timestamp_to_secs(&imu.stamp);
-        if imu_time < self.last_imu_time {
-            return None; // wrapping time (mostly bag file restarts), wait for lidar wrap to reset
-        }
 
         self.runtime_eval.start("imu_pre").unwrap();
 
@@ -941,8 +939,9 @@ impl Prelio {
         let imu_data = imu.clone();
         match self.imu_sender.send(imu_data) {
             Ok(_) => {}
-            Err(e) => {
-                log::error!("Error while sending imu message to sync worker: {e}");
+            Err(_) => {
+                self.runtime_eval.stop("imu_pre").unwrap();
+                return None;
             }
         }
         self.runtime_eval.stop("imu_pre").unwrap();
@@ -1195,7 +1194,10 @@ impl Prelio {
 
                 // Waiting for sync signal. Needed for cases where undistortion uses an EKF state that predicts forward and the correction must be made first before predicting further.
                 if let Some(wait_for_next) = ready_for_next.as_ref() {
-                    wait_for_next.recv().unwrap();
+                    if let Err(_) = wait_for_next.recv() {
+                        warn!("Could not wait for next sync");
+                        return;
+                    }
                 }
 
                 let imu_frame = meas

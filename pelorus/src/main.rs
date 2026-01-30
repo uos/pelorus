@@ -213,7 +213,14 @@ fn lio(
     export_trajectory: bool,
     synchronous_mode: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    lio_with_ready_signal(config, None, export_trajectory, synchronous_mode, None)
+    lio_with_ready_signal(
+        config,
+        None,
+        export_trajectory,
+        synchronous_mode,
+        None,
+        None,
+    )
 }
 
 fn lio_with_ready_signal(
@@ -222,6 +229,8 @@ fn lio_with_ready_signal(
     export_trajectory: bool,
     #[allow(unused_variables)] synchronous_mode: bool,
     shared_stats: Option<std::sync::Arc<SharedStats>>,
+    // Optional flag that, when set to true, will cause the LIO loop to exit
+    shutdown_flag: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     #[cfg(any(feature = "ratpub", feature = "rat"))]
     let rt = if cfg!(feature = "ratpub") || (synchronous_mode && cfg!(feature = "rat")) {
@@ -612,7 +621,10 @@ fn lio_with_ready_signal(
         });
     }
 
-    std::thread::spawn(move || {
+    // Clone shutdown_flag for the processing thread; original is used for the spinner
+    let processing_shutdown_flag = shutdown_flag.clone();
+
+    let processing_handle = std::thread::spawn(move || {
         // Initialize Prelio prediction
         ready_for_next_tx.send(()).unwrap();
 
@@ -652,7 +664,33 @@ fn lio_with_ready_signal(
             let _ = signal.send(());
         }
 
-        while let Ok(lifis_tick) = synced_rx.recv() {
+        // Main processing loop. Use recv_timeout when a shutdown flag is provided so we can
+        // check for shutdown requests periodically. If no shutdown flag is provided, block
+        // on recv() as before.
+        loop {
+            let lifis_tick = match processing_shutdown_flag.as_ref() {
+                Some(flag) => {
+                    // First check if shutdown was already requested to avoid blocking.
+                    if flag.load(std::sync::atomic::Ordering::Relaxed) {
+                        info!("Shutdown flag detected, exiting processing loop");
+                        break;
+                    }
+
+                    // Block with a short timeout so we can still respond promptly to shutdown signals.
+                    match synced_rx.recv_timeout(std::time::Duration::from_millis(50)) {
+                        Ok(t) => t,
+                        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => continue,
+                        Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                            info!("synced_rx disconnected, exiting processing loop");
+                            break;
+                        }
+                    }
+                }
+                None => match synced_rx.recv() {
+                    Ok(t) => t,
+                    Err(_) => break,
+                },
+            };
             // Record scan arrival for measuring actual sensor rate
             if let Some(ref stats) = shared_stats {
                 stats.record_scan();
@@ -1290,31 +1328,91 @@ fn lio_with_ready_signal(
         info!("--- END lifis tick ---");
     });
 
+    // Clone shutdown flag for spinner loop
+    #[cfg(any(feature = "ratpub", feature = "r2r"))]
+    let spinner_shutdown_flag = shutdown_flag.clone();
+
     #[cfg(feature = "ratpub")]
     {
-        std::thread::park();
-        Ok(())
+        // Check shutdown flag periodically instead of parking forever
+        loop {
+            if let Some(ref flag) = spinner_shutdown_flag {
+                if flag.load(std::sync::atomic::Ordering::Relaxed) {
+                    info!("Shutdown flag detected in ratpub spinner");
+                    break;
+                }
+            }
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        }
+        // Wait for processing thread to finish (with timeout)
+        let _ = processing_handle.join();
+        return Ok(());
     }
 
     #[cfg(feature = "ros2-client")]
-    future::block_on(async {
-        match node.spinner().unwrap().spin().await {
-            Err(e) => {
-                error!("Node did not exit succesfully {e}");
+    {
+        // ros2-client doesn't have a simple way to break the spinner, so we run it in a thread
+        // and check the shutdown flag periodically
+        let spinner_shutdown = shutdown_flag.clone();
+        let spinner_handle = std::thread::spawn(move || {
+            future::block_on(async {
+                match node.spinner().unwrap().spin().await {
+                    Err(e) => {
+                        error!("Node did not exit successfully {e}");
+                    }
+                    Ok(_) => {}
+                }
+            });
+        });
+
+        // Monitor shutdown flag and wait for processing to complete
+        loop {
+            if let Some(ref flag) = spinner_shutdown {
+                if flag.load(std::sync::atomic::Ordering::Relaxed) {
+                    info!("Shutdown flag detected, waiting for processing thread");
+                    break;
+                }
             }
-            Ok(_) => {}
+            if processing_handle.is_finished() {
+                info!("Processing thread finished");
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(100));
         }
-    });
+
+        // Join processing thread (should be quick now)
+        let _ = processing_handle.join();
+        // Note: spinner_handle may still be running but will be cleaned up on process exit
+        // We don't wait for it since ros2-client spinner doesn't have clean shutdown
+        return Ok(());
+    }
+
     #[cfg(feature = "r2r")]
     {
         let spin_timeout = std::time::Duration::from_millis(10);
         loop {
             node.spin_once(spin_timeout.clone());
+            if let Some(ref flag) = spinner_shutdown_flag {
+                if flag.load(std::sync::atomic::Ordering::Relaxed) {
+                    info!("Shutdown flag detected in r2r spinner");
+                    break;
+                }
+            }
+            if processing_handle.is_finished() {
+                info!("Processing thread finished");
+                break;
+            }
         }
+        // Wait for processing thread to finish
+        let _ = processing_handle.join();
+        return Ok(());
     }
 
-    #[cfg(feature = "ros2-client")]
-    Ok(())
+    #[cfg(not(any(feature = "ratpub", feature = "ros2-client", feature = "r2r")))]
+    {
+        let _ = processing_handle.join();
+        Ok(())
+    }
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -1357,53 +1455,70 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     // Update log level after config has set RUST_LOG
                     update_log_level();
 
-                    // Check if TUI should be enabled
                     let show_tui = config.show_tui;
 
                     if show_tui {
-                        // Run with TUI
                         let shared_stats = std::sync::Arc::new(SharedStats::new());
                         let stats_for_tui = shared_stats.clone();
 
-                        // Pass lidar rate to TUI for real-time factor calculation
-                        shared_stats.set_target_lidar_rate(10.0); // Default 10Hz, will be updated when first scan arrives
+                        shared_stats.set_target_lidar_rate(10.0); // will be updated when first scan arrives
 
                         let (tui_stop_tx, tui_stop_rx) = std::sync::mpsc::channel();
                         let (shutdown_tx, shutdown_rx) = std::sync::mpsc::channel();
 
-                        // Start TUI thread
                         let tui_thread = std::thread::spawn(move || {
                             let mut tui = StatsTui::new(stats_for_tui)
                                 .with_stop_receiver(tui_stop_rx)
                                 .with_shutdown_sender(shutdown_tx);
                             let _ = tui.run();
                         });
-
-                        // Start LIO in a separate thread
                         let lio_config = config.clone();
                         let lio_export = config_args.export_trajectory;
                         let lio_sync = config_args.rat;
                         let lio_stats = Some(shared_stats);
 
+                        let lio_shutdown_flag =
+                            std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+                        let lio_shutdown_flag_for_thread = lio_shutdown_flag.clone();
+
                         let lio_handle = std::thread::spawn(move || -> Result<(), String> {
-                            lio_with_ready_signal(lio_config, None, lio_export, lio_sync, lio_stats)
-                                .map_err(|e| e.to_string())
+                            lio_with_ready_signal(
+                                lio_config,
+                                None,
+                                lio_export,
+                                lio_sync,
+                                lio_stats,
+                                Some(lio_shutdown_flag_for_thread),
+                            )
+                            .map_err(|e| e.to_string())
                         });
 
                         // Wait for either TUI shutdown or LIO completion
                         loop {
                             if shutdown_rx.try_recv().is_ok() {
+                                // TUI requested shutdown -> request LIO to stop
+                                lio_shutdown_flag.store(true, std::sync::atomic::Ordering::SeqCst);
+                                info!("received shutdown from TUI");
                                 break;
                             }
                             if lio_handle.is_finished() {
+                                // LIO terminated -> request TUI to stop
+                                let _ = tui_stop_tx.send(());
+                                info!("lio finished, stopping tui");
                                 break;
                             }
                             std::thread::sleep(std::time::Duration::from_millis(100));
                         }
 
-                        // Stop TUI
+                        // Ensure both threads are asked to stop
                         let _ = tui_stop_tx.send(());
-                        let _ = tui_thread.join();
+                        lio_shutdown_flag.store(true, std::sync::atomic::Ordering::SeqCst);
+
+                        // Join TUI thread first (should be quick)
+                        let tui_join_result = tui_thread.join();
+                        if tui_join_result.is_err() {
+                            warn!("TUI thread panicked");
+                        }
 
                         // Get LIO result
                         match lio_handle.join() {
@@ -1412,7 +1527,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             Err(_) => Err(anyhow!("LIO thread panicked").into()),
                         }
                     } else {
-                        // Run without TUI (original behavior)
                         lio(config, config_args.export_trajectory, config_args.rat)
                     }
                 }
@@ -1630,6 +1744,11 @@ pf! i 1
                     let (pelorus_ready_tx, pelorus_ready_rx) = std::sync::mpsc::channel();
 
                     // start Odometry in thread
+                    // Provide an atomic shutdown flag so we can request LIO to shutdown from main/TUI
+                    let lio_shutdown_flag =
+                        std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+                    let lio_shutdown_flag_for_thread = lio_shutdown_flag.clone();
+
                     let lio_handle = std::thread::spawn(move || {
                         if let Err(e) = lio_with_ready_signal(
                             config,
@@ -1637,6 +1756,7 @@ pf! i 1
                             offline_args.export_trajectory,
                             true,
                             None, // No TUI stats for offline mode (uses output_tui instead)
+                            Some(lio_shutdown_flag_for_thread),
                         ) {
                             error!("Odometry failed: {}", e);
                             return Err(format!("Odometry failed: {}", e));
@@ -1678,37 +1798,58 @@ pf! i 1
                         let _ = tui.run();
                     });
 
-                    // wait for end, TODO use different function to handle generating output after end
-                    let lio_finished =
-                        std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-                    let lio_finished_clone = lio_finished.clone();
-
-                    std::thread::spawn(move || {
-                        let _ = lio_handle.join();
-                        lio_finished_clone.store(true, std::sync::atomic::Ordering::SeqCst);
-                    });
-
-                    // wait loop
+                    // wait loop - check for various exit conditions
                     loop {
                         if exit_rx.try_recv().is_ok() {
+                            // minot finished -> request TUI and LIO to stop
+                            let _ = tui_stop_tx.send(());
+                            lio_shutdown_flag.store(true, std::sync::atomic::Ordering::SeqCst);
+                            info!("minot finished, stopping TUI and LIO");
                             break;
                         }
-                        if lio_finished.load(std::sync::atomic::Ordering::SeqCst) {
+                        if lio_handle.is_finished() {
+                            // LIO finished -> request TUI to stop
+                            let _ = tui_stop_tx.send(());
+                            info!("LIO finished, stopping TUI");
                             break;
                         }
                         if shutdown_rx.try_recv().is_ok() {
+                            // TUI requested shutdown -> request LIO to stop
+                            lio_shutdown_flag.store(true, std::sync::atomic::Ordering::SeqCst);
+                            info!("TUI requested shutdown, stopping LIO");
                             break;
                         }
                         std::thread::sleep(std::time::Duration::from_millis(100));
                     }
 
-                    // stop TUI thread gracefully to restore terminal state
+                    // Ensure both are signaled to stop
                     let _ = tui_stop_tx.send(());
+                    lio_shutdown_flag.store(true, std::sync::atomic::Ordering::SeqCst);
+
+                    // Join TUI thread (should be quick)
                     let _ = tui_thread.join();
 
-                    if exit_rx.try_recv().is_err()
-                        && !lio_finished.load(std::sync::atomic::Ordering::SeqCst)
-                    {
+                    // Join LIO thread with timeout
+                    let join_start = std::time::Instant::now();
+                    let join_timeout = std::time::Duration::from_secs(3);
+                    let lio_exited_cleanly = loop {
+                        if lio_handle.is_finished() {
+                            match lio_handle.join() {
+                                Ok(Ok(())) => info!("LIO thread joined successfully"),
+                                Ok(Err(e)) => warn!("LIO thread exited with error: {}", e),
+                                Err(_) => warn!("LIO thread panicked"),
+                            }
+                            break true;
+                        }
+                        if join_start.elapsed() > join_timeout {
+                            warn!("LIO thread did not exit within timeout");
+                            break false;
+                        }
+                        std::thread::sleep(std::time::Duration::from_millis(100));
+                    };
+
+                    // If user initiated shutdown (not normal completion), exit with appropriate code
+                    if !lio_exited_cleanly {
                         let _ = minot_child.kill();
                         std::process::exit(130); // "Command terminated by user."
                     }

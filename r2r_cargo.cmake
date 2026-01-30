@@ -102,6 +102,10 @@ function(r2r_cargo)
       list(APPEND FEATURES "evaluate")
     endif()
 
+    if (NOT DEFINED PELORUS_RERUN OR PELORUS_RERUN)
+      list(APPEND FEATURES "rerun")
+    endif()
+
   endif()
 
   # handle cmake args and env args
@@ -112,9 +116,6 @@ function(r2r_cargo)
          AND NOT "$ENV{PELORUS_CUDA}" STREQUAL "0"
          AND NOT "$ENV{PELORUS_CUDA}" STREQUAL "OFF")
     list(APPEND FEATURES "cuda")
-  endif()
-  if(PELORUS_RERUN)
-    list(APPEND FEATURES "rerun")
   endif()
   if(PELORUS_MAPPING)
     list(APPEND FEATURES "mapping")

@@ -742,24 +742,18 @@ impl StatsTui {
                 if let Event::Key(key) = event::read()? {
                     match key.code {
                         KeyCode::Char('q') | KeyCode::Esc => {
-                            if let Some(tx) = &self.shutdown_tx {
-                                let _ = tx.send(());
-                            }
-                            // Exit the entire process
                             set_tui_active(false);
                             disable_raw_mode()?;
                             execute!(terminal.backend_mut(), LeaveAlternateScreen, cursor::Show)?;
-                            std::process::exit(0);
+                            self.shutdown_tx.as_ref().map(|sender| sender.send(()));
+                            return Ok(());
                         }
                         KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                            if let Some(tx) = &self.shutdown_tx {
-                                let _ = tx.send(());
-                            }
-                            // Exit the entire process
+                            self.shutdown_tx.as_ref().map(|sender| sender.send(()));
                             set_tui_active(false);
                             disable_raw_mode()?;
                             execute!(terminal.backend_mut(), LeaveAlternateScreen, cursor::Show)?;
-                            std::process::exit(0);
+                            return Ok(());
                         }
                         KeyCode::Char('1') => self.current_tab = Tab::Stats,
                         KeyCode::Char('2') => self.current_tab = Tab::Trajectory,
@@ -812,6 +806,10 @@ impl StatsTui {
 
             if let Some(rx) = &self.stop_rx {
                 if rx.try_recv().is_ok() {
+                    // External shutdown requested; forward to main via shutdown_tx and exit
+                    if let Some(tx) = &self.shutdown_tx {
+                        let _ = tx.send(());
+                    }
                     break;
                 }
             }

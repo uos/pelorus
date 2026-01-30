@@ -191,6 +191,10 @@ impl OutputTui {
             // external
             if let Some(rx) = &self.stop_rx {
                 if rx.try_recv().is_ok() {
+                    // External shutdown requested; forward to main via shutdown_tx and exit
+                    if let Some(tx) = &self.shutdown_tx {
+                        let _ = tx.send(());
+                    }
                     break;
                 }
             }
