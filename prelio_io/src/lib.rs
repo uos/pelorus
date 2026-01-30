@@ -1062,7 +1062,10 @@ impl PrelioNode {
                 odom_time: synced_data.lidar_end_time_abs,
             };
 
-            sender.send(res).expect("could not send lifis tick");
+            if let Err(_) = sender.send(res) {
+                error!("Closing transform thread.");
+                return;
+            }
         }
     }
 }
