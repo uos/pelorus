@@ -27,7 +27,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     for var in assigned_vars.iter() {
         if !evaluated_vars.contains(var) {
             println!(
-                "cargo:warning=Variable '{}' in default.rl was never used.",
+                "cargo:warning=Warning: Variable '{}' is not recognized by Pelorus",
                 var
             );
         }

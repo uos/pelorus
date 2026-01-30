@@ -414,7 +414,8 @@ pub enum Qos {
 /// Top-level configuration used by both the binary and the FFI layer.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct LioConfig {
-    pub feedback_fps: u32,
+    pub show_tui: bool,
+    pub debug_fps: u32,
     pub registered_cloud_qos: Qos,
     pub odom_qos: Qos,
     pub imu_odom_qos: Qos,

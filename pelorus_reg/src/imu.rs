@@ -31,7 +31,7 @@ pub struct ImuProcessing {
     mean_gyr: Vector3<f64>,
     lidar_to_imu_t: Vector3<f64>,
     lidar_to_imu_r: Matrix3<f64>,
-    angvel_last: Vector3<f64>,
+    pub angvel_last: Vector3<f64>,
     acc_s_last: Vector3<f64>,
     imu_state: crate::iekf::StateIKFom,
     pub ekf_cov_gyr_bias: Matrix3<f64>,
@@ -646,12 +646,15 @@ impl ImuProcessing {
                 )),
             ),
             linear_velocity: ekf.state.vel,
+            angular_velocity: self.angvel_last,
             lidar_imu_extrinsic: Isometry3::from_parts(
                 Translation3::from(ekf.state.offset_t_l_i),
                 UnitQuaternion::from_rotation_matrix(&Rotation3::from_matrix(
                     &ekf.state.offset_r_l_i.matrix(),
                 )),
             ),
+            accel_bias: ekf.state.ba,
+            gyro_bias: ekf.state.bg,
         })
     }
 }

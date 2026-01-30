@@ -74,8 +74,17 @@ pub fn ast_to_config_with_usage(
     defaults: Evaluated,
     user: Evaluated,
 ) -> anyhow::Result<(LioConfig, (Vec<String>, Vec<String>))> {
-    let config = ast_to_config_inner(defaults, user, true)?;
-    Ok(config)
+    let config = ast_to_config_inner(defaults, user, true, false)?;
+    Ok((config.0, config.1))
+}
+
+#[allow(unreachable_patterns, clippy::unnecessary_fallible_conversions)]
+pub fn ast_to_config_with_user_usage(
+    defaults: Evaluated,
+    user: Evaluated,
+) -> anyhow::Result<(LioConfig, (Vec<String>, Vec<String>))> {
+    let config = ast_to_config_inner(defaults, user, false, true)?;
+    Ok((config.0, config.2))
 }
 
 /// Constructs an `LioConfig` by layering a user configuration over a default one.
@@ -83,14 +92,29 @@ pub fn ast_to_config_with_usage(
 pub fn ast_to_config(mut defaults: Evaluated, user: Evaluated) -> anyhow::Result<LioConfig> {
     // Disable warnings for default config since we only care about user-provided config
     defaults.vars = defaults.vars.with_drop_warning(false);
-    ast_to_config_inner(defaults, user, false).map(|(config, _)| config)
+
+    // Capture user usage information so we can warn about unrecognized variables
+    let (config, _default_usage, user_usage) = ast_to_config_inner(defaults, user, false, true)?;
+    let (assigned_vars, evaluated_vars) = user_usage;
+    for var in assigned_vars.iter() {
+        if !evaluated_vars.contains(var) {
+            log::warn!("Variable '{}' is not recognized by Pelorus", var);
+        }
+    }
+
+    Ok(config)
 }
 
 fn ast_to_config_inner(
     defaults: Evaluated,
     user: Evaluated,
-    capture_usage: bool,
-) -> anyhow::Result<(LioConfig, (Vec<String>, Vec<String>))> {
+    capture_default_usage: bool,
+    capture_user_usage: bool,
+) -> anyhow::Result<(
+    LioConfig,
+    (Vec<String>, Vec<String>),
+    (Vec<String>, Vec<String>),
+)> {
     let asts = Asts::new(defaults.vars, user.vars);
 
     // --- Helper Functions for Enum Parsing ---
@@ -346,7 +370,8 @@ fn ast_to_config_inner(
     // --- Output Configuration ---
     let (
         imu_filtered_topic,
-        feedback_fps,
+        show_tui,
+        debug_fps,
         map_frame,
         lidar_as_map_tf,
         logger_prefix,
@@ -361,14 +386,16 @@ fn ast_to_config_inner(
     ) = {
         let output_ns = asts.filter_ns(&["output"]);
         let terminal_ns = output_ns.filter_ns(&["terminal"]);
-        let show_ui: bool =
+        let show_tui: bool =
             resolve_var!(terminal_ns, "ui", as bool, Rhs::Val(Val::BoolVal(b)) => {b})?;
-        let feedback_fps = if show_ui {
-            resolve_var!(terminal_ns, "fps", as i32, Rhs::Val(Val::NumVal(NumVal::Integer(i))) => {i})?
+        let show_debug: bool =
+            resolve_var!(terminal_ns, "debug", as bool, Rhs::Val(Val::BoolVal(b)) => {b})?;
+        let debug_fps = if show_debug {
+            resolve_var!(terminal_ns, "debug_fps", as i32, Rhs::Val(Val::NumVal(NumVal::Integer(i))) => {i})?
         } else {
-            // Mark fps as "used" even when UI is disabled
-            let _ = terminal_ns.defaults.evaluate_stats_only("fps");
-            let _ = terminal_ns.user.evaluate_stats_only("fps");
+            // Mark debug_fps as "used" even when debug is disabled
+            let _ = terminal_ns.defaults.evaluate_stats_only("debug_fps");
+            let _ = terminal_ns.user.evaluate_stats_only("debug_fps");
             0
         };
         let warning_debounce = resolve_var!(terminal_ns, "warning_debounce", as f64, Rhs::Val(Val::UnitedVal(UnitVal::TimeVal(v))) => { v.get::<second>() as f64 })?;
@@ -399,7 +426,8 @@ fn ast_to_config_inner(
         let imu_filtered_qos = resolve_var!(output_ns, "imu_ahrs_filtered_msg_qos", as Qos, Rhs::Val(Val::StringVal(s)) => {reliablility_parse(&s)?})?;
         (
             imu_filtered_topic,
-            feedback_fps,
+            show_tui,
+            debug_fps,
             map_frame,
             lidar_as_map_tf,
             logger_prefix,
@@ -518,7 +546,8 @@ fn ast_to_config_inner(
         dist_update_sensitivity,
         ekf_max_iterations,
         lidar_odom_cov,
-        feedback_fps,
+        show_tui,
+        debug_fps,
         lidar_as_map_tf,
         mapping_resolution,
         odom_qos,
@@ -561,11 +590,17 @@ fn ast_to_config_inner(
         enable_live_extrinsic_calibration: false,
     };
 
-    let usage_info = if capture_usage {
+    let default_usage_info = if capture_default_usage {
         asts.defaults.usage_vars()
     } else {
         (vec![], vec![])
     };
 
-    Ok((final_config, usage_info))
+    let user_usage_info = if capture_user_usage {
+        asts.user.usage_vars()
+    } else {
+        (vec![], vec![])
+    };
+
+    Ok((final_config, default_usage_info, user_usage_info))
 }

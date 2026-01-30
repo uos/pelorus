@@ -438,12 +438,15 @@ impl crate::Registration for RegistrationState {
                 )),
             ),
             linear_velocity: self.ekf.state.vel,
+            angular_velocity: self.imu_processing.angvel_last,
             lidar_imu_extrinsic: Isometry3::from_parts(
                 Translation3::from(self.ekf.state.offset_t_l_i),
                 UnitQuaternion::from_rotation_matrix(&Rotation3::from_matrix(
                     &self.ekf.state.offset_r_l_i.matrix(),
                 )),
             ),
+            accel_bias: self.ekf.state.ba,
+            gyro_bias: self.ekf.state.bg,
         }
     }
 
