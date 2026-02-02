@@ -443,19 +443,19 @@ fn lio_with_ready_signal(
         )
         .unwrap();
 
-    #[cfg(all(not(feature = "no-viz"), feature = "ros2-client"))]
-    let imu_path_publisher = node
-        .create_publisher(
-            &node
-                .create_topic(
-                    &ros2_client::Name::new(&namespace, "imu_path").unwrap(),
-                    ros2_client::MessageTypeName::new("nav_msgs", "Path"),
-                    &config.imu_path_qos.into(),
-                )
-                .unwrap(),
-            None,
-        )
-        .unwrap();
+    // #[cfg(all(not(feature = "no-viz"), feature = "ros2-client"))]
+    // let imu_path_publisher = node
+    //     .create_publisher(
+    //         &node
+    //             .create_topic(
+    //                 &ros2_client::Name::new(&namespace, "imu_path").unwrap(),
+    //                 ros2_client::MessageTypeName::new("nav_msgs", "Path"),
+    //                 &config.imu_path_qos.into(),
+    //             )
+    //             .unwrap(),
+    //         None,
+    //     )
+    //     .unwrap();
     // #[cfg(all(
     //     not(feature = "no-viz"),
     //     feature = "ros2-client",
@@ -527,18 +527,18 @@ fn lio_with_ready_signal(
                 .await
                 .unwrap()
         });
-    #[cfg(all(not(feature = "no-viz"), feature = "r2r"))]
-    let imu_path_publisher =
-        node.create_publisher::<Path>("imu_path", config.imu_path_qos.into())?;
-    #[cfg(all(not(feature = "no-viz"), feature = "ratpub"))]
-    let imu_path_publisher = rt
-        .as_ref()
-        .expect("rt always exists with ratpub feat")
-        .block_on(async {
-            node.create_publisher::<Path>("imu_path".to_owned())
-                .await
-                .unwrap()
-        });
+    // #[cfg(all(not(feature = "no-viz"), feature = "r2r"))]
+    // let imu_path_publisher =
+    //     node.create_publisher::<Path>("imu_path", config.imu_path_qos.into())?;
+    // #[cfg(all(not(feature = "no-viz"), feature = "ratpub"))]
+    // let imu_path_publisher = rt
+    //     .as_ref()
+    //     .expect("rt always exists with ratpub feat")
+    //     .block_on(async {
+    //         node.create_publisher::<Path>("imu_path".to_owned())
+    //             .await
+    //             .unwrap()
+    //     });
     // #[cfg(all(
     //     not(feature = "no-viz"),
     //     feature = "map",
@@ -555,8 +555,8 @@ fn lio_with_ready_signal(
     let mut lidar_path_poses: VecDeque<PoseStamped> = VecDeque::new();
     let lidar_path_frame_id = config.prelio_params.map_frame.clone();
 
-    let mut imu_path_poses: VecDeque<PoseStamped> = VecDeque::new();
-    let imu_path_frame_id = config.prelio_params.map_frame.clone();
+    // let mut imu_path_poses: VecDeque<PoseStamped> = VecDeque::new();
+    // let imu_path_frame_id = config.prelio_params.map_frame.clone();
 
     let mut last_scan_time = None;
 
@@ -1128,15 +1128,15 @@ fn lio_with_ready_signal(
             imu_odom.pose.covariance = pelorus_odom.pose.covariance.clone();
             imu_odom.twist.covariance = pelorus_odom.twist.covariance.clone();
 
-            #[cfg(not(feature = "no-viz"))]
-            imu_path_poses.push_back(PoseStamped {
-                pose: imu_odom.pose.pose.clone(),
-                header: imu_odom.header.clone(),
-            });
-            #[cfg(not(feature = "no-viz"))]
-            if imu_path_poses.len() > PATH_LIMIT {
-                imu_path_poses.pop_front();
-            }
+            // #[cfg(not(feature = "no-viz"))]
+            // imu_path_poses.push_back(PoseStamped {
+            //     pose: imu_odom.pose.pose.clone(),
+            //     header: imu_odom.header.clone(),
+            // });
+            // #[cfg(not(feature = "no-viz"))]
+            // if imu_path_poses.len() > PATH_LIMIT {
+            //     imu_path_poses.pop_front();
+            // }
 
             #[cfg(feature = "rerun")]
             if let Some(ref rec) = rec {
@@ -1248,10 +1248,10 @@ fn lio_with_ready_signal(
                 .publish(&imu_odom)
                 .expect("Failed to publish imu odom");
 
-            #[cfg(all(not(feature = "no-viz"), not(feature = "ratpub")))]
-            imu_path_publisher
-                .publish(&imu_path)
-                .expect("Failed to publish imu path"); // TODO this will spam a lot, maybe also throttle like lidar_path
+            // #[cfg(all(not(feature = "no-viz"), not(feature = "ratpub")))]
+            // imu_path_publisher
+            //     .publish(&imu_path)
+            //     .expect("Failed to publish imu path"); // TODO this will spam a lot, maybe also throttle like lidar_path
 
             #[cfg(all(not(feature = "no-viz"), feature = "ratpub"))]
             let pub_lidar_path = Path {
@@ -1261,14 +1261,14 @@ fn lio_with_ready_signal(
                 },
                 poses: lidar_path_poses.iter().cloned().collect(),
             };
-            #[cfg(all(not(feature = "no-viz"), feature = "ratpub"))]
-            let pub_imu_path = Path {
-                header: Header {
-                    frame_id: imu_path_frame_id.clone(),
-                    stamp: imu_odom.header.stamp.clone(),
-                },
-                poses: imu_path_poses.iter().cloned().collect(),
-            };
+            // #[cfg(all(not(feature = "no-viz"), feature = "ratpub"))]
+            // let pub_imu_path = Path {
+            //     header: Header {
+            //         frame_id: imu_path_frame_id.clone(),
+            //         stamp: imu_odom.header.stamp.clone(),
+            //     },
+            //     poses: imu_path_poses.iter().cloned().collect(),
+            // };
             #[cfg(all(not(feature = "no-viz"), feature = "ratpub"))]
             rt.as_ref()
                 .expect("rt always exists with ratpub feat")
@@ -1283,26 +1283,26 @@ fn lio_with_ready_signal(
                         .await
                         .expect("Failed to publish imu odom");
 
-                    imu_path_publisher
-                        .publish(&pub_imu_path)
-                        .await
-                        .expect("Failed to publish imu path"); // TODO this will spam a lot, maybe also throttle like lidar_path
+                    // imu_path_publisher
+                    //     .publish(&pub_imu_path)
+                    //     .await
+                    //     .expect("Failed to publish imu path"); // TODO this will spam a lot, maybe also throttle like lidar_path
                 });
-            #[cfg(feature = "rerun")]
-            if let Some(ref rec) = rec {
-                let imu_path_strip =
-                    rerun::LineStrip3D::from_iter(imu_path_poses.iter().map(|p| {
-                        glam::Vec3::new(
-                            p.pose.position.x as f32,
-                            p.pose.position.y as f32,
-                            p.pose.position.z as f32,
-                        )
-                    }));
-                let imu_path_strips = rerun::LineStrips3D::new(std::iter::once(imu_path_strip));
-                if let Err(err) = rec.log("imu_path", &imu_path_strips) {
-                    error!("Error sending to rerun {err}");
-                }
-            }
+            // #[cfg(feature = "rerun")]
+            // if let Some(ref rec) = rec {
+            //     let imu_path_strip =
+            //         rerun::LineStrip3D::from_iter(imu_path_poses.iter().map(|p| {
+            //             glam::Vec3::new(
+            //                 p.pose.position.x as f32,
+            //                 p.pose.position.y as f32,
+            //                 p.pose.position.z as f32,
+            //             )
+            //         }));
+            //     let imu_path_strips = rerun::LineStrips3D::new(std::iter::once(imu_path_strip));
+            //     if let Err(err) = rec.log("imu_path", &imu_path_strips) {
+            //         error!("Error sending to rerun {err}");
+            //     }
+            // }
 
             let iteration_time_ms = eval.get_sum_of_top_level_times_ms();
 
