@@ -104,3 +104,6 @@ incremental = false  # Devs are not expected to use the colcon pipeline for incr
 [profile.dev.package.backtrace]
 opt-level = 3
 
+# TODO publish ratslang fix
+[patch.crates-io]
+ratslang = { git = "https://codeberg.org/uos-ce/ratslang.git" }
