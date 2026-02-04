@@ -98,14 +98,6 @@ function(r2r_cargo)
       list(APPEND FEATURES "mimalloc")
     endif()
 
-    if (NOT DEFINED PELORUS_EVALUATION OR PELORUS_EVALUATION)
-      list(APPEND FEATURES "evaluate")
-    endif()
-
-    if (NOT DEFINED PELORUS_RERUN OR PELORUS_RERUN)
-      list(APPEND FEATURES "rerun")
-    endif()
-
   endif()
 
   # handle cmake args and env args
@@ -126,6 +118,13 @@ function(r2r_cargo)
   if (PELORUS_NO_VIZ)
     list(APPEND FEATURES "no-viz")
   endif()
+  if (PELORUS_EVALUATION)
+    list(APPEND FEATURES "evaluate")
+  endif()
+  if (PELORUS_RERUN)
+    list(APPEND FEATURES "rerun")
+  endif()
+
 
   string(JOIN "," FEATURES_STR ${FEATURES})
 

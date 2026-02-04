@@ -14,6 +14,7 @@ permissions:
 
 env:
   RUST_FONTCONFIG_DLOPEN: 1
+  CARGO_BUILD_JOBS: 2
 
 jobs:
   sanity:
@@ -55,7 +56,7 @@ jobs:
       matrix:
         include:
           - runner: bookworm
-          - runner: ubuntu-latest-arm-raw
+          # - runner: ubuntu-latest-arm-raw
     runs-on: ${{ matrix.runner }}
     steps:
       - name: Docker clean
@@ -101,13 +102,13 @@ jobs:
           rustup update
 
           mkdir -p "dist/${ARCH}"
-           
+
           # ------- RAW
           cargo build -p pelorus_c --release
           mv target/release/libpelorus.so dist/${ARCH}/
           mv target/release/libpelorus.a  dist/${ARCH}/
 
-          cargo build -p pelorus --release
+          cargo build -p pelorus --features rerun,evaluate --release
           mv target/release/pelorus dist/${ARCH}/
 
           # ------- DEB
@@ -148,7 +149,7 @@ jobs:
           toml set "$updatetoml" 'package.metadata.deb.name' "$DEB_NAME" >"$tmp"
           mv "$tmp" "$updatetoml"
 
-          cargo deb --package pelorus
+          cargo deb --package pelorus --features rerun,evaluate
 
           # prepare upload
           mv target/debian/*.deb dist/${ARCH}/
@@ -166,7 +167,7 @@ jobs:
       matrix:
         include:
           - runner: bookworm
-          - runner: ubuntu-latest-arm-raw
+          # - runner: ubuntu-latest-arm-raw
     runs-on: ${{ matrix.runner }}
     steps:
       - name: Docker clean
@@ -183,11 +184,12 @@ jobs:
             arch: arm64
           - target: x86_64-apple-darwin
             arch: amd64
-    runs-on: ubuntu-dev-noble-arm
+    # runs-on: ubuntu-dev-noble-arm
+    runs-on: macos-latest
     env:
       TARGET: ${{ matrix.target }}
       ARCH: ${{ matrix.arch }}
-      SDKROOT: /opt/MacOSX.sdk
+      SDKROOT: /Library/Developer/CommandLineTools/SDKs/MacOSX.sdk
     steps:
       - uses: actions/checkout@v4
       - name: Build
@@ -265,7 +267,7 @@ jobs:
           mv target/release/libpelorus.so dist/${ARCH}/
           mv target/release/libpelorus.a  dist/${ARCH}/
 
-          cargo build -p pelorus --release --features cuda
+          cargo build -p pelorus --release --features cuda,rerun,evaluate
           mv target/release/pelorus dist/${ARCH}/
 
           # ------- DEB
@@ -306,7 +308,7 @@ jobs:
           toml set "$updatetoml" 'package.metadata.deb.name' "$DEB_NAME" >"$tmp"
           mv "$tmp" "$updatetoml"
 
-          cargo deb --package pelorus
+          cargo deb --package pelorus --features cuda,rerun,evaluate
 
           # prepare upload
           mv target/debian/*.deb dist/${ARCH}/
@@ -324,7 +326,7 @@ jobs:
       matrix:
         include:
           - runner: bookworm
-          - runner: ubuntu-latest-arm-raw
+          # - runner: ubuntu-latest-arm-raw
     runs-on: ${{ matrix.runner }}
     steps:
       - name: Docker clean
@@ -385,7 +387,7 @@ jobs:
           mv target/release/libpelorus.so dist/${ARCH}/
           mv target/release/libpelorus.a  dist/${ARCH}/
 
-          cargo build -p pelorus --release --features cuda
+          cargo build -p pelorus --release --features cuda,rerun,evaluate
           mv target/release/pelorus dist/${ARCH}/
 
           # ------- DEB
@@ -426,7 +428,7 @@ jobs:
           toml set "$updatetoml" 'package.metadata.deb.name' "$DEB_NAME" >"$tmp"
           mv "$tmp" "$updatetoml"
 
-          cargo deb --package pelorus
+          cargo deb --package pelorus --features cuda,rerun,evaluate
 
           # prepare upload
           mv target/debian/*.deb dist/${ARCH}/
@@ -444,7 +446,7 @@ jobs:
       matrix:
         include:
           - runner: bookworm
-          - runner: ubuntu-latest-arm-raw
+          # - runner: ubuntu-latest-arm-raw
     runs-on: ${{ matrix.runner }}
     steps:
       - name: Docker clean
@@ -505,7 +507,7 @@ jobs:
           mv target/release/libpelorus.so dist/${ARCH}/
           mv target/release/libpelorus.a  dist/${ARCH}/
 
-          cargo build -p pelorus --release --features cuda
+          cargo build -p pelorus --release --features cuda,rerun,evaluate
           mv target/release/pelorus dist/${ARCH}/
 
           # ------- DEB
@@ -546,7 +548,7 @@ jobs:
           toml set "$updatetoml" 'package.metadata.deb.name' "$DEB_NAME" >"$tmp"
           mv "$tmp" "$updatetoml"
 
-          cargo deb --package pelorus
+          cargo deb --package pelorus --features cuda,rerun,evaluate
 
           # prepare upload
           mv target/debian/*.deb dist/${ARCH}/
@@ -564,7 +566,7 @@ jobs:
       matrix:
         include:
           - runner: bookworm
-          - runner: ubuntu-latest-arm-raw
+          # - runner: ubuntu-latest-arm-raw
     runs-on: ${{ matrix.runner }}
     steps:
       - name: Docker clean
@@ -663,7 +665,7 @@ jobs:
       matrix:
         include:
           - runner: bookworm
-          - runner: ubuntu-latest-arm-raw
+          # - runner: ubuntu-latest-arm-raw
     runs-on: ${{ matrix.runner }}
     steps:
       - name: Docker clean
@@ -733,7 +735,7 @@ jobs:
       matrix:
         include:
           - runner: bookworm
-          - runner: ubuntu-latest-arm-raw
+          # - runner: ubuntu-latest-arm-raw
     runs-on: ${{ matrix.runner }}
     steps:
       - name: Docker clean
@@ -803,7 +805,7 @@ jobs:
       matrix:
         include:
           - runner: bookworm
-          - runner: ubuntu-latest-arm-raw
+          # - runner: ubuntu-latest-arm-raw
     runs-on: ${{ matrix.runner }}
     steps:
       - name: Docker clean
@@ -873,7 +875,7 @@ jobs:
       matrix:
         include:
           - runner: bookworm
-          - runner: ubuntu-latest-arm-raw
+          # - runner: ubuntu-latest-arm-raw
     runs-on: ${{ matrix.runner }}
     steps:
       - name: Docker clean
@@ -999,7 +1001,7 @@ jobs:
       matrix:
         include:
           - runner: bookworm
-          - runner: ubuntu-latest-arm-raw
+          # - runner: ubuntu-latest-arm-raw
     runs-on: ${{ matrix.runner }}
     steps:
       - name: Docker clean
@@ -1007,7 +1009,6 @@ jobs:
           docker system prune -af
 
   wheels:
-    runs-on: ubuntu-dev-noble-arm # the ARM runner has more power and capacity
     needs:
       - clean-6
     strategy:
@@ -1015,12 +1016,20 @@ jobs:
         # omitting ppc64le and s390x since they probably have other problems than running this software
         include:
           - target: x86_64-apple-darwin # MacOS x64
+            runner: macos-latest
           - target: aarch64-apple-darwin # MacOS Apple Silicon
+            runner: macos-latest
           - target: aarch64-unknown-linux-gnu # armv8 gnu (Jetson etc)
+            runner: ubuntu-dev-noble-arm
           - target: x86_64-unknown-linux-gnu # x64 gnu
+            runner: ubuntu-dev-noble-arm
           - target: x86_64-unknown-linux-musl # musl manylinux x64
+            runner: ubuntu-dev-noble-arm
           - target: aarch64-unknown-linux-musl # musl manylinux armv8
+            runner: ubuntu-dev-noble-arm
           - target: armv7-unknown-linux-musleabihf # musl manylinux armv7
+            runner: ubuntu-dev-noble-arm
+    runs-on: ${{ matrix.runner }}
     env:
       TARGET: ${{ matrix.target }}
     steps:
@@ -1031,12 +1040,12 @@ jobs:
           rustup target add "$TARGET"
 
           if [[ "$TARGET" == *apple-darwin* ]]; then
-            export SDKROOT=/opt/MacOSX.sdk
+            export SDKROOT=/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk
             export RUSTFLAGS="-C link-arg=-F${SDKROOT}/System/Library/Frameworks -C link-arg=-L${SDKROOT}/usr/lib -C link-arg=-isysroot -C link-arg=${SDKROOT}"
           fi
 
           # binary
-          MATURIN_ARGS="build --zig --manifest-path pelorus/Cargo.toml --release --target-dir wheels"
+          MATURIN_ARGS="build --zig --manifest-path pelorus/Cargo.toml --release --target-dir wheels --features rerun,evaluate"
           maturin $MATURIN_ARGS --target "$TARGET"
 
           # bindings
@@ -1048,3 +1057,302 @@ jobs:
         with:
           name: wheels
           path: target/wheels
+
+  clean-6-5:
+    needs:
+      - wheels
+    strategy:
+      matrix:
+        include:
+          - runner: bookworm
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - name: Docker clean
+        run: docker system prune -af
+
+  wheels-cuda-12-6:
+    needs:
+      - clean-6-5
+    strategy:
+      matrix:
+        include:
+          - image: docker.io/stelzo/ubuntu-dev:noble-cu12-6
+            target: x86_64-unknown-linux-gnu
+            runner: ubuntu-latest
+          - image: docker.io/stelzo/ubuntu-dev:noble-cu12-6
+            target: aarch64-unknown-linux-gnu
+            runner: ubuntu-latest-arm
+    runs-on: ${{ matrix.runner }}
+    container:
+      image: ${{ matrix.image }}
+    env:
+      CUDA_HOME: /usr/local/cuda
+      TARGET: ${{ matrix.target }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build CUDA wheels
+        run: |
+          rustup update
+          maturin build --manifest-path pelorus/Cargo.toml --release --features cuda,rerun,evaluate --target "$TARGET"
+          maturin build --manifest-path pelorus_py/Cargo.toml --release --features cuda --target "$TARGET"
+      - name: Upload wheels
+        uses: actions/upload-artifact@v3
+        with:
+          name: wheels-cuda12-6
+          path: target/wheels
+
+  clean-6-75:
+    needs:
+      - wheels-cuda-12-6
+    strategy:
+      matrix:
+        include:
+          - runner: bookworm
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - name: Docker clean
+        run: docker system prune -af
+
+  wheels-cuda-12-8:
+    needs:
+      - clean-6-75
+    strategy:
+      matrix:
+        include:
+          - image: docker.io/stelzo/ubuntu-dev:noble-cu12-8
+            target: x86_64-unknown-linux-gnu
+            runner: ubuntu-latest
+          - image: docker.io/stelzo/ubuntu-dev:noble-cu12-8
+            target: aarch64-unknown-linux-gnu
+            runner: ubuntu-latest-arm
+    runs-on: ${{ matrix.runner }}
+    container:
+      image: ${{ matrix.image }}
+    env:
+      CUDA_HOME: /usr/local/cuda
+      TARGET: ${{ matrix.target }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build CUDA wheels
+        run: |
+          rustup update
+          maturin build --manifest-path pelorus/Cargo.toml --release --features cuda,rerun,evaluate --target "$TARGET"
+          maturin build --manifest-path pelorus_py/Cargo.toml --release --features cuda --target "$TARGET"
+      - name: Upload wheels
+        uses: actions/upload-artifact@v3
+        with:
+          name: wheels-cuda12-8
+          path: target/wheels
+
+  clean-6-875:
+    needs:
+      - wheels-cuda-12-8
+    strategy:
+      matrix:
+        include:
+          - runner: bookworm
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - name: Docker clean
+        run: docker system prune -af
+
+  wheels-cuda-13-1:
+    needs:
+      - clean-6-875
+    strategy:
+      matrix:
+        include:
+          - image: docker.io/stelzo/ubuntu-dev:noble-cu13-1
+            target: x86_64-unknown-linux-gnu
+            runner: ubuntu-latest
+          - image: docker.io/stelzo/ubuntu-dev:noble-cu13-1
+            target: aarch64-unknown-linux-gnu
+            runner: ubuntu-latest-arm
+    runs-on: ${{ matrix.runner }}
+    container:
+      image: ${{ matrix.image }}
+    env:
+      CUDA_HOME: /usr/local/cuda
+      TARGET: ${{ matrix.target }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build CUDA wheels
+        run: |
+          rustup update
+          maturin build --manifest-path pelorus/Cargo.toml --release --features cuda,rerun,evaluate --target "$TARGET"
+          maturin build --manifest-path pelorus_py/Cargo.toml --release --features cuda --target "$TARGET"
+      - name: Upload wheels
+        uses: actions/upload-artifact@v3
+        with:
+          name: wheels-cuda13-1
+          path: target/wheels
+
+  clean-7:
+    needs:
+      - wheels-cuda-13-1
+    strategy:
+      matrix:
+        include:
+          - runner: bookworm
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - name: Docker clean
+        run: docker system prune -af
+
+  tarball:
+    needs:
+      - clean-7
+    runs-on: ubuntu-dev-noble-arm
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v3
+        with:
+          path: dl
+
+      - name: Create tarballs
+        run: |
+          set -euo pipefail
+          VERSION=$(toml get --raw Cargo.toml workspace.package.version)
+          mkdir -p release
+
+          make_tarball() {
+            local archive_name=$1; shift
+            local staging
+            staging=$(mktemp -d)
+            local dest="$staging/pelorus-${VERSION}"
+            mkdir -p "$dest"
+            for f in "$@"; do
+              [ -f "$f" ] && cp "$f" "$dest/"
+            done
+            # only create if we actually copied files
+            if [ "$(ls -A "$dest" 2>/dev/null)" ]; then
+              tar -czf "release/${archive_name}.tar.gz" -C "$staging" "pelorus-${VERSION}"
+              echo "  created ${archive_name}.tar.gz"
+            else
+              echo "  SKIP ${archive_name} (no files found)"
+            fi
+            rm -rf "$staging"
+          }
+
+          echo "=== Linux glibc ==="
+          for repo in noble jammy; do
+            for arch in amd64 arm64; do
+              make_tarball "pelorus-${VERSION}-linux-${repo}-${arch}" \
+                "dl/artifacts-rawlibs-${repo}/${arch}/pelorus" \
+                "dl/artifacts-rawlibs-${repo}/${arch}/libpelorus.so" \
+                "dl/artifacts-rawlibs-${repo}/${arch}/libpelorus.a"
+            done
+          done
+
+          echo "=== Linux musl (static) ==="
+          for arch in amd64 arm64; do
+            make_tarball "pelorus-${VERSION}-linux-musl-${arch}" \
+              "dl/artifacts-cli-musl/${arch}/pelorus"
+          done
+
+          echo "=== macOS ==="
+          for arch in amd64 arm64; do
+            make_tarball "pelorus-${VERSION}-macos-${arch}" \
+              "dl/artifacts-macos/${arch}/pelorus" \
+              "dl/artifacts-macos/${arch}/libpelorus.dylib" \
+              "dl/artifacts-macos/${arch}/libpelorus.a"
+          done
+
+          echo "=== Linux CUDA ==="
+          for cuda in 12-6 12-8 13-1; do
+            for repo in noble jammy; do
+              for arch in amd64 arm64; do
+                make_tarball "pelorus-${VERSION}-linux-${repo}-${arch}-cuda${cuda}" \
+                  "dl/artifacts-rawlibs-${repo}-cuda${cuda}/${arch}/pelorus" \
+                  "dl/artifacts-rawlibs-${repo}-cuda${cuda}/${arch}/libpelorus.so" \
+                  "dl/artifacts-rawlibs-${repo}-cuda${cuda}/${arch}/libpelorus.a"
+              done
+            done
+          done
+
+          echo "=== glim plugin ==="
+          for repo in noble jammy; do
+            for arch in amd64 arm64; do
+              make_tarball "pelorus-glim-${VERSION}-linux-${repo}-${arch}" \
+                "dl/artifacts-glim-${repo}/${arch}/libodometry_estimation_pelorus.so"
+            done
+          done
+
+          echo ""
+          echo "=== Release artifacts ==="
+          ls -lh release/
+
+      - name: Upload tarballs
+        uses: actions/upload-artifact@v3
+        with:
+          name: release-tarballs
+          path: release/
+
+  release:
+    needs:
+      - tarball
+    runs-on: ubuntu-dev-noble-arm
+    steps:
+      - name: Download tarballs
+        uses: actions/download-artifact@v3
+        with:
+          name: release-tarballs
+          path: release
+
+      - name: Create release and upload assets
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          apt-get install -y jq
+
+          API_URL="${GITHUB_SERVER_URL}/api/v1"
+          REPO="${GITHUB_REPOSITORY}"
+          TAG="${GITHUB_REF_NAME}"
+          TOKEN="${GITHUB_TOKEN}"
+
+          echo "Creating release ${TAG} for ${REPO}..."
+
+          # Check if release already exists for this tag
+          EXISTING=$(curl -sf \
+            -H "Authorization: token ${TOKEN}" \
+            "${API_URL}/repos/${REPO}/releases/tags/${TAG}" 2>/dev/null || echo '{}')
+
+          RELEASE_ID=$(echo "$EXISTING" | jq -r '.id // empty')
+
+          if [ -z "$RELEASE_ID" ]; then
+            # Create new release
+            RESULT=$(curl -sf -X POST "${API_URL}/repos/${REPO}/releases" \
+              -H "Authorization: token ${TOKEN}" \
+              -H "Content-Type: application/json" \
+              -d @- <<PAYLOAD
+          {
+            "tag_name": "${TAG}",
+            "name": "${TAG}",
+            "body": "Release ${TAG}\n\n### Install\nSee README for installation instructions.\n\n### Artifacts\n- **tar.gz** archives for Linux (noble, jammy, musl) and macOS (amd64, arm64)\n- **CUDA** variants for 12.6, 12.8, 13.1\n- **.deb** packages published to [PPA](https://codeberg.org/uos-robotics/ppa)\n- **Python wheels** on PyPI and PPA",
+            "draft": false,
+            "prerelease": false
+          }
+          PAYLOAD
+            )
+            RELEASE_ID=$(echo "$RESULT" | jq -r '.id')
+            echo "Created release id=${RELEASE_ID}"
+          else
+            echo "Release already exists id=${RELEASE_ID}, uploading assets"
+          fi
+
+          # Upload each tarball as a release asset
+          for f in release/*.tar.gz; do
+            [ -f "$f" ] || continue
+            FNAME=$(basename "$f")
+            echo "  uploading ${FNAME}..."
+            curl -sf -X POST \
+              "${API_URL}/repos/${REPO}/releases/${RELEASE_ID}/assets?name=${FNAME}" \
+              -H "Authorization: token ${TOKEN}" \
+              -H "Content-Type: multipart/form-data" \
+              -F "attachment=@${f}" > /dev/null
+          done
+
+          echo "Release ${TAG} published with $(ls release/*.tar.gz 2>/dev/null | wc -l) assets."
