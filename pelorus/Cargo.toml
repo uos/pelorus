@@ -44,6 +44,7 @@ ratatui = "0.29"
 crossterm = "0.28"
 num_cpus = "1.16"
 libc = "0.2"
+clap_complete.workspace = true
 
 [features]
 default = ["offline", "parallel"] # evaluate and rerun need newer rustc versions, so only enable them manually
