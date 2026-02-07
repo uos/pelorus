@@ -82,6 +82,7 @@ morton-encoding = "2.0.1"
 rustc-hash = "2.1.1"
 plotters = "0.3"
 petname = "2"
+clap_complete = "4.5.65"
 
 [profile.release]
 lto = "fat"         # Link Time Optimization

@@ -1,7 +1,8 @@
 #[allow(unused_imports)]
 use anyhow::Error;
 use anyhow::anyhow;
-use clap::ValueEnum;
+use clap::{CommandFactory, ValueEnum};
+use clap_complete::{Shell, generate};
 #[cfg(feature = "mimalloc")]
 use mimalloc::MiMalloc;
 use pelorus_core::config::{ast_to_config, ast_to_config_with_user_usage};
@@ -120,6 +121,14 @@ pub enum Command {
     /// Evaluate exported trajectories
     #[cfg(feature = "evaluate")]
     Evaluate(EvalArgs),
+
+    /// Generate shell completions
+    /// Example usage: `pelorus completions bash > pelorus_completions.sh`
+    Completions {
+        /// The shell to generate completions for
+        #[arg(value_enum)]
+        shell: Shell,
+    },
 }
 
 #[derive(Debug, Clone, Parser)]
@@ -1457,6 +1466,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     const DEFAULT_CONFIG_STR: &str = include_str!("../../default.rl");
 
     match args.command {
+        Command::Completions { shell } => {
+            let mut cmd = Args::command();
+            let bin_name = cmd.get_name().to_string();
+            generate(shell, &mut cmd, bin_name, &mut std::io::stdout());
+            Ok(())
+        }
         Command::Run(args) => {
             match args {
                 RunArgs::Online(config_args) => {
