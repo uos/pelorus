@@ -1093,6 +1093,7 @@ jobs:
       - name: Build CUDA wheels
         run: |
           rustup update
+          uv tool install patchelf
           maturin build --manifest-path pelorus/Cargo.toml --release --features cuda,rerun,evaluate --target "$TARGET"
           maturin build --manifest-path pelorus_py/Cargo.toml --release --features cuda --target "$TARGET"
       - name: Upload wheels
@@ -1136,6 +1137,7 @@ jobs:
       - name: Build CUDA wheels
         run: |
           rustup update
+          uv tool install patchelf
           maturin build --manifest-path pelorus/Cargo.toml --release --features cuda,rerun,evaluate --target "$TARGET"
           maturin build --manifest-path pelorus_py/Cargo.toml --release --features cuda --target "$TARGET"
       - name: Upload wheels
@@ -1179,6 +1181,7 @@ jobs:
       - name: Build CUDA wheels
         run: |
           rustup update
+          uv tool install patchelf
           maturin build --manifest-path pelorus/Cargo.toml --release --features cuda,rerun,evaluate --target "$TARGET"
           maturin build --manifest-path pelorus_py/Cargo.toml --release --features cuda --target "$TARGET"
       - name: Upload wheels
