@@ -107,6 +107,6 @@ opt-level = 3
 
 # TODO publish ratslang fix
 [patch.crates-io]
-ratslang = { git = "https://codeberg.org/uos-ce/ratslang.git" }
+ratslang = { git = "https://codeberg.org/stelzo/ratslang.git" }
 ratpub = { git = "https://github.com/uos/minot.git" }
 mt_rat = { git = "https://github.com/uos/minot.git" }
