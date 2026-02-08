@@ -19,8 +19,6 @@ use prelio_io::impl_ros2_interfaces_jazzy_rkyv;
 use std::fs;
 #[cfg(feature = "rat")]
 use std::process::{Command as ProcessCommand, Stdio};
-use std::time::UNIX_EPOCH;
-
 const PATH_LIMIT: usize = 10_000;
 
 use ros_pointcloud2::prelude::*;
@@ -34,6 +32,7 @@ use clap::{Parser, Subcommand};
 use futures_lite::future;
 use log::{error, info, warn};
 use nalgebra::{Isometry3, Translation3, UnitQuaternion};
+use std::io::IsTerminal;
 #[cfg(feature = "r2r")]
 #[allow(unused_imports)]
 use r2r::{
@@ -87,9 +86,10 @@ use std::path::PathBuf;
 
 #[cfg(feature = "evaluate")]
 use pelorus::evaluate;
-#[cfg(feature = "rat")]
-use pelorus::output_tui;
-use pelorus::stats_tui::{SharedStats, StatsTui, init_logger, update_log_level};
+use pelorus::stats_tui::{
+    SharedStats, StatsTui, init_logger, update_log_level,
+};
+use std::time::UNIX_EPOCH;
 
 #[allow(dead_code)]
 fn lerp_color(c1: (f32, f32, f32), c2: (f32, f32, f32), t: f32) -> (f32, f32, f32) {
@@ -335,10 +335,9 @@ fn lio_with_ready_signal(
                 None
             } else {
                 // Server is reachable, try to connect
-                match rerun::RecordingStreamBuilder::new("pelorus").connect_grpc_opts(
-                    format!("rerun+http://{}/proxy", rerun_server_addr),
-                    Some(std::time::Duration::from_secs(2)),
-                ) {
+                match rerun::RecordingStreamBuilder::new("pelorus")
+                    .connect_grpc_opts(format!("rerun+http://{}/proxy", rerun_server_addr))
+                {
                     Ok(stream) => {
                         info!("Connected to Rerun at {}", rerun_server_addr);
                         Some(std::sync::Arc::new(stream))
@@ -1503,10 +1502,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     // Update log level after config has set RUST_LOG
                     update_log_level();
 
-                    let show_tui = config.show_tui;
+                    let mut show_tui = config.show_tui;
+
+                    if show_tui && !std::io::stdout().is_terminal() {
+                        warn!("TUI requested but stdout is not a terminal. Disabling TUI.");
+                        show_tui = false;
+                    }
 
                     if show_tui {
                         let shared_stats = std::sync::Arc::new(SharedStats::new());
+                        shared_stats.set_mode("Online");
                         let stats_for_tui = shared_stats.clone();
 
                         shared_stats.set_target_lidar_rate(10.0); // will be updated when first scan arrives
@@ -1580,11 +1585,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
                 #[cfg(feature = "rat")]
                 RunArgs::Offline(offline_args) => {
-                    // TODO check minot version and if features are correct, else install using script to use one more feature so we can talk to it. Use our stdin/stdout for the script and start TUI when minot is ok.
-                    let output_capture = std::sync::Arc::new(output_tui::OutputCapture::new());
-                    let capture_for_minot_stdout = output_capture.clone();
-                    let capture_for_minot_stderr = output_capture.clone();
-                    let capture_for_tui = output_capture.clone();
+                    let shared_stats = std::sync::Arc::new(SharedStats::new());
+                    shared_stats.set_mode("Offline");
+                    let stats_for_tui = shared_stats.clone();
+                    // Set default target rate, will be updated by measured rate
+                    shared_stats.set_target_lidar_rate(10.0);
 
                     let default_ast = ratslang::compile_code(DEFAULT_CONFIG_STR)
                         .map_err(|e| anyhow!("Failed to compile embedded default config: {}", e))?;
@@ -1611,31 +1616,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
                     let config = {
                         let mut config = ast_to_config(default_ast, user_ast)?;
-                        config.show_tui = false; // disable TUI for offline mode (uses output_tui instead)
-                        config.debug_fps = 0; // disable debug output for offline
+                        config.show_tui = true; 
                         config
                     };
 
-                    let logger = output_tui::CaptureLogger::new(output_capture.clone());
-                    log::set_boxed_logger(Box::new(logger))
-                        .map_err(|e| anyhow!("Failed to set logger: {}", e))?;
+                    let show_tui = config.show_tui && std::io::stdout().is_terminal();
+                    if !show_tui && config.show_tui {
+                         warn!("TUI requested for offline mode but stdout is not a terminal. Continuing without visualization.");
+                    }
 
-                    let rl = std::env::var("RUST_LOG").unwrap_or_else(|_| "info".to_string());
-                    let rl_lc = rl.to_lowercase();
-                    let level_filter = if rl_lc.contains("trace") {
-                        log::LevelFilter::Trace
-                    } else if rl_lc.contains("debug") {
-                        log::LevelFilter::Debug
-                    } else if rl_lc.contains("info") {
-                        log::LevelFilter::Info
-                    } else if rl_lc.contains("warn") {
-                        log::LevelFilter::Warn
-                    } else if rl_lc.contains("error") {
-                        log::LevelFilter::Error
-                    } else {
-                        log::LevelFilter::Info
-                    };
-                    log::set_max_level(level_filter);
+                    // Update log level after config has set RUST_LOG
+                    update_log_level();
 
                     let lidar_topic = &config.prelio_node_params.cloud_src_topic;
                     let imu_topic = &config.prelio_node_params.imu_src_topic;
@@ -1644,6 +1635,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     let scan_init_samples = config.prelio_params.initial_scan_accumulate;
                     let bagfile_path_canon = offline_args.bagfile_path.canonicalize().unwrap();
                     let bagfile_path = bagfile_path_canon.clone().to_string_lossy().to_string();
+                    shared_stats.set_bagfile(
+                        bagfile_path_canon
+                            .file_name()
+                            .unwrap_or_default()
+                            .to_string_lossy(),
+                    );
 
                     let mt_content = format!(
                         r#"
@@ -1682,7 +1679,24 @@ pf! l 1
 pf! i 1
 "#
                     );
+                    
+                    // Start TUI immediately so we can see what's happening
+                    let (tui_stop_tx, tui_stop_rx) = std::sync::mpsc::channel();
+                    let (shutdown_tx, shutdown_rx) = std::sync::mpsc::channel();
 
+                    let tui_thread = if show_tui {
+                        Some(std::thread::spawn(move || {
+                            let mut tui = StatsTui::new(stats_for_tui)
+                                .with_stop_receiver(tui_stop_rx)
+                                .with_shutdown_sender(shutdown_tx);
+                            let _ = tui.run();
+                        }))
+                    } else {
+                        None
+                    };
+
+                    // Define the main logic as a closure/block to easily handle errors and cleanup
+                    let run_offline_logic = || -> anyhow::Result<()> {
                     let mt_file_path = std::env::temp_dir().join("pelorus_offline.mt");
                     fs::write(&mt_file_path, mt_content)
                         .map_err(|e| anyhow!("Failed to write .mt file: {}", e))?;
@@ -1719,7 +1733,6 @@ pf! i 1
                     use std::io::{BufRead, BufReader};
 
                     let (ready_tx, ready_rx) = std::sync::mpsc::channel();
-                    let _ready_tx_guard = ready_tx.clone();
                     let (exit_tx, exit_rx) = std::sync::mpsc::channel();
 
                     // Thread for stdout
@@ -1730,7 +1743,7 @@ pf! i 1
                         for line in reader.lines() {
                             match line {
                                 Ok(line) => {
-                                    capture_for_minot_stdout.add_minot_line(line.clone());
+                                    info!("[Minot] {}", line);
 
                                     // detect end of bagfile
                                     if line.to_lowercase().contains("end of bagfile") {
@@ -1745,8 +1758,7 @@ pf! i 1
                                     }
                                 }
                                 Err(e) => {
-                                    capture_for_minot_stdout
-                                        .add_minot_line(format!("Error reading stdout: {}", e));
+                                    error!("[Minot] Error reading stdout: {}", e);
                                     break;
                                 }
                             }
@@ -1759,7 +1771,11 @@ pf! i 1
                         for line in reader.lines() {
                             match line {
                                 Ok(line) => {
-                                    capture_for_minot_stderr.add_minot_line(line.clone());
+                                    if line.to_lowercase().contains("error") {
+                                        error!("[Minot] {}", line);
+                                    } else {
+                                        info!("[Minot] {}", line);
+                                    }
 
                                     // detect readiness on stderr
                                     if line.contains(
@@ -1772,8 +1788,7 @@ pf! i 1
                                     }
                                 }
                                 Err(e) => {
-                                    capture_for_minot_stderr
-                                        .add_minot_line(format!("Error reading stderr: {}", e));
+                                    error!("[Minot] Error reading stderr: {}", e);
                                     break;
                                 }
                             }
@@ -1796,6 +1811,7 @@ pf! i 1
                     let lio_shutdown_flag =
                         std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
                     let lio_shutdown_flag_for_thread = lio_shutdown_flag.clone();
+                    let shared_stats_for_lio = shared_stats.clone();
 
                     let lio_handle = std::thread::spawn(move || {
                         if let Err(e) = lio_with_ready_signal(
@@ -1803,7 +1819,7 @@ pf! i 1
                             Some(pelorus_ready_tx),
                             offline_args.export_trajectory,
                             true,
-                            None, // No TUI stats for offline mode (uses output_tui instead)
+                            Some(shared_stats_for_lio),
                             Some(lio_shutdown_flag_for_thread),
                         ) {
                             error!("Odometry failed: {}", e);
@@ -1821,6 +1837,12 @@ pf! i 1
                     }
                     info!("Triggering minot to start processing...");
 
+                    // Check if process is still alive before writing
+                    if let Ok(Some(status)) = minot_child.try_wait() {
+                         error!("Minot process has already exited with status: {}", status);
+                         return Err(anyhow!("Minot exited prematurely: {}", status));
+                    }
+
                     use std::io::Write;
                     minot_stdin
                         .write_all(b"\n")
@@ -1829,36 +1851,31 @@ pf! i 1
                         .flush()
                         .map_err(|e| anyhow!("Failed to flush minot stdin: {}", e))?;
 
-                    // start TUI in thread
+                    /* 
+                    // TUI is already running from the start of the block
                     let (tui_stop_tx, tui_stop_rx) = std::sync::mpsc::channel();
                     let (shutdown_tx, shutdown_rx) = std::sync::mpsc::channel();
+                    
                     let tui_thread = std::thread::spawn(move || {
-                        let mut tui = output_tui::OutputTui::new(
-                            capture_for_tui,
-                            bagfile_path_canon
-                                .file_name()
-                                .unwrap()
-                                .to_string_lossy()
-                                .to_string(),
+                        let mut tui = StatsTui::new(
+                            stats_for_tui,
                         )
                         .with_stop_receiver(tui_stop_rx)
                         .with_shutdown_sender(shutdown_tx);
                         let _ = tui.run();
                     });
+                    */
 
                     // wait loop - check for various exit conditions
                     loop {
                         if exit_rx.try_recv().is_ok() {
-                            // minot finished -> request TUI and LIO to stop
-                            let _ = tui_stop_tx.send(());
+                            // minot finished -> request stop
                             lio_shutdown_flag.store(true, std::sync::atomic::Ordering::SeqCst);
                             info!("minot finished, stopping TUI and LIO");
                             break;
                         }
                         if lio_handle.is_finished() {
-                            // LIO finished -> request TUI to stop
-                            let _ = tui_stop_tx.send(());
-                            info!("LIO finished, stopping TUI");
+                            log::info!("LIO finished, stopping TUI");
                             break;
                         }
                         if shutdown_rx.try_recv().is_ok() {
@@ -1869,40 +1886,53 @@ pf! i 1
                         }
                         std::thread::sleep(std::time::Duration::from_millis(100));
                     }
-
-                    // Ensure both are signaled to stop
-                    let _ = tui_stop_tx.send(());
+                    
+                    // Cleanup
                     lio_shutdown_flag.store(true, std::sync::atomic::Ordering::SeqCst);
-
-                    // Join TUI thread (should be quick)
-                    let _ = tui_thread.join();
 
                     // Join LIO thread with timeout
                     let join_start = std::time::Instant::now();
                     let join_timeout = std::time::Duration::from_secs(3);
-                    let lio_exited_cleanly = loop {
+                    loop {
                         if lio_handle.is_finished() {
                             match lio_handle.join() {
                                 Ok(Ok(())) => info!("LIO thread joined successfully"),
                                 Ok(Err(e)) => warn!("LIO thread exited with error: {}", e),
                                 Err(_) => warn!("LIO thread panicked"),
                             }
-                            break true;
+                            break;
                         }
                         if join_start.elapsed() > join_timeout {
                             warn!("LIO thread did not exit within timeout");
-                            break false;
+                            break;
                         }
                         std::thread::sleep(std::time::Duration::from_millis(100));
                     };
-
-                    // If user initiated shutdown (not normal completion), exit with appropriate code
-                    if !lio_exited_cleanly {
-                        let _ = minot_child.kill();
-                        std::process::exit(130); // "Command terminated by user."
-                    }
-
+                    
+                    // Kill minot just in case
+                    let _ = minot_child.kill();
+                    
                     Ok(())
+                    };
+
+                    match run_offline_logic() {
+                        Ok(_) => {
+                            let _ = tui_stop_tx.send(());
+                            if let Some(handle) = tui_thread {
+                                let _ = handle.join();
+                            }
+                            Ok(())
+                        }
+                        Err(e) => {
+                            error!("Offline run failed: {}", e);
+                            std::thread::sleep(std::time::Duration::from_secs(2)); // Give time for user to read error
+                            let _ = tui_stop_tx.send(());
+                            if let Some(handle) = tui_thread {
+                                let _ = handle.join();
+                            }
+                            Err(e.into())
+                        }
+                    }
                 }
             }
         }

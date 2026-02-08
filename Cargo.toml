@@ -18,7 +18,7 @@ license = "MIT OR Apache-2.0"
 repository = "https://codeberg.org/uos-robotics/pelorus/"
 version = "0.0.1"
 authors = ["Christopher 'stelzo' Sieh <stelzo@steado.de>"]
-rust-version = "1.85" # ROS lyrical
+# rust-version = "1.85" # ROS lyrical
 
 [workspace.dependencies]
 pelorus = { path = "pelorus", version = "0.0.1" }
@@ -44,7 +44,7 @@ faer = { version = "0.23", default-features = false, features = ["std", "rayon",
 r2r = { version = "0.9.5" }
 ros2-client = { version = "0.8" }
 tokio = { version = "1", default-features = false }
-rerun = { version = "0.24", default-features = false, features = ["sdk", "glam"] }
+rerun = { version = "0.29", default-features = false, features = ["sdk", "glam"] }
 ros2-interfaces-jazzy-serde = { version = "0.0.4", features = [
   "std_msgs",
   "geometry_msgs",
@@ -108,3 +108,4 @@ opt-level = 3
 # TODO publish ratslang fix
 [patch.crates-io]
 ratslang = { git = "https://codeberg.org/uos-ce/ratslang.git" }
+ratpub = { path = "../minot/ratpub" }

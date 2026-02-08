@@ -94,10 +94,6 @@ function(r2r_cargo)
       list(APPEND FEATURES "rat")
     endif()
 
-    if(NOT DEFINED PELORUS_MIMALLOC OR PELORUS_MIMALLOC)
-      list(APPEND FEATURES "mimalloc")
-    endif()
-
   endif()
 
   # handle cmake args and env args
@@ -108,6 +104,9 @@ function(r2r_cargo)
          AND NOT "$ENV{PELORUS_CUDA}" STREQUAL "0"
          AND NOT "$ENV{PELORUS_CUDA}" STREQUAL "OFF")
     list(APPEND FEATURES "cuda")
+  endif()
+  if(PELORUS_MIMALLOC)
+    list(APPEND FEATURES "mimalloc")
   endif()
   if(PELORUS_MAPPING)
     list(APPEND FEATURES "mapping")

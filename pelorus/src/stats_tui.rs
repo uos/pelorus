@@ -205,6 +205,10 @@ pub fn set_tui_active(active: bool) {
 /// Shared statistics for the TUI
 #[derive(Debug, Clone, Default)]
 pub struct TuiStats {
+    // Mode
+    pub mode: String,
+    pub bagfile: Option<String>,
+
     // Sensor info
     pub lidar_vendor: Option<LidarVendor>,
     pub target_lidar_rate_hz: f64,
@@ -292,6 +296,16 @@ impl SharedStats {
             #[cfg(target_os = "macos")]
             last_cpu_macos: Arc::new(Mutex::new(None)),
         }
+    }
+
+    pub fn set_mode(&self, mode: impl Into<String>) {
+        let mut stats = self.inner.lock().unwrap();
+        stats.mode = mode.into();
+    }
+
+    pub fn set_bagfile(&self, bagfile: impl Into<String>) {
+        let mut stats = self.inner.lock().unwrap();
+        stats.bagfile = Some(bagfile.into());
     }
 
     pub fn get(&self) -> TuiStats {
@@ -827,21 +841,43 @@ impl StatsTui {
         let chunks = Layout::default()
             .direction(Direction::Vertical)
             .constraints([
+                Constraint::Length(1), // Header
                 Constraint::Length(3), // Tabs
                 Constraint::Min(10),   // Content
                 Constraint::Length(1), // Help bar
             ])
             .split(size);
 
-        self.render_tabs(f, chunks[0]);
-
+        self.render_title_bar(f, chunks[0], stats);
+        self.render_tabs(f, chunks[1]);
+        
         match self.current_tab {
-            Tab::Stats => self.render_stats_tab(f, chunks[1], stats),
-            Tab::Trajectory => self.render_trajectory_tab(f, chunks[1], stats),
-            Tab::Logs => self.render_logs_tab(f, chunks[1]),
+            Tab::Stats => self.render_stats_tab(f, chunks[2], stats),
+            Tab::Trajectory => self.render_trajectory_tab(f, chunks[2], stats),
+            Tab::Logs => self.render_logs_tab(f, chunks[2]),
         }
 
-        self.render_help_bar(f, chunks[2]);
+        self.render_help_bar(f, chunks[3]);
+    }
+
+    fn render_title_bar(&self, f: &mut ratatui::Frame, area: Rect, stats: &TuiStats) {
+        let mode_text = if stats.mode.is_empty() {
+            "Pelorus".to_string()
+        } else {
+            format!("Pelorus [{}]", stats.mode)
+        };
+        
+        let mut spans = vec![
+            Span::styled(mode_text, Style::default().add_modifier(Modifier::BOLD).fg(Color::Cyan)),
+        ];
+
+        if let Some(bag) = &stats.bagfile {
+            spans.push(Span::raw(" | Bag: "));
+            spans.push(Span::styled(bag, Style::default().fg(Color::Yellow)));
+        }
+
+        let paragraph = Paragraph::new(Line::from(spans));
+        f.render_widget(paragraph, area);
     }
 
     fn render_tabs(&self, f: &mut ratatui::Frame, area: Rect) {
@@ -1027,7 +1063,8 @@ impl StatsTui {
         // Calculate text positions relative to view bounds
         let range_h = max_h - min_h;
         let range_v = max_v - min_v;
-        let text_x = min_h + range_h * 0.02;
+        // Align text exactly to the left edge to avoid jitter from floating point padding
+        let text_x = min_h;
         let text_y_1 = max_v - range_v * 0.03;
         let text_y_2 = max_v - range_v * 0.06;
         let text_y_3 = max_v - range_v * 0.09;
@@ -1150,7 +1187,7 @@ impl StatsTui {
                 // Scale labels on edges
                 // Bottom left - min values
                 ctx.print(
-                    min_h + range_h * 0.02,
+                    min_h,
                     min_v + range_v * 0.02,
                     Line::from(Span::styled(
                         format!("{}: {:.1}m", axis_h_label, min_h),
@@ -1170,7 +1207,7 @@ impl StatsTui {
 
                 // Left side - min V (bottom)
                 ctx.print(
-                    min_h + range_h * 0.02,
+                    min_h,
                     min_v + range_v * 0.05,
                     Line::from(Span::styled(
                         format!("{}: {:.1}m", axis_v_label, min_v),
@@ -1180,7 +1217,7 @@ impl StatsTui {
 
                 // Left side - max V (top area, below info)
                 ctx.print(
-                    min_h + range_h * 0.02,
+                    min_h,
                     max_v - range_v * 0.13,
                     Line::from(Span::styled(
                         format!("{}: {:.1}m", axis_v_label, max_v),
