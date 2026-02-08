@@ -1358,7 +1358,6 @@ jobs:
           fi
 
           echo "Release ${TAG} published."
-  
 
   publish-ppa:
     needs:
@@ -1481,7 +1480,7 @@ jobs:
           ssh-keyscan codeberg.org >> ~/.ssh/known_hosts 2>/dev/null
           export GIT_SSH_COMMAND='ssh -i ~/.ssh/deploy_key -o UserKnownHostsFile=~/.ssh/known_hosts -o StrictHostKeyChecking=yes'
 
-          git clone --depth 1 --filter=blob:none --sparse git@codeberg.org:uos-robotics/ppa.git ppa
+          git clone --depth 1 --filter=blob:none --sparse ssh://git@codeberg.org/uos-robotics/ppa.git ppa
           cd ppa
           git sparse-checkout init --cone
           git sparse-checkout set \
@@ -1510,7 +1509,7 @@ jobs:
           git config --global user.email "$(git log -1 --pretty=format:'%ae')"
           git config --global user.name "$(git log -1 --pretty=format:'%an')"
           git commit -m "ci: add debs and wheels from ${FORGEJO_REPOSITORY}@${FORGEJO_SHA}" || echo "No changes to commit"
-          git push origin main
+          git push origin pages
 
           # Cleanup
           shred -u ~/.ssh/deploy_key || rm -f ~/.ssh/deploy_key

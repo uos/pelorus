@@ -4004,7 +4004,8 @@ checksum = "96a1fe2275b68991faded2c80aa4a33dba398b77d276038b8f50701a22e55918"
 [[package]]
 name = "mt_net"
 version = "0.4.3"
-source = "git+https://github.com/uos/minot.git#f954e036e43c1d3020af852034319a16e3ac95a3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5eb6743842b667f3ebd2ece4ec971c106d0e3f85d4b8f3dac6bf5db2ae9cbb33"
 dependencies = [
  "anyhow",
  "rkyv",
@@ -4015,7 +4016,8 @@ dependencies = [
 [[package]]
 name = "mt_rat"
 version = "0.4.3"
-source = "git+https://github.com/uos/minot.git#f954e036e43c1d3020af852034319a16e3ac95a3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "342061ac82d77ed503e83224f360a5d352db77f4916f8efd807ed9ba81bf0b8c"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -4031,7 +4033,8 @@ dependencies = [
 [[package]]
 name = "mt_sea"
 version = "0.4.3"
-source = "git+https://github.com/uos/minot.git#f954e036e43c1d3020af852034319a16e3ac95a3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c2738afaf933f364d38809a2fc24cfa91a1e22ebc88d7bc5518edbec205723a9"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -5569,7 +5572,8 @@ dependencies = [
 [[package]]
 name = "ratpub"
 version = "0.4.3"
-source = "git+https://github.com/uos/minot.git#f954e036e43c1d3020af852034319a16e3ac95a3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "dc6113db69abda5ed8c3c257dc3d88d417188bc847ab7b97d7b83ec556a55923"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -5585,8 +5589,9 @@ dependencies = [
 
 [[package]]
 name = "ratslang"
-version = "0.4.0"
-source = "git+https://codeberg.org/uos-ce/ratslang.git#7cc7a196b1c967fcf943355a76065ab9d0d850d5"
+version = "0.4.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "49ab0e6f46448bc717d67a0b417c4938a141a3971210689a1829f9ab693b717f"
 dependencies = [
  "anyhow",
  "ariadne",
@@ -6696,9 +6701,9 @@ dependencies = [
 
 [[package]]
 name = "ros_pointcloud2"
-version = "1.0.0-rc.2"
+version = "1.0.0-rc.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0b520c2b6ff1740651a586bad575d512fbb7c92d73b74a45635b982cea80d338"
+checksum = "046d50226f060e7bd9adbebc9a7a2b59a5781485dbd016502795cd79e52987ac"
 dependencies = [
  "rayon",
  "rpcl2-derive",

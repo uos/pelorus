@@ -29,11 +29,15 @@ prelio_io = { path = "prelio_io", version = "0.0.1" }
 spole = { path = "spole", version = "0.0.1" }
 pelorus_cuda = { path = "pelorus_cuda", version = "0.0.1" }
 
-ros_pointcloud2 = { version = "1.0.0-rc.2", features = [
+ros_pointcloud2 = { version = "1.0.0-rc.3", features = [
   "rayon",
   "derive",
+  "r2r",
+  "ros2_interfaces_jazzy_serde",
+  "ros2_interfaces_jazzy_rkyv",
+  "nalgebra",
 ] }
-ratslang = "0.4.0"
+ratslang = "0.4.1"
 ratpub = "0.4.3"
 mt_rat = "0.4.3"
 imu-calib = "0.1"
@@ -104,9 +108,3 @@ incremental = false  # Devs are not expected to use the colcon pipeline for incr
 
 [profile.dev.package.backtrace]
 opt-level = 3
-
-# TODO publish ratslang fix
-[patch.crates-io]
-ratslang = { git = "https://codeberg.org/stelzo/ratslang.git" }
-ratpub = { git = "https://github.com/uos/minot.git" }
-mt_rat = { git = "https://github.com/uos/minot.git" }
