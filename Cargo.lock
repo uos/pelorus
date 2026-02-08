@@ -4003,19 +4003,8 @@ checksum = "96a1fe2275b68991faded2c80aa4a33dba398b77d276038b8f50701a22e55918"
 
 [[package]]
 name = "mt_net"
-version = "0.4.2"
-dependencies = [
- "anyhow",
- "rkyv",
- "ros2-interfaces-jazzy-rkyv",
- "serde",
-]
-
-[[package]]
-name = "mt_net"
-version = "0.4.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9c8502c1832f774da31b9b6eb65b74f0ebe19e3b66f40c95acb2e073cca7e3e2"
+version = "0.4.3"
+source = "git+https://github.com/uos/minot.git#f954e036e43c1d3020af852034319a16e3ac95a3"
 dependencies = [
  "anyhow",
  "rkyv",
@@ -4025,15 +4014,14 @@ dependencies = [
 
 [[package]]
 name = "mt_rat"
-version = "0.4.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2d784d9c214b968f38035f9b97470c44e8080e1261bc913b80fc8d0f62bd8591"
+version = "0.4.3"
+source = "git+https://github.com/uos/minot.git#f954e036e43c1d3020af852034319a16e3ac95a3"
 dependencies = [
  "anyhow",
  "async-trait",
  "env_logger",
  "log",
- "mt_sea 0.4.2 (registry+https://github.com/rust-lang/crates.io-index)",
+ "mt_sea",
  "nalgebra 0.33.2",
  "rand 0.8.5",
  "rkyv",
@@ -4042,34 +4030,15 @@ dependencies = [
 
 [[package]]
 name = "mt_sea"
-version = "0.4.2"
+version = "0.4.3"
+source = "git+https://github.com/uos/minot.git#f954e036e43c1d3020af852034319a16e3ac95a3"
 dependencies = [
  "anyhow",
  "async-trait",
  "deadpool",
  "env_logger",
  "log",
- "mt_net 0.4.2",
- "nalgebra 0.33.2",
- "pnet",
- "rand 0.8.5",
- "rkyv",
- "socket2 0.5.10",
- "tokio",
-]
-
-[[package]]
-name = "mt_sea"
-version = "0.4.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c8fde3c9a7cbb00f84480d140da53e5c282e5005a467775df78e087bfa18c33b"
-dependencies = [
- "anyhow",
- "async-trait",
- "deadpool",
- "env_logger",
- "log",
- "mt_net 0.4.2 (registry+https://github.com/rust-lang/crates.io-index)",
+ "mt_net",
  "nalgebra 0.33.2",
  "pnet",
  "rand 0.8.5",
@@ -5599,14 +5568,15 @@ dependencies = [
 
 [[package]]
 name = "ratpub"
-version = "0.4.2"
+version = "0.4.3"
+source = "git+https://github.com/uos/minot.git#f954e036e43c1d3020af852034319a16e3ac95a3"
 dependencies = [
  "anyhow",
  "async-trait",
  "env_logger",
  "log",
- "mt_net 0.4.2",
- "mt_sea 0.4.2",
+ "mt_net",
+ "mt_sea",
  "nalgebra 0.33.2",
  "rkyv",
  "ros2-interfaces-jazzy-rkyv",
