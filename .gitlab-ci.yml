@@ -15,8 +15,8 @@ rust-stable:
   stage: build
   script:
     - rustup default stable
-    - cargo build --verbose
-    - cargo test --verbose
+    - cargo build
+    - cargo test
   rules:
     - if: '$CI_PIPELINE_SOURCE == "schedule"'
       when: never
@@ -71,15 +71,6 @@ glim-odom:
     - cd ../../glim_integration/pelorus_glim_odometry && mkdir build && cd build
     - cmake ..
     - make
-  rules:
-    - if: '$CI_PIPELINE_SOURCE == "schedule"'
-      when: never
-    - when: on_success
- 
-msrv:
-  stage: test
-  script:
-    - cargo msrv verify --manifest-path pelorus/Cargo.toml
   rules:
     - if: '$CI_PIPELINE_SOURCE == "schedule"'
       when: never

@@ -35,52 +35,37 @@ Building might take a while.
 Available flags for the ROS 2 version are:
 
 **Default flags** (enabled by default, disable all with `-D PELORUS_ALL_DEFAULTS=OFF`):
-- `parallel` (use all available CPU cores)
-- `mimalloc` (use mimalloc as memory allocator)
-- `evaluation` (build the `evaluation` command for comparing trajectories and generating metrics similar to the `evo` tool)
+- `parallel` use all available CPU cores
+- `rat` synchronize input/output for use with [Minot](https://github.com/uos/minot) using the `-r` flag
 
 **Optional flags**:
-- `cuda` (use all available CUDA accelerations; requires `CUDA_HOME` environment variable to be set to your `/usr/local/cuda` or similar)
-- `rerun` (visualization with timeline; set `RERUN_SERVER_ADDR` for remote instances, e.g. `127.0.0.1:9876`. Requires v0.24)
-- `map` (publish localmap; only meant for debug purposes)
-- `no-viz` (avoid any visualization code; useful for headless systems)
+- `cuda` use all available CUDA accelerations; requires `CUDA_HOME` environment variable to be set to your `/usr/local/cuda` or similar
+- `rerun` visualization with timeline; set `RERUN_SERVER_ADDR` for remote instances, e.g. `127.0.0.1:9876`. Requires v0.29 and modern Rust Toolchain.
+- `map` publish localmap; only meant for debug purposes
+- `no-viz` avoid visualization code; useful for headless systems
+- `mimalloc` use mimalloc as memory allocator
+- `evaluation` build the `evaluation` command for comparing trajectories and generating metrics similar to the `evo` tool. Requires modern Rust Toolchain.
 
 
 After building and sourcing, you can use Pelorus as a ROS node.
 
 ```sh
+# generate a config file with settings that are recommended to change for your use case
+ros2 run pelorus pelorus config generate recommended > pelorus.rl
+# edit pelorus.rl to your needs, e.g. set the topic names, frame ids, sensor parameters etc.
+
+# verify the config file for correctness
+ros2 run pelorus pelorus config verify pelorus.rl
+
+# run Pelorus with the config file
 ros2 run pelorus pelorus run online -c pelorus.rl
 ```
 
-In the following examples, the `ros2 run` prefix will be omitted. Just preprend it again when using ROS.
-
-### Configuration
+## Configuration
 
 Pelorus uses `ratslang` for proper configuration. The defaults are validated at compile time. Every change overwrites the default.
 
-Generate a minimal configuration with typical required parameters for robots or datasets by:
-
-```sh
-# typical settings that often change
-pelorus config generate recommended > pelorus.rl
-
-# alternatively, output all settings
-pelorus config generate full > pelorus.rl
-```
-
-Adapt the values and validate the config to check you did everything correctly:
-
-```sh
-pelorus config verify pelorus.rl
-```
+Generate a minimal configuration with typical required parameters for robots or datasets with the `recommended` preset or a full configuration with all parameters and their defaults with the `full` preset.
 
 For basics of the configuration language itself visit the [Ratslang](https://github.com/stelzo/ratslang) project.
-
-### 🚀 Launching
-
-Source your workspace and run the node. If your configuration file, (e.g. `pelorus.rl`) file is in the same directory where you are running the command, you can use a relative path:
-
-```sh
-ros2 run pelorus pelorus run online -c pelorus.rl
-```
 
