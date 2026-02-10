@@ -56,7 +56,7 @@ jobs:
       matrix:
         include:
           - runner: bookworm
-          # - runner: ubuntu-latest-arm-raw
+          - runner: macos-latest
     runs-on: ${{ matrix.runner }}
     steps:
       - name: Docker clean
@@ -167,7 +167,7 @@ jobs:
       matrix:
         include:
           - runner: bookworm
-          # - runner: ubuntu-latest-arm-raw
+          - runner: macos-latest
     runs-on: ${{ matrix.runner }}
     steps:
       - name: Docker clean
@@ -326,7 +326,7 @@ jobs:
       matrix:
         include:
           - runner: bookworm
-          # - runner: ubuntu-latest-arm-raw
+          - runner: macos-latest
     runs-on: ${{ matrix.runner }}
     steps:
       - name: Docker clean
@@ -446,7 +446,7 @@ jobs:
       matrix:
         include:
           - runner: bookworm
-          # - runner: ubuntu-latest-arm-raw
+          - runner: macos-latest
     runs-on: ${{ matrix.runner }}
     steps:
       - name: Docker clean
@@ -566,7 +566,7 @@ jobs:
       matrix:
         include:
           - runner: bookworm
-          # - runner: ubuntu-latest-arm-raw
+          - runner: macos-latest
     runs-on: ${{ matrix.runner }}
     steps:
       - name: Docker clean
@@ -665,7 +665,7 @@ jobs:
       matrix:
         include:
           - runner: bookworm
-          # - runner: ubuntu-latest-arm-raw
+          - runner: macos-latest
     runs-on: ${{ matrix.runner }}
     steps:
       - name: Docker clean
@@ -735,7 +735,7 @@ jobs:
       matrix:
         include:
           - runner: bookworm
-          # - runner: ubuntu-latest-arm-raw
+          - runner: macos-latest
     runs-on: ${{ matrix.runner }}
     steps:
       - name: Docker clean
@@ -805,7 +805,7 @@ jobs:
       matrix:
         include:
           - runner: bookworm
-          # - runner: ubuntu-latest-arm-raw
+          - runner: macos-latest
     runs-on: ${{ matrix.runner }}
     steps:
       - name: Docker clean
@@ -875,7 +875,7 @@ jobs:
       matrix:
         include:
           - runner: bookworm
-          # - runner: ubuntu-latest-arm-raw
+          - runner: macos-latest
     runs-on: ${{ matrix.runner }}
     steps:
       - name: Docker clean
@@ -1001,7 +1001,7 @@ jobs:
       matrix:
         include:
           - runner: bookworm
-          # - runner: ubuntu-latest-arm-raw
+          - runner: macos-latest
     runs-on: ${{ matrix.runner }}
     steps:
       - name: Docker clean
@@ -1065,6 +1065,7 @@ jobs:
       matrix:
         include:
           - runner: bookworm
+          - runner: macos-latest
     runs-on: ${{ matrix.runner }}
     steps:
       - name: Docker clean
@@ -1108,6 +1109,7 @@ jobs:
       matrix:
         include:
           - runner: bookworm
+          - runner: macos-latest
     runs-on: ${{ matrix.runner }}
     steps:
       - name: Docker clean
@@ -1151,6 +1153,7 @@ jobs:
       matrix:
         include:
           - runner: bookworm
+          - runner: macos-latest
     runs-on: ${{ matrix.runner }}
     steps:
       - name: Docker clean
@@ -1194,6 +1197,7 @@ jobs:
       matrix:
         include:
           - runner: bookworm
+          - runner: macos-latest
     runs-on: ${{ matrix.runner }}
     steps:
       - name: Docker clean
