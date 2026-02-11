@@ -2,6 +2,8 @@
 # assuming sourced ros environment and starting from the package root directory
 # creates the deb in the current dir
 
+apt-get update -y
+
 # needed for creating the deb
 apt-get install -y debhelper sed grep
 
