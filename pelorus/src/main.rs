@@ -32,7 +32,6 @@ use clap::{Parser, Subcommand};
 use futures_lite::future;
 use log::{error, info, warn};
 use nalgebra::{Isometry3, Translation3, UnitQuaternion};
-use std::io::IsTerminal;
 #[cfg(feature = "r2r")]
 #[allow(unused_imports)]
 use r2r::{
@@ -71,6 +70,7 @@ use ros2_interfaces_jazzy_serde::{
     visualization_msgs::msg::Marker,
 };
 use std::collections::VecDeque;
+use std::io::IsTerminal;
 
 use prelio_io::prelio::LocatedBufferView;
 #[cfg(feature = "ros2-client")]
@@ -86,9 +86,7 @@ use std::path::PathBuf;
 
 #[cfg(feature = "evaluate")]
 use pelorus::evaluate;
-use pelorus::stats_tui::{
-    SharedStats, StatsTui, init_logger, update_log_level,
-};
+use pelorus::stats_tui::{SharedStats, StatsTui, init_logger, update_log_level};
 use std::time::UNIX_EPOCH;
 
 #[allow(dead_code)]
@@ -1616,13 +1614,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
                     let config = {
                         let mut config = ast_to_config(default_ast, user_ast)?;
-                        config.show_tui = true; 
+                        config.show_tui = true;
                         config
                     };
 
                     let show_tui = config.show_tui && std::io::stdout().is_terminal();
                     if !show_tui && config.show_tui {
-                         warn!("TUI requested for offline mode but stdout is not a terminal. Continuing without visualization.");
+                        warn!(
+                            "TUI requested for offline mode but stdout is not a terminal. Continuing without visualization."
+                        );
                     }
 
                     // Update log level after config has set RUST_LOG
@@ -1679,7 +1679,7 @@ pf! l 1
 pf! i 1
 "#
                     );
-                    
+
                     // Start TUI immediately so we can see what's happening
                     let (tui_stop_tx, tui_stop_rx) = std::sync::mpsc::channel();
                     let (shutdown_tx, shutdown_rx) = std::sync::mpsc::channel();
@@ -1697,88 +1697,88 @@ pf! i 1
 
                     // Define the main logic as a closure/block to easily handle errors and cleanup
                     let run_offline_logic = || -> anyhow::Result<()> {
-                    let mt_file_path = std::env::temp_dir().join("pelorus_offline.mt");
-                    fs::write(&mt_file_path, mt_content)
-                        .map_err(|e| anyhow!("Failed to write .mt file: {}", e))?;
+                        let mt_file_path = std::env::temp_dir().join("pelorus_offline.mt");
+                        fs::write(&mt_file_path, mt_content)
+                            .map_err(|e| anyhow!("Failed to write .mt file: {}", e))?;
 
-                    info!("Generated .mt file at: {:?}", mt_file_path);
+                        info!("Generated .mt file at: {:?}", mt_file_path);
 
-                    // Spawn minot in headless mode with --sync
-                    let mut minot_child = ProcessCommand::new(&offline_args.minot_path)
-                        .arg("headless")
-                        .arg(&mt_file_path)
-                        .arg("--sync")
-                        .stdin(Stdio::piped())
-                        .stdout(Stdio::piped())
-                        .stderr(Stdio::piped())
-                        .spawn()
-                        .map_err(|e| anyhow!("Failed to spawn minot: {}", e))?;
+                        // Spawn minot in headless mode with --sync
+                        let mut minot_child = ProcessCommand::new(&offline_args.minot_path)
+                            .arg("headless")
+                            .arg(&mt_file_path)
+                            .arg("--sync")
+                            .stdin(Stdio::piped())
+                            .stdout(Stdio::piped())
+                            .stderr(Stdio::piped())
+                            .spawn()
+                            .map_err(|e| anyhow!("Failed to spawn minot: {}", e))?;
 
-                    info!("Spawned minot process with PID: {}", minot_child.id());
+                        info!("Spawned minot process with PID: {}", minot_child.id());
 
-                    let mut minot_stdin = minot_child
-                        .stdin
-                        .take()
-                        .ok_or_else(|| anyhow!("Failed to open minot stdin"))?;
-                    let minot_stdout = minot_child
-                        .stdout
-                        .take()
-                        .ok_or_else(|| anyhow!("Failed to open minot stdout"))?;
-                    let minot_stderr = minot_child
-                        .stderr
-                        .take()
-                        .ok_or_else(|| anyhow!("Failed to open minot stderr"))?;
+                        let mut minot_stdin = minot_child
+                            .stdin
+                            .take()
+                            .ok_or_else(|| anyhow!("Failed to open minot stdin"))?;
+                        let minot_stdout = minot_child
+                            .stdout
+                            .take()
+                            .ok_or_else(|| anyhow!("Failed to open minot stdout"))?;
+                        let minot_stderr = minot_child
+                            .stderr
+                            .take()
+                            .ok_or_else(|| anyhow!("Failed to open minot stderr"))?;
 
-                    info!("Waiting for minot to be ready...");
-                    use std::io::{BufRead, BufReader};
+                        info!("Waiting for minot to be ready...");
+                        use std::io::{BufRead, BufReader};
 
-                    let (ready_tx, ready_rx) = std::sync::mpsc::channel();
-                    let (exit_tx, exit_rx) = std::sync::mpsc::channel();
+                        let (ready_tx, ready_rx) = std::sync::mpsc::channel();
+                        let (exit_tx, exit_rx) = std::sync::mpsc::channel();
 
-                    // Thread for stdout
-                    let exit_tx_clone = exit_tx.clone();
-                    let ready_tx_clone = ready_tx.clone();
-                    std::thread::spawn(move || {
-                        let reader = BufReader::new(minot_stdout);
-                        for line in reader.lines() {
-                            match line {
-                                Ok(line) => {
-                                    info!("[Minot] {}", line);
+                        // Thread for stdout
+                        let exit_tx_clone = exit_tx.clone();
+                        let ready_tx_clone = ready_tx.clone();
+                        std::thread::spawn(move || {
+                            let reader = BufReader::new(minot_stdout);
+                            for line in reader.lines() {
+                                match line {
+                                    Ok(line) => {
+                                        info!("[Minot] {}", line);
 
-                                    // detect end of bagfile
-                                    if line.to_lowercase().contains("end of bagfile") {
-                                        let _ = exit_tx_clone.send(());
+                                        // detect end of bagfile
+                                        if line.to_lowercase().contains("end of bagfile") {
+                                            let _ = exit_tx_clone.send(());
+                                        }
+                                        if line.contains("--sync")
+                                            || line.to_lowercase().contains("waiting for input")
+                                            || line.to_lowercase().contains("press enter")
+                                            || line.to_lowercase().contains("stdin")
+                                        {
+                                            let _ = ready_tx_clone.send(true);
+                                        }
                                     }
-                                    if line.contains("--sync")
-                                        || line.to_lowercase().contains("waiting for input")
-                                        || line.to_lowercase().contains("press enter")
-                                        || line.to_lowercase().contains("stdin")
-                                    {
-                                        let _ = ready_tx_clone.send(true);
+                                    Err(e) => {
+                                        error!("[Minot] Error reading stdout: {}", e);
+                                        break;
                                     }
-                                }
-                                Err(e) => {
-                                    error!("[Minot] Error reading stdout: {}", e);
-                                    break;
                                 }
                             }
-                        }
-                    });
+                        });
 
-                    // Thread for stderr
-                    std::thread::spawn(move || {
-                        let reader = BufReader::new(minot_stderr);
-                        for line in reader.lines() {
-                            match line {
-                                Ok(line) => {
-                                    if line.to_lowercase().contains("error") {
-                                        error!("[Minot] {}", line);
-                                    } else {
-                                        info!("[Minot] {}", line);
-                                    }
+                        // Thread for stderr
+                        std::thread::spawn(move || {
+                            let reader = BufReader::new(minot_stderr);
+                            for line in reader.lines() {
+                                match line {
+                                    Ok(line) => {
+                                        if line.to_lowercase().contains("error") {
+                                            error!("[Minot] {}", line);
+                                        } else {
+                                            info!("[Minot] {}", line);
+                                        }
 
-                                    // detect readiness on stderr
-                                    if line.contains(
+                                        // detect readiness on stderr
+                                        if line.contains(
                                         "Waiting for input on stdin before execution (--sync mode)",
                                     ) || line.to_lowercase().contains("waiting for input")
                                         || line.to_lowercase().contains("press enter")
@@ -1786,133 +1786,133 @@ pf! i 1
                                     {
                                         let _ = ready_tx.send(true);
                                     }
-                                }
-                                Err(e) => {
-                                    error!("[Minot] Error reading stderr: {}", e);
-                                    break;
+                                    }
+                                    Err(e) => {
+                                        error!("[Minot] Error reading stderr: {}", e);
+                                        break;
+                                    }
                                 }
                             }
+                        });
+
+                        let got_ready = ready_rx
+                            .recv_timeout(std::time::Duration::from_secs(30))
+                            .is_ok();
+                        if !got_ready {
+                            info!("Did not receive explicit Minot ready; proceeding as fallback");
                         }
-                    });
 
-                    let got_ready = ready_rx
-                        .recv_timeout(std::time::Duration::from_secs(30))
-                        .is_ok();
-                    if !got_ready {
-                        info!("Did not receive explicit Minot ready; proceeding as fallback");
-                    }
+                        info!("Minot is ready, starting pelorus offline processing...");
 
-                    info!("Minot is ready, starting pelorus offline processing...");
+                        let (pelorus_ready_tx, pelorus_ready_rx) = std::sync::mpsc::channel();
 
-                    let (pelorus_ready_tx, pelorus_ready_rx) = std::sync::mpsc::channel();
+                        // start Odometry in thread
+                        // Provide an atomic shutdown flag so we can request LIO to shutdown from main/TUI
+                        let lio_shutdown_flag =
+                            std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+                        let lio_shutdown_flag_for_thread = lio_shutdown_flag.clone();
+                        let shared_stats_for_lio = shared_stats.clone();
 
-                    // start Odometry in thread
-                    // Provide an atomic shutdown flag so we can request LIO to shutdown from main/TUI
-                    let lio_shutdown_flag =
-                        std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-                    let lio_shutdown_flag_for_thread = lio_shutdown_flag.clone();
-                    let shared_stats_for_lio = shared_stats.clone();
+                        let lio_handle = std::thread::spawn(move || {
+                            if let Err(e) = lio_with_ready_signal(
+                                config,
+                                Some(pelorus_ready_tx),
+                                offline_args.export_trajectory,
+                                true,
+                                Some(shared_stats_for_lio),
+                                Some(lio_shutdown_flag_for_thread),
+                            ) {
+                                error!("Odometry failed: {}", e);
+                                return Err(format!("Odometry failed: {}", e));
+                            }
+                            Ok(())
+                        });
 
-                    let lio_handle = std::thread::spawn(move || {
-                        if let Err(e) = lio_with_ready_signal(
-                            config,
-                            Some(pelorus_ready_tx),
-                            offline_args.export_trajectory,
-                            true,
-                            Some(shared_stats_for_lio),
-                            Some(lio_shutdown_flag_for_thread),
-                        ) {
-                            error!("Odometry failed: {}", e);
-                            return Err(format!("Odometry failed: {}", e));
+                        info!("Waiting for pelorus to initialize...");
+                        match pelorus_ready_rx.recv_timeout(std::time::Duration::from_secs(5)) {
+                            Ok(_) => info!("Pelorus is ready!"),
+                            Err(_) => info!(
+                                "Pelorus ready not received in 5s; proceeding to trigger minot anyway"
+                            ),
                         }
+                        info!("Triggering minot to start processing...");
+
+                        // Check if process is still alive before writing
+                        if let Ok(Some(status)) = minot_child.try_wait() {
+                            error!("Minot process has already exited with status: {}", status);
+                            return Err(anyhow!("Minot exited prematurely: {}", status));
+                        }
+
+                        use std::io::Write;
+                        minot_stdin
+                            .write_all(b"\n")
+                            .map_err(|e| anyhow!("Failed to write to minot stdin: {}", e))?;
+                        minot_stdin
+                            .flush()
+                            .map_err(|e| anyhow!("Failed to flush minot stdin: {}", e))?;
+
+                        /*
+                        // TUI is already running from the start of the block
+                        let (tui_stop_tx, tui_stop_rx) = std::sync::mpsc::channel();
+                        let (shutdown_tx, shutdown_rx) = std::sync::mpsc::channel();
+
+                        let tui_thread = std::thread::spawn(move || {
+                            let mut tui = StatsTui::new(
+                                stats_for_tui,
+                            )
+                            .with_stop_receiver(tui_stop_rx)
+                            .with_shutdown_sender(shutdown_tx);
+                            let _ = tui.run();
+                        });
+                        */
+
+                        // wait loop - check for various exit conditions
+                        loop {
+                            if exit_rx.try_recv().is_ok() {
+                                // minot finished -> request stop
+                                lio_shutdown_flag.store(true, std::sync::atomic::Ordering::SeqCst);
+                                info!("minot finished, stopping TUI and LIO");
+                                break;
+                            }
+                            if lio_handle.is_finished() {
+                                log::info!("LIO finished, stopping TUI");
+                                break;
+                            }
+                            if shutdown_rx.try_recv().is_ok() {
+                                // TUI requested shutdown -> request LIO to stop
+                                lio_shutdown_flag.store(true, std::sync::atomic::Ordering::SeqCst);
+                                info!("TUI requested shutdown, stopping LIO");
+                                break;
+                            }
+                            std::thread::sleep(std::time::Duration::from_millis(100));
+                        }
+
+                        // Cleanup
+                        lio_shutdown_flag.store(true, std::sync::atomic::Ordering::SeqCst);
+
+                        // Join LIO thread with timeout
+                        let join_start = std::time::Instant::now();
+                        let join_timeout = std::time::Duration::from_secs(3);
+                        loop {
+                            if lio_handle.is_finished() {
+                                match lio_handle.join() {
+                                    Ok(Ok(())) => info!("LIO thread joined successfully"),
+                                    Ok(Err(e)) => warn!("LIO thread exited with error: {}", e),
+                                    Err(_) => warn!("LIO thread panicked"),
+                                }
+                                break;
+                            }
+                            if join_start.elapsed() > join_timeout {
+                                warn!("LIO thread did not exit within timeout");
+                                break;
+                            }
+                            std::thread::sleep(std::time::Duration::from_millis(100));
+                        }
+
+                        // Kill minot just in case
+                        let _ = minot_child.kill();
+
                         Ok(())
-                    });
-
-                    info!("Waiting for pelorus to initialize...");
-                    match pelorus_ready_rx.recv_timeout(std::time::Duration::from_secs(5)) {
-                        Ok(_) => info!("Pelorus is ready!"),
-                        Err(_) => info!(
-                            "Pelorus ready not received in 5s; proceeding to trigger minot anyway"
-                        ),
-                    }
-                    info!("Triggering minot to start processing...");
-
-                    // Check if process is still alive before writing
-                    if let Ok(Some(status)) = minot_child.try_wait() {
-                         error!("Minot process has already exited with status: {}", status);
-                         return Err(anyhow!("Minot exited prematurely: {}", status));
-                    }
-
-                    use std::io::Write;
-                    minot_stdin
-                        .write_all(b"\n")
-                        .map_err(|e| anyhow!("Failed to write to minot stdin: {}", e))?;
-                    minot_stdin
-                        .flush()
-                        .map_err(|e| anyhow!("Failed to flush minot stdin: {}", e))?;
-
-                    /* 
-                    // TUI is already running from the start of the block
-                    let (tui_stop_tx, tui_stop_rx) = std::sync::mpsc::channel();
-                    let (shutdown_tx, shutdown_rx) = std::sync::mpsc::channel();
-                    
-                    let tui_thread = std::thread::spawn(move || {
-                        let mut tui = StatsTui::new(
-                            stats_for_tui,
-                        )
-                        .with_stop_receiver(tui_stop_rx)
-                        .with_shutdown_sender(shutdown_tx);
-                        let _ = tui.run();
-                    });
-                    */
-
-                    // wait loop - check for various exit conditions
-                    loop {
-                        if exit_rx.try_recv().is_ok() {
-                            // minot finished -> request stop
-                            lio_shutdown_flag.store(true, std::sync::atomic::Ordering::SeqCst);
-                            info!("minot finished, stopping TUI and LIO");
-                            break;
-                        }
-                        if lio_handle.is_finished() {
-                            log::info!("LIO finished, stopping TUI");
-                            break;
-                        }
-                        if shutdown_rx.try_recv().is_ok() {
-                            // TUI requested shutdown -> request LIO to stop
-                            lio_shutdown_flag.store(true, std::sync::atomic::Ordering::SeqCst);
-                            info!("TUI requested shutdown, stopping LIO");
-                            break;
-                        }
-                        std::thread::sleep(std::time::Duration::from_millis(100));
-                    }
-                    
-                    // Cleanup
-                    lio_shutdown_flag.store(true, std::sync::atomic::Ordering::SeqCst);
-
-                    // Join LIO thread with timeout
-                    let join_start = std::time::Instant::now();
-                    let join_timeout = std::time::Duration::from_secs(3);
-                    loop {
-                        if lio_handle.is_finished() {
-                            match lio_handle.join() {
-                                Ok(Ok(())) => info!("LIO thread joined successfully"),
-                                Ok(Err(e)) => warn!("LIO thread exited with error: {}", e),
-                                Err(_) => warn!("LIO thread panicked"),
-                            }
-                            break;
-                        }
-                        if join_start.elapsed() > join_timeout {
-                            warn!("LIO thread did not exit within timeout");
-                            break;
-                        }
-                        std::thread::sleep(std::time::Duration::from_millis(100));
-                    };
-                    
-                    // Kill minot just in case
-                    let _ = minot_child.kill();
-                    
-                    Ok(())
                     };
 
                     match run_offline_logic() {

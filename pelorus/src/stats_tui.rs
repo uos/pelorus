@@ -850,7 +850,7 @@ impl StatsTui {
 
         self.render_title_bar(f, chunks[0], stats);
         self.render_tabs(f, chunks[1]);
-        
+
         match self.current_tab {
             Tab::Stats => self.render_stats_tab(f, chunks[2], stats),
             Tab::Trajectory => self.render_trajectory_tab(f, chunks[2], stats),
@@ -862,14 +862,17 @@ impl StatsTui {
 
     fn render_title_bar(&self, f: &mut ratatui::Frame, area: Rect, stats: &TuiStats) {
         let mode_text = if stats.mode.is_empty() {
-            "Pelorus".to_string()
+            format!("Pelorus v{}", VERSION)
         } else {
-            format!("Pelorus [{}]", stats.mode)
+            format!("Pelorus v{} [{}]", VERSION, stats.mode)
         };
-        
-        let mut spans = vec![
-            Span::styled(mode_text, Style::default().add_modifier(Modifier::BOLD).fg(Color::Cyan)),
-        ];
+
+        let mut spans = vec![Span::styled(
+            mode_text,
+            Style::default()
+                .add_modifier(Modifier::BOLD)
+                .fg(Color::Cyan),
+        )];
 
         if let Some(bag) = &stats.bagfile {
             spans.push(Span::raw(" | Bag: "));
@@ -897,13 +900,7 @@ impl StatsTui {
             .block(
                 Block::default()
                     .borders(Borders::ALL)
-                    .border_style(Style::default().fg(Color::DarkGray))
-                    .title(Span::styled(
-                        format!("Pelorus v{} ", VERSION),
-                        Style::default()
-                            .fg(Color::Cyan)
-                            .add_modifier(Modifier::BOLD),
-                    )),
+                    .border_style(Style::default().fg(Color::DarkGray)),
             )
             .select(selected)
             .style(Style::default().fg(Color::DarkGray))
