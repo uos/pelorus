@@ -3,10 +3,10 @@
 # creates the deb in the current dir
 
 # needed for creating the deb
-apt-get install --no-install-recommends -y debhelper sed grep
+apt-get install -y debhelper sed grep
 
 # deps from the package.xml
-apt-get install --no-install-recommends -y cargo libclang-dev python3-catkin-pkg-modules
+apt-get install -y cargo libclang-dev python3-catkin-pkg-modules
 
 cargo_ver=$(grep -Po '^\s*version\s*=\s*"\K[^"]+' Cargo.toml)
 xml_ver=$(grep -Po '<\s*version\s*>\K[^<]+' package.xml)
