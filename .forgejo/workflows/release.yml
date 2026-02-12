@@ -23,7 +23,8 @@ jobs:
       - uses: actions/checkout@v4
       - name: Check
         run: |
-          rustup update
+          rustup toolchain uninstall stable
+          rustup toolchain install stable
           cargo check
       - name: Validate packaging files versions
         run: |
@@ -99,8 +100,8 @@ jobs:
           apt-get install -y cmake
           VERSION=$(toml get --raw Cargo.toml workspace.package.version)
           VERSION=$VERSION-1
-          rustup update
-
+          rustup toolchain uninstall stable
+          rustup toolchain install stable
           mkdir -p "dist/${ARCH}"
 
           # ------- RAW
@@ -194,7 +195,8 @@ jobs:
       - uses: actions/checkout@v4
       - name: Build
         run: |
-          rustup update
+          rustup toolchain uninstall stable
+          rustup toolchain install stable
           rustup target add $TARGET
 
           mkdir -p "dist/${ARCH}"
@@ -254,7 +256,8 @@ jobs:
           set -euo pipefail
           apt-get install -y cmake
           VERSION=$(toml get --raw Cargo.toml workspace.package.version)
-          rustup update
+          rustup toolchain uninstall stable
+          rustup toolchain install stable
 
           mkdir -p "dist/${ARCH}"
 
@@ -374,7 +377,8 @@ jobs:
           set -euo pipefail
           apt-get install -y cmake
           VERSION=$(toml get --raw Cargo.toml workspace.package.version)
-          rustup update
+          rustup toolchain uninstall stable
+          rustup toolchain install stable
 
           mkdir -p "dist/${ARCH}"
 
@@ -494,7 +498,8 @@ jobs:
           set -euo pipefail
           apt-get install -y cmake
           VERSION=$(toml get --raw Cargo.toml workspace.package.version)
-          rustup update
+          rustup toolchain uninstall stable
+          rustup toolchain install stable
 
           mkdir -p "dist/${ARCH}"
 
@@ -598,7 +603,8 @@ jobs:
       - uses: actions/checkout@v4
       - name: Build
         run: |
-          rustup update
+          rustup toolchain uninstall stable
+          rustup toolchain install stable
 
           for distro in jazzy humble; do
           if [ -f "/opt/ros/$distro/setup.bash" ]; then
@@ -643,7 +649,8 @@ jobs:
           TARGET: ${{ matrix.target }}
           ARCH: ${{ matrix.arch }}
         run: |
-          rustup update
+          rustup toolchain uninstall stable
+          rustup toolchain install stable
           rustup target add $TARGET
 
           mkdir -p "dist/${ARCH}"
@@ -716,7 +723,8 @@ jobs:
             exit 1
           fi
 
-          rustup update
+          rustup toolchain uninstall stable
+          rustup toolchain install stable
 
           export PELORUS_CUDA=1
           bash ./scripts/make-deb.bash
@@ -786,7 +794,8 @@ jobs:
             exit 1
           fi
 
-          rustup update
+          rustup toolchain uninstall stable
+          rustup toolchain install stable
 
           export PELORUS_CUDA=1
           bash ./scripts/make-deb.bash
@@ -856,7 +865,8 @@ jobs:
             exit 1
           fi
 
-          rustup update
+          rustup toolchain uninstall stable
+          rustup toolchain install stable
 
           export PELORUS_CUDA=1
           bash ./scripts/make-deb.bash
@@ -928,7 +938,8 @@ jobs:
           VERSION=$(toml get --raw Cargo.toml workspace.package.version)
           VERSION=$VERSION-1
           mkdir -p dist/${ARCH}
-          rustup update
+          rustup toolchain uninstall stable
+          rustup toolchain install stable
 
           # - set name
           updatetoml=glim_integration/pelorus_glim_odometry/Cargo.toml
@@ -1036,7 +1047,8 @@ jobs:
       - uses: actions/checkout@v4
       - name: Build wheels
         run: |
-          rustup update
+          rustup toolchain uninstall stable
+          rustup toolchain install stable
           rustup target add "$TARGET"
 
           # for ring
@@ -1096,7 +1108,8 @@ jobs:
       - uses: actions/checkout@v4
       - name: Build CUDA wheels
         run: |
-          rustup update
+          rustup toolchain uninstall stable
+          rustup toolchain install stable
           maturin build --manifest-path pelorus/Cargo.toml --release --features cuda,rerun,evaluate --target "$TARGET" --skip-auditwheel
           maturin build --manifest-path pelorus_py/Cargo.toml --release --features cuda --target "$TARGET" --skip-auditwheel
       - name: Upload wheels
@@ -1140,7 +1153,8 @@ jobs:
       - uses: actions/checkout@v4
       - name: Build CUDA wheels
         run: |
-          rustup update
+          rustup toolchain uninstall stable
+          rustup toolchain install stable
           maturin build --manifest-path pelorus/Cargo.toml --release --features cuda,rerun,evaluate --target "$TARGET" --skip-auditwheel
           maturin build --manifest-path pelorus_py/Cargo.toml --release --features cuda --target "$TARGET" --skip-auditwheel
       - name: Upload wheels
@@ -1184,7 +1198,8 @@ jobs:
       - uses: actions/checkout@v4
       - name: Build CUDA wheels
         run: |
-          rustup update
+          rustup toolchain uninstall stable
+          rustup toolchain install stable
           maturin build --manifest-path pelorus/Cargo.toml --release --features cuda,rerun,evaluate --target "$TARGET" --skip-auditwheel
           maturin build --manifest-path pelorus_py/Cargo.toml --release --features cuda --target "$TARGET" --skip-auditwheel
       - name: Upload wheels
