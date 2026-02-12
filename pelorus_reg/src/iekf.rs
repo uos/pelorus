@@ -23,7 +23,6 @@ fn mat3_to_faer(m: &nalgebra::Matrix3<f64>) -> Mat<f64> {
 // TODO use config, needs some refactor
 const GRAVITY_DEFAULT: f64 = 9.81;
 
-/// 24-dimensional state following S-FAST_LIO ordering:
 /// - pos (0-2): position in world frame
 /// - rot (3-5): rotation SO3 (world to IMU)
 /// - offset_R_L_I (6-8): lidar-to-IMU rotation extrinsic
@@ -104,7 +103,6 @@ impl InputIKFom {
 }
 
 /// Get the state transition function f(x, u) Matrix (24x1)
-/// Following S-FAST_LIO use-ikfom.hpp get_f() ordering:
 /// - (0-2): vel (position derivative)
 /// - (3-5): omega (rotation derivative)
 /// - (6-8): zeros (offset_R_L_I derivative - not estimated online typically)
@@ -178,7 +176,6 @@ where
 }
 
 /// Get the Jacobian of the state transition function f(x, u) with respect to x.
-/// Following S-FAST_LIO use-ikfom.hpp df_dx() - returns 24x24 matrix
 /// Note: This returns the matrix WITHOUT the identity and dt multiplication
 /// (those are applied in predict())
 pub fn df_dx(s: &StateIKFom, inp: &InputIKFom) -> Mat<f64> {
@@ -220,8 +217,6 @@ pub fn df_dx(s: &StateIKFom, inp: &InputIKFom) -> Mat<f64> {
 }
 
 /// Get the Jacobian of the state transition function f(x, u) with respect to w (noise).
-/// Following S-FAST_LIO use-ikfom.hpp df_dw() - returns 24x12 matrix
-/// Note: This returns the matrix WITHOUT the dt multiplication (applied in predict())
 pub fn df_dw(s: &StateIKFom, _inp: &InputIKFom) -> Mat<f64> {
     let mut cov = Mat::<f64>::zeros(24, 12);
 
@@ -730,6 +725,10 @@ impl Iekf {
             return;
         }
 
+        {
+            let mut eval = eval.write().unwrap();
+            eval.start("ekf_correct/it").unwrap();
+        }
         // Save propagated state and covariance
         let state_propagated = self.state;
         let p_propagated = self.cov.clone();
@@ -739,7 +738,6 @@ impl Iekf {
         let mut converge_count = 0;
         let mut converge_flag = true;
 
-        // Iterate from -1 to max_iter (following S-FAST_LIO convention)
         // -1 iteration is just to compute the first Jacobian
         for iter in 0..=max_iter {
             let mut valid = true;
@@ -747,7 +745,7 @@ impl Iekf {
 
             {
                 let mut eval = eval.write().unwrap();
-                eval.start("ekf_correct/model").unwrap();
+                eval.start("ekf_correct/it/model").unwrap();
             }
 
             model(
@@ -760,7 +758,7 @@ impl Iekf {
             );
 
             let mut eval = eval.write().unwrap();
-            eval.stop("ekf_correct/model").unwrap();
+            eval.stop("ekf_correct/it/model").unwrap();
 
             if !valid || num_measurements == 0 {
                 continue;
@@ -769,7 +767,7 @@ impl Iekf {
             // Use actual number of measurements, not buffer size
             let m = num_measurements;
 
-            eval.start("ekf_correct/info_mat").unwrap();
+            eval.start("ekf_correct/it/info_mat").unwrap();
 
             // dx_new = boxminus(x_, x_propagated) - equation (18): x^k - x^
             let dx_new = box_minus(&self.state, &state_propagated);
@@ -778,7 +776,6 @@ impl Iekf {
             // We only use the first m rows of h_x (the actual measurements)
             // HTH is 24 x 24 but only 12x12 top-left block is non-zero
             let h_full = &self.h_x;
-            // Create a view of only the first m rows
             let h = h_full.subrows(0, m);
             let h_t = h.transpose(); // 12 x m
 
@@ -805,8 +802,8 @@ impl Iekf {
                 }
             }
 
-            eval.stop("ekf_correct/info_mat").unwrap();
-            eval.start("ekf_correct/lhs").unwrap();
+            eval.stop("ekf_correct/it/info_mat").unwrap();
+            eval.start("ekf_correct/it/lhs").unwrap();
 
             // K_front = (HTH / R + P^-1)^-1
             let p_inv = p_propagated.partial_piv_lu().inverse();
@@ -814,7 +811,6 @@ impl Iekf {
             let k_front = lhs.partial_piv_lu().inverse();
 
             // K = K_front[:, 0:12] * H^T / R  (24 x m)
-            // Pre-allocate k if needed
             if self.k.ncols() < m {
                 self.k.reserve(24, m);
             }
@@ -840,8 +836,8 @@ impl Iekf {
                 faer::Par::Seq,
             );
 
-            eval.stop("ekf_correct/lhs").unwrap();
-            eval.start("ekf_correct/gain").unwrap();
+            eval.stop("ekf_correct/it/lhs").unwrap();
+            eval.start("ekf_correct/it/gain").unwrap();
 
             // KH = K * H (24 x m * m x 12 = 24 x 12, but we store as 24 x 24 with zeros)
             let mut kh_12 = Mat::<f64>::zeros(24, 12);
@@ -887,8 +883,8 @@ impl Iekf {
             // dx_ = K * h + (KH - I) * dx_new
             let dx_ = &kh_vec + &kh_i_dx;
 
-            eval.stop("ekf_correct/gain").unwrap();
-            eval.start("ekf_correct/state").unwrap();
+            eval.stop("ekf_correct/it/gain").unwrap();
+            eval.start("ekf_correct/it/state").unwrap();
 
             // Check for NaN
             let mut has_nan = false;
@@ -902,11 +898,11 @@ impl Iekf {
                 warn!("IEKF: NaN detected in iteration {}, aborting.", iter);
                 self.state = state_propagated;
                 self.cov = p_propagated;
-                eval.stop("ekf_correct/state").unwrap();
+                eval.stop("ekf_correct/it/state").unwrap();
+                eval.stop("ekf_correct/it").unwrap();
                 return;
             }
 
-            // x_ = boxplus(x_, dx_)
             self.state = box_plus(&self.state, &dx_);
 
             // Check convergence: if all |dx_[j]| < EPSI, converged
@@ -914,6 +910,7 @@ impl Iekf {
             for j in 0..24 {
                 if dx_[(j, 0)].abs() > measurement_noise_cov {
                     converge_flag = false;
+                    eval.stop("ekf_correct/it/state").unwrap();
                     break;
                 }
             }
@@ -928,17 +925,21 @@ impl Iekf {
                 converge_flag = true;
             }
 
-            eval.stop("ekf_correct/state").unwrap();
+            eval.stop("ekf_correct/it/state").unwrap();
 
             // Exit if converged twice or at max iteration
             if converge_count > 1 || iter == max_iter {
                 break;
             }
         }
+        let mut eval = eval.write().unwrap();
+        eval.stop("ekf_correct/it").unwrap();
 
         // Covariance update: P = (I - KH) * P  (equation 19)
+        eval.start("ekf_correct/cov").unwrap();
         let id24 = Mat::<f64>::identity(24, 24);
         let i_kh = &id24 - &self.k_h;
         self.cov = &i_kh * &p_propagated;
+        eval.stop("ekf_correct/cov").unwrap();
     }
 }

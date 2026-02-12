@@ -1039,6 +1039,9 @@ jobs:
           rustup update
           rustup target add "$TARGET"
 
+          # for ring
+          export CFLAGS_aarch64_unknown_linux_gnu: "-D__ARM_ARCH=8"
+
           if [[ "$TARGET" == *apple-darwin* ]]; then
             export SDKROOT=/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk
             export RUSTFLAGS="-C link-arg=-F${SDKROOT}/System/Library/Frameworks -C link-arg=-L${SDKROOT}/usr/lib -C link-arg=-isysroot -C link-arg=${SDKROOT}"
@@ -1298,7 +1301,7 @@ jobs:
     needs:
       - tarball
     runs-on: ubuntu-dev-noble-arm
-    #if: startsWith(github.ref, 'refs/tags/')
+    if: startsWith(github.ref, 'refs/tags/')
     steps:
       - uses: actions/checkout@v4
 
@@ -1380,6 +1383,7 @@ jobs:
           PPA_DEPLOY_KEY: ${{ secrets.PPA_DEPLOY_KEY }}
         run: |
           set -euo pipefail
+          apt-get update -y && apt-get install -y ssh
 
           # ── Collect .deb files by series ──────────────────────
           mkdir -p staging/noble staging/jammy
