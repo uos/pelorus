@@ -29,6 +29,7 @@ jobs:
       - name: Validate packaging files versions
         run: |
           set -euo pipefail
+          ulimit -n 65536
           apt-get install -y cmake
           VERSION=$(toml get --raw Cargo.toml workspace.package.version)
           echo "Workspace version: $VERSION"
@@ -97,6 +98,7 @@ jobs:
           ARCH: ${{ matrix.arch }}
         run: |
           set -euo pipefail
+          ulimit -n 65536
           apt-get install -y cmake
           VERSION=$(toml get --raw Cargo.toml workspace.package.version)
           VERSION=$VERSION-1
@@ -198,7 +200,7 @@ jobs:
           rustup toolchain uninstall stable
           rustup toolchain install stable
           rustup target add $TARGET
-
+          ulimit -n 65536
           mkdir -p "dist/${ARCH}"
 
           export RUSTFLAGS="-C link-arg=-F${SDKROOT}/System/Library/Frameworks -C link-arg=-L${SDKROOT}/usr/lib -C link-arg=-isysroot -C link-arg=${SDKROOT}"
@@ -254,6 +256,7 @@ jobs:
           ARCH: ${{ matrix.arch }}
         run: |
           set -euo pipefail
+          ulimit -n 65536
           apt-get install -y cmake
           VERSION=$(toml get --raw Cargo.toml workspace.package.version)
           rustup toolchain uninstall stable
@@ -375,6 +378,7 @@ jobs:
           ARCH: ${{ matrix.arch }}
         run: |
           set -euo pipefail
+          ulimit -n 65536
           apt-get install -y cmake
           VERSION=$(toml get --raw Cargo.toml workspace.package.version)
           rustup toolchain uninstall stable
@@ -496,6 +500,7 @@ jobs:
           ARCH: ${{ matrix.arch }}
         run: |
           set -euo pipefail
+          ulimit -n 65536
           apt-get install -y cmake
           VERSION=$(toml get --raw Cargo.toml workspace.package.version)
           rustup toolchain uninstall stable
@@ -603,6 +608,7 @@ jobs:
       - uses: actions/checkout@v4
       - name: Build
         run: |
+          ulimit -n 65536
           rustup toolchain uninstall stable
           rustup toolchain install stable
 
@@ -649,6 +655,7 @@ jobs:
           TARGET: ${{ matrix.target }}
           ARCH: ${{ matrix.arch }}
         run: |
+          ulimit -n 65536
           rustup toolchain uninstall stable
           rustup toolchain install stable
           rustup target add $TARGET
@@ -710,6 +717,7 @@ jobs:
       - uses: actions/checkout@v4
       - name: Build
         run: |
+          ulimit -n 65536
           for distro in jazzy humble; do
           if [ -f "/opt/ros/$distro/setup.bash" ]; then
             echo "Sourcing ROS distro: $distro"
@@ -781,6 +789,7 @@ jobs:
       - uses: actions/checkout@v4
       - name: Build
         run: |
+          ulimit -n 65536
           for distro in jazzy humble; do
           if [ -f "/opt/ros/$distro/setup.bash" ]; then
             echo "Sourcing ROS distro: $distro"
@@ -852,6 +861,7 @@ jobs:
       - uses: actions/checkout@v4
       - name: Build
         run: |
+          ulimit -n 65536
           for distro in jazzy humble; do
           if [ -f "/opt/ros/$distro/setup.bash" ]; then
             echo "Sourcing ROS distro: $distro"
@@ -935,6 +945,7 @@ jobs:
           dpkg -i "./deb-artifacts/$ARCH/libpelorus-dev_${VERSION}_${ARCH}.deb"
       - name: Build
         run: |
+          ulimit -n 65536
           VERSION=$(toml get --raw Cargo.toml workspace.package.version)
           VERSION=$VERSION-1
           mkdir -p dist/${ARCH}
@@ -1047,6 +1058,7 @@ jobs:
       - uses: actions/checkout@v4
       - name: Build wheels
         run: |
+          ulimit -n 65536
           rustup toolchain uninstall stable
           rustup toolchain install stable
           rustup target add "$TARGET"
@@ -1108,6 +1120,7 @@ jobs:
       - uses: actions/checkout@v4
       - name: Build CUDA wheels
         run: |
+          ulimit -n 65536
           rustup toolchain uninstall stable
           rustup toolchain install stable
           maturin build --manifest-path pelorus/Cargo.toml --release --features cuda,rerun,evaluate --target "$TARGET" --skip-auditwheel
@@ -1153,6 +1166,7 @@ jobs:
       - uses: actions/checkout@v4
       - name: Build CUDA wheels
         run: |
+          ulimit -n 65536
           rustup toolchain uninstall stable
           rustup toolchain install stable
           maturin build --manifest-path pelorus/Cargo.toml --release --features cuda,rerun,evaluate --target "$TARGET" --skip-auditwheel
@@ -1198,6 +1212,7 @@ jobs:
       - uses: actions/checkout@v4
       - name: Build CUDA wheels
         run: |
+          ulimit -n 65536
           rustup toolchain uninstall stable
           rustup toolchain install stable
           maturin build --manifest-path pelorus/Cargo.toml --release --features cuda,rerun,evaluate --target "$TARGET" --skip-auditwheel
