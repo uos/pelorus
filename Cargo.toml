@@ -89,7 +89,7 @@ petname = "2.0"
 clap_complete = "4.5.65"
 
 [profile.release]
-lto = "fat"         # Link Time Optimization
+lto = "thin"         # Link Time Optimization
 codegen-units = 1   # Slower compile times but compiler sees all generated code and can optimize over everything across modules. Also decreases binary size.
 strip = "symbols"   # Significantly reduce binary size
 opt-level = 3
