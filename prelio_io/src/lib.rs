@@ -1063,7 +1063,7 @@ impl PrelioNode {
             };
 
             if let Err(_) = sender.send(res) {
-                error!("Closing transform thread.");
+                warn!("Closing transform thread.");
                 return;
             }
         }
