@@ -134,7 +134,7 @@ impl CudaBuffer {
                 dst.as_mut_ptr() as *mut ::std::os::raw::c_void,
                 self.gpu_ptr,
                 self.element_size as u32,
-                self.n as u32,
+                dst.len() as u32,
             )
         }
     }
