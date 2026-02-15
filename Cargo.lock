@@ -4326,9 +4326,8 @@ checksum = "96a1fe2275b68991faded2c80aa4a33dba398b77d276038b8f50701a22e55918"
 
 [[package]]
 name = "mt_net"
-version = "0.5.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0b8fdc7f061f3546319cb209a1962e67f709c13a0d510e6b8cd4d05b5c64251e"
+version = "0.5.1"
+source = "git+https://codeberg.org/stelzo/minot#21c737b333547a12b73d57b8c7b86fc1a5bcf356"
 dependencies = [
  "anyhow",
  "rkyv",
@@ -4338,9 +4337,8 @@ dependencies = [
 
 [[package]]
 name = "mt_rat"
-version = "0.5.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0ae3be8722d2fd7c56d883eb82e001805a7abf69ca043ddd3d06eb716f0df31a"
+version = "0.5.1"
+source = "git+https://codeberg.org/stelzo/minot#21c737b333547a12b73d57b8c7b86fc1a5bcf356"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -4355,9 +4353,8 @@ dependencies = [
 
 [[package]]
 name = "mt_sea"
-version = "0.5.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e60b02069768428f194b88d098e6ad3b0153d92ee7ed0219c535817127279e78"
+version = "0.5.1"
+source = "git+https://codeberg.org/stelzo/minot#21c737b333547a12b73d57b8c7b86fc1a5bcf356"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -6152,9 +6149,8 @@ dependencies = [
 
 [[package]]
 name = "ratpub"
-version = "0.5.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9ee299a97056f092cf83f7f9fa3f9ab4bb37bcd3161fd72c0b8b0d027625a6eb"
+version = "0.5.1"
+source = "git+https://codeberg.org/stelzo/minot#21c737b333547a12b73d57b8c7b86fc1a5bcf356"
 dependencies = [
  "anyhow",
  "async-trait",

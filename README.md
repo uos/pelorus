@@ -58,7 +58,7 @@ ros2 run pelorus pelorus config generate recommended > pelorus.rl
 ros2 run pelorus pelorus config verify pelorus.rl
 
 # run Pelorus with the config file
-ros2 run pelorus pelorus run online -c pelorus.rl
+ros2 run pelorus pelorus online -c pelorus.rl
 ```
 
 ## Configuration

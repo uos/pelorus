@@ -21,7 +21,7 @@ CudaContext::CudaContext(int device_id) {
   }
 
   cudaDeviceProp info = cuda::getDeviceInfo(device_id);
-  std::cout << "[Pelorus - CudaContext] Construct context on device "
+  std::cerr << "[Pelorus - CudaContext] Construct context on device "
             << device_id << " - " << info.name << " " << info.luid << std::endl;
 
 #if CUDA_VERSION >= 13000

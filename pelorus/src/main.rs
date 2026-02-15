@@ -30,7 +30,7 @@ static GLOBAL: MiMalloc = MiMalloc;
 use clap::{Parser, Subcommand};
 #[allow(unused_imports)]
 use futures_lite::future;
-use log::{error, info, warn};
+use log::{debug, error, info, trace, warn};
 use nalgebra::{Isometry3, Translation3, UnitQuaternion};
 #[cfg(feature = "r2r")]
 #[allow(unused_imports)]
@@ -108,9 +108,12 @@ struct Args {
 #[derive(Debug, Clone, Subcommand)]
 #[command()]
 pub enum Command {
-    /// Run the odometry process
-    #[command(subcommand)]
-    Run(RunArgs),
+    /// Spawn the server process and wait for input (online mode)
+    Online(ConfigArgs),
+
+    /// Use a Bagfile directly and run synchronously
+    #[cfg(feature = "rat")]
+    Offline(OfflineArgs),
 
     /// Create or validate configuration files
     #[command(subcommand)]
@@ -127,16 +130,6 @@ pub enum Command {
         #[arg(value_enum)]
         shell: Shell,
     },
-}
-
-#[derive(Debug, Clone, Parser)]
-#[command()]
-pub enum RunArgs {
-    /// Spawn the server process and wait for input
-    Online(ConfigArgs),
-    /// Use a Bagfile directly and run synchronously
-    #[cfg(feature = "rat")]
-    Offline(OfflineArgs),
 }
 
 #[derive(Debug, Clone, Parser)]
@@ -1454,6 +1447,22 @@ fn lio_with_ready_signal(
     }
 }
 
+fn log_minot_line(line: &str) {
+    if let Some(rest) = line.strip_prefix("[ERROR] ") {
+        error!("[Minot] {}", rest.trim());
+    } else if let Some(rest) = line.strip_prefix("[WARN] ") {
+        warn!("[Minot] {}", rest.trim());
+    } else if let Some(rest) = line.strip_prefix("[DEBUG] ") {
+        debug!("[Minot] {}", rest.trim());
+    } else if let Some(rest) = line.strip_prefix("[TRACE] ") {
+        trace!("[Minot] {}", rest.trim());
+    } else if let Some(rest) = line.strip_prefix("[INFO] ") {
+        info!("[Minot] {}", rest.trim());
+    } else {
+        info!("[Minot] {}", line);
+    }
+}
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Initialize our custom logger that works with both TUI and console
     init_logger();
@@ -1469,181 +1478,180 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             generate(shell, &mut cmd, bin_name, &mut std::io::stdout());
             Ok(())
         }
-        Command::Run(args) => {
-            match args {
-                RunArgs::Online(config_args) => {
-                    let default_ast = ratslang::compile_code(DEFAULT_CONFIG_STR)
-                        .map_err(|e| anyhow!("Failed to compile embedded default config: {}", e))?;
+        /* `run` wrapper removed; `online`/`offline` are top-level commands */
+        Command::Online(config_args) => {
+            let default_ast = ratslang::compile_code(DEFAULT_CONFIG_STR)
+                .map_err(|e| anyhow!("Failed to compile embedded default config: {}", e))?;
 
-                    let user_ast = if let Some(config_path) = config_args.config_path {
-                        let path = std::path::Path::new(&config_path);
-                        if !path.exists() {
-                            return Err(anyhow!(
-                                "Error: Configuration file not found at '{}'",
-                                config_path.to_string_lossy()
-                            )
-                            .into());
-                        }
-                        ratslang::compile_file(&path.to_path_buf(), None, None).map_err(|e| {
-                            anyhow!(
-                                "Failed to compile user config '{}': {}",
-                                config_path.to_string_lossy(),
-                                e
-                            )
-                        })?
-                    } else {
-                        ratslang::compile_code("")?
-                    };
-
-                    let config = ast_to_config(default_ast, user_ast)?;
-
-                    // Update log level after config has set RUST_LOG
-                    update_log_level();
-
-                    let mut show_tui = config.show_tui;
-
-                    if show_tui && !std::io::stdout().is_terminal() {
-                        warn!("TUI requested but stdout is not a terminal. Disabling TUI.");
-                        show_tui = false;
-                    }
-
-                    if show_tui {
-                        let shared_stats = std::sync::Arc::new(SharedStats::new());
-                        shared_stats.set_mode("Online");
-                        let stats_for_tui = shared_stats.clone();
-
-                        shared_stats.set_target_lidar_rate(10.0); // will be updated when first scan arrives
-
-                        let (tui_stop_tx, tui_stop_rx) = std::sync::mpsc::channel();
-                        let (shutdown_tx, shutdown_rx) = std::sync::mpsc::channel();
-
-                        let tui_thread = std::thread::spawn(move || {
-                            let mut tui = StatsTui::new(stats_for_tui)
-                                .with_stop_receiver(tui_stop_rx)
-                                .with_shutdown_sender(shutdown_tx);
-                            let _ = tui.run();
-                        });
-                        let lio_config = config.clone();
-                        let lio_export = config_args.export_trajectory;
-                        let lio_sync = config_args.rat;
-                        let lio_stats = Some(shared_stats);
-
-                        let lio_shutdown_flag =
-                            std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-                        let lio_shutdown_flag_for_thread = lio_shutdown_flag.clone();
-
-                        let lio_handle = std::thread::spawn(move || -> Result<(), String> {
-                            lio_with_ready_signal(
-                                lio_config,
-                                None,
-                                lio_export,
-                                lio_sync,
-                                lio_stats,
-                                Some(lio_shutdown_flag_for_thread),
-                            )
-                            .map_err(|e| e.to_string())
-                        });
-
-                        // Wait for either TUI shutdown or LIO completion
-                        loop {
-                            if shutdown_rx.try_recv().is_ok() {
-                                // TUI requested shutdown -> request LIO to stop
-                                lio_shutdown_flag.store(true, std::sync::atomic::Ordering::SeqCst);
-                                info!("received shutdown from TUI");
-                                break;
-                            }
-                            if lio_handle.is_finished() {
-                                // LIO terminated -> request TUI to stop
-                                let _ = tui_stop_tx.send(());
-                                info!("lio finished, stopping tui");
-                                break;
-                            }
-                            std::thread::sleep(std::time::Duration::from_millis(100));
-                        }
-
-                        // Ensure both threads are asked to stop
-                        let _ = tui_stop_tx.send(());
-                        lio_shutdown_flag.store(true, std::sync::atomic::Ordering::SeqCst);
-
-                        // Join TUI thread first (should be quick)
-                        let tui_join_result = tui_thread.join();
-                        if tui_join_result.is_err() {
-                            warn!("TUI thread panicked");
-                        }
-
-                        // Get LIO result
-                        match lio_handle.join() {
-                            Ok(Ok(())) => Ok(()),
-                            Ok(Err(e)) => Err(anyhow!("{}", e).into()),
-                            Err(_) => Err(anyhow!("LIO thread panicked").into()),
-                        }
-                    } else {
-                        lio(config, config_args.export_trajectory, config_args.rat)
-                    }
+            let user_ast = if let Some(config_path) = config_args.config_path {
+                let path = std::path::Path::new(&config_path);
+                if !path.exists() {
+                    return Err(anyhow!(
+                        "Error: Configuration file not found at '{}'",
+                        config_path.to_string_lossy()
+                    )
+                    .into());
                 }
-                #[cfg(feature = "rat")]
-                RunArgs::Offline(offline_args) => {
-                    let shared_stats = std::sync::Arc::new(SharedStats::new());
-                    shared_stats.set_mode("Offline");
-                    let stats_for_tui = shared_stats.clone();
-                    // Set default target rate, will be updated by measured rate
-                    shared_stats.set_target_lidar_rate(10.0);
+                ratslang::compile_file(&path.to_path_buf(), None, None).map_err(|e| {
+                    anyhow!(
+                        "Failed to compile user config '{}': {}",
+                        config_path.to_string_lossy(),
+                        e
+                    )
+                })?
+            } else {
+                ratslang::compile_code("")?
+            };
 
-                    let default_ast = ratslang::compile_code(DEFAULT_CONFIG_STR)
-                        .map_err(|e| anyhow!("Failed to compile embedded default config: {}", e))?;
+            let config = ast_to_config(default_ast, user_ast)?;
 
-                    let user_ast = if let Some(config_path) = offline_args.config_path {
-                        let path = std::path::Path::new(&config_path);
-                        if !path.exists() {
-                            return Err(anyhow!(
-                                "Error: Configuration file not found at '{}'",
-                                config_path.to_string_lossy()
-                            )
-                            .into());
-                        }
-                        ratslang::compile_file(&path.to_path_buf(), None, None).map_err(|e| {
-                            anyhow!(
-                                "Failed to compile user config '{}': {}",
-                                config_path.to_string_lossy(),
-                                e
-                            )
-                        })?
-                    } else {
-                        ratslang::compile_code("")?
-                    };
+            // Update log level after config has set RUST_LOG
+            update_log_level();
 
-                    let config = {
-                        let mut config = ast_to_config(default_ast, user_ast)?;
-                        config.show_tui = true;
-                        config
-                    };
+            let mut show_tui = config.show_tui;
 
-                    let show_tui = config.show_tui && std::io::stdout().is_terminal();
-                    if !show_tui && config.show_tui {
-                        warn!(
-                            "TUI requested for offline mode but stdout is not a terminal. Continuing without visualization."
-                        );
+            if show_tui && !std::io::stdout().is_terminal() {
+                warn!("TUI requested but stdout is not a terminal. Disabling TUI.");
+                show_tui = false;
+            }
+
+            if show_tui {
+                let shared_stats = std::sync::Arc::new(SharedStats::new());
+                shared_stats.set_mode("Online");
+                let stats_for_tui = shared_stats.clone();
+
+                shared_stats.set_target_lidar_rate(10.0); // will be updated when first scan arrives
+
+                let (tui_stop_tx, tui_stop_rx) = std::sync::mpsc::channel();
+                let (shutdown_tx, shutdown_rx) = std::sync::mpsc::channel();
+
+                let tui_thread = std::thread::spawn(move || {
+                    let mut tui = StatsTui::new(stats_for_tui)
+                        .with_stop_receiver(tui_stop_rx)
+                        .with_shutdown_sender(shutdown_tx);
+                    let _ = tui.run();
+                });
+                let lio_config = config.clone();
+                let lio_export = config_args.export_trajectory;
+                let lio_sync = config_args.rat;
+                let lio_stats = Some(shared_stats);
+
+                let lio_shutdown_flag =
+                    std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+                let lio_shutdown_flag_for_thread = lio_shutdown_flag.clone();
+
+                let lio_handle = std::thread::spawn(move || -> Result<(), String> {
+                    lio_with_ready_signal(
+                        lio_config,
+                        None,
+                        lio_export,
+                        lio_sync,
+                        lio_stats,
+                        Some(lio_shutdown_flag_for_thread),
+                    )
+                    .map_err(|e| e.to_string())
+                });
+
+                // Wait for either TUI shutdown or LIO completion
+                loop {
+                    if shutdown_rx.try_recv().is_ok() {
+                        // TUI requested shutdown -> request LIO to stop
+                        lio_shutdown_flag.store(true, std::sync::atomic::Ordering::SeqCst);
+                        info!("received shutdown from TUI");
+                        break;
                     }
+                    if lio_handle.is_finished() {
+                        // LIO terminated -> request TUI to stop
+                        let _ = tui_stop_tx.send(());
+                        info!("lio finished, stopping tui");
+                        break;
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(100));
+                }
 
-                    // Update log level after config has set RUST_LOG
-                    update_log_level();
+                // Ensure both threads are asked to stop
+                let _ = tui_stop_tx.send(());
+                lio_shutdown_flag.store(true, std::sync::atomic::Ordering::SeqCst);
 
-                    let lidar_topic = &config.prelio_node_params.cloud_src_topic;
-                    let imu_topic = &config.prelio_node_params.imu_src_topic;
-                    let imu_init_time_ms =
-                        (config.prelio_node_params.imu_predictor_init_time_sec * 1000.0) as u64;
-                    let scan_init_samples = config.prelio_params.initial_scan_accumulate;
-                    let bagfile_path_canon = offline_args.bagfile_path.canonicalize().unwrap();
-                    let bagfile_path = bagfile_path_canon.clone().to_string_lossy().to_string();
-                    shared_stats.set_bagfile(
-                        bagfile_path_canon
-                            .file_name()
-                            .unwrap_or_default()
-                            .to_string_lossy(),
-                    );
+                // Join TUI thread first (should be quick)
+                let tui_join_result = tui_thread.join();
+                if tui_join_result.is_err() {
+                    warn!("TUI thread panicked");
+                }
 
-                    let mt_content = format!(
-                        r#"
+                // Get LIO result
+                match lio_handle.join() {
+                    Ok(Ok(())) => Ok(()),
+                    Ok(Err(e)) => Err(anyhow!("{}", e).into()),
+                    Err(_) => Err(anyhow!("LIO thread panicked").into()),
+                }
+            } else {
+                lio(config, config_args.export_trajectory, config_args.rat)
+            }
+        }
+        #[cfg(feature = "rat")]
+        Command::Offline(offline_args) => {
+            let shared_stats = std::sync::Arc::new(SharedStats::new());
+            shared_stats.set_mode("Offline");
+            let stats_for_tui = shared_stats.clone();
+            // Set default target rate, will be updated by measured rate
+            shared_stats.set_target_lidar_rate(10.0);
+
+            let default_ast = ratslang::compile_code(DEFAULT_CONFIG_STR)
+                .map_err(|e| anyhow!("Failed to compile embedded default config: {}", e))?;
+
+            let user_ast = if let Some(config_path) = offline_args.config_path {
+                let path = std::path::Path::new(&config_path);
+                if !path.exists() {
+                    return Err(anyhow!(
+                        "Error: Configuration file not found at '{}'",
+                        config_path.to_string_lossy()
+                    )
+                    .into());
+                }
+                ratslang::compile_file(&path.to_path_buf(), None, None).map_err(|e| {
+                    anyhow!(
+                        "Failed to compile user config '{}': {}",
+                        config_path.to_string_lossy(),
+                        e
+                    )
+                })?
+            } else {
+                ratslang::compile_code("")?
+            };
+
+            let config = {
+                let mut config = ast_to_config(default_ast, user_ast)?;
+                config.show_tui = true;
+                config
+            };
+
+            let show_tui = config.show_tui && std::io::stdout().is_terminal();
+            if !show_tui && config.show_tui {
+                warn!(
+                    "TUI requested for offline mode but stdout is not a terminal. Continuing without visualization."
+                );
+            }
+
+            // Update log level after config has set RUST_LOG
+            update_log_level();
+
+            let lidar_topic = &config.prelio_node_params.cloud_src_topic;
+            let imu_topic = &config.prelio_node_params.imu_src_topic;
+            let imu_init_time_ms =
+                (config.prelio_node_params.imu_predictor_init_time_sec * 1000.0) as u64;
+            let scan_init_samples = config.prelio_params.initial_scan_accumulate;
+            let bagfile_path_canon = offline_args.bagfile_path.canonicalize().unwrap();
+            let bagfile_path = bagfile_path_canon.clone().to_string_lossy().to_string();
+            shared_stats.set_bagfile(
+                bagfile_path_canon
+                    .file_name()
+                    .unwrap_or_default()
+                    .to_string_lossy(),
+            );
+
+            let mt_content = format!(
+                r#"
 _bag.{{
   cloud.{{
     _topic = "{lidar_topic}"
@@ -1678,261 +1686,266 @@ pf! [i, l], l 1
 pf! l 1
 pf! i 1
 "#
-                    );
+            );
 
-                    // Start TUI immediately so we can see what's happening
-                    let (tui_stop_tx, tui_stop_rx) = std::sync::mpsc::channel();
-                    let (shutdown_tx, shutdown_rx) = std::sync::mpsc::channel();
+            // Start TUI immediately so we can see what's happening
+            let (tui_stop_tx, tui_stop_rx) = std::sync::mpsc::channel();
+            let (shutdown_tx, shutdown_rx) = std::sync::mpsc::channel();
 
-                    let tui_thread = if show_tui {
-                        Some(std::thread::spawn(move || {
-                            let mut tui = StatsTui::new(stats_for_tui)
-                                .with_stop_receiver(tui_stop_rx)
-                                .with_shutdown_sender(shutdown_tx);
-                            let _ = tui.run();
-                        }))
-                    } else {
-                        None
-                    };
+            let tui_thread = if show_tui {
+                Some(std::thread::spawn(move || {
+                    let mut tui = StatsTui::new(stats_for_tui)
+                        .with_stop_receiver(tui_stop_rx)
+                        .with_shutdown_sender(shutdown_tx);
+                    let _ = tui.run();
+                }))
+            } else {
+                None
+            };
 
-                    // Define the main logic as a closure/block to easily handle errors and cleanup
-                    let run_offline_logic = || -> anyhow::Result<()> {
-                        let mt_file_path = std::env::temp_dir().join("pelorus_offline.mt");
-                        fs::write(&mt_file_path, mt_content)
-                            .map_err(|e| anyhow!("Failed to write .mt file: {}", e))?;
+            // Define the main logic as a closure/block to easily handle errors and cleanup
+            let run_offline_logic = || -> anyhow::Result<()> {
+                let mt_file_path = std::env::temp_dir().join("pelorus_offline.mt");
+                fs::write(&mt_file_path, mt_content)
+                    .map_err(|e| anyhow!("Failed to write .mt file: {}", e))?;
 
-                        info!("Generated .mt file at: {:?}", mt_file_path);
+                info!("Generated .mt file at: {:?}", mt_file_path);
 
-                        // Spawn minot in headless mode with --sync
-                        let mut minot_child = ProcessCommand::new(&offline_args.minot_path)
-                            .arg("headless")
-                            .arg(&mt_file_path)
-                            .arg("--sync")
-                            .stdin(Stdio::piped())
-                            .stdout(Stdio::piped())
-                            .stderr(Stdio::piped())
-                            .spawn()
-                            .map_err(|e| anyhow!("Failed to spawn minot: {}", e))?;
+                // Spawn minot in headless mode with --sync
+                let mut minot_child = ProcessCommand::new(&offline_args.minot_path)
+                    .arg("headless")
+                    .arg(&mt_file_path)
+                    .arg("--sync")
+                    .stdin(Stdio::piped())
+                    .stdout(Stdio::piped())
+                    .stderr(Stdio::piped())
+                    .spawn()
+                    .map_err(|e| anyhow!("Failed to spawn minot: {}", e))?;
 
-                        info!("Spawned minot process with PID: {}", minot_child.id());
+                info!("Spawned minot process with PID: {}", minot_child.id());
 
-                        let mut minot_stdin = minot_child
-                            .stdin
-                            .take()
-                            .ok_or_else(|| anyhow!("Failed to open minot stdin"))?;
-                        let minot_stdout = minot_child
-                            .stdout
-                            .take()
-                            .ok_or_else(|| anyhow!("Failed to open minot stdout"))?;
-                        let minot_stderr = minot_child
-                            .stderr
-                            .take()
-                            .ok_or_else(|| anyhow!("Failed to open minot stderr"))?;
+                let mut minot_stdin = minot_child
+                    .stdin
+                    .take()
+                    .ok_or_else(|| anyhow!("Failed to open minot stdin"))?;
+                let minot_stdout = minot_child
+                    .stdout
+                    .take()
+                    .ok_or_else(|| anyhow!("Failed to open minot stdout"))?;
+                let minot_stderr = minot_child
+                    .stderr
+                    .take()
+                    .ok_or_else(|| anyhow!("Failed to open minot stderr"))?;
 
-                        info!("Waiting for minot to be ready...");
-                        use std::io::{BufRead, BufReader};
+                info!("Waiting for minot to be ready...");
+                use std::io::{BufRead, BufReader};
 
-                        let (ready_tx, ready_rx) = std::sync::mpsc::channel();
-                        let (exit_tx, exit_rx) = std::sync::mpsc::channel();
+                let (ready_tx, ready_rx) = std::sync::mpsc::channel();
+                let (exit_tx, exit_rx) = std::sync::mpsc::channel();
 
-                        // Thread for stdout
-                        let exit_tx_clone = exit_tx.clone();
-                        let ready_tx_clone = ready_tx.clone();
-                        std::thread::spawn(move || {
-                            let reader = BufReader::new(minot_stdout);
-                            for line in reader.lines() {
-                                match line {
-                                    Ok(line) => {
-                                        info!("[Minot] {}", line);
+                // Thread for stdout
+                let exit_tx_clone = exit_tx.clone();
+                let ready_tx_clone = ready_tx.clone();
+                std::thread::spawn(move || {
+                    let reader = BufReader::new(minot_stdout);
+                    for line in reader.lines() {
+                        match line {
+                            Ok(line) => {
+                                let trimmed = line.trim();
+                                if !trimmed.is_empty() {
+                                    log_minot_line(trimmed);
+                                }
 
-                                        // detect end of bagfile
-                                        if line.to_lowercase().contains("end of bagfile") {
-                                            let _ = exit_tx_clone.send(());
-                                        }
-                                        if line.contains("--sync")
-                                            || line.to_lowercase().contains("waiting for input")
-                                            || line.to_lowercase().contains("press enter")
-                                            || line.to_lowercase().contains("stdin")
-                                        {
-                                            let _ = ready_tx_clone.send(true);
-                                        }
-                                    }
-                                    Err(e) => {
-                                        error!("[Minot] Error reading stdout: {}", e);
-                                        break;
-                                    }
+                                // detect end of bagfile; TODO unsure if this should really quit the program
+                                if line.to_lowercase().contains("end of bagfile") {
+                                    let _ = exit_tx_clone.send(());
+                                }
+                                if line.contains("--sync")
+                                    || line.to_lowercase().contains("waiting for input")
+                                    || line.to_lowercase().contains("press enter")
+                                    || line.to_lowercase().contains("stdin")
+                                {
+                                    let _ = ready_tx_clone.send(true);
                                 }
                             }
-                        });
-
-                        // Thread for stderr
-                        std::thread::spawn(move || {
-                            let reader = BufReader::new(minot_stderr);
-                            for line in reader.lines() {
-                                match line {
-                                    Ok(line) => {
-                                        if line.to_lowercase().contains("error") {
-                                            error!("[Minot] {}", line);
-                                        } else {
-                                            info!("[Minot] {}", line);
-                                        }
-
-                                        // detect readiness on stderr
-                                        if line.contains(
-                                        "Waiting for input on stdin before execution (--sync mode)",
-                                    ) || line.to_lowercase().contains("waiting for input")
-                                        || line.to_lowercase().contains("press enter")
-                                        || line.to_lowercase().contains("stdin")
-                                    {
-                                        let _ = ready_tx.send(true);
-                                    }
-                                    }
-                                    Err(e) => {
-                                        error!("[Minot] Error reading stderr: {}", e);
-                                        break;
-                                    }
-                                }
-                            }
-                        });
-
-                        let got_ready = ready_rx
-                            .recv_timeout(std::time::Duration::from_secs(30))
-                            .is_ok();
-                        if !got_ready {
-                            info!("Did not receive explicit Minot ready; proceeding as fallback");
-                        }
-
-                        info!("Minot is ready, starting pelorus offline processing...");
-
-                        let (pelorus_ready_tx, pelorus_ready_rx) = std::sync::mpsc::channel();
-
-                        // start Odometry in thread
-                        // Provide an atomic shutdown flag so we can request LIO to shutdown from main/TUI
-                        let lio_shutdown_flag =
-                            std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-                        let lio_shutdown_flag_for_thread = lio_shutdown_flag.clone();
-                        let shared_stats_for_lio = shared_stats.clone();
-
-                        let lio_handle = std::thread::spawn(move || {
-                            if let Err(e) = lio_with_ready_signal(
-                                config,
-                                Some(pelorus_ready_tx),
-                                offline_args.export_trajectory,
-                                true,
-                                Some(shared_stats_for_lio),
-                                Some(lio_shutdown_flag_for_thread),
-                            ) {
-                                error!("Odometry failed: {}", e);
-                                return Err(format!("Odometry failed: {}", e));
-                            }
-                            Ok(())
-                        });
-
-                        info!("Waiting for pelorus to initialize...");
-                        match pelorus_ready_rx.recv_timeout(std::time::Duration::from_secs(5)) {
-                            Ok(_) => info!("Pelorus is ready!"),
-                            Err(_) => info!(
-                                "Pelorus ready not received in 5s; proceeding to trigger minot anyway"
-                            ),
-                        }
-                        info!("Triggering minot to start processing...");
-
-                        // Check if process is still alive before writing
-                        if let Ok(Some(status)) = minot_child.try_wait() {
-                            error!("Minot process has already exited with status: {}", status);
-                            return Err(anyhow!("Minot exited prematurely: {}", status));
-                        }
-
-                        use std::io::Write;
-                        minot_stdin
-                            .write_all(b"\n")
-                            .map_err(|e| anyhow!("Failed to write to minot stdin: {}", e))?;
-                        minot_stdin
-                            .flush()
-                            .map_err(|e| anyhow!("Failed to flush minot stdin: {}", e))?;
-
-                        /*
-                        // TUI is already running from the start of the block
-                        let (tui_stop_tx, tui_stop_rx) = std::sync::mpsc::channel();
-                        let (shutdown_tx, shutdown_rx) = std::sync::mpsc::channel();
-
-                        let tui_thread = std::thread::spawn(move || {
-                            let mut tui = StatsTui::new(
-                                stats_for_tui,
-                            )
-                            .with_stop_receiver(tui_stop_rx)
-                            .with_shutdown_sender(shutdown_tx);
-                            let _ = tui.run();
-                        });
-                        */
-
-                        // wait loop - check for various exit conditions
-                        loop {
-                            if exit_rx.try_recv().is_ok() {
-                                // minot finished -> request stop
-                                lio_shutdown_flag.store(true, std::sync::atomic::Ordering::SeqCst);
-                                info!("minot finished, stopping TUI and LIO");
+                            Err(e) => {
+                                error!("[Minot] Error reading stdout: {}", e);
                                 break;
                             }
-                            if lio_handle.is_finished() {
-                                log::info!("LIO finished, stopping TUI");
-                                break;
-                            }
-                            if shutdown_rx.try_recv().is_ok() {
-                                // TUI requested shutdown -> request LIO to stop
-                                lio_shutdown_flag.store(true, std::sync::atomic::Ordering::SeqCst);
-                                info!("TUI requested shutdown, stopping LIO");
-                                break;
-                            }
-                            std::thread::sleep(std::time::Duration::from_millis(100));
-                        }
-
-                        // Cleanup
-                        lio_shutdown_flag.store(true, std::sync::atomic::Ordering::SeqCst);
-
-                        // Join LIO thread with timeout
-                        let join_start = std::time::Instant::now();
-                        let join_timeout = std::time::Duration::from_secs(3);
-                        loop {
-                            if lio_handle.is_finished() {
-                                match lio_handle.join() {
-                                    Ok(Ok(())) => info!("LIO thread joined successfully"),
-                                    Ok(Err(e)) => warn!("LIO thread exited with error: {}", e),
-                                    Err(_) => warn!("LIO thread panicked"),
-                                }
-                                break;
-                            }
-                            if join_start.elapsed() > join_timeout {
-                                warn!("LIO thread did not exit within timeout");
-                                break;
-                            }
-                            std::thread::sleep(std::time::Duration::from_millis(100));
-                        }
-
-                        // Kill minot just in case
-                        let _ = minot_child.kill();
-
-                        Ok(())
-                    };
-
-                    match run_offline_logic() {
-                        Ok(_) => {
-                            let _ = tui_stop_tx.send(());
-                            if let Some(handle) = tui_thread {
-                                let _ = handle.join();
-                            }
-                            Ok(())
-                        }
-                        Err(e) => {
-                            error!("Offline run failed: {}", e);
-                            std::thread::sleep(std::time::Duration::from_secs(2)); // Give time for user to read error
-                            let _ = tui_stop_tx.send(());
-                            if let Some(handle) = tui_thread {
-                                let _ = handle.join();
-                            }
-                            Err(e.into())
                         }
                     }
+                });
+
+                // Thread for stderr
+                std::thread::spawn(move || {
+                    let reader = BufReader::new(minot_stderr);
+                    for line in reader.lines() {
+                        match line {
+                            Ok(line) => {
+                                let trimmed = line.trim();
+                                if !trimmed.is_empty() {
+                                    log_minot_line(trimmed);
+                                }
+
+                                // detect end of bagfile on stderr (runner logs go here)
+                                if line.to_lowercase().contains("end of bagfile") {
+                                    let _ = exit_tx.send(());
+                                }
+
+                                // detect readiness on stderr
+                                if line.contains(
+                                    "Waiting for input on stdin before execution (--sync mode)",
+                                ) || line.to_lowercase().contains("waiting for input")
+                                    || line.to_lowercase().contains("press enter")
+                                    || line.to_lowercase().contains("stdin")
+                                {
+                                    let _ = ready_tx.send(true);
+                                }
+                            }
+                            Err(e) => {
+                                error!("[Minot] Error reading stderr: {}", e);
+                                break;
+                            }
+                        }
+                    }
+                });
+
+                let got_ready = ready_rx
+                    .recv_timeout(std::time::Duration::from_secs(30))
+                    .is_ok();
+                if !got_ready {
+                    info!("Did not receive explicit Minot ready; proceeding as fallback");
+                }
+
+                info!("Minot is ready, starting pelorus offline processing...");
+
+                let (pelorus_ready_tx, pelorus_ready_rx) = std::sync::mpsc::channel();
+
+                // start Odometry in thread
+                // Provide an atomic shutdown flag so we can request LIO to shutdown from main/TUI
+                let lio_shutdown_flag =
+                    std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+                let lio_shutdown_flag_for_thread = lio_shutdown_flag.clone();
+                let shared_stats_for_lio = shared_stats.clone();
+
+                let lio_handle = std::thread::spawn(move || {
+                    if let Err(e) = lio_with_ready_signal(
+                        config,
+                        Some(pelorus_ready_tx),
+                        offline_args.export_trajectory,
+                        true,
+                        Some(shared_stats_for_lio),
+                        Some(lio_shutdown_flag_for_thread),
+                    ) {
+                        error!("Odometry failed: {}", e);
+                        return Err(format!("Odometry failed: {}", e));
+                    }
+                    Ok(())
+                });
+
+                info!("Waiting for pelorus to initialize...");
+                match pelorus_ready_rx.recv_timeout(std::time::Duration::from_secs(5)) {
+                    Ok(_) => info!("Pelorus is ready!"),
+                    Err(_) => info!(
+                        "Pelorus ready not received in 5s; proceeding to trigger minot anyway"
+                    ),
+                }
+                info!("Triggering minot to start processing...");
+
+                // Check if process is still alive before writing
+                if let Ok(Some(status)) = minot_child.try_wait() {
+                    error!("Minot process has already exited with status: {}", status);
+                    return Err(anyhow!("Minot exited prematurely: {}", status));
+                }
+
+                use std::io::Write;
+                minot_stdin
+                    .write_all(b"\n")
+                    .map_err(|e| anyhow!("Failed to write to minot stdin: {}", e))?;
+                minot_stdin
+                    .flush()
+                    .map_err(|e| anyhow!("Failed to flush minot stdin: {}", e))?;
+
+                /*
+                // TUI is already running from the start of the block
+                let (tui_stop_tx, tui_stop_rx) = std::sync::mpsc::channel();
+                let (shutdown_tx, shutdown_rx) = std::sync::mpsc::channel();
+
+                let tui_thread = std::thread::spawn(move || {
+                    let mut tui = StatsTui::new(
+                        stats_for_tui,
+                    )
+                    .with_stop_receiver(tui_stop_rx)
+                    .with_shutdown_sender(shutdown_tx);
+                    let _ = tui.run();
+                });
+                */
+
+                // wait loop - check for various exit conditions
+                loop {
+                    if exit_rx.try_recv().is_ok() {
+                        // minot finished -> request stop
+                        lio_shutdown_flag.store(true, std::sync::atomic::Ordering::SeqCst);
+                        info!("minot finished, stopping TUI and LIO");
+                        break;
+                    }
+                    if lio_handle.is_finished() {
+                        log::info!("LIO finished, stopping TUI");
+                        break;
+                    }
+                    if shutdown_rx.try_recv().is_ok() {
+                        // TUI requested shutdown -> request LIO to stop
+                        lio_shutdown_flag.store(true, std::sync::atomic::Ordering::SeqCst);
+                        info!("TUI requested shutdown, stopping LIO");
+                        break;
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(100));
+                }
+
+                // Cleanup
+                lio_shutdown_flag.store(true, std::sync::atomic::Ordering::SeqCst);
+
+                // Join LIO thread with timeout
+                let join_start = std::time::Instant::now();
+                let join_timeout = std::time::Duration::from_secs(3);
+                loop {
+                    if lio_handle.is_finished() {
+                        match lio_handle.join() {
+                            Ok(Ok(())) => info!("LIO thread joined successfully"),
+                            Ok(Err(e)) => warn!("LIO thread exited with error: {}", e),
+                            Err(_) => warn!("LIO thread panicked"),
+                        }
+                        break;
+                    }
+                    if join_start.elapsed() > join_timeout {
+                        warn!("LIO thread did not exit within timeout");
+                        break;
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(100));
+                }
+
+                // Kill minot just in case
+                let _ = minot_child.kill();
+
+                Ok(())
+            };
+
+            match run_offline_logic() {
+                Ok(_) => {
+                    let _ = tui_stop_tx.send(());
+                    if let Some(handle) = tui_thread {
+                        let _ = handle.join();
+                    }
+                    Ok(())
+                }
+                Err(e) => {
+                    error!("Offline run failed: {}", e);
+                    std::thread::sleep(std::time::Duration::from_secs(2)); // Give time for user to read error
+                    let _ = tui_stop_tx.send(());
+                    if let Some(handle) = tui_thread {
+                        let _ = handle.join();
+                    }
+                    Err(e.into())
                 }
             }
         }

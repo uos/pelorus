@@ -59,7 +59,7 @@ static void printCudaInfo() {
   cuda_version_str << cuda_version / 1000 << "." << (cuda_version % 1000) / 10
                    << "." << cuda_version % 10;
 
-  std::cout << "[Pelorus - CudaContext] CUDA Driver Version / Runtime Version: "
+  std::cerr << "[Pelorus - CudaContext] CUDA Driver Version / Runtime Version: "
             << driver_version_str.str() << " / " << cuda_version_str.str()
             << std::endl;
 }

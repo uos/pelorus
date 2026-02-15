@@ -734,6 +734,10 @@ jobs:
           rustup toolchain uninstall stable
           rustup toolchain install stable
 
+          # mark ROS package with CUDA suffix so the generated .deb is variant-specific
+          CUDA_PART="${{ matrix.cuda }}"
+          sed -i "s|<name>pelorus</name>|<name>pelorus-cuda${CUDA_PART}</name>|" package.xml
+
           export PELORUS_CUDA=1
           bash ./scripts/make-deb.bash
 
@@ -806,6 +810,10 @@ jobs:
           rustup toolchain uninstall stable
           rustup toolchain install stable
 
+          # mark ROS package with CUDA suffix so the generated .deb is variant-specific
+          CUDA_PART="${{ matrix.cuda }}"
+          sed -i "s|<name>pelorus</name>|<name>pelorus-cuda${CUDA_PART}</name>|" package.xml
+
           export PELORUS_CUDA=1
           bash ./scripts/make-deb.bash
 
@@ -877,6 +885,10 @@ jobs:
 
           rustup toolchain uninstall stable
           rustup toolchain install stable
+
+          # mark ROS package with CUDA suffix so the generated .deb is variant-specific
+          CUDA_PART="${{ matrix.cuda }}"
+          sed -i "s|<name>pelorus</name>|<name>pelorus-cuda${CUDA_PART}</name>|" package.xml
 
           export PELORUS_CUDA=1
           bash ./scripts/make-deb.bash

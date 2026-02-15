@@ -34,7 +34,7 @@ curl -sLo dlg_cut.zip "https://myshare.uni-osnabrueck.de/f/5faf4154af384854ab94?
 > Maximum speed using default flags.
 
 ~~~sh
-RUSTFLAGS="-C target-cpu=native -C llvm-args=-cost-kind=latency" cargo run --release -- run -c pelorus.rl
+RUSTFLAGS="-C target-cpu=native -C llvm-args=-cost-kind=latency" cargo run --release -- online -c pelorus.rl
 ~~~
 
 ## opt-ratsync
@@ -42,7 +42,7 @@ RUSTFLAGS="-C target-cpu=native -C llvm-args=-cost-kind=latency" cargo run --rel
 > Run within Minot toolchain as fast as possible.
 
 ~~~sh
-RUSTFLAGS="-C target-cpu=native -C llvm-args=-cost-kind=latency" cargo run --release --no-default-features --features mimalloc,offline,parallel -- run online -rc pelorus.rl
+RUSTFLAGS="-C target-cpu=native -C llvm-args=-cost-kind=latency" cargo run --release --no-default-features --features mimalloc,offline,parallel -- online -rc pelorus.rl
 ~~~
 
 ## opt-ros2
@@ -50,7 +50,7 @@ RUSTFLAGS="-C target-cpu=native -C llvm-args=-cost-kind=latency" cargo run --rel
 > Maximum speed using default flags.
 
 ~~~sh
-RUSTFLAGS="-C target-cpu=native -C llvm-args=-cost-kind=latency" cargo run --release --no-default-features --features mimalloc,parallel,downsample,ros2 -- run -c pelorus.rl
+RUSTFLAGS="-C target-cpu=native -C llvm-args=-cost-kind=latency" cargo run --release --no-default-features --features mimalloc,parallel,downsample,ros2 -- online -c pelorus.rl
 ~~~
 
 ## dev
@@ -58,6 +58,6 @@ RUSTFLAGS="-C target-cpu=native -C llvm-args=-cost-kind=latency" cargo run --rel
 > Start with development flags and logging.
 
 ~~~sh
-RUST_BACKTRACE=1 RUST_LOG=debug,minot=off,rat=off,tracing=off,mt_sea=off,h2=off,hyper_util=off,re_sdk=off,re_chunk=off,tower=off,ratpub=off,tonic=off,tonic_web=off cargo mommy run --profile dbg-release --no-default-features --features dev -- run online -rc pelorus.rl
+RUST_BACKTRACE=1 RUST_LOG=debug,minot=off,rat=off,tracing=off,mt_sea=off,h2=off,hyper_util=off,re_sdk=off,re_chunk=off,tower=off,ratpub=off,tonic=off,tonic_web=off cargo mommy run --profile dbg-release --no-default-features --features dev -- online -rc pelorus.rl
 ~~~
 
