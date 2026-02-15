@@ -75,6 +75,7 @@ impl From<log::Level> for LogLevel {
 pub struct LogEntry {
     pub timestamp: f64,
     pub level: LogLevel,
+    pub target: String,
     pub message: String,
 }
 
@@ -94,12 +95,13 @@ impl LogBuffer {
         }
     }
 
-    pub fn push(&mut self, level: LogLevel, message: String) {
+    pub fn push(&mut self, level: LogLevel, target: String, message: String) {
         let start = LOG_START_TIME.get_or_init(Instant::now);
         let timestamp = start.elapsed().as_secs_f64();
         self.entries.push(LogEntry {
             timestamp,
             level,
+            target,
             message,
         });
         if self.entries.len() > MAX_LOG_ENTRIES {
@@ -139,11 +141,12 @@ impl log::Log for TuiLogger {
 
         let message = format!("{}", record.args());
         let level = LogLevel::from(record.level());
+        let target = record.target().to_string();
 
         // Always capture to buffer for TUI
         if let Some(buffer) = LOG_BUFFER.get() {
             if let Ok(mut buf) = buffer.lock() {
-                buf.push(level, message.clone());
+                buf.push(level, target.clone(), message.clone());
             }
         }
 
@@ -431,8 +434,9 @@ impl SharedStats {
             stats.target_lidar_rate_hz
         };
 
-        if sensor_rate > 0.0 && freq_hz > 0.0 {
-            stats.real_time_factor = freq_hz / sensor_rate;
+        if sensor_rate > 0.0 && avg > 0.0 {
+            let sensor_period_ms = 1000.0 / sensor_rate;
+            stats.real_time_factor = sensor_period_ms / avg;
         }
     }
 
@@ -676,6 +680,7 @@ pub struct StatsTui {
     view_mode: ViewMode,
     log_scroll: Option<usize>, // None = auto-follow (show latest), Some(n) = manual scroll position
     log_buffer: Arc<Mutex<LogBuffer>>,
+    show_minot_logs: bool,
 }
 
 impl StatsTui {
@@ -688,6 +693,7 @@ impl StatsTui {
             view_mode: ViewMode::FollowCurrent,
             log_scroll: None, // Auto-follow by default
             log_buffer: get_log_buffer(),
+            show_minot_logs: true,
         }
     }
 
@@ -812,6 +818,9 @@ impl StatsTui {
                         }
                         KeyCode::End if self.current_tab == Tab::Logs => {
                             self.log_scroll = None; // Auto-follow = show latest
+                        }
+                        KeyCode::Char('m') if self.current_tab == Tab::Logs => {
+                            self.show_minot_logs = !self.show_minot_logs;
                         }
                         _ => {}
                     }
@@ -1492,13 +1501,23 @@ impl StatsTui {
         f.render_widget(paragraph, area);
     }
 
+    fn is_minot_log(entry: &LogEntry) -> bool {
+        entry.message.starts_with("[Minot]")
+    }
+
     fn render_logs_tab(&self, f: &mut ratatui::Frame, area: Rect) {
         let entries = self.log_buffer.lock().ok();
         let entries = entries.as_ref().map(|b| b.entries()).unwrap_or(&[]);
 
+        let filtered_entries: Vec<(usize, &LogEntry)> = entries
+            .iter()
+            .enumerate()
+            .filter(|(_, e)| self.show_minot_logs || !Self::is_minot_log(e))
+            .collect();
+
         let visible_height = area.height.saturating_sub(2) as usize; // -2 for borders
         let content_width = area.width.saturating_sub(2) as usize; // -2 for borders
-        let total_entries = entries.len();
+        let total_entries = filtered_entries.len();
 
         // Prefix length: "   45.47s WARN  " = 16 chars
         let prefix_len = 16;
@@ -1508,7 +1527,7 @@ impl StatsTui {
         // Build wrapped lines with entry indices
         let mut wrapped_lines: Vec<(usize, Line)> = Vec::new();
 
-        for (entry_idx, entry) in entries.iter().enumerate() {
+        for (entry_idx, entry) in filtered_entries.iter() {
             let time_str = format!("{:>8.2}s", entry.timestamp);
             let msg = &entry.message;
             let msg_color = if entry.level == LogLevel::Error || entry.level == LogLevel::Warn {
@@ -1520,7 +1539,7 @@ impl StatsTui {
             if msg.len() <= msg_width || msg_width == 0 {
                 // Single line
                 wrapped_lines.push((
-                    entry_idx,
+                    *entry_idx,
                     Line::from(vec![
                         Span::styled(time_str, Style::default().fg(Color::DarkGray)),
                         Span::raw(" "),
@@ -1550,7 +1569,7 @@ impl StatsTui {
 
                     if first_line {
                         wrapped_lines.push((
-                            entry_idx,
+                            *entry_idx,
                             Line::from(vec![
                                 Span::styled(
                                     time_str.clone(),
@@ -1570,7 +1589,7 @@ impl StatsTui {
                         first_line = false;
                     } else {
                         wrapped_lines.push((
-                            entry_idx,
+                            *entry_idx,
                             Line::from(vec![
                                 Span::styled(
                                     continuation_indent,
@@ -1648,11 +1667,17 @@ impl StatsTui {
             )
         };
 
+        let logs_title = if self.show_minot_logs {
+            " Logs "
+        } else {
+            " Logs [minot hidden] "
+        };
+
         let block = Block::default()
             .borders(Borders::ALL)
             .border_style(Style::default().fg(Color::DarkGray))
             .title(Span::styled(
-                " Logs ",
+                logs_title,
                 Style::default()
                     .fg(Color::Green)
                     .add_modifier(Modifier::BOLD),
@@ -1789,6 +1814,13 @@ impl StatsTui {
                         .add_modifier(Modifier::BOLD),
                 ),
                 Span::styled(" Jump  ", Style::default().fg(Color::DarkGray)),
+                Span::styled(
+                    "m",
+                    Style::default()
+                        .fg(Color::Yellow)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(" Minot  ", Style::default().fg(Color::DarkGray)),
                 Span::styled(
                     "q",
                     Style::default()
