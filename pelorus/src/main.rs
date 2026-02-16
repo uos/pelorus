@@ -1447,6 +1447,7 @@ fn lio_with_ready_signal(
     }
 }
 
+#[allow(dead_code)]
 fn log_minot_line(line: &str) {
     if let Some(rest) = line.strip_prefix("[ERROR] ") {
         error!("[Minot] {}", rest.trim());
