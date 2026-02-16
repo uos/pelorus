@@ -8,26 +8,17 @@ dynamic = ["version"]
 description = "Pelorus - High Efficient Lidar Inertial Odometry"
 readme = "README.md"
 requires-python = ">=3.8"
-license = {text = "MIT OR Apache-2.0"}
+license = { text = "MIT OR Apache-2.0" }
 keywords = ["robotics", "lidar", "odometry", "lio", "slam"]
 classifiers = [
-    "Development Status :: 4 - Beta",
-    "Intended Audience :: Developers",
-    "Intended Audience :: Science/Research",
-    "License :: OSI Approved :: MIT License",
-    "License :: OSI Approved :: Apache Software License",
-    "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.8",
-    "Programming Language :: Python :: 3.9",
-    "Programming Language :: Python :: 3.10",
-    "Programming Language :: Python :: 3.11",
-    "Programming Language :: Python :: 3.12",
-    "Programming Language :: Rust",
-    "Topic :: Scientific/Engineering :: Robotics",
+  "Intended Audience :: Developers",
+  "Intended Audience :: Science/Research",
+  "License :: OSI Approved :: MIT License",
+  "License :: OSI Approved :: Apache Software License",
+  "Programming Language :: Rust",
+  "Framework :: Robot Framework :: Library",
 ]
-dependencies = [
-    "numpy>=1.16",
-]
+dependencies = ["numpy>=1.16"]
 
 [project.optional-dependencies]
 mcap = ["mcap-ros2-support>=0.5.7,<0.6.0"]
