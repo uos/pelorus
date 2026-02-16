@@ -7,27 +7,19 @@ name = "pelorus-cli"
 description = "Pelorus CLI - High Efficient Lidar Inertial Odometry"
 dynamic = ["version"]
 requires-python = ">=3.8"
-license = {text = "MIT OR Apache-2.0"}
+license = { text = "MIT OR Apache-2.0" }
 keywords = ["robotics", "lidar", "odometry", "lio", "slam"]
 classifiers = [
-    "Development Status :: 4 - Beta",
-    "Intended Audience :: Developers",
-    "Intended Audience :: Science/Research",
-    "License :: OSI Approved :: MIT License",
-    "License :: OSI Approved :: Apache Software License",
-    "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.8",
-    "Programming Language :: Python :: 3.9",
-    "Programming Language :: Python :: 3.10",
-    "Programming Language :: Python :: 3.11",
-    "Programming Language :: Python :: 3.12",
-    "Programming Language :: Rust",
-    "Topic :: Scientific/Engineering :: Robotics",
+  "Development Status :: 4 - Beta",
+  "Intended Audience :: Developers",
+  "Intended Audience :: Science/Research",
+  "License :: OSI Approved :: MIT License",
+  "License :: OSI Approved :: Apache Software License",
+  "Programming Language :: Rust",
+  "Framework :: Robot Framework :: Tool",
 ]
 
-dependencies = [
-    "minot-cli>=0.5.0,<0.6.0",
-]
+dependencies = ["minot-cli>=0.5.0,<0.6.0"]
 
 [project.optional-dependencies]
 rerun = ["rerun-sdk>=0.29.0,<0.30.0"]
