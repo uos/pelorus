@@ -210,10 +210,17 @@ impl ImuProcessing {
             n += 1.0;
         }
 
-        ekf.state.grav = -self.mean_acc / self.mean_acc.norm() * 9.81; // TODO PARAM
         ekf.state.bg = self.mean_gyr;
         ekf.state.offset_t_l_i = self.lidar_to_imu_t;
         ekf.state.offset_r_l_i = sophus_lie::Rotation3::try_from_mat(&self.lidar_to_imu_r).unwrap();
+
+        // Initialize R_W_I so the world frame aligns with the lidar frame (not the IMU frame).
+        // R_W_L = R_W_I * R_I_L = I  =>  R_W_I = R_I_L^{-1} = R_L_I
+        ekf.state.rot = ekf.state.offset_r_l_i.inverse();
+
+        // Gravity in IMU frame, then rotated to the new world frame: g_W = R_W_I * g_IMU
+        let g_imu = -self.mean_acc / self.mean_acc.norm() * 9.81; // TODO PARAM
+        ekf.state.grav = ekf.state.rot.matrix() * g_imu;
 
         ekf.cov = faer::Mat::<f64>::identity(24, 24);
 
