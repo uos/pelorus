@@ -477,9 +477,8 @@ impl Iekf {
 
         let adjusted_base_cov = base_cov * (1.0 + dt_gap * 5.0);
         let r_wb = self.state.rot.matrix();
-        let r_bw = r_wb.transpose();
 
-        let v_meas_world = r_bw * odom.twist_linear;
+        let v_meas_world = r_wb * odom.twist_linear;
 
         match kinematic {
             KinematicModel::Differential | KinematicModel::Ackermann { .. } => {
