@@ -735,8 +735,9 @@ jobs:
           rustup toolchain install stable
 
           # mark ROS package with CUDA suffix so the generated .deb is variant-specific
-          CUDA_PART="${{ matrix.cuda }}"
+          export CUDA_PART="${{ matrix.cuda }}"
           sed -i "s|<name>pelorus</name>|<name>pelorus-cuda${CUDA_PART}</name>|" package.xml
+          sed -i "s|project(pelorus)|project(pelorus-cuda${CUDA_PART})|" CMakeLists.txt
 
           export PELORUS_CUDA=1
           bash ./scripts/make-deb.bash
@@ -811,8 +812,9 @@ jobs:
           rustup toolchain install stable
 
           # mark ROS package with CUDA suffix so the generated .deb is variant-specific
-          CUDA_PART="${{ matrix.cuda }}"
+          export CUDA_PART="${{ matrix.cuda }}"
           sed -i "s|<name>pelorus</name>|<name>pelorus-cuda${CUDA_PART}</name>|" package.xml
+          sed -i "s|project(pelorus)|project(pelorus-cuda${CUDA_PART})|" CMakeLists.txt
 
           export PELORUS_CUDA=1
           bash ./scripts/make-deb.bash
@@ -887,8 +889,9 @@ jobs:
           rustup toolchain install stable
 
           # mark ROS package with CUDA suffix so the generated .deb is variant-specific
-          CUDA_PART="${{ matrix.cuda }}"
+          export CUDA_PART="${{ matrix.cuda }}"
           sed -i "s|<name>pelorus</name>|<name>pelorus-cuda${CUDA_PART}</name>|" package.xml
+          sed -i "s|project(pelorus)|project(pelorus-cuda${CUDA_PART})|" CMakeLists.txt
 
           export PELORUS_CUDA=1
           bash ./scripts/make-deb.bash
@@ -1597,6 +1600,7 @@ jobs:
             --password "${PYPI_TOKEN}" \
             --non-interactive \
             --skip-existing \
+            --verbose \
             dist/*.whl
 
           echo "Published to PyPI."
