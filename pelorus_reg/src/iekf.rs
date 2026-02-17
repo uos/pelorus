@@ -270,6 +270,7 @@ pub struct Iekf {
     pub k: Mat<f64>,   // Kalman gain (24 x m)
     pub k_h: Mat<f64>, // K * H (24 x 24)
     pub hth: Mat<f64>, // H^T * H (24 x 24, but only 12x12 block is non-zero)
+    pub base_to_lidar: nalgebra::Isometry3<f64>,
 }
 
 /// Adding the state and the perturbation, stay on the manifold
@@ -364,7 +365,7 @@ fn box_minus(x1: &StateIKFom, x2: &StateIKFom) -> Mat<f64> {
 }
 
 impl Iekf {
-    pub fn new(g: f64) -> Self {
+    pub fn new(g: f64, base_to_lidar: nalgebra::Isometry3<f64>) -> Self {
         Self {
             state: StateIKFom::new(g),
             cov: Mat::<f64>::identity(24, 24),
@@ -386,6 +387,7 @@ impl Iekf {
             cov_i_kh: Mat::<f64>::zeros(24, 24),
             i_cov_i_kh: Mat::<f64>::zeros(24, 24),
             hth: Mat::<f64>::zeros(24, 24),
+            base_to_lidar,
         }
     }
 
@@ -476,8 +478,22 @@ impl Iekf {
         });
 
         let adjusted_base_cov = base_cov * (1.0 + dt_gap * 5.0);
-        let r_wb = self.state.rot.matrix();
+        let r_wi = self.state.rot.matrix();
 
+        // Current LiDAR-to-IMU rotation (R_IL from state)
+        let r_il = self.state.offset_r_l_i.matrix();
+
+        // Static Base-to-LiDAR (R_BL from config)
+        let r_bl_rot = self.base_to_lidar.rotation.to_rotation_matrix();
+        let r_bl = r_bl_rot.matrix();
+
+        // Compute Base-to-IMU rotation: R_BI = R_BL * R_IL^T
+        let r_bi = r_bl * r_il.transpose();
+
+        // Compute Base-to-World rotation: R_WB = R_WI * R_BI^T
+        let r_wb = r_wi * r_bi.transpose();
+
+        // Measurement is in Base frame, transform to World frame
         let v_meas_world = r_wb * odom.twist_linear;
 
         match kinematic {
@@ -649,51 +665,69 @@ impl Iekf {
             return;
         }
 
-        let r_w_i = self.state.rot.matrix();
-        let r_i_w = r_w_i.transpose();
-        let v_body = r_i_w * self.state.vel;
+        // Current IMU orientation in World frame (R_WI)
+        let r_wi = self.state.rot.matrix();
+        let r_iw = r_wi.transpose();
+
+        // Current LiDAR-to-IMU rotation (R_IL from state)
+        let r_il = self.state.offset_r_l_i.matrix();
+
+        // Static Base-to-LiDAR (R_BL from config)
+        let r_bl_rot = self.base_to_lidar.rotation.to_rotation_matrix();
+        let r_bl = r_bl_rot.matrix();
+
+        // Compute Base-to-IMU rotation: R_BI = R_BL * R_LI = R_BL * R_IL^T
+        let r_bi = r_bl * r_il.transpose();
+
+        // Compute World-to-Base rotation: R_BW = R_BI * R_IW
+        let r_bw = r_bi * r_iw;
+
+        // Velocity of IMU in World frame
+        let v_i_world = self.state.vel;
+
+        // Vector from IMU to reference point (in IMU frame)
+        let p_i_ref = match model_type {
+            KinematicModel::Ackermann { imu_to_rear_axle } => imu_to_rear_axle,
+            _ => {
+                // For other models, the reference point is the base_link center.
+                // p_IB = t_IL + R_IL * p_LB = t_IL - R_IL * R_BL^T * t_BL
+                let t_il = self.state.offset_t_l_i;
+                let t_bl = self.base_to_lidar.translation.vector;
+                t_il - r_il * r_bl.transpose() * t_bl
+            }
+        };
+
+        // Velocity of reference point in Base frame
+        // v_ref_base = R_BI * ( R_WI^T * v_i_world + omega_i_imu x p_i_ref )
+        let v_ref_base = r_bi * (r_iw * v_i_world + gyro_measurement.cross(&p_i_ref));
+
         let r_var = constraint_noise_std * constraint_noise_std;
 
         match model_type {
-            KinematicModel::Differential => {
+            KinematicModel::Differential | KinematicModel::Ackermann { .. } => {
                 // lateral (y) constraint - velocity index is 12-14 in 24-dim state
                 let mut h_lat = Col::<f64>::zeros(24);
+                // Jacobian H = d(v_ref_base.y) / d(v_i_world) = e_y^T * R_BI * R_WI^T = row 1 of R_BW
                 for j in 0..3 {
-                    h_lat[12 + j] = r_i_w[(1, j)];
+                    h_lat[12 + j] = r_bw[(1, j)];
                 }
-                self.apply_scalar_constraint(h_lat, -v_body.y, r_var);
+                self.apply_scalar_constraint(h_lat, -v_ref_base.y, r_var);
 
                 // vertical (z) constraint
                 let mut h_vert = Col::<f64>::zeros(24);
+                // Jacobian H = d(v_ref_base.z) / d(v_i_world) = e_z^T * R_BI * R_WI^T = row 2 of R_BW
                 for j in 0..3 {
-                    h_vert[12 + j] = r_i_w[(2, j)];
+                    h_vert[12 + j] = r_bw[(2, j)];
                 }
-                self.apply_scalar_constraint(h_vert, -v_body.z, r_var);
+                self.apply_scalar_constraint(h_vert, -v_ref_base.z, r_var);
             }
             KinematicModel::Holonomic2D => {
                 // Only vertical (z) constraint: robot stays on ground
                 let mut h_vert = Col::<f64>::zeros(24);
                 for j in 0..3 {
-                    h_vert[12 + j] = r_i_w[(2, j)];
+                    h_vert[12 + j] = r_bw[(2, j)];
                 }
-                self.apply_scalar_constraint(h_vert, -v_body.z, r_var);
-            }
-
-            KinematicModel::Ackermann { imu_to_rear_axle } => {
-                // rear‑axle lateral constraint
-                let v_rear = v_body + gyro_measurement.cross(&imu_to_rear_axle);
-                let mut h_lat = Col::<f64>::zeros(24);
-                for j in 0..3 {
-                    h_lat[12 + j] = r_i_w[(1, j)];
-                }
-                self.apply_scalar_constraint(h_lat, -v_rear.y, r_var);
-
-                // vertical constraint
-                let mut h_vert = Col::<f64>::zeros(24);
-                for j in 0..3 {
-                    h_vert[12 + j] = r_i_w[(2, j)];
-                }
-                self.apply_scalar_constraint(h_vert, -v_body.z, r_var);
+                self.apply_scalar_constraint(h_vert, -v_ref_base.z, r_var);
             }
 
             KinematicModel::Full3D => {}
