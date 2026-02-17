@@ -69,7 +69,7 @@ impl RegistrationState {
             update_cov_sensitivity,
         );
 
-        let ekf = crate::iekf::Iekf::new(g);
+        let ekf = crate::iekf::Iekf::new(g, base_to_lidar);
 
         Self {
             ekf,
