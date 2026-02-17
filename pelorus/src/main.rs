@@ -732,7 +732,7 @@ fn lio_with_ready_signal(
             last_scan_time = Some(timestamp_to_secs(&orig_time));
 
             // use the last difference if there is no odom from lifis
-            let init_guess = if lifis_tick.imu_odom.pose.pose.position.x == 0.0
+            let init_guess_lidar = if lifis_tick.imu_odom.pose.pose.position.x == 0.0
                 && lifis_tick.imu_odom.pose.pose.position.y == 0.0
                 && lifis_tick.imu_odom.pose.pose.position.z == 0.0
             {
@@ -742,10 +742,9 @@ fn lio_with_ready_signal(
                     && lifis_tick.imu_odom.pose.pose.orientation.y == 0.0
                     && lifis_tick.imu_odom.pose.pose.orientation.z == 0.0
                 {
-                    t_last_current
+                    t_world * t_last_current
                 } else {
                     // there is an orientation calculated by lifis for undeskewing the cloud, so we can use that
-                    let initial_guess_translation = t_last_current.translation;
                     let initial_guess_rotation =
                         nalgebra::UnitQuaternion::from_quaternion(nalgebra::Quaternion::new(
                             lifis_tick.imu_odom.pose.pose.orientation.w,
@@ -753,10 +752,11 @@ fn lio_with_ready_signal(
                             lifis_tick.imu_odom.pose.pose.orientation.y,
                             lifis_tick.imu_odom.pose.pose.orientation.z,
                         ));
-                    nalgebra::Isometry3::from_parts(
-                        initial_guess_translation,
+                    let initial_guess_lidar_local = nalgebra::Isometry3::from_parts(
+                        t_last_current.translation,
                         initial_guess_rotation,
-                    )
+                    );
+                    t_world * initial_guess_lidar_local
                 }
             } else {
                 let initial_guess_translation = Translation3::new(
@@ -773,16 +773,16 @@ fn lio_with_ready_signal(
                         lifis_tick.imu_odom.pose.pose.orientation.z,
                     ));
 
+                // init_guess from lifis is IMU pose T_W_I. Convert to LiDAR pose T_W_L.
                 nalgebra::Isometry3::from_parts(initial_guess_translation, initial_guess_rotation)
+                    * ext
             };
-
-            let init_guess_world = t_world * init_guess;
 
             let (register_pose, ekf_state) = {
                 let mut map = map.lock().unwrap();
                 match map.register_and_map(
                     lifis_tick.map_only,
-                    ext,
+                    init_guess_lidar,
                     &cloud_for_reg,
                     current_cloud_time,
                     Some(&ready_for_next_tx),
@@ -810,15 +810,16 @@ fn lio_with_ready_signal(
 
             let old_t_world = t_world;
 
-            // TODO maybe not inverse when not transpose the same result
-            t_world = if config.lidar_as_map_tf {
-                ekf_state.lidar_imu_extrinsic.inverse() * register_pose.pose
+            // t_world represents the pose of the child_frame in the map_frame.
+            // If base_link_frame is configured, we output the pose of the Base (T_W_B).
+            // Otherwise, we output the pose of the LiDAR (T_W_L).
+            let (use_pose, child_frame) = if let Some(ref base_frame) = config.base_link_frame {
+                (register_pose.base_pose, base_frame.clone())
             } else {
-                register_pose.pose
+                (register_pose.pose, orig_frame.clone())
             };
 
-            // optional transform from global_lidar to global_imu
-            // t_world = corr_t_l_i.cast() * register_pose.pose;
+            t_world = use_pose;
 
             // transformation from the last pose to the current pose in the local frame
             t_last_current = old_t_world.inverse() * t_world;
@@ -829,7 +830,7 @@ fn lio_with_ready_signal(
                 nanosec: lifis_tick.odom_time.nanosec,
             };
             pelorus_odom.header.frame_id = config.prelio_params.map_frame.clone();
-            pelorus_odom.child_frame_id = orig_frame.clone();
+            pelorus_odom.child_frame_id = child_frame.clone();
             pelorus_odom.pose.pose.position.x = t_world.translation.vector.x;
             pelorus_odom.pose.pose.position.y = t_world.translation.vector.y;
             pelorus_odom.pose.pose.position.z = t_world.translation.vector.z;
@@ -837,6 +838,27 @@ fn lio_with_ready_signal(
             pelorus_odom.pose.pose.orientation.y = t_world.rotation.j;
             pelorus_odom.pose.pose.orientation.z = t_world.rotation.k;
             pelorus_odom.pose.pose.orientation.w = t_world.rotation.w;
+
+            // Fill velocities in the child frame (Base or LiDAR)
+            let lin_vel_body = t_world.rotation.inverse() * ekf_state.linear_velocity;
+            pelorus_odom.twist.twist.linear.x = lin_vel_body.x;
+            pelorus_odom.twist.twist.linear.y = lin_vel_body.y;
+            pelorus_odom.twist.twist.linear.z = lin_vel_body.z;
+
+            let ang_vel_body = if config.base_link_frame.is_some() {
+                // Omega_B = R_B_L * Omega_L + R_B_L * (R_L_I * Omega_I_from_IMU) ... wait.
+                // Angular velocity is simplest in the IMU frame (ekf_state.angular_velocity).
+                // Omega_B = R_B_I * Omega_I = (R_B_L * R_L_I) * Omega_I
+                let r_b_l = config.base_to_lidar.rotation.inverse();
+                let r_l_i = ekf_state.lidar_imu_extrinsic.rotation.inverse();
+                (r_b_l * r_l_i) * ekf_state.angular_velocity
+            } else {
+                ekf_state.lidar_imu_extrinsic.rotation.inverse() * ekf_state.angular_velocity
+            };
+            pelorus_odom.twist.twist.angular.x = ang_vel_body.x;
+            pelorus_odom.twist.twist.angular.y = ang_vel_body.y;
+            pelorus_odom.twist.twist.angular.z = ang_vel_body.z;
+
             {
                 // TODO covariances probably not in the right frame right now and ignores extrinsic rotation
                 let (pose_cov_iekf, twist_cov_iekf) = {
@@ -1002,14 +1024,8 @@ fn lio_with_ready_signal(
                 #[cfg(feature = "rerun")]
                 if let Some(ref rec) = rec {
                     let points = total_map.iter().map(|v| {
-                        // TODO maybe not inverse(), see above in lidar_as_map_tf
-                        let v = ros_to_rerun.cast()
-                            * ekf_state
-                                .lidar_imu_extrinsic
-                                .inverse()
-                                .cast()
-                                .transform_point(v);
-                        glam::Vec3::new(v.x, v.y, v.z)
+                        let v = ros_to_rerun.cast().transform_point(v);
+                        glam::Vec3::new(v.x as f32, v.y as f32, v.z as f32)
                     });
 
                     if let Err(err) = rec.log(
@@ -1028,10 +1044,7 @@ fn lio_with_ready_signal(
                     let mut total_map = PointCloud2Msg::try_from_vec(
                         total_map
                             .iter()
-                            .map(|p| {
-                                let p = corr_t_l_i.transform_point(&p);
-                                PointXYZ::new(p.x, p.y, p.z)
-                            })
+                            .map(|p| PointXYZ::new(p.x, p.y, p.z))
                             .collect(),
                     )
                     .unwrap();
@@ -1051,7 +1064,7 @@ fn lio_with_ready_signal(
                         nanosec: lifis_tick.odom_time.nanosec,
                     },
                 },
-                child_frame_id: orig_frame,
+                child_frame_id: child_frame,
                 transform: Transform {
                     translation: Vector3 {
                         x: t_world.translation.vector.x as f64,
@@ -1109,7 +1122,7 @@ fn lio_with_ready_signal(
                 let ps: ros_pointcloud2::PointCloud2Msg = cloud.clone().into();
                 let reg_out = RegisteredCloud {
                     cloud: ps,
-                    registration: map_to_lidar_transform,
+                    registration: register_pose.pose.cast(),
                     timestamp: current_cloud_time,
                 };
 
@@ -1117,13 +1130,13 @@ fn lio_with_ready_signal(
             }
 
             let mut imu_odom = pelorus_odom.clone();
-            imu_odom.pose.pose.position.x = init_guess_world.translation.vector.x;
-            imu_odom.pose.pose.position.y = init_guess_world.translation.vector.y;
-            imu_odom.pose.pose.position.z = init_guess_world.translation.vector.z;
-            imu_odom.pose.pose.orientation.x = init_guess_world.rotation.quaternion().i;
-            imu_odom.pose.pose.orientation.y = init_guess_world.rotation.quaternion().j;
-            imu_odom.pose.pose.orientation.z = init_guess_world.rotation.quaternion().k;
-            imu_odom.pose.pose.orientation.w = init_guess_world.rotation.quaternion().w;
+            imu_odom.pose.pose.position.x = init_guess_lidar.translation.vector.x;
+            imu_odom.pose.pose.position.y = init_guess_lidar.translation.vector.y;
+            imu_odom.pose.pose.position.z = init_guess_lidar.translation.vector.z;
+            imu_odom.pose.pose.orientation.x = init_guess_lidar.rotation.quaternion().i;
+            imu_odom.pose.pose.orientation.y = init_guess_lidar.rotation.quaternion().j;
+            imu_odom.pose.pose.orientation.z = init_guess_lidar.rotation.quaternion().k;
+            imu_odom.pose.pose.orientation.w = init_guess_lidar.rotation.quaternion().w;
             imu_odom.pose.covariance = pelorus_odom.pose.covariance.clone();
             imu_odom.twist.covariance = pelorus_odom.twist.covariance.clone();
 
@@ -1153,7 +1166,7 @@ fn lio_with_ready_signal(
                     .map(|v: PointXYZI| {
                         let color = gradient.eval_continuous(v.intensity as f64 / 255.0);
                         let v = if config.rerun_undistorted_static_world {
-                            t_world.cast() * nalgebra::Point3::new(v.x, v.y, v.z)
+                            register_pose.pose.cast() * nalgebra::Point3::new(v.x, v.y, v.z)
                         } else {
                             nalgebra::Point3::new(v.x, v.y, v.z)
                         };

@@ -60,6 +60,7 @@ impl Pipeline {
             config.lidar_odom_cov,
             config.neighbor_max_range,
             ext_lidar_to_imu,
+            config.base_to_lidar,
             IVoxNearbyType::Nearby26,
             config.dist_update_sensitivity,
             config.ekf_max_iterations,

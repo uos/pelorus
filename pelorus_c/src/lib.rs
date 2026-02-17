@@ -1,6 +1,5 @@
 //! C FFI bindings for Pelorus
 
-use core::panic;
 use std::ffi::{CStr, c_char, c_void};
 
 use std::path::Path;
@@ -56,7 +55,7 @@ struct ProcessingThread {
     shutdown: Arc<AtomicBool>,
     // Latest odometry produced (for synchronous retrieval during init)
     last_output: Arc<Mutex<Option<PelorusOutput>>>,
-    // Configuration containing lidar_as_map_tf_base setting
+    // Configuration
     config: LioConfig,
     // Extrinsic transform from Lidar to IMU for frame conversion
     ext_lidar_to_imu: nalgebra::Isometry3<f64>,
@@ -81,7 +80,7 @@ pub struct PelorusHandle {
     imu_predictor_init_time_sec: f64,
     _processing_thread: Option<thread::JoinHandle<()>>,
     shutdown: Arc<AtomicBool>,
-    // Configuration containing lidar_as_map_tf_base setting
+    // Configuration
     config: LioConfig,
     // Extrinsic transform from Lidar to IMU for frame conversion
     ext_lidar_to_imu: nalgebra::Isometry3<f64>,
@@ -286,16 +285,23 @@ fn convert_to_c_odometry(
     config: &LioConfig,
     ext_lidar_to_imu: &nalgebra::Isometry3<f64>,
 ) -> pelorus_odometry {
-    let (pose, linvel, angvel, cloud) = if config.lidar_as_map_tf {
-        (
-            ext_lidar_to_imu.inverse() * odom.pose, // TODO this is wrong. the order does not make sense. something is fishy. I think somehwere in the jacobians there is a flipped matmul order
-            ext_lidar_to_imu.inverse() * odom.linear_velocity,
-            ext_lidar_to_imu.inverse() * odom.angular_velocity,
-            odom.cloud.clone(),
-        )
+    let (pose, linvel, angvel, _child_frame) = if let Some(ref base_frame) = config.base_link_frame
+    {
+        let t_w_b = odom.pose * config.base_to_lidar.inverse();
+        let lin_vel_b = t_w_b.rotation.inverse() * odom.linear_velocity;
+        let r_b_i = config.base_to_lidar.rotation.inverse() * ext_lidar_to_imu.rotation.inverse();
+        let ang_vel_b = r_b_i * odom.angular_velocity;
+        (t_w_b, lin_vel_b, ang_vel_b, base_frame.clone())
     } else {
-        panic!("not publishing as lidar frame is not supported at the moment")
+        (
+            odom.pose,
+            odom.pose.rotation.inverse() * odom.linear_velocity,
+            ext_lidar_to_imu.rotation.inverse() * odom.angular_velocity,
+            odom.frame_id.clone(),
+        )
     };
+
+    let cloud = odom.cloud.clone();
 
     let (pvec, pcount) = if cloud.is_empty() {
         (ptr::null_mut(), 0)

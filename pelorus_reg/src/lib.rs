@@ -21,8 +21,10 @@ pub use spole::*;
 /// - **Lidar Frame (L)**: Sensor-fixed frame attached to the LiDAR
 #[derive(Clone, Default, Debug)]
 pub struct CloudRegisterResult {
-    /// Pose of the lidar in world frame (T_W_I)
+    /// Pose of the lidar in world frame (T_W_L)
     pub pose: Isometry3<f64>,
+    /// Pose of the base link in world frame (T_W_B)
+    pub base_pose: Isometry3<f64>,
     pub avg_iterations: Option<u32>,
 }
 

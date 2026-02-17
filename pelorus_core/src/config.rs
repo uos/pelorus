@@ -367,7 +367,6 @@ fn ast_to_config_inner(
         show_tui,
         debug_fps,
         map_frame,
-        lidar_as_map_tf,
         logger_prefix,
         mapping_resolution,
         odom_qos,
@@ -377,6 +376,24 @@ fn ast_to_config_inner(
         imu_filtered_qos,
         warning_debounce,
         undistorted_static_world,
+        base_link_frame,
+        base_to_lidar,
+    ): (
+        _,
+        _,
+        _,
+        _,
+        _,
+        _,
+        _,
+        _,
+        _,
+        _,
+        _,
+        _,
+        _,
+        Option<String>,
+        nalgebra::Isometry3<f64>,
     ) = {
         let output_ns = asts.filter_ns(&["output"]);
         let terminal_ns = output_ns.filter_ns(&["terminal"]);
@@ -408,7 +425,6 @@ fn ast_to_config_inner(
         let undistorted_static_world = resolve_var!(rerun_ns, "undistorted_static_world", as bool, Rhs::Val(Val::BoolVal(b)) => {b})?;
 
         let map_frame = resolve_var!(output_ns, "global_frame", as String, Rhs::Val(Val::StringVal(s)) | Rhs::Path(s) => {s})?;
-        let lidar_as_map_tf = resolve_var!(output_ns, "lidar_as_map_tf_base", as bool, Rhs::Val(Val::BoolVal(b)) => {b})?;
         let logger_prefix = resolve_var!(output_ns, "logger_prefix", as String, Rhs::Val(Val::StringVal(s)) | Rhs::Path(s) => {s})?;
         let mapping_ns = output_ns.filter_ns(&["mapping"]);
         let mapping_resolution = resolve_var!(mapping_ns, "resolution", as f32, Rhs::Val(Val::UnitedVal(UnitVal::LengthVal(v))) => { v.get::<meter>() as f32 })?;
@@ -418,12 +434,46 @@ fn ast_to_config_inner(
         let imu_odom_qos = resolve_var!(output_ns, "imu_odometry_msg_qos", as Qos, Rhs::Val(Val::StringVal(s)) => {reliablility_parse(&s)?})?;
         let imu_path_qos = resolve_var!(output_ns, "imu_path_msg_qos", as Qos, Rhs::Val(Val::StringVal(s)) => {reliablility_parse(&s)?})?;
         let imu_filtered_qos = resolve_var!(output_ns, "imu_ahrs_filtered_msg_qos", as Qos, Rhs::Val(Val::StringVal(s)) => {reliablility_parse(&s)?})?;
+
+        let base_link_ns = output_ns.filter_ns(&["base_link"]);
+        let base_link_frame = match resolve_var!(base_link_ns, "frame_id", as String, Rhs::Val(Val::StringVal(s)) | Rhs::Path(s) => {s})
+        {
+            Ok(s) => {
+                let s: String = s;
+                if s.is_empty() { None } else { Some(s) }
+            }
+            Err(_) => None,
+        };
+
+        let base_transform_ns = base_link_ns.filter_ns(&["from_lidar_transform"]);
+        let base_translation: Vector3<f64> = resolve_var!(base_transform_ns, "translation", as Vector3<f64>, Rhs::Array(v) => {
+            let (Some(x_rhs), Some(y_rhs), Some(z_rhs)) = (v.first(), v.get(1), v.get(2)) else { return Err(anyhow!("Expected three vector components.")) };
+            let (Rhs::Val(Val::UnitedVal(UnitVal::LengthVal(x))), Rhs::Val(Val::UnitedVal(UnitVal::LengthVal(y))), Rhs::Val(Val::UnitedVal(UnitVal::LengthVal(z)))) = (&**x_rhs, &**y_rhs, &**z_rhs) else { return Err(anyhow!("All components must be length values.")) };
+            Vector3::new(x.get::<meter>(), y.get::<meter>(), z.get::<meter>())
+        })?;
+        let base_rotation: Matrix3<f64> = resolve_var!(base_transform_ns, "rotation", as Matrix3<f64>, Rhs::Array(rows) => {
+            if rows.len() != 3 { return Err(anyhow!("Rotation matrix must have 3 rows.")) }
+            let mut elements = Vec::with_capacity(9);
+            for row_rhs in rows {
+                let Rhs::Array(cols) = &*row_rhs else { return Err(anyhow!("Expected a row to be an array.")) };
+                if cols.len() != 3 { return Err(anyhow!("Matrix row must have 3 columns.")) }
+                for col_rhs in cols {
+                    let Rhs::Val(Val::NumVal(NumVal::Floating(val))) = &**col_rhs else { return Err(anyhow!("Matrix element must be a float.")) };
+                    elements.push(*val);
+                }
+            }
+            Matrix3::new(elements[0], elements[1], elements[2], elements[3], elements[4], elements[5], elements[6], elements[7], elements[8])
+        })?;
+        let base_to_lidar = nalgebra::Isometry3::from_parts(
+            nalgebra::Translation3::from(base_translation),
+            nalgebra::UnitQuaternion::from_matrix(&base_rotation),
+        );
+
         (
             imu_filtered_topic,
             show_tui,
             debug_fps,
             map_frame,
-            lidar_as_map_tf,
             logger_prefix,
             mapping_resolution,
             odom_qos,
@@ -433,6 +483,8 @@ fn ast_to_config_inner(
             imu_filtered_qos,
             warning_debounce,
             undistorted_static_world,
+            base_link_frame,
+            base_to_lidar,
         )
     };
 
@@ -542,13 +594,14 @@ fn ast_to_config_inner(
         lidar_odom_cov,
         show_tui,
         debug_fps,
-        lidar_as_map_tf,
         mapping_resolution,
         odom_qos,
         path_qos,
         imu_odom_qos,
         imu_path_qos,
         imu_params,
+        base_link_frame,
+        base_to_lidar,
         prelio_node_params: LifisNodeParameters {
             wheel_qos,
             wheel_src_topic,
