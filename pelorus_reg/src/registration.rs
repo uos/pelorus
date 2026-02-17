@@ -148,11 +148,11 @@ impl RegistrationState {
         }
 
         // --- PREPARE TWIST COVARIANCE (3x3 linear part) in BODY FRAME ---
-        // Current state: Vel (6..9) is World Frame.
+        // Current state: Vel (12..15) is World Frame.
         // Target: ROS Twist Linear is Body Frame.
         // Transform: Cov_body = R^T * Cov_world * R
 
-        let cov_vv_world = extract_3x3_block(&self.ekf.cov, 6, 6);
+        let cov_vv_world = extract_3x3_block(&self.ekf.cov, 12, 12);
         // Use r_bw (which is R^T) to rotate World->Body
         let cov_vv_body = rotate_covariance(&cov_vv_world, &r_bw);
 
@@ -790,8 +790,7 @@ impl crate::Registration for RegistrationState {
             eval_outer.write().unwrap().stop("ekf_correct").unwrap();
         };
 
-        // Prepare transform from lidar -> imu frame.
-        // This is the lidar pose in imu coordinate system, so we can lidar -> imu or imu -> lidar with invert.
+        // Prepare transform from LiDAR to IMU frame (T_I_L).
         let t_i_l = Isometry3::from_parts(
             Translation3::from(self.ekf.state.offset_t_l_i),
             UnitQuaternion::from_rotation_matrix(&Rotation3::from_matrix(
@@ -799,24 +798,16 @@ impl crate::Registration for RegistrationState {
             )),
         );
 
-        // Transform from world frame to imu frame (IEKF coordinate system).
-        // The original state.pose is in imu frame relative to the world, so we can imu -> world.
+        // Transform from IMU frame to World frame (T_W_I).
         let t_w_i = Isometry3::from_parts(
-            Translation3::from(self.ekf.state.pose().translation()),
+            Translation3::from(self.ekf.state.pos),
             UnitQuaternion::from_rotation_matrix(&Rotation3::from_matrix(
-                &self.ekf.state.pose().rotation().matrix(),
+                &self.ekf.state.rot.matrix(),
             )),
         );
 
-        // world -> lidar (TODO I wanted that BUUUUT it is actually imu coordinates and I can not find out why)
-        //  (world <- IMU) then (IMU then LiDAR)
+        // Calculate LiDAR pose in World frame (T_W_L = T_W_I * T_I_L).
         let t_w_l = t_w_i * t_i_l;
-
-        // lidar -> world
-        // let t_l_w = t_i_l * t_w_i.inverse();
-
-        // imu -> world
-        // let t_i_w = t_w_i.inverse();
 
         // Signal prelio it can use the ekf again
         ready_for_next

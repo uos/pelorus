@@ -745,7 +745,6 @@ fn lio_with_ready_signal(
                     t_world * t_last_current
                 } else {
                     // there is an orientation calculated by lifis for undeskewing the cloud, so we can use that
-                    let initial_guess_translation = t_world.translation * t_last_current.translation;
                     let initial_guess_rotation =
                         nalgebra::UnitQuaternion::from_quaternion(nalgebra::Quaternion::new(
                             lifis_tick.imu_odom.pose.pose.orientation.w,
@@ -753,10 +752,9 @@ fn lio_with_ready_signal(
                             lifis_tick.imu_odom.pose.pose.orientation.y,
                             lifis_tick.imu_odom.pose.pose.orientation.z,
                         ));
-                    nalgebra::Isometry3::from_parts(
-                        initial_guess_translation,
-                        initial_guess_rotation,
-                    )
+                    let initial_guess_lidar_local =
+                        nalgebra::Isometry3::from_parts(t_last_current.translation, initial_guess_rotation);
+                    t_world * initial_guess_lidar_local
                 }
             } else {
                 let initial_guess_translation = Translation3::new(

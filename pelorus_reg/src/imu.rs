@@ -218,6 +218,10 @@ impl ImuProcessing {
         // R_W_L = R_W_I * R_I_L = I  =>  R_W_I = R_I_L^{-1} = R_L_I
         ekf.state.rot = ekf.state.offset_r_l_i.inverse();
 
+        // Initialize position such that the LiDAR starts at the World origin.
+        // p_W_L = R_W_I * t_I_L + p_W_I = 0  => p_W_I = - R_W_I * t_I_L
+        ekf.state.pos = -(ekf.state.rot.matrix() * ekf.state.offset_t_l_i);
+
         // Gravity in IMU frame, then rotated to the new world frame: g_W = R_W_I * g_IMU
         let g_imu = -self.mean_acc / self.mean_acc.norm() * 9.81; // TODO PARAM
         ekf.state.grav = ekf.state.rot.matrix() * g_imu;
