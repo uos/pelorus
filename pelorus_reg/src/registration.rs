@@ -25,6 +25,7 @@ pub struct RegistrationState {
     pub map: spole::IVoxHashMap,
     laser_point_noise_cov: f64,
     ekf_max_iterations: usize,
+    base_to_lidar: Isometry3<f64>,
     #[cfg(feature = "cuda")]
     planes_cpu_buffer: Vec<PointXYZINormal>,
     #[cfg(feature = "cuda")]
@@ -56,6 +57,7 @@ impl RegistrationState {
         laser_point_noise_cov: f64,
         _neighbor_max_range: f64,
         lidar_to_imu: Isometry3<f64>,
+        base_to_lidar: Isometry3<f64>,
         knn_nearby_voxel_search_range: IVoxNearbyType,
         update_cov_sensitivity: f32,
         ekf_max_iterations: usize,
@@ -71,10 +73,15 @@ impl RegistrationState {
 
         Self {
             ekf,
-            imu_processing: crate::imu::ImuProcessing::new(imu_params, &lidar_to_imu),
+            imu_processing: crate::imu::ImuProcessing::new(
+                imu_params,
+                &lidar_to_imu,
+                &base_to_lidar,
+            ),
             map,
             laser_point_noise_cov,
             ekf_max_iterations,
+            base_to_lidar,
             #[cfg(feature = "cuda")]
             planes_cpu_buffer: Vec::new(),
             #[cfg(feature = "cuda")]
@@ -809,6 +816,10 @@ impl crate::Registration for RegistrationState {
         // Calculate LiDAR pose in World frame (T_W_L = T_W_I * T_I_L).
         let t_w_l = t_w_i * t_i_l;
 
+        // Calculate Base pose in World frame (T_W_B = T_W_L * T_L_B).
+        // self.base_to_lidar is T_B_L, so T_L_B is base_to_lidar.inverse().
+        let t_w_b = t_w_l * self.base_to_lidar.inverse();
+
         // Signal prelio it can use the ekf again
         ready_for_next
             .expect("we need ready_for_next!")
@@ -842,6 +853,7 @@ impl crate::Registration for RegistrationState {
 
         Ok(Some(crate::CloudRegisterResult {
             pose: t_w_l,
+            base_pose: t_w_b,
             avg_iterations: None,
         }))
     }

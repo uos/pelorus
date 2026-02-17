@@ -72,6 +72,7 @@ fn dispatch_output(
     last_output: &Arc<Mutex<Option<PelorusOutput>>>,
     sent_count: &mut usize,
     ext_lidar_to_imu: &nalgebra::Isometry3<f64>,
+    config: &LioConfig,
 ) {
     // Store latest output for synchronous queries during IMU init
     if let Ok(mut last) = last_output.lock() {
@@ -88,8 +89,7 @@ fn dispatch_output(
     if let Some(cb) = cb_opt {
         Python::attach(|py| {
             let dict = PyDict::new(py);
-            if let Err(e) =
-                PelorusHandle::fill_odom_dict(&dict, &output, ext_lidar_to_imu)
+            if let Err(e) = PelorusHandle::fill_odom_dict(&dict, &output, config, ext_lidar_to_imu)
             {
                 error!("failed to build odometry dict for callback #{sent_count}: {e}");
                 return;
@@ -155,6 +155,7 @@ fn processing_thread_main(thread: ProcessingThread) {
                     &thread.last_output,
                     &mut sent_count,
                     &lidar_to_imu,
+                    &thread.pipeline.config,
                 );
             }
             None => {
@@ -183,6 +184,7 @@ fn processing_thread_main(thread: ProcessingThread) {
                         &thread.last_output,
                         &mut sent_count,
                         &lidar_to_imu,
+                        &thread.pipeline.config,
                     );
                 }
             }
@@ -589,7 +591,7 @@ impl PelorusHandle {
                         &self.config.imu_params.initial_rotation_lidar_to_imu.into(),
                     ),
                 );
-                Self::fill_odom_dict(&dict, &odom, &lidar_to_imu)?;
+                Self::fill_odom_dict(&dict, &odom, &self.config, &lidar_to_imu)?;
                 Ok(Some(dict.into()))
             }
             Err(mpsc::TryRecvError::Empty) => Ok(None),
@@ -636,7 +638,7 @@ impl PelorusHandle {
             ),
         );
 
-        Self::fill_odom_dict(&dict, &odom, &lidar_to_imu)?;
+        Self::fill_odom_dict(&dict, &odom, &self.config, &lidar_to_imu)?;
         Ok(dict.into())
     }
 
@@ -686,6 +688,7 @@ impl PelorusHandle {
     fn fill_odom_dict(
         dict: &Bound<'_, PyDict>,
         odom: &PelorusOutput,
+        config: &LioConfig,
         ext_lidar_to_imu: &nalgebra::Isometry3<f64>,
     ) -> PyResult<()> {
         dict.set_item("timestamp_sec", odom.timestamp.sec)?;
@@ -694,11 +697,20 @@ impl PelorusHandle {
         let timestamp = sec_nanosec_to_timestamp(odom.timestamp.sec, odom.timestamp.nanosec);
         dict.set_item("timestamp", timestamp)?;
 
-        let (pose, linvel, angvel) = (
-            odom.pose,
-            odom.pose.rotation.inverse() * odom.linear_velocity,
-            ext_lidar_to_imu.rotation.inverse() * odom.angular_velocity,
-        );
+        let (pose, linvel, angvel) = if let Some(ref _base_frame) = config.base_link_frame {
+            let t_w_b = odom.pose * config.base_to_lidar.inverse();
+            let lin_vel_b = t_w_b.rotation.inverse() * odom.linear_velocity;
+            let r_b_i =
+                config.base_to_lidar.rotation.inverse() * ext_lidar_to_imu.rotation.inverse();
+            let ang_vel_b = r_b_i * odom.angular_velocity;
+            (t_w_b, lin_vel_b, ang_vel_b)
+        } else {
+            (
+                odom.pose,
+                odom.pose.rotation.inverse() * odom.linear_velocity,
+                ext_lidar_to_imu.rotation.inverse() * odom.angular_velocity,
+            )
+        };
 
         let position = vec![pose.translation.x, pose.translation.y, pose.translation.z];
         dict.set_item("position", position)?;

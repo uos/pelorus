@@ -183,7 +183,7 @@ wheel {
   # covariance = 0.001
 
   # Standard deviation for kinematic constraints in undistortion (lower = stronger constraints)
-  kinematic_constraint_std = 0.1
+  kinematic_constraint_std = 0.001
 
   # @recommended
   # Full3D | Differential | Holonomic2D | Ackermann. Applies kinematic constraints on the IEKF.
@@ -221,6 +221,20 @@ output {
   # @recommended
   # Which frame to publish the TF messages to
   global_frame = "lio_init"
+
+  # @recommended
+  base_link {
+    # If not empty, the odometry and TF will be published for this frame instead of the LiDAR frame.
+    frame_id = ""
+
+    from_lidar_transform {
+      # Pose of the LiDAR in the base_link frame.
+      translation = [0.0mm, 0.0mm, 0.0mm]
+      rotation = [ [1.0, 0.0, 0.0],
+                   [0.0, 1.0, 0.0],
+                   [0.0, 0.0, 1.0] ]
+    }
+  }
 
   mapping {
     # When "mapping" flag is enabled, this defines the resolution of the global map.

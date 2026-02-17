@@ -31,6 +31,8 @@ pub struct ImuProcessing {
     mean_gyr: Vector3<f64>,
     lidar_to_imu_t: Vector3<f64>,
     lidar_to_imu_r: Matrix3<f64>,
+    lidar_to_base_t: Vector3<f64>,
+    lidar_to_base_r: Matrix3<f64>,
     pub angvel_last: Vector3<f64>,
     acc_s_last: Vector3<f64>,
     imu_state: crate::iekf::StateIKFom,
@@ -60,6 +62,8 @@ impl Default for ImuProcessing {
             mean_gyr: Vector3::zeros(),
             lidar_to_imu_t: Vector3::zeros(),
             lidar_to_imu_r: Matrix3::identity(),
+            lidar_to_base_t: Vector3::zeros(),
+            lidar_to_base_r: Matrix3::identity(),
             ekf_cov_gyr_bias: Matrix3::zeros(),
             ekf_cov_acc_bias: Matrix3::zeros(),
             ekf_cov_acc: Matrix3::zeros(),
@@ -155,7 +159,11 @@ impl Pose6D {
 }
 
 impl ImuProcessing {
-    pub fn new(params: &ImuParameters, lidar_to_imu: &Isometry3<f64>) -> Self {
+    pub fn new(
+        params: &ImuParameters,
+        lidar_to_imu: &Isometry3<f64>,
+        base_to_lidar: &Isometry3<f64>,
+    ) -> Self {
         let mut s = Self::default();
 
         s.ekf_cov_acc[(0, 0)] = params.cov_acc[0];
@@ -183,6 +191,10 @@ impl ImuProcessing {
 
         s.lidar_to_imu_r = *lidar_to_imu.rotation.to_rotation_matrix().matrix();
         s.lidar_to_imu_t = lidar_to_imu.translation.vector;
+
+        let lidar_to_base = base_to_lidar.inverse();
+        s.lidar_to_base_r = *lidar_to_base.rotation.to_rotation_matrix().matrix();
+        s.lidar_to_base_t = lidar_to_base.translation.vector;
 
         s
     }
@@ -214,13 +226,20 @@ impl ImuProcessing {
         ekf.state.offset_t_l_i = self.lidar_to_imu_t;
         ekf.state.offset_r_l_i = sophus_lie::Rotation3::try_from_mat(&self.lidar_to_imu_r).unwrap();
 
-        // Initialize R_W_I so the world frame aligns with the lidar frame (not the IMU frame).
-        // R_W_L = R_W_I * R_I_L = I  =>  R_W_I = R_I_L^{-1} = R_L_I
-        ekf.state.rot = ekf.state.offset_r_l_i.inverse();
+        // Initialize R_W_I so the world frame aligns with the base frame (not the IMU or LiDAR frame).
+        // R_W_B = R_W_I * R_I_L * R_L_B = I  =>  R_W_I = (R_I_L * R_L_B)^{-1} = R_B_L * R_L_I
+        // Note: self.lidar_to_base_r is R_B_L.
+        let r_b_l = self.lidar_to_base_r;
+        let r_l_i = self.lidar_to_imu_r.transpose();
+        let r_w_i_mat = r_b_l * r_l_i;
+        ekf.state.rot = sophus_lie::Rotation3::try_from_mat(&r_w_i_mat).unwrap();
 
-        // Initialize position such that the LiDAR starts at the World origin.
-        // p_W_L = R_W_I * t_I_L + p_W_I = 0  => p_W_I = - R_W_I * t_I_L
-        ekf.state.pos = -(ekf.state.rot.matrix() * ekf.state.offset_t_l_i);
+        // Initialize position such that the Base starts at the World origin.
+        // p_W_B = R_W_I * (R_I_L * p_L_B + t_I_L) + p_W_I = 0
+        // p_W_I = - R_W_I * (R_I_L * p_L_B + t_I_L)
+        let p_l_b = self.lidar_to_base_t;
+        let p_i_b = self.lidar_to_imu_r * p_l_b + self.lidar_to_imu_t;
+        ekf.state.pos = -(ekf.state.rot.matrix() * p_i_b);
 
         // Gravity in IMU frame, then rotated to the new world frame: g_W = R_W_I * g_IMU
         let g_imu = -self.mean_acc / self.mean_acc.norm() * 9.81; // TODO PARAM
