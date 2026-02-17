@@ -222,9 +222,6 @@ output {
   # Which frame to publish the TF messages to
   global_frame = "lio_init"
 
-  # The cloud is processed in the IMU coordinate system. With this parameter, each point that wants to be published is first transformed back to the Lidar coordinate system again.
-  lidar_as_map_tf_base = true
-
   mapping {
     # When "mapping" flag is enabled, this defines the resolution of the global map.
     resolution = 20cm

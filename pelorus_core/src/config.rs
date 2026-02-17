@@ -367,7 +367,6 @@ fn ast_to_config_inner(
         show_tui,
         debug_fps,
         map_frame,
-        lidar_as_map_tf,
         logger_prefix,
         mapping_resolution,
         odom_qos,
@@ -408,7 +407,6 @@ fn ast_to_config_inner(
         let undistorted_static_world = resolve_var!(rerun_ns, "undistorted_static_world", as bool, Rhs::Val(Val::BoolVal(b)) => {b})?;
 
         let map_frame = resolve_var!(output_ns, "global_frame", as String, Rhs::Val(Val::StringVal(s)) | Rhs::Path(s) => {s})?;
-        let lidar_as_map_tf = resolve_var!(output_ns, "lidar_as_map_tf_base", as bool, Rhs::Val(Val::BoolVal(b)) => {b})?;
         let logger_prefix = resolve_var!(output_ns, "logger_prefix", as String, Rhs::Val(Val::StringVal(s)) | Rhs::Path(s) => {s})?;
         let mapping_ns = output_ns.filter_ns(&["mapping"]);
         let mapping_resolution = resolve_var!(mapping_ns, "resolution", as f32, Rhs::Val(Val::UnitedVal(UnitVal::LengthVal(v))) => { v.get::<meter>() as f32 })?;
@@ -423,7 +421,6 @@ fn ast_to_config_inner(
             show_tui,
             debug_fps,
             map_frame,
-            lidar_as_map_tf,
             logger_prefix,
             mapping_resolution,
             odom_qos,
@@ -542,7 +539,6 @@ fn ast_to_config_inner(
         lidar_odom_cov,
         show_tui,
         debug_fps,
-        lidar_as_map_tf,
         mapping_resolution,
         odom_qos,
         path_qos,
