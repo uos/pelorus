@@ -282,15 +282,26 @@ fn processing_thread_main(thread: ProcessingThread) {
 
 fn convert_to_c_odometry(
     odom: &PelorusOutput,
-    _config: &LioConfig,
+    config: &LioConfig,
     ext_lidar_to_imu: &nalgebra::Isometry3<f64>,
 ) -> pelorus_odometry {
-    let (pose, linvel, angvel, cloud) = (
-        odom.pose,
-        odom.pose.rotation.inverse() * odom.linear_velocity,
-        ext_lidar_to_imu.rotation.inverse() * odom.angular_velocity,
-        odom.cloud.clone(),
-    );
+    let (pose, linvel, angvel, _child_frame) = if let Some(ref base_frame) = config.base_link_frame
+    {
+        let t_w_b = odom.pose * config.base_to_lidar.inverse();
+        let lin_vel_b = t_w_b.rotation.inverse() * odom.linear_velocity;
+        let r_b_i = config.base_to_lidar.rotation.inverse() * ext_lidar_to_imu.rotation.inverse();
+        let ang_vel_b = r_b_i * odom.angular_velocity;
+        (t_w_b, lin_vel_b, ang_vel_b, base_frame.clone())
+    } else {
+        (
+            odom.pose,
+            odom.pose.rotation.inverse() * odom.linear_velocity,
+            ext_lidar_to_imu.rotation.inverse() * odom.angular_velocity,
+            odom.frame_id.clone(),
+        )
+    };
+
+    let cloud = odom.cloud.clone();
 
     let (pvec, pcount) = if cloud.is_empty() {
         (ptr::null_mut(), 0)

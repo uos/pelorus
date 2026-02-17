@@ -433,6 +433,8 @@ pub struct LioConfig {
     pub dist_update_sensitivity: f32,
     pub mapping_resolution: f32,
     pub rerun_undistorted_static_world: bool,
+    pub base_link_frame: Option<String>,
+    pub base_to_lidar: Isometry3<f64>,
 }
 
 pub fn timestamp_to_secs(t: &TimeMsg) -> f64 {

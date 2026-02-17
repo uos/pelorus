@@ -752,8 +752,10 @@ fn lio_with_ready_signal(
                             lifis_tick.imu_odom.pose.pose.orientation.y,
                             lifis_tick.imu_odom.pose.pose.orientation.z,
                         ));
-                    let initial_guess_lidar_local =
-                        nalgebra::Isometry3::from_parts(t_last_current.translation, initial_guess_rotation);
+                    let initial_guess_lidar_local = nalgebra::Isometry3::from_parts(
+                        t_last_current.translation,
+                        initial_guess_rotation,
+                    );
                     t_world * initial_guess_lidar_local
                 }
             } else {
@@ -809,9 +811,15 @@ fn lio_with_ready_signal(
             let old_t_world = t_world;
 
             // t_world represents the pose of the child_frame in the map_frame.
-            // We always output the pose of the LiDAR (T_W_L) in the odometry.
-            // register_pose.pose is the LiDAR pose T_W_L = T_W_I * T_I_L.
-            t_world = register_pose.pose;
+            // If base_link_frame is configured, we output the pose of the Base (T_W_B).
+            // Otherwise, we output the pose of the LiDAR (T_W_L).
+            let (use_pose, child_frame) = if let Some(ref base_frame) = config.base_link_frame {
+                (register_pose.base_pose, base_frame.clone())
+            } else {
+                (register_pose.pose, orig_frame.clone())
+            };
+
+            t_world = use_pose;
 
             // transformation from the last pose to the current pose in the local frame
             t_last_current = old_t_world.inverse() * t_world;
@@ -822,7 +830,7 @@ fn lio_with_ready_signal(
                 nanosec: lifis_tick.odom_time.nanosec,
             };
             pelorus_odom.header.frame_id = config.prelio_params.map_frame.clone();
-            pelorus_odom.child_frame_id = orig_frame.clone();
+            pelorus_odom.child_frame_id = child_frame.clone();
             pelorus_odom.pose.pose.position.x = t_world.translation.vector.x;
             pelorus_odom.pose.pose.position.y = t_world.translation.vector.y;
             pelorus_odom.pose.pose.position.z = t_world.translation.vector.z;
@@ -831,14 +839,22 @@ fn lio_with_ready_signal(
             pelorus_odom.pose.pose.orientation.z = t_world.rotation.k;
             pelorus_odom.pose.pose.orientation.w = t_world.rotation.w;
 
-            // Fill velocities in the child frame (LiDAR)
+            // Fill velocities in the child frame (Base or LiDAR)
             let lin_vel_body = t_world.rotation.inverse() * ekf_state.linear_velocity;
             pelorus_odom.twist.twist.linear.x = lin_vel_body.x;
             pelorus_odom.twist.twist.linear.y = lin_vel_body.y;
             pelorus_odom.twist.twist.linear.z = lin_vel_body.z;
 
-            let ang_vel_body =
-                ekf_state.lidar_imu_extrinsic.rotation.inverse() * ekf_state.angular_velocity;
+            let ang_vel_body = if config.base_link_frame.is_some() {
+                // Omega_B = R_B_L * Omega_L + R_B_L * (R_L_I * Omega_I_from_IMU) ... wait.
+                // Angular velocity is simplest in the IMU frame (ekf_state.angular_velocity).
+                // Omega_B = R_B_I * Omega_I = (R_B_L * R_L_I) * Omega_I
+                let r_b_l = config.base_to_lidar.rotation.inverse();
+                let r_l_i = ekf_state.lidar_imu_extrinsic.rotation.inverse();
+                (r_b_l * r_l_i) * ekf_state.angular_velocity
+            } else {
+                ekf_state.lidar_imu_extrinsic.rotation.inverse() * ekf_state.angular_velocity
+            };
             pelorus_odom.twist.twist.angular.x = ang_vel_body.x;
             pelorus_odom.twist.twist.angular.y = ang_vel_body.y;
             pelorus_odom.twist.twist.angular.z = ang_vel_body.z;
@@ -1028,9 +1044,7 @@ fn lio_with_ready_signal(
                     let mut total_map = PointCloud2Msg::try_from_vec(
                         total_map
                             .iter()
-                            .map(|p| {
-                                PointXYZ::new(p.x, p.y, p.z)
-                            })
+                            .map(|p| PointXYZ::new(p.x, p.y, p.z))
                             .collect(),
                     )
                     .unwrap();
@@ -1050,7 +1064,7 @@ fn lio_with_ready_signal(
                         nanosec: lifis_tick.odom_time.nanosec,
                     },
                 },
-                child_frame_id: orig_frame,
+                child_frame_id: child_frame,
                 transform: Transform {
                     translation: Vector3 {
                         x: t_world.translation.vector.x as f64,
