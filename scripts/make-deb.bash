@@ -24,7 +24,12 @@ shopt -s dotglob nullglob
 mkdir pelorus-src
 mv -- * pelorus-src/
 shopt -u dotglob nullglob
-tar -cJf "ros-$ROS_DISTRO-pelorus_$xml_ver.orig.tar.xz" pelorus-src
+
+if [ "${PELORUS_CUDA:-}" = 1 ]; then
+    tar -cJf "ros-${ROS_DISTRO}-pelorus-cuda${CUDA_PART}_${xml_ver}.orig.tar.xz" pelorus-src
+else
+    tar -cJf "ros-${ROS_DISTRO}-pelorus_${xml_ver}.orig.tar.xz" pelorus-src
+fi
 
 cd pelorus-src
 
