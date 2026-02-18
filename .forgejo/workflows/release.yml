@@ -738,7 +738,7 @@ jobs:
           export CUDA_PART="${{ matrix.cuda }}"
           sed -i "s|<name>pelorus</name>|<name>pelorus-cuda${CUDA_PART}</name>|" package.xml
           sed -i "s|project(pelorus)|project(pelorus-cuda${CUDA_PART})|" CMakeLists.txt
-          sed -i "s/^\[features\]/[[bin]]\nname = \"pelorus-cuda${CUDA_VERSION}\"\npath = \"src\/main.rs\"\n\n[features]/" pelorus/Cargo.toml
+          sed -i "s/^\[features\]/[[bin]]\nname = \"pelorus-cuda${CUDA_PART}\"\npath = \"src\/main.rs\"\n\n[features]/" pelorus/Cargo.toml
 
           export PELORUS_CUDA=1
           bash ./scripts/make-deb.bash
@@ -816,7 +816,7 @@ jobs:
           export CUDA_PART="${{ matrix.cuda }}"
           sed -i "s|<name>pelorus</name>|<name>pelorus-cuda${CUDA_PART}</name>|" package.xml
           sed -i "s|project(pelorus)|project(pelorus-cuda${CUDA_PART})|" CMakeLists.txt
-          sed -i "s/^\[features\]/[[bin]]\nname = \"pelorus-cuda${CUDA_VERSION}\"\npath = \"src\/main.rs\"\n\n[features]/" pelorus/Cargo.toml
+          sed -i "s/^\[features\]/[[bin]]\nname = \"pelorus-cuda${CUDA_PART}\"\npath = \"src\/main.rs\"\n\n[features]/" pelorus/Cargo.toml
 
           export PELORUS_CUDA=1
           bash ./scripts/make-deb.bash
@@ -894,7 +894,7 @@ jobs:
           export CUDA_PART="${{ matrix.cuda }}"
           sed -i "s|<name>pelorus</name>|<name>pelorus-cuda${CUDA_PART}</name>|" package.xml
           sed -i "s|project(pelorus)|project(pelorus-cuda${CUDA_PART})|" CMakeLists.txt
-          sed -i "s/^\[features\]/[[bin]]\nname = \"pelorus-cuda${CUDA_VERSION}\"\npath = \"src\/main.rs\"\n\n[features]/" pelorus/Cargo.toml
+          sed -i "s/^\[features\]/[[bin]]\nname = \"pelorus-cuda${CUDA_PART}\"\npath = \"src\/main.rs\"\n\n[features]/" pelorus/Cargo.toml
 
           export PELORUS_CUDA=1
           bash ./scripts/make-deb.bash
