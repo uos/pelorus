@@ -1,6 +1,6 @@
 //! C FFI bindings for Pelorus
 
-use std::ffi::{CStr, c_char, c_void};
+use std::ffi::{CStr, CString, c_char, c_void};
 
 use std::path::Path;
 use std::ptr;
@@ -162,13 +162,13 @@ pub struct pelorus_odometry {
     pub timestamp_nanosec: u32,
 
     // Pose (position + orientation)
-    // FRAME: Pose is in Lidar World frame.
+    // FRAME: Pose of child_frame_id in World frame.
     pub position: [f64; 3],         // [x, y, z] in meters
     pub orientation: [f64; 4],      // quaternion [w, x, y, z]
     pub pose_covariance: [f64; 36], // 6x6 covariance matrix, in IMU World frame
 
     // Velocity (linear + angular)
-    // FRAME: Velocities and covariances are in Lidar World frame.
+    // FRAME: Expressed in child_frame_id.
     pub linear_velocity: [f64; 3],   // [vx, vy, vz] in m/s
     pub angular_velocity: [f64; 3],  // [wx, wy, wz] in rad/s
     pub twist_covariance: [f64; 36], // 6x6 covariance matrix, in IMU World frame
@@ -180,6 +180,11 @@ pub struct pelorus_odometry {
     // FRAME: In Lidar World frame
     pub points: *mut pelorus_point_xyzi,
     pub num_points: usize,
+
+    // Child frame ID: the frame whose pose is expressed above.
+    // Set to the base_link frame name when configured, otherwise the LiDAR input frame.
+    // Must be freed via pelorus_free_odometry().
+    pub child_frame_id: *mut c_char,
 }
 
 // Status codes used by the C API. Mirrors `pelorus_status` in the public header.
@@ -285,21 +290,15 @@ fn convert_to_c_odometry(
     config: &LioConfig,
     ext_lidar_to_imu: &nalgebra::Isometry3<f64>,
 ) -> pelorus_odometry {
-    let (pose, linvel, angvel, _child_frame) = if let Some(ref base_frame) = config.base_link_frame
-    {
-        let t_w_b = odom.pose * config.base_to_lidar.inverse();
-        let lin_vel_b = t_w_b.rotation.inverse() * odom.linear_velocity;
-        let r_b_i = config.base_to_lidar.rotation.inverse() * ext_lidar_to_imu.rotation.inverse();
-        let ang_vel_b = r_b_i * odom.angular_velocity;
-        (t_w_b, lin_vel_b, ang_vel_b, base_frame.clone())
-    } else {
-        (
-            odom.pose,
-            odom.pose.rotation.inverse() * odom.linear_velocity,
-            ext_lidar_to_imu.rotation.inverse() * odom.angular_velocity,
-            odom.frame_id.clone(),
-        )
-    };
+    // Always apply base_to_lidar (identity by default = no-op when unconfigured).
+    let pose = odom.pose * config.base_to_lidar.inverse();
+    let linvel = pose.rotation.inverse() * odom.linear_velocity;
+    let r_b_i = config.base_to_lidar.rotation.inverse() * ext_lidar_to_imu.rotation.inverse();
+    let angvel = r_b_i * odom.angular_velocity;
+    let child_frame = config.base_link_frame.as_deref().unwrap_or(&odom.frame_id);
+    let child_frame_id = CString::new(child_frame)
+        .map(|s| s.into_raw())
+        .unwrap_or(ptr::null_mut());
 
     let cloud = odom.cloud.clone();
 
@@ -335,6 +334,7 @@ fn convert_to_c_odometry(
         scan_id: odom.scan_id,
         points: pvec,
         num_points: pcount,
+        child_frame_id,
     }
 }
 
@@ -1117,6 +1117,10 @@ pub unsafe extern "C" fn pelorus_free_odometry(odom: *mut pelorus_odometry) {
             drop(points);
             odom_data.points = ptr::null_mut();
             odom_data.num_points = 0;
+        }
+        if !odom_data.child_frame_id.is_null() {
+            drop(CString::from_raw(odom_data.child_frame_id));
+            odom_data.child_frame_id = ptr::null_mut();
         }
     }
 }

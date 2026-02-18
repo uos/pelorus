@@ -111,33 +111,37 @@ typedef struct pelorus_point_xyzi {
  *
  * **Coordinate Frame:**
  * - `position`, `orientation`, `linear_velocity`, `angular_velocity`, and
- * `points`: Expressed in the **Lidar World frame**.
+ * `points`: The pose/velocity is that of the `child_frame_id` (LiDAR frame by
+ * default, or the configured base_link frame) expressed in the World frame.
  * - `pose_covariance` and `twist_covariance`: Expressed in the **IMU World
  * frame**.
  *
  * The world frame is established at initialization with the Z-axis pointing
  * upward (anti-gravity), aligned with the IMU orientation at startup.
  *
- * Memory for the points array is allocated by Pelorus and must be freed using
- * pelorus_free_odometry() after use.
+ * Memory for the points array and child_frame_id string are allocated by
+ * Pelorus and must be freed using pelorus_free_odometry() after use.
  */
 typedef struct pelorus_odometry {
   int32_t timestamp_sec;      /**< Timestamp seconds since epoch */
   uint32_t timestamp_nanosec; /**< Timestamp nanoseconds part */
-  double position[3]; /**< Position [x, y, z] in meters in Lidar World frame */
-  double orientation[4]; /**< Quaternion [w, x, y, z] in Lidar World frame */
+  double position[3]; /**< Position [x, y, z] in meters in World frame */
+  double orientation[4]; /**< Quaternion [w, x, y, z] in World frame */
   double pose_covariance[36];  /**< 6x6 pose covariance (row-major) in IMU World
                                   frame */
-  double linear_velocity[3];   /**< Linear velocity [vx, vy, vz] m/s in Lidar
-                                  World frame */
-  double angular_velocity[3];  /**< Angular velocity [wx, wy, wz] rad/s in Lidar
-                                  World frame */
+  double linear_velocity[3];   /**< Linear velocity [vx, vy, vz] m/s in child
+                                  frame */
+  double angular_velocity[3];  /**< Angular velocity [wx, wy, wz] rad/s in child
+                                  frame */
   double twist_covariance[36]; /**< 6x6 twist covariance (row-major) in IMU
                                   World frame */
   uint64_t scan_id; /**< Scan id assigned when the pointcloud was added */
-  pelorus_point_xyzi *points; /**< Registered point cloud in Lidar World frame
-                                 (must free when `points_memory==0`) */
+  pelorus_point_xyzi *points; /**< Registered point cloud in World frame
+                                 (must free with pelorus_free_odometry()) */
   uintptr_t num_points;       /**< Number of points in cloud */
+  char *child_frame_id; /**< Frame whose pose is expressed above (base_link when
+                           configured, else LiDAR input frame). Freed by
+                           pelorus_free_odometry(). */
 } pelorus_odometry;
 
 /**
