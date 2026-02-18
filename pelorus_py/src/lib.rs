@@ -697,20 +697,13 @@ impl PelorusHandle {
         let timestamp = sec_nanosec_to_timestamp(odom.timestamp.sec, odom.timestamp.nanosec);
         dict.set_item("timestamp", timestamp)?;
 
-        let (pose, linvel, angvel) = if let Some(ref _base_frame) = config.base_link_frame {
-            let t_w_b = odom.pose * config.base_to_lidar.inverse();
-            let lin_vel_b = t_w_b.rotation.inverse() * odom.linear_velocity;
-            let r_b_i =
-                config.base_to_lidar.rotation.inverse() * ext_lidar_to_imu.rotation.inverse();
-            let ang_vel_b = r_b_i * odom.angular_velocity;
-            (t_w_b, lin_vel_b, ang_vel_b)
-        } else {
-            (
-                odom.pose,
-                odom.pose.rotation.inverse() * odom.linear_velocity,
-                ext_lidar_to_imu.rotation.inverse() * odom.angular_velocity,
-            )
-        };
+        // Always apply base_to_lidar (identity by default = no-op when unconfigured).
+        let pose = odom.pose * config.base_to_lidar.inverse();
+        let linvel = pose.rotation.inverse() * odom.linear_velocity;
+        let r_b_i = config.base_to_lidar.rotation.inverse() * ext_lidar_to_imu.rotation.inverse();
+        let angvel = r_b_i * odom.angular_velocity;
+        let frame_id = config.base_link_frame.as_deref().unwrap_or(&odom.frame_id);
+        dict.set_item("frame_id", frame_id)?;
 
         let position = vec![pose.translation.x, pose.translation.y, pose.translation.z];
         dict.set_item("position", position)?;

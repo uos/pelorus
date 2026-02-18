@@ -17,678 +17,678 @@ env:
   CARGO_BUILD_JOBS: 2
 
 jobs:
-  # sanity:
-  #   runs-on: ubuntu-dev-noble-arm
-  #   steps:
-  #     - uses: actions/checkout@v4
-  #     - name: Check
-  #       run: |
-  #         rustup toolchain uninstall stable
-  #         rustup toolchain install stable
-  #         cargo check
-  #     - name: Validate packaging files versions
-  #       run: |
-  #         set -euo pipefail
-  #         ulimit -n 65536
-  #         apt-get install -y cmake
-  #         VERSION=$(toml get --raw Cargo.toml workspace.package.version)
-  #         echo "Workspace version: $VERSION"
-  #         cmake -S pelorus_c -B pelorus_c/build -DCMAKE_INSTALL_PREFIX=/usr
-
-  #         if ! grep -q "Version: $VERSION" pelorus_c/build/pelorus.pc; then
-  #           echo "pelorus.pc version mismatch or missing" >&2
-  #           echo "pelorus.pc content:" >&2
-  #           sed -n '1,120p' pelorus_c/build/pelorus.pc >&2 || true
-  #           exit 1
-  #         fi
-
-  #         if ! grep -q "pelorus_PACKAGE_VERSION \"${VERSION}\"" pelorus_c/build/pelorusConfig.cmake; then
-  #           echo "pelorusConfig.cmake version mismatch or missing" >&2
-  #           echo "pelorusConfig.cmake content:" >&2
-  #           sed -n '1,120p' pelorus_c/build/pelorusConfig.cmake >&2 || true
-  #           exit 1
-  #         fi
-
-  #         echo "Packaging files contain correct version: $VERSION"
-
-  # clean-1:
-  #   needs:
-  #     - sanity
-  #   strategy:
-  #     matrix:
-  #       include:
-  #         - runner: bookworm
-  #         - runner: macos-latest
-  #   runs-on: ${{ matrix.runner }}
-  #   steps:
-  #     - name: Docker clean
-  #       run: |
-  #         docker system prune -af
-
-  # rawlibs:
-  #   needs:
-  #     - clean-1
-  #   strategy:
-  #     matrix:
-  #       include:
-  #         - image: docker.io/stelzo/ubuntu-dev:noble
-  #           arch: amd64
-  #           repo: noble
-  #           runner: ubuntu-latest
-  #         - image: docker.io/stelzo/ubuntu-dev:noble
-  #           arch: arm64
-  #           repo: noble
-  #           runner: ubuntu-latest-arm
-  #         - image: docker.io/stelzo/ubuntu-dev:jammy
-  #           arch: amd64
-  #           repo: jammy
-  #           runner: ubuntu-latest
-  #         - image: docker.io/stelzo/ubuntu-dev:jammy
-  #           repo: jammy
-  #           arch: arm64
-  #           runner: ubuntu-latest-arm
-  #   runs-on: ${{ matrix.runner }}
-  #   container:
-  #     image: ${{ matrix.image }}
-  #   steps:
-  #     - uses: actions/checkout@v4
-  #     - name: Build
-  #       env:
-  #         IMAGE: ${{ matrix.image }}
-  #         ARCH: ${{ matrix.arch }}
-  #       run: |
-  #         set -euo pipefail
-  #         ulimit -n 65536
-  #         apt-get install -y cmake
-  #         VERSION=$(toml get --raw Cargo.toml workspace.package.version)
-  #         VERSION=$VERSION-1
-  #         rustup toolchain uninstall stable
-  #         rustup toolchain install stable
-  #         mkdir -p "dist/${ARCH}"
-
-  #         # ------- RAW
-  #         cargo build -p pelorus_c --release
-  #         mv target/release/libpelorus.so dist/${ARCH}/
-  #         mv target/release/libpelorus.a  dist/${ARCH}/
-
-  #         cargo build -p pelorus --features rerun,evaluate --release
-  #         mv target/release/pelorus dist/${ARCH}/
-
-  #         # ------- DEB
-  #         # -- lib
-  #         updatetoml=pelorus_c/Cargo.toml
-  #         DEB_NAME="libpelorus"
-  #         LIB_DEB=$DEB_NAME
-  #         tmp=$(mktemp)
-  #         toml set "$updatetoml" 'package.metadata.deb.name' "$DEB_NAME" >"$tmp"
-  #         mv "$tmp" "$updatetoml"
-
-  #         cargo deb --package pelorus_c
-
-  #         # -- dev
-  #         DEB_NAME="libpelorus-dev"
-  #         DEV_DEB=$DEB_NAME
-  #         updatetoml=pelorus_c/deb-dev/Cargo.toml
-  #         tmp=$(mktemp)
-  #         toml set "$updatetoml" 'package.metadata.deb.name' "$DEB_NAME" >"$tmp"
-  #         mv "$tmp" "$updatetoml"
-
-  #         # - pin dependencies
-  #         tmp=$(mktemp)
-  #         toml set "$updatetoml" 'package.metadata.deb.depends' "${LIB_DEB} ( = ${VERSION} )" >"$tmp"
-  #         mv "$tmp" "$updatetoml"
-
-  #         # Generate packaging artifacts with CMake and copy them into the dev crate
-  #         cmake -S pelorus_c -B pelorus_c/build -DCMAKE_INSTALL_PREFIX=/usr
-  #         cp pelorus_c/build/pelorus.pc pelorus_c/deb-dev/pelorus.pc
-  #         cp pelorus_c/build/pelorusConfig.cmake pelorus_c/deb-dev/pelorusConfig.cmake
-
-  #         cargo deb --package libpelorus-dev
-
-  #         # -- bin
-  #         DEB_NAME="pelorus"
-  #         updatetoml=pelorus/Cargo.toml
-  #         tmp=$(mktemp)
-  #         toml set "$updatetoml" 'package.metadata.deb.name' "$DEB_NAME" >"$tmp"
-  #         mv "$tmp" "$updatetoml"
-
-  #         cargo deb --package pelorus --features rerun,evaluate
-
-  #         # prepare upload
-  #         mv target/debian/*.deb dist/${ARCH}/
-
-  #     - name: Upload
-  #       uses: actions/upload-artifact@v3
-  #       with:
-  #         name: artifacts-rawlibs-${{ matrix.repo }}
-  #         path: dist/
-
-  # clean-2:
-  #   needs:
-  #     - rawlibs
-  #   strategy:
-  #     matrix:
-  #       include:
-  #         - runner: bookworm
-  #         - runner: macos-latest
-  #   runs-on: ${{ matrix.runner }}
-  #   steps:
-  #     - name: Docker clean
-  #       run: |
-  #         docker system prune -af
-
-  # macos:
-  #   needs:
-  #     - clean-2
-  #   strategy:
-  #     matrix:
-  #       include:
-  #         - target: aarch64-apple-darwin
-  #           arch: arm64
-  #         - target: x86_64-apple-darwin
-  #           arch: amd64
-  #   # runs-on: ubuntu-dev-noble-arm
-  #   runs-on: macos-latest
-  #   env:
-  #     TARGET: ${{ matrix.target }}
-  #     ARCH: ${{ matrix.arch }}
-  #     SDKROOT: /Library/Developer/CommandLineTools/SDKs/MacOSX.sdk
-  #   steps:
-  #     - uses: actions/checkout@v4
-  #     - name: Build
-  #       run: |
-  #         rustup toolchain uninstall stable
-  #         rustup toolchain install stable
-  #         rustup target add $TARGET
-  #         ulimit -n 65536
-  #         mkdir -p "dist/${ARCH}"
-
-  #         export RUSTFLAGS="-C link-arg=-F${SDKROOT}/System/Library/Frameworks -C link-arg=-L${SDKROOT}/usr/lib -C link-arg=-isysroot -C link-arg=${SDKROOT}"
-  #         cargo zigbuild --target $TARGET "$@" --release --package pelorus_c
-  #         mv target/$TARGET/release/libpelorus.dylib dist/${ARCH}/
-  #         mv target/$TARGET/release/libpelorus.a  dist/${ARCH}/
-
-  #         cargo zigbuild --target $TARGET "$@" --release --package pelorus
-  #         mv target/$TARGET/release/pelorus dist/${ARCH}/
-
-  #     - name: Upload
-  #       uses: actions/upload-artifact@v3
-  #       with:
-  #         name: artifacts-macos
-  #         path: dist/
-
-  # rawlibs-cuda-12-6:
-  #   needs:
-  #     - macos
-  #   strategy:
-  #     matrix:
-  #       include:
-  #         - image: docker.io/stelzo/ubuntu-dev:noble-cu12-6
-  #           arch: amd64
-  #           repo: noble
-  #           cuda: 12-6
-  #           runner: ubuntu-latest
-  #         - image: docker.io/stelzo/ubuntu-dev:noble-cu12-6
-  #           arch: arm64
-  #           repo: noble
-  #           cuda: 12-6
-  #           runner: ubuntu-latest-arm
-  #         - image: docker.io/stelzo/ubuntu-dev:jammy-cu12-6
-  #           arch: amd64
-  #           repo: jammy
-  #           cuda: 12-6
-  #           runner: ubuntu-latest
-  #         - image: docker.io/stelzo/ubuntu-dev:jammy-cu12-6
-  #           arch: arm64
-  #           repo: jammy
-  #           cuda: 12-6
-  #           runner: ubuntu-latest-arm
-  #   runs-on: ${{ matrix.runner }}
-  #   container:
-  #     image: ${{ matrix.image }}
-  #   env:
-  #     CUDA_HOME: /usr/local/cuda
-  #   steps:
-  #     - uses: actions/checkout@v4
-  #     - name: Build
-  #       env:
-  #         IMAGE: ${{ matrix.image }}
-  #         ARCH: ${{ matrix.arch }}
-  #       run: |
-  #         set -euo pipefail
-  #         ulimit -n 65536
-  #         apt-get install -y cmake
-  #         VERSION=$(toml get --raw Cargo.toml workspace.package.version)
-  #         rustup toolchain uninstall stable
-  #         rustup toolchain install stable
-
-  #         mkdir -p "dist/${ARCH}"
-
-  #         # Parse cuda tag
-  #         IMAGE_TAG="${IMAGE##*:}"
-  #         CUDA_PART="${IMAGE_TAG#*-cu}"
-
-  #         # ------- RAW
-  #         cargo build -p pelorus_c --release --features cuda
-  #         mv target/release/libpelorus.so dist/${ARCH}/
-  #         mv target/release/libpelorus.a  dist/${ARCH}/
-
-  #         cargo build -p pelorus --release --features cuda,rerun,evaluate
-  #         mv target/release/pelorus dist/${ARCH}/
-
-  #         # ------- DEB
-  #         # -- lib
-  #         updatetoml=pelorus_c/Cargo.toml
-  #         DEB_NAME="libpelorus-cuda${CUDA_PART}"
-  #         LIB_DEB=$DEB_NAME
-  #         tmp=$(mktemp)
-  #         toml set "$updatetoml" 'package.metadata.deb.name' "$DEB_NAME" >"$tmp"
-  #         mv "$tmp" "$updatetoml"
-
-  #         cargo deb --package pelorus_c
-
-  #         # -- dev
-  #         DEB_NAME="libpelorus-cuda${CUDA_PART}-dev"
-  #         DEV_DEB=$DEB_NAME
-  #         updatetoml=pelorus_c/deb-dev/Cargo.toml
-  #         tmp=$(mktemp)
-  #         toml set "$updatetoml" 'package.metadata.deb.name' "$DEB_NAME" >"$tmp"
-  #         mv "$tmp" "$updatetoml"
-
-  #         # - pin dependencies
-  #         tmp=$(mktemp)
-  #         toml set "$updatetoml" 'package.metadata.deb.depends' "${LIB_DEB} ( = ${VERSION} )" >"$tmp"
-  #         mv "$tmp" "$updatetoml"
-
-  #         # Generate packaging artifacts with CMake and copy them into the dev crate
-  #         cmake -S pelorus_c -B pelorus_c/build -DCMAKE_INSTALL_PREFIX=/usr
-  #         cp pelorus_c/build/pelorus.pc pelorus_c/deb-dev/pelorus.pc
-  #         cp pelorus_c/build/pelorusConfig.cmake pelorus_c/deb-dev/pelorusConfig.cmake
-
-  #         cargo deb --package libpelorus-dev
-
-  #         # -- bin
-  #         DEB_NAME="pelorus-cuda${CUDA_PART}"
-  #         updatetoml=pelorus/Cargo.toml
-  #         tmp=$(mktemp)
-  #         toml set "$updatetoml" 'package.metadata.deb.name' "$DEB_NAME" >"$tmp"
-  #         mv "$tmp" "$updatetoml"
-
-  #         cargo deb --package pelorus --features cuda,rerun,evaluate
-
-  #         # prepare upload
-  #         mv target/debian/*.deb dist/${ARCH}/
-
-  #     - name: Upload
-  #       uses: actions/upload-artifact@v3
-  #       with:
-  #         name: artifacts-rawlibs-${{ matrix.repo }}-cuda${{ matrix.cuda }}
-  #         path: dist/
-
-  # clean-2-5:
-  #   needs:
-  #     - rawlibs-cuda-12-6
-  #   strategy:
-  #     matrix:
-  #       include:
-  #         - runner: bookworm
-  #         - runner: macos-latest
-  #   runs-on: ${{ matrix.runner }}
-  #   steps:
-  #     - name: Docker clean
-  #       run: |
-  #         docker system prune -af
-
-  # rawlibs-cuda-12-8:
-  #   needs:
-  #     - clean-2-5
-  #   strategy:
-  #     matrix:
-  #       include:
-  #         - image: docker.io/stelzo/ubuntu-dev:noble-cu12-8
-  #           arch: amd64
-  #           repo: noble
-  #           cuda: 12-8
-  #           runner: ubuntu-latest
-  #         - image: docker.io/stelzo/ubuntu-dev:noble-cu12-8
-  #           arch: arm64
-  #           repo: noble
-  #           cuda: 12-8
-  #           runner: ubuntu-latest-arm
-  #         - image: docker.io/stelzo/ubuntu-dev:jammy-cu12-8
-  #           arch: amd64
-  #           repo: jammy
-  #           cuda: 12-8
-  #           runner: ubuntu-latest
-  #         - image: docker.io/stelzo/ubuntu-dev:jammy-cu12-8
-  #           arch: arm64
-  #           repo: jammy
-  #           cuda: 12-8
-  #           runner: ubuntu-latest-arm
-  #   runs-on: ${{ matrix.runner }}
-  #   container:
-  #     image: ${{ matrix.image }}
-  #   env:
-  #     CUDA_HOME: /usr/local/cuda
-  #   steps:
-  #     - uses: actions/checkout@v4
-  #     - name: Build
-  #       env:
-  #         IMAGE: ${{ matrix.image }}
-  #         ARCH: ${{ matrix.arch }}
-  #       run: |
-  #         set -euo pipefail
-  #         ulimit -n 65536
-  #         apt-get install -y cmake
-  #         VERSION=$(toml get --raw Cargo.toml workspace.package.version)
-  #         rustup toolchain uninstall stable
-  #         rustup toolchain install stable
-
-  #         mkdir -p "dist/${ARCH}"
-
-  #         # Parse cuda tag
-  #         IMAGE_TAG="${IMAGE##*:}"
-  #         CUDA_PART="${IMAGE_TAG#*-cu}"
-
-  #         # ------- RAW
-  #         cargo build -p pelorus_c --release --features cuda
-  #         mv target/release/libpelorus.so dist/${ARCH}/
-  #         mv target/release/libpelorus.a  dist/${ARCH}/
-
-  #         cargo build -p pelorus --release --features cuda,rerun,evaluate
-  #         mv target/release/pelorus dist/${ARCH}/
-
-  #         # ------- DEB
-  #         # -- lib
-  #         updatetoml=pelorus_c/Cargo.toml
-  #         DEB_NAME="libpelorus-cuda${CUDA_PART}"
-  #         LIB_DEB=$DEB_NAME
-  #         tmp=$(mktemp)
-  #         toml set "$updatetoml" 'package.metadata.deb.name' "$DEB_NAME" >"$tmp"
-  #         mv "$tmp" "$updatetoml"
-
-  #         cargo deb --package pelorus_c
-
-  #         # -- dev
-  #         DEB_NAME="libpelorus-cuda${CUDA_PART}-dev"
-  #         DEV_DEB=$DEB_NAME
-  #         updatetoml=pelorus_c/deb-dev/Cargo.toml
-  #         tmp=$(mktemp)
-  #         toml set "$updatetoml" 'package.metadata.deb.name' "$DEB_NAME" >"$tmp"
-  #         mv "$tmp" "$updatetoml"
-
-  #         # - pin dependencies
-  #         tmp=$(mktemp)
-  #         toml set "$updatetoml" 'package.metadata.deb.depends' "${LIB_DEB} ( = ${VERSION} )" >"$tmp"
-  #         mv "$tmp" "$updatetoml"
-
-  #         # Generate packaging artifacts with CMake and copy them into the dev crate
-  #         cmake -S pelorus_c -B pelorus_c/build -DCMAKE_INSTALL_PREFIX=/usr
-  #         cp pelorus_c/build/pelorus.pc pelorus_c/deb-dev/pelorus.pc
-  #         cp pelorus_c/build/pelorusConfig.cmake pelorus_c/deb-dev/pelorusConfig.cmake
-
-  #         cargo deb --package libpelorus-dev
-
-  #         # -- bin
-  #         DEB_NAME="pelorus-cuda${CUDA_PART}"
-  #         updatetoml=pelorus/Cargo.toml
-  #         tmp=$(mktemp)
-  #         toml set "$updatetoml" 'package.metadata.deb.name' "$DEB_NAME" >"$tmp"
-  #         mv "$tmp" "$updatetoml"
-
-  #         cargo deb --package pelorus --features cuda,rerun,evaluate
-
-  #         # prepare upload
-  #         mv target/debian/*.deb dist/${ARCH}/
-
-  #     - name: Upload
-  #       uses: actions/upload-artifact@v3
-  #       with:
-  #         name: artifacts-rawlibs-${{ matrix.repo }}-cuda${{ matrix.cuda }}
-  #         path: dist/
-
-  # clean-2-75:
-  #   needs:
-  #     - rawlibs-cuda-12-8
-  #   strategy:
-  #     matrix:
-  #       include:
-  #         - runner: bookworm
-  #         - runner: macos-latest
-  #   runs-on: ${{ matrix.runner }}
-  #   steps:
-  #     - name: Docker clean
-  #       run: |
-  #         docker system prune -af
-
-  # rawlibs-cuda-13-1:
-  #   needs:
-  #     - clean-2-75
-  #   strategy:
-  #     matrix:
-  #       include:
-  #         - image: docker.io/stelzo/ubuntu-dev:noble-cu13-1
-  #           arch: amd64
-  #           repo: noble
-  #           cuda: 13-1
-  #           runner: ubuntu-latest
-  #         - image: docker.io/stelzo/ubuntu-dev:noble-cu13-1
-  #           arch: arm64
-  #           repo: noble
-  #           cuda: 13-1
-  #           runner: ubuntu-latest-arm
-  #         - image: docker.io/stelzo/ubuntu-dev:jammy-cu13-1
-  #           arch: amd64
-  #           repo: jammy
-  #           cuda: 13-1
-  #           runner: ubuntu-latest
-  #         - image: docker.io/stelzo/ubuntu-dev:jammy-cu13-1
-  #           arch: arm64
-  #           repo: jammy
-  #           cuda: 13-1
-  #           runner: ubuntu-latest-arm
-  #   runs-on: ${{ matrix.runner }}
-  #   container:
-  #     image: ${{ matrix.image }}
-  #   env:
-  #     CUDA_HOME: /usr/local/cuda
-  #   steps:
-  #     - uses: actions/checkout@v4
-  #     - name: Build
-  #       env:
-  #         IMAGE: ${{ matrix.image }}
-  #         ARCH: ${{ matrix.arch }}
-  #       run: |
-  #         set -euo pipefail
-  #         ulimit -n 65536
-  #         apt-get install -y cmake
-  #         VERSION=$(toml get --raw Cargo.toml workspace.package.version)
-  #         rustup toolchain uninstall stable
-  #         rustup toolchain install stable
-
-  #         mkdir -p "dist/${ARCH}"
-
-  #         # Parse cuda tag
-  #         IMAGE_TAG="${IMAGE##*:}"
-  #         CUDA_PART="${IMAGE_TAG#*-cu}"
-
-  #         # ------- RAW
-  #         cargo build -p pelorus_c --release --features cuda
-  #         mv target/release/libpelorus.so dist/${ARCH}/
-  #         mv target/release/libpelorus.a  dist/${ARCH}/
-
-  #         cargo build -p pelorus --release --features cuda,rerun,evaluate
-  #         mv target/release/pelorus dist/${ARCH}/
-
-  #         # ------- DEB
-  #         # -- lib
-  #         updatetoml=pelorus_c/Cargo.toml
-  #         DEB_NAME="libpelorus-cuda${CUDA_PART}"
-  #         LIB_DEB=$DEB_NAME
-  #         tmp=$(mktemp)
-  #         toml set "$updatetoml" 'package.metadata.deb.name' "$DEB_NAME" >"$tmp"
-  #         mv "$tmp" "$updatetoml"
-
-  #         cargo deb --package pelorus_c
-
-  #         # -- dev
-  #         DEB_NAME="libpelorus-cuda${CUDA_PART}-dev"
-  #         DEV_DEB=$DEB_NAME
-  #         updatetoml=pelorus_c/deb-dev/Cargo.toml
-  #         tmp=$(mktemp)
-  #         toml set "$updatetoml" 'package.metadata.deb.name' "$DEB_NAME" >"$tmp"
-  #         mv "$tmp" "$updatetoml"
-
-  #         # - pin dependencies
-  #         tmp=$(mktemp)
-  #         toml set "$updatetoml" 'package.metadata.deb.depends' "${LIB_DEB} ( = ${VERSION} )" >"$tmp"
-  #         mv "$tmp" "$updatetoml"
-
-  #         # Generate packaging artifacts with CMake and copy them into the dev crate
-  #         cmake -S pelorus_c -B pelorus_c/build -DCMAKE_INSTALL_PREFIX=/usr
-  #         cp pelorus_c/build/pelorus.pc pelorus_c/deb-dev/pelorus.pc
-  #         cp pelorus_c/build/pelorusConfig.cmake pelorus_c/deb-dev/pelorusConfig.cmake
-
-  #         cargo deb --package libpelorus-dev
-
-  #         # -- bin
-  #         DEB_NAME="pelorus-cuda${CUDA_PART}"
-  #         updatetoml=pelorus/Cargo.toml
-  #         tmp=$(mktemp)
-  #         toml set "$updatetoml" 'package.metadata.deb.name' "$DEB_NAME" >"$tmp"
-  #         mv "$tmp" "$updatetoml"
-
-  #         cargo deb --package pelorus --features cuda,rerun,evaluate
-
-  #         # prepare upload
-  #         mv target/debian/*.deb dist/${ARCH}/
-
-  #     - name: Upload
-  #       uses: actions/upload-artifact@v3
-  #       with:
-  #         name: artifacts-rawlibs-${{ matrix.repo }}-cuda${{ matrix.cuda }}
-  #         path: dist/
-
-  # clean-3:
-  #   needs:
-  #     - rawlibs-cuda-13-1
-  #   strategy:
-  #     matrix:
-  #       include:
-  #         - runner: bookworm
-  #         - runner: macos-latest
-  #   runs-on: ${{ matrix.runner }}
-  #   steps:
-  #     - name: Docker clean
-  #       run: |
-  #         docker system prune -af
-
-  # ros-debs:
-  #   needs:
-  #     - clean-3
-  #   strategy:
-  #     matrix:
-  #       include:
-  #         - image: docker.io/stelzo/ubuntu-dev:jazzy
-  #           repo: noble
-  #           runner: ubuntu-latest
-  #         - image: docker.io/stelzo/ubuntu-dev:humble
-  #           repo: jammy
-  #           runner: ubuntu-latest
-  #         - image: docker.io/stelzo/ubuntu-dev:jazzy
-  #           repo: noble
-  #           runner: ubuntu-latest-arm
-  #         - image: docker.io/stelzo/ubuntu-dev:humble
-  #           repo: jammy
-  #           runner: ubuntu-latest-arm
-  #   runs-on: ${{ matrix.runner }}
-  #   container:
-  #     image: ${{ matrix.image }}
-  #   steps:
-  #     - uses: actions/checkout@v4
-  #     - name: Build
-  #       run: |
-  #         ulimit -n 65536
-  #         rustup toolchain uninstall stable
-  #         rustup toolchain install stable
-
-  #         for distro in jazzy humble; do
-  #         if [ -f "/opt/ros/$distro/setup.bash" ]; then
-  #           echo "Sourcing ROS distro: $distro"
-  #           . "/opt/ros/$distro/setup.bash"
-  #           export ROS_DISTRO="$distro"
-  #           break
-  #         fi
-  #         done
-
-  #         if [ -z "${ROS_DISTRO:-}" ]; then
-  #           echo "No supported ROS distro found" >&2
-  #           exit 1
-  #         fi
-
-  #         bash ./scripts/make-deb.bash
-
-  #     - name: Upload deb
-  #       uses: actions/upload-artifact@v3
-  #       with:
-  #         name: artifacts-ros-debs-${{ matrix.repo }}
-  #         path: |
-  #           *.deb
-
-  # cli-musl:
-  #   needs:
-  #     - ros-debs
-  #   strategy:
-  #     matrix:
-  #       include:
-  #         - target: x86_64-unknown-linux-musl
-  #           runner: ubuntu-dev-noble-arm
-  #           arch: amd64
-  #         - target: aarch64-unknown-linux-musl
-  #           runner: ubuntu-dev-noble-arm
-  #           arch: arm64
-  #   runs-on: ${{ matrix.runner }}
-  #   steps:
-  #     - uses: actions/checkout@v4
-  #     - name: Build
-  #       env:
-  #         TARGET: ${{ matrix.target }}
-  #         ARCH: ${{ matrix.arch }}
-  #       run: |
-  #         ulimit -n 65536
-  #         rustup toolchain uninstall stable
-  #         rustup toolchain install stable
-  #         rustup target add $TARGET
-
-  #         mkdir -p "dist/${ARCH}"
-
-  #         export RUSTFLAGS="-C target-feature=+crt-static"
-  #         cargo zigbuild -p pelorus --release --target $TARGET
-  #         mv target/$TARGET/release/pelorus dist/${ARCH}/
-
-  #     - name: Upload
-  #       uses: actions/upload-artifact@v3
-  #       with:
-  #         name: artifacts-cli-musl
-  #         path: dist/
-
-  # clean-4:
-  #   needs:
-  #     - cli-musl
-  #   strategy:
-  #     matrix:
-  #       include:
-  #         - runner: bookworm
-  #         - runner: macos-latest
-  #   runs-on: ${{ matrix.runner }}
-  #   steps:
-  #     - name: Docker clean
-  #       run: |
-  #         docker system prune -af
+  sanity:
+    runs-on: ubuntu-dev-noble-arm
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check
+        run: |
+          rustup toolchain uninstall stable
+          rustup toolchain install stable
+          cargo check
+      - name: Validate packaging files versions
+        run: |
+          set -euo pipefail
+          ulimit -n 65536
+          apt-get install -y cmake
+          VERSION=$(toml get --raw Cargo.toml workspace.package.version)
+          echo "Workspace version: $VERSION"
+          cmake -S pelorus_c -B pelorus_c/build -DCMAKE_INSTALL_PREFIX=/usr
+
+          if ! grep -q "Version: $VERSION" pelorus_c/build/pelorus.pc; then
+            echo "pelorus.pc version mismatch or missing" >&2
+            echo "pelorus.pc content:" >&2
+            sed -n '1,120p' pelorus_c/build/pelorus.pc >&2 || true
+            exit 1
+          fi
+
+          if ! grep -q "pelorus_PACKAGE_VERSION \"${VERSION}\"" pelorus_c/build/pelorusConfig.cmake; then
+            echo "pelorusConfig.cmake version mismatch or missing" >&2
+            echo "pelorusConfig.cmake content:" >&2
+            sed -n '1,120p' pelorus_c/build/pelorusConfig.cmake >&2 || true
+            exit 1
+          fi
+
+          echo "Packaging files contain correct version: $VERSION"
+
+  clean-1:
+    needs:
+      - sanity
+    strategy:
+      matrix:
+        include:
+          - runner: bookworm
+          - runner: macos-latest
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - name: Docker clean
+        run: |
+          docker system prune -af
+
+  rawlibs:
+    needs:
+      - clean-1
+    strategy:
+      matrix:
+        include:
+          - image: docker.io/stelzo/ubuntu-dev:noble
+            arch: amd64
+            repo: noble
+            runner: ubuntu-latest
+          - image: docker.io/stelzo/ubuntu-dev:noble
+            arch: arm64
+            repo: noble
+            runner: ubuntu-latest-arm
+          - image: docker.io/stelzo/ubuntu-dev:jammy
+            arch: amd64
+            repo: jammy
+            runner: ubuntu-latest
+          - image: docker.io/stelzo/ubuntu-dev:jammy
+            repo: jammy
+            arch: arm64
+            runner: ubuntu-latest-arm
+    runs-on: ${{ matrix.runner }}
+    container:
+      image: ${{ matrix.image }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build
+        env:
+          IMAGE: ${{ matrix.image }}
+          ARCH: ${{ matrix.arch }}
+        run: |
+          set -euo pipefail
+          ulimit -n 65536
+          apt-get install -y cmake
+          VERSION=$(toml get --raw Cargo.toml workspace.package.version)
+          VERSION=$VERSION-1
+          rustup toolchain uninstall stable
+          rustup toolchain install stable
+          mkdir -p "dist/${ARCH}"
+
+          # ------- RAW
+          cargo build -p pelorus_c --release
+          mv target/release/libpelorus.so dist/${ARCH}/
+          mv target/release/libpelorus.a  dist/${ARCH}/
+
+          cargo build -p pelorus --features rerun,evaluate --release
+          mv target/release/pelorus dist/${ARCH}/
+
+          # ------- DEB
+          # -- lib
+          updatetoml=pelorus_c/Cargo.toml
+          DEB_NAME="libpelorus"
+          LIB_DEB=$DEB_NAME
+          tmp=$(mktemp)
+          toml set "$updatetoml" 'package.metadata.deb.name' "$DEB_NAME" >"$tmp"
+          mv "$tmp" "$updatetoml"
+
+          cargo deb --package pelorus_c
+
+          # -- dev
+          DEB_NAME="libpelorus-dev"
+          DEV_DEB=$DEB_NAME
+          updatetoml=pelorus_c/deb-dev/Cargo.toml
+          tmp=$(mktemp)
+          toml set "$updatetoml" 'package.metadata.deb.name' "$DEB_NAME" >"$tmp"
+          mv "$tmp" "$updatetoml"
+
+          # - pin dependencies
+          tmp=$(mktemp)
+          toml set "$updatetoml" 'package.metadata.deb.depends' "${LIB_DEB} ( = ${VERSION} )" >"$tmp"
+          mv "$tmp" "$updatetoml"
+
+          # Generate packaging artifacts with CMake and copy them into the dev crate
+          cmake -S pelorus_c -B pelorus_c/build -DCMAKE_INSTALL_PREFIX=/usr
+          cp pelorus_c/build/pelorus.pc pelorus_c/deb-dev/pelorus.pc
+          cp pelorus_c/build/pelorusConfig.cmake pelorus_c/deb-dev/pelorusConfig.cmake
+
+          cargo deb --package libpelorus-dev
+
+          # -- bin
+          DEB_NAME="pelorus"
+          updatetoml=pelorus/Cargo.toml
+          tmp=$(mktemp)
+          toml set "$updatetoml" 'package.metadata.deb.name' "$DEB_NAME" >"$tmp"
+          mv "$tmp" "$updatetoml"
+
+          cargo deb --package pelorus --features rerun,evaluate
+
+          # prepare upload
+          mv target/debian/*.deb dist/${ARCH}/
+
+      - name: Upload
+        uses: actions/upload-artifact@v3
+        with:
+          name: artifacts-rawlibs-${{ matrix.repo }}
+          path: dist/
+
+  clean-2:
+    needs:
+      - rawlibs
+    strategy:
+      matrix:
+        include:
+          - runner: bookworm
+          - runner: macos-latest
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - name: Docker clean
+        run: |
+          docker system prune -af
+
+  macos:
+    needs:
+      - clean-2
+    strategy:
+      matrix:
+        include:
+          - target: aarch64-apple-darwin
+            arch: arm64
+          - target: x86_64-apple-darwin
+            arch: amd64
+    # runs-on: ubuntu-dev-noble-arm
+    runs-on: macos-latest
+    env:
+      TARGET: ${{ matrix.target }}
+      ARCH: ${{ matrix.arch }}
+      SDKROOT: /Library/Developer/CommandLineTools/SDKs/MacOSX.sdk
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build
+        run: |
+          rustup toolchain uninstall stable
+          rustup toolchain install stable
+          rustup target add $TARGET
+          ulimit -n 65536
+          mkdir -p "dist/${ARCH}"
+
+          export RUSTFLAGS="-C link-arg=-F${SDKROOT}/System/Library/Frameworks -C link-arg=-L${SDKROOT}/usr/lib -C link-arg=-isysroot -C link-arg=${SDKROOT}"
+          cargo zigbuild --target $TARGET "$@" --release --package pelorus_c
+          mv target/$TARGET/release/libpelorus.dylib dist/${ARCH}/
+          mv target/$TARGET/release/libpelorus.a  dist/${ARCH}/
+
+          cargo zigbuild --target $TARGET "$@" --release --package pelorus
+          mv target/$TARGET/release/pelorus dist/${ARCH}/
+
+      - name: Upload
+        uses: actions/upload-artifact@v3
+        with:
+          name: artifacts-macos
+          path: dist/
+
+  rawlibs-cuda-12-6:
+    needs:
+      - macos
+    strategy:
+      matrix:
+        include:
+          - image: docker.io/stelzo/ubuntu-dev:noble-cu12-6
+            arch: amd64
+            repo: noble
+            cuda: 12-6
+            runner: ubuntu-latest
+          - image: docker.io/stelzo/ubuntu-dev:noble-cu12-6
+            arch: arm64
+            repo: noble
+            cuda: 12-6
+            runner: ubuntu-latest-arm
+          - image: docker.io/stelzo/ubuntu-dev:jammy-cu12-6
+            arch: amd64
+            repo: jammy
+            cuda: 12-6
+            runner: ubuntu-latest
+          - image: docker.io/stelzo/ubuntu-dev:jammy-cu12-6
+            arch: arm64
+            repo: jammy
+            cuda: 12-6
+            runner: ubuntu-latest-arm
+    runs-on: ${{ matrix.runner }}
+    container:
+      image: ${{ matrix.image }}
+    env:
+      CUDA_HOME: /usr/local/cuda
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build
+        env:
+          IMAGE: ${{ matrix.image }}
+          ARCH: ${{ matrix.arch }}
+        run: |
+          set -euo pipefail
+          ulimit -n 65536
+          apt-get install -y cmake
+          VERSION=$(toml get --raw Cargo.toml workspace.package.version)
+          rustup toolchain uninstall stable
+          rustup toolchain install stable
+
+          mkdir -p "dist/${ARCH}"
+
+          # Parse cuda tag
+          IMAGE_TAG="${IMAGE##*:}"
+          CUDA_PART="${IMAGE_TAG#*-cu}"
+
+          # ------- RAW
+          cargo build -p pelorus_c --release --features cuda
+          mv target/release/libpelorus.so dist/${ARCH}/
+          mv target/release/libpelorus.a  dist/${ARCH}/
+
+          cargo build -p pelorus --release --features cuda,rerun,evaluate
+          mv target/release/pelorus dist/${ARCH}/
+
+          # ------- DEB
+          # -- lib
+          updatetoml=pelorus_c/Cargo.toml
+          DEB_NAME="libpelorus-cuda${CUDA_PART}"
+          LIB_DEB=$DEB_NAME
+          tmp=$(mktemp)
+          toml set "$updatetoml" 'package.metadata.deb.name' "$DEB_NAME" >"$tmp"
+          mv "$tmp" "$updatetoml"
+
+          cargo deb --package pelorus_c
+
+          # -- dev
+          DEB_NAME="libpelorus-cuda${CUDA_PART}-dev"
+          DEV_DEB=$DEB_NAME
+          updatetoml=pelorus_c/deb-dev/Cargo.toml
+          tmp=$(mktemp)
+          toml set "$updatetoml" 'package.metadata.deb.name' "$DEB_NAME" >"$tmp"
+          mv "$tmp" "$updatetoml"
+
+          # - pin dependencies
+          tmp=$(mktemp)
+          toml set "$updatetoml" 'package.metadata.deb.depends' "${LIB_DEB} ( = ${VERSION} )" >"$tmp"
+          mv "$tmp" "$updatetoml"
+
+          # Generate packaging artifacts with CMake and copy them into the dev crate
+          cmake -S pelorus_c -B pelorus_c/build -DCMAKE_INSTALL_PREFIX=/usr
+          cp pelorus_c/build/pelorus.pc pelorus_c/deb-dev/pelorus.pc
+          cp pelorus_c/build/pelorusConfig.cmake pelorus_c/deb-dev/pelorusConfig.cmake
+
+          cargo deb --package libpelorus-dev
+
+          # -- bin
+          DEB_NAME="pelorus-cuda${CUDA_PART}"
+          updatetoml=pelorus/Cargo.toml
+          tmp=$(mktemp)
+          toml set "$updatetoml" 'package.metadata.deb.name' "$DEB_NAME" >"$tmp"
+          mv "$tmp" "$updatetoml"
+
+          cargo deb --package pelorus --features cuda,rerun,evaluate
+
+          # prepare upload
+          mv target/debian/*.deb dist/${ARCH}/
+
+      - name: Upload
+        uses: actions/upload-artifact@v3
+        with:
+          name: artifacts-rawlibs-${{ matrix.repo }}-cuda${{ matrix.cuda }}
+          path: dist/
+
+  clean-2-5:
+    needs:
+      - rawlibs-cuda-12-6
+    strategy:
+      matrix:
+        include:
+          - runner: bookworm
+          - runner: macos-latest
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - name: Docker clean
+        run: |
+          docker system prune -af
+
+  rawlibs-cuda-12-8:
+    needs:
+      - clean-2-5
+    strategy:
+      matrix:
+        include:
+          - image: docker.io/stelzo/ubuntu-dev:noble-cu12-8
+            arch: amd64
+            repo: noble
+            cuda: 12-8
+            runner: ubuntu-latest
+          - image: docker.io/stelzo/ubuntu-dev:noble-cu12-8
+            arch: arm64
+            repo: noble
+            cuda: 12-8
+            runner: ubuntu-latest-arm
+          - image: docker.io/stelzo/ubuntu-dev:jammy-cu12-8
+            arch: amd64
+            repo: jammy
+            cuda: 12-8
+            runner: ubuntu-latest
+          - image: docker.io/stelzo/ubuntu-dev:jammy-cu12-8
+            arch: arm64
+            repo: jammy
+            cuda: 12-8
+            runner: ubuntu-latest-arm
+    runs-on: ${{ matrix.runner }}
+    container:
+      image: ${{ matrix.image }}
+    env:
+      CUDA_HOME: /usr/local/cuda
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build
+        env:
+          IMAGE: ${{ matrix.image }}
+          ARCH: ${{ matrix.arch }}
+        run: |
+          set -euo pipefail
+          ulimit -n 65536
+          apt-get install -y cmake
+          VERSION=$(toml get --raw Cargo.toml workspace.package.version)
+          rustup toolchain uninstall stable
+          rustup toolchain install stable
+
+          mkdir -p "dist/${ARCH}"
+
+          # Parse cuda tag
+          IMAGE_TAG="${IMAGE##*:}"
+          CUDA_PART="${IMAGE_TAG#*-cu}"
+
+          # ------- RAW
+          cargo build -p pelorus_c --release --features cuda
+          mv target/release/libpelorus.so dist/${ARCH}/
+          mv target/release/libpelorus.a  dist/${ARCH}/
+
+          cargo build -p pelorus --release --features cuda,rerun,evaluate
+          mv target/release/pelorus dist/${ARCH}/
+
+          # ------- DEB
+          # -- lib
+          updatetoml=pelorus_c/Cargo.toml
+          DEB_NAME="libpelorus-cuda${CUDA_PART}"
+          LIB_DEB=$DEB_NAME
+          tmp=$(mktemp)
+          toml set "$updatetoml" 'package.metadata.deb.name' "$DEB_NAME" >"$tmp"
+          mv "$tmp" "$updatetoml"
+
+          cargo deb --package pelorus_c
+
+          # -- dev
+          DEB_NAME="libpelorus-cuda${CUDA_PART}-dev"
+          DEV_DEB=$DEB_NAME
+          updatetoml=pelorus_c/deb-dev/Cargo.toml
+          tmp=$(mktemp)
+          toml set "$updatetoml" 'package.metadata.deb.name' "$DEB_NAME" >"$tmp"
+          mv "$tmp" "$updatetoml"
+
+          # - pin dependencies
+          tmp=$(mktemp)
+          toml set "$updatetoml" 'package.metadata.deb.depends' "${LIB_DEB} ( = ${VERSION} )" >"$tmp"
+          mv "$tmp" "$updatetoml"
+
+          # Generate packaging artifacts with CMake and copy them into the dev crate
+          cmake -S pelorus_c -B pelorus_c/build -DCMAKE_INSTALL_PREFIX=/usr
+          cp pelorus_c/build/pelorus.pc pelorus_c/deb-dev/pelorus.pc
+          cp pelorus_c/build/pelorusConfig.cmake pelorus_c/deb-dev/pelorusConfig.cmake
+
+          cargo deb --package libpelorus-dev
+
+          # -- bin
+          DEB_NAME="pelorus-cuda${CUDA_PART}"
+          updatetoml=pelorus/Cargo.toml
+          tmp=$(mktemp)
+          toml set "$updatetoml" 'package.metadata.deb.name' "$DEB_NAME" >"$tmp"
+          mv "$tmp" "$updatetoml"
+
+          cargo deb --package pelorus --features cuda,rerun,evaluate
+
+          # prepare upload
+          mv target/debian/*.deb dist/${ARCH}/
+
+      - name: Upload
+        uses: actions/upload-artifact@v3
+        with:
+          name: artifacts-rawlibs-${{ matrix.repo }}-cuda${{ matrix.cuda }}
+          path: dist/
+
+  clean-2-75:
+    needs:
+      - rawlibs-cuda-12-8
+    strategy:
+      matrix:
+        include:
+          - runner: bookworm
+          - runner: macos-latest
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - name: Docker clean
+        run: |
+          docker system prune -af
+
+  rawlibs-cuda-13-1:
+    needs:
+      - clean-2-75
+    strategy:
+      matrix:
+        include:
+          - image: docker.io/stelzo/ubuntu-dev:noble-cu13-1
+            arch: amd64
+            repo: noble
+            cuda: 13-1
+            runner: ubuntu-latest
+          - image: docker.io/stelzo/ubuntu-dev:noble-cu13-1
+            arch: arm64
+            repo: noble
+            cuda: 13-1
+            runner: ubuntu-latest-arm
+          - image: docker.io/stelzo/ubuntu-dev:jammy-cu13-1
+            arch: amd64
+            repo: jammy
+            cuda: 13-1
+            runner: ubuntu-latest
+          - image: docker.io/stelzo/ubuntu-dev:jammy-cu13-1
+            arch: arm64
+            repo: jammy
+            cuda: 13-1
+            runner: ubuntu-latest-arm
+    runs-on: ${{ matrix.runner }}
+    container:
+      image: ${{ matrix.image }}
+    env:
+      CUDA_HOME: /usr/local/cuda
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build
+        env:
+          IMAGE: ${{ matrix.image }}
+          ARCH: ${{ matrix.arch }}
+        run: |
+          set -euo pipefail
+          ulimit -n 65536
+          apt-get install -y cmake
+          VERSION=$(toml get --raw Cargo.toml workspace.package.version)
+          rustup toolchain uninstall stable
+          rustup toolchain install stable
+
+          mkdir -p "dist/${ARCH}"
+
+          # Parse cuda tag
+          IMAGE_TAG="${IMAGE##*:}"
+          CUDA_PART="${IMAGE_TAG#*-cu}"
+
+          # ------- RAW
+          cargo build -p pelorus_c --release --features cuda
+          mv target/release/libpelorus.so dist/${ARCH}/
+          mv target/release/libpelorus.a  dist/${ARCH}/
+
+          cargo build -p pelorus --release --features cuda,rerun,evaluate
+          mv target/release/pelorus dist/${ARCH}/
+
+          # ------- DEB
+          # -- lib
+          updatetoml=pelorus_c/Cargo.toml
+          DEB_NAME="libpelorus-cuda${CUDA_PART}"
+          LIB_DEB=$DEB_NAME
+          tmp=$(mktemp)
+          toml set "$updatetoml" 'package.metadata.deb.name' "$DEB_NAME" >"$tmp"
+          mv "$tmp" "$updatetoml"
+
+          cargo deb --package pelorus_c
+
+          # -- dev
+          DEB_NAME="libpelorus-cuda${CUDA_PART}-dev"
+          DEV_DEB=$DEB_NAME
+          updatetoml=pelorus_c/deb-dev/Cargo.toml
+          tmp=$(mktemp)
+          toml set "$updatetoml" 'package.metadata.deb.name' "$DEB_NAME" >"$tmp"
+          mv "$tmp" "$updatetoml"
+
+          # - pin dependencies
+          tmp=$(mktemp)
+          toml set "$updatetoml" 'package.metadata.deb.depends' "${LIB_DEB} ( = ${VERSION} )" >"$tmp"
+          mv "$tmp" "$updatetoml"
+
+          # Generate packaging artifacts with CMake and copy them into the dev crate
+          cmake -S pelorus_c -B pelorus_c/build -DCMAKE_INSTALL_PREFIX=/usr
+          cp pelorus_c/build/pelorus.pc pelorus_c/deb-dev/pelorus.pc
+          cp pelorus_c/build/pelorusConfig.cmake pelorus_c/deb-dev/pelorusConfig.cmake
+
+          cargo deb --package libpelorus-dev
+
+          # -- bin
+          DEB_NAME="pelorus-cuda${CUDA_PART}"
+          updatetoml=pelorus/Cargo.toml
+          tmp=$(mktemp)
+          toml set "$updatetoml" 'package.metadata.deb.name' "$DEB_NAME" >"$tmp"
+          mv "$tmp" "$updatetoml"
+
+          cargo deb --package pelorus --features cuda,rerun,evaluate
+
+          # prepare upload
+          mv target/debian/*.deb dist/${ARCH}/
+
+      - name: Upload
+        uses: actions/upload-artifact@v3
+        with:
+          name: artifacts-rawlibs-${{ matrix.repo }}-cuda${{ matrix.cuda }}
+          path: dist/
+
+  clean-3:
+    needs:
+      - rawlibs-cuda-13-1
+    strategy:
+      matrix:
+        include:
+          - runner: bookworm
+          - runner: macos-latest
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - name: Docker clean
+        run: |
+          docker system prune -af
+
+  ros-debs:
+    needs:
+      - clean-3
+    strategy:
+      matrix:
+        include:
+          - image: docker.io/stelzo/ubuntu-dev:jazzy
+            repo: noble
+            runner: ubuntu-latest
+          - image: docker.io/stelzo/ubuntu-dev:humble
+            repo: jammy
+            runner: ubuntu-latest
+          - image: docker.io/stelzo/ubuntu-dev:jazzy
+            repo: noble
+            runner: ubuntu-latest-arm
+          - image: docker.io/stelzo/ubuntu-dev:humble
+            repo: jammy
+            runner: ubuntu-latest-arm
+    runs-on: ${{ matrix.runner }}
+    container:
+      image: ${{ matrix.image }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build
+        run: |
+          ulimit -n 65536
+          rustup toolchain uninstall stable
+          rustup toolchain install stable
+
+          for distro in jazzy humble; do
+          if [ -f "/opt/ros/$distro/setup.bash" ]; then
+            echo "Sourcing ROS distro: $distro"
+            . "/opt/ros/$distro/setup.bash"
+            export ROS_DISTRO="$distro"
+            break
+          fi
+          done
+
+          if [ -z "${ROS_DISTRO:-}" ]; then
+            echo "No supported ROS distro found" >&2
+            exit 1
+          fi
+
+          bash ./scripts/make-deb.bash
+
+      - name: Upload deb
+        uses: actions/upload-artifact@v3
+        with:
+          name: artifacts-ros-debs-${{ matrix.repo }}
+          path: |
+            *.deb
+
+  cli-musl:
+    needs:
+      - ros-debs
+    strategy:
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-musl
+            runner: ubuntu-dev-noble-arm
+            arch: amd64
+          - target: aarch64-unknown-linux-musl
+            runner: ubuntu-dev-noble-arm
+            arch: arm64
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build
+        env:
+          TARGET: ${{ matrix.target }}
+          ARCH: ${{ matrix.arch }}
+        run: |
+          ulimit -n 65536
+          rustup toolchain uninstall stable
+          rustup toolchain install stable
+          rustup target add $TARGET
+
+          mkdir -p "dist/${ARCH}"
+
+          export RUSTFLAGS="-C target-feature=+crt-static"
+          cargo zigbuild -p pelorus --release --target $TARGET
+          mv target/$TARGET/release/pelorus dist/${ARCH}/
+
+      - name: Upload
+        uses: actions/upload-artifact@v3
+        with:
+          name: artifacts-cli-musl
+          path: dist/
+
+  clean-4:
+    needs:
+      - cli-musl
+    strategy:
+      matrix:
+        include:
+          - runner: bookworm
+          - runner: macos-latest
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - name: Docker clean
+        run: |
+          docker system prune -af
 
   ros-debs-cuda-12-6:
-    # needs:
-    # - clean-4
+    needs:
+      - clean-4
     strategy:
       matrix:
         include:
