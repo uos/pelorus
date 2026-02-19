@@ -1587,6 +1587,7 @@ jobs:
     runs-on: ubuntu-dev-noble
     needs:
       - release
+      - publish-ppa
     steps:
       - uses: actions/checkout@v4
       - name: Update AUR

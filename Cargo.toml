@@ -20,18 +20,18 @@ include = ["**/*.rs", "**/*.md", "**/Cargo.toml", "**/pelorus_cuda/**"]
 keywords = ["robotics"]
 license = "MIT OR Apache-2.0"
 repository = "https://codeberg.org/uos-robotics/pelorus/"
-version = "0.0.1"
+version = "0.0.2"
 authors = ["Christopher 'stelzo' Sieh <stelzo@steado.de>"]
 rust-version = "1.85"                                                   # ROS lyrical
 
 [workspace.dependencies]
-pelorus = { path = "pelorus", version = "0.0.1" }
-pelorus_core = { path = "pelorus_core", version = "0.0.1" }
-pelorus_reg = { path = "pelorus_reg", version = "0.0.1" }
-prelio = { path = "prelio", version = "0.0.1" }
-prelio_io = { path = "prelio_io", version = "0.0.1" }
-spole = { path = "spole", version = "0.0.1" }
-pelorus_cuda = { path = "pelorus_cuda", version = "0.0.1" }
+pelorus = { path = "pelorus", version = "0.0.2" }
+pelorus_core = { path = "pelorus_core", version = "0.0.2" }
+pelorus_reg = { path = "pelorus_reg", version = "0.0.2" }
+prelio = { path = "prelio", version = "0.0.2" }
+prelio_io = { path = "prelio_io", version = "0.0.2" }
+spole = { path = "spole", version = "0.0.2" }
+pelorus_cuda = { path = "pelorus_cuda", version = "0.0.2" }
 
 ros_pointcloud2 = { version = "1.0.0-rc.3", features = [
   "rayon",
