@@ -36,7 +36,7 @@ Available flags for the ROS 2 version are:
 
 **Default flags** (enabled by default, disable all with `-D PELORUS_ALL_DEFAULTS=OFF`):
 - `parallel` use all available CPU cores
-- `rat` synchronize input/output for use with [Minot](https://github.com/uos/minot) using the `-r` flag
+- `rat` synchronize input/output for use with [Minot](https://codeberg.org/stelzo/minot) using the `-r` flag
 
 **Optional flags**:
 - `cuda` use all available CUDA accelerations; requires `CUDA_HOME` environment variable to be set to your `/usr/local/cuda` or similar
