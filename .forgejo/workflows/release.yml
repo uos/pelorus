@@ -208,7 +208,7 @@ jobs:
           mv target/$TARGET/release/libpelorus.dylib dist/${ARCH}/
           mv target/$TARGET/release/libpelorus.a  dist/${ARCH}/
 
-          cargo zigbuild --target $TARGET "$@" --release --package pelorus
+          cargo zigbuild --target $TARGET "$@" --release --package pelorus --features evaluate
           mv target/$TARGET/release/pelorus dist/${ARCH}/
 
       - name: Upload
@@ -1545,7 +1545,8 @@ jobs:
             whl/cpu \
             whl/cu126 \
             whl/cu128 \
-            whl/cu131
+            whl/cu131 \
+            bin
 
           # Copy debs
           for series in noble jammy; do
@@ -1560,8 +1561,13 @@ jobs:
             build_pep503_index "whl/${variant}"
           done
 
+          # Copy macOS and musl tarballs
+          mkdir -p bin
+          find "../dl/release-tarballs" -name 'pelorus-*-macos-*.tar.gz' -exec cp {} bin/ \; 2>/dev/null || true
+          find "../dl/release-tarballs" -name 'pelorus-*-linux-musl-*.tar.gz' -exec cp {} bin/ \; 2>/dev/null || true
+
           # Commit and push
-          git add ubuntu/ whl/
+          git add ubuntu/ whl/ bin/
           git config --global user.email "$(git log -1 --pretty=format:'%ae')"
           git config --global user.name "$(git log -1 --pretty=format:'%an')"
           git commit -m "ci: add debs and wheels from ${FORGEJO_REPOSITORY}@${FORGEJO_SHA}" || echo "No changes to commit"
@@ -1604,6 +1610,54 @@ jobs:
           git commit -m "Update package from $GITHUB_REPOSITORY@$GITHUB_SHA"
           git push origin
           shred -u ~/.ssh/aur_key || rm -f ~/.ssh/aur_key
+
+  homebrew:
+    runs-on: ubuntu-dev-noble-arm
+    needs:
+      - publish-ppa
+    if: startsWith(github.ref, 'refs/tags/')
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download release tarballs
+        uses: actions/download-artifact@v3
+        with:
+          name: release-tarballs
+          path: release
+
+      - name: Update Homebrew tap
+        env:
+          HOMEBREW_TAP_DEPLOY_KEY: ${{ secrets.HOMEBREW_TAP_DEPLOY_KEY }}
+        run: |
+          set -euo pipefail
+          VERSION=$(toml get --raw Cargo.toml workspace.package.version)
+
+          ARM_SHA256=$(sha256sum "release/pelorus-${VERSION}-macos-arm64.tar.gz" | awk '{print $1}')
+          X86_SHA256=$(sha256sum "release/pelorus-${VERSION}-macos-amd64.tar.gz" | awk '{print $1}')
+
+          sed \
+            -e "s/VERSION_PLACEHOLDER/${VERSION}/g" \
+            -e "s/ARM_SHA256_PLACEHOLDER/${ARM_SHA256}/g" \
+            -e "s/X86_SHA256_PLACEHOLDER/${X86_SHA256}/g" \
+            packaging/homebrew/pelorus.rb > /tmp/pelorus.rb
+
+          mkdir -p ~/.ssh
+          printf '%s\n' "$HOMEBREW_TAP_DEPLOY_KEY" > ~/.ssh/tap_key
+          chmod 600 ~/.ssh/tap_key
+          ssh-keyscan github.com >> ~/.ssh/known_hosts 2>/dev/null
+          export GIT_SSH_COMMAND='ssh -i ~/.ssh/tap_key -o UserKnownHostsFile=~/.ssh/known_hosts -o StrictHostKeyChecking=yes'
+
+          git config --global user.email "$(git log -1 --pretty=format:'%ae')"
+          git config --global user.name "$(git log -1 --pretty=format:'%an')"
+
+          git clone git@github.com:stelzo/homebrew-pelorus.git homebrew-pelorus
+          mkdir -p homebrew-pelorus/Formula
+          cp /tmp/pelorus.rb homebrew-pelorus/Formula/pelorus.rb
+          cd homebrew-pelorus
+          git add Formula/pelorus.rb
+          git commit -m "pelorus ${VERSION}"
+          git push origin
+          shred -u ~/.ssh/tap_key || rm -f ~/.ssh/tap_key
 
   publish-pypi:
     needs:

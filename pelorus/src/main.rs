@@ -108,7 +108,7 @@ struct Args {
 #[derive(Debug, Clone, Subcommand)]
 #[command()]
 pub enum Command {
-    /// Spawn the server process and wait for input (online mode)
+    /// Spawn the server process and wait for input using the compiled data provider
     Online(ConfigArgs),
 
     /// Use a Bagfile directly and run synchronously
