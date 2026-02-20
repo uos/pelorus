@@ -79,6 +79,11 @@ impl Pipeline {
         Arc::clone(&self.map)
     }
 
+    pub fn set_base_to_lidar(&mut self, base_to_lidar: Isometry3<f64>) {
+        self.config.base_to_lidar = base_to_lidar;
+        self.map.lock().unwrap().set_base_to_lidar(base_to_lidar);
+    }
+
     pub fn ext(&self) -> Isometry3<f64> {
         self.ext_lidar_to_imu
     }

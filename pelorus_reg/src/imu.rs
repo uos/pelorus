@@ -199,6 +199,12 @@ impl ImuProcessing {
         s
     }
 
+    pub fn set_base_to_lidar(&mut self, base_to_lidar: &Isometry3<f64>) {
+        let lidar_to_base = base_to_lidar.inverse();
+        self.lidar_to_base_r = *lidar_to_base.rotation.to_rotation_matrix().matrix();
+        self.lidar_to_base_t = lidar_to_base.translation.vector;
+    }
+
     pub fn initialize(&mut self, msgs: &[ImuMsg], ekf: &mut crate::iekf::Iekf) -> Vector3<f64> {
         let mut n = 1.0;
         self.last_imu = crate::ImuMsg::default();

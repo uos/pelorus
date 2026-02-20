@@ -873,4 +873,10 @@ impl crate::Registration for RegistrationState {
         self.imu_processing
             .initialize(message_buffer, &mut self.ekf)
     }
+
+    fn set_base_to_lidar(&mut self, base_to_lidar: Isometry3<f64>) {
+        self.base_to_lidar = base_to_lidar;
+        self.ekf.base_to_lidar = base_to_lidar;
+        self.imu_processing.set_base_to_lidar(&base_to_lidar);
+    }
 }

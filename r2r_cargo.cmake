@@ -131,7 +131,7 @@ function(r2r_cargo)
   # set(ENV{RUSTFLAGS} "-C target-cpu=native -C llvm-args=-cost-kind=latency")
  
   add_custom_target(cargo_target ALL
-      COMMAND ${CMAKE_COMMAND} "-E" "env" "RUSTFLAGS=$ENV{RUSTFLAGS}" "CMAKE_IDL_PACKAGES=$ENV{CMAKE_IDL_PACKAGES}" "CMAKE_INCLUDE_DIRS=$ENV{CMAKE_INCLUDE_DIRS}" "cargo" "build" "-p" "pelorus" "--profile" "colcon" "--no-default-features" "--features" "${FEATURES_STR}" "--locked"
+      COMMAND ${CMAKE_COMMAND} "-E" "env" "RUSTFLAGS=$ENV{RUSTFLAGS}" "CMAKE_IDL_PACKAGES=$ENV{CMAKE_IDL_PACKAGES}" "CMAKE_INCLUDE_DIRS=$ENV{CMAKE_INCLUDE_DIRS}" "cargo" "build" "-p" "pelorus_cli" "--profile" "colcon" "--no-default-features" "--features" "${FEATURES_STR}" "--locked"
      WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
       )
   unset(CARGO_CLEAN CACHE)
