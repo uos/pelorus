@@ -1,0 +1,146 @@
+[package]
+name = "pelorus_cli"
+description = "Highly efficient Lidar Inertial Odometry."
+edition.workspace = true
+include.workspace = true
+keywords.workspace = true
+license.workspace = true
+repository.workspace = true
+version.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+pelorus_core.workspace = true
+prelio_io.workspace = true
+pelorus_cuda = { optional = true, workspace = true }
+prelio.workspace = true
+pelorus_reg.workspace = true
+ros_pointcloud2.workspace = true
+ros2-client = { workspace = true, optional = true }
+nalgebra.workspace = true
+anyhow.workspace = true
+rand.workspace = true
+either.workspace = true
+env_logger.workspace = true
+log.workspace = true
+ros2-interfaces-jazzy-serde = { workspace = true, optional = true }
+rerun = { workspace = true, optional = true }
+futures-lite.workspace = true
+mimalloc = { version = "0.1.48", default-features = false, optional = true }
+clap = { version = "4.5.53", features = ["derive"] }
+r2r = { workspace = true, optional = true }
+ratpub = { workspace = true, optional = true }
+ros2-interfaces-jazzy-rkyv = { workspace = true, optional = true }
+tokio = { workspace = true, optional = true }
+mt_rat = { workspace = true, optional = true }
+rustc-hash.workspace = true
+ratslang.workspace = true
+sophus_lie = { workspace = true, optional = true }
+plotters = { workspace = true, optional = true }
+petname.workspace = true
+colorous = "1.0"
+ratatui = "0.29"
+crossterm = "0.28"
+num_cpus = "1.16"
+libc = "0.2"
+rayon = { workspace = true, optional = true }
+clap_complete.workspace = true
+
+[[bin]]
+name = "pelorus"
+path = "src/main.rs"
+
+[features]
+default = [
+  "offline",
+  "parallel",
+] # evaluate and rerun need newer rustc versions, so only enable them manually
+# default = ["dev"] # toggled in development
+
+# -#-#-#-#-#- Sensor Communication -#-#-#-#-#-
+
+# Alias for default fallback
+ros2 = ["ros2c"]
+
+# ROS2 Node via C bindings. See the lio.toml for controlling QoS.
+ros2c = ["r2r"]
+
+# ROS2 with Rust native implementation. No ROS2 installation required. See the lio.toml for controlling QoS.
+ros2-rust = ["ros2-client"]
+
+# Custom Rust-only pub/sub implementation used in my offline-mapping, development and debugging workflow (see https://uos.github.io/minot/#native-publishsubscribe).
+ratpub = [
+  "dep:ratpub",
+  "dep:tokio",
+  "dep:ros2-interfaces-jazzy-rkyv",
+  "prelio_io/ratpub",
+]
+
+# -#-#-#-#-#- Performance and Methods -#-#-#-#-#-
+
+# The input scan is reduced for faster registration (resolution affects accuracy)
+downsample = ["prelio_io/downsample"]
+
+# Build and use CUDA accelerations
+cuda = ["prelio_io/cuda", "dep:pelorus_cuda", "pelorus_reg/cuda"]
+
+# Switch to threadpool workstealing whenever large buffers are processed. The cuda feature has higher precedence, but not every parallel part is implemented with cuda, so a combination of both flags make sense.
+parallel = ["prelio_io/parallel", "pelorus_reg/parallel", "dep:rayon"]
+
+# Lidar + IMU with naiive kdtree for neighborsearch. Currently slow and unstable. Use only with good reason.
+kdtree = ["pelorus_reg/nn_kdt"]
+
+# Enables synchronization with a bagfile using Minot (https://uos.github.io/minot/)
+offline = ["ratpub", "rat"]
+
+# Use Mimalloc as allocator. General speedup when using dynamic memory.
+mimalloc = ["dep:mimalloc"]
+
+# -#-#-#-#-#- Visualizations -#-#-#-#-#-
+
+# Visualize data with rerun. Set the `RERUN_SERVER_ADDR` env variable to your rerun instance, default is '127.0.0.1:9876'.
+rerun = ["dep:rerun", "prelio_io/rerun"]
+
+# Collect undistorted and registered scans to a map. WARNING: This feature is really naiive right now and slows down computation dramatically. In combination with the "offline" flag, the synchronization for "mt_rat" will move to post-mapping.
+mapping = []
+
+# Publish the localmap. WARNING: You should only enable this for debugging or you want to fiddle with the config. Getting the map is inefficient and unoptimized.
+map = []
+
+# Skips publishing any visualizations that take too much compute resources (e.g. iterating a point cloud)
+no-viz = []
+
+# Enable the visualization tools (`evaluate` subcommand) for comparing against ground truths.
+evaluate = ["dep:sophus_lie", "dep:plotters", "dep:rerun"]
+
+# -#-#-#-#-#- Low level -#-#-#-#-#-
+
+# Toggle tooling typically used for development
+dev = ["offline", "rerun", "parallel", "map"]
+
+# Use variable syncing for triggers
+rat = ["dep:mt_rat", "dep:tokio"]
+
+# Use native ROS2 as pub/sub system
+ros2-client = [
+  "dep:ros2-client",
+  "dep:ros2-interfaces-jazzy-serde",
+  "prelio_io/ros2-client",
+]
+
+# Use rclc bindings as pub/sub system
+r2r = ["dep:r2r", "prelio_io/r2r"]
+
+[build-dependencies]
+anyhow.workspace = true
+env_logger.workspace = true
+pelorus_core = { path = "../pelorus_core" }
+ratslang.workspace = true
+
+[package.metadata.deb]
+name = "pelorus"
+depends = "minot (>= 0.5.0-1), minot (<< 0.6.0~)"
+section = "science"
+priority = "optional"
+assets = [["target/release/pelorus", "usr/bin/pelorus", "755"]]
