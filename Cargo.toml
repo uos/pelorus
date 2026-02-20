@@ -44,8 +44,8 @@ ros_pointcloud2 = { version = "1.0.0-rc.3", features = [
   "nalgebra",
 ] }
 ratslang = "0.4.1"
-ratpub = { version = "0.5.2" }
-mt_rat = { version = "0.5.2" }
+ratpub = { version = "0.5.3" }
+mt_rat = { version = "0.5.3" }
 imu-calib = "0.1" # TODO use noise calib
 
 once_cell = "1.21"
