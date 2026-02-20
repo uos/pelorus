@@ -41,6 +41,32 @@ echo "  Cargo.toml"
 echo "  package.xml"
 echo "  pelorus_c/CMakeLists.txt"
 echo "  packaging/arch-bin/PKGBUILD"
+
+ROS_IMAGE="docker.io/stelzo/ubuntu-dev:jazzy"
+CARGO_HOME_HOST="${CARGO_HOME:-$HOME/.cargo}"
+
+if command -v podman &>/dev/null; then
+    CONTAINER_RUNTIME="podman"
+elif command -v docker &>/dev/null; then
+    CONTAINER_RUNTIME="docker"
+else
+    echo "Error: neither podman nor docker found" >&2
+    exit 1
+fi
+
+echo ""
+echo "── Re-creating Cargo.lock inside ${ROS_IMAGE} (via ${CONTAINER_RUNTIME}) ────────────────────────"
+${CONTAINER_RUNTIME} run --rm \
+    --network=host \
+    --userns=keep-id \
+    -v "${SCRIPT_DIR}:/workspace:z" \
+    -v "${CARGO_HOME_HOST}:${CARGO_HOME_HOST}:z" \
+    -e CARGO_HOME="${CARGO_HOME_HOST}" \
+    -e PATH="${CARGO_HOME_HOST}/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin" \
+    -w /workspace \
+    "${ROS_IMAGE}" \
+    bash -c ". /opt/ros/jazzy/setup.bash && rustup default stable && cargo update"
+
 echo ""
 echo "── git diff ──────────────────────────────────────────────────────────"
 git diff

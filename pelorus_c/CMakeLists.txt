@@ -20,6 +20,21 @@ option(PELORUS_FEATURE_NO_IMU_SYNC "Disable IMU synchronization" OFF)
 # Find Rust/Cargo
 find_program(CARGO_EXECUTABLE cargo REQUIRED)
 
+# Capture Rust environment at configure time so it survives `sudo make install`.
+# When cmake is run as the user, $HOME points to the user's home; that value is
+# then baked into the generated Makefile and forwarded to every cargo invocation
+# even when make is later run under sudo (which resets $HOME to /root).
+if(DEFINED ENV{CARGO_HOME})
+    set(PELORUS_CARGO_HOME "$ENV{CARGO_HOME}")
+else()
+    set(PELORUS_CARGO_HOME "$ENV{HOME}/.cargo")
+endif()
+if(DEFINED ENV{RUSTUP_HOME})
+    set(PELORUS_RUSTUP_HOME "$ENV{RUSTUP_HOME}")
+else()
+    set(PELORUS_RUSTUP_HOME "$ENV{HOME}/.rustup")
+endif()
+
 # Determine build profile
 if(CMAKE_BUILD_TYPE STREQUAL "Debug")
     set(CARGO_BUILD_TYPE "debug")
@@ -58,7 +73,10 @@ else()
 endif()
 
 add_custom_target(pelorus_rust_build ALL
-    COMMAND ${CARGO_EXECUTABLE} build --package pelorus_c ${CARGO_BUILD_FLAG} ${FEATURES_ARG}
+    COMMAND ${CMAKE_COMMAND} -E env
+        "CARGO_HOME=${PELORUS_CARGO_HOME}"
+        "RUSTUP_HOME=${PELORUS_RUSTUP_HOME}"
+        ${CARGO_EXECUTABLE} build --package pelorus_c ${CARGO_BUILD_FLAG} ${FEATURES_ARG}
     WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/..
     COMMENT "Building pelorus_c Rust library with Cargo"
     BYPRODUCTS 

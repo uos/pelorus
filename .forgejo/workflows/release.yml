@@ -111,7 +111,7 @@ jobs:
           mv target/release/libpelorus.so dist/${ARCH}/
           mv target/release/libpelorus.a  dist/${ARCH}/
 
-          cargo build -p pelorus --features rerun,evaluate --release
+          cargo build -p pelorus_cli --features rerun,evaluate --release
           mv target/release/pelorus dist/${ARCH}/
 
           # ------- DEB
@@ -147,12 +147,12 @@ jobs:
 
           # -- bin
           DEB_NAME="pelorus"
-          updatetoml=pelorus/Cargo.toml
+          updatetoml=pelorus_cli/Cargo.toml
           tmp=$(mktemp)
           toml set "$updatetoml" 'package.metadata.deb.name' "$DEB_NAME" >"$tmp"
           mv "$tmp" "$updatetoml"
 
-          cargo deb --package pelorus --features rerun,evaluate
+          cargo deb --package pelorus_cli --features rerun,evaluate
 
           # prepare upload
           mv target/debian/*.deb dist/${ARCH}/
@@ -208,8 +208,16 @@ jobs:
           mv target/$TARGET/release/libpelorus.dylib dist/${ARCH}/
           mv target/$TARGET/release/libpelorus.a  dist/${ARCH}/
 
-          cargo zigbuild --target $TARGET "$@" --release --package pelorus --features evaluate
+          cargo zigbuild --target $TARGET "$@" --release --package pelorus_cli --features evaluate
           mv target/$TARGET/release/pelorus dist/${ARCH}/
+
+          # Generate cmake config and pkg-config files
+          cmake -S pelorus_c -B pelorus_c/build -DCMAKE_INSTALL_PREFIX=/usr/local -DPELORUS_BUILD_SHARED=OFF -DPELORUS_BUILD_STATIC=OFF
+          cp pelorus_c/pelorus.h dist/${ARCH}/
+          cp pelorus_c/pelorus.hpp dist/${ARCH}/
+          cp pelorus_c/build/pelorus.pc dist/${ARCH}/
+          cp pelorus_c/build/pelorusConfig.cmake dist/${ARCH}/
+          cp pelorus_c/build/pelorusConfigVersion.cmake dist/${ARCH}/
 
       - name: Upload
         uses: actions/upload-artifact@v3
@@ -273,7 +281,7 @@ jobs:
           mv target/release/libpelorus.so dist/${ARCH}/
           mv target/release/libpelorus.a  dist/${ARCH}/
 
-          cargo build -p pelorus --release --features cuda,rerun,evaluate
+          cargo build -p pelorus_cli --release --features cuda,rerun,evaluate
           mv target/release/pelorus dist/${ARCH}/
 
           # ------- DEB
@@ -309,12 +317,12 @@ jobs:
 
           # -- bin
           DEB_NAME="pelorus-cuda${CUDA_PART}"
-          updatetoml=pelorus/Cargo.toml
+          updatetoml=pelorus_cli/Cargo.toml
           tmp=$(mktemp)
           toml set "$updatetoml" 'package.metadata.deb.name' "$DEB_NAME" >"$tmp"
           mv "$tmp" "$updatetoml"
 
-          cargo deb --package pelorus --features cuda,rerun,evaluate
+          cargo deb --package pelorus_cli --features cuda,rerun,evaluate
 
           # prepare upload
           mv target/debian/*.deb dist/${ARCH}/
@@ -395,7 +403,7 @@ jobs:
           mv target/release/libpelorus.so dist/${ARCH}/
           mv target/release/libpelorus.a  dist/${ARCH}/
 
-          cargo build -p pelorus --release --features cuda,rerun,evaluate
+          cargo build -p pelorus_cli --release --features cuda,rerun,evaluate
           mv target/release/pelorus dist/${ARCH}/
 
           # ------- DEB
@@ -431,12 +439,12 @@ jobs:
 
           # -- bin
           DEB_NAME="pelorus-cuda${CUDA_PART}"
-          updatetoml=pelorus/Cargo.toml
+          updatetoml=pelorus_cli/Cargo.toml
           tmp=$(mktemp)
           toml set "$updatetoml" 'package.metadata.deb.name' "$DEB_NAME" >"$tmp"
           mv "$tmp" "$updatetoml"
 
-          cargo deb --package pelorus --features cuda,rerun,evaluate
+          cargo deb --package pelorus_cli --features cuda,rerun,evaluate
 
           # prepare upload
           mv target/debian/*.deb dist/${ARCH}/
@@ -517,7 +525,7 @@ jobs:
           mv target/release/libpelorus.so dist/${ARCH}/
           mv target/release/libpelorus.a  dist/${ARCH}/
 
-          cargo build -p pelorus --release --features cuda,rerun,evaluate
+          cargo build -p pelorus_cli --release --features cuda,rerun,evaluate
           mv target/release/pelorus dist/${ARCH}/
 
           # ------- DEB
@@ -553,12 +561,12 @@ jobs:
 
           # -- bin
           DEB_NAME="pelorus-cuda${CUDA_PART}"
-          updatetoml=pelorus/Cargo.toml
+          updatetoml=pelorus_cli/Cargo.toml
           tmp=$(mktemp)
           toml set "$updatetoml" 'package.metadata.deb.name' "$DEB_NAME" >"$tmp"
           mv "$tmp" "$updatetoml"
 
-          cargo deb --package pelorus --features cuda,rerun,evaluate
+          cargo deb --package pelorus_cli --features cuda,rerun,evaluate
 
           # prepare upload
           mv target/debian/*.deb dist/${ARCH}/
@@ -663,7 +671,7 @@ jobs:
           mkdir -p "dist/${ARCH}"
 
           export RUSTFLAGS="-C target-feature=+crt-static"
-          cargo zigbuild -p pelorus --release --target $TARGET
+          cargo zigbuild -p pelorus_cli --release --target $TARGET
           mv target/$TARGET/release/pelorus dist/${ARCH}/
 
       - name: Upload
@@ -738,7 +746,7 @@ jobs:
           export CUDA_PART="${{ matrix.cuda }}"
           sed -i "s|<name>pelorus</name>|<name>pelorus-cuda${CUDA_PART}</name>|" package.xml
           sed -i "s|project(pelorus)|project(pelorus-cuda${CUDA_PART})|" CMakeLists.txt
-          sed -i "s/^\[features\]/[[bin]]\nname = \"pelorus-cuda${CUDA_PART}\"\npath = \"src\/main.rs\"\n\n[features]/" pelorus/Cargo.toml
+          sed -i "s/^\[features\]/[[bin]]\nname = \"pelorus-cuda${CUDA_PART}\"\npath = \"src\/main.rs\"\n\n[features]/" pelorus_cli/Cargo.toml
 
           export PELORUS_CUDA=1
           bash ./scripts/make-deb.bash
@@ -816,7 +824,7 @@ jobs:
           export CUDA_PART="${{ matrix.cuda }}"
           sed -i "s|<name>pelorus</name>|<name>pelorus-cuda${CUDA_PART}</name>|" package.xml
           sed -i "s|project(pelorus)|project(pelorus-cuda${CUDA_PART})|" CMakeLists.txt
-          sed -i "s/^\[features\]/[[bin]]\nname = \"pelorus-cuda${CUDA_PART}\"\npath = \"src\/main.rs\"\n\n[features]/" pelorus/Cargo.toml
+          sed -i "s/^\[features\]/[[bin]]\nname = \"pelorus-cuda${CUDA_PART}\"\npath = \"src\/main.rs\"\n\n[features]/" pelorus_cli/Cargo.toml
 
           export PELORUS_CUDA=1
           bash ./scripts/make-deb.bash
@@ -894,7 +902,7 @@ jobs:
           export CUDA_PART="${{ matrix.cuda }}"
           sed -i "s|<name>pelorus</name>|<name>pelorus-cuda${CUDA_PART}</name>|" package.xml
           sed -i "s|project(pelorus)|project(pelorus-cuda${CUDA_PART})|" CMakeLists.txt
-          sed -i "s/^\[features\]/[[bin]]\nname = \"pelorus-cuda${CUDA_PART}\"\npath = \"src\/main.rs\"\n\n[features]/" pelorus/Cargo.toml
+          sed -i "s/^\[features\]/[[bin]]\nname = \"pelorus-cuda${CUDA_PART}\"\npath = \"src\/main.rs\"\n\n[features]/" pelorus_cli/Cargo.toml
 
           export PELORUS_CUDA=1
           bash ./scripts/make-deb.bash
@@ -1090,7 +1098,7 @@ jobs:
           fi
 
           # binary
-          MATURIN_ARGS="build --zig --manifest-path pelorus/Cargo.toml --release --target-dir wheels --features rerun,evaluate"
+          MATURIN_ARGS="build --zig --manifest-path pelorus_cli/Cargo.toml --release --target-dir wheels --features rerun,evaluate"
           maturin $MATURIN_ARGS --target "$TARGET"
 
           # bindings
@@ -1141,7 +1149,7 @@ jobs:
           ulimit -n 65536
           rustup toolchain uninstall stable
           rustup toolchain install stable
-          maturin build --manifest-path pelorus/Cargo.toml --release --features cuda,rerun,evaluate --target "$TARGET" --skip-auditwheel
+          maturin build --manifest-path pelorus_cli/Cargo.toml --release --features cuda,rerun,evaluate --target "$TARGET" --skip-auditwheel
           maturin build --manifest-path pelorus_py/Cargo.toml --release --features cuda --target "$TARGET" --skip-auditwheel
       - name: Upload wheels
         uses: actions/upload-artifact@v3
@@ -1187,7 +1195,7 @@ jobs:
           ulimit -n 65536
           rustup toolchain uninstall stable
           rustup toolchain install stable
-          maturin build --manifest-path pelorus/Cargo.toml --release --features cuda,rerun,evaluate --target "$TARGET" --skip-auditwheel
+          maturin build --manifest-path pelorus_cli/Cargo.toml --release --features cuda,rerun,evaluate --target "$TARGET" --skip-auditwheel
           maturin build --manifest-path pelorus_py/Cargo.toml --release --features cuda --target "$TARGET" --skip-auditwheel
       - name: Upload wheels
         uses: actions/upload-artifact@v3
@@ -1233,7 +1241,7 @@ jobs:
           ulimit -n 65536
           rustup toolchain uninstall stable
           rustup toolchain install stable
-          maturin build --manifest-path pelorus/Cargo.toml --release --features cuda,rerun,evaluate --target "$TARGET" --skip-auditwheel
+          maturin build --manifest-path pelorus_cli/Cargo.toml --release --features cuda,rerun,evaluate --target "$TARGET" --skip-auditwheel
           maturin build --manifest-path pelorus_py/Cargo.toml --release --features cuda --target "$TARGET" --skip-auditwheel
       - name: Upload wheels
         uses: actions/upload-artifact@v3
@@ -1312,7 +1320,12 @@ jobs:
             make_tarball "pelorus-${VERSION}-macos-${arch}" \
               "dl/artifacts-macos/${arch}/pelorus" \
               "dl/artifacts-macos/${arch}/libpelorus.dylib" \
-              "dl/artifacts-macos/${arch}/libpelorus.a"
+              "dl/artifacts-macos/${arch}/libpelorus.a" \
+              "dl/artifacts-macos/${arch}/pelorus.h" \
+              "dl/artifacts-macos/${arch}/pelorus.hpp" \
+              "dl/artifacts-macos/${arch}/pelorus.pc" \
+              "dl/artifacts-macos/${arch}/pelorusConfig.cmake" \
+              "dl/artifacts-macos/${arch}/pelorusConfigVersion.cmake"
           done
 
           echo "=== Linux CUDA ==="

@@ -5,8 +5,9 @@ registration {
     # Feature size used for registration. NOTE: This will heavily affect your registration accuracy and runtime.
     resolution = 50cm
 
+    # @recommended
     # How many Voxels of the previous defined resolution to save at any time. With Cuda enabled, the capacity will be round up to the next power of 2.
-    capacity = 120000
+    capacity = 131072
    
     # Magic weighting value for handling the sensivity to new scans. The higher this value, the sensitive is it to brand new scans.
     distribution_update_sensitivity = 10.0
@@ -228,6 +229,9 @@ output {
     frame_id = ""
 
     from_lidar_transform {
+      # Ignore the next manual translation and use the TF tree instead. The lookup will be once with receiving the first sensor message.
+      use_tf_tree = false
+
       # Pose of the LiDAR in the base_link frame.
       translation = [0.0mm, 0.0mm, 0.0mm]
       rotation = [ [1.0, 0.0, 0.0],
@@ -266,6 +270,13 @@ output {
   imu_ahrs_filtered_topic = "imu/filtered"
 
   logger_prefix = "pelorus"
+}
+
+parallelism {
+  # @recommended
+  # Maximum number of CPU threads used for parallel point-cloud processing.
+  # Set to 0 to use all available cores.
+  num_threads = 0
 }
 
 

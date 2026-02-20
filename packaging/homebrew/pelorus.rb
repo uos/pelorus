@@ -21,6 +21,13 @@ class Pelorus < Formula
 
   def install
     bin.install "pelorus"
+    lib.install "libpelorus.dylib"
+    lib.install "libpelorus.a"
+    include.install "pelorus.h"
+    include.install "pelorus.hpp"
+    (lib/"pkgconfig").install "pelorus.pc"
+    (lib/"cmake/pelorus").install "pelorusConfig.cmake"
+    (lib/"cmake/pelorus").install "pelorusConfigVersion.cmake"
     generate_completions_from_executable(bin/"pelorus", "completions")
   end
 

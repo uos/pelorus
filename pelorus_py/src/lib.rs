@@ -223,6 +223,16 @@ impl PelorusHandle {
         let mut config = load_pelorus_config(config_path)
             .map_err(|e| PyRuntimeError::new_err(format!("Failed to load configuration: {}", e)))?;
 
+        #[cfg(feature = "parallel")]
+        if config.num_threads > 0 {
+            if let Err(e) = rayon::ThreadPoolBuilder::new()
+                .num_threads(config.num_threads)
+                .build_global()
+            {
+                log::warn!("Failed to configure rayon thread pool to {} threads: {e}", config.num_threads);
+            }
+        }
+
         if !device_specific_pointcloud2 {
             // Select the generic parsing path (internally uses a vendor mode, but we keep the
             // public API vendor-agnostic).

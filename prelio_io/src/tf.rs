@@ -17,6 +17,7 @@ use thiserror::Error;
 
 pub struct TfBroadcaster {
     publisher: ros2_client::Publisher<TFMessage>,
+    static_publisher: ros2_client::Publisher<TFMessage>,
 }
 
 impl TfBroadcaster {
@@ -36,6 +37,22 @@ impl TfBroadcaster {
                     None,
                 )
                 .unwrap(),
+            static_publisher: node
+                .create_publisher(
+                    &node
+                        .create_topic(
+                            &ros2_client::Name::new("/", "tf_static").unwrap(),
+                            ros2_client::MessageTypeName::new("tf2_msgs", "TFMessage"),
+                            &ros2_client::QosPolicyBuilder::new()
+                                .durability(ros2_client::DurabilityPolicy::TransientLocal)
+                                .reliability(ros2_client::ReliabilityPolicy::Reliable)
+                                .history(ros2_client::HistoryPolicy::KeepLast { depth: 1 })
+                                .build(),
+                        )
+                        .unwrap(),
+                    None,
+                )
+                .unwrap(),
         }
     }
 
@@ -46,6 +63,17 @@ impl TfBroadcaster {
         };
         // TODO: handle error correctly
         self.publisher
+            .publish(tf_message)
+            .map_err(|err| TfError::R2r(err.to_string()))
+    }
+
+    /// Broadcast static transform
+    pub fn send_static_transform(&self, tf: TransformStamped) -> Result<(), TfError> {
+        let tf_message = TFMessage {
+            transforms: vec![tf],
+        };
+        // TODO: handle error correctly
+        self.static_publisher
             .publish(tf_message)
             .map_err(|err| TfError::R2r(err.to_string()))
     }
@@ -244,7 +272,11 @@ impl TfListener {
                     .create_topic(
                         &ros2_client::Name::new("/", "tf_static").unwrap(),
                         ros2_client::MessageTypeName::new("tf2_msgs", "TFMessage"),
-                        &ros2_client::DEFAULT_SUBSCRIPTION_QOS,
+                        &ros2_client::QosPolicyBuilder::new()
+                            .durability(ros2_client::DurabilityPolicy::TransientLocal)
+                            .reliability(ros2_client::ReliabilityPolicy::Reliable)
+                            .history(ros2_client::HistoryPolicy::KeepLast { depth: 1 })
+                            .build(),
                     )
                     .unwrap(),
                 None,

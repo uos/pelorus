@@ -47,6 +47,11 @@ impl TfBroadcaster {
         }
         Ok(())
     }
+
+    /// Broadcast static transform
+    pub async fn send_static_transform(&self, tf: TransformStamped) -> Result<(), TfError> {
+        self.send_transform(tf).await
+    }
 }
 
 /// Enumerates the different types of errors

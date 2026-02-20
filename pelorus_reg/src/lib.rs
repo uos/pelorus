@@ -79,6 +79,7 @@ pub trait Registration {
 
     fn imu_ekf_predict(&mut self, acc: [f64; 3], gyro: [f64; 3], dt: f64) -> ImuEkfPrediction;
     fn init_imu_ekf(&mut self, message_buffer: &[ImuMsg]) -> Vector3<f64>;
+    fn set_base_to_lidar(&mut self, base_to_lidar: Isometry3<f64>);
     fn get_state(&self) -> ImuEkfPrediction;
     fn undistort(
         &mut self,

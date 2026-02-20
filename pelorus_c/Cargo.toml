@@ -15,23 +15,18 @@ name = "pelorus"
 crate-type = ["cdylib", "staticlib"]
 
 [dependencies]
-prelio.workspace = true
-pelorus_core.workspace = true
-pelorus_reg.workspace = true
-spole.workspace = true
-ros_pointcloud2.workspace = true
-ros2-interfaces-jazzy-serde.workspace = true
-nalgebra.workspace = true
-anyhow.workspace = true
+pelorus.workspace = true
 log.workspace = true
-ratslang.workspace = true
+
+[build-dependencies]
+cbindgen = "0.29"
 
 [features]
 default = ["parallel"]
-downsample = ["prelio/downsample"]
-parallel = ["prelio/parallel", "pelorus_reg/parallel"]
-cuda = ["prelio/cuda", "pelorus_reg/cuda"]
-no-imu-sync = ["prelio/no-imu-sync"]
+downsample = ["pelorus/downsample"]
+parallel = ["pelorus/parallel"]
+cuda = ["pelorus/cuda"]
+no-imu-sync = ["pelorus/no-imu-sync"]
 
 [package.metadata.deb]
 name = "libpelorus"

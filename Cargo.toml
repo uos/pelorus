@@ -2,10 +2,11 @@
 members = [
   "pelorus_core",
   "pelorus_cuda",
-  "pelorus",
+  "pelorus_cli",
   "pelorus_c",
   "pelorus_c/deb-dev",
   "pelorus_py",
+  "pelorus",
   "pelorus_reg",
   "prelio",
   "prelio_io",
@@ -25,6 +26,7 @@ authors = ["Christopher 'stelzo' Sieh <stelzo@steado.de>"]
 rust-version = "1.85"                                                   # ROS lyrical
 
 [workspace.dependencies]
+pelorus_cli = { path = "pelorus_cli", version = "0.0.2" }
 pelorus = { path = "pelorus", version = "0.0.2" }
 pelorus_core = { path = "pelorus_core", version = "0.0.2" }
 pelorus_reg = { path = "pelorus_reg", version = "0.0.2" }

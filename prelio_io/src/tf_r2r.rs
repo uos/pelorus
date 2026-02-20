@@ -19,6 +19,7 @@ use thiserror::Error;
 
 pub struct TfBroadcaster {
     publisher: r2r::Publisher<TFMessage>,
+    static_publisher: r2r::Publisher<TFMessage>,
 }
 
 impl TfBroadcaster {
@@ -27,6 +28,16 @@ impl TfBroadcaster {
     pub fn new(node: &mut r2r::Node) -> Self {
         Self {
             publisher: node.create_publisher("/tf", QosProfile::default()).unwrap(),
+            static_publisher: node
+                .create_publisher(
+                    "/tf_static",
+                    r2r::QosProfile::parameters()
+                        .durability(r2r::qos::DurabilityPolicy::TransientLocal)
+                        .reliability(r2r::qos::ReliabilityPolicy::Reliable)
+                        .history(r2r::qos::HistoryPolicy::KeepLast)
+                        .keep_last(1),
+                )
+                .unwrap(),
         }
     }
 
@@ -37,6 +48,17 @@ impl TfBroadcaster {
         };
         // TODO: handle error correctly
         self.publisher
+            .publish(&tf_message)
+            .map_err(|err| TfError::R2r(err.to_string()))
+    }
+
+    /// Broadcast static transform
+    pub fn send_static_transform(&self, tf: TransformStamped) -> Result<(), TfError> {
+        let tf_message = TFMessage {
+            transforms: vec![tf],
+        };
+        // TODO: handle error correctly
+        self.static_publisher
             .publish(&tf_message)
             .map_err(|err| TfError::R2r(err.to_string()))
     }
@@ -217,7 +239,14 @@ impl TfListener {
         });
 
         let mut static_subscriber = node
-            .subscribe::<TFMessage>("/tf_static", QosProfile::default())
+            .subscribe::<TFMessage>(
+                "/tf_static",
+                r2r::QosProfile::parameters()
+                    .durability(r2r::qos::DurabilityPolicy::TransientLocal)
+                    .reliability(r2r::qos::ReliabilityPolicy::Reliable)
+                    .history(r2r::qos::HistoryPolicy::KeepLast)
+                    .keep_last(1),
+            )
             .unwrap();
 
         let buff_for_static_sub = buff.clone();
