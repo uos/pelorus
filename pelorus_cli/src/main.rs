@@ -2161,7 +2161,7 @@ pf! i 1
                 let (imu_tx, imu_rx) = std::sync::mpsc::channel::<String>();
 
                 std::thread::spawn(move || {
-                    futures_lite::block_on(async move {
+                    future::block_on(async move {
                         if let Some(msg) = lidar_sub.next().await {
                             let _ = lidar_tx.send(msg.header.frame_id);
                         }
@@ -2169,7 +2169,7 @@ pf! i 1
                 });
 
                 std::thread::spawn(move || {
-                    futures_lite::block_on(async move {
+                    future::block_on(async move {
                         if let Some(msg) = imu_sub.next().await {
                             let _ = imu_tx.send(msg.header.frame_id);
                         }
@@ -2242,7 +2242,7 @@ pf! i 1
                 };
 
                 // --- imu.from_lidar_transform ---
-                if let (Some(ref lf), Some(ref imuf)) = (&lidar_frame, &imu_frame) {
+                if let (Some(lf), Some(imuf)) = (&lidar_frame, &imu_frame) {
                     match tf_listener.lookup_transform(lf, imuf, t0.clone()) {
                         Ok(tf) => {
                             let iso = isometry_from_transform(&tf.transform);
@@ -2281,7 +2281,7 @@ pf! i 1
                                         imu_inner.find("from_lidar_transform")
                                     {
                                         let flt_pos = imu_start + flt_pos_rel;
-                                        if let Some((flt_start, flt_end)) =
+                                        if let Some((_, flt_end)) =
                                             find_block_range(&config_content, flt_pos)
                                         {
                                             config_content
@@ -2306,7 +2306,7 @@ pf! i 1
                 }
 
                 // --- output.base_link.from_lidar_transform ---
-                if let (Some(ref lf), Some(ref blf)) = (&lidar_frame, &lio_config.base_link_frame) {
+                if let (Some(lf), Some(blf)) = (&lidar_frame, &lio_config.base_link_frame) {
                     match tf_listener.lookup_transform(lf, blf, t0) {
                         Ok(tf) => {
                             let iso = isometry_from_transform(&tf.transform);
@@ -2351,7 +2351,7 @@ pf! i 1
                                                 bl_inner.find("from_lidar_transform")
                                             {
                                                 let flt_pos = bl_start + flt_pos_rel;
-                                                if let Some((flt_start, flt_end)) =
+                                                if let Some((_, flt_end)) =
                                                     find_block_range(&config_content, flt_pos)
                                                 {
                                                     config_content.replace_range(
