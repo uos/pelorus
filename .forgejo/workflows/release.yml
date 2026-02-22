@@ -1608,6 +1608,7 @@ jobs:
           AUR_SSH_KEY: ${{ secrets.AUR_SSH_KEY }}
         run: |
           mkdir -p ~/.ssh
+          apt update && apt-get install -y keychain
           printf '%s\n' "$AUR_SSH_KEY" > ~/.ssh/aur_key
           chmod 600 ~/.ssh/aur_key
           ssh-keyscan aur.archlinux.org >> ~/.ssh/known_hosts
@@ -1645,6 +1646,7 @@ jobs:
         run: |
           set -euo pipefail
           VERSION=$(toml get --raw Cargo.toml workspace.package.version)
+          apt update && apt-get install -y keychain
 
           ARM_SHA256=$(sha256sum "release/pelorus-${VERSION}-macos-arm64.tar.gz" | awk '{print $1}')
           X86_SHA256=$(sha256sum "release/pelorus-${VERSION}-macos-amd64.tar.gz" | awk '{print $1}')
