@@ -812,9 +812,33 @@ fn lio_with_ready_signal(
                     &cuda_stream,
                 ) {
                     Ok(Some(pose)) => (pose, map.get_state()),
-                    Ok(None) => continue, // skip outputting trivial solutions on initialization
+                    Ok(None) => {
+                        // mark to send new data even on init
+                        #[cfg(feature = "rat")]
+                        if synchronous_mode {
+                            warn!("sending on none");
+                            rat::bacon(
+                                "tick_end",
+                                &mut "".to_string(),
+                                rat::VariableType::StaticOnly,
+                            )
+                            .unwrap();
+                        }
+                        continue;
+                    } // skip outputting trivial solutions on initialization
                     Err(err) => {
                         error!("{err}");
+                        // mark to send new data even on error
+                        warn!("sending on err");
+                        #[cfg(feature = "rat")]
+                        if synchronous_mode {
+                            rat::bacon(
+                                "tick_end",
+                                &mut "".to_string(),
+                                rat::VariableType::StaticOnly,
+                            )
+                            .unwrap();
+                        }
                         continue;
                     }
                 }
@@ -1692,6 +1716,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let config = {
                 let mut config = ast_to_config(default_ast, user_ast)?;
                 config.show_tui = true;
+                config.prelio_node_params.synchronous_mode = true;
                 config
             };
 
@@ -1720,9 +1745,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
             let lidar_topic = &config.prelio_node_params.cloud_src_topic;
             let imu_topic = &config.prelio_node_params.imu_src_topic;
-            let imu_init_time_ms =
-                (config.prelio_node_params.imu_predictor_init_time_sec * 1000.0) as u64;
-            let scan_init_samples = config.prelio_params.initial_scan_accumulate;
             let bagfile_path_canon = offline_args.bagfile_path.canonicalize().unwrap();
             let bagfile_path = bagfile_path_canon.clone().to_string_lossy().to_string();
             shared_stats.set_bagfile(
@@ -1748,24 +1770,15 @@ _bag.{{
 }}
 _start_locked = false
 
+# Setting triggers for topics.
+# After receiving one message of l or i, playback will pause until a 'tick_end' signal is received.
 pf! [i, l], l 1 tick_end
 pf! l 1 tick_end
 pf! i 1 tick_end
 
 reset! {bagfile_path}
 
-# imu init
-pf! i 1 
-pf! [i,l] {imu_init_time_ms}ms
-pf! i 1 
-
-# initial aggregate, starting loop
-pf! [i, l], l {scan_init_samples}
-pf! l 1
-pf! i 1
-
-pf! [i, l], l 1
-pf! l 1
+# Starting the feedback loop by playing the first IMU message (first step is IMU init)
 pf! i 1
 "#
             );

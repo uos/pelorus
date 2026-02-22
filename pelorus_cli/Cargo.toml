@@ -120,7 +120,7 @@ evaluate = ["dep:sophus_lie", "dep:plotters", "dep:rerun"]
 dev = ["offline", "rerun", "parallel", "map"]
 
 # Use variable syncing for triggers
-rat = ["dep:mt_rat", "dep:tokio"]
+rat = ["dep:mt_rat", "dep:tokio", "prelio_io/rat"]
 
 # Use native ROS2 as pub/sub system
 ros2-client = [

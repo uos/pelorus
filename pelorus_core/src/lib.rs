@@ -370,6 +370,7 @@ pub struct LifisNodeParameters {
     pub wheel_qos: Qos,
     pub imu_qos: Qos,
     pub imu_filtered_qos: Qos,
+    pub synchronous_mode: bool,
 }
 
 #[cfg(feature = "r2r")]
