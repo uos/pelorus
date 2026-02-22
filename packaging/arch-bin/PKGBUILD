@@ -22,9 +22,8 @@ source_aarch64=(
 )
 sha256sums_aarch64=('SKIP' 'SKIP' 'SKIP')
 noextract=("$pkgname-$pkgver-bin.deb" "$pkgname-$pkgver-bin-lib.deb" "$pkgname-$pkgver-bin-dev.deb")
-sha256sums=('SKIP' 'SKIP' 'SKIP')
-provides=('libpelorus')
-conflicts=('libpelorus')
+provides=('pelorus' 'libpelorus')
+conflicts=('pelorus' 'libpelorus')
 
 prepare() {
   mkdir -p "$srcdir/pelorus-bin-ext" "$srcdir/pelorus-lib-ext" "$srcdir/pelorus-dev-ext"
@@ -58,7 +57,6 @@ package() {
   install -Dm644 "$srcdir/pelorus-dev-ext/usr/include/pelorus.hpp" "$pkgdir/usr/include/pelorus.hpp"
   install -Dm644 "$srcdir/pelorus-dev-ext/usr/lib/pkgconfig/pelorus.pc" "$pkgdir/usr/lib/pkgconfig/pelorus.pc"
   install -Dm644 "$srcdir/pelorus-dev-ext/usr/lib/cmake/pelorus/pelorusConfig.cmake" "$pkgdir/usr/lib/cmake/pelorus/pelorusConfig.cmake"
-  install -Dm644 "$srcdir/pelorus-dev-ext/usr/lib/cmake/pelorus/pelorusConfigVersion.cmake" "$pkgdir/usr/lib/cmake/pelorus/pelorusConfigVersion.cmake"
 
   install -Dm644 "$srcdir/completions/bash" "$pkgdir/usr/share/bash-completion/completions/pelorus"
   install -Dm644 "$srcdir/completions/_zsh" "$pkgdir/usr/share/zsh/site-functions/_pelorus"
