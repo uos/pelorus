@@ -1554,8 +1554,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     match args.command {
         Command::Completions { shell } => {
             let mut cmd = Args::command();
-            let bin_name = cmd.get_name().to_string();
-            generate(shell, &mut cmd, bin_name, &mut std::io::stdout());
+            generate(
+                shell,
+                &mut cmd,
+                "pelorus".to_owned(),
+                &mut std::io::stdout(),
+            );
             Ok(())
         }
         /* `run` wrapper removed; `online`/`offline` are top-level commands */
