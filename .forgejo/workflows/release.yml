@@ -988,50 +988,50 @@ jobs:
           WD=$(pwd)
           BUILD_DIR="$WD/glim_integration/pelorus_glim_odometry/build"
           mkdir -p $BUILD_DIR
-
-          # ---- CPU
-          # - pin dependencies
-          LIB_DEB="libpelorus"
-          tmp=$(mktemp)
-          toml set "$updatetoml" 'package.metadata.deb.depends' "${LIB_DEB} ( = ${VERSION} )" >"$tmp"
-          mv "$tmp" "$updatetoml"
-
-          # - build
           cd $BUILD_DIR
           cmake ..
           make -j2
           cd $WD
           cp "$BUILD_DIR/libodometry_estimation_pelorus.so" dist/${ARCH}/
+
+          # ---- CPU
+          DEB_NAME="libpelorus_glim_odometry"
+          LIB_DEB="libpelorus"
+
+          tmp=$(mktemp)
+          toml set "$updatetoml" 'package.metadata.deb.name' "$DEB_NAME" >"$tmp"
+          mv "$tmp" "$updatetoml"
+          tmp=$(mktemp)
+          toml set "$updatetoml" 'package.metadata.deb.depends' "${LIB_DEB} ( = ${VERSION} )" >"$tmp"
+          mv "$tmp" "$updatetoml"
           cargo deb --package pelorus_glim_odometry --no-build
           mv target/debian/*.deb dist/${ARCH}/
 
           # ---- CUDA 12.6
-          # - pin dependencies
+          DEB_NAME="libpelorus_glim_odometry-cuda12-6"
           LIB_DEB="libpelorus-cuda12-6"
+
+          tmp=$(mktemp)
+          toml set "$updatetoml" 'package.metadata.deb.name' "$DEB_NAME" >"$tmp"
+          mv "$tmp" "$updatetoml"
           tmp=$(mktemp)
           toml set "$updatetoml" 'package.metadata.deb.depends' "${LIB_DEB} ( = ${VERSION} )" >"$tmp"
           mv "$tmp" "$updatetoml"
 
-          # - build
-          cd $BUILD_DIR
-          cmake ..
-          make -j2
-          cd $WD
           cargo deb --package pelorus_glim_odometry --no-build
           mv target/debian/*.deb dist/${ARCH}/
 
           # ---- CUDA 13.1
-          # - pin dependencies
+          DEB_NAME="libpelorus_glim_odometry-cuda13-1"
           LIB_DEB="libpelorus-cuda13-1"
+
+          tmp=$(mktemp)
+          toml set "$updatetoml" 'package.metadata.deb.name' "$DEB_NAME" >"$tmp"
+          mv "$tmp" "$updatetoml"
           tmp=$(mktemp)
           toml set "$updatetoml" 'package.metadata.deb.depends' "${LIB_DEB} ( = ${VERSION} )" >"$tmp"
           mv "$tmp" "$updatetoml"
 
-          # - build
-          cd $BUILD_DIR
-          cmake ..
-          make -j2
-          cd $WD
           cargo deb --package pelorus_glim_odometry --no-build
           mv target/debian/*.deb dist/${ARCH}/
 
