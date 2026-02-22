@@ -625,6 +625,7 @@ fn ast_to_config_inner(
             logger_prefix,
             imu_filtered_qos,
             imu_filtered_topic,
+            synchronous_mode: false,
         },
         prelio_params: LifisParameters {
             lidar_vendor,

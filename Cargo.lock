@@ -5620,6 +5620,7 @@ dependencies = [
  "env_logger",
  "futures-lite",
  "log",
+ "mt_rat",
  "nalgebra 0.33.2",
  "pelorus_core",
  "prelio",

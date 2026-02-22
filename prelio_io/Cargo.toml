@@ -27,9 +27,11 @@ r2r = { workspace = true, optional = true }
 rerun = { workspace = true, optional = true }
 ratpub = { workspace = true, optional = true }
 tokio = { workspace = true, optional = true }
+mt_rat = { workspace = true, optional = true }
 ros2-interfaces-jazzy-rkyv = { workspace = true, optional = true }
 
 [features]
+rat = ["dep:mt_rat"]
 downsample = ["prelio/downsample"]
 cuda = ["prelio/cuda"]
 parallel = ["prelio/parallel"]
