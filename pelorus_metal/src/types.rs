@@ -19,25 +19,41 @@ impl Vector3 {
 
 impl From<nalgebra::Vector3<f64>> for Vector3 {
     fn from(v: nalgebra::Vector3<f64>) -> Self {
-        Self { x: v.x, y: v.y, z: v.z }
+        Self {
+            x: v.x,
+            y: v.y,
+            z: v.z,
+        }
     }
 }
 
 impl From<&nalgebra::Vector3<f64>> for Vector3 {
     fn from(v: &nalgebra::Vector3<f64>) -> Self {
-        Self { x: v.x, y: v.y, z: v.z }
+        Self {
+            x: v.x,
+            y: v.y,
+            z: v.z,
+        }
     }
 }
 
 impl From<nalgebra::Translation3<f64>> for Vector3 {
     fn from(t: nalgebra::Translation3<f64>) -> Self {
-        Self { x: t.vector.x, y: t.vector.y, z: t.vector.z }
+        Self {
+            x: t.vector.x,
+            y: t.vector.y,
+            z: t.vector.z,
+        }
     }
 }
 
 impl From<&nalgebra::Translation3<f64>> for Vector3 {
     fn from(t: &nalgebra::Translation3<f64>) -> Self {
-        Self { x: t.vector.x, y: t.vector.y, z: t.vector.z }
+        Self {
+            x: t.vector.x,
+            y: t.vector.y,
+            z: t.vector.z,
+        }
     }
 }
 
@@ -71,13 +87,23 @@ impl Quaternion {
 
 impl Default for Quaternion {
     fn default() -> Self {
-        Self { w: 1.0, x: 0.0, y: 0.0, z: 0.0 }
+        Self {
+            w: 1.0,
+            x: 0.0,
+            y: 0.0,
+            z: 0.0,
+        }
     }
 }
 
 impl From<nalgebra::UnitQuaternion<f64>> for Quaternion {
     fn from(q: nalgebra::UnitQuaternion<f64>) -> Self {
-        Self { w: q.coords.w, x: q.coords.x, y: q.coords.y, z: q.coords.z }
+        Self {
+            w: q.coords.w,
+            x: q.coords.x,
+            y: q.coords.y,
+            z: q.coords.z,
+        }
     }
 }
 
@@ -103,11 +129,7 @@ impl From<[[f64; 3]; 3]> for Matrix3 {
 impl From<[f64; 9]> for Matrix3 {
     fn from(d: [f64; 9]) -> Self {
         Self {
-            data: [
-                [d[0], d[1], d[2]],
-                [d[3], d[4], d[5]],
-                [d[6], d[7], d[8]],
-            ],
+            data: [[d[0], d[1], d[2]], [d[3], d[4], d[5]], [d[6], d[7], d[8]]],
         }
     }
 }
@@ -127,9 +149,15 @@ impl From<nalgebra::Matrix3<f64>> for Matrix3 {
 impl From<Matrix3> for nalgebra::Matrix3<f64> {
     fn from(m: Matrix3) -> Self {
         nalgebra::Matrix3::new(
-            m.data[0][0], m.data[0][1], m.data[0][2],
-            m.data[1][0], m.data[1][1], m.data[1][2],
-            m.data[2][0], m.data[2][1], m.data[2][2],
+            m.data[0][0],
+            m.data[0][1],
+            m.data[0][2],
+            m.data[1][0],
+            m.data[1][1],
+            m.data[1][2],
+            m.data[2][0],
+            m.data[2][1],
+            m.data[2][2],
         )
     }
 }
@@ -232,13 +260,25 @@ const _: [u8; 20] = [0u8; std::mem::size_of::<PointXYZIT>()];
 
 impl From<PointXYZIT> for Point {
     fn from(p: PointXYZIT) -> Self {
-        Self { x: p.x, y: p.y, z: p.z, i: p.intensity, t: p.timestamp }
+        Self {
+            x: p.x,
+            y: p.y,
+            z: p.z,
+            i: p.intensity,
+            t: p.timestamp,
+        }
     }
 }
 
 impl From<Point> for PointXYZIT {
     fn from(p: Point) -> Self {
-        PointXYZIT { x: p.x, y: p.y, z: p.z, intensity: p.i, timestamp: p.t }
+        PointXYZIT {
+            x: p.x,
+            y: p.y,
+            z: p.z,
+            intensity: p.i,
+            timestamp: p.t,
+        }
     }
 }
 

@@ -45,7 +45,7 @@ ratatui = "0.29"
 crossterm = "0.28"
 num_cpus = "1.16"
 libc = "0.2"
-rayon = { workspace = true, optional = true }
+rayon.workspace = true
 clap_complete.workspace = true
 
 [[bin]]
@@ -53,11 +53,7 @@ name = "pelorus"
 path = "src/main.rs"
 
 [features]
-default = [
-  "offline",
-  "parallel",
-] # evaluate and rerun need newer rustc versions, so only enable them manually
-# default = ["dev"] # toggled in development
+default = ["offline"] # evaluate and rerun need newer rustc versions, so only enable them manually
 
 # -#-#-#-#-#- Sensor Communication -#-#-#-#-#-
 
@@ -85,10 +81,7 @@ downsample = ["prelio_io/downsample"]
 
 # Build and use CUDA accelerations
 cuda = ["prelio_io/cuda", "dep:pelorus_cuda", "pelorus_reg/cuda"]
-metal = ["dep:pelorus_metal", "pelorus_reg/metal", "pelorus_metal/metal_available", "pelorus_metal/metal_enable"]
-
-# Switch to threadpool workstealing whenever large buffers are processed. The cuda feature has higher precedence, but not every parallel part is implemented with cuda, so a combination of both flags make sense.
-parallel = ["prelio_io/parallel", "pelorus_reg/parallel", "dep:rayon"]
+metal = ["prelio_io/metal", "prelio/metal", "dep:pelorus_metal", "pelorus_reg/metal", "pelorus_metal/metal_available", "pelorus_metal/metal_enable"]
 
 # Lidar + IMU with naiive kdtree for neighborsearch. Currently slow and unstable. Use only with good reason.
 kdtree = ["pelorus_reg/nn_kdt"]
@@ -119,7 +112,7 @@ evaluate = ["dep:sophus_lie", "dep:plotters", "dep:rerun"]
 # -#-#-#-#-#- Low level -#-#-#-#-#-
 
 # Toggle tooling typically used for development
-dev = ["offline", "rerun", "parallel", "map"]
+dev = ["offline", "rerun", "map"]
 
 # Use variable syncing for triggers
 rat = ["dep:mt_rat", "dep:tokio", "prelio_io/rat"]

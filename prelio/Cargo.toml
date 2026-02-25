@@ -28,7 +28,6 @@ imu-calib.workspace = true
 morton-encoding.workspace = true
 
 [features]
-parallel = []
 downsample = []
 cuda = ["dep:pelorus_cuda", "pelorus_cuda/cuda_available", "pelorus_cuda/cuda_enable"]
 metal = ["dep:pelorus_metal", "pelorus_metal/metal_available", "pelorus_metal/metal_enable"]

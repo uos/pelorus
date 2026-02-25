@@ -86,7 +86,9 @@ use std::path::PathBuf;
 
 #[cfg(feature = "evaluate")]
 use pelorus_cli::evaluate;
-use pelorus_cli::stats_tui::{SharedStats, StatsTui, init_logger, update_log_level};
+use pelorus_cli::stats_tui::{
+    SharedStats, StatsTui, init_logger, set_tui_active, update_log_level,
+};
 use std::time::UNIX_EPOCH;
 
 #[allow(dead_code)]
@@ -656,6 +658,8 @@ fn lio_with_ready_signal(
 
         #[cfg(feature = "cuda")]
         let cuda_stream = pelorus_cuda::Stream::new();
+        #[cfg(feature = "metal")]
+        let metal_stream = pelorus_metal::Stream::new();
 
         // TODO avoid casting f32, maybe res needs f64?
         #[cfg(feature = "cuda")]
@@ -666,6 +670,15 @@ fn lio_with_ready_signal(
             config.dist_update_sensitivity,
             config.neighbor_max_range as f32,
             pelorus_cuda::NeighborType::Neighbor26,
+        );
+        #[cfg(feature = "metal")]
+        pelorus_metal::init_map(
+            &metal_stream,
+            config.map_capacity,
+            config.map_resolution as f32,
+            config.dist_update_sensitivity,
+            config.neighbor_max_range as f32,
+            pelorus_metal::NeighborType::Neighbor26,
         );
 
         let mut trajectory_file = {
@@ -691,6 +704,24 @@ fn lio_with_ready_signal(
         }
 
         let mut static_tf_published = false;
+
+        // Reusable buffer for the point cloud on GPU
+        #[cfg(feature = "cuda")]
+        let mut persistent_cloud_buf = LocatedBufferView::Cuda {
+            buffer: pelorus_cuda::CudaBuffer::new(
+                &cuda_stream,
+                size_of::<pelorus_core::PointXYZIT>(),
+                100_000,
+            ),
+        };
+        #[cfg(feature = "metal")]
+        let mut persistent_cloud_buf = LocatedBufferView::Metal {
+            buffer: pelorus_metal::MetalBuffer::new(
+                &metal_stream,
+                size_of::<pelorus_core::PointXYZIT>(),
+                100_000,
+            ),
+        };
 
         // Main processing loop. Use recv_timeout when a shutdown flag is provided so we can
         // check for shutdown requests periodically. If no shutdown flag is provided, block
@@ -727,11 +758,23 @@ fn lio_with_ready_signal(
             eval.merge(&lifis_tick.runtime_eval);
 
             #[cfg(feature = "cuda")]
-            let cloud_for_reg = LocatedBufferView::copy_from_slice_cuda(
-                &cuda_stream,
-                lifis_tick.deskewed_cloud.as_slice(),
-            );
-            #[cfg(not(feature = "cuda"))]
+            {
+                persistent_cloud_buf
+                    .realloc_if_needed_cuda(&cuda_stream, lifis_tick.deskewed_cloud.len());
+                persistent_cloud_buf
+                    .upload_from_slice_cuda(&cuda_stream, lifis_tick.deskewed_cloud.as_slice());
+            }
+            #[cfg(feature = "metal")]
+            {
+                persistent_cloud_buf
+                    .realloc_if_needed_metal(&metal_stream, lifis_tick.deskewed_cloud.len());
+                persistent_cloud_buf
+                    .upload_from_slice_metal(&metal_stream, lifis_tick.deskewed_cloud.as_slice());
+            }
+
+            #[cfg(any(feature = "cuda", feature = "metal"))]
+            let cloud_for_reg = &persistent_cloud_buf;
+            #[cfg(not(any(feature = "cuda", feature = "metal")))]
             let cloud_for_reg = LocatedBufferView::Ram(lifis_tick.deskewed_cloud);
 
             let cloud_out = lifis_tick.deskewed_cloud_passthrough;
@@ -745,6 +788,24 @@ fn lio_with_ready_signal(
                     map.clear_localmap();
 
                     info!("Resetting map");
+                    #[cfg(feature = "cuda")]
+                    pelorus_cuda::init_map(
+                        &cuda_stream,
+                        config.map_capacity,
+                        config.map_resolution as f32,
+                        config.dist_update_sensitivity,
+                        config.neighbor_max_range as f32,
+                        pelorus_cuda::NeighborType::Neighbor26,
+                    );
+                    #[cfg(feature = "metal")]
+                    pelorus_metal::init_map(
+                        &metal_stream,
+                        config.map_capacity,
+                        config.map_resolution as f32,
+                        config.dist_update_sensitivity,
+                        config.neighbor_max_range as f32,
+                        pelorus_metal::NeighborType::Neighbor26,
+                    );
                     t_world = nalgebra::Isometry3::identity();
                     t_last_current = nalgebra::Isometry3::identity();
                 }
@@ -810,13 +871,14 @@ fn lio_with_ready_signal(
                     &mut eval,
                     #[cfg(feature = "cuda")]
                     &cuda_stream,
+                    #[cfg(feature = "metal")]
+                    &metal_stream,
                 ) {
                     Ok(Some(pose)) => (pose, map.get_state()),
                     Ok(None) => {
                         // mark to send new data even on init
                         #[cfg(feature = "rat")]
                         if synchronous_mode {
-                            warn!("sending on none");
                             rat::bacon(
                                 "tick_end",
                                 &mut "".to_string(),
@@ -829,7 +891,6 @@ fn lio_with_ready_signal(
                     Err(err) => {
                         error!("{err}");
                         // mark to send new data even on error
-                        warn!("sending on err");
                         #[cfg(feature = "rat")]
                         if synchronous_mode {
                             rat::bacon(
@@ -1021,7 +1082,7 @@ fn lio_with_ready_signal(
             let mut cloud: PointCloud2 = {
                 match (cloud_out, cloud_for_reg) {
                     (None, LocatedBufferView::Ram(items)) => {
-                        let msg = PointCloud2Msg::try_from_vec(items).expect("msg");
+                        let msg = PointCloud2Msg::try_from_vec(items.to_vec()).expect("msg");
                         #[cfg(feature = "ros2-client")]
                         let out = impl_ros2_interfaces_jazzy_serde::from_pointcloud2_msg(msg);
                         #[cfg(feature = "ratpub")]
@@ -1033,7 +1094,7 @@ fn lio_with_ready_signal(
                     }
                     // ignore downsampled one if we have the raw
                     (Some(items), _) => {
-                        let msg = PointCloud2Msg::try_from_vec(items).expect("msg");
+                        let msg = PointCloud2Msg::try_from_vec(items.to_vec()).expect("msg");
                         #[cfg(feature = "ros2-client")]
                         let out = impl_ros2_interfaces_jazzy_serde::from_pointcloud2_msg(msg);
                         #[cfg(feature = "ratpub")]
@@ -1051,6 +1112,24 @@ fn lio_with_ready_signal(
                         },
                     ) => {
                         let buff = cloud_for_reg.into_cloud(&cuda_stream);
+                        let msg = ros_pointcloud2::PointCloud2Msg::try_from_vec(buff).unwrap();
+                        #[cfg(feature = "ros2-client")]
+                        let out = impl_ros2_interfaces_jazzy_serde::from_pointcloud2_msg(msg);
+                        #[cfg(feature = "ratpub")]
+                        let out = impl_ros2_interfaces_jazzy_rkyv::from_pointcloud2_msg(msg);
+                        #[cfg(feature = "r2r")]
+                        let out = impl_r2r::from_pointcloud2_msg(msg);
+
+                        out
+                    }
+                    #[cfg(feature = "metal")]
+                    (
+                        None,
+                        LocatedBufferView::Metal {
+                            buffer: cloud_for_reg,
+                        },
+                    ) => {
+                        let buff = cloud_for_reg.into_cloud(&metal_stream);
                         let msg = ros_pointcloud2::PointCloud2Msg::try_from_vec(buff).unwrap();
                         #[cfg(feature = "ros2-client")]
                         let out = impl_ros2_interfaces_jazzy_serde::from_pointcloud2_msg(msg);
@@ -1087,10 +1166,12 @@ fn lio_with_ready_signal(
             #[cfg(all(feature = "map", all(feature = "rerun", feature = "ratpub")))]
             {
                 eval.start("pub_localmap").unwrap();
-                #[cfg(not(feature = "cuda"))]
+                #[cfg(not(any(feature = "cuda", feature = "metal")))]
                 let total_map = map.lock().unwrap().get_entire_map();
                 #[cfg(feature = "cuda")]
                 let total_map = pelorus_cuda::get_map();
+                #[cfg(feature = "metal")]
+                let total_map = pelorus_metal::get_map();
                 #[cfg(feature = "rerun")]
                 if let Some(ref rec) = rec {
                     let points = total_map.iter().map(|v| {
@@ -1543,6 +1624,23 @@ fn log_minot_line(line: &str) {
     }
 }
 
+fn set_backend_from_config(shared_stats: &SharedStats, config: &LioConfig) {
+    let backend = if config.num_threads > 0 {
+        format!("CPU ({} cores)", config.num_threads)
+    } else {
+        format!("CPU ({} cores)", num_cpus::get())
+    };
+
+    let mut accelerator = None;
+    if cfg!(feature = "cuda") {
+        accelerator = Some("CUDA".to_string());
+    } else if cfg!(feature = "metal") {
+        accelerator = Some("Metal".to_string());
+    }
+
+    shared_stats.set_backend_info(backend, accelerator);
+}
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Initialize our custom logger that works with both TUI and console
     init_logger();
@@ -1589,7 +1687,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
             let config = ast_to_config(default_ast, user_ast)?;
 
-            #[cfg(feature = "parallel")]
             if config.num_threads > 0 {
                 if let Err(e) = rayon::ThreadPoolBuilder::new()
                     .num_threads(config.num_threads)
@@ -1608,13 +1705,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let mut show_tui = config.show_tui;
 
             if show_tui && !std::io::stdout().is_terminal() {
-                warn!("TUI requested but stdout is not a terminal. Disabling TUI.");
                 show_tui = false;
+            }
+
+            if !show_tui {
+                // TUI won't be used — restore stderr logging suppressed by init_logger
+                set_tui_active(false);
             }
 
             if show_tui {
                 let shared_stats = std::sync::Arc::new(SharedStats::new());
                 shared_stats.set_mode("Online");
+                set_backend_from_config(&shared_stats, &config);
                 let stats_for_tui = shared_stats.clone();
 
                 shared_stats.set_target_lidar_rate(10.0); // will be updated when first scan arrives
@@ -1724,7 +1826,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 config
             };
 
-            #[cfg(feature = "parallel")]
+            set_backend_from_config(&shared_stats, &config);
+
             if config.num_threads > 0 {
                 if let Err(e) = rayon::ThreadPoolBuilder::new()
                     .num_threads(config.num_threads)
@@ -1738,10 +1841,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
 
             let show_tui = config.show_tui && std::io::stdout().is_terminal();
-            if !show_tui && config.show_tui {
-                warn!(
-                    "TUI requested for offline mode but stdout is not a terminal. Continuing without visualization."
-                );
+
+            if !show_tui {
+                // TUI won't be used so restore stderr logging suppressed by init_logger
+                set_tui_active(false);
             }
 
             // Update log level after config has set RUST_LOG

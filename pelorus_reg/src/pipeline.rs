@@ -19,6 +19,8 @@ pub struct Pipeline {
     pub config: LioConfig,
     #[cfg(feature = "cuda")]
     cuda_stream: pelorus_cuda::Stream,
+    #[cfg(feature = "metal")]
+    metal_stream: pelorus_metal::Stream,
 }
 
 /// Result from cloud registration and mapping
@@ -72,6 +74,8 @@ impl Pipeline {
             config: config.clone(),
             #[cfg(feature = "cuda")]
             cuda_stream: pelorus_cuda::Stream::new(),
+            #[cfg(feature = "metal")]
+            metal_stream: pelorus_metal::Stream::new(),
         }
     }
 
@@ -171,6 +175,8 @@ impl Pipeline {
                 &mut eval,
                 #[cfg(feature = "cuda")]
                 &self.cuda_stream,
+                #[cfg(feature = "metal")]
+                &self.metal_stream,
             ) {
                 Ok(Some(res)) => {
                     let state = map.get_state();

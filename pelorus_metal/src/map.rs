@@ -1,15 +1,17 @@
 use bytemuck::{Pod, Zeroable};
-use metal::MTLResourceOptions;
+#[cfg(feature = "metal_enable")]
+use rayon::prelude::*;
 use std::sync::{Mutex, MutexGuard, OnceLock};
 
-use crate::pipeline::{get_pipelines, group1d, grid1d};
+use crate::pipeline::{get_pipelines, grid1d, group1d};
 use crate::stream::Stream;
 use crate::types::NeighborType;
 
-// ── GPU-side structs (must exactly match MSL layout) ─────────────────────────
+use objc2_metal::{
+    MTLBarrierScope, MTLBuffer, MTLCommandBuffer, MTLCommandEncoder, MTLCommandQueue,
+    MTLComputeCommandEncoder,
+};
 
-/// Hash table entry: key is the int32 voxel hash, value is the index into
-/// the distribution buffer.  EMPTY_KEY = i32::MIN indicates an empty slot.
 #[repr(C)]
 #[derive(Clone, Copy, Default, Pod, Zeroable)]
 pub struct KeyValuePair {
@@ -17,84 +19,79 @@ pub struct KeyValuePair {
     pub value: u32,
 }
 
-/// Voxel distribution stored in the GPU buffer.
-///
-/// Layout (92 bytes, all 4-byte aligned — matches the MSL `VoxelDistribution`):
-/// ```text
-/// mean[3]:     12 bytes  offset  0
-/// point_count:  4 bytes  offset 12
-/// cov[9]:      36 bytes  offset 16
-/// last_scan:    4 bytes  offset 52
-/// L[9]:        36 bytes  offset 56
-/// total:       92 bytes
-/// ```
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]
 pub struct GpuVoxelDist {
-    pub mean: [f32; 3],
+    pub lock_flag: i32,
+    pub transform: [f32; 9],
     pub point_count: u32,
-    pub cov: [f32; 9],
+    pub mean: [f32; 3],
+    pub covariance: [f32; 9],
     pub last_scan: u32,
-    pub l: [f32; 9],  // Cholesky factor
 }
 
-// Compile-time size assertion
-const _: () = assert!(size_of::<GpuVoxelDist>() == 92);
+const _: () = assert!(size_of::<GpuVoxelDist>() == 96);
 
-// ── Build-voxels params struct (matches MSL BuildVoxelsParams) ────────────────
-/// Parameters passed to the `build_voxels` kernel.
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]
 pub struct BuildVoxelsParams {
-    pub pose_quat: [f32; 4],       // quaternion (x,y,z,w)
-    pub pose_trans: [f32; 3],      // translation
-    pub resolution: f32,
-    pub scan_number: u32,
-    pub sensitivity: f32,
-    pub min_dist: f32,
-    pub unique_key_count: u32,
-    pub table_cap: u32,
-    pub dist_cap: u32,
-    pub _pad: u32,
+    pub pose_quat: [f32; 4],   // 16 bytes, offset 0
+    pub pose_trans: [f32; 3],  // 12 bytes, offset 16
+    pub _pad0: f32,            // 4 bytes, offset 28
+    pub resolution: f32,       // 4 bytes, offset 32
+    pub scan_number: u32,      // 4 bytes, offset 36
+    pub sensitivity: f32,      // 4 bytes, offset 40
+    pub min_dist: f32,         // 4 bytes, offset 44
+    pub unique_key_count: u32, // 4 bytes, offset 48
+    pub table_cap: u32,        // 4 bytes, offset 52
+    pub dist_cap: u32,         // 4 bytes, offset 56
+    pub _pad1: u32,            // 4 bytes, offset 60 -> Total 64
 }
 
-// ── Planes params struct (matches MSL PlanesParams) ───────────────────────────
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]
 pub struct PlanesParams {
-    pub lidar_to_imu_quat: [f32; 4],
-    pub lidar_to_imu_pos: [f32; 3],
-    pub _pad0: f32,
-    pub pose_quat: [f32; 4],
-    pub pose_pos: [f32; 3],
-    pub _pad1: f32,
-    pub cloud_size: u32,
-    pub table_cap: u32,
-    pub resolution: f32,
-    pub sphericity_threshold: f32,
+    pub lidar_to_imu_quat: [f32; 4], // 16 bytes, offset 0
+    pub lidar_to_imu_pos: [f32; 3],  // 12 bytes, offset 16
+    pub _pad0: f32,                  // 4 bytes, offset 28
+    pub pose_quat: [f32; 4],         // 16 bytes, offset 32
+    pub pose_pos: [f32; 3],          // 12 bytes, offset 48
+    pub _pad1: f32,                  // 4 bytes, offset 60
+    pub cloud_size: u32,             // 4 bytes, offset 64
+    pub table_cap: u32,              // 4 bytes, offset 68
+    pub resolution: f32,             // 4 bytes, offset 72
+    pub sphericity_threshold: f32,   // 4 bytes, offset 76
+    pub _pad2: u32,                  // 4 bytes, offset 80 -> Total 84
 }
 
-// ── Global state ─────────────────────────────────────────────────────────────
+/// Tests use this mutex to avoid map state races
+#[cfg(test)]
+pub(crate) static TEST_MAP_MUTEX: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+pub struct ScratchBuffers {
+    pub keys: crate::buffer::MetalBuffer,
+    pub indices: crate::buffer::MetalBuffer,
+    pub packed: crate::buffer::MetalBuffer,
+    pub run_starts: crate::buffer::MetalBuffer,
+    pub run_ends: crate::buffer::MetalBuffer,
+    pub unique_keys: crate::buffer::MetalBuffer,
+    pub sorted_points: crate::buffer::MetalBuffer,
+    pub counter: crate::buffer::MetalBuffer,
+    pub capacity: usize,
+}
 
 pub struct MetalMapState {
-    /// Hash table: `table_cap` KeyValuePair entries.
-    /// We store keys and values as separate flat arrays for atomic access.
-    /// keys_buf: [i32; table_cap]
-    pub keys_buf: metal::Buffer,
-    /// values_buf: [u32; table_cap]
-    pub values_buf: metal::Buffer,
-    /// Distribution buffer: [GpuVoxelDist; dist_cap]
-    pub dist_buf: metal::Buffer,
-    /// Companion key buffer: [i32; dist_cap] (which voxel key each dist slot holds)
-    pub dist_keys_buf: metal::Buffer,
-    /// Atomic cursor for claiming dist buffer slots.
-    pub add_cursor_buf: metal::Buffer,
+    pub keys_buf: crate::buffer::MetalBuffer,
+    pub values_buf: crate::buffer::MetalBuffer,
+    pub dist_buf: crate::buffer::MetalBuffer,
+    pub dist_keys_buf: crate::buffer::MetalBuffer,
+    pub add_cursor_buf: crate::buffer::MetalBuffer,
+    pub scratch: ScratchBuffers,
     pub dist_cap: u32,
     pub table_cap: u32,
     pub resolution: f32,
     pub sensitivity: f32,
     pub min_dist: f32,
-    pub nbtype: NeighborType,
     pub scan_number: u32,
 }
 
@@ -108,59 +105,82 @@ pub fn get_state() -> MutexGuard<'static, Option<MetalMapState>> {
     global_state().lock().unwrap()
 }
 
-// ── Initialise the map ───────────────────────────────────────────────────────
-
 pub fn init_map_impl(
     stream: &Stream,
     capacity: usize,
     voxel_size: f32,
     sensitivity: f32,
     min_dist: f32,
-    nbtype: NeighborType,
+    _nbtype: NeighborType,
 ) {
     let capacity = capacity.next_power_of_two();
     let dist_cap = capacity as u32;
     let table_cap = dist_cap * 2;
 
-    let alloc = |bytes: usize| -> metal::Buffer {
-        let buf = stream.device.new_buffer(
-            bytes as u64,
-            MTLResourceOptions::StorageModeShared,
+    let keys_buf = crate::buffer::MetalBuffer::new(stream, size_of::<i32>(), table_cap as usize);
+    let values_buf = crate::buffer::MetalBuffer::new(stream, size_of::<u32>(), table_cap as usize);
+    let dist_buf =
+        crate::buffer::MetalBuffer::new(stream, size_of::<GpuVoxelDist>(), dist_cap as usize);
+    let dist_keys_buf =
+        crate::buffer::MetalBuffer::new(stream, size_of::<i32>(), dist_cap as usize);
+    let add_cursor_buf = crate::buffer::MetalBuffer::new(stream, size_of::<u32>(), 1);
+
+    unsafe {
+        std::ptr::write_bytes(
+            dist_buf.buf.contents().as_ptr().cast::<u8>(),
+            0,
+            dist_buf.buf.length() as usize,
         );
-        unsafe { std::ptr::write_bytes(buf.contents() as *mut u8, 0, bytes) };
-        buf
-    };
-
-    let keys_buf = alloc(table_cap as usize * size_of::<i32>());
-    let values_buf = alloc(table_cap as usize * size_of::<u32>());
-    let dist_buf = alloc(dist_cap as usize * size_of::<GpuVoxelDist>());
-    let dist_keys_buf = alloc(dist_cap as usize * size_of::<i32>());
-    let add_cursor_buf = alloc(size_of::<u32>());
-
-    // Fill hash table keys with EMPTY_KEY via GPU kernel
-    {
-        let pipes = get_pipelines(&stream.device);
-        let cb = stream.queue.new_command_buffer();
-        let enc = cb.new_compute_command_encoder();
-        enc.set_compute_pipeline_state(&pipes.hashmap_init);
-        enc.set_buffer(0, Some(&keys_buf), 0);
-        let cap_u32 = table_cap;
-        enc.set_bytes(1, size_of::<u32>() as u64, &cap_u32 as *const u32 as *const _);
-        enc.dispatch_threads(grid1d(table_cap as usize), group1d());
-        enc.end_encoding();
-        cb.commit();
-        cb.wait_until_completed();
+        let slice = std::slice::from_raw_parts_mut(
+            dist_keys_buf.buf.contents().as_ptr().cast::<i32>(),
+            dist_cap as usize,
+        );
+        slice.fill(i32::MIN);
+        std::ptr::write_bytes(
+            add_cursor_buf.buf.contents().as_ptr().cast::<u8>(),
+            0,
+            add_cursor_buf.buf.length() as usize,
+        );
     }
 
-    // Also init dist_keys with EMPTY_KEY
+    // Initial scratch buffers with capacity 1; these will be resized on demand in add_to_map_impl.
+    // We just need valid buffers to pass to the GPU during init.
+    let scratch_cap = 1;
+    let scratch = ScratchBuffers {
+        keys: crate::buffer::MetalBuffer::new(stream, size_of::<i32>(), scratch_cap),
+        indices: crate::buffer::MetalBuffer::new(stream, size_of::<u32>(), scratch_cap),
+        packed: crate::buffer::MetalBuffer::new(stream, size_of::<u64>(), scratch_cap),
+        run_starts: crate::buffer::MetalBuffer::new(stream, size_of::<u32>(), scratch_cap),
+        run_ends: crate::buffer::MetalBuffer::new(stream, size_of::<u32>(), scratch_cap),
+        unique_keys: crate::buffer::MetalBuffer::new(stream, size_of::<i32>(), scratch_cap),
+        sorted_points: crate::buffer::MetalBuffer::new(
+            stream,
+            size_of::<crate::types::Point>(),
+            scratch_cap,
+        ),
+        counter: crate::buffer::MetalBuffer::new(stream, size_of::<u32>(), 1),
+        // keep the logical capacity zero so resize logic still fires immediately
+        capacity: 0,
+    };
+
     {
-        let slice = unsafe {
-            std::slice::from_raw_parts_mut(
-                dist_keys_buf.contents() as *mut i32,
-                dist_cap as usize,
-            )
-        };
-        slice.fill(i32::MIN);
+        let pipes = get_pipelines(&*stream.device);
+        let cb = stream.queue.commandBuffer().expect("cb");
+        let enc = cb.computeCommandEncoder().expect("enc");
+        enc.setComputePipelineState(&pipes.hashmap_init);
+        let cap_u32 = table_cap;
+        unsafe {
+            enc.setBuffer_offset_atIndex(Some(keys_buf.metal_buffer()), 0, 0);
+            enc.setBytes_length_atIndex(
+                std::ptr::NonNull::new(&cap_u32 as *const u32 as *mut _).unwrap(),
+                size_of::<u32>(),
+                1,
+            );
+            enc.dispatchThreads_threadsPerThreadgroup(grid1d(table_cap as usize), group1d());
+            enc.endEncoding();
+        }
+        cb.commit();
+        cb.waitUntilCompleted();
     }
 
     let state = MetalMapState {
@@ -169,30 +189,31 @@ pub fn init_map_impl(
         dist_buf,
         dist_keys_buf,
         add_cursor_buf,
+        scratch,
         dist_cap,
         table_cap,
         resolution: voxel_size,
         sensitivity,
         min_dist,
-        nbtype,
         scan_number: 0,
     };
 
     *get_state() = Some(state);
 }
 
-// ── Add points to the map ─────────────────────────────────────────────────────
-
 pub fn add_to_map_impl(
     stream: &Stream,
     cloud_buf: &crate::buffer::MetalBuffer,
     pose_t: &crate::types::Vector3,
-    pose_r: &crate::types::Matrix3,
+    pose_r: &crate::types::Quaternion,
 ) {
     use nalgebra::UnitQuaternion;
+    use std::time::Instant;
+
+    let start_all = Instant::now();
 
     let mut guard = get_state();
-    let state = guard.as_mut().expect("Map not initialised — call init_map first");
+    let state = guard.as_mut().expect("Map not initialised");
 
     state.scan_number += 1;
     let scan_number = state.scan_number;
@@ -200,9 +221,8 @@ pub fn add_to_map_impl(
     let dist_cap = state.dist_cap;
     let table_cap = state.table_cap;
 
-    // ── Convert pose to quaternion (f32) ──────────────────────────────────────
-    let rot_f64: nalgebra::Matrix3<f64> = (*pose_r).into();
-    let q = UnitQuaternion::from_matrix(&rot_f64);
+    // rotation already provided as quaternion; just convert into nalgebra type
+    let q: UnitQuaternion<f64> = (*pose_r).into();
     let pose_quat = [q.i as f32, q.j as f32, q.k as f32, q.w as f32];
     let pose_trans = [pose_t.x as f32, pose_t.y as f32, pose_t.z as f32];
 
@@ -211,168 +231,349 @@ pub fn add_to_map_impl(
         return;
     }
 
-    // ── CPU: compute per-point voxel keys and sort ────────────────────────────
-    // Points are in shared memory — read directly.
-    let points: &[crate::types::Point] = unsafe {
-        std::slice::from_raw_parts(
-            cloud_buf.buf.contents() as *const crate::types::Point,
-            n_points,
-        )
+    if state.scratch.capacity < n_points {
+        let new_cap = (n_points as f32 * 1.5) as usize; // Slight over-allocation
+        state.scratch.keys = crate::buffer::MetalBuffer::new(stream, size_of::<i32>(), new_cap);
+        state.scratch.indices = crate::buffer::MetalBuffer::new(stream, size_of::<u32>(), new_cap);
+        state.scratch.packed = crate::buffer::MetalBuffer::new(stream, size_of::<u64>(), new_cap);
+        state.scratch.run_starts =
+            crate::buffer::MetalBuffer::new(stream, size_of::<u32>(), new_cap);
+        state.scratch.run_ends = crate::buffer::MetalBuffer::new(stream, size_of::<u32>(), new_cap);
+        state.scratch.unique_keys =
+            crate::buffer::MetalBuffer::new(stream, size_of::<i32>(), new_cap);
+        state.scratch.sorted_points =
+            crate::buffer::MetalBuffer::new(stream, size_of::<crate::types::Point>(), new_cap);
+        state.scratch.capacity = new_cap;
+    }
+
+    let params = BuildVoxelsParams {
+        pose_quat,
+        pose_trans,
+        _pad0: 0.0,
+        resolution,
+        scan_number,
+        sensitivity: state.sensitivity,
+        min_dist: state.min_dist,
+        unique_key_count: n_points as u32,
+        table_cap,
+        dist_cap,
+        _pad1: 0,
     };
 
-    // Transform each point to global frame on CPU; compute voxel key
-    let qv = nalgebra::Vector3::new(pose_quat[0] as f64, pose_quat[1] as f64, pose_quat[2] as f64);
-    let qw = pose_quat[3] as f64;
-    let trans_v = nalgebra::Vector3::new(
-        pose_trans[0] as f64, pose_trans[1] as f64, pose_trans[2] as f64,
-    );
+    let t_keys = Instant::now();
 
-    let mut keyed: Vec<(i32, u32)> = points
-        .iter()
-        .enumerate()
-        .map(|(i, p)| {
-            let local = nalgebra::Vector3::new(p.x as f64, p.y as f64, p.z as f64);
-            // Quaternion rotate: v + 2w(u×v) + 2(u×(u×v))
-            let uv = qv.cross(&local);
-            let uuv = qv.cross(&uv);
-            let global = local + (uv * qw + uuv) * 2.0 + trans_v;
+    let pipes = get_pipelines(&*stream.device);
+    let cb = stream.queue.commandBuffer().expect("cb");
+    let enc = cb.computeCommandEncoder().expect("enc");
+    enc.setComputePipelineState(&pipes.calculate_keys);
+    let mut pk = params;
+    pk.unique_key_count = n_points as u32; // cloud size
+    unsafe {
+        enc.setBuffer_offset_atIndex(Some(cloud_buf.metal_buffer()), 0, 0);
+        enc.setBuffer_offset_atIndex(Some(state.scratch.keys.metal_buffer()), 0, 1);
+        enc.setBuffer_offset_atIndex(Some(state.scratch.indices.metal_buffer()), 0, 2);
+        enc.setBytes_length_atIndex(
+            std::ptr::NonNull::new(&pk as *const _ as *mut _).unwrap(),
+            size_of::<BuildVoxelsParams>(),
+            3,
+        );
+        enc.dispatchThreads_threadsPerThreadgroup(grid1d(n_points), group1d());
+        enc.endEncoding();
+    }
+    cb.commit();
+    let dur_keys = t_keys.elapsed();
 
-            let inv = 1.0 / resolution as f64;
-            let gx = global.x.floor() as i32;
-            let gy = global.y.floor() as i32;
-            let gz = global.z.floor() as i32;
-            // Same grid hash as CUDA
-            let key = ((gx.wrapping_mul(73856093i32) as u32)
-                ^ (gy.wrapping_mul(471943i32) as u32)
-                ^ (gz.wrapping_mul(83492791i32) as u32)) as i32;
-            let _ = inv; // used for floor; compiler will optimize
-            (key, i as u32)
-        })
-        .collect();
+    let t_sort = Instant::now();
 
-    keyed.sort_unstable_by_key(|(k, _)| *k);
+    let padded_n = n_points.next_power_of_two();
+    let pipes = get_pipelines(&*stream.device);
+    let cb = stream.queue.commandBuffer().expect("cb");
+    let enc = cb.computeCommandEncoder().expect("enc");
 
-    // ── Compute run starts/ends ───────────────────────────────────────────────
+    enc.setComputePipelineState(&pipes.pack_keys);
+    let n_u32 = n_points as u32;
+    unsafe {
+        enc.setBuffer_offset_atIndex(Some(state.scratch.keys.metal_buffer()), 0, 0);
+        enc.setBuffer_offset_atIndex(Some(state.scratch.indices.metal_buffer()), 0, 1);
+        enc.setBuffer_offset_atIndex(Some(state.scratch.packed.metal_buffer()), 0, 2);
+        enc.setBytes_length_atIndex(
+            std::ptr::NonNull::new(&n_u32 as *const u32 as *mut _).unwrap(),
+            size_of::<u32>(),
+            3,
+        );
+        enc.dispatchThreads_threadsPerThreadgroup(grid1d(n_points), group1d());
+    }
+
+    if n_points < padded_n {
+        enc.setComputePipelineState(&pipes.init_pad);
+        let diff = (padded_n - n_points) as u32;
+        let cap_u32 = state.scratch.capacity as u32;
+        unsafe {
+            enc.setBuffer_offset_atIndex(Some(state.scratch.packed.metal_buffer()), 0, 0);
+            enc.setBytes_length_atIndex(
+                std::ptr::NonNull::new(&n_u32 as *const u32 as *mut _).unwrap(),
+                size_of::<u32>(),
+                1,
+            );
+            enc.setBytes_length_atIndex(
+                std::ptr::NonNull::new(&cap_u32 as *const u32 as *mut _).unwrap(),
+                size_of::<u32>(),
+                2,
+            );
+            enc.dispatchThreads_threadsPerThreadgroup(grid1d(diff as usize), group1d());
+        }
+    }
+
+    // Barrier: pack/pad wrote packed buffer, bitonic reads+writes it
+    enc.memoryBarrierWithScope(MTLBarrierScope::Buffers);
+    enc.setComputePipelineState(&pipes.bitonic_step);
+    let mut k = 2;
+    while k <= padded_n {
+        let mut j = k >> 1;
+        while j > 0 {
+            let k_u32 = k as u32;
+            let j_u32 = j as u32;
+            unsafe {
+                enc.setBuffer_offset_atIndex(Some(state.scratch.packed.metal_buffer()), 0, 0);
+                enc.setBytes_length_atIndex(
+                    std::ptr::NonNull::new(&j_u32 as *const u32 as *mut _).unwrap(),
+                    size_of::<u32>(),
+                    1,
+                );
+                enc.setBytes_length_atIndex(
+                    std::ptr::NonNull::new(&k_u32 as *const u32 as *mut _).unwrap(),
+                    size_of::<u32>(),
+                    2,
+                );
+                enc.dispatchThreads_threadsPerThreadgroup(grid1d(padded_n), group1d());
+            }
+            // Barrier between each bitonic step (read-write dependency on packed)
+            enc.memoryBarrierWithScope(MTLBarrierScope::Buffers);
+            j >>= 1;
+        }
+        k <<= 1;
+    }
+
+    enc.setComputePipelineState(&pipes.unpack_keys);
+    unsafe {
+        enc.setBuffer_offset_atIndex(Some(state.scratch.packed.metal_buffer()), 0, 0);
+        enc.setBuffer_offset_atIndex(Some(state.scratch.keys.metal_buffer()), 0, 1);
+        enc.setBuffer_offset_atIndex(Some(state.scratch.indices.metal_buffer()), 0, 2);
+        enc.setBytes_length_atIndex(
+            std::ptr::NonNull::new(&n_u32 as *const u32 as *mut _).unwrap(),
+            size_of::<u32>(),
+            3,
+        );
+        enc.dispatchThreads_threadsPerThreadgroup(grid1d(n_points), group1d());
+    }
+
+    enc.endEncoding();
+    cb.commit();
+    cb.waitUntilCompleted();
+
+    let sorted_keys_gpu = state.scratch.keys.as_slice::<i32>();
+    let sorted_keys = &sorted_keys_gpu[..n_points];
+
     let mut unique_keys: Vec<i32> = Vec::new();
     let mut run_starts: Vec<u32> = Vec::new();
     let mut run_ends: Vec<u32> = Vec::new();
-    let mut sorted_indices: Vec<u32> = Vec::with_capacity(n_points);
 
-    let mut i = 0usize;
-    while i < keyed.len() {
-        let key = keyed[i].0;
-        let start = sorted_indices.len() as u32;
-        while i < keyed.len() && keyed[i].0 == key {
-            sorted_indices.push(keyed[i].1);
-            i += 1;
+    if !sorted_keys.is_empty() {
+        let mut current_key = sorted_keys[0];
+        let mut start_idx = 0;
+
+        for (i, &key) in sorted_keys.iter().enumerate().skip(1) {
+            if key != current_key {
+                unique_keys.push(current_key);
+                run_starts.push(start_idx as u32);
+                run_ends.push(i as u32);
+                current_key = key;
+                start_idx = i;
+            }
         }
-        unique_keys.push(key);
-        run_starts.push(start);
-        run_ends.push(sorted_indices.len() as u32);
+        unique_keys.push(current_key);
+        run_starts.push(start_idx as u32);
+        run_ends.push(n_points as u32);
     }
+
+    let dur_sort = t_sort.elapsed();
 
     let n_unique = unique_keys.len();
     if n_unique == 0 {
         return;
     }
 
-    // ── Upload CPU arrays to shared GPU buffers ───────────────────────────────
-    let make_buf = |data: &[u8]| -> metal::Buffer {
-        let buf = stream.device.new_buffer(
-            data.len() as u64,
-            MTLResourceOptions::StorageModeShared,
+    let copy_to = |dst: &crate::buffer::MetalBuffer, src: &[u8]| unsafe {
+        std::ptr::copy_nonoverlapping(
+            src.as_ptr(),
+            dst.buf.contents().as_ptr().cast::<u8>(),
+            src.len(),
         );
+    };
+    copy_to(
+        &state.scratch.run_starts,
+        bytemuck::cast_slice::<u32, u8>(&run_starts),
+    );
+    copy_to(
+        &state.scratch.run_ends,
+        bytemuck::cast_slice::<u32, u8>(&run_ends),
+    );
+    copy_to(
+        &state.scratch.unique_keys,
+        bytemuck::cast_slice::<i32, u8>(&unique_keys),
+    );
+
+    let t_build = Instant::now();
+
+    {
+        let pipes = get_pipelines(&*stream.device);
+        let cb = stream.queue.commandBuffer().expect("cb");
+        let enc = cb.computeCommandEncoder().expect("enc");
+
+        enc.setComputePipelineState(&pipes.reorder_points);
         unsafe {
-            std::ptr::copy_nonoverlapping(data.as_ptr(), buf.contents() as *mut u8, data.len());
+            enc.setBuffer_offset_atIndex(Some(cloud_buf.metal_buffer()), 0, 0);
+            enc.setBuffer_offset_atIndex(Some(state.scratch.sorted_points.metal_buffer()), 0, 1);
+            enc.setBuffer_offset_atIndex(Some(state.scratch.indices.metal_buffer()), 0, 2);
+            enc.setBytes_length_atIndex(
+                std::ptr::NonNull::new(&params as *const _ as *mut _).unwrap(),
+                size_of::<BuildVoxelsParams>(),
+                3,
+            );
+            enc.dispatchThreads_threadsPerThreadgroup(grid1d(n_points), group1d());
         }
-        buf
-    };
 
-    let sorted_idx_buf = make_buf(bytemuck::cast_slice::<u32, u8>(&sorted_indices));
-    let run_starts_buf = make_buf(bytemuck::cast_slice::<u32, u8>(&run_starts));
-    let run_ends_buf   = make_buf(bytemuck::cast_slice::<u32, u8>(&run_ends));
-    let unique_keys_buf = make_buf(bytemuck::cast_slice::<i32, u8>(&unique_keys));
+        // Barrier: reorder_points writes sorted_points, build_voxels reads it
+        enc.memoryBarrierWithScope(MTLBarrierScope::Buffers);
 
-    // ── Build params ──────────────────────────────────────────────────────────
-    let params = BuildVoxelsParams {
-        pose_quat,
-        pose_trans,
-        resolution,
-        scan_number,
-        sensitivity: state.sensitivity,
-        min_dist: state.min_dist,
-        unique_key_count: n_unique as u32,
-        table_cap,
-        dist_cap,
-        _pad: 0,
-    };
+        let mut pb = params;
+        pb.unique_key_count = n_unique as u32;
 
-    // ── Dispatch build_voxels ─────────────────────────────────────────────────
-    {
-        let pipes = get_pipelines(&stream.device);
-        let cb = stream.queue.new_command_buffer();
-        let enc = cb.new_compute_command_encoder();
-        enc.set_compute_pipeline_state(&pipes.build_voxels);
+        enc.setComputePipelineState(&pipes.build_voxels);
+        unsafe {
+            enc.setBuffer_offset_atIndex(Some(state.scratch.sorted_points.metal_buffer()), 0, 0);
+            enc.setBuffer_offset_atIndex(Some(state.scratch.indices.metal_buffer()), 0, 1);
+            enc.setBuffer_offset_atIndex(Some(state.scratch.run_starts.metal_buffer()), 0, 2);
+            enc.setBuffer_offset_atIndex(Some(state.scratch.run_ends.metal_buffer()), 0, 3);
+            enc.setBuffer_offset_atIndex(Some(state.scratch.unique_keys.metal_buffer()), 0, 4);
+            enc.setBuffer_offset_atIndex(Some(state.keys_buf.metal_buffer()), 0, 5);
+            enc.setBuffer_offset_atIndex(Some(state.values_buf.metal_buffer()), 0, 6);
+            enc.setBuffer_offset_atIndex(Some(state.dist_buf.metal_buffer()), 0, 7);
+            enc.setBuffer_offset_atIndex(Some(state.dist_keys_buf.metal_buffer()), 0, 8);
+            enc.setBuffer_offset_atIndex(Some(state.add_cursor_buf.metal_buffer()), 0, 9);
+            enc.setBytes_length_atIndex(
+                std::ptr::NonNull::new(&pb as *const _ as *mut _).unwrap(),
+                size_of::<BuildVoxelsParams>(),
+                10,
+            );
+            enc.dispatchThreads_threadsPerThreadgroup(grid1d(n_unique), group1d());
+        }
 
-        enc.set_buffer(0, Some(cloud_buf.metal_buffer()), 0);
-        enc.set_buffer(1, Some(&sorted_idx_buf), 0);
-        enc.set_buffer(2, Some(&run_starts_buf), 0);
-        enc.set_buffer(3, Some(&run_ends_buf), 0);
-        enc.set_buffer(4, Some(&unique_keys_buf), 0);
-        enc.set_buffer(5, Some(&state.keys_buf), 0);
-        enc.set_buffer(6, Some(&state.values_buf), 0);
-        enc.set_buffer(7, Some(&state.dist_buf), 0);
-        enc.set_buffer(8, Some(&state.dist_keys_buf), 0);
-        enc.set_buffer(9, Some(&state.add_cursor_buf), 0);
-        enc.set_bytes(
-            10,
-            size_of::<BuildVoxelsParams>() as u64,
-            &params as *const BuildVoxelsParams as *const _,
-        );
+        // Barrier: build_voxels writes dists/dist_keys, hashmap rebuild reads them
+        enc.memoryBarrierWithScope(MTLBarrierScope::Buffers);
 
-        enc.dispatch_threads(grid1d(n_unique), group1d());
-        enc.end_encoding();
+        enc.setComputePipelineState(&pipes.hashmap_init);
+        let table_cap_u32 = state.table_cap;
+        unsafe {
+            enc.setBuffer_offset_atIndex(Some(state.keys_buf.metal_buffer()), 0, 0);
+            enc.setBytes_length_atIndex(
+                std::ptr::NonNull::new(&table_cap_u32 as *const u32 as *mut _).unwrap(),
+                size_of::<u32>(),
+                1,
+            );
+            enc.dispatchThreads_threadsPerThreadgroup(grid1d(state.table_cap as usize), group1d());
+        }
+
+        // Barrier: hashmap_init writes table_keys, rebuild reads them
+        enc.memoryBarrierWithScope(MTLBarrierScope::Buffers);
+
+        enc.setComputePipelineState(&pipes.rebuild_hashmap_keyed);
+        let dist_cap_u32 = state.dist_cap;
+        unsafe {
+            enc.setBuffer_offset_atIndex(Some(state.keys_buf.metal_buffer()), 0, 0);
+            enc.setBuffer_offset_atIndex(Some(state.values_buf.metal_buffer()), 0, 1);
+            enc.setBuffer_offset_atIndex(Some(state.dist_keys_buf.metal_buffer()), 0, 2);
+            enc.setBytes_length_atIndex(
+                std::ptr::NonNull::new(&dist_cap_u32 as *const u32 as *mut _).unwrap(),
+                size_of::<u32>(),
+                3,
+            );
+            enc.setBytes_length_atIndex(
+                std::ptr::NonNull::new(&table_cap_u32 as *const u32 as *mut _).unwrap(),
+                size_of::<u32>(),
+                4,
+            );
+            enc.dispatchThreads_threadsPerThreadgroup(grid1d(state.dist_cap as usize), group1d());
+        }
+
+        enc.endEncoding();
         cb.commit();
-        cb.wait_until_completed();
+        cb.waitUntilCompleted();
     }
+    let dur_build = t_build.elapsed();
 
-    // ── Rebuild hashmap (clear + re-insert from dist buffer) ──────────────────
-    let add_cursor = unsafe {
-        *(state.add_cursor_buf.contents() as *const u32)
-    };
-    let valid_size = (add_cursor as usize).min(dist_cap as usize);
+    log::info!(
+        "[Metal] add_to_map: total={:?}, keys={:?}, sort={:?}, build+rebuild={:?}",
+        start_all.elapsed(),
+        dur_keys,
+        dur_sort,
+        dur_build
+    );
+}
 
-    {
-        let pipes = get_pipelines(&stream.device);
-        let cb = stream.queue.new_command_buffer();
-        let enc = cb.new_compute_command_encoder();
-
-        // First: clear the hash table keys back to EMPTY_KEY
-        enc.set_compute_pipeline_state(&pipes.hashmap_init);
-        enc.set_buffer(0, Some(&state.keys_buf), 0);
-        enc.set_bytes(1, size_of::<u32>() as u64, &table_cap as *const u32 as *const _);
-        enc.dispatch_threads(grid1d(table_cap as usize), group1d());
-
-        // NOTE: Metal does not allow pipeline state changes mid-encoder for blit.
-        // End this encoder and start a new one for rebuild.
-        enc.end_encoding();
-
-        let enc2 = cb.new_compute_command_encoder();
-        enc2.set_compute_pipeline_state(&pipes.rebuild_hashmap_keyed);
-        enc2.set_buffer(0, Some(&state.keys_buf), 0);
-        enc2.set_buffer(1, Some(&state.values_buf), 0);
-        enc2.set_buffer(2, Some(&state.dist_keys_buf), 0);
-        enc2.set_bytes(3, size_of::<u32>() as u64, &(valid_size as u32) as *const u32 as *const _);
-        enc2.set_bytes(4, size_of::<u32>() as u64, &table_cap as *const u32 as *const _);
-        enc2.dispatch_threads(grid1d(valid_size.max(1)), group1d());
-        enc2.end_encoding();
-
-        cb.commit();
-        cb.wait_until_completed();
+#[cfg(test)]
+pub(crate) fn acquire_test_lock() -> std::sync::MutexGuard<'static, ()> {
+    match TEST_MAP_MUTEX.lock() {
+        Ok(g) => g,
+        Err(e) => e.into_inner(),
     }
 }
 
-// ── Get map points ────────────────────────────────────────────────────────────
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cpu_sort_matches_gpu_semantics() {
+        let _lock = acquire_test_lock();
+        let keys: Vec<i32> = vec![3, -1, 2, -1, 0, i32::MIN, i32::MAX];
+        let idxs: Vec<u32> = (0..keys.len() as u32).collect();
+
+        // apply the same code used in add_to_map_impl
+        let n_points = keys.len();
+        let mut keys_slice = keys.clone();
+        let mut inds_slice = idxs.clone();
+
+        // sort
+        let mut packed: Vec<u64> = Vec::with_capacity(n_points);
+        for i in 0..n_points {
+            let k_u = keys_slice[i] as u32;
+            let idx = inds_slice[i];
+            packed.push(((k_u as u64) << 32) | (idx as u64));
+        }
+        packed.sort_unstable();
+
+        for (i, p) in packed.into_iter().enumerate() {
+            let k_u = (p >> 32) as u32;
+            let idx = (p & 0xFFFFFFFF) as u32;
+            keys_slice[i] = k_u as i32;
+            inds_slice[i] = idx;
+        }
+
+        // now compute expected using straightforward packing+sort directly
+        let mut expected: Vec<(i32, u32)> =
+            keys.iter().copied().zip(idxs.iter().copied()).collect();
+        expected.sort_unstable_by_key(|&(k, idx)| {
+            let k_u = k as u32;
+            ((k_u as u64) << 32) | (idx as u64)
+        });
+
+        for i in 0..n_points {
+            assert_eq!(keys_slice[i], expected[i].0);
+            assert_eq!(inds_slice[i], expected[i].1);
+        }
+    }
+}
 
 pub fn get_map_impl() -> Vec<nalgebra::Point3<f32>> {
     let guard = get_state();
@@ -381,17 +582,11 @@ pub fn get_map_impl() -> Vec<nalgebra::Point3<f32>> {
         None => return vec![],
     };
 
-    let add_cursor = unsafe {
-        *(state.add_cursor_buf.contents() as *const u32)
-    };
+    let add_cursor = unsafe { *(state.add_cursor_buf.buf.contents().as_ptr().cast::<u32>()) };
     let valid = (add_cursor as usize).min(state.dist_cap as usize);
 
-    let dists: &[GpuVoxelDist] = unsafe {
-        std::slice::from_raw_parts(
-            state.dist_buf.contents() as *const GpuVoxelDist,
-            valid,
-        )
-    };
+    let dists = state.dist_buf.as_slice::<GpuVoxelDist>();
+    let dists = &dists[..valid];
 
     dists
         .iter()
@@ -404,7 +599,7 @@ pub fn get_map_size_impl() -> u32 {
     let guard = get_state();
     match guard.as_ref() {
         Some(s) => {
-            let cursor = unsafe { *(s.add_cursor_buf.contents() as *const u32) };
+            let cursor = unsafe { *(s.add_cursor_buf.buf.contents().as_ptr().cast::<u32>()) };
             cursor.min(s.dist_cap)
         }
         None => 0,
@@ -415,52 +610,55 @@ pub fn cleanup_map_impl() {
     *get_state() = None;
 }
 
-// ── Planes computation ────────────────────────────────────────────────────────
-
 pub fn planes_metal_impl(
     stream: &Stream,
     cloud: &crate::buffer::MetalBuffer,
     ekf_pose_t: &crate::types::Vector3,
-    ekf_pose_r: &crate::types::Matrix3,
+    ekf_pose_r: &crate::types::Quaternion,
     ekf_imu_offset_t: &crate::types::Vector3,
-    ekf_imu_offset_r: &crate::types::Matrix3,
+    ekf_imu_offset_r: &crate::types::Quaternion,
     out_buff: &mut Vec<ros_pointcloud2::points::PointXYZINormal>,
     out_buff_gpu: &mut crate::buffer::MetalBuffer,
 ) {
     use nalgebra::UnitQuaternion;
+    use std::time::Instant;
 
-    assert!(out_buff.len() >= cloud.n, "out_buff too small");
+    let t_all = Instant::now();
 
-    let guard = get_state();
-    let state = guard.as_ref().expect("Map not initialised");
+    let mut guard = get_state();
+    let state = guard.as_mut().expect("Map not initialised");
 
-    // Build quaternions
-    let ext_rot: nalgebra::Matrix3<f64> = (*ekf_imu_offset_r).into();
-    let ext_q = UnitQuaternion::from_matrix(&ext_rot);
-    let pose_rot: nalgebra::Matrix3<f64> = (*ekf_pose_r).into();
-    let pose_q = UnitQuaternion::from_matrix(&pose_rot);
+    // quaternion inputs already
+    let ext_q: UnitQuaternion<f64> = (*ekf_imu_offset_r).into();
+    let pose_q: UnitQuaternion<f64> = (*ekf_pose_r).into();
 
-    let lidar_to_imu_quat = [ext_q.i as f32, ext_q.j as f32, ext_q.k as f32, ext_q.w as f32];
+    let lidar_to_imu_quat = [
+        ext_q.i as f32,
+        ext_q.j as f32,
+        ext_q.k as f32,
+        ext_q.w as f32,
+    ];
     let lidar_to_imu_pos = [
         ekf_imu_offset_t.x as f32,
         ekf_imu_offset_t.y as f32,
         ekf_imu_offset_t.z as f32,
     ];
-    let pose_quat = [pose_q.i as f32, pose_q.j as f32, pose_q.k as f32, pose_q.w as f32];
-    let pose_pos = [ekf_pose_t.x as f32, ekf_pose_t.y as f32, ekf_pose_t.z as f32];
+    let pose_quat = [
+        pose_q.i as f32,
+        pose_q.j as f32,
+        pose_q.k as f32,
+        pose_q.w as f32,
+    ];
+    let pose_pos = [
+        ekf_pose_t.x as f32,
+        ekf_pose_t.y as f32,
+        ekf_pose_t.z as f32,
+    ];
 
-    // Zero the out_size counter
     unsafe {
-        *(out_buff_gpu.buf.contents() as *mut u32) = 0;
+        *(out_buff_gpu.buf.contents().as_ptr().cast::<u32>()) = 0;
+        *(state.scratch.counter.buf.contents().as_ptr().cast::<u32>()) = 0;
     }
-
-    // We use the first 4 bytes of out_buff_gpu as an atomic counter.
-    // Construct a dedicated counter buffer.
-    let counter_buf = stream.device.new_buffer(
-        size_of::<u32>() as u64,
-        MTLResourceOptions::StorageModeShared,
-    );
-    unsafe { *(counter_buf.contents() as *mut u32) = 0; }
 
     let params = PlanesParams {
         lidar_to_imu_quat,
@@ -473,41 +671,65 @@ pub fn planes_metal_impl(
         table_cap: state.table_cap,
         resolution: state.resolution,
         sphericity_threshold: 0.5,
+        _pad2: 0,
     };
 
+    let t_gpu = Instant::now();
     {
-        let pipes = get_pipelines(&stream.device);
-        let cb = stream.queue.new_command_buffer();
-        let enc = cb.new_compute_command_encoder();
-        enc.set_compute_pipeline_state(&pipes.plane_krnl);
-        enc.set_buffer(0, Some(cloud.metal_buffer()), 0);
-        enc.set_buffer(1, Some(&state.keys_buf), 0);
-        enc.set_buffer(2, Some(&state.values_buf), 0);
-        enc.set_buffer(3, Some(&state.dist_buf), 0);
-        enc.set_buffer(4, Some(&counter_buf), 0);
-        enc.set_buffer(5, Some(out_buff_gpu.metal_buffer()), 0);
-        enc.set_bytes(
-            6,
-            size_of::<PlanesParams>() as u64,
-            &params as *const PlanesParams as *const _,
-        );
-        enc.dispatch_threads(grid1d(cloud.n), group1d());
-        enc.end_encoding();
+        let pipes = get_pipelines(&*stream.device);
+        let cb = stream.queue.commandBuffer().expect("cb");
+        let enc = cb.computeCommandEncoder().expect("enc");
+        enc.setComputePipelineState(&pipes.plane_krnl);
+        unsafe {
+            enc.setBuffer_offset_atIndex(Some(cloud.metal_buffer()), 0, 0);
+            enc.setBuffer_offset_atIndex(Some(state.keys_buf.metal_buffer()), 0, 1);
+            enc.setBuffer_offset_atIndex(Some(state.values_buf.metal_buffer()), 0, 2);
+            enc.setBuffer_offset_atIndex(Some(state.dist_buf.metal_buffer()), 0, 3);
+            enc.setBuffer_offset_atIndex(Some(state.scratch.counter.metal_buffer()), 0, 4);
+            enc.setBuffer_offset_atIndex(Some(out_buff_gpu.metal_buffer()), 0, 5);
+            enc.setBytes_length_atIndex(
+                std::ptr::NonNull::new(&params as *const _ as *mut _).unwrap(),
+                size_of::<PlanesParams>(),
+                6,
+            );
+            enc.dispatchThreads_threadsPerThreadgroup(grid1d(cloud.n), group1d());
+            enc.endEncoding();
+        }
         cb.commit();
-        cb.wait_until_completed();
+        cb.waitUntilCompleted();
     }
+    let dur_gpu = t_gpu.elapsed();
 
-    // Read back results
-    let out_size = unsafe { *(counter_buf.contents() as *const u32) } as usize;
-    let gpu_normals: &[crate::types::PointNormal] = unsafe {
-        std::slice::from_raw_parts(
-            out_buff_gpu.buf.contents() as *const crate::types::PointNormal,
-            out_size.min(out_buff.len()),
-        )
-    };
+    let t_copy = Instant::now();
+    let out_size =
+        unsafe { *(state.scratch.counter.buf.contents().as_ptr().cast::<u32>()) } as usize;
+    let gpu_normals = out_buff_gpu.as_slice::<crate::types::PointNormal>();
+    let gpu_normals = &gpu_normals[..out_size.min(out_buff.len())];
 
     unsafe { out_buff.set_len(out_size.min(out_buff.capacity())) };
-    for (dst, src) in out_buff.iter_mut().zip(gpu_normals.iter()) {
-        *dst = (*src).into();
+
+    #[cfg(feature = "metal_enable")]
+    {
+        out_buff
+            .par_iter_mut()
+            .zip(gpu_normals.par_iter())
+            .for_each(|(dst, src)| {
+                *dst = (*src).into();
+            });
     }
+    #[cfg(not(feature = "metal_enable"))]
+    {
+        for (dst, src) in out_buff.iter_mut().zip(gpu_normals.iter()) {
+            *dst = (*src).into();
+        }
+    }
+    let dur_copy = t_copy.elapsed();
+
+    log::info!(
+        "[Metal] planes: total={:?}, gpu={:?}, copy={:?}, size={}",
+        t_all.elapsed(),
+        dur_gpu,
+        dur_copy,
+        out_size
+    );
 }

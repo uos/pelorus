@@ -105,6 +105,14 @@ function(r2r_cargo)
          AND NOT "$ENV{PELORUS_CUDA}" STREQUAL "OFF")
     list(APPEND FEATURES "cuda")
   endif()
+  if(PELORUS_METAL)
+    list(APPEND FEATURES "metal")
+  elseif(DEFINED ENV{PELORUS_METAL}
+         AND NOT "$ENV{PELORUS_METAL}" STREQUAL ""
+         AND NOT "$ENV{PELORUS_METAL}" STREQUAL "0"
+         AND NOT "$ENV{PELORUS_METAL}" STREQUAL "OFF")
+    list(APPEND FEATURES "metal")
+  endif()
   if(PELORUS_MIMALLOC)
     list(APPEND FEATURES "mimalloc")
   endif()

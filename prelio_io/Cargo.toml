@@ -34,7 +34,7 @@ ros2-interfaces-jazzy-rkyv = { workspace = true, optional = true }
 rat = ["dep:mt_rat"]
 downsample = ["prelio/downsample"]
 cuda = ["prelio/cuda"]
-parallel = ["prelio/parallel"]
+metal = ["prelio/metal"]
 no-imu-sync = ["prelio/no-imu-sync"]
 rerun = ["dep:rerun"]
 ratpub = [

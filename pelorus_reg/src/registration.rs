@@ -5,8 +5,10 @@ use pelorus_core::{
 };
 #[cfg(feature = "cuda")]
 use pelorus_cuda::CudaBuffer;
+#[cfg(feature = "metal")]
+use pelorus_metal::MetalBuffer;
 use prelio::LocatedBufferView;
-#[cfg(all(feature = "parallel", not(feature = "cuda")))]
+#[cfg(not(any(feature = "cuda", feature = "metal")))]
 use rayon::prelude::*;
 use ros_pointcloud2::{
     impl_pointxyz_for_nalgebra,
@@ -26,11 +28,13 @@ pub struct RegistrationState {
     laser_point_noise_cov: f64,
     ekf_max_iterations: usize,
     base_to_lidar: Isometry3<f64>,
-    #[cfg(feature = "cuda")]
+    #[cfg(any(feature = "cuda", feature = "metal"))]
     planes_cpu_buffer: Vec<PointXYZINormal>,
     #[cfg(feature = "cuda")]
     planes_gpu_buffer: Option<CudaBuffer>,
-    #[cfg(not(feature = "cuda"))]
+    #[cfg(feature = "metal")]
+    planes_gpu_buffer: Option<MetalBuffer>,
+    #[cfg(not(any(feature = "cuda", feature = "metal")))]
     planes_buffer: Vec<PointXYZINormal>,
 }
 
@@ -82,16 +86,18 @@ impl RegistrationState {
             laser_point_noise_cov,
             ekf_max_iterations,
             base_to_lidar,
-            #[cfg(feature = "cuda")]
+            #[cfg(any(feature = "cuda", feature = "metal"))]
             planes_cpu_buffer: Vec::new(),
             #[cfg(feature = "cuda")]
             planes_gpu_buffer: None,
-            #[cfg(not(feature = "cuda"))]
+            #[cfg(feature = "metal")]
+            planes_gpu_buffer: None,
+            #[cfg(not(any(feature = "cuda", feature = "metal")))]
             planes_buffer: Vec::new(),
         }
     }
 
-    #[cfg(not(feature = "cuda"))]
+    #[cfg(not(any(feature = "cuda", feature = "metal")))]
     fn add_to_map(&mut self, cloud: &LocatedBufferView<PointXYZIT>, pose: Isometry3<f64>) {
         let LocatedBufferView::Ram(cloud) = cloud;
 
@@ -113,6 +119,10 @@ impl RegistrationState {
 
     pub fn clear_localmap(&mut self) {
         self.map.clear();
+        #[cfg(feature = "cuda")]
+        pelorus_cuda::cleanup_map();
+        #[cfg(feature = "metal")]
+        pelorus_metal::cleanup_map();
     }
 
     pub fn get_odometry_covariances(&self) -> ([f64; 36], [f64; 9]) {
@@ -466,19 +476,24 @@ impl crate::Registration for RegistrationState {
         ready_for_next: Option<&std::sync::mpsc::Sender<()>>,
         eval: &mut RuntimeEvaluator,
         #[cfg(feature = "cuda")] stream: &pelorus_cuda::Stream,
+        #[cfg(feature = "metal")] stream: &pelorus_metal::Stream,
     ) -> anyhow::Result<Option<crate::CloudRegisterResult>> {
         let eval_outer = std::sync::Arc::new(std::sync::RwLock::new(eval));
         #[cfg(feature = "cuda")]
         let map_empty = pelorus_cuda::get_map_size() == 0;
+        #[cfg(feature = "metal")]
+        let map_empty = pelorus_metal::get_map_size() == 0;
 
         if map_only {
-            #[cfg(not(feature = "cuda"))]
+            #[cfg(not(any(feature = "cuda", feature = "metal")))]
             self.add_to_map(cloud, imu_transform);
             #[cfg(feature = "cuda")]
             {
                 let cloud = match cloud {
                     LocatedBufferView::Ram(_) => panic!("cuda buffer in cpu task"),
                     LocatedBufferView::Cuda { buffer } => buffer,
+                    #[cfg(feature = "metal")]
+                    _ => unreachable!(),
                 };
 
                 let transl = &imu_transform.translation.vector.into();
@@ -486,16 +501,33 @@ impl crate::Registration for RegistrationState {
                 let rotmat = imu_transform.rotation.to_rotation_matrix().matrix().clone();
                 pelorus_cuda::add_to_map(&stream, cloud, &transl, &rotmat.into());
             }
+            #[cfg(feature = "metal")]
+            {
+                let cloud = match cloud {
+                    LocatedBufferView::Ram(_) => panic!("metal buffer in cpu task"),
+                    LocatedBufferView::Metal { buffer } => buffer,
+                    #[cfg(feature = "cuda")]
+                    _ => unreachable!(),
+                };
+
+                let transl = &imu_transform.translation.vector.into();
+                let rot_quat: pelorus_metal::Quaternion = imu_transform.rotation.into();
+                pelorus_metal::add_to_map(&stream, cloud, &transl, &rot_quat);
+            }
 
             return Ok(None);
         }
 
-        #[cfg(not(feature = "cuda"))]
+        #[cfg(not(any(feature = "cuda", feature = "metal")))]
         let map_empty = self.map.is_empty();
         if !map_empty {
-            #[cfg(not(feature = "cuda"))]
+            #[cfg(not(any(feature = "cuda", feature = "metal")))]
             let map = &mut self.map;
-            const EXTRA: f32 = if cfg!(feature = "cuda") { 1.7 } else { 1.5 };
+            const EXTRA: f32 = if cfg!(any(feature = "cuda", feature = "metal")) {
+                1.7
+            } else {
+                1.5
+            };
             let cloud_len_alloc = (EXTRA * cloud.len() as f32).ceil() as usize;
             {
                 eval_outer.write().unwrap().start("ekf_correct").unwrap();
@@ -503,13 +535,14 @@ impl crate::Registration for RegistrationState {
 
             let eval_cb = eval_outer.clone();
 
-            #[cfg(feature = "cuda")]
+            #[cfg(any(feature = "cuda", feature = "metal"))]
             {
                 if self.planes_cpu_buffer.capacity() < cloud.len() {
                     self.planes_cpu_buffer
                         .reserve(cloud_len_alloc - self.planes_cpu_buffer.capacity());
                 }
 
+                #[cfg(feature = "cuda")]
                 if self.planes_gpu_buffer.is_none()
                     || self.planes_gpu_buffer.as_ref().unwrap().n < cloud.len()
                 {
@@ -519,9 +552,20 @@ impl crate::Registration for RegistrationState {
                         cloud_len_alloc,
                     ));
                 }
+
+                #[cfg(feature = "metal")]
+                if self.planes_gpu_buffer.is_none()
+                    || self.planes_gpu_buffer.as_ref().unwrap().n < cloud.len()
+                {
+                    self.planes_gpu_buffer = Some(MetalBuffer::new(
+                        stream,
+                        size_of::<PointXYZINormal>(),
+                        cloud_len_alloc,
+                    ));
+                }
             }
 
-            #[cfg(not(feature = "cuda"))]
+            #[cfg(not(any(feature = "cuda", feature = "metal")))]
             {
                 if self.planes_buffer.capacity() < cloud.len() {
                     self.planes_buffer
@@ -529,12 +573,12 @@ impl crate::Registration for RegistrationState {
                 }
             }
 
-            #[cfg(feature = "cuda")]
+            #[cfg(any(feature = "cuda", feature = "metal"))]
             let planes_cpu_buffer = std::ptr::addr_of_mut!(self.planes_cpu_buffer);
-            #[cfg(feature = "cuda")]
+            #[cfg(any(feature = "cuda", feature = "metal"))]
             let planes_gpu_buffer = std::ptr::addr_of_mut!(self.planes_gpu_buffer);
 
-            #[cfg(not(feature = "cuda"))]
+            #[cfg(not(any(feature = "cuda", feature = "metal")))]
             let planes_buffer = std::ptr::addr_of_mut!(self.planes_buffer);
 
             self.ekf.correct(
@@ -551,23 +595,24 @@ impl crate::Registration for RegistrationState {
                     let mut eval = eval_cb.write().unwrap();
                     eval.start("ekf_correct/model/planes").unwrap();
 
-                    #[cfg(feature = "cuda")]
+                    #[cfg(any(feature = "cuda", feature = "metal"))]
                     let planes = unsafe { &mut *planes_cpu_buffer };
-                    #[cfg(feature = "cuda")]
+                    #[cfg(any(feature = "cuda", feature = "metal"))]
                     {
                         planes.clear();
                         unsafe { planes.set_len(cloud.len()) };
                     }
-                    #[cfg(feature = "cuda")]
-                    let planes_gpu = unsafe { (*planes_gpu_buffer).as_mut().unwrap() };
 
                     #[cfg(feature = "cuda")]
                     let planes = {
+                        let planes_gpu = unsafe { (*planes_gpu_buffer).as_mut().unwrap() };
                         let cloud = match cloud {
                             LocatedBufferView::Ram(_) => {
                                 panic!("cloud not allocated on GPU")
                             }
                             LocatedBufferView::Cuda { buffer } => buffer,
+                            #[cfg(feature = "metal")]
+                            _ => unreachable!(),
                         };
 
                         // call to cuda kernel
@@ -593,133 +638,105 @@ impl crate::Registration for RegistrationState {
                         planes
                     };
 
-                    #[cfg(not(feature = "cuda"))]
+                    #[cfg(feature = "metal")]
+                    let planes = {
+                        let planes_gpu = unsafe { (*planes_gpu_buffer).as_mut().unwrap() };
+                        let cloud = match cloud {
+                            LocatedBufferView::Ram(_) => {
+                                panic!("cloud not allocated on GPU")
+                            }
+                            LocatedBufferView::Metal { buffer } => buffer,
+                            #[cfg(feature = "cuda")]
+                            _ => unreachable!(),
+                        };
+
+                        // call to metal kernel
+                        // prepare quaternion values up front to avoid borrowing
+                        let pose_q: pelorus_metal::Quaternion = {
+                            let mat: nalgebra::Matrix3<f64> =
+                                ekf_state.pose().rotation().matrix().clone();
+                            nalgebra::UnitQuaternion::from_matrix(&mat).into()
+                        };
+                        let offset_q: pelorus_metal::Quaternion = {
+                            let mat: nalgebra::Matrix3<f64> =
+                                ekf_state.offset_r_l_i.matrix().clone();
+                            nalgebra::UnitQuaternion::from_matrix(&mat).into()
+                        };
+
+                        pelorus_metal::planes_metal(
+                            &stream,
+                            cloud,
+                            &pelorus_metal::Vector3::new(
+                                ekf_state.pose().translation().x,
+                                ekf_state.pose().translation().y,
+                                ekf_state.pose().translation().z,
+                            ),
+                            &pose_q,
+                            &pelorus_metal::Vector3::new(
+                                ekf_state.offset_t_l_i.x,
+                                ekf_state.offset_t_l_i.y,
+                                ekf_state.offset_t_l_i.z,
+                            ),
+                            &offset_q,
+                            planes,
+                            planes_gpu,
+                        );
+
+                        planes
+                    };
+
+                    #[cfg(not(any(feature = "cuda", feature = "metal")))]
                     let planes = {
                         let LocatedBufferView::Ram(cloud) = cloud;
 
                         let planes_buf: &mut Vec<PointXYZINormal> = unsafe { &mut *planes_buffer };
                         planes_buf.clear();
 
-                        let iter = {
-                            #[cfg(feature = "parallel")]
+                        let pm = cloud.par_iter().flat_map(|point_local| {
+                            let p_l =
+                                nalgebra::Point3::new(point_local.x, point_local.y, point_local.z);
+                            let p_imu = ekf_state.offset_r_l_i.matrix() * p_l.cast()
+                                + ekf_state.offset_t_l_i;
+                            let p_world = ekf_state.pose().transform(p_imu.coords);
+
+                            let query_point =
+                                PointXYZ::new(p_world.x as f32, p_world.y as f32, p_world.z as f32);
+
                             {
-                                cloud.par_iter()
-                            }
-                            #[cfg(not(feature = "parallel"))]
-                            {
-                                cloud.iter()
-                            }
-                        };
-
-                        #[cfg(feature = "parallel")]
-                        {
-                            let pm = iter.flat_map(|point_local| {
-                                // let filtered: Vec<PointXYZINormal> = iter
-                                // .filter_map(|point_local| {
-                                let p_l = nalgebra::Point3::new(
-                                    point_local.x,
-                                    point_local.y,
-                                    point_local.z,
-                                );
-                                let p_imu = ekf_state.offset_r_l_i.matrix() * p_l.cast()
-                                    + ekf_state.offset_t_l_i;
-                                let p_world = ekf_state.pose().transform(p_imu.coords);
-
-                                let query_point = PointXYZ::new(
-                                    p_world.x as f32,
-                                    p_world.y as f32,
-                                    p_world.z as f32,
-                                );
-
-                                {
-                                    let plane = map.plane_fit_from_distributions(&query_point)?;
-                                    let pd2 = plane[0] * p_world.x as f32
-                                        + plane[1] * p_world.y as f32
-                                        + plane[2] * p_world.z as f32
-                                        + plane[3];
-                                    let s = 1.0
-                                        - 0.9 * pd2.abs()
-                                            / nalgebra::Point3::new(
-                                                point_local.x,
-                                                point_local.y,
-                                                point_local.z,
-                                            )
-                                            .cast::<f64>()
-                                            .coords
-                                            .norm()
-                                            .sqrt()
-                                                as f32;
-
-                                    if s <= 0.9 {
-                                        None
-                                    } else {
-                                        Some(PointXYZINormal::new(
+                                let plane = map.plane_fit_from_distributions(&query_point)?;
+                                let pd2 = plane[0] * p_world.x as f32
+                                    + plane[1] * p_world.y as f32
+                                    + plane[2] * p_world.z as f32
+                                    + plane[3];
+                                let s = 1.0
+                                    - 0.9 * pd2.abs()
+                                        / nalgebra::Point3::new(
                                             point_local.x,
                                             point_local.y,
                                             point_local.z,
-                                            pd2,
-                                            plane[0],
-                                            plane[1],
-                                            plane[2],
-                                        ))
-                                    }
-                                }
-                            });
+                                        )
+                                        .cast::<f64>()
+                                        .coords
+                                        .norm()
+                                        .sqrt() as f32;
 
-                            planes_buf.par_extend(pm);
-                        }
-
-                        #[cfg(not(feature = "parallel"))]
-                        {
-                            for point_local in iter {
-                                let p_l = nalgebra::Point3::new(
-                                    point_local.x,
-                                    point_local.y,
-                                    point_local.z,
-                                );
-                                let p_imu = ekf_state.offset_r_l_i.matrix() * p_l.cast()
-                                    + ekf_state.offset_t_l_i;
-                                let p_world = ekf_state.pose().transform(p_imu.coords);
-
-                                let query_point = PointXYZ::new(
-                                    p_world.x as f32,
-                                    p_world.y as f32,
-                                    p_world.z as f32,
-                                );
-
-                                if let Some(plane) = map.plane_fit_from_distributions(&query_point)
-                                {
-                                    let pd2 = plane[0] * p_world.x as f32
-                                        + plane[1] * p_world.y as f32
-                                        + plane[2] * p_world.z as f32
-                                        + plane[3];
-                                    let s = 1.0
-                                        - 0.9 * pd2.abs()
-                                            / nalgebra::Point3::new(
-                                                point_local.x,
-                                                point_local.y,
-                                                point_local.z,
-                                            )
-                                            .cast::<f64>()
-                                            .coords
-                                            .norm()
-                                            .sqrt()
-                                                as f32;
-
-                                    if s > 0.9 {
-                                        planes_buf.push(PointXYZINormal::new(
-                                            point_local.x,
-                                            point_local.y,
-                                            point_local.z,
-                                            pd2,
-                                            plane[0],
-                                            plane[1],
-                                            plane[2],
-                                        ));
-                                    }
+                                if s <= 0.9 {
+                                    None
+                                } else {
+                                    Some(PointXYZINormal::new(
+                                        point_local.x,
+                                        point_local.y,
+                                        point_local.z,
+                                        pd2,
+                                        plane[0],
+                                        plane[1],
+                                        plane[2],
+                                    ))
                                 }
                             }
-                        }
+                        });
+
+                        planes_buf.par_extend(pm);
 
                         planes_buf
                     };
@@ -830,13 +847,15 @@ impl crate::Registration for RegistrationState {
             eval_outer.write().unwrap().start("map_update").unwrap();
         }
 
-        #[cfg(not(feature = "cuda"))]
+        #[cfg(not(any(feature = "cuda", feature = "metal")))]
         self.add_to_map(cloud, t_w_l);
         #[cfg(feature = "cuda")]
         {
             let cloud = match cloud {
                 LocatedBufferView::Ram(_) => panic!("cuda buffer in cpu task"),
                 LocatedBufferView::Cuda { buffer } => buffer,
+                #[cfg(feature = "metal")]
+                _ => unreachable!(),
             };
 
             let rotmat = t_w_l.rotation.to_rotation_matrix().matrix().clone();
@@ -846,6 +865,23 @@ impl crate::Registration for RegistrationState {
                 &t_w_l.translation.vector.into(),
                 &rotmat.into(),
             );
+        }
+        #[cfg(feature = "metal")]
+        {
+            let cloud = match cloud {
+                LocatedBufferView::Ram(_) => panic!("metal buffer in cpu task"),
+                LocatedBufferView::Metal { buffer } => buffer,
+                #[cfg(feature = "cuda")]
+                _ => unreachable!(),
+            };
+
+            let transl = &t_w_l.translation.vector.into();
+            let rot_quat: pelorus_metal::Quaternion = {
+                let mat: nalgebra::Matrix3<f64> =
+                    t_w_l.rotation.to_rotation_matrix().matrix().clone();
+                nalgebra::UnitQuaternion::from_matrix(&mat).into()
+            };
+            pelorus_metal::add_to_map(&stream, cloud, transl, &rot_quat);
         }
         {
             eval_outer.write().unwrap().stop("map_update").unwrap();

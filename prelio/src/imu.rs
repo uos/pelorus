@@ -4,7 +4,6 @@ use pelorus_core::{
     ImuMsg, ImuPredictorUndistort, PointXYZIT, UndistortParameters, imu_msg_to_cov,
     imu_msg_to_twist, time_msg_from_secs,
 };
-#[cfg(feature = "parallel")]
 use rayon::iter::{IntoParallelIterator, ParallelIterator};
 
 use sophus_lie::prelude::*;
@@ -411,16 +410,7 @@ impl ImuProcess {
     ) -> Vec<ros_pointcloud2::points::PointXYZI> {
         let tbe = pose_end_of_frame.translation();
         let rso3_be = pose_end_of_frame.rotation().log();
-        let iter = {
-            #[cfg(feature = "parallel")]
-            {
-                cloud_in_out.into_par_iter()
-            }
-            #[cfg(not(feature = "parallel"))]
-            {
-                cloud_in_out.into_iter()
-            }
-        };
+        let iter = cloud_in_out.into_par_iter();
         iter.map(|p| {
             let ring = p.timestamp.floor() as i64;
             let dt_bi = p.timestamp - ring as f32;

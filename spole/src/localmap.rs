@@ -1,4 +1,3 @@
-#[cfg(feature = "parallel")]
 use rayon::{
     iter::{
         IndexedParallelIterator, IntoParallelRefIterator, IntoParallelRefMutIterator,
@@ -163,15 +162,8 @@ impl Livodish {
         }
         self.lru_cursor = 0;
 
-        #[cfg(feature = "parallel")]
         let iter = self.lru_mapping.par_iter();
-        #[cfg(not(feature = "parallel"))]
-        let iter = self.lru_mapping.iter();
-
-        #[cfg(feature = "parallel")]
         let keys_iter = self.lru_mapping_keys.par_iter_mut();
-        #[cfg(not(feature = "parallel"))]
-        let keys_iter = self.lru_mapping_keys.iter_mut();
 
         iter.zip(keys_iter)
             .filter_map(|(&opt_idx, key)| opt_idx.and_then(|idx| Some((idx, key))))
@@ -215,11 +207,7 @@ impl Livodish {
             right_val.cmp(&left_val)
         };
 
-        // let kl = keys.len();
-        #[cfg(feature = "parallel")]
         self.lru_mapping_keys.par_sort_unstable_by(cmp);
-        #[cfg(not(feature = "parallel"))]
-        self.lru_mapping_keys.sort_unstable_by(cmp);
 
         for (i, key) in self.lru_mapping_keys.iter().enumerate() {
             unsafe { *self.lru_mapping.get_unchecked_mut(i) = Some(key.index) };

@@ -11,14 +11,17 @@ authors.workspace = true
 rust-version.workspace = true
 
 [dependencies]
-metal = "0.29"
-bytemuck = { version = "1", features = ["derive"] }
+objc2.workspace = true
+objc2-metal.workspace = true
+objc2-foundation.workspace = true
+bytemuck.workspace = true
 nalgebra.workspace = true
 ros_pointcloud2.workspace = true
 pelorus_core.workspace = true
 log.workspace = true
 libc.workspace = true
+rayon = { workspace = true, optional = true }
 
 [features]
 metal_available = []
-metal_enable = []
+metal_enable = ["dep:rayon"]

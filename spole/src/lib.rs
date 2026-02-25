@@ -9,7 +9,6 @@ use nalgebra::{Point3, Vector3};
 use rand::{Rng, SeedableRng};
 
 use nalgebra::{Cholesky, Matrix3};
-#[cfg(all(feature = "parallel", not(feature = "nn_kdt")))]
 use rayon::slice::ParallelSliceMut;
 use ros_pointcloud2::points::PointXYZ;
 
@@ -577,19 +576,7 @@ impl IVoxHashMap {
 
             // downsample first, then update per voxel using distributions
             // After this, all points in the same voxel are adjacent
-            #[cfg(feature = "parallel")]
-            {
-                const PAR_SORT_BOUNDARY: usize = 1; // When tested on an M3, par sort was always faster, no matter the size. TODO test on other platforms
-                if keyed_points.len() > PAR_SORT_BOUNDARY {
-                    keyed_points.par_sort_unstable_by_key(|(_, key)| *key);
-                } else {
-                    keyed_points.sort_unstable_by_key(|(_, key)| *key);
-                }
-            }
-            #[cfg(not(feature = "parallel"))]
-            {
-                keyed_points.sort_unstable_by_key(|(_, key)| *key);
-            }
+            keyed_points.par_sort_unstable_by_key(|(_, key)| *key);
 
             // TODO chunk by seems extremely fast on M3 Pro
             // #[cfg(feature = "parallel")]

@@ -22,7 +22,6 @@ class Pelorus < Formula
   def install
     bin.install "pelorus"
     lib.install "libpelorus.dylib"
-    lib.install "libpelorus.a"
     include.install "pelorus.h"
     include.install "pelorus.hpp"
     (lib/"pkgconfig").install "pelorus.pc"

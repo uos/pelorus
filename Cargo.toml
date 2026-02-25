@@ -22,20 +22,20 @@ include = ["**/*.rs", "**/*.md", "**/Cargo.toml", "**/pelorus_cuda/**"]
 keywords = ["robotics"]
 license = "MIT OR Apache-2.0"
 repository = "https://codeberg.org/uos-robotics/pelorus/"
-version = "0.0.3"
+version = "0.0.4"
 authors = ["Christopher 'stelzo' Sieh <stelzo@steado.de>"]
 rust-version = "1.85"                                                   # ROS lyrical
 
 [workspace.dependencies]
-pelorus_cli = { path = "pelorus_cli", version = "0.0.3" }
-pelorus = { path = "pelorus", version = "0.0.3" }
-pelorus_core = { path = "pelorus_core", version = "0.0.3" }
-pelorus_reg = { path = "pelorus_reg", version = "0.0.3" }
-prelio = { path = "prelio", version = "0.0.3" }
-prelio_io = { path = "prelio_io", version = "0.0.3" }
-spole = { path = "spole", version = "0.0.3" }
-pelorus_cuda = { path = "pelorus_cuda", version = "0.0.3" }
-pelorus_metal = { path = "pelorus_metal", version = "0.0.3" }
+pelorus_cli = { path = "pelorus_cli", version = "0.0.4" }
+pelorus = { path = "pelorus", version = "0.0.4" }
+pelorus_core = { path = "pelorus_core", version = "0.0.4" }
+pelorus_reg = { path = "pelorus_reg", version = "0.0.4" }
+prelio = { path = "prelio", version = "0.0.4" }
+prelio_io = { path = "prelio_io", version = "0.0.4" }
+spole = { path = "spole", version = "0.0.4" }
+pelorus_cuda = { path = "pelorus_cuda", version = "0.0.4" }
+pelorus_metal = { path = "pelorus_metal", version = "0.0.4" }
 
 ros_pointcloud2 = { version = "1.0.0-rc.3", features = [
   "rayon",
@@ -102,6 +102,29 @@ rustc-hash = "2.1.1"
 plotters = "0.3"
 petname = "2.0"
 clap_complete = "4.5.65"
+objc2 = "0.6"
+objc2-metal = { version = "0.3", features = [
+  "std",
+  "MTLBuffer",
+  "MTLCommandBuffer",
+  "MTLCommandQueue",
+  "MTLComputePipeline",
+  "MTLDevice",
+  "MTLLibrary",
+  "MTLResource",
+] }
+objc2-foundation = { version = "0.3", features = [
+  "std",
+  "NSArray",
+  "NSDictionary",
+  "NSEnumerator",
+  "NSError",
+  "NSObject",
+  "NSRange",
+  "NSString",
+  "NSURL",
+] }
+bytemuck = { version = "1", features = ["derive"] }
 
 [profile.release]
 strip = "symbols" # Significantly reduce binary size
@@ -110,7 +133,7 @@ debug = 0
 
 [profile.full-release]
 inherits = "release"
-lto = "thin"         # Link Time Optimization
+lto = "thin"         # Link Time Optimization. Larger than "thin" explodes the runner memory
 codegen-units = 1    # Slower compile times but compiler sees all generated code and can optimize over everything across modules. Also decreases binary size.
 strip = "symbols"    # Significantly reduce binary size
 opt-level = 3

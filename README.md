@@ -40,6 +40,7 @@ Available flags for the ROS 2 version are:
 
 **Optional flags**:
 - `cuda` use all available CUDA accelerations; requires `CUDA_HOME` environment variable to be set to your `/usr/local/cuda` or similar
+- `metal` use Apple Metal acceleration on macOS (Apple Silicon)
 - `rerun` visualization with timeline; set `RERUN_SERVER_ADDR` for remote instances, e.g. `127.0.0.1:9876`. Requires v0.29 and modern Rust Toolchain.
 - `map` publish localmap; only meant for debug purposes
 - `no-viz` avoid visualization code; useful for headless systems

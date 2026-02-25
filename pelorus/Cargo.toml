@@ -24,11 +24,11 @@ anyhow.workspace = true
 log.workspace = true
 ratslang.workspace = true
 thiserror.workspace = true
-rayon = { workspace = true, optional = true }
+rayon.workspace = true
 
 [features]
-default = ["parallel"]
+default = []
 downsample = ["prelio/downsample"]
-parallel = ["prelio/parallel", "pelorus_reg/parallel", "dep:rayon"]
 cuda = ["prelio/cuda", "pelorus_reg/cuda"]
+metal = ["prelio/metal", "pelorus_reg/metal"]
 no-imu-sync = ["prelio/no-imu-sync"]

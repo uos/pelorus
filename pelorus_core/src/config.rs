@@ -448,8 +448,7 @@ fn ast_to_config_inner(
         };
 
         let base_transform_ns = base_link_ns.filter_ns(&["from_lidar_transform"]);
-        let base_to_lidar_tf_override =
-            resolve_var!(base_transform_ns, "use_tf_tree", as bool, Rhs::Val(Val::BoolVal(b)) => {b})?;
+        let base_to_lidar_tf_override = resolve_var!(base_transform_ns, "use_tf_tree", as bool, Rhs::Val(Val::BoolVal(b)) => {b})?;
         let base_translation: Vector3<f64> = resolve_var!(base_transform_ns, "translation", as Vector3<f64>, Rhs::Array(v) => {
             let (Some(x_rhs), Some(y_rhs), Some(z_rhs)) = (v.first(), v.get(1), v.get(2)) else { return Err(anyhow!("Expected three vector components.")) };
             let (Rhs::Val(Val::UnitedVal(UnitVal::LengthVal(x))), Rhs::Val(Val::UnitedVal(UnitVal::LengthVal(y))), Rhs::Val(Val::UnitedVal(UnitVal::LengthVal(z)))) = (&**x_rhs, &**y_rhs, &**z_rhs) else { return Err(anyhow!("All components must be length values.")) };
@@ -589,10 +588,18 @@ fn ast_to_config_inner(
         )
     };
 
-    // --- Parallelism Configuration ---
     let num_threads = {
         let parallelism_ns = asts.filter_ns(&["parallelism"]);
-        resolve_var!(parallelism_ns, "num_threads", as usize, Rhs::Val(Val::NumVal(NumVal::Integer(i))) => { i })?
+        let rhs = resolve_var!(parallelism_ns, "num_threads", as &Rhs, r => { r })?;
+        match rhs {
+            Rhs::Val(Val::NumVal(NumVal::Integer(i))) => i as usize,
+            Rhs::Val(Val::StringVal(s)) if s.eq_ignore_ascii_case("all") => 0usize,
+            _ => {
+                return Err(anyhow!(
+                    "parallelism.num_threads must be an integer or 'all'"
+                ));
+            }
+        }
     };
 
     let final_config = LioConfig {

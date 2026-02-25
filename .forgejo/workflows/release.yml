@@ -33,7 +33,7 @@ jobs:
           apt-get install -y cmake
           VERSION=$(toml get --raw Cargo.toml workspace.package.version)
           echo "Workspace version: $VERSION"
-          cmake -S pelorus_c -B pelorus_c/build -DCMAKE_INSTALL_PREFIX=/usr
+          cmake -S pelorus_c -B pelorus_c/build -DCMAKE_INSTALL_PREFIX=/usr -DPELORUS_BUILD_SHARED=OFF -DPELORUS_BUILD_STATIC=OFF
 
           if ! grep -q "Version: $VERSION" pelorus_c/build/pelorus.pc; then
             echo "pelorus.pc version mismatch or missing" >&2
@@ -139,7 +139,7 @@ jobs:
           mv "$tmp" "$updatetoml"
 
           # Generate packaging artifacts with CMake and copy them into the dev crate
-          cmake -S pelorus_c -B pelorus_c/build -DCMAKE_INSTALL_PREFIX=/usr
+          cmake -S pelorus_c -B pelorus_c/build -DCMAKE_INSTALL_PREFIX=/usr -DPELORUS_BUILD_SHARED=OFF -DPELORUS_BUILD_STATIC=OFF
           cp pelorus_c/build/pelorus.pc pelorus_c/deb-dev/pelorus.pc
           cp pelorus_c/build/pelorusConfig.cmake pelorus_c/deb-dev/pelorusConfig.cmake
 
@@ -204,15 +204,14 @@ jobs:
           mkdir -p "dist/${ARCH}"
 
           export RUSTFLAGS="-C link-arg=-F${SDKROOT}/System/Library/Frameworks -C link-arg=-L${SDKROOT}/usr/lib -C link-arg=-isysroot -C link-arg=${SDKROOT}"
-          cargo zigbuild --target $TARGET "$@" --release --package pelorus_c
+          cargo zigbuild --target $TARGET "$@" --release --package pelorus_c --features metal
           mv target/$TARGET/release/libpelorus.dylib dist/${ARCH}/
-          mv target/$TARGET/release/libpelorus.a  dist/${ARCH}/
 
-          cargo zigbuild --target $TARGET "$@" --release --package pelorus_cli --features evaluate
+          cargo zigbuild --target $TARGET "$@" --release --package pelorus_cli --features evaluate,metal
           mv target/$TARGET/release/pelorus dist/${ARCH}/
 
           # Generate cmake config and pkg-config files
-          cmake -S pelorus_c -B pelorus_c/build -DCMAKE_INSTALL_PREFIX=/usr/local -DPELORUS_BUILD_SHARED=OFF -DPELORUS_BUILD_STATIC=OFF
+          cmake -S pelorus_c -B pelorus_c/build -DCMAKE_INSTALL_PREFIX=/usr -DPELORUS_BUILD_SHARED=OFF -DPELORUS_BUILD_STATIC=OFF
           cp pelorus_c/pelorus.h dist/${ARCH}/
           cp pelorus_c/pelorus.hpp dist/${ARCH}/
           cp pelorus_c/build/pelorus.pc dist/${ARCH}/
@@ -312,6 +311,7 @@ jobs:
           cmake -S pelorus_c -B pelorus_c/build -DCMAKE_INSTALL_PREFIX=/usr
           cp pelorus_c/build/pelorus.pc pelorus_c/deb-dev/pelorus.pc
           cp pelorus_c/build/pelorusConfig.cmake pelorus_c/deb-dev/pelorusConfig.cmake
+          cp pelorus_c/build/pelorusConfigVersion.cmake pelorus_c/deb-dev/pelorusConfigVersion.cmake
 
           cargo deb --package libpelorus-dev
 
@@ -434,6 +434,7 @@ jobs:
           cmake -S pelorus_c -B pelorus_c/build -DCMAKE_INSTALL_PREFIX=/usr
           cp pelorus_c/build/pelorus.pc pelorus_c/deb-dev/pelorus.pc
           cp pelorus_c/build/pelorusConfig.cmake pelorus_c/deb-dev/pelorusConfig.cmake
+          cp pelorus_c/build/pelorusConfigVersion.cmake pelorus_c/deb-dev/pelorusConfigVersion.cmake
 
           cargo deb --package libpelorus-dev
 
@@ -556,6 +557,7 @@ jobs:
           cmake -S pelorus_c -B pelorus_c/build -DCMAKE_INSTALL_PREFIX=/usr
           cp pelorus_c/build/pelorus.pc pelorus_c/deb-dev/pelorus.pc
           cp pelorus_c/build/pelorusConfig.cmake pelorus_c/deb-dev/pelorusConfig.cmake
+          cp pelorus_c/build/pelorusConfigVersion.cmake pelorus_c/deb-dev/pelorusConfigVersion.cmake
 
           cargo deb --package libpelorus-dev
 
@@ -1095,14 +1097,18 @@ jobs:
           if [[ "$TARGET" == *apple-darwin* ]]; then
             export SDKROOT=/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk
             export RUSTFLAGS="-C link-arg=-F${SDKROOT}/System/Library/Frameworks -C link-arg=-L${SDKROOT}/usr/lib -C link-arg=-isysroot -C link-arg=${SDKROOT}"
+            METAL_FEATURE=",metal"
+          else
+            METAL_FEATURE=""
           fi
 
           # binary
-          MATURIN_ARGS="build --zig --manifest-path pelorus_cli/Cargo.toml --release --target-dir wheels --features rerun,evaluate"
+          MATURIN_ARGS="build --zig --manifest-path pelorus_cli/Cargo.toml --release --target-dir wheels --features rerun,evaluate${METAL_FEATURE}"
           maturin $MATURIN_ARGS --target "$TARGET"
 
           # bindings
           MATURIN_ARGS="build --zig --manifest-path pelorus_py/Cargo.toml --release --target-dir wheels"
+          [ -n "$METAL_FEATURE" ] && MATURIN_ARGS="${MATURIN_ARGS} --features metal"
           maturin $MATURIN_ARGS --target "$TARGET"
 
       - name: Upload wheels
@@ -1320,7 +1326,6 @@ jobs:
             make_tarball "pelorus-${VERSION}-macos-${arch}" \
               "dl/artifacts-macos/${arch}/pelorus" \
               "dl/artifacts-macos/${arch}/libpelorus.dylib" \
-              "dl/artifacts-macos/${arch}/libpelorus.a" \
               "dl/artifacts-macos/${arch}/pelorus.h" \
               "dl/artifacts-macos/${arch}/pelorus.hpp" \
               "dl/artifacts-macos/${arch}/pelorus.pc" \
