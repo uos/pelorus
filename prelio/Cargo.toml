@@ -14,6 +14,7 @@ rust-version.workspace = true
 [dependencies]
 pelorus_core.workspace = true
 pelorus_cuda = { optional = true, workspace = true }
+pelorus_metal = { optional = true, workspace = true }
 ros_pointcloud2.workspace = true
 log.workspace = true
 anyhow.workspace = true
@@ -30,5 +31,6 @@ morton-encoding.workspace = true
 parallel = []
 downsample = []
 cuda = ["dep:pelorus_cuda", "pelorus_cuda/cuda_available", "pelorus_cuda/cuda_enable"]
+metal = ["dep:pelorus_metal", "pelorus_metal/metal_available", "pelorus_metal/metal_enable"]
 no-imu-sync = []
 default = []

@@ -2,6 +2,7 @@
 members = [
   "pelorus_core",
   "pelorus_cuda",
+  "pelorus_metal",
   "pelorus_cli",
   "pelorus_c",
   "pelorus_c/deb-dev",
@@ -34,6 +35,7 @@ prelio = { path = "prelio", version = "0.0.3" }
 prelio_io = { path = "prelio_io", version = "0.0.3" }
 spole = { path = "spole", version = "0.0.3" }
 pelorus_cuda = { path = "pelorus_cuda", version = "0.0.3" }
+pelorus_metal = { path = "pelorus_metal", version = "0.0.3" }
 
 ros_pointcloud2 = { version = "1.0.0-rc.3", features = [
   "rayon",
