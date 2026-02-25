@@ -16,7 +16,7 @@ use ratatui::{
         canvas::{Canvas, Line as CanvasLine, Points},
     },
 };
-use std::io;
+use std::io::{self, IsTerminal};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
@@ -179,6 +179,14 @@ pub fn init_logger() {
         // Start with Info, will be updated after config is loaded
         log::set_max_level(log::LevelFilter::Info);
     }
+
+    // Suppress console output immediately when running in a terminal. Any log
+    // messages before the TUI starts would otherwise end up in the main buffer
+    // and reappear after LeaveAlternateScreen. If we later determine TUI won't
+    // be used, call set_tui_active(false) to restore stderr output.
+    if std::io::stdout().is_terminal() {
+        set_tui_active(true);
+    }
 }
 
 /// Update the log level after configuration is loaded.
@@ -200,7 +208,6 @@ pub fn update_log_level() {
     log::set_max_level(level);
 }
 
-/// Mark TUI as active (suppresses console output)
 pub fn set_tui_active(active: bool) {
     TUI_ACTIVE.store(active, Ordering::Relaxed);
 }
@@ -211,6 +218,10 @@ pub struct TuiStats {
     // Mode
     pub mode: String,
     pub bagfile: Option<String>,
+
+    // Backend info
+    pub backend: String,
+    pub accelerator: Option<String>,
 
     // Sensor info
     pub lidar_vendor: Option<LidarVendor>,
@@ -243,12 +254,12 @@ pub struct TuiStats {
     pub ram_mb: f64,
     pub num_cores: usize,
 
-    // GPU (CUDA/Jetson)
-    #[cfg(feature = "cuda")]
+    // GPU (CUDA/Metal/Jetson) - Process-local buffer usage
+    #[cfg(any(feature = "cuda", feature = "metal"))]
     pub gpu_memory_used_mb: f64,
-    #[cfg(feature = "cuda")]
+    #[cfg(any(feature = "cuda", feature = "metal"))]
     pub gpu_memory_total_mb: f64,
-    #[cfg(feature = "cuda")]
+    #[cfg(any(feature = "cuda", feature = "metal"))]
     pub gpu_utilization: f64,
 
     // Elapsed
@@ -281,6 +292,8 @@ impl SharedStats {
         let num_cores = num_cpus::get();
         let inner = Arc::new(Mutex::new(TuiStats {
             num_cores,
+            backend: "CPU".to_string(),
+            accelerator: None,
             target_lidar_rate_hz: 10.0,
             ..Default::default()
         }));
@@ -309,6 +322,12 @@ impl SharedStats {
     pub fn set_bagfile(&self, bagfile: impl Into<String>) {
         let mut stats = self.inner.lock().unwrap();
         stats.bagfile = Some(bagfile.into());
+    }
+
+    pub fn set_backend_info(&self, backend: String, accelerator: Option<String>) {
+        let mut stats = self.inner.lock().unwrap();
+        stats.backend = backend;
+        stats.accelerator = accelerator;
     }
 
     pub fn get(&self) -> TuiStats {
@@ -484,7 +503,7 @@ impl SharedStats {
         stats.avg_cpu_percent = avg_cpu;
         stats.max_cpu_percent = max_cpu;
 
-        #[cfg(feature = "cuda")]
+        #[cfg(any(feature = "cuda", feature = "metal"))]
         {
             let (gpu_used, gpu_total, gpu_util) = get_gpu_stats();
             stats.gpu_memory_used_mb = gpu_used;
@@ -518,6 +537,7 @@ fn get_ram_usage_mb() -> f64 {
         unsafe {
             let mut rusage: libc::rusage = std::mem::zeroed();
             if libc::getrusage(libc::RUSAGE_SELF, &mut rusage) == 0 {
+                // On macOS ru_maxrss is in bytes
                 return rusage.ru_maxrss as f64 / (1024.0 * 1024.0);
             }
         }
@@ -600,17 +620,36 @@ fn get_cpu_usage_macos(last: Option<(u64, f64)>) -> (f64, (u64, f64)) {
     (-1.0, current)
 }
 
-#[cfg(feature = "cuda")]
+#[cfg(any(feature = "cuda", feature = "metal"))]
 fn get_gpu_stats() -> (f64, f64, f64) {
-    let is_jetson = std::path::Path::new("/sys/devices/platform/host1x").exists()
-        || std::fs::read_to_string("/proc/device-tree/model")
-            .map(|s| s.to_lowercase().contains("jetson"))
-            .unwrap_or(false);
+    #[cfg(feature = "metal")]
+    {
+        #[cfg(target_os = "macos")]
+        {
+            // Process-specific Metal allocation
+            let used = pelorus_metal::get_used_memory() as f64 / (1024.0 * 1024.0);
+            // We only track process-local memory for Metal.
+            // System-wide total/utilization is often misleading or unavailable per-process.
+            (used, 0.0, 0.0)
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            (0.0, 0.0, 0.0)
+        }
+    }
 
-    if is_jetson {
-        get_jetson_gpu_stats()
-    } else {
-        get_nvidia_gpu_stats()
+    #[cfg(feature = "cuda")]
+    {
+        let is_jetson = std::path::Path::new("/sys/devices/platform/host1x").exists()
+            || std::fs::read_to_string("/proc/device-tree/model")
+                .map(|s| s.to_lowercase().contains("jetson"))
+                .unwrap_or(false);
+
+        if is_jetson {
+            get_jetson_gpu_stats()
+        } else {
+            get_nvidia_gpu_stats()
+        }
     }
 }
 
@@ -762,7 +801,6 @@ impl StatsTui {
                 if let Event::Key(key) = event::read()? {
                     match key.code {
                         KeyCode::Char('q') | KeyCode::Esc => {
-                            set_tui_active(false);
                             disable_raw_mode()?;
                             execute!(terminal.backend_mut(), LeaveAlternateScreen, cursor::Show)?;
                             self.shutdown_tx.as_ref().map(|sender| sender.send(()));
@@ -770,7 +808,6 @@ impl StatsTui {
                         }
                         KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                             self.shutdown_tx.as_ref().map(|sender| sender.send(()));
-                            set_tui_active(false);
                             disable_raw_mode()?;
                             execute!(terminal.backend_mut(), LeaveAlternateScreen, cursor::Show)?;
                             return Ok(());
@@ -838,9 +875,8 @@ impl StatsTui {
             }
         }
 
-        set_tui_active(false);
         disable_raw_mode()?;
-        execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
+        execute!(terminal.backend_mut(), LeaveAlternateScreen, cursor::Show)?;
         Ok(())
     }
 
@@ -1262,6 +1298,26 @@ impl StatsTui {
             String::new()
         };
 
+        let mut info_line = vec![
+            Span::raw("💻 "),
+            Span::styled(&stats.backend, Style::default().fg(Color::White)),
+        ];
+
+        if let Some(accel) = &stats.accelerator {
+            info_line.push(Span::raw(" + "));
+            let color = if accel.to_lowercase().contains("metal") {
+                Color::Green
+            } else if accel.to_lowercase().contains("cuda") {
+                Color::Cyan
+            } else {
+                Color::Magenta
+            };
+            info_line.push(Span::styled(
+                accel,
+                Style::default().fg(color).add_modifier(Modifier::BOLD),
+            ));
+        }
+
         let lines = vec![
             Line::from(vec![
                 Span::raw("⏱️  "),
@@ -1270,13 +1326,7 @@ impl StatsTui {
                 Span::styled(vendor, Style::default().fg(Color::Cyan)),
                 Span::styled(sensor_rate_str, Style::default().fg(Color::Cyan)),
             ]),
-            Line::from(vec![
-                Span::raw("💻 "),
-                Span::styled(
-                    format!("{} cores", stats.num_cores),
-                    Style::default().fg(Color::White),
-                ),
-            ]),
+            Line::from(info_line),
         ];
 
         let block = Block::default()
@@ -1463,20 +1513,8 @@ impl StatsTui {
             ]),
         ];
 
-        #[cfg(feature = "cuda")]
+        #[cfg(any(feature = "cuda", feature = "metal"))]
         {
-            if stats.gpu_memory_total_mb > 0.0 {
-                lines.push(Line::from(vec![
-                    Span::styled("GPU Mem     ", Style::default().fg(Color::DarkGray)),
-                    Span::styled(
-                        format!(
-                            "{:>6.0} / {:.0} MB",
-                            stats.gpu_memory_used_mb, stats.gpu_memory_total_mb
-                        ),
-                        Style::default().fg(Color::Cyan),
-                    ),
-                ]));
-            }
             if stats.gpu_utilization > 0.0 {
                 lines.push(Line::from(vec![
                     Span::styled("GPU Load    ", Style::default().fg(Color::DarkGray)),

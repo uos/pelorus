@@ -7,7 +7,6 @@ use pelorus_core::{
     COV_IMU_BIAS_DEFAULT, COV_IMU_RAW_DEFAULT, ImuMsg, ImuParameters, KinematicModel, LidarVendor,
     OdomMsg, PointXYZIT, timestamp_to_secs,
 };
-#[cfg(feature = "parallel")]
 use rayon::prelude::*;
 use sophus_lie::IsAffineGroup;
 
@@ -461,101 +460,6 @@ impl ImuProcessing {
         ekf.correct_kinematics(kinematic, gyro, constraint_std);
         self.imu_state = ekf.state;
 
-        #[cfg(not(feature = "parallel"))]
-        {
-            let mut it_pcl = cloud.len();
-            for i in (1..imu_poses.len()).rev() {
-                let head = &imu_poses[i - 1];
-                let tail = &imu_poses[i];
-
-                while it_pcl > 0 && cloud[it_pcl - 1].timestamp as f64 > head.offset_time {
-                    it_pcl -= 1;
-                    let pcl_point = &cloud[it_pcl];
-
-                    let mut dt = pcl_point.timestamp as f64 - head.offset_time;
-                    if dt < 0.0 {
-                        // This can happen due to floating point inaccuracies if the point is very close
-                        // to the head time. We can treat it as having zero offset.
-                        warn!(
-                            "Point timestamp slightly before IMU head offset_time, clamping dt to 0."
-                        );
-                        dt = 0.0;
-                    }
-
-                    let r_i = head
-                        .pose
-                        .rotation()
-                        .group_mul(crate::iekf::SO3::exp(tail.gyr * dt))
-                        .matrix();
-                    let t_ei = head.pose.translation() + head.vel * dt + 0.5 * tail.acc * dt * dt
-                        - self.imu_state.pose().translation();
-
-                    let p_imu_frame = self.imu_state.offset_r_l_i.matrix()
-                        * Vector3::new(pcl_point.x as f64, pcl_point.y as f64, pcl_point.z as f64)
-                        + self.imu_state.offset_t_l_i;
-                    let p_compensate = self.imu_state.offset_r_l_i.matrix().transpose()
-                        * (self.imu_state.pose().rotation().matrix().transpose()
-                            * (r_i * p_imu_frame + t_ei)
-                            - self.imu_state.offset_t_l_i);
-
-                    cloud[it_pcl].x = p_compensate.x as f32;
-                    cloud[it_pcl].y = p_compensate.y as f32;
-                    cloud[it_pcl].z = p_compensate.z as f32;
-                }
-            }
-
-            // Additionally deskew the passthrough cloud. Avoid this if possible, since this blocks the thread. Rayon is here really powerful.
-            if let Some(passthrough) = cloud_passthrough {
-                let mut it_pcl = passthrough.len();
-                for i in (1..imu_poses.len()).rev() {
-                    let head = &imu_poses[i - 1];
-                    let tail = &imu_poses[i];
-
-                    while it_pcl > 0 && passthrough[it_pcl - 1].timestamp as f64 > head.offset_time
-                    {
-                        it_pcl -= 1;
-                        let pcl_point = &passthrough[it_pcl];
-
-                        let mut dt = pcl_point.timestamp as f64 - head.offset_time;
-                        if dt < 0.0 {
-                            // This can happen due to floating point inaccuracies if the point is very close
-                            // to the head time. We can treat it as having zero offset.
-                            warn!(
-                                "Point timestamp slightly before IMU head offset_time, clamping dt to 0."
-                            );
-                            dt = 0.0;
-                        }
-
-                        let r_i = head
-                            .pose
-                            .rotation()
-                            .group_mul(crate::iekf::SO3::exp(tail.gyr * dt))
-                            .matrix();
-                        let t_ei =
-                            head.pose.translation() + head.vel * dt + 0.5 * tail.acc * dt * dt
-                                - self.imu_state.pose().translation();
-
-                        let p_imu_frame = self.imu_state.offset_r_l_i.matrix()
-                            * Vector3::new(
-                                pcl_point.x as f64,
-                                pcl_point.y as f64,
-                                pcl_point.z as f64,
-                            )
-                            + self.imu_state.offset_t_l_i;
-                        let p_compensate = self.imu_state.offset_r_l_i.matrix().transpose()
-                            * (self.imu_state.pose().rotation().matrix().transpose()
-                                * (r_i * p_imu_frame + t_ei)
-                                - self.imu_state.offset_t_l_i);
-
-                        passthrough[it_pcl].x = p_compensate.x as f32;
-                        passthrough[it_pcl].y = p_compensate.y as f32;
-                        passthrough[it_pcl].z = p_compensate.z as f32;
-                    }
-                }
-            }
-        }
-
-        #[cfg(feature = "parallel")]
         {
             let imu_state_pose_translation = self.imu_state.pose().translation();
             let imu_state_pose_rotation_t = self.imu_state.pose().rotation().matrix().transpose();

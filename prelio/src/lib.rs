@@ -33,6 +33,12 @@ pub struct LabeledPointCloud2Msg {
 
 use imu::*;
 
+pub trait BufferStream {}
+#[cfg(feature = "cuda")]
+impl BufferStream for pelorus_cuda::Stream {}
+#[cfg(feature = "metal")]
+impl BufferStream for pelorus_metal::Stream {}
+
 #[inline]
 fn safe_angle(angle: f64) -> f64 {
     let factor = (angle / (2.0 * std::f64::consts::PI)).floor() as i32;
@@ -137,6 +143,18 @@ impl<T> LocatedBufferView<T> {
             buffer: CudaBuffer::new(stream, size_of::<usize>(), len),
         }
     }
+    #[cfg(feature = "metal")]
+    pub fn alloc_points_metal(stream: &pelorus_metal::Stream, len: usize) -> Self {
+        Self::Metal {
+            buffer: pelorus_metal::MetalBuffer::new(stream, size_of::<PointXYZI>(), len),
+        }
+    }
+    #[cfg(feature = "metal")]
+    pub fn alloc_neighbors_metal(stream: &pelorus_metal::Stream, len: usize) -> Self {
+        Self::Metal {
+            buffer: pelorus_metal::MetalBuffer::new(stream, size_of::<usize>(), len),
+        }
+    }
     pub fn from_vec_cpu(src: Vec<T>) -> Self {
         Self::Ram(src)
     }
@@ -150,6 +168,51 @@ impl<T> LocatedBufferView<T> {
     pub fn copy_from_slice_metal(stream: &pelorus_metal::Stream, src: &[PointXYZIT]) -> Self {
         Self::Metal {
             buffer: pelorus_metal::MetalBuffer::from_cloud(stream, src),
+        }
+    }
+
+    #[cfg(feature = "cuda")]
+    pub fn realloc_if_needed_cuda(&mut self, stream: &pelorus_cuda::Stream, len: usize) {
+        match self {
+            LocatedBufferView::Cuda { buffer } if buffer.n < len => {
+                *buffer = pelorus_cuda::CudaBuffer::new(
+                    stream,
+                    size_of::<PointXYZIT>(),
+                    (len as f32 * 1.2) as usize,
+                );
+            }
+            _ => {}
+        }
+    }
+
+    #[cfg(feature = "metal")]
+    pub fn realloc_if_needed_metal(&mut self, stream: &pelorus_metal::Stream, len: usize) {
+        match self {
+            LocatedBufferView::Metal { buffer } => {
+                if buffer.capacity() < len {
+                    *buffer = pelorus_metal::MetalBuffer::new(
+                        stream,
+                        size_of::<PointXYZIT>(),
+                        (len as f32 * 1.2) as usize,
+                    );
+                }
+                buffer.n = len;
+            }
+            _ => {}
+        }
+    }
+
+    #[cfg(feature = "cuda")]
+    pub fn upload_from_slice_cuda(&mut self, stream: &pelorus_cuda::Stream, src: &[PointXYZIT]) {
+        if let LocatedBufferView::Cuda { buffer } = self {
+            buffer.upload(stream, src);
+        }
+    }
+
+    #[cfg(feature = "metal")]
+    pub fn upload_from_slice_metal(&mut self, stream: &pelorus_metal::Stream, src: &[PointXYZIT]) {
+        if let LocatedBufferView::Metal { buffer } = self {
+            buffer.upload(stream, src);
         }
     }
 
@@ -391,7 +454,6 @@ fn filter_downsample<const N: usize, P: PointXYZITimestamp<N>>(
     let mut downsampled: Vec<PointXYZIT> = Vec::with_capacity(cloud.dimensions.len());
 
     #[allow(unused_mut)]
-    #[cfg(feature = "parallel")]
     let mut raw_out = {
         if bypass_output_downsample {
             Some((Vec::with_capacity(cloud.dimensions.len()), cloud.clone()))
@@ -400,18 +462,7 @@ fn filter_downsample<const N: usize, P: PointXYZITimestamp<N>>(
         }
     };
 
-    #[allow(unused_mut)]
-    #[cfg(not(feature = "parallel"))]
-    let mut raw_out = {
-        if bypass_output_downsample {
-            Some(Vec::with_capacity(cloud.dimensions.len()))
-        } else {
-            None
-        }
-    };
-
     // --- Processing ---
-    #[cfg(feature = "parallel")]
     {
         let iter = cloud.try_into_par_iter()?.map(map_to_non_trait);
 
@@ -455,38 +506,11 @@ fn filter_downsample<const N: usize, P: PointXYZITimestamp<N>>(
             downsampled.par_sort_unstable_by(cmp);
         }
     }
-
-    #[cfg(not(feature = "parallel"))]
-    {
-        let iter = cloud.try_into_iter()?.map(map_to_non_trait);
-
-        if let Some(bypass) = raw_out.as_mut() {
-            bypass.extend(iter.filter_map(filter_map_non_down));
-            bypass.sort_unstable_by(cmp);
-
-            // Now downsample the filtered cloud
-
-            keyed_points.extend(bypass.iter().filter_map(map_down_ref));
-        } else {
-            keyed_points.extend(iter.filter_map(filter_map_down));
-        }
-
-        keyed_points.sort_unstable_by_key(|(key, _)| *key);
-        downsampled.extend(
-            keyed_points
-                .chunk_by(|a, b| a.0 == b.0)
-                .map(find_medoid_in_slice),
-        );
-
-        // Sort again by timestamps because we could have merged multiple timestamps
-        downsampled.sort_unstable_by(cmp);
-    }
     let (first, last) = match (&downsampled.first(), &downsampled.last()) {
         (Some(first), Some(last)) if (last.timestamp > 0.0) => (first.timestamp, last.timestamp),
         _ => return Ok(None),
     };
 
-    #[cfg(feature = "parallel")]
     let raw_out = raw_out.map(|r| r.0);
 
     // TODO back to keeping the timestamp f64, only testing right now because of artefacts

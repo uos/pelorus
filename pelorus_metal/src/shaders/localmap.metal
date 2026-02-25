@@ -1,33 +1,76 @@
 // localmap.metal — build_voxels kernel: one thread per unique voxel group.
-// CPU pre-sorts points by voxel key and provides run_starts/run_ends.
 // Included after hashmap.metal in the compiled source.
 
-// Params for build_voxels, passed as a single constant buffer to minimise bindings.
 struct BuildVoxelsParams {
-    float4 pose_quat;      // quaternion (x,y,z,w) of the pose
-    float3 pose_trans;     // translation of the pose
-    float  resolution;
-    uint   scan_number;
-    float  sensitivity;    // unused in this simplified port
-    float  min_dist;       // unused in this simplified port
-    uint   unique_key_count;
-    uint   table_cap;      // hash table capacity = dist_cap * 2
-    uint   dist_cap;       // distribution buffer capacity
+    float pose_quat[4];
+    float pose_trans[3];
+    float _pad0;
+    float resolution;
+    uint  scan_number;
+    float sensitivity;
+    float min_dist;
+    uint  unique_key_count;
+    uint  table_cap;
+    uint  dist_cap;
+    uint  _pad1;
 };
 
+// calculate_keys: Transform points to global frame and compute voxel keys.
+kernel void calculate_keys(
+    device const Point*          points         [[buffer(0)]],
+    device int*                  out_keys       [[buffer(1)]],
+    device uint*                 out_indices    [[buffer(2)]],
+    constant BuildVoxelsParams&  params         [[buffer(3)]],
+    uint                         idx            [[thread_position_in_grid]])
+{
+    if (idx >= params.unique_key_count) return; // reused for cloud_size
+
+    float4 q = float4(params.pose_quat[0], params.pose_quat[1], params.pose_quat[2], params.pose_quat[3]);
+    float3 t = float3(params.pose_trans[0], params.pose_trans[1], params.pose_trans[2]);
+
+    Point p_raw = points[idx];
+    float3 p_local = float3(p_raw.x, p_raw.y, p_raw.z);
+    float3 p_global = iso_transform(q, t, p_local);
+
+    int3 grid = grid_pos(params.resolution, p_global);
+    out_keys[idx] = hash_grid(grid);
+    out_indices[idx] = idx;
+}
+
+kernel void reorder_points(
+    device const Point*          src            [[buffer(0)]],
+    device Point*                dst            [[buffer(1)]],
+    device const uint*           sorted_indices [[buffer(2)]],
+    constant BuildVoxelsParams&  params         [[buffer(3)]],
+    uint                         idx            [[thread_position_in_grid]])
+{
+    if (idx >= params.unique_key_count) return; // unique_key_count reused for cloud size
+
+    float4 q = float4(params.pose_quat[0], params.pose_quat[1], params.pose_quat[2], params.pose_quat[3]);
+    float3 t = float3(params.pose_trans[0], params.pose_trans[1], params.pose_trans[2]);
+
+    Point p_raw = src[sorted_indices[idx]];
+    float3 p_local = float3(p_raw.x, p_raw.y, p_raw.z);
+    float3 p_global = iso_transform(q, t, p_local);
+
+    Point p_out = p_raw;
+    p_out.x = p_global.x; p_out.y = p_global.y; p_out.z = p_global.z;
+    dst[idx] = p_out;
+}
+
 // build_voxels: one thread per unique voxel.
-// Sorted_indices[run_starts[idx]..run_ends[idx]] contains the original cloud
-// indices for all points that belong to this voxel.
+// ALIGNED WITH CUDA: Does NOT insert into hash table. Only reads.
+// If not found, claims slot and writes key/voxel. Rebuild kernel will link them later.
 kernel void build_voxels(
     device const Point*          cloud          [[buffer(0)]],
     device const uint*           sorted_indices [[buffer(1)]],
     device const uint*           run_starts     [[buffer(2)]],
     device const uint*           run_ends       [[buffer(3)]],
     device const int*            unique_keys    [[buffer(4)]],
-    device atomic_int*           table_keys     [[buffer(5)]],
-    device uint*                 table_vals     [[buffer(6)]],
+    device const atomic_int*     table_keys     [[buffer(5)]],
+    device const uint*           table_vals     [[buffer(6)]],
     device VoxelDistribution*    dists          [[buffer(7)]],
-    device int*                  dist_keys      [[buffer(8)]],  // companion: dist key per slot
+    device int*                  dist_keys      [[buffer(8)]],
     device atomic_uint*          add_cursor     [[buffer(9)]],
     constant BuildVoxelsParams&  params         [[buffer(10)]],
     uint                         idx            [[thread_position_in_grid]])
@@ -41,123 +84,100 @@ kernel void build_voxels(
 
     if (count == 0 || voxel_key == EMPTY_KEY) return;
 
-    // ── 1. Compute mean and covariance for this voxel's points ──────────────
+    // ── 1. Create scan_voxel (two-pass biased covariance for stability) ──
     float3 sum = float3(0, 0, 0);
     for (uint i = start; i < end; i++) {
-        uint pi = sorted_indices[i];
-        float3 p_local  = float3(cloud[pi].x, cloud[pi].y, cloud[pi].z);
-        float3 p_global = iso_transform(params.pose_quat, params.pose_trans, p_local);
-        sum += p_global;
+        sum += float3(cloud[i].x, cloud[i].y, cloud[i].z);
     }
-    float  fn     = float(count);
-    float3 mean_v = sum / fn;
+    
+    float fn = float(count);
+    float3 scan_mean = sum / fn;
 
-    // Covariance (scatter / n)
-    float cov[9] = { 0,0,0, 0,0,0, 0,0,0 };
+    float  s_xx=0, s_xy=0, s_xz=0, s_yy=0, s_yz=0, s_zz=0;
     for (uint i = start; i < end; i++) {
-        uint pi = sorted_indices[i];
-        float3 p_local  = float3(cloud[pi].x, cloud[pi].y, cloud[pi].z);
-        float3 p_global = iso_transform(params.pose_quat, params.pose_trans, p_local);
-        float d[3] = { p_global.x - mean_v.x,
-                       p_global.y - mean_v.y,
-                       p_global.z - mean_v.z };
-        for (int r = 0; r < 3; r++)
-            for (int c = 0; c < 3; c++)
-                cov[r * 3 + c] += d[r] * d[c];
-    }
-    for (int i = 0; i < 9; i++) cov[i] /= fn;
-
-    // ── 2. Compute Cholesky factor L ─────────────────────────────────────────
-    float L[9] = { 0,0,0, 0,0,0, 0,0,0 };
-    bool chol_ok = cholesky_3x3(cov, L);
-    if (!chol_ok) {
-        // Fallback: diagonal from eigenvalues
-        float3 ev = symmetric_eigen_3x3(cov);
-        L[0] = sqrt(max(0.0f, ev.x));
-        L[4] = sqrt(max(0.0f, ev.y));
-        L[8] = sqrt(max(0.0f, ev.z));
+        float3 p = float3(cloud[i].x, cloud[i].y, cloud[i].z) - scan_mean;
+        s_xx += p.x * p.x; s_xy += p.x * p.y; s_xz += p.x * p.z;
+        s_yy += p.y * p.y; s_yz += p.y * p.z; s_zz += p.z * p.z;
     }
 
-    // ── 3. Look up or insert into the hash table ─────────────────────────────
-    uint table_cap = params.table_cap;
-    uint slot = hash_fn(voxel_key) & (table_cap - 1);
-    uint buf_idx = UINT_MAX;
-    bool found_existing = false;
+    float scan_cov[9];
+    scan_cov[0] = s_xx/fn; scan_cov[1] = s_xy/fn; scan_cov[2] = s_xz/fn;
+    scan_cov[3] = scan_cov[1];
+    scan_cov[4] = s_yy/fn; scan_cov[5] = s_yz/fn;
+    scan_cov[6] = scan_cov[2];
+    scan_cov[7] = scan_cov[5];
+    scan_cov[8] = s_zz/fn;
 
-    for (;;) {
-        int cur = atomic_load_explicit(&table_keys[slot], memory_order_relaxed);
-        if (cur == voxel_key) {
-            buf_idx = table_vals[slot];
-            found_existing = true;
-            break;
+    // ── 2. Lookup existing ──────────────────────────────────────────────────
+    uint buf_idx = hashmap_lookup(table_keys, table_vals, params.table_cap, voxel_key);
+
+    if (buf_idx != UINT_MAX) {
+        // Update existing (No lock needed: one thread per unique key)
+        device VoxelDistribution& d = dists[buf_idx];
+        d.last_scan = params.scan_number;
+
+        float3 d_mean = float3(d.mean[0], d.mean[1], d.mean[2]);
+        float3 mean_diff = d_mean - scan_mean;
+        float fn_d = float(d.point_count);
+        float maturity_decay = max(1.0f, log(fn_d));
+        float effective_sensitivity = params.sensitivity / maturity_decay;
+
+        float reg_cov[9];
+        for (int i=0; i<9; i++) reg_cov[i] = d.cov[i];
+        regularize_cov(reg_cov);
+
+        float L_reg[9];
+        float m_sq;
+        if (cholesky_3x3(reg_cov, L_reg)) {
+            m_sq = mahalanobis_sq(mean_diff, L_reg);
+        } else {
+            m_sq = dot(mean_diff, mean_diff);
         }
-        if (cur == EMPTY_KEY) {
-            // Try to claim this slot
-            int expected = EMPTY_KEY;
-            bool claimed = atomic_compare_exchange_weak_explicit(
-                &table_keys[slot], &expected, voxel_key,
-                memory_order_relaxed, memory_order_relaxed);
-            if (claimed) {
-                // Claim a distribution buffer slot
-                uint new_idx = atomic_fetch_add_explicit(add_cursor, 1u, memory_order_relaxed);
-                if (new_idx >= params.dist_cap) {
-                    // Buffer full — overwrite the oldest (LRU not implemented: just wrap)
-                    new_idx = new_idx % params.dist_cap;
-                }
-                table_vals[slot] = new_idx;
-                buf_idx = new_idx;
-                found_existing = false;
-                break;
+
+        float alpha = exp(-m_sq / (2.0f * effective_sensitivity));
+
+        if (alpha >= 1e-5f) {
+            float3 new_mean = d_mean * (1.0f - alpha) + scan_mean * alpha;
+            float outer[9];
+            float dv[3] = { mean_diff.x, mean_diff.y, mean_diff.z };
+            for (int r=0; r<3; r++)
+                for (int c=0; c<3; c++)
+                    outer[r*3+c] = dv[r] * dv[c];
+
+            for (int i=0; i<9; i++) {
+                d.cov[i] = d.cov[i] * (1.0f - alpha) + scan_cov[i] * alpha +
+                           outer[i] * (alpha * (1.0f - alpha));
             }
-            // Someone else claimed it; retry this slot
-            continue;
-        }
-        slot = (slot + 1) & (table_cap - 1);
-    }
+            d.mean[0] = new_mean.x; d.mean[1] = new_mean.y; d.mean[2] = new_mean.z;
 
-    if (buf_idx == UINT_MAX) return;
-
-    // ── 4. Write the distribution to the buffer ───────────────────────────────
-    device VoxelDistribution& d = dists[buf_idx];
-    dist_keys[buf_idx] = voxel_key;
-
-    if (found_existing && d.point_count > 0) {
-        // Merge: weighted update with the new scan's distribution
-        // Simple approach: pool (Welford parallel combination)
-        uint n1 = d.point_count;
-        uint n2 = count;
-        uint n_total = n1 + n2;
-        float fn1 = float(n1), fn2 = float(n2), fn_t = float(n_total);
-
-        float3 old_mean = float3(d.mean[0], d.mean[1], d.mean[2]);
-        float3 delta    = mean_v - old_mean;
-        float3 new_mean = old_mean + delta * (fn2 / fn_t);
-
-        float w = fn1 * fn2 / fn_t;
-        float dv[3] = { delta.x, delta.y, delta.z };
-
-        for (int r = 0; r < 3; r++) {
-            for (int c = 0; c < 3; c++) {
-                float s1 = d.cov[r*3+c] * (fn1 > 1.0 ? (fn1-1.0) : 0.0);
-                float s2 = cov[r*3+c]   * (fn2 > 1.0 ? (fn2-1.0) : 0.0);
-                d.cov[r*3+c] = (s1 + s2 + dv[r]*dv[c]*w)
-                               / (fn_t > 1.0 ? (fn_t-1.0) : 1.0);
+            float next_L[9] = {0};
+            if (!cholesky_3x3_device(d.cov, next_L)) {
+                float3 ev = symmetric_eigen_3x3_device(d.cov);
+                next_L[0] = sqrt(max(0.0f, ev.x)); next_L[4] = sqrt(max(0.0f, ev.y)); next_L[8] = sqrt(max(0.0f, ev.z));
             }
-        }
+            for (int i=0; i<9; i++) d.transform[i] = next_L[i];
 
-        d.mean[0] = new_mean.x;
-        d.mean[1] = new_mean.y;
-        d.mean[2] = new_mean.z;
-        d.point_count = n_total;
+            d.point_count += count;
+        }
     } else {
-        // Fresh entry
-        d.mean[0] = mean_v.x;
-        d.mean[1] = mean_v.y;
-        d.mean[2] = mean_v.z;
+        // Claim new slot
+        uint new_idx = atomic_fetch_add_explicit(add_cursor, 1u, memory_order_relaxed);
+        uint wrapped_idx = new_idx % params.dist_cap;
+        
+        device VoxelDistribution& d = dists[wrapped_idx];
+        d.mean[0] = scan_mean.x; d.mean[1] = scan_mean.y; d.mean[2] = scan_mean.z;
+        for (int i=0; i<9; i++) d.cov[i] = scan_cov[i];
         d.point_count = count;
-        for (int i = 0; i < 9; i++) d.cov[i] = cov[i];
+        d.last_scan = params.scan_number;
+        
+        float scan_L[9] = {0};
+        if (!cholesky_3x3(scan_cov, scan_L)) {
+            float3 ev = symmetric_eigen_3x3(scan_cov);
+            scan_L[0] = sqrt(max(0.0f, ev.x)); scan_L[4] = sqrt(max(0.0f, ev.y)); scan_L[8] = sqrt(max(0.0f, ev.z));
+        }
+        for (int i=0; i<9; i++) d.transform[i] = scan_L[i];
+        
+        dist_keys[wrapped_idx] = voxel_key;
+        atomic_store_explicit(&d.lock_flag, 0, memory_order_relaxed);
     }
-
-    for (int i = 0; i < 9; i++) d.L[i] = L[i];
-    d.last_scan = params.scan_number;
 }

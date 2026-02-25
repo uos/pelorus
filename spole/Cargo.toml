@@ -28,7 +28,6 @@ pelorus_core.workspace = true
 
 [features]
 # default = ["nn_kdt"]
-parallel = []
 nn_kdt = ["dep:kiddo"]
 
 # [dev-dependencies]

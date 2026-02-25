@@ -22,10 +22,10 @@ log.workspace = true
 cbindgen = "0.29"
 
 [features]
-default = ["parallel"]
+default = []
 downsample = ["pelorus/downsample"]
-parallel = ["pelorus/parallel"]
 cuda = ["pelorus/cuda"]
+metal = ["pelorus/metal"]
 no-imu-sync = ["pelorus/no-imu-sync"]
 
 [package.metadata.deb]

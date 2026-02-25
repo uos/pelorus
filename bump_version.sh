@@ -23,16 +23,25 @@ cd "$SCRIPT_DIR"
 CURRENT_VERSION="$(grep -m1 '^version = ' Cargo.toml | sed 's/version = "\(.*\)"/\1/')"
 echo "Bumping: $CURRENT_VERSION -> $NEW_VERSION"
 
-sed -i "s/^version = \"${CURRENT_VERSION}\"/version = \"${NEW_VERSION}\"/" Cargo.toml
+# Portable sed -i
+sed_i() {
+    if [[ "$OSTYPE" == "darwin"* ]]; then
+        sed -i "" "$@"
+    else
+        sed -i "$@"
+    fi
+}
 
-sed -i -E "/path = \"[^\"]+\"/s/version = \"${CURRENT_VERSION}\"/version = \"${NEW_VERSION}\"/" Cargo.toml
+sed_i "s/^version = \"${CURRENT_VERSION}\"/version = \"${NEW_VERSION}\"/" Cargo.toml
 
-sed -i "s|<version>${CURRENT_VERSION}</version>|<version>${NEW_VERSION}</version>|" package.xml
+sed_i -E "/path = \"[^\"]+\"/s/version = \"${CURRENT_VERSION}\"/version = \"${NEW_VERSION}\"/" Cargo.toml
 
-sed -i -E "s/(project\([a-zA-Z_]+ VERSION )${CURRENT_VERSION}/\1${NEW_VERSION}/" \
+sed_i "s|<version>${CURRENT_VERSION}</version>|<version>${NEW_VERSION}</version>|" package.xml
+
+sed_i -E "s/(project\([a-zA-Z_]+ VERSION )${CURRENT_VERSION}/\1${NEW_VERSION}/" \
     pelorus_c/CMakeLists.txt
 
-sed -i "s/^pkgver=${CURRENT_VERSION}/pkgver=${NEW_VERSION}/" \
+sed_i "s/^pkgver=${CURRENT_VERSION}/pkgver=${NEW_VERSION}/" \
     packaging/arch-bin/PKGBUILD
 
 echo ""
@@ -43,12 +52,17 @@ echo "  pelorus_c/CMakeLists.txt"
 echo "  packaging/arch-bin/PKGBUILD"
 
 ROS_IMAGE="docker.io/stelzo/ubuntu-dev:jazzy"
-CARGO_HOME_HOST="${CARGO_HOME:-$HOME/.cargo}"
+# Use a separate CARGO_HOME for the container to avoid overwriting host shims (macOS vs Linux)
+CARGO_HOME_CONTAINER="/tmp/cargo-container-cache"
 
-if command -v podman &>/dev/null; then
-    CONTAINER_RUNTIME="podman"
-elif command -v docker &>/dev/null; then
+if command -v docker &>/dev/null; then
     CONTAINER_RUNTIME="docker"
+    RUNTIME_FLAGS=""
+    MOUNT_SUFFIX=""
+elif command -v podman &>/dev/null; then
+    CONTAINER_RUNTIME="podman"
+    RUNTIME_FLAGS="--userns=keep-id"
+    MOUNT_SUFFIX=":z"
 else
     echo "Error: neither podman nor docker found" >&2
     exit 1
@@ -58,11 +72,9 @@ echo ""
 echo "── Re-creating Cargo.lock inside ${ROS_IMAGE} (via ${CONTAINER_RUNTIME}) ────────────────────────"
 ${CONTAINER_RUNTIME} run --rm \
     --network=host \
-    --userns=keep-id \
-    -v "${SCRIPT_DIR}:/workspace:z" \
-    -v "${CARGO_HOME_HOST}:${CARGO_HOME_HOST}:z" \
-    -e CARGO_HOME="${CARGO_HOME_HOST}" \
-    -e PATH="${CARGO_HOME_HOST}/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin" \
+    ${RUNTIME_FLAGS} \
+    -v "${SCRIPT_DIR}:/workspace${MOUNT_SUFFIX}" \
+    -e CARGO_HOME="${CARGO_HOME_CONTAINER}" \
     -w /workspace \
     "${ROS_IMAGE}" \
     bash -c ". /opt/ros/jazzy/setup.bash && rustup default stable && cargo update"

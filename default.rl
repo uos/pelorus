@@ -192,9 +192,7 @@ wheel {
   
   # @recommended
   # Ackermann steering configuration (only used when kinematic_model = Ackermann)
-  ackermann {
-    imu_to_rear_axle = [0.0m, 0.0m, 0.0m] # Offset from IMU to rear axle center in imu frame
-  }
+  ackermann.imu_to_rear_axle = [0.0m, 0.0m, 0.0m] # Offset from IMU to rear axle center in imu frame
 }
 
 output {
@@ -239,11 +237,9 @@ output {
                    [0.0, 0.0, 1.0] ]
     }
   }
-
-  mapping {
-    # When "mapping" flag is enabled, this defines the resolution of the global map.
-    resolution = 20cm
-  }
+  
+  # When "mapping" flag is enabled, this defines the resolution of the global map.
+  mapping.resolution = 20cm
 
   rerun {
     # Logs the registered clouds static in world coordinates so they do not vanish.
@@ -272,12 +268,8 @@ output {
   logger_prefix = "pelorus"
 }
 
-parallelism {
-  # @recommended
-  # Maximum number of CPU threads used for parallel point-cloud processing.
-  # Set to 0 to use all available cores.
-  num_threads = 0
-}
-
-
-
+# @recommended
+# Maximum number of CPU threads used for parallel point-cloud processing.
+# Set to `all` to use all available cores or specify a number like `4` for a fixed number.
+# High numbers will result in more substantial CPU load.
+parallelism.num_threads = 3

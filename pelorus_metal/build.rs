@@ -10,6 +10,8 @@ fn main() {
         println!("cargo:rustc-link-lib=framework=Foundation");
         println!("cargo:rustc-link-lib=framework=QuartzCore");
     } else {
-        println!("cargo:warning=Metal not available: target_os={target_os}, metal_enable={metal_enable}");
+        println!(
+            "cargo:warning=Metal not available: target_os={target_os}, metal_enable={metal_enable}"
+        );
     }
 }

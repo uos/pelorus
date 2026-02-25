@@ -19,18 +19,13 @@ struct PointNormal {
 };
 
 // VoxelDistribution layout (must match Rust GpuVoxelDist exactly)
-// mean[3]:     12 bytes (offset 0)
-// point_count:  4 bytes (offset 12)
-// cov[9]:      36 bytes (offset 16)
-// last_scan:    4 bytes (offset 52)
-// L[9]:        36 bytes (offset 56)
-// Total: 92 bytes
 struct VoxelDistribution {
-    float mean[3];
+    atomic_int lock_flag;
+    float transform[9];  // Cholesky factor L
     uint  point_count;
-    float cov[9];       // row-major 3x3 covariance
+    float mean[3];
+    float cov[9];        // row-major 3x3 covariance
     uint  last_scan;
-    float L[9];         // row-major 3x3 Cholesky factor
 };
 
 // ── Math helpers ─────────────────────────────────────────────────────────────
@@ -47,34 +42,38 @@ inline float3 iso_transform(float4 quat, float3 trans, float3 point) {
     return quat_rotate(quat, point) + trans;
 }
 
-// Convert world position → voxel grid cell
-inline int3 pos2grid(float resolution, float3 p) {
+// Convert world position → voxel grid cell (match CUDA floor)
+inline int3 grid_pos(float resolution, float3 p) {
     float inv = 1.0 / resolution;
     return int3(int(floor(p.x * inv)),
                 int(floor(p.y * inv)),
                 int(floor(p.z * inv)));
 }
 
-// Map grid cell → int32 hash key (same as CUDA hash_grid)
+// Map grid cell → int32 hash key (aligned with CUDA hash_grid)
 inline int hash_grid(int3 g) {
-    return int(((uint)(g.x * 73856093)) ^
-               ((uint)(g.y * 471943))   ^
-               ((uint)(g.z * 83492791)));
+    uint64_t h = (g.x * 73856093) ^
+                 (g.y * 471943) ^
+                 (g.z * 83492791);
+    return int(h);
 }
 
 // Murmur3-inspired hash for open-addressing (same as CUDA hash_function)
 inline uint hash_fn(int key) {
     uint h = uint(key);
-    h = (h ^ (h >> 16)) * 0x85ebca6bu;
-    h = (h ^ (h >> 13)) * 0xc2b2ae35u;
-    h = h ^ (h >> 16);
+    h ^= h >> 16;
+    h *= 0x85ebca6bu;
+    h ^= h >> 13;
+    h *= 0xc2b2ae35u;
+    h ^= h >> 16;
     return h;
 }
 
 // ── Cholesky 3×3 ─────────────────────────────────────────────────────────────
 
 // Returns true on success; fills L (lower-triangular) such that A = L * L^T
-inline bool cholesky_3x3(thread const float* A, thread float* L) {
+template<typename T>
+inline bool cholesky_3x3_impl(T A, thread float* L) {
     // Zero out L
     for (int i = 0; i < 9; i++) L[i] = 0.0;
 
@@ -100,6 +99,13 @@ inline bool cholesky_3x3(thread const float* A, thread float* L) {
     return true;
 }
 
+inline bool cholesky_3x3(thread const float* A, thread float* L) {
+    return cholesky_3x3_impl(A, L);
+}
+inline bool cholesky_3x3_device(device const float* A, thread float* L) {
+    return cholesky_3x3_impl(A, L);
+}
+
 // Forward + backward substitution: solve A x = b using Cholesky factor L
 inline float3 cholesky_solve_3x3(thread const float* L, float3 b) {
     // Forward: L y = b
@@ -116,9 +122,23 @@ inline float3 cholesky_solve_3x3(thread const float* L, float3 b) {
     return x;
 }
 
+// Compute (mu1 - mu2)^T * inv(Cov) * (mu1 - mu2)
+inline float mahalanobis_sq(float3 diff, thread const float* L) {
+    float3 sol = cholesky_solve_3x3(L, diff);
+    return dot(diff, sol);
+}
+
+inline void regularize_cov(thread float* cov) {
+    float regularization_factor = 1e-6f;
+    cov[0] += regularization_factor;
+    cov[4] += regularization_factor;
+    cov[8] += regularization_factor;
+}
+
 // ── Symmetric 3×3 eigenvalues (trigonometric method) ─────────────────────────
 
-inline float3 symmetric_eigen_3x3(thread const float* A) {
+template<typename T>
+inline float3 symmetric_eigen_3x3_impl(T A) {
     const float a00 = A[0], a01 = A[1], a02 = A[2];
     const float a11 = A[4], a12 = A[5];
     const float a22 = A[8];
@@ -155,19 +175,24 @@ inline float3 symmetric_eigen_3x3(thread const float* A) {
     return ev;
 }
 
+inline float3 symmetric_eigen_3x3(thread const float* A) {
+    return symmetric_eigen_3x3_impl(A);
+}
+inline float3 symmetric_eigen_3x3_device(device const float* A) {
+    return symmetric_eigen_3x3_impl(A);
+}
+
 // ── Hashmap lookup ────────────────────────────────────────────────────────────
 
 // Returns buffer index for key, or UINT_MAX if not found.
-// table_keys: flat int array of size table_capacity
-// table_vals: flat uint array of size table_capacity
-inline uint hashmap_lookup(device const int* table_keys,
+inline uint hashmap_lookup(device const atomic_int* table_keys,
                            device const uint* table_vals,
                            uint table_capacity,
                            int key) {
     if (key == EMPTY_KEY) return UINT_MAX;
     uint slot = hash_fn(key) & (table_capacity - 1);
     for (;;) {
-        int cur = table_keys[slot];
+        int cur = atomic_load_explicit(&table_keys[slot], memory_order_relaxed);
         if (cur == key)       return table_vals[slot];
         if (cur == EMPTY_KEY) return UINT_MAX;
         slot = (slot + 1) & (table_capacity - 1);
@@ -178,65 +203,86 @@ inline uint hashmap_lookup(device const int* table_keys,
 
 // Writes up to 27 neighbor grid offsets into out[]; returns count.
 inline uint neighbor_cells(uint nbtype, int3 g, thread int3* out) {
-    // nbtype: 0=center, 6=nearby6, 18=nearby18, 26=nearby26
-    // We always output nearby_26 (27 cells) as that is what plane_fit uses.
-    // nbtype parameter reserved for future use.
     uint n = 0;
     for (int dz = -1; dz <= 1; dz++)
     for (int dy = -1; dy <= 1; dy++)
     for (int dx = -1; dx <= 1; dx++) {
         out[n++] = g + int3(dx, dy, dz);
     }
-    return n; // always 27
+    return n;
 }
 
 // ── Pool neighbor VoxelDistributions (parallel combination) ──────────────────
 
-// Merge `other` into `acc` using parallel-mean formula (no Mahalanobis weighting)
-inline void pool_dist(thread VoxelDistribution& acc,
+// Merge `other` into `acc` using parallel-mean formula (unbiased covariance matching CUDA)
+inline void pool_dist(thread uint& acc_point_count,
+                      thread float* acc_mean,
+                      thread float* acc_cov,
                       device const VoxelDistribution& other) {
     if (other.point_count == 0) return;
 
-    uint n1 = acc.point_count;
-    uint n2 = other.point_count;
-
-    if (n1 == 0) {
-        acc.point_count  = n2;
-        acc.mean[0]      = other.mean[0];
-        acc.mean[1]      = other.mean[1];
-        acc.mean[2]      = other.mean[2];
-        for (int i = 0; i < 9; i++) acc.cov[i] = other.cov[i];
+    if (acc_point_count == 0) {
+        acc_point_count  = other.point_count;
+        acc_mean[0]      = other.mean[0];
+        acc_mean[1]      = other.mean[1];
+        acc_mean[2]      = other.mean[2];
+        for (int i = 0; i < 9; i++) acc_cov[i] = other.cov[i];
         return;
     }
 
-    uint n_total = n1 + n2;
-    float fn1 = float(n1), fn2 = float(n2), fn = float(n_total);
+    float fn1 = float(acc_point_count);
+    float fn2 = float(other.point_count);
+    float fn_t = fn1 + fn2;
+
+    if (fn_t <= 1.0f) {
+        // Degenerate case, just average
+        acc_mean[0] = (acc_mean[0] * fn1 + other.mean[0] * fn2) / fn_t;
+        acc_mean[1] = (acc_mean[1] * fn1 + other.mean[1] * fn2) / fn_t;
+        acc_mean[2] = (acc_mean[2] * fn1 + other.mean[2] * fn2) / fn_t;
+        acc_point_count = (uint)fn_t;
+        for(int i=0; i<9; i++) acc_cov[i] = 0;
+        return;
+    }
 
     float3 delta;
-    delta.x = other.mean[0] - acc.mean[0];
-    delta.y = other.mean[1] - acc.mean[1];
-    delta.z = other.mean[2] - acc.mean[2];
+    delta.x = other.mean[0] - acc_mean[0];
+    delta.y = other.mean[1] - acc_mean[1];
+    delta.z = other.mean[2] - acc_mean[2];
 
     float3 new_mean;
-    new_mean.x = acc.mean[0] + delta.x * (fn2 / fn);
-    new_mean.y = acc.mean[1] + delta.y * (fn2 / fn);
-    new_mean.z = acc.mean[2] + delta.z * (fn2 / fn);
+    new_mean.x = acc_mean[0] + delta.x * (fn2 / fn_t);
+    new_mean.y = acc_mean[1] + delta.y * (fn2 / fn_t);
+    new_mean.z = acc_mean[2] + delta.z * (fn2 / fn_t);
 
-    // Welford parallel covariance: S_combined = S1 + S2 + delta*delta^T * n1*n2/n
-    float w = fn1 * fn2 / fn;
+    // Combine Covariance (matching CUDA logic):
+    // Treat input covariances as if they came from Biased storage, 
+    // effectively converting to scatter matrix by * (N-1).
+    
+    float fn1_m1 = (fn1 > 1.0f) ? (fn1 - 1.0f) : 0.0f;
+    float fn2_m1 = (fn2 > 1.0f) ? (fn2 - 1.0f) : 0.0f;
+    
+    // Weight for the mean-separation term
+    float delta_weight = (fn1 * fn2 / fn_t);
+    
     float d[3] = { delta.x, delta.y, delta.z };
 
     for (int r = 0; r < 3; r++) {
         for (int c = 0; c < 3; c++) {
-            float s1 = acc.cov[r * 3 + c] * (fn1 > 1.0 ? (fn1 - 1.0) : 0.0);
-            float s2 = other.cov[r * 3 + c] * (fn2 > 1.0 ? (fn2 - 1.0) : 0.0);
-            acc.cov[r * 3 + c] = (s1 + s2 + d[r] * d[c] * w)
-                                   / (fn > 1.0 ? (fn - 1.0) : 1.0);
+            // S1 = Cov1 * (n1 - 1)
+            float s1 = acc_cov[r * 3 + c] * fn1_m1;
+            // S2 = Cov2 * (n2 - 1)
+            float s2 = other.cov[r * 3 + c] * fn2_m1;
+            
+            // New Scatter = S1 + S2 + delta_outer * weight
+            float scatter = s1 + s2 + d[r] * d[c] * delta_weight;
+            
+            // New Cov = Scatter / (n_total - 1)
+            acc_cov[r * 3 + c] = scatter / (fn_t - 1.0f);
         }
     }
 
-    acc.mean[0] = new_mean.x;
-    acc.mean[1] = new_mean.y;
-    acc.mean[2] = new_mean.z;
-    acc.point_count = n_total;
+    acc_mean[0] = new_mean.x;
+    acc_mean[1] = new_mean.y;
+    acc_mean[2] = new_mean.z;
+    acc_point_count = (uint)fn_t;
 }

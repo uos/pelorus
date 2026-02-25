@@ -21,5 +21,6 @@ assets = [
     ["pelorus.hpp", "usr/include/pelorus.hpp", "644"],
     ["pelorus.pc", "usr/lib/pkgconfig/pelorus.pc", "644"],
     ["pelorusConfig.cmake", "usr/lib/cmake/pelorus/pelorusConfig.cmake", "644"],
+    ["pelorusConfigVersion.cmake", "usr/lib/cmake/pelorus/pelorusConfigVersion.cmake", "644"],
 ]
 

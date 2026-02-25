@@ -18,7 +18,6 @@
 //! println!("position: {:?}", odom.position);
 //! ```
 
-#[cfg(feature = "parallel")]
 use std::sync::OnceLock;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, mpsc};
@@ -279,7 +278,6 @@ fn processing_thread_main(thread: ProcessingThread) {
 
 // ---------- thread pool ----------
 
-#[cfg(feature = "parallel")]
 static RAYON_THREADS: OnceLock<usize> = OnceLock::new();
 
 /// Configure the rayon global thread pool.
@@ -287,7 +285,6 @@ static RAYON_THREADS: OnceLock<usize> = OnceLock::new();
 /// Called once at Handle creation. If a previous Handle already configured
 /// the pool with a different count, a warning is logged and the request is
 /// ignored (first Handle wins — rayon only allows one global init).
-#[cfg(feature = "parallel")]
 fn configure_thread_pool(num_threads: usize) {
     if num_threads == 0 {
         return; // 0 means "use all cores" — leave rayon's default alone
@@ -361,7 +358,6 @@ impl Handle {
     ) -> Result<Self, Error> {
         let mut config = load_config(config_path)?;
 
-        #[cfg(feature = "parallel")]
         configure_thread_pool(config.num_threads);
 
         if !device_specific_pointcloud2 {

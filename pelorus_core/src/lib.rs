@@ -1,3 +1,4 @@
+use bytemuck::{Pod, Zeroable};
 use either::Either;
 use nalgebra::{Isometry3, Matrix3, Point2, Point3, Vector2, Vector3};
 use ros_pointcloud2::prelude::*;
@@ -437,7 +438,6 @@ pub struct LioConfig {
     pub base_link_frame: Option<String>,
     pub base_to_lidar: Isometry3<f64>,
     pub base_to_lidar_tf_override: bool,
-    /// Maximum rayon worker threads (0 = all available cores).
     pub num_threads: usize,
 }
 
@@ -445,7 +445,6 @@ pub fn timestamp_to_secs(t: &TimeMsg) -> f64 {
     t.sec as f64 + t.nanosec as f64 / 1_000_000_000.0
 }
 
-// TODO check correctness
 pub fn secs_to_timestamp(secs: f64) -> TimeMsg {
     let sec = secs as i32;
     let nanosec = ((secs - sec as f64) * 1_000_000_000.0) as u32;
@@ -476,7 +475,7 @@ pub struct MeasureGroup {
     pub odom_buffer: Vec<OdomMsg>,
 }
 
-#[derive(Debug, Clone, Default, Copy, PointConvertible, PartialEq, PartialOrd)]
+#[derive(Debug, Clone, Default, Copy, PointConvertible, PartialEq, PartialOrd, Pod, Zeroable)]
 #[repr(C)]
 pub struct PointXYZIT {
     pub x: f32,
