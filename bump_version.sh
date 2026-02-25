@@ -19,9 +19,9 @@ fi
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
 
-# Detect current version from the workspace Cargo.toml
-CURRENT_VERSION="$(grep -m1 '^version = ' Cargo.toml | sed 's/version = "\(.*\)"/\1/')"
-echo "Bumping: $CURRENT_VERSION -> $NEW_VERSION"
+# Detect current version from the workspace Cargo.toml (for logging only)
+DETECTED_VERSION="$(grep -m1 '^version = ' Cargo.toml | sed 's/version = "\(.*\)"/\1/')"
+echo "Bumping to: $NEW_VERSION (detected current: $DETECTED_VERSION)"
 
 # Portable sed -i
 sed_i() {
@@ -32,16 +32,21 @@ sed_i() {
     fi
 }
 
-sed_i "s/^version = \"${CURRENT_VERSION}\"/version = \"${NEW_VERSION}\"/" Cargo.toml
+# Update Cargo.toml (workspace version)
+sed_i "s/^version = \".*\"/version = \"${NEW_VERSION}\"/" Cargo.toml
 
-sed_i -E "/path = \"[^\"]+\"/s/version = \"${CURRENT_VERSION}\"/version = \"${NEW_VERSION}\"/" Cargo.toml
+# Update workspace member versions in Cargo.toml
+sed_i -E "/path = \"[^\"]+\"/s/version = \"[^\"]+\"/version = \"${NEW_VERSION}\"/" Cargo.toml
 
-sed_i "s|<version>${CURRENT_VERSION}</version>|<version>${NEW_VERSION}</version>|" package.xml
+# Update package.xml
+sed_i -E "s|<version>.*</version>|<version>${NEW_VERSION}</version>|" package.xml
 
-sed_i -E "s/(project\([a-zA-Z_]+ VERSION )${CURRENT_VERSION}/\1${NEW_VERSION}/" \
+# Update pelorus_c/CMakeLists.txt
+sed_i -E "s/(project\([a-zA-Z_]+ VERSION )[0-9]+\.[0-9]+\.[0-9]+/\1${NEW_VERSION}/" \
     pelorus_c/CMakeLists.txt
 
-sed_i "s/^pkgver=${CURRENT_VERSION}/pkgver=${NEW_VERSION}/" \
+# Update PKGBUILD
+sed_i "s/^pkgver=.*/pkgver=${NEW_VERSION}/" \
     packaging/arch-bin/PKGBUILD
 
 echo ""
