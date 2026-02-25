@@ -14,6 +14,9 @@ use pelorus_core::{
     RobosensePointNoIntensity, Twist, VelodynePoint, VelodynePointNoIntensity, time_msg_from_secs,
     timing::RuntimeEvaluator,
 };
+#[cfg(all(feature = "cuda", feature = "metal"))]
+compile_error!("Features 'cuda' and 'metal' are mutually exclusive. Enable only one.");
+
 #[cfg(feature = "cuda")]
 use pelorus_cuda::CudaBuffer;
 use std::thread;
@@ -115,6 +118,10 @@ pub enum LocatedBufferView<T> {
     Cuda {
         buffer: pelorus_cuda::CudaBuffer,
     },
+    #[cfg(feature = "metal")]
+    Metal {
+        buffer: pelorus_metal::MetalBuffer,
+    },
 }
 
 impl<T> LocatedBufferView<T> {
@@ -139,12 +146,20 @@ impl<T> LocatedBufferView<T> {
             buffer: CudaBuffer::from_cloud(&stream, src),
         }
     }
+    #[cfg(feature = "metal")]
+    pub fn copy_from_slice_metal(stream: &pelorus_metal::Stream, src: &[PointXYZIT]) -> Self {
+        Self::Metal {
+            buffer: pelorus_metal::MetalBuffer::from_cloud(stream, src),
+        }
+    }
 
     pub fn len(&self) -> usize {
         match self {
             LocatedBufferView::Ram(point_xyzs) => point_xyzs.len(),
             #[cfg(feature = "cuda")]
             LocatedBufferView::Cuda { buffer: cloud } => cloud.n,
+            #[cfg(feature = "metal")]
+            LocatedBufferView::Metal { buffer } => buffer.n,
         }
     }
 }

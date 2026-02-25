@@ -14,6 +14,7 @@ rust-version.workspace = true
 pelorus_core.workspace = true
 prelio_io.workspace = true
 pelorus_cuda = { optional = true, workspace = true }
+pelorus_metal = { optional = true, workspace = true }
 prelio.workspace = true
 pelorus_reg.workspace = true
 ros_pointcloud2.workspace = true
@@ -84,6 +85,7 @@ downsample = ["prelio_io/downsample"]
 
 # Build and use CUDA accelerations
 cuda = ["prelio_io/cuda", "dep:pelorus_cuda", "pelorus_reg/cuda"]
+metal = ["dep:pelorus_metal", "pelorus_reg/metal", "pelorus_metal/metal_available", "pelorus_metal/metal_enable"]
 
 # Switch to threadpool workstealing whenever large buffers are processed. The cuda feature has higher precedence, but not every parallel part is implemented with cuda, so a combination of both flags make sense.
 parallel = ["prelio_io/parallel", "pelorus_reg/parallel", "dep:rayon"]
