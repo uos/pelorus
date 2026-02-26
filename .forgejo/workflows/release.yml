@@ -142,6 +142,7 @@ jobs:
           cmake -S pelorus_c -B pelorus_c/build -DCMAKE_INSTALL_PREFIX=/usr -DPELORUS_BUILD_SHARED=OFF -DPELORUS_BUILD_STATIC=OFF
           cp pelorus_c/build/pelorus.pc pelorus_c/deb-dev/pelorus.pc
           cp pelorus_c/build/pelorusConfig.cmake pelorus_c/deb-dev/pelorusConfig.cmake
+          cp pelorus_c/build/pelorusConfigVersion.cmake pelorus_c/deb-dev/pelorusConfigVersion.cmake
 
           cargo deb --package libpelorus-dev
 
