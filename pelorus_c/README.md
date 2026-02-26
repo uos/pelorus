@@ -25,8 +25,7 @@ sudo make install
 
 #### Feature Flags
 
-- `PELORUS_FEATURE_DOWNSAMPLE` - Enable downsampling (default: ON)
-- `PELORUS_FEATURE_PARALLEL` - Enable parallel processing (default: ON)
+- `PELORUS_FEATURE_METAL` - Enable Metal acceleration (default: OFF)
 - `PELORUS_FEATURE_CUDA` - Enable CUDA acceleration (default: OFF)
 - `PELORUS_FEATURE_NO_IMU_SYNC` - Disable IMU synchronization (default: OFF)
 
