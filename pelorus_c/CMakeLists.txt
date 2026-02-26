@@ -13,7 +13,7 @@ option(PELORUS_BUILD_EXAMPLES "Build C examples" OFF)
 option(PELORUS_INSTALL "Install pelorus_c library and headers" ON)
 
 # Feature flags for Rust build (match pelorus_c/Cargo.toml features)
-option(PELORUS_FEATURE_PARALLEL "Enable parallel processing" ON)
+option(PELORUS_FEATURE_METAL "Enable Metal acceleration" OFF)
 option(PELORUS_FEATURE_CUDA "Enable CUDA acceleration" OFF)
 option(PELORUS_FEATURE_NO_IMU_SYNC "Disable IMU synchronization" OFF)
 
@@ -52,8 +52,8 @@ set(RUST_STATIC_LIB "${RUST_TARGET_DIR}/${CMAKE_STATIC_LIBRARY_PREFIX}pelorus${C
 
 # Build feature list for Cargo
 set(CARGO_FEATURES "")
-if(PELORUS_FEATURE_PARALLEL)
-    list(APPEND CARGO_FEATURES "parallel")
+if(PELORUS_FEATURE_METAL)
+    list(APPEND CARGO_FEATURES "metal")
 endif()
 if(PELORUS_FEATURE_CUDA)
     list(APPEND CARGO_FEATURES "cuda")

@@ -86,10 +86,6 @@ function(r2r_cargo)
 
   # Master switch to disable all defaults at once (defaults to ON)
   if(NOT DEFINED PELORUS_ALL_DEFAULTS OR PELORUS_ALL_DEFAULTS)
-    if(NOT DEFINED PELORUS_PARALLEL OR PELORUS_PARALLEL)
-      list(APPEND FEATURES "parallel")
-    endif()
-
     if(NOT DEFINED PELORUS_RAT OR PELORUS_RAT)
       list(APPEND FEATURES "rat")
     endif()
