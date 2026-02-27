@@ -1,6 +1,7 @@
 pub mod imu;
 mod naive_preint;
 mod naive_preint_eth;
+use rayon::prelude::*;
 
 use log::{error, info, warn};
 
@@ -342,6 +343,23 @@ fn filter_downsample<const N: usize, P: PointXYZITimestamp<N>>(
 
     // --- Mapping and Filtering functions ---
 
+    let undistort = |mut point: PointXYZIT| -> Option<PointXYZIT> {
+        let ts = point.timestamp;
+        if ts.is_nan() {
+            return None;
+        }
+
+        // absolute to relative ts
+        point.timestamp = if matches!(lifis_params.lidar_vendor, LidarVendor::LivoxMid360) {
+            let scan_end_t = end_t.expect("vendor match out of date");
+            (ts - scan_end_t as f32).max(0.0) // handle driver inaccuracies
+        } else {
+            ts
+        };
+
+        Some(point)
+    };
+
     let filter = |point: PointXYZIT| -> Option<PointXYZIT> {
         let params = &lifis_params.passthrough_filter;
         let p_t = params.filter_frame_transform * nalgebra::Point3::new(point.x, point.y, point.z);
@@ -402,22 +420,7 @@ fn filter_downsample<const N: usize, P: PointXYZITimestamp<N>>(
             return None;
         }
 
-        let ts = point.timestamp;
-        if ts.is_nan() {
-            return None;
-        }
-
-        let mut out = point.clone();
-
-        // absolute to relative ts
-        out.timestamp = if matches!(lifis_params.lidar_vendor, LidarVendor::LivoxMid360) {
-            let scan_end_t = end_t.expect("vendor match out of date");
-            (ts - scan_end_t as f32).max(0.0) // handle driver inaccuracies
-        } else {
-            ts
-        };
-
-        Some(out)
+        undistort(point)
     };
 
     let map_down_ref = |point: &PointXYZIT| {
@@ -437,8 +440,8 @@ fn filter_downsample<const N: usize, P: PointXYZITimestamp<N>>(
 
     let filter_map_down = |point| map_down(filter(point)?);
 
-    let filter_map_non_down = |point| {
-        let mut point = filter(point)?;
+    let filter_map_non_down = |point: PointXYZIT| {
+        let mut point = undistort(point)?;
         point.intensity *= 255.0;
         Some(point)
     };
@@ -464,7 +467,14 @@ fn filter_downsample<const N: usize, P: PointXYZITimestamp<N>>(
 
     // --- Processing ---
     {
-        let iter = cloud.try_into_par_iter()?.map(map_to_non_trait);
+        let point_skip = lifis_params.downsample.point_skip.max(1);
+        let iter = cloud
+            .try_into_par_iter()?
+            .collect::<Vec<_>>()
+            .into_par_iter()
+            .enumerate()
+            .filter(move |(i, _)| i % point_skip == 0)
+            .map(|(_, p)| map_to_non_trait(p));
 
         if let Some((bypass, bypass_iter)) = raw_out.as_mut() {
             let bypass_iter = bypass_iter.try_into_par_iter()?.map(map_to_non_trait);
@@ -508,7 +518,18 @@ fn filter_downsample<const N: usize, P: PointXYZITimestamp<N>>(
     }
     let (first, last) = match (&downsampled.first(), &downsampled.last()) {
         (Some(first), Some(last)) if (last.timestamp > 0.0) => (first.timestamp, last.timestamp),
-        _ => return Ok(None),
+        _ => {
+            if let Some((bypass, _)) = raw_out.as_ref() {
+                match (&bypass.first(), &bypass.last()) {
+                    (Some(first), Some(last)) if (last.timestamp > 0.0) => {
+                        (first.timestamp, last.timestamp)
+                    }
+                    _ => return Ok(None),
+                }
+            } else {
+                return Ok(None);
+            }
+        }
     };
 
     let raw_out = raw_out.map(|r| r.0);

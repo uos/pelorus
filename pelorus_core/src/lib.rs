@@ -328,6 +328,7 @@ pub struct UndistortParameters {
 pub struct DownsampleParameters {
     pub voxel_size: f32,
     pub bypass_output_downsample: bool,
+    pub point_skip: usize,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]

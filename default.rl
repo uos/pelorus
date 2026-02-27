@@ -26,6 +26,10 @@ preprocessing {
     # Output the full undistorted cloud on the cloud output topic.
     bypass_output_downsample = true
 
+    # @recommended
+    # Downsample the incoming scan by keeping only every n-th point. 1 means no points are skipped.
+    point_skip = 1
+
     # Estimated sizes of features in the incoming scan, expressed as a factor of registration.map.resolution. Expected values are between 0.0 and 1.0.
     query_resolution_factor = 1.0
   }
@@ -52,7 +56,7 @@ preprocessing {
 
     distance {
       # Example ..2m (up to 2m from origin) or 1cm..4m (everything from 1cm to 4m distance)
-      range = ..
+      range = 4m..
 
       # if true we only accept points outside the range
       invert = false

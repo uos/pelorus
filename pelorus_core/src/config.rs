@@ -495,6 +495,7 @@ fn ast_to_config_inner(
     // --- Preprocessing Configuration ---
     let (
         initial_scan_accumulate,
+        point_skip,
         query_resolution_factor,
         bypass_output_downsample,
         passthrough_filter,
@@ -503,6 +504,7 @@ fn ast_to_config_inner(
         let preproc_ns = asts.filter_ns(&["preprocessing"]);
         let initial_scan_accumulate = resolve_var!(preproc_ns, "initial_scan_accumulate", as usize, Rhs::Val(Val::NumVal(NumVal::Integer(i))) => { i })?;
         let downsample_ns = preproc_ns.filter_ns(&["downsample"]);
+        let point_skip = resolve_var!(downsample_ns, "point_skip", as usize, Rhs::Val(Val::NumVal(NumVal::Integer(i))) => { i })?;
         let bypass_output_downsample = resolve_var!(downsample_ns, "bypass_output_downsample", as bool, Rhs::Val(Val::BoolVal(b)) => { b })?;
         let query_resolution_factor: f64 = resolve_var!(downsample_ns, "query_resolution_factor", as f64, Rhs::Val(Val::NumVal(NumVal::Floating(v))) => { v })?;
 
@@ -581,6 +583,7 @@ fn ast_to_config_inner(
         };
         (
             initial_scan_accumulate,
+            point_skip,
             query_resolution_factor,
             bypass_output_downsample,
             passthrough_filter,
@@ -642,6 +645,7 @@ fn ast_to_config_inner(
             downsample: DownsampleParameters {
                 voxel_size: (query_resolution_factor * map_resolution) as f32,
                 bypass_output_downsample,
+                point_skip,
             },
             passthrough_filter,
             global_zero_frame,
