@@ -20,13 +20,22 @@ class Pelorus < Formula
   end
 
   def install
+    chmod 0755, "pelorus"
     bin.install "pelorus"
+
+    inreplace "pelorus.pc", "prefix=/usr", "prefix=#{prefix}"
+
+    chmod 0644, "libpelorus.dylib"
     lib.install "libpelorus.dylib"
     include.install "pelorus.h"
     include.install "pelorus.hpp"
     (lib/"pkgconfig").install "pelorus.pc"
     (lib/"cmake/pelorus").install "pelorusConfig.cmake"
     (lib/"cmake/pelorus").install "pelorusConfigVersion.cmake"
+
+    # Fix install name for dylib to use @rpath
+    system "install_name_tool", "-id", "@rpath/libpelorus.dylib", lib/"libpelorus.dylib"
+
     generate_completions_from_executable(bin/"pelorus", "completions")
   end
 

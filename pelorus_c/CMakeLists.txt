@@ -155,7 +155,7 @@ if(PELORUS_INSTALL)
 
     # Generate pelorus.pc (pkg-config)
     file(WRITE "${PKG_OUT_DIR}/pelorus.pc"
-      "prefix=/usr\n"
+      "prefix=${CMAKE_INSTALL_PREFIX}\n"
       "exec_prefix=\${prefix}\n"
       "libdir=\${prefix}/lib\n"
       "includedir=\${prefix}/include\n"
