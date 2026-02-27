@@ -1610,13 +1610,15 @@ jobs:
     container:
       image: archlinux:latest
     steps:
+      - name: Deps
+        run: |
+          sudo pacman -Sy openssh git nodejs
       - uses: actions/checkout@v4
       - name: Update AUR
         env:
           AUR_SSH_KEY: ${{ secrets.AUR_SSH_KEY }}
         run: |
           mkdir -p ~/.ssh
-          sudo pacman -Sy openssh git
           printf '%s\n' "$AUR_SSH_KEY" > ~/.ssh/aur_key
           chmod 600 ~/.ssh/aur_key
           ssh-keyscan aur.archlinux.org >> ~/.ssh/known_hosts
