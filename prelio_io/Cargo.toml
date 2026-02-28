@@ -28,10 +28,11 @@ rerun = { workspace = true, optional = true }
 ratpub = { workspace = true, optional = true }
 tokio = { workspace = true, optional = true }
 mt_rat = { workspace = true, optional = true }
+libc = { workspace = true, optional = true }
 ros2-interfaces-jazzy-rkyv = { workspace = true, optional = true }
 
 [features]
-rat = ["dep:mt_rat"]
+rat = ["dep:mt_rat", "dep:libc"]
 downsample = ["prelio/downsample"]
 cuda = ["prelio/cuda"]
 metal = ["prelio/metal"]

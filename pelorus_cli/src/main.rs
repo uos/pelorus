@@ -84,8 +84,6 @@ use pelorus_reg::Registration;
 use prelio_io::PrelioNode;
 use std::path::PathBuf;
 
-#[cfg(feature = "evaluate")]
-use pelorus_cli::evaluate;
 use pelorus_cli::stats_tui::{
     SharedStats, StatsTui, init_logger, set_tui_active, update_log_level,
 };
@@ -120,10 +118,6 @@ pub enum Command {
     /// Create or validate configuration files
     #[command(subcommand)]
     Config(ConfigCommand),
-
-    /// Evaluate exported trajectories
-    #[cfg(feature = "evaluate")]
-    Evaluate(EvalArgs),
 
     /// Generate shell completions
     /// Example usage: `pelorus completions bash > pelorus_completions.sh`
@@ -194,14 +188,6 @@ pub struct TfAutoRos2Args {
     /// If not provided, the default configuration values are used
     #[arg(short, long)]
     pub config_path: Option<PathBuf>,
-}
-
-#[derive(Debug, Clone, Parser)]
-pub struct EvalArgs {
-    /// Path in TUM format.
-    pub estimated_file: PathBuf,
-    /// Path in TUM format.
-    pub reference_file: PathBuf,
 }
 
 #[derive(Debug, Clone, Parser)]
@@ -638,6 +624,13 @@ fn lio_with_ready_signal(
 
                 #[cfg(feature = "rat")]
                 if synchronous_mode {
+                    let now_ns = {
+                        let mut ts = libc::timespec { tv_sec: 0, tv_nsec: 0 };
+                        unsafe { libc::clock_gettime(libc::CLOCK_MONOTONIC, &mut ts) };
+                        ts.tv_sec as f64 * 1e9 + ts.tv_nsec as f64
+                    };
+                    let mut ts = rat::NetArray::from(nalgebra::DMatrix::<f64>::from_element(1, 1, now_ns));
+                    rat::bacon("pelorus:sd_end", &mut ts, rat::VariableType::F64).unwrap();
                     rat::bacon(
                         "tick_end",
                         &mut "".to_string(),
@@ -879,6 +872,13 @@ fn lio_with_ready_signal(
                         // mark to send new data even on init
                         #[cfg(feature = "rat")]
                         if synchronous_mode {
+                            let now_ns = {
+                                let mut ts = libc::timespec { tv_sec: 0, tv_nsec: 0 };
+                                unsafe { libc::clock_gettime(libc::CLOCK_MONOTONIC, &mut ts) };
+                                ts.tv_sec as f64 * 1e9 + ts.tv_nsec as f64
+                            };
+                            let mut ts = rat::NetArray::from(nalgebra::DMatrix::<f64>::from_element(1, 1, now_ns));
+                            rat::bacon("pelorus:sd_end", &mut ts, rat::VariableType::F64).unwrap();
                             rat::bacon(
                                 "tick_end",
                                 &mut "".to_string(),
@@ -893,6 +893,13 @@ fn lio_with_ready_signal(
                         // mark to send new data even on error
                         #[cfg(feature = "rat")]
                         if synchronous_mode {
+                            let now_ns = {
+                                let mut ts = libc::timespec { tv_sec: 0, tv_nsec: 0 };
+                                unsafe { libc::clock_gettime(libc::CLOCK_MONOTONIC, &mut ts) };
+                                ts.tv_sec as f64 * 1e9 + ts.tv_nsec as f64
+                            };
+                            let mut ts = rat::NetArray::from(nalgebra::DMatrix::<f64>::from_element(1, 1, now_ns));
+                            rat::bacon("pelorus:sd_end", &mut ts, rat::VariableType::F64).unwrap();
                             rat::bacon(
                                 "tick_end",
                                 &mut "".to_string(),
@@ -1513,6 +1520,13 @@ fn lio_with_ready_signal(
             // mark to send new data
             #[cfg(all(feature = "rat", not(feature = "mapping")))]
             if synchronous_mode {
+                let now_ns = {
+                    let mut ts = libc::timespec { tv_sec: 0, tv_nsec: 0 };
+                    unsafe { libc::clock_gettime(libc::CLOCK_MONOTONIC, &mut ts) };
+                    ts.tv_sec as f64 * 1e9 + ts.tv_nsec as f64
+                };
+                let mut ts = rat::NetArray::from(nalgebra::DMatrix::<f64>::from_element(1, 1, now_ns));
+                rat::bacon("pelorus:sd_end", &mut ts, rat::VariableType::F64).unwrap();
                 rat::bacon(
                     "tick_end",
                     &mut "".to_string(),
@@ -2513,12 +2527,5 @@ pf! i 1
                 Ok(())
             }
         },
-        #[cfg(feature = "evaluate")]
-        Command::Evaluate(paths) => {
-            let estimated_path = std::path::PathBuf::from(&paths.estimated_file);
-            let ground_truth_path = std::path::PathBuf::from(&paths.reference_file);
-            evaluate::visualize_results(&estimated_path, &ground_truth_path)?;
-            Ok(())
-        }
     }
 }

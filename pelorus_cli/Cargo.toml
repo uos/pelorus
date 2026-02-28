@@ -37,8 +37,6 @@ tokio = { workspace = true, optional = true }
 mt_rat = { workspace = true, optional = true }
 rustc-hash.workspace = true
 ratslang.workspace = true
-sophus_lie = { workspace = true, optional = true }
-plotters = { workspace = true, optional = true }
 petname.workspace = true
 colorous = "1.0"
 ratatui = "0.29"
@@ -53,7 +51,7 @@ name = "pelorus"
 path = "src/main.rs"
 
 [features]
-default = ["offline"] # evaluate and rerun need newer rustc versions, so only enable them manually
+default = ["offline"] # rerun needs newer rustc versions, so only enable it manually
 
 # -#-#-#-#-#- Sensor Communication -#-#-#-#-#-
 
@@ -106,8 +104,7 @@ map = []
 # Skips publishing any visualizations that take too much compute resources (e.g. iterating a point cloud)
 no-viz = []
 
-# Enable the visualization tools (`evaluate` subcommand) for comparing against ground truths.
-evaluate = ["dep:sophus_lie", "dep:plotters", "dep:rerun"]
+# Enable the visualization tools for comparing against ground truths.
 
 # -#-#-#-#-#- Low level -#-#-#-#-#-
 

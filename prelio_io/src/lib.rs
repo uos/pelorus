@@ -366,6 +366,18 @@ fn cloud_callback(
     {
         let state = state.lock().unwrap();
         let mut lifis = state.lifis.lock().unwrap();
+
+        #[cfg(feature = "rat")]
+        {
+            let now_ns = {
+                let mut ts = libc::timespec { tv_sec: 0, tv_nsec: 0 };
+                unsafe { libc::clock_gettime(libc::CLOCK_MONOTONIC, &mut ts) };
+                ts.tv_sec as f64 * 1e9 + ts.tv_nsec as f64
+            };
+            let mut ts = rat::NetArray::from(nalgebra::DMatrix::<f64>::from_element(1, 1, now_ns));
+            rat::bacon("pelorus:sd_start", &mut ts, rat::VariableType::F64).ok();
+        }
+
         lifis.add_pointcloud(in_msg);
     }
 
