@@ -59,20 +59,18 @@ kernel void reorder_points(
 }
 
 // build_voxels: one thread per unique voxel.
-// ALIGNED WITH CUDA: Does NOT insert into hash table. Only reads.
-// If not found, claims slot and writes key/voxel. Rebuild kernel will link them later.
+// Host-side code pre-assigns each voxel to either an existing slot (update)
+// or a replacement slot (CPU LRU policy), then this kernel only applies math updates.
 kernel void build_voxels(
     device const Point*          cloud          [[buffer(0)]],
     device const uint*           sorted_indices [[buffer(1)]],
     device const uint*           run_starts     [[buffer(2)]],
     device const uint*           run_ends       [[buffer(3)]],
     device const int*            unique_keys    [[buffer(4)]],
-    device const atomic_int*     table_keys     [[buffer(5)]],
-    device const uint*           table_vals     [[buffer(6)]],
+    device const uint*           target_indices [[buffer(5)]],
+    device const uint*           update_flags   [[buffer(6)]],
     device VoxelDistribution*    dists          [[buffer(7)]],
-    device int*                  dist_keys      [[buffer(8)]],
-    device atomic_uint*          add_cursor     [[buffer(9)]],
-    constant BuildVoxelsParams&  params         [[buffer(10)]],
+    constant BuildVoxelsParams&  params         [[buffer(8)]],
     uint                         idx            [[thread_position_in_grid]])
 {
     if (idx >= params.unique_key_count) return;
@@ -108,11 +106,10 @@ kernel void build_voxels(
     scan_cov[7] = scan_cov[5];
     scan_cov[8] = s_zz/fn;
 
-    // ── 2. Lookup existing ──────────────────────────────────────────────────
-    uint buf_idx = hashmap_lookup(table_keys, table_vals, params.table_cap, voxel_key);
+    uint buf_idx = target_indices[idx];
+    bool is_update = (update_flags[idx] != 0u);
 
-    if (buf_idx != UINT_MAX) {
-        // Update existing (No lock needed: one thread per unique key)
+    if (is_update) {
         device VoxelDistribution& d = dists[buf_idx];
         d.last_scan = params.scan_number;
 
@@ -160,11 +157,8 @@ kernel void build_voxels(
             d.point_count += count;
         }
     } else {
-        // Claim new slot
-        uint new_idx = atomic_fetch_add_explicit(add_cursor, 1u, memory_order_relaxed);
-        uint wrapped_idx = new_idx % params.dist_cap;
-        
-        device VoxelDistribution& d = dists[wrapped_idx];
+        // Insert new/replacement slot pre-selected by host-side CPU LRU logic.
+        device VoxelDistribution& d = dists[buf_idx];
         d.mean[0] = scan_mean.x; d.mean[1] = scan_mean.y; d.mean[2] = scan_mean.z;
         for (int i=0; i<9; i++) d.cov[i] = scan_cov[i];
         d.point_count = count;
@@ -176,8 +170,7 @@ kernel void build_voxels(
             scan_L[0] = sqrt(max(0.0f, ev.x)); scan_L[4] = sqrt(max(0.0f, ev.y)); scan_L[8] = sqrt(max(0.0f, ev.z));
         }
         for (int i=0; i<9; i++) d.transform[i] = scan_L[i];
-        
-        dist_keys[wrapped_idx] = voxel_key;
+
         atomic_store_explicit(&d.lock_flag, 0, memory_order_relaxed);
     }
 }

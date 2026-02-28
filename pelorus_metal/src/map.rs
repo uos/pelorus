@@ -1,6 +1,7 @@
 use bytemuck::{Pod, Zeroable};
 #[cfg(feature = "metal_enable")]
 use rayon::prelude::*;
+use std::collections::HashMap;
 use std::sync::{Mutex, MutexGuard, OnceLock};
 
 use crate::pipeline::{get_pipelines, grid1d, group1d};
@@ -31,6 +32,14 @@ pub struct GpuVoxelDist {
 }
 
 const _: () = assert!(size_of::<GpuVoxelDist>() == 96);
+const EMPTY_KEY: i32 = i32::MIN;
+
+#[derive(Clone, Copy, Default)]
+struct SortKey {
+    index: u32,
+    temporal_dist: u64,
+    point_count: u64,
+}
 
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]
@@ -75,6 +84,8 @@ pub struct ScratchBuffers {
     pub run_starts: crate::buffer::MetalBuffer,
     pub run_ends: crate::buffer::MetalBuffer,
     pub unique_keys: crate::buffer::MetalBuffer,
+    pub target_indices: crate::buffer::MetalBuffer,
+    pub update_flags: crate::buffer::MetalBuffer,
     pub sorted_points: crate::buffer::MetalBuffer,
     pub counter: crate::buffer::MetalBuffer,
     pub capacity: usize,
@@ -93,6 +104,13 @@ pub struct MetalMapState {
     pub sensitivity: f32,
     pub min_dist: f32,
     pub scan_number: u32,
+    add_cursor: u32,
+    lru_cursor: u32,
+    lru_mapping: Vec<u32>,
+    lru_mapping_keys: Vec<SortKey>,
+    key_to_index: HashMap<i32, u32>,
+    pending_lru_rebuild: bool,
+    pending_lru_scan_number: u32,
 }
 
 static MAP_STATE: OnceLock<Mutex<Option<MetalMapState>>> = OnceLock::new();
@@ -153,6 +171,8 @@ pub fn init_map_impl(
         run_starts: crate::buffer::MetalBuffer::new(stream, size_of::<u32>(), scratch_cap),
         run_ends: crate::buffer::MetalBuffer::new(stream, size_of::<u32>(), scratch_cap),
         unique_keys: crate::buffer::MetalBuffer::new(stream, size_of::<i32>(), scratch_cap),
+        target_indices: crate::buffer::MetalBuffer::new(stream, size_of::<u32>(), scratch_cap),
+        update_flags: crate::buffer::MetalBuffer::new(stream, size_of::<u32>(), scratch_cap),
         sorted_points: crate::buffer::MetalBuffer::new(
             stream,
             size_of::<crate::types::Point>(),
@@ -196,9 +216,109 @@ pub fn init_map_impl(
         sensitivity,
         min_dist,
         scan_number: 0,
+        add_cursor: 0,
+        lru_cursor: 0,
+        lru_mapping: (0..dist_cap).collect(),
+        lru_mapping_keys: vec![SortKey::default(); dist_cap as usize],
+        key_to_index: HashMap::with_capacity(dist_cap as usize),
+        pending_lru_rebuild: false,
+        pending_lru_scan_number: 0,
     };
 
     *get_state() = Some(state);
+}
+
+fn assign_target_indices_with_cpu_lru(
+    state: &mut MetalMapState,
+    unique_keys: &[i32],
+    target_indices: &mut Vec<u32>,
+    update_flags: &mut Vec<u32>,
+) {
+    target_indices.clear();
+    update_flags.clear();
+    target_indices.reserve(unique_keys.len());
+    update_flags.reserve(unique_keys.len());
+
+    let dist_cap = state.dist_cap;
+    let dist_keys_mut = state.dist_keys_buf.as_slice_mut::<i32>();
+    for &key in unique_keys {
+        if let Some(&idx) = state.key_to_index.get(&key) {
+            target_indices.push(idx);
+            update_flags.push(1);
+            continue;
+        }
+
+        if state.add_cursor < dist_cap {
+            let idx = state.add_cursor;
+            state.add_cursor += 1;
+            dist_keys_mut[idx as usize] = key;
+            state.key_to_index.insert(key, idx);
+            target_indices.push(idx);
+            update_flags.push(0);
+            continue;
+        }
+
+        if state.lru_cursor >= dist_cap {
+            log::warn!("Replacing too many points inside LRU Cache. Increase the map capacity!");
+            break;
+        }
+
+        let victim = state.lru_mapping[state.lru_cursor as usize];
+        state.lru_cursor += 1;
+
+        let old_key = dist_keys_mut[victim as usize];
+        if old_key != EMPTY_KEY {
+            state.key_to_index.remove(&old_key);
+        }
+        dist_keys_mut[victim as usize] = key;
+        state.key_to_index.insert(key, victim);
+
+        target_indices.push(victim);
+        update_flags.push(0);
+    }
+
+    state.add_cursor = state.add_cursor.min(dist_cap);
+    let add_cursor_ptr = state.add_cursor_buf.buf.contents().as_ptr().cast::<u32>();
+    unsafe {
+        *add_cursor_ptr = state.add_cursor;
+    }
+}
+
+fn rebuild_cpu_lru_order(state: &mut MetalMapState, scan_number: u32) {
+    if state.add_cursor < state.dist_cap {
+        return;
+    }
+
+    let dists = state.dist_buf.as_slice::<GpuVoxelDist>();
+    for (i, &idx) in state.lru_mapping.iter().enumerate() {
+        let item = &dists[idx as usize];
+        state.lru_mapping_keys[i] = SortKey {
+            index: idx,
+            temporal_dist: scan_number.saturating_sub(item.last_scan) as u64,
+            point_count: item.point_count as u64,
+        };
+    }
+
+    state.lru_mapping_keys.sort_unstable_by(|a, b| {
+        if a.point_count == 0 && b.point_count == 0 {
+            return std::cmp::Ordering::Equal;
+        }
+        if a.point_count == 0 {
+            return std::cmp::Ordering::Less;
+        }
+        if b.point_count == 0 {
+            return std::cmp::Ordering::Greater;
+        }
+
+        let left = (a.temporal_dist as u128) * (b.point_count as u128);
+        let right = (b.temporal_dist as u128) * (a.point_count as u128);
+        right.cmp(&left)
+    });
+
+    for (i, key) in state.lru_mapping_keys.iter().enumerate() {
+        state.lru_mapping[i] = key.index;
+    }
+    state.lru_cursor = 0;
 }
 
 pub fn add_to_map_impl(
@@ -211,6 +331,18 @@ pub fn add_to_map_impl(
     use std::time::Instant;
 
     let start_all = Instant::now();
+
+    // Rebuild CPU-side LRU ordering from the previous scan once GPU writes are complete.
+    // This removes a forced wait at the end of each frame while keeping identical eviction logic.
+    {
+        let mut guard = get_state();
+        let state = guard.as_mut().expect("Map not initialised");
+        if state.pending_lru_rebuild {
+            stream.sync();
+            rebuild_cpu_lru_order(state, state.pending_lru_scan_number);
+            state.pending_lru_rebuild = false;
+        }
+    }
 
     let mut guard = get_state();
     let state = guard.as_mut().expect("Map not initialised");
@@ -241,6 +373,10 @@ pub fn add_to_map_impl(
         state.scratch.run_ends = crate::buffer::MetalBuffer::new(stream, size_of::<u32>(), new_cap);
         state.scratch.unique_keys =
             crate::buffer::MetalBuffer::new(stream, size_of::<i32>(), new_cap);
+        state.scratch.target_indices =
+            crate::buffer::MetalBuffer::new(stream, size_of::<u32>(), new_cap);
+        state.scratch.update_flags =
+            crate::buffer::MetalBuffer::new(stream, size_of::<u32>(), new_cap);
         state.scratch.sorted_points =
             crate::buffer::MetalBuffer::new(stream, size_of::<crate::types::Point>(), new_cap);
         state.scratch.capacity = new_cap;
@@ -398,10 +534,17 @@ pub fn add_to_map_impl(
 
     let dur_sort = t_sort.elapsed();
 
-    let n_unique = unique_keys.len();
-    if n_unique == 0 {
+    let mut target_indices: Vec<u32> = Vec::with_capacity(unique_keys.len());
+    let mut update_flags: Vec<u32> = Vec::with_capacity(unique_keys.len());
+    assign_target_indices_with_cpu_lru(state, &unique_keys, &mut target_indices, &mut update_flags);
+    let n_assigned = target_indices.len();
+    if n_assigned == 0 {
         return;
     }
+
+    unique_keys.truncate(n_assigned);
+    run_starts.truncate(n_assigned);
+    run_ends.truncate(n_assigned);
 
     let copy_to = |dst: &crate::buffer::MetalBuffer, src: &[u8]| unsafe {
         std::ptr::copy_nonoverlapping(
@@ -421,6 +564,14 @@ pub fn add_to_map_impl(
     copy_to(
         &state.scratch.unique_keys,
         bytemuck::cast_slice::<i32, u8>(&unique_keys),
+    );
+    copy_to(
+        &state.scratch.target_indices,
+        bytemuck::cast_slice::<u32, u8>(&target_indices),
+    );
+    copy_to(
+        &state.scratch.update_flags,
+        bytemuck::cast_slice::<u32, u8>(&update_flags),
     );
 
     let t_build = Instant::now();
@@ -447,7 +598,7 @@ pub fn add_to_map_impl(
         enc.memoryBarrierWithScope(MTLBarrierScope::Buffers);
 
         let mut pb = params;
-        pb.unique_key_count = n_unique as u32;
+        pb.unique_key_count = n_assigned as u32;
 
         enc.setComputePipelineState(&pipes.build_voxels);
         unsafe {
@@ -456,17 +607,15 @@ pub fn add_to_map_impl(
             enc.setBuffer_offset_atIndex(Some(state.scratch.run_starts.metal_buffer()), 0, 2);
             enc.setBuffer_offset_atIndex(Some(state.scratch.run_ends.metal_buffer()), 0, 3);
             enc.setBuffer_offset_atIndex(Some(state.scratch.unique_keys.metal_buffer()), 0, 4);
-            enc.setBuffer_offset_atIndex(Some(state.keys_buf.metal_buffer()), 0, 5);
-            enc.setBuffer_offset_atIndex(Some(state.values_buf.metal_buffer()), 0, 6);
+            enc.setBuffer_offset_atIndex(Some(state.scratch.target_indices.metal_buffer()), 0, 5);
+            enc.setBuffer_offset_atIndex(Some(state.scratch.update_flags.metal_buffer()), 0, 6);
             enc.setBuffer_offset_atIndex(Some(state.dist_buf.metal_buffer()), 0, 7);
-            enc.setBuffer_offset_atIndex(Some(state.dist_keys_buf.metal_buffer()), 0, 8);
-            enc.setBuffer_offset_atIndex(Some(state.add_cursor_buf.metal_buffer()), 0, 9);
             enc.setBytes_length_atIndex(
                 std::ptr::NonNull::new(&pb as *const _ as *mut _).unwrap(),
                 size_of::<BuildVoxelsParams>(),
-                10,
+                8,
             );
-            enc.dispatchThreads_threadsPerThreadgroup(grid1d(n_unique), group1d());
+            enc.dispatchThreads_threadsPerThreadgroup(grid1d(n_assigned), group1d());
         }
 
         // Barrier: build_voxels writes dists/dist_keys, hashmap rebuild reads them
@@ -488,13 +637,13 @@ pub fn add_to_map_impl(
         enc.memoryBarrierWithScope(MTLBarrierScope::Buffers);
 
         enc.setComputePipelineState(&pipes.rebuild_hashmap_keyed);
-        let dist_cap_u32 = state.dist_cap;
+        let valid_size_u32 = state.add_cursor.min(state.dist_cap);
         unsafe {
             enc.setBuffer_offset_atIndex(Some(state.keys_buf.metal_buffer()), 0, 0);
             enc.setBuffer_offset_atIndex(Some(state.values_buf.metal_buffer()), 0, 1);
             enc.setBuffer_offset_atIndex(Some(state.dist_keys_buf.metal_buffer()), 0, 2);
             enc.setBytes_length_atIndex(
-                std::ptr::NonNull::new(&dist_cap_u32 as *const u32 as *mut _).unwrap(),
+                std::ptr::NonNull::new(&valid_size_u32 as *const u32 as *mut _).unwrap(),
                 size_of::<u32>(),
                 3,
             );
@@ -503,17 +652,21 @@ pub fn add_to_map_impl(
                 size_of::<u32>(),
                 4,
             );
-            enc.dispatchThreads_threadsPerThreadgroup(grid1d(state.dist_cap as usize), group1d());
+            enc.dispatchThreads_threadsPerThreadgroup(
+                grid1d(valid_size_u32 as usize),
+                group1d(),
+            );
         }
 
         enc.endEncoding();
         cb.commit();
-        cb.waitUntilCompleted();
     }
     let dur_build = t_build.elapsed();
+    state.pending_lru_rebuild = true;
+    state.pending_lru_scan_number = scan_number;
 
     log::info!(
-        "[Metal] add_to_map: total={:?}, keys={:?}, sort={:?}, build+rebuild={:?}",
+        "[Metal] add_to_map: total={:?}, keys={:?}, sort={:?}, build+rebuild_submit={:?}",
         start_all.elapsed(),
         dur_keys,
         dur_sort,
@@ -582,8 +735,7 @@ pub fn get_map_impl() -> Vec<nalgebra::Point3<f32>> {
         None => return vec![],
     };
 
-    let add_cursor = unsafe { *(state.add_cursor_buf.buf.contents().as_ptr().cast::<u32>()) };
-    let valid = (add_cursor as usize).min(state.dist_cap as usize);
+    let valid = (state.add_cursor as usize).min(state.dist_cap as usize);
 
     let dists = state.dist_buf.as_slice::<GpuVoxelDist>();
     let dists = &dists[..valid];
@@ -599,8 +751,7 @@ pub fn get_map_size_impl() -> u32 {
     let guard = get_state();
     match guard.as_ref() {
         Some(s) => {
-            let cursor = unsafe { *(s.add_cursor_buf.buf.contents().as_ptr().cast::<u32>()) };
-            cursor.min(s.dist_cap)
+            s.add_cursor.min(s.dist_cap)
         }
         None => 0,
     }
