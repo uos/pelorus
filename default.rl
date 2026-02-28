@@ -28,7 +28,7 @@ preprocessing {
 
     # @recommended
     # Downsample the incoming scan by keeping only every n-th point. 1 means no points are skipped.
-    point_skip = 1
+    point_skip = 3
 
     # Estimated sizes of features in the incoming scan, expressed as a factor of registration.map.resolution. Expected values are between 0.0 and 1.0.
     query_resolution_factor = 1.0

@@ -417,20 +417,18 @@ pub fn encompassing_voxel_iter(grid_key: (i32, i32, i32), factor: i32) -> Encomp
 #[cfg(not(feature = "nn_kdt"))]
 fn hash(point: &Point3<f32>, voxel_size: f32) -> i32 {
     const PRIME_1: i32 = 73_856_093;
-    const PRIME_2: i32 = 19_349_663;
+    const PRIME_2: i32 = 471_943;
     const PRIME_3: i32 = 83_492_791;
-    const PRIME_4: i32 = 116_881;
 
     let xyz = point * (1.0 / voxel_size);
 
-    let x = xyz.x.round() as i32;
-    let y = xyz.y.round() as i32;
-    let z = xyz.z.round() as i32;
+    let x = xyz.x.floor() as i32;
+    let y = xyz.y.floor() as i32;
+    let z = xyz.z.floor() as i32;
 
     let mut hash = x.wrapping_mul(PRIME_1);
     hash = hash.wrapping_add(y.wrapping_mul(PRIME_2));
     hash = hash.wrapping_add(z.wrapping_mul(PRIME_3));
-    hash = hash.wrapping_rem(PRIME_4);
 
     hash
 }
@@ -1150,16 +1148,16 @@ impl IVoxHashMap {
 
     #[inline(always)]
     pub fn pos2grid(&self, pos: &PointXYZ) -> (i32, i32, i32) {
-        let gx = (pos.x * self.inverse_resolution).round() as i32;
-        let gy = (pos.y * self.inverse_resolution).round() as i32;
-        let gz = (pos.z * self.inverse_resolution).round() as i32;
+        let gx = (pos.x * self.inverse_resolution).floor() as i32;
+        let gy = (pos.y * self.inverse_resolution).floor() as i32;
+        let gz = (pos.z * self.inverse_resolution).floor() as i32;
         (gx, gy, gz)
     }
 
     #[inline(always)]
     pub fn hash_grid(grid_key: &(i32, i32, i32)) -> i32 {
         const PRIME_1: i32 = 73856093;
-        const PRIME_2: i32 = 19349663;
+        const PRIME_2: i32 = 471943;
         const PRIME_3: i32 = 83492791;
 
         let mut hash = grid_key.0.wrapping_mul(PRIME_1);
@@ -1172,14 +1170,14 @@ impl IVoxHashMap {
     #[inline(always)]
     pub fn hash(point: &nalgebra::Point3<f32>, voxel_size: f32) -> i32 {
         const PRIME_1: i32 = 73_856_093;
-        const PRIME_2: i32 = 19_349_663;
+        const PRIME_2: i32 = 471_943;
         const PRIME_3: i32 = 83_492_791;
 
         let xyz = point * (1.0 / voxel_size);
 
-        let x = xyz.x.round() as i32;
-        let y = xyz.y.round() as i32;
-        let z = xyz.z.round() as i32;
+        let x = xyz.x.floor() as i32;
+        let y = xyz.y.floor() as i32;
+        let z = xyz.z.floor() as i32;
 
         let mut hash = x.wrapping_mul(PRIME_1);
         hash = hash.wrapping_add(y.wrapping_mul(PRIME_2));

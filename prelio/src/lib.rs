@@ -230,20 +230,18 @@ impl<T> LocatedBufferView<T> {
 
 fn hash(point: &Point3<f32>, voxel_size: f32) -> i32 {
     const PRIME_1: i32 = 73_856_093;
-    const PRIME_2: i32 = 19_349_663;
+    const PRIME_2: i32 = 471_943;
     const PRIME_3: i32 = 83_492_791;
-    const PRIME_4: i32 = 116_881;
 
     let xyz = point * (1.0 / voxel_size);
 
-    let x = xyz.x.round() as i32;
-    let y = xyz.y.round() as i32;
-    let z = xyz.z.round() as i32;
+    let x = xyz.x.floor() as i32;
+    let y = xyz.y.floor() as i32;
+    let z = xyz.z.floor() as i32;
 
     let mut hash = x.wrapping_mul(PRIME_1);
     hash = hash.wrapping_add(y.wrapping_mul(PRIME_2));
     hash = hash.wrapping_add(z.wrapping_mul(PRIME_3));
-    hash = hash.wrapping_rem(PRIME_4);
 
     hash
 }
@@ -311,6 +309,28 @@ fn filter_downsample_with_fallback<
             } else {
                 Err(e)
             }
+        }
+    }
+}
+
+enum EitherParIter<L, R> {
+    Left(L),
+    Right(R),
+}
+
+impl<L, R> rayon::iter::ParallelIterator for EitherParIter<L, R>
+where
+    L: rayon::iter::ParallelIterator,
+    R: rayon::iter::ParallelIterator<Item = L::Item>,
+{
+    type Item = L::Item;
+    fn drive_unindexed<C>(self, consumer: C) -> C::Result
+    where
+        C: rayon::iter::plumbing::UnindexedConsumer<Self::Item>,
+    {
+        match self {
+            EitherParIter::Left(l) => l.drive_unindexed(consumer),
+            EitherParIter::Right(r) => r.drive_unindexed(consumer),
         }
     }
 }
@@ -468,13 +488,17 @@ fn filter_downsample<const N: usize, P: PointXYZITimestamp<N>>(
     // --- Processing ---
     {
         let point_skip = lifis_params.downsample.point_skip.max(1);
-        let iter = cloud
-            .try_into_par_iter()?
-            .collect::<Vec<_>>()
-            .into_par_iter()
-            .enumerate()
-            .filter(move |(i, _)| i % point_skip == 0)
-            .map(|(_, p)| map_to_non_trait(p));
+        let iter = if point_skip == 1 {
+            EitherParIter::Left(cloud.try_into_par_iter()?.map(map_to_non_trait))
+        } else {
+            EitherParIter::Right(
+                cloud
+                    .try_into_iter()?
+                    .step_by(point_skip)
+                    .map(map_to_non_trait)
+                    .par_bridge(),
+            )
+        };
 
         if let Some((bypass, bypass_iter)) = raw_out.as_mut() {
             let bypass_iter = bypass_iter.try_into_par_iter()?.map(map_to_non_trait);

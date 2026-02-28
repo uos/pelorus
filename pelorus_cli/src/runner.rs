@@ -84,11 +84,9 @@ use pelorus_reg::Registration;
 use prelio_io::PrelioNode;
 use std::path::PathBuf;
 
+use crate::stats_tui::{SharedStats, StatsTui, init_logger, set_tui_active, update_log_level};
 #[cfg(feature = "evaluate")]
 use pelorus_cli::evaluate;
-use crate::stats_tui::{
-    SharedStats, StatsTui, init_logger, set_tui_active, update_log_level,
-};
 use std::time::UNIX_EPOCH;
 
 #[allow(dead_code)]
@@ -99,7 +97,6 @@ fn lerp_color(c1: (f32, f32, f32), c2: (f32, f32, f32), t: f32) -> (f32, f32, f3
         c1.2 * (1.0 - t) + c2.2 * t,
     )
 }
-
 
 #[derive(Debug)]
 #[allow(dead_code)]
@@ -516,11 +513,15 @@ pub fn lio_with_ready_signal(
                 #[cfg(feature = "rat")]
                 if synchronous_mode {
                     let now_ns = {
-                        let mut ts = libc::timespec { tv_sec: 0, tv_nsec: 0 };
+                        let mut ts = libc::timespec {
+                            tv_sec: 0,
+                            tv_nsec: 0,
+                        };
                         unsafe { libc::clock_gettime(libc::CLOCK_MONOTONIC, &mut ts) };
                         ts.tv_sec as f64 * 1e9 + ts.tv_nsec as f64
                     };
-                    let mut ts = rat::NetArray::from(nalgebra::DMatrix::<f64>::from_element(1, 1, now_ns));
+                    let mut ts =
+                        rat::NetArray::from(nalgebra::DMatrix::<f64>::from_element(1, 1, now_ns));
                     rat::bacon("pelorus:sd_end", &mut ts, rat::VariableType::F64).unwrap();
                     rat::bacon(
                         "tick_end",
@@ -764,11 +765,16 @@ pub fn lio_with_ready_signal(
                         #[cfg(feature = "rat")]
                         if synchronous_mode {
                             let now_ns = {
-                                let mut ts = libc::timespec { tv_sec: 0, tv_nsec: 0 };
+                                let mut ts = libc::timespec {
+                                    tv_sec: 0,
+                                    tv_nsec: 0,
+                                };
                                 unsafe { libc::clock_gettime(libc::CLOCK_MONOTONIC, &mut ts) };
                                 ts.tv_sec as f64 * 1e9 + ts.tv_nsec as f64
                             };
-                            let mut ts = rat::NetArray::from(nalgebra::DMatrix::<f64>::from_element(1, 1, now_ns));
+                            let mut ts = rat::NetArray::from(
+                                nalgebra::DMatrix::<f64>::from_element(1, 1, now_ns),
+                            );
                             rat::bacon("pelorus:sd_end", &mut ts, rat::VariableType::F64).unwrap();
                             rat::bacon(
                                 "tick_end",
@@ -785,11 +791,16 @@ pub fn lio_with_ready_signal(
                         #[cfg(feature = "rat")]
                         if synchronous_mode {
                             let now_ns = {
-                                let mut ts = libc::timespec { tv_sec: 0, tv_nsec: 0 };
+                                let mut ts = libc::timespec {
+                                    tv_sec: 0,
+                                    tv_nsec: 0,
+                                };
                                 unsafe { libc::clock_gettime(libc::CLOCK_MONOTONIC, &mut ts) };
                                 ts.tv_sec as f64 * 1e9 + ts.tv_nsec as f64
                             };
-                            let mut ts = rat::NetArray::from(nalgebra::DMatrix::<f64>::from_element(1, 1, now_ns));
+                            let mut ts = rat::NetArray::from(
+                                nalgebra::DMatrix::<f64>::from_element(1, 1, now_ns),
+                            );
                             rat::bacon("pelorus:sd_end", &mut ts, rat::VariableType::F64).unwrap();
                             rat::bacon(
                                 "tick_end",
@@ -1412,11 +1423,15 @@ pub fn lio_with_ready_signal(
             #[cfg(all(feature = "rat", not(feature = "mapping")))]
             if synchronous_mode {
                 let now_ns = {
-                    let mut ts = libc::timespec { tv_sec: 0, tv_nsec: 0 };
+                    let mut ts = libc::timespec {
+                        tv_sec: 0,
+                        tv_nsec: 0,
+                    };
                     unsafe { libc::clock_gettime(libc::CLOCK_MONOTONIC, &mut ts) };
                     ts.tv_sec as f64 * 1e9 + ts.tv_nsec as f64
                 };
-                let mut ts = rat::NetArray::from(nalgebra::DMatrix::<f64>::from_element(1, 1, now_ns));
+                let mut ts =
+                    rat::NetArray::from(nalgebra::DMatrix::<f64>::from_element(1, 1, now_ns));
                 rat::bacon("pelorus:sd_end", &mut ts, rat::VariableType::F64).unwrap();
                 rat::bacon(
                     "tick_end",
@@ -1545,4 +1560,3 @@ pub fn set_backend_from_config(shared_stats: &SharedStats, config: &LioConfig) {
 
     shared_stats.set_backend_info(backend, accelerator);
 }
-
