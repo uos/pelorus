@@ -1602,7 +1602,7 @@ jobs:
           echo "Wheels: pip install pelorus --extra-index-url https://codeberg.org/uos-robotics/ppa/raw/branch/main/whl/cpu/"
           echo "CUDA:   pip install pelorus --extra-index-url https://codeberg.org/uos-robotics/ppa/raw/branch/main/whl/cu126/"
 
-  aur:
+aur:
     runs-on: ubuntu-dev-noble
     needs:
       - release
@@ -1612,29 +1612,45 @@ jobs:
     steps:
       - name: Deps
         run: |
-          sudo pacman -Sy openssh git nodejs
+          pacman -Sy --noconfirm openssh git nodejs sudo base-devel
+          
+          useradd -m build
+          echo "build ALL=(ALL) NOPASSWD: ALL" > /etc/sudoers.d/build
+
       - uses: actions/checkout@v4
+
       - name: Update AUR
         env:
           AUR_SSH_KEY: ${{ secrets.AUR_SSH_KEY }}
         run: |
-          mkdir -p ~/.ssh
-          printf '%s\n' "$AUR_SSH_KEY" > ~/.ssh/aur_key
-          chmod 600 ~/.ssh/aur_key
-          ssh-keyscan aur.archlinux.org >> ~/.ssh/known_hosts
-          export GIT_SSH_COMMAND='ssh -i ~/.ssh/aur_key -o UserKnownHostsFile=~/.ssh/known_hosts -o StrictHostKeyChecking=yes'
+          mkdir -p /home/build/.ssh
+          printf '%s\n' "$AUR_SSH_KEY" > /home/build/.ssh/aur_key
+          chmod 600 /home/build/.ssh/aur_key
+          ssh-keyscan aur.archlinux.org >> /home/build/.ssh/known_hosts
+          
+          chown -R build:build . /home/build/.ssh
 
-          git config --global user.email $(git log -1 --pretty=format:'%ae')
-          git config --global user.name $(git log -1 --pretty=format:'%an')
+          sudo -u build bash << 'EOF'
+            set -euo pipefail
+            export GIT_SSH_COMMAND='ssh -i /home/build/.ssh/aur_key -o UserKnownHostsFile=/home/build/.ssh/known_hosts -o StrictHostKeyChecking=yes'
 
-          git clone ssh://aur@aur.archlinux.org/pelorus-bin.git pelorus-bin
-          cp packaging/arch-bin/PKGBUILD pelorus-bin/
-          cd pelorus-bin
-          makepkg --printsrcinfo > .SRCINFO
-          git add -f .SRCINFO PKGBUILD
-          git commit -m "Update package from $GITHUB_REPOSITORY@$GITHUB_SHA"
-          git push origin
-          shred -u ~/.ssh/aur_key || rm -f ~/.ssh/aur_key
+            # Set git identity
+            git config --global user.email "$(git log -1 --pretty=format:'%ae')"
+            git config --global user.name "$(git log -1 --pretty=format:'%an')"
+
+            # Clone and update
+            git clone ssh://aur@aur.archlinux.org/pelorus-bin.git pelorus-bin
+            cp packaging/arch-bin/PKGBUILD pelorus-bin/
+            cd pelorus-bin
+            
+            # This will now succeed without the root error
+            makepkg --printsrcinfo > .SRCINFO
+            
+            git add -f .SRCINFO PKGBUILD
+            git commit -m "Update package from $GITHUB_REPOSITORY@$GITHUB_SHA"
+            git push origin
+          EOF
+          shred -u /home/build/.ssh/aur_key
 
   homebrew:
     runs-on: ubuntu-dev-noble-arm
