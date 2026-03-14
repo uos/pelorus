@@ -127,7 +127,7 @@ imu {
   # Reliable | BestEffort | SystemDefault. Any other setting than Reliable is undefined behavior.
   qos.reliability = Reliable
 
-  initial_setup = 500ms
+  initial_setup = 100ms
 
   # @recommended
   from_lidar_transform {
@@ -137,8 +137,8 @@ imu {
 
     # lidar -> imu
     translation = [-6.253mm, 11.775mm, 28.535mm]
-    rotation = [  [-1.0, 0.0, 0.0],
-                  [0.0, -1.0, 0.0],
+    rotation = [  [1.0, 0.0, 0.0],
+                  [0.0, 1.0, 0.0],
                   [0.0, 0.0, 1.0] ]
   }
 
