@@ -806,7 +806,11 @@ impl IVoxHashMap {
 
         let eigenvalues = Self::symmetric_eigen_3x3(&merged_dist.covariance);
         let mut eigenvalues_vec = [eigenvalues.x, eigenvalues.y, eigenvalues.z];
-        eigenvalues_vec.sort_unstable_by(|a, b| a.partial_cmp(b).unwrap());
+        eigenvalues_vec.sort_unstable_by(|a, b| a.total_cmp(b));
+
+        if eigenvalues_vec[0].is_nan() || eigenvalues_vec[2].is_nan() {
+            return None;
+        }
 
         let lambda_0 = eigenvalues_vec[0];
         let lambda_2 = eigenvalues_vec[2];
@@ -907,7 +911,11 @@ impl IVoxHashMap {
         // This logic is borrowed directly from your `plane_fit_stable` function.
         let eigenvalues = Self::symmetric_eigen_3x3(&merged_dist.covariance);
         let mut eigenvalues_vec = [eigenvalues.x, eigenvalues.y, eigenvalues.z];
-        eigenvalues_vec.sort_unstable_by(|a, b| a.partial_cmp(b).unwrap());
+        eigenvalues_vec.sort_unstable_by(|a, b| a.total_cmp(b));
+
+        if eigenvalues_vec[0].is_nan() || eigenvalues_vec[2].is_nan() {
+            return None;
+        }
 
         let lambda_0 = eigenvalues_vec[0]; // Smallest
         let lambda_2 = eigenvalues_vec[2]; // Largest
