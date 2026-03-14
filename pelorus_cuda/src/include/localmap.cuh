@@ -91,7 +91,8 @@ public:
 };
 
 __device__ bool plane_fit_from_distributions(
-    const rm::Pointf &query, const KeyValuePair *map, uint32_t table_capacity,
+    const rm::Pointf &query, NearbyType nbtype, const KeyValuePair *map,
+    uint32_t table_capacity,
     const thrust::pair<uint32_t, VoxelDistribution> *buffer, float resolution,
     float sphericity_threshold, float4 &plane_equation);
 

@@ -32,3 +32,6 @@ default = []
 nn_kdt = ["spole/nn_kdt"]
 cuda = ["dep:pelorus_cuda", "pelorus_cuda/cuda_available", "pelorus_cuda/cuda_enable", "prelio/cuda"]
 metal = ["dep:pelorus_metal", "pelorus_metal/metal_available", "pelorus_metal/metal_enable", "prelio/metal"]
+
+[dev-dependencies]
+serde_json = "1.0.149"

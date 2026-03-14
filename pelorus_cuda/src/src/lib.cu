@@ -282,7 +282,7 @@ __global__ void plane_krnl(Point *cloud, uint32_t cloud_size,
   rm::Pointf p_global = global_pose * p_imu;
 
   float4 plane;
-  if (!plane_fit_from_distributions(p_global, map, capacity, buffer,
+  if (!plane_fit_from_distributions(p_global, nbtype, map, capacity, buffer,
                                     map_resolution, 0.5, plane)) {
     return;
   }

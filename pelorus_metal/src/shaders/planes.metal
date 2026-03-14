@@ -12,7 +12,7 @@ struct PlanesParams {
     uint  table_cap;
     float resolution;
     float sphericity_threshold;  // typically 0.5
-    uint  _pad2;
+    uint  nbtype;
 };
 
 // Helper: plane normal–point distance (signed)
@@ -100,7 +100,7 @@ kernel void plane_krnl(
     // Collect 27 neighbor voxels
     int3 grid = grid_pos(params.resolution, p_global);
     int3 neighbors[27];
-    uint nb_count = neighbor_cells(26, grid, neighbors);
+    uint nb_count = neighbor_cells(params.nbtype, grid, neighbors);
 
     // Local accumulation fields
     uint  merged_point_count = 0;
@@ -123,10 +123,10 @@ kernel void plane_krnl(
     float4 plane;
     if (!plane_fit(merged_point_count, merged_mean, merged_cov, params.sphericity_threshold, plane)) return;
 
-    // Score filter (same formula as CUDA)
+    // Score filter (same formula as CUDA/CPU)
     float pd2 = plane_point_dist(plane, p_global);
     float l2_sq = p_local.x*p_local.x + p_local.y*p_local.y + p_local.z*p_local.z;
-    float s   = 1.0 - 0.9 * fabs(pd2) / sqrt(max(l2_sq, 1e-9f));
+    float s   = 1.0 - 0.9 * fabs(pd2) / sqrt(sqrt(max(l2_sq, 1e-9f)));
     if (s <= 0.9) return;
 
     // Atomic output write

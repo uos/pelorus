@@ -52,10 +52,10 @@ inline int3 grid_pos(float resolution, float3 p) {
 
 // Map grid cell → int32 hash key (aligned with CUDA hash_grid)
 inline int hash_grid(int3 g) {
-    uint64_t h = (g.x * 73856093) ^
-                 (g.y * 471943) ^
-                 (g.z * 83492791);
-    return int(h);
+    int h = (g.x * 73856093) +
+            (g.y * 471943) +
+            (g.z * 83492791);
+    return h;
 }
 
 // Murmur3-inspired hash for open-addressing (same as CUDA hash_function)
@@ -201,20 +201,43 @@ inline uint hashmap_lookup(device const atomic_int* table_keys,
 
 // ── Neighbor offsets ──────────────────────────────────────────────────────────
 
-// Writes up to 27 neighbor grid offsets into out[]; returns count.
+// Writes neighbor grid offsets into out[]; returns count.
 inline uint neighbor_cells(uint nbtype, int3 g, thread int3* out) {
-    uint n = 0;
-    for (int dz = -1; dz <= 1; dz++)
-    for (int dy = -1; dy <= 1; dy++)
-    for (int dx = -1; dx <= 1; dx++) {
-        out[n++] = g + int3(dx, dy, dz);
+    if (nbtype == 6) { // Nearby6
+        out[0] = g;
+        out[1] = g + int3(-1,  0,  0);
+        out[2] = g + int3( 1,  0,  0);
+        out[3] = g + int3( 0,  1,  0);
+        out[4] = g + int3( 0, -1,  0);
+        out[5] = g + int3( 0,  0, -1);
+        out[6] = g + int3( 0,  0,  1);
+        return 7;
+    } else if (nbtype == 18) { // Nearby18
+        out[0] = g;
+        out[1] = g + int3(-1,  0,  0); out[2] = g + int3( 1,  0,  0);
+        out[3] = g + int3( 0,  1,  0); out[4] = g + int3( 0, -1,  0);
+        out[5] = g + int3( 0,  0, -1); out[6] = g + int3( 0,  0,  1);
+        out[7] = g + int3( 1,  1,  0); out[8] = g + int3(-1,  1,  0);
+        out[9] = g + int3( 1, -1,  0); out[10] = g + int3(-1, -1,  0);
+        out[11] = g + int3( 1,  0,  1); out[12] = g + int3(-1,  0,  1);
+        out[13] = g + int3( 1,  0, -1); out[14] = g + int3(-1,  0, -1);
+        out[15] = g + int3( 0,  1,  1); out[16] = g + int3( 0, -1,  1);
+        out[17] = g + int3( 0,  1, -1); out[18] = g + int3( 0, -1, -1);
+        return 19;
+    } else { // Nearby26 (default)
+        uint n = 0;
+        for (int dz = -1; dz <= 1; dz++)
+        for (int dy = -1; dy <= 1; dy++)
+        for (int dx = -1; dx <= 1; dx++) {
+            out[n++] = g + int3(dx, dy, dz);
+        }
+        return n;
     }
-    return n;
 }
 
 // ── Pool neighbor VoxelDistributions (parallel combination) ──────────────────
 
-// Merge `other` into `acc` using parallel-mean formula (unbiased covariance matching CUDA)
+// Merge `other` into `acc` using parallel-mean formula (matching CPU's VoxelDistribution::pool)
 inline void pool_dist(thread uint& acc_point_count,
                       thread float* acc_mean,
                       thread float* acc_cov,
@@ -230,59 +253,32 @@ inline void pool_dist(thread uint& acc_point_count,
         return;
     }
 
-    float fn1 = float(acc_point_count);
-    float fn2 = float(other.point_count);
-    float fn_t = fn1 + fn2;
+    float n1 = float(acc_point_count);
+    float n2 = float(other.point_count);
+    float total_points = n1 + n2;
 
-    if (fn_t <= 1.0f) {
-        // Degenerate case, just average
-        acc_mean[0] = (acc_mean[0] * fn1 + other.mean[0] * fn2) / fn_t;
-        acc_mean[1] = (acc_mean[1] * fn1 + other.mean[1] * fn2) / fn_t;
-        acc_mean[2] = (acc_mean[2] * fn1 + other.mean[2] * fn2) / fn_t;
-        acc_point_count = (uint)fn_t;
-        for(int i=0; i<9; i++) acc_cov[i] = 0;
-        return;
-    }
-
-    float3 delta;
-    delta.x = other.mean[0] - acc_mean[0];
-    delta.y = other.mean[1] - acc_mean[1];
-    delta.z = other.mean[2] - acc_mean[2];
-
-    float3 new_mean;
-    new_mean.x = acc_mean[0] + delta.x * (fn2 / fn_t);
-    new_mean.y = acc_mean[1] + delta.y * (fn2 / fn_t);
-    new_mean.z = acc_mean[2] + delta.z * (fn2 / fn_t);
-
-    // Combine Covariance (matching CUDA logic):
-    // Treat input covariances as if they came from Biased storage, 
-    // effectively converting to scatter matrix by * (N-1).
+    float3 mean1 = float3(acc_mean[0], acc_mean[1], acc_mean[2]);
+    float3 mean2 = float3(other.mean[0], other.mean[1], other.mean[2]);
     
-    float fn1_m1 = (fn1 > 1.0f) ? (fn1 - 1.0f) : 0.0f;
-    float fn2_m1 = (fn2 > 1.0f) ? (fn2 - 1.0f) : 0.0f;
-    
-    // Weight for the mean-separation term
-    float delta_weight = (fn1 * fn2 / fn_t);
+    float3 new_mean = (n1 * mean1 + n2 * mean2) / total_points;
+
+    float3 delta = mean1 - mean2;
+    float delta_weight = (n1 * n2 / total_points);
     
     float d[3] = { delta.x, delta.y, delta.z };
 
     for (int r = 0; r < 3; r++) {
         for (int c = 0; c < 3; c++) {
-            // S1 = Cov1 * (n1 - 1)
-            float s1 = acc_cov[r * 3 + c] * fn1_m1;
-            // S2 = Cov2 * (n2 - 1)
-            float s2 = other.cov[r * 3 + c] * fn2_m1;
+            float c1 = acc_cov[r * 3 + c];
+            float c2 = other.cov[r * 3 + c];
             
-            // New Scatter = S1 + S2 + delta_outer * weight
-            float scatter = s1 + s2 + d[r] * d[c] * delta_weight;
-            
-            // New Cov = Scatter / (n_total - 1)
-            acc_cov[r * 3 + c] = scatter / (fn_t - 1.0f);
+            // new_cov = (n1*C1 + n2*C2 + outer * weight) / total_points
+            acc_cov[r * 3 + c] = (n1 * c1 + n2 * c2 + d[r] * d[c] * delta_weight) / total_points;
         }
     }
 
     acc_mean[0] = new_mean.x;
     acc_mean[1] = new_mean.y;
     acc_mean[2] = new_mean.z;
-    acc_point_count = (uint)fn_t;
+    acc_point_count = (uint)total_points;
 }

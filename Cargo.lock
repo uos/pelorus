@@ -5020,6 +5020,7 @@ dependencies = [
  "rayon",
  "ros_pointcloud2",
  "serde",
+ "serde_json",
  "sophus_lie",
  "spole",
 ]

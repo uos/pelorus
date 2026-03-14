@@ -404,9 +404,11 @@ __device__ rm::Vector3<int32_t> pos2grid(float resolution,
 }
 
 __device__ int32_t hash_grid(const rm::Vector3<int32_t> &grid_key) {
-  return static_cast<int32_t>(static_cast<size_t>(((grid_key.x) * 73856093) ^
-                                                  ((grid_key.y) * 471943) ^
-                                                  ((grid_key.z) * 83492791)));
+  return static_cast<int32_t>(
+      (static_cast<uint32_t>(grid_key.x) * 73856093u) +
+      (static_cast<uint32_t>(grid_key.y) * 471943u) +
+      (static_cast<uint32_t>(grid_key.z) * 83492791u)
+  );
 }
 
 __global__ void calculate_keys_kernel(const Point *points, uint32_t point_size,
@@ -1166,10 +1168,6 @@ __device__ void VoxelDistribution::pool(const VoxelDistribution &other) {
   const rm::Vector3f delta = other.mean - this->mean;
   const rm::Vector3f new_mean = this->mean + delta * (n2 / n_total);
 
-  // Combine scatter matrices (covariance * (n-1)) for numerical stability
-  const rm::Matrix3x3f S1 = this->covariance * (n1 > 1.0f ? (n1 - 1.0f) : 0.0f);
-  const rm::Matrix3x3f S2 = other.covariance * (n2 > 1.0f ? (n2 - 1.0f) : 0.0f);
-
   rm::Matrix3x3f delta_outer_product;
   const float d[3] = {delta.x, delta.y, delta.z};
   for (int j = 0; j < 3; ++j) {
@@ -1178,9 +1176,10 @@ __device__ void VoxelDistribution::pool(const VoxelDistribution &other) {
     }
   }
 
-  const rm::Matrix3x3f new_scatter =
-      S1 + S2 + delta_outer_product * (n1 * n2 / n_total);
-  const rm::Matrix3x3f new_covariance = new_scatter * (1.0f / (n_total - 1.0f));
+  const rm::Matrix3x3f new_covariance =
+      (this->covariance * n1 + other.covariance * n2 +
+       delta_outer_product * (n1 * n2 / n_total)) *
+      (1.0f / n_total);
 
   this->point_count = new_point_count;
   this->mean = new_mean;
@@ -1188,31 +1187,80 @@ __device__ void VoxelDistribution::pool(const VoxelDistribution &other) {
 }
 
 __device__ bool plane_fit_from_distributions(
-    const rm::Pointf &query, const KeyValuePair *map, uint32_t table_capacity,
+    const rm::Pointf &query, NearbyType nbtype, const KeyValuePair *map,
+    uint32_t table_capacity,
     const thrust::pair<uint32_t, VoxelDistribution> *buffer, float resolution,
     float sphericity_threshold, float4 &plane_equation) {
   VoxelDistribution merged_dist;
 
   const rm::Vector3i grid = pos2grid(resolution, query);
 
-  // TODO switch on nbtype? use smaller nbtypes for other res
-  const Neighbors27 neighbor_grids = nearby_26(grid);
-
-  for (int i = 0; i < 27; ++i) {
-    const int32_t k = hash_grid(neighbor_grids.data[i]);
-
+  switch (nbtype) {
+  case NearbyType::Center: {
+    const int32_t k = hash_grid(grid);
     uint32_t slot = hash_function(k) & (table_capacity - 1);
     while (true) {
       if (map[slot].key == k) {
-        const uint32_t buffer_idx = map[slot].value;
-        merged_dist.pool(buffer[buffer_idx].second);
+        merged_dist.pool(buffer[map[slot].value].second);
         break;
       }
-      if (map[slot].key == EMPTY_KEY) {
+      if (map[slot].key == EMPTY_KEY)
         break;
-      }
-      slot = (slot + 1) & (table_capacity - 1); // Linear probe
+      slot = (slot + 1) & (table_capacity - 1);
     }
+    break;
+  }
+  case NearbyType::Nearby6: {
+    const Neighbors7 neighbor_grids = nearby_6(grid);
+    for (int i = 0; i < 7; ++i) {
+      const int32_t k = hash_grid(neighbor_grids.data[i]);
+      uint32_t slot = hash_function(k) & (table_capacity - 1);
+      while (true) {
+        if (map[slot].key == k) {
+          merged_dist.pool(buffer[map[slot].value].second);
+          break;
+        }
+        if (map[slot].key == EMPTY_KEY)
+          break;
+        slot = (slot + 1) & (table_capacity - 1);
+      }
+    }
+    break;
+  }
+  case NearbyType::Nearby18: {
+    const Neighbors19 neighbor_grids = nearby_18(grid);
+    for (int i = 0; i < 19; ++i) {
+      const int32_t k = hash_grid(neighbor_grids.data[i]);
+      uint32_t slot = hash_function(k) & (table_capacity - 1);
+      while (true) {
+        if (map[slot].key == k) {
+          merged_dist.pool(buffer[map[slot].value].second);
+          break;
+        }
+        if (map[slot].key == EMPTY_KEY)
+          break;
+        slot = (slot + 1) & (table_capacity - 1);
+      }
+    }
+    break;
+  }
+  case NearbyType::Nearby26: {
+    const Neighbors27 neighbor_grids = nearby_26(grid);
+    for (int i = 0; i < 27; ++i) {
+      const int32_t k = hash_grid(neighbor_grids.data[i]);
+      uint32_t slot = hash_function(k) & (table_capacity - 1);
+      while (true) {
+        if (map[slot].key == k) {
+          merged_dist.pool(buffer[map[slot].value].second);
+          break;
+        }
+        if (map[slot].key == EMPTY_KEY)
+          break;
+        slot = (slot + 1) & (table_capacity - 1);
+      }
+    }
+    break;
+  }
   }
 
   if (merged_dist.point_count < 3) {

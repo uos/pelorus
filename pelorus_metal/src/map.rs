@@ -70,7 +70,7 @@ pub struct PlanesParams {
     pub table_cap: u32,              // 4 bytes, offset 68
     pub resolution: f32,             // 4 bytes, offset 72
     pub sphericity_threshold: f32,   // 4 bytes, offset 76
-    pub _pad2: u32,                  // 4 bytes, offset 80 -> Total 84
+    pub nbtype: u32,                 // 4 bytes, offset 80 -> Total 84
 }
 
 /// Tests use this mutex to avoid map state races
@@ -104,6 +104,7 @@ pub struct MetalMapState {
     pub sensitivity: f32,
     pub min_dist: f32,
     pub scan_number: u32,
+    pub nbtype: u32,
     add_cursor: u32,
     lru_cursor: u32,
     lru_mapping: Vec<u32>,
@@ -216,6 +217,7 @@ pub fn init_map_impl(
         sensitivity,
         min_dist,
         scan_number: 0,
+        nbtype: _nbtype as u32,
         add_cursor: 0,
         lru_cursor: 0,
         lru_mapping: (0..dist_cap).collect(),
@@ -822,7 +824,7 @@ pub fn planes_metal_impl(
         table_cap: state.table_cap,
         resolution: state.resolution,
         sphericity_threshold: 0.5,
-        _pad2: 0,
+        nbtype: state.nbtype,
     };
 
     let t_gpu = Instant::now();

@@ -609,7 +609,7 @@ impl IVoxHashMap {
             // #[cfg(not(feature = "parallel"))]
             // {
             keyed_points
-                .chunk_by(|a, b| a.0 == b.0)
+                .chunk_by(|a, b| a.1 == b.1)
                 .for_each(|group_slice| {
                     let dist = VoxelDistribution::from_points(group_slice, current_scan_number);
                     let grid = self.pos2grid(&PointXYZ {
