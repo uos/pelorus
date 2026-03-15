@@ -56,7 +56,7 @@ use ros2_interfaces_jazzy_rkyv::{
     geometry_msgs::msg::{Point, PoseStamped, Quaternion, Transform, TransformStamped, Vector3},
     nav_msgs::msg::{Odometry, Path},
     sensor_msgs::msg::PointCloud2,
-    std_msgs::msg::Header,
+    std_msgs::msg::{Header, String as RosString},
     visualization_msgs::msg::Marker,
 };
 #[cfg(feature = "ros2-client")]
@@ -87,7 +87,7 @@ use std::path::PathBuf;
 use pelorus_cli::stats_tui::{
     SharedStats, StatsTui, init_logger, set_tui_active, update_log_level,
 };
-use std::time::UNIX_EPOCH;
+use std::time::{Duration, Instant, UNIX_EPOCH};
 
 #[allow(dead_code)]
 fn lerp_color(c1: (f32, f32, f32), c2: (f32, f32, f32), t: f32) -> (f32, f32, f32) {
@@ -533,6 +533,15 @@ fn lio_with_ready_signal(
                 .await
                 .unwrap()
         });
+    #[cfg(feature = "ratpub")]
+    let stats_publisher = rt
+        .as_ref()
+        .expect("rt always exists with ratpub feat")
+        .block_on(async {
+            node.create_publisher::<RosString>("pelorus_stats".to_owned())
+                .await
+                .unwrap()
+        });
     // #[cfg(all(not(feature = "no-viz"), feature = "r2r"))]
     // let imu_path_publisher =
     //     node.create_publisher::<Path>("imu_path", config.imu_path_qos.into())?;
@@ -556,6 +565,7 @@ fn lio_with_ready_signal(
 
     let mut t_world = nalgebra::Isometry3::identity();
     let mut t_last_current = nalgebra::Isometry3::identity();
+    let mut last_stats_pub = Instant::now();
 
     // Use VecDeque for efficient removal from front (O(1) instead of O(n))
     let mut lidar_path_poses: VecDeque<PoseStamped> = VecDeque::new();
@@ -1256,10 +1266,9 @@ fn lio_with_ready_signal(
                 let inner_tf_broad = std::sync::Arc::clone(&tf_broadcaster);
                 std::thread::spawn(move || {
                     future::block_on(async move {
-                        inner_tf_broad
-                            .send_transform(tf)
-                            .await
-                            .expect("Failed to send transform");
+                        if let Err(err) = inner_tf_broad.send_transform(tf).await {
+                            error!("Failed to send transform: {err}");
+                        }
                     });
                 });
             }
@@ -1513,6 +1522,43 @@ fn lio_with_ready_signal(
 
                 // Record computation time for this scan iteration
                 stats.record_comp_time(iteration_time_ms);
+            }
+
+            #[cfg(feature = "ratpub")]
+            if let Some(ref stats) = shared_stats {
+                if last_stats_pub.elapsed() >= Duration::from_millis(500) {
+                    last_stats_pub = Instant::now();
+                    let snapshot = stats.get();
+                    let payload = format!(
+                        "elapsed={:.2};lidar_hz={:.2};proc_hz={:.2};rt={:.2};cpu={:.1};ram={:.1};comp_ms={:.2};comp_avg={:.2};pos={:.3},{:.3},{:.3};ori={:.5},{:.5},{:.5},{:.5};vel={:.3},{:.3},{:.3};ang={:.4},{:.4},{:.4}",
+                        snapshot.elapsed_secs,
+                        snapshot.measured_sensor_rate_hz,
+                        snapshot.processing_freq_hz,
+                        snapshot.real_time_factor,
+                        snapshot.cpu_percent,
+                        snapshot.ram_mb,
+                        snapshot.last_comp_time_ms,
+                        snapshot.avg_comp_time_ms,
+                        snapshot.position[0],
+                        snapshot.position[1],
+                        snapshot.position[2],
+                        snapshot.orientation[0],
+                        snapshot.orientation[1],
+                        snapshot.orientation[2],
+                        snapshot.orientation[3],
+                        snapshot.linear_velocity[0],
+                        snapshot.linear_velocity[1],
+                        snapshot.linear_velocity[2],
+                        snapshot.angular_velocity[0],
+                        snapshot.angular_velocity[1],
+                        snapshot.angular_velocity[2],
+                    );
+                    let msg = RosString { data: payload };
+                    let _ = rt
+                        .as_ref()
+                        .expect("rt always exists with ratpub feat")
+                        .block_on(async { stats_publisher.publish(&msg).await });
+                }
             }
 
             // Debug output (non-TUI timing metrics)

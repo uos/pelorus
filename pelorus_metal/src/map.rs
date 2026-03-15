@@ -654,10 +654,7 @@ pub fn add_to_map_impl(
                 size_of::<u32>(),
                 4,
             );
-            enc.dispatchThreads_threadsPerThreadgroup(
-                grid1d(valid_size_u32 as usize),
-                group1d(),
-            );
+            enc.dispatchThreads_threadsPerThreadgroup(grid1d(valid_size_u32 as usize), group1d());
         }
 
         enc.endEncoding();
@@ -752,9 +749,7 @@ pub fn get_map_impl() -> Vec<nalgebra::Point3<f32>> {
 pub fn get_map_size_impl() -> u32 {
     let guard = get_state();
     match guard.as_ref() {
-        Some(s) => {
-            s.add_cursor.min(s.dist_cap)
-        }
+        Some(s) => s.add_cursor.min(s.dist_cap),
         None => 0,
     }
 }

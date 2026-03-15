@@ -17,21 +17,50 @@ use std::sync::{Arc, RwLock};
 use thiserror::Error;
 
 pub struct TfBroadcaster {
+    _publisher_node: Option<Arc<Node>>,
     publisher: Option<Publisher<TFMessage>>,
+    static_publisher: Option<Publisher<TFMessage>>,
 }
 const TF_STATIC_TOPIC: &str = "/tf_static";
 const TF_TOPIC: &str = "/tf";
 
 impl TfBroadcaster {
     /// Create a new TfBroadcaster
-    // TODO broadcasting is mute atm because a publisher can not reach the subscriber on the same node. They share the socket :)
     #[track_caller]
-    pub fn new(_node: &Arc<Node>, _rt: Arc<tokio::runtime::Runtime>) -> Self {
-        // Self {
-        //     publisher: rt
-        //         .block_on(async { node.create_publisher(TF_TOPIC.to_owned()).await.unwrap() }),
-        // }
-        Self { publisher: None }
+    pub fn new(_node: &Arc<Node>, rt: Arc<tokio::runtime::Runtime>) -> Self {
+        // Use a dedicated node for TF publishing to avoid pub/sub conflicts on the same ship.
+        let (publisher_node, publisher, static_publisher) = rt.block_on(async {
+            let node_name = format!("pelorus_tf_pub_{}", std::process::id());
+            match Node::create(node_name).await {
+                Ok(node) => {
+                    let node = Arc::new(node);
+                    let dyn_pub = node
+                        .create_publisher::<TFMessage>(TF_TOPIC.to_owned())
+                        .await;
+                    let static_pub = node
+                        .create_publisher::<TFMessage>(TF_STATIC_TOPIC.to_owned())
+                        .await;
+                    if dyn_pub.is_err() || static_pub.is_err() {
+                        eprintln!(
+                            "[pelorus tf] failed to create TF publishers: dyn={:?} static={:?}",
+                            dyn_pub.as_ref().err(),
+                            static_pub.as_ref().err()
+                        );
+                    }
+                    (Some(node), dyn_pub.ok(), static_pub.ok())
+                }
+                Err(err) => {
+                    eprintln!("[pelorus tf] failed to create TF publisher node: {err}");
+                    (None, None, None)
+                }
+            }
+        });
+
+        Self {
+            _publisher_node: publisher_node,
+            publisher,
+            static_publisher,
+        }
     }
 
     /// Broadcast transform
@@ -50,7 +79,15 @@ impl TfBroadcaster {
 
     /// Broadcast static transform
     pub async fn send_static_transform(&self, tf: TransformStamped) -> Result<(), TfError> {
-        self.send_transform(tf).await
+        let tf_message = TFMessage {
+            transforms: vec![tf],
+        };
+        if let Some(p) = self.static_publisher.as_ref() {
+            p.publish(&tf_message)
+                .await
+                .map_err(|err| TfError::R2r(err.to_string()))?
+        }
+        Ok(())
     }
 }
 
