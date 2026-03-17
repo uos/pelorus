@@ -254,13 +254,6 @@ fn lio_with_ready_signal(
         None
     };
 
-    #[cfg(feature = "rat")]
-    if synchronous_mode {
-        if let Some(rt) = rt.as_ref() {
-            rat::init("pelorus", None, Some(std::sync::Arc::clone(rt))).unwrap();
-        }
-    }
-
     #[cfg(not(feature = "ratpub"))]
     #[allow(unused_variables)]
     let namespace = "/pelorus";
@@ -275,8 +268,23 @@ fn lio_with_ready_signal(
     let node = std::sync::Arc::new(
         rt.as_ref()
             .expect("rt always exists with ratpub feat")
-            .block_on(async { Node::create("pelorus_node".to_owned()).await.unwrap() }),
+            .block_on(async {
+                Node::create(ratpub::NodeConfig {
+                    name: "pelorus_node".to_owned(),
+                    mode: ratpub::NodeMode::Reliable,
+                    coord_mode: ratpub::CoordMode::AutoStart,
+                })
+                .await
+                .unwrap()
+            }),
     );
+
+    #[cfg(feature = "rat")]
+    if synchronous_mode {
+        if let Some(rt) = rt.as_ref() {
+            rat::init("pelorus", None, Some(std::sync::Arc::clone(rt))).unwrap();
+        }
+    }
 
     #[cfg(feature = "r2r")]
     let ctx = r2r::Context::create()?;
@@ -1526,7 +1534,7 @@ fn lio_with_ready_signal(
 
             #[cfg(feature = "ratpub")]
             if let Some(ref stats) = shared_stats {
-                if last_stats_pub.elapsed() >= Duration::from_millis(500) {
+                if last_stats_pub.elapsed() >= Duration::from_millis(250) {
                     last_stats_pub = Instant::now();
                     let snapshot = stats.get();
                     let payload = format!(

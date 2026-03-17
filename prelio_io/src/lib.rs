@@ -550,9 +550,13 @@ impl PrelioNode {
 
         #[cfg(feature = "ratpub")]
         let mut cloud_subscriber = rt.block_on(async {
-            node.create_subscriber::<PointCloud2>(node_params.cloud_src_topic.clone(), 10)
-                .await
-                .unwrap()
+            node.create_subscriber::<PointCloud2>(
+                node_params.cloud_src_topic.clone(),
+                10,
+                ratpub::NodeMode::Reliable,
+            )
+            .await
+            .unwrap()
         });
 
         #[cfg(feature = "r2r")]
@@ -561,9 +565,13 @@ impl PrelioNode {
 
         #[cfg(feature = "ratpub")]
         let mut wheel_subscriber = rt.block_on(async {
-            node.create_subscriber::<Odometry>(node_params.wheel_src_topic.clone(), 10)
-                .await
-                .unwrap()
+            node.create_subscriber::<Odometry>(
+                node_params.wheel_src_topic.clone(),
+                10,
+                ratpub::NodeMode::Reliable,
+            )
+            .await
+            .unwrap()
         });
 
         // Share with cloud callback, TODO maybe the only one who needs it, so remove mutex and arc?
@@ -884,9 +892,13 @@ impl PrelioNode {
         {
             let imu_sub_rt = Arc::clone(&rt);
             let mut imu_sub = imu_sub_rt.block_on(async {
-                node.create_subscriber::<Imu>(node_params.imu_src_topic.clone(), 100)
-                    .await
-                    .unwrap()
+                node.create_subscriber::<Imu>(
+                    node_params.imu_src_topic.clone(),
+                    100,
+                    ratpub::NodeMode::Reliable,
+                )
+                .await
+                .unwrap()
             });
 
             let imu_imu_init_state = imu_init_state.clone();

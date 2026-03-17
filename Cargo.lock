@@ -2602,6 +2602,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "795cbfc56d419a7ce47ccbb7504dd9a5b7c484c083c356e797de08bd988d9629"
 
 [[package]]
+name = "fs2"
+version = "0.4.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9564fc758e15025b46aa6643b1b77d047d1a56a1aea6e01002ac0c7026876213"
+dependencies = [
+ "libc",
+ "winapi 0.3.9",
+]
+
+[[package]]
 name = "fuchsia-zircon"
 version = "0.3.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4150,10 +4160,21 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "96a1fe2275b68991faded2c80aa4a33dba398b77d276038b8f50701a22e55918"
 
 [[package]]
+name = "mt_coord"
+version = "0.7.0"
+dependencies = [
+ "anyhow",
+ "fs2",
+ "log",
+ "mt_net",
+ "mt_scope",
+ "mt_sea",
+ "tokio",
+]
+
+[[package]]
 name = "mt_net"
-version = "0.5.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "77f31fc99e5ab4e33f33d66ca449aa04c3507ec3a15af8603dcb9c627146be60"
+version = "0.7.0"
 dependencies = [
  "anyhow",
  "rkyv",
@@ -4163,9 +4184,7 @@ dependencies = [
 
 [[package]]
 name = "mt_rat"
-version = "0.5.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e8c98334c61883d7662990dbcdd00cfcefc09edb9ab7250293869fa763f30126"
+version = "0.7.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -4179,10 +4198,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "mt_scope"
+version = "0.7.0"
+dependencies = [
+ "anyhow",
+ "env_logger",
+ "log",
+ "mt_sea",
+ "once_cell",
+ "rand 0.8.5",
+ "tokio",
+ "zenoh",
+]
+
+[[package]]
 name = "mt_sea"
-version = "0.5.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "49630a938192596f68d8a19b78559b2b0af39903e4b28db64b71fb3b7a711273"
+version = "0.7.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -4193,6 +4224,7 @@ dependencies = [
  "rand 0.8.5",
  "rkyv",
  "tokio",
+ "tokio-util",
  "zenoh",
 ]
 
@@ -5956,20 +5988,20 @@ dependencies = [
 
 [[package]]
 name = "ratpub"
-version = "0.5.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b7263301b70196a62649d0549dc101264fe03638e0815104f1f56962a4bc62cf"
+version = "0.7.0"
 dependencies = [
  "anyhow",
  "async-trait",
  "env_logger",
  "log",
+ "mt_coord",
  "mt_net",
  "mt_sea",
  "nalgebra 0.33.2",
  "rkyv",
  "ros2-interfaces-jazzy-rkyv",
  "tokio",
+ "tokio-util",
 ]
 
 [[package]]
@@ -8382,9 +8414,12 @@ checksum = "9ae9cec805b01e8fc3fd2fe289f89149a9b66dd16786abd8b19cfa7b48cb0098"
 dependencies = [
  "bytes",
  "futures-core",
+ "futures-io",
  "futures-sink",
  "futures-util",
+ "hashbrown 0.15.5",
  "pin-project-lite",
+ "slab",
  "tokio",
 ]
 

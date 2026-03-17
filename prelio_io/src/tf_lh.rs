@@ -31,7 +31,12 @@ impl TfBroadcaster {
         // Use a dedicated node for TF publishing to avoid pub/sub conflicts on the same ship.
         let (publisher_node, publisher, static_publisher) = rt.block_on(async {
             let node_name = format!("pelorus_tf_pub_{}", std::process::id());
-            match Node::create(node_name).await {
+            let nodeconfig = ratpub::NodeConfig {
+                name: node_name,
+                mode: ratpub::NodeMode::BestEffort,
+                coord_mode: ratpub::CoordMode::AutoStart,
+            };
+            match Node::create(nodeconfig).await {
                 Ok(node) => {
                     let node = Arc::new(node);
                     let dyn_pub = node
@@ -251,9 +256,13 @@ impl TfListener {
         let buff = Arc::new(RwLock::new(tf_buffer));
 
         let mut dynamic_subscriber = rt.block_on(async {
-            node.create_subscriber::<TFMessage>(TF_TOPIC.to_owned(), 100)
-                .await
-                .unwrap()
+            node.create_subscriber::<TFMessage>(
+                TF_TOPIC.to_owned(),
+                100,
+                ratpub::NodeMode::BestEffort,
+            )
+            .await
+            .unwrap()
         });
 
         let buff_for_dynamic_sub = buff.clone();
@@ -272,9 +281,13 @@ impl TfListener {
         });
 
         let mut static_subscriber = rt.block_on(async {
-            node.create_subscriber::<TFMessage>(TF_STATIC_TOPIC.to_owned(), 100)
-                .await
-                .unwrap()
+            node.create_subscriber::<TFMessage>(
+                TF_STATIC_TOPIC.to_owned(),
+                100,
+                ratpub::NodeMode::BestEffort,
+            )
+            .await
+            .unwrap()
         });
 
         let buff_for_static_sub = buff.clone();
