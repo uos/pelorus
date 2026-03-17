@@ -46,7 +46,7 @@ ros_pointcloud2 = { version = "1.0.0-rc.3", features = [
   "nalgebra",
 ] }
 ratslang = "0.4.1"
-ratpub = { version = "0.7.0", path = "../minot/ratpub" }
+mt_pubsub = { version = "0.7.0", path = "../minot/mt_pubsub" }
 mt_rat = { version = "0.7.0", path = "../minot/mt_rat"  }
 imu-calib = "0.1" # TODO use noise calib
 

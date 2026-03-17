@@ -1,6 +1,6 @@
 #[cfg(feature = "ros2-client")]
 pub mod tf;
-#[cfg(feature = "ratpub")]
+#[cfg(feature = "mt_pubsub")]
 pub mod tf_lh;
 #[cfg(feature = "r2r")]
 pub mod tf_r2r;
@@ -29,12 +29,12 @@ use r2r::{
     sensor_msgs::msg::{Imu, PointCloud2},
     std_msgs::msg::Header,
 };
-#[cfg(feature = "ratpub")]
-use ratpub::Node;
+#[cfg(feature = "mt_pubsub")]
+use mt_pubsub::Node;
 use ros_pointcloud2::prelude::*;
 #[cfg(feature = "ros2-client")]
 use ros2_client::ros2;
-#[cfg(feature = "ratpub")]
+#[cfg(feature = "mt_pubsub")]
 use ros2_interfaces_jazzy_rkyv::{
     builtin_interfaces::msg::Time,
     geometry_msgs::msg::{
@@ -58,7 +58,7 @@ use std::sync::{Arc, Mutex};
 
 #[cfg(feature = "ros2-client")]
 impl_pointcloud2_for_ros2_interfaces_jazzy_serde!();
-#[cfg(feature = "ratpub")]
+#[cfg(feature = "mt_pubsub")]
 impl_pointcloud2_for_ros2_interfaces_jazzy_rkyv!();
 #[cfg(feature = "r2r")]
 impl_pointcloud2_for_r2r!();
@@ -168,16 +168,16 @@ fn cloud_callback(
     state: Arc<Mutex<State>>,
     #[cfg(feature = "ros2-client")] tf_listener: Arc<tf::TfListener>,
     #[cfg(feature = "r2r")] tf_listener: Arc<tf_r2r::TfListener>,
-    #[cfg(feature = "ratpub")] tf_listener: Arc<tf_lh::TfListener>,
+    #[cfg(feature = "mt_pubsub")] tf_listener: Arc<tf_lh::TfListener>,
     #[cfg(feature = "ros2-client")] msg: PointCloud2,
-    #[cfg(feature = "ratpub")] msg: PointCloud2,
+    #[cfg(feature = "mt_pubsub")] msg: PointCloud2,
     #[cfg(feature = "r2r")] msg: r2r::sensor_msgs::msg::PointCloud2,
     first_imu_tf: Option<String>,
 ) -> anyhow::Result<()> {
     let orig_header = msg.header.clone();
     #[cfg(feature = "ros2-client")]
     let in_msg = impl_ros2_interfaces_jazzy_serde::to_pointcloud2_msg(msg);
-    #[cfg(feature = "ratpub")]
+    #[cfg(feature = "mt_pubsub")]
     let in_msg = impl_ros2_interfaces_jazzy_rkyv::to_pointcloud2_msg(msg);
     #[cfg(feature = "r2r")]
     let in_msg = impl_r2r::to_pointcloud2_msg(msg);
@@ -377,11 +377,11 @@ fn cloud_callback(
         // block_in_place temporarily removes the thread from the Tokio scheduler,
         // allowing mt_rat's internal current_thread runtime to call block_on without
         // triggering "Cannot start a runtime from within a runtime".
-        #[cfg(feature = "ratpub")]
+        #[cfg(feature = "mt_pubsub")]
         tokio::task::block_in_place(|| {
             rat::bacon("pelorus:sd_start", &mut ts, rat::VariableType::F64).ok();
         });
-        #[cfg(not(feature = "ratpub"))] // TODO not sure if this is actually correct
+        #[cfg(not(feature = "mt_pubsub"))] // TODO not sure if this is actually correct
         rat::bacon("pelorus:sd_start", &mut ts, rat::VariableType::F64).ok();
     }
 
@@ -398,7 +398,7 @@ pub struct PrelioNode {
     pub state: Arc<std::sync::Mutex<State>>,
     #[cfg(feature = "ros2-client")]
     pub tf_listener: Arc<tf::TfListener>,
-    #[cfg(feature = "ratpub")]
+    #[cfg(feature = "mt_pubsub")]
     pub tf_listener: Arc<tf_lh::TfListener>,
     #[cfg(feature = "r2r")]
     pub tf_listener: Arc<tf_r2r::TfListener>,
@@ -479,8 +479,8 @@ impl PrelioNode {
     pub fn new(
         #[cfg(feature = "ros2-client")] node: &mut ros2_client::Node,
         #[cfg(feature = "r2r")] node: &mut r2r::Node,
-        #[cfg(feature = "ratpub")] node: &Node,
-        #[cfg(feature = "ratpub")] rt: Arc<tokio::runtime::Runtime>,
+        #[cfg(feature = "mt_pubsub")] node: &Node,
+        #[cfg(feature = "mt_pubsub")] rt: Arc<tokio::runtime::Runtime>,
         params: &LifisParameters,
         node_params: &LifisNodeParameters,
         imu_pose_predictor_init: Option<Arc<Mutex<dyn FnMut(&[ImuMsg]) + Send + Sync>>>,
@@ -495,7 +495,7 @@ impl PrelioNode {
         #[cfg(feature = "r2r")]
         let tf_listener = Arc::new(tf_r2r::TfListener::new(node));
 
-        #[cfg(feature = "ratpub")]
+        #[cfg(feature = "mt_pubsub")]
         let tf_listener = Arc::new(tf_lh::TfListener::new(node, rt.clone()));
 
         #[cfg(feature = "rat")]
@@ -548,12 +548,12 @@ impl PrelioNode {
         let cloud_subscriber = node
             .subscribe::<PointCloud2>(&node_params.cloud_src_topic, node_params.cloud_qos.into())?;
 
-        #[cfg(feature = "ratpub")]
+        #[cfg(feature = "mt_pubsub")]
         let mut cloud_subscriber = rt.block_on(async {
             node.create_subscriber::<PointCloud2>(
                 node_params.cloud_src_topic.clone(),
                 10,
-                ratpub::NodeMode::Reliable,
+                mt_pubsub::NodeMode::Reliable,
             )
             .await
             .unwrap()
@@ -563,12 +563,12 @@ impl PrelioNode {
         let wheel_subscriber =
             node.subscribe::<Odometry>(&node_params.wheel_src_topic, node_params.wheel_qos.into())?;
 
-        #[cfg(feature = "ratpub")]
+        #[cfg(feature = "mt_pubsub")]
         let mut wheel_subscriber = rt.block_on(async {
             node.create_subscriber::<Odometry>(
                 node_params.wheel_src_topic.clone(),
                 10,
-                ratpub::NodeMode::Reliable,
+                mt_pubsub::NodeMode::Reliable,
             )
             .await
             .unwrap()
@@ -588,13 +588,13 @@ impl PrelioNode {
             buffer: Some(Vec::new()),
         }));
 
-        #[cfg(any(feature = "ros2-client", feature = "ratpub", feature = "r2r"))]
+        #[cfg(any(feature = "ros2-client", feature = "mt_pubsub", feature = "r2r"))]
         let tf_listener_clone = tf_listener.clone();
-        #[cfg(any(feature = "ros2-client", feature = "ratpub", feature = "r2r"))]
+        #[cfg(any(feature = "ros2-client", feature = "mt_pubsub", feature = "r2r"))]
         let state_clone = state.clone();
-        #[cfg(any(feature = "ros2-client", feature = "ratpub", feature = "r2r"))]
+        #[cfg(any(feature = "ros2-client", feature = "mt_pubsub", feature = "r2r"))]
         let imu_tf_frame_lidar_inner = Arc::clone(&imu_tf_frame);
-        // #[cfg(all(not(feature = "no-imu-sync"), feature = "ratpub"))]
+        // #[cfg(all(not(feature = "no-imu-sync"), feature = "mt_pubsub"))]
         // let lidar_imu_init_buffer = imu_init_buffer.clone();
         #[cfg(feature = "ros2-client")]
         std::thread::spawn(move || {
@@ -652,7 +652,7 @@ impl PrelioNode {
             })
         });
 
-        #[cfg(feature = "ratpub")]
+        #[cfg(feature = "mt_pubsub")]
         {
             let wheel_sub_rt = Arc::clone(&rt);
             let state_wheel = state.clone();
@@ -716,7 +716,7 @@ impl PrelioNode {
         }
         // let state_clone = state.clone();
 
-        #[cfg(feature = "ratpub")]
+        #[cfg(feature = "mt_pubsub")]
         {
             let cloud_sub_rt = Arc::clone(&rt);
             std::thread::spawn(move || {
@@ -888,14 +888,14 @@ impl PrelioNode {
             }
         });
 
-        #[cfg(feature = "ratpub")]
+        #[cfg(feature = "mt_pubsub")]
         {
             let imu_sub_rt = Arc::clone(&rt);
             let mut imu_sub = imu_sub_rt.block_on(async {
                 node.create_subscriber::<Imu>(
                     node_params.imu_src_topic.clone(),
                     100,
-                    ratpub::NodeMode::Reliable,
+                    mt_pubsub::NodeMode::Reliable,
                 )
                 .await
                 .unwrap()
@@ -1279,7 +1279,7 @@ fn lifis_to_imu(msg: ImuMsg) -> Imu {
             msg.orientation_covariance[7],
             msg.orientation_covariance[8],
         ],
-        #[cfg(feature = "ratpub")]
+        #[cfg(feature = "mt_pubsub")]
         orientation_covariance: [
             msg.orientation_covariance[0],
             msg.orientation_covariance[1],
@@ -1321,7 +1321,7 @@ fn lifis_to_imu(msg: ImuMsg) -> Imu {
             msg.angular_velocity_covariance[7],
             msg.angular_velocity_covariance[8],
         ],
-        #[cfg(feature = "ratpub")]
+        #[cfg(feature = "mt_pubsub")]
         angular_velocity_covariance: [
             msg.angular_velocity_covariance[0],
             msg.angular_velocity_covariance[1],
@@ -1363,7 +1363,7 @@ fn lifis_to_imu(msg: ImuMsg) -> Imu {
             msg.linear_acceleration_covariance[7],
             msg.linear_acceleration_covariance[8],
         ],
-        #[cfg(feature = "ratpub")]
+        #[cfg(feature = "mt_pubsub")]
         linear_acceleration_covariance: [
             msg.linear_acceleration_covariance[0],
             msg.linear_acceleration_covariance[1],

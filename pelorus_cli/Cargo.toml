@@ -31,7 +31,7 @@ futures-lite.workspace = true
 mimalloc = { version = "0.1.48", default-features = false, optional = true }
 clap = { version = "4.5.53", features = ["derive"] }
 r2r = { workspace = true, optional = true }
-ratpub = { workspace = true, optional = true }
+mt_pubsub = { workspace = true, optional = true }
 ros2-interfaces-jazzy-rkyv = { workspace = true, optional = true }
 tokio = { workspace = true, optional = true }
 mt_rat = { workspace = true, optional = true }
@@ -65,11 +65,11 @@ ros2c = ["r2r"]
 ros2-rust = ["ros2-client"]
 
 # Custom Rust-only pub/sub implementation used in my offline-mapping, development and debugging workflow (see https://uos.github.io/minot/#native-publishsubscribe).
-ratpub = [
-  "dep:ratpub",
+mt_pubsub = [
+  "dep:mt_pubsub",
   "dep:tokio",
   "dep:ros2-interfaces-jazzy-rkyv",
-  "prelio_io/ratpub",
+  "prelio_io/mt_pubsub",
 ]
 
 # -#-#-#-#-#- Performance and Methods -#-#-#-#-#-
@@ -85,7 +85,7 @@ metal = ["prelio_io/metal", "prelio/metal", "dep:pelorus_metal", "pelorus_reg/me
 kdtree = ["pelorus_reg/nn_kdt"]
 
 # Enables synchronization with a bagfile using Minot (https://uos.github.io/minot/)
-offline = ["ratpub", "rat"]
+offline = ["mt_pubsub", "rat"]
 
 # Use Mimalloc as allocator. General speedup when using dynamic memory.
 mimalloc = ["dep:mimalloc"]

@@ -3,7 +3,7 @@
 /// tf_r2r is written by Arjo Chakravarty <arjo129@gmail.com>, Michael Maerz <maerz@magazino.eu> and Mitsuharu Kojima <kojima@smilerobotics.com>.
 /// See this [repository](https://github.com/smilerobotics/tf_rosrust) or [crates.io](https://crates.io/crates/tf_r2r) for the original.
 use nalgebra::geometry::{Isometry3, Translation3, UnitQuaternion};
-use ratpub::{Node, Publisher};
+use mt_pubsub::{Node, Publisher};
 use ros2_interfaces_jazzy_rkyv::{
     builtin_interfaces::msg::{Duration, Time},
     tf2_msgs::msg::TFMessage,
@@ -31,10 +31,10 @@ impl TfBroadcaster {
         // Use a dedicated node for TF publishing to avoid pub/sub conflicts on the same ship.
         let (publisher_node, publisher, static_publisher) = rt.block_on(async {
             let node_name = format!("pelorus_tf_pub_{}", std::process::id());
-            let nodeconfig = ratpub::NodeConfig {
+            let nodeconfig = mt_pubsub::NodeConfig {
                 name: node_name,
-                mode: ratpub::NodeMode::BestEffort,
-                coord_mode: ratpub::CoordMode::AutoStart,
+                mode: mt_pubsub::NodeMode::BestEffort,
+                coord_mode: mt_pubsub::CoordMode::AutoStart,
             };
             match Node::create(nodeconfig).await {
                 Ok(node) => {
@@ -259,7 +259,7 @@ impl TfListener {
             node.create_subscriber::<TFMessage>(
                 TF_TOPIC.to_owned(),
                 100,
-                ratpub::NodeMode::BestEffort,
+                mt_pubsub::NodeMode::BestEffort,
             )
             .await
             .unwrap()
@@ -284,7 +284,7 @@ impl TfListener {
             node.create_subscriber::<TFMessage>(
                 TF_STATIC_TOPIC.to_owned(),
                 100,
-                ratpub::NodeMode::BestEffort,
+                mt_pubsub::NodeMode::BestEffort,
             )
             .await
             .unwrap()

@@ -4183,6 +4183,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "mt_pubsub"
+version = "0.7.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "env_logger",
+ "log",
+ "mt_coord",
+ "mt_net",
+ "mt_sea",
+ "nalgebra 0.33.2",
+ "rkyv",
+ "ros2-interfaces-jazzy-rkyv",
+ "tokio",
+ "tokio-util",
+]
+
+[[package]]
 name = "mt_rat"
 version = "0.7.0"
 dependencies = [
@@ -4939,6 +4957,7 @@ dependencies = [
  "libc",
  "log",
  "mimalloc",
+ "mt_pubsub",
  "mt_rat",
  "nalgebra 0.33.2",
  "num_cpus",
@@ -4952,7 +4971,6 @@ dependencies = [
  "r2r",
  "rand 0.9.2",
  "ratatui",
- "ratpub",
  "ratslang",
  "rayon",
  "rerun",
@@ -5479,12 +5497,12 @@ dependencies = [
  "futures-lite",
  "libc",
  "log",
+ "mt_pubsub",
  "mt_rat",
  "nalgebra 0.33.2",
  "pelorus_core",
  "prelio",
  "r2r",
- "ratpub",
  "rerun",
  "ros2-client",
  "ros2-interfaces-jazzy-rkyv",
@@ -5984,24 +6002,6 @@ dependencies = [
  "unicode-segmentation",
  "unicode-truncate",
  "unicode-width 0.2.0",
-]
-
-[[package]]
-name = "ratpub"
-version = "0.7.0"
-dependencies = [
- "anyhow",
- "async-trait",
- "env_logger",
- "log",
- "mt_coord",
- "mt_net",
- "mt_sea",
- "nalgebra 0.33.2",
- "rkyv",
- "ros2-interfaces-jazzy-rkyv",
- "tokio",
- "tokio-util",
 ]
 
 [[package]]

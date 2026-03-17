@@ -13,7 +13,7 @@ use pelorus_reg::pipeline::Pipeline;
 use prelio_io::impl_r2r;
 #[cfg(feature = "ros2-client")]
 use prelio_io::impl_ros2_interfaces_jazzy_jazzy;
-#[cfg(feature = "ratpub")]
+#[cfg(feature = "mt_pubsub")]
 use prelio_io::impl_ros2_interfaces_jazzy_rkyv;
 #[cfg(feature = "rat")]
 use std::fs;
@@ -43,13 +43,13 @@ use r2r::{
     std_msgs::msg::Header,
     visualization_msgs::msg::Marker,
 };
-#[cfg(feature = "ratpub")]
-use ratpub::Node;
+#[cfg(feature = "mt_pubsub")]
+use mt_pubsub::Node;
 #[cfg(feature = "rerun")]
 use rerun::external::glam;
 #[cfg(feature = "ros2-client")]
 use ros2_client::{NodeName, NodeOptions};
-#[cfg(feature = "ratpub")]
+#[cfg(feature = "mt_pubsub")]
 #[allow(unused_imports)]
 use ros2_interfaces_jazzy_rkyv::{
     builtin_interfaces::msg::Time,
@@ -75,7 +75,7 @@ use std::io::IsTerminal;
 use prelio_io::prelio::LocatedBufferView;
 #[cfg(feature = "ros2-client")]
 use prelio_io::tf::TfBroadcaster;
-#[cfg(feature = "ratpub")]
+#[cfg(feature = "mt_pubsub")]
 use prelio_io::tf_lh::TfBroadcaster;
 #[cfg(feature = "r2r")]
 use prelio_io::tf_r2r::TfBroadcaster;
@@ -242,8 +242,8 @@ fn lio_with_ready_signal(
     // Optional flag that, when set to true, will cause the LIO loop to exit
     shutdown_flag: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    #[cfg(any(feature = "ratpub", feature = "rat"))]
-    let rt = if cfg!(feature = "ratpub") || (synchronous_mode && cfg!(feature = "rat")) {
+    #[cfg(any(feature = "mt_pubsub", feature = "rat"))]
+    let rt = if cfg!(feature = "mt_pubsub") || (synchronous_mode && cfg!(feature = "rat")) {
         Some(std::sync::Arc::new(
             tokio::runtime::Builder::new_multi_thread()
                 .enable_all()
@@ -254,7 +254,7 @@ fn lio_with_ready_signal(
         None
     };
 
-    #[cfg(not(feature = "ratpub"))]
+    #[cfg(not(feature = "mt_pubsub"))]
     #[allow(unused_variables)]
     let namespace = "/pelorus";
     #[cfg(feature = "ros2-client")]
@@ -264,15 +264,15 @@ fn lio_with_ready_signal(
         NodeName::new(namespace, "pelorus_node")?,
         NodeOptions::new().enable_rosout(true),
     )?;
-    #[cfg(feature = "ratpub")]
+    #[cfg(feature = "mt_pubsub")]
     let node = std::sync::Arc::new(
         rt.as_ref()
-            .expect("rt always exists with ratpub feat")
+            .expect("rt always exists with mt_pubsub feat")
             .block_on(async {
-                Node::create(ratpub::NodeConfig {
+                Node::create(mt_pubsub::NodeConfig {
                     name: "pelorus_node".to_owned(),
-                    mode: ratpub::NodeMode::Reliable,
-                    coord_mode: ratpub::CoordMode::AutoStart,
+                    mode: mt_pubsub::NodeMode::Reliable,
+                    coord_mode: mt_pubsub::CoordMode::AutoStart,
                 })
                 .await
                 .unwrap()
@@ -291,13 +291,13 @@ fn lio_with_ready_signal(
     #[cfg(feature = "r2r")]
     let mut node = r2r::Node::create(ctx, "pelorus", "pelorus")?;
 
-    #[cfg(not(feature = "ratpub"))]
+    #[cfg(not(feature = "mt_pubsub"))]
     let tf_broadcaster = TfBroadcaster::new(&mut node);
-    #[cfg(feature = "ratpub")]
+    #[cfg(feature = "mt_pubsub")]
     let tf_broadcaster = std::sync::Arc::new(TfBroadcaster::new(
         &node,
         rt.as_ref()
-            .expect("rt always exists with ratpub feat")
+            .expect("rt always exists with mt_pubsub feat")
             .clone(),
     ));
 
@@ -368,13 +368,13 @@ fn lio_with_ready_signal(
 
     let (ready_for_next_tx, ready_for_next_rx) = std::sync::mpsc::channel();
     let (lifis_node, synced_rx) = PrelioNode::new(
-        #[cfg(not(feature = "ratpub"))]
+        #[cfg(not(feature = "mt_pubsub"))]
         &mut node,
-        #[cfg(feature = "ratpub")]
+        #[cfg(feature = "mt_pubsub")]
         &node,
-        #[cfg(feature = "ratpub")]
+        #[cfg(feature = "mt_pubsub")]
         rt.as_ref()
-            .expect("rt always exists with ratpub feat")
+            .expect("rt always exists with mt_pubsub feat")
             .clone(),
         &config.prelio_params,
         &config.prelio_node_params,
@@ -489,7 +489,7 @@ fn lio_with_ready_signal(
     //     .unwrap();
     // #[cfg(all(not(feature = "no-viz"), feature = "map", feature = "r2r"))]
     // let map_publisher = node.create_publisher::<PointCloud2>("map", QosProfile::default())?;
-    // #[cfg(feature = "ratpub")]
+    // #[cfg(feature = "mt_pubsub")]
     // let map_publisher = rt.block_on(async {
     //     node.create_publisher::<PointCloud2>("map".to_owned())
     //         .await
@@ -498,10 +498,10 @@ fn lio_with_ready_signal(
     #[cfg(feature = "r2r")]
     let cloud_publisher =
         node.create_publisher::<PointCloud2>("registered", config.registered_cloud_qos.into())?;
-    #[cfg(feature = "ratpub")]
+    #[cfg(feature = "mt_pubsub")]
     let cloud_publisher = rt
         .as_ref()
-        .expect("rt always exists with ratpub feat")
+        .expect("rt always exists with mt_pubsub feat")
         .block_on(async {
             node.create_publisher::<PointCloud2>("registered".to_owned())
                 .await
@@ -509,10 +509,10 @@ fn lio_with_ready_signal(
         });
     #[cfg(feature = "r2r")]
     let odom_publisher = node.create_publisher::<Odometry>("odom", config.odom_qos.into())?;
-    #[cfg(feature = "ratpub")]
+    #[cfg(feature = "mt_pubsub")]
     let odom_publisher = rt
         .as_ref()
-        .expect("rt always exists with ratpub feat")
+        .expect("rt always exists with mt_pubsub feat")
         .block_on(async {
             node.create_publisher::<Odometry>("odom".to_owned())
                 .await
@@ -520,10 +520,10 @@ fn lio_with_ready_signal(
         });
     #[cfg(all(not(feature = "no-viz"), feature = "r2r"))]
     let lidar_path_publisher = node.create_publisher::<Path>("path", config.path_qos.into())?;
-    #[cfg(all(not(feature = "no-viz"), feature = "ratpub"))]
+    #[cfg(all(not(feature = "no-viz"), feature = "mt_pubsub"))]
     let lidar_path_publisher = rt
         .as_ref()
-        .expect("rt always exists with ratpub feat")
+        .expect("rt always exists with mt_pubsub feat")
         .block_on(async {
             node.create_publisher::<Path>("path".to_owned())
                 .await
@@ -532,19 +532,19 @@ fn lio_with_ready_signal(
     #[cfg(all(not(feature = "no-viz"), feature = "r2r"))]
     let imu_odom_publisher =
         node.create_publisher::<Odometry>("imu_odom", config.imu_odom_qos.into())?;
-    #[cfg(all(not(feature = "no-viz"), feature = "ratpub"))]
+    #[cfg(all(not(feature = "no-viz"), feature = "mt_pubsub"))]
     let imu_odom_publisher = rt
         .as_ref()
-        .expect("rt always exists with ratpub feat")
+        .expect("rt always exists with mt_pubsub feat")
         .block_on(async {
             node.create_publisher::<Odometry>("imu_odom".to_owned())
                 .await
                 .unwrap()
         });
-    #[cfg(feature = "ratpub")]
+    #[cfg(feature = "mt_pubsub")]
     let stats_publisher = rt
         .as_ref()
-        .expect("rt always exists with ratpub feat")
+        .expect("rt always exists with mt_pubsub feat")
         .block_on(async {
             node.create_publisher::<RosString>("pelorus_stats".to_owned())
                 .await
@@ -553,10 +553,10 @@ fn lio_with_ready_signal(
     // #[cfg(all(not(feature = "no-viz"), feature = "r2r"))]
     // let imu_path_publisher =
     //     node.create_publisher::<Path>("imu_path", config.imu_path_qos.into())?;
-    // #[cfg(all(not(feature = "no-viz"), feature = "ratpub"))]
+    // #[cfg(all(not(feature = "no-viz"), feature = "mt_pubsub"))]
     // let imu_path_publisher = rt
     //     .as_ref()
-    //     .expect("rt always exists with ratpub feat")
+    //     .expect("rt always exists with mt_pubsub feat")
     //     .block_on(async {
     //         node.create_publisher::<Path>("imu_path".to_owned())
     //             .await
@@ -976,7 +976,7 @@ fn lio_with_ready_signal(
                             let iso = prelio_io::tf_r2r::isometry_from_transform(&tf.transform);
                             #[cfg(feature = "ros2-client")]
                             let iso = prelio_io::tf::isometry_from_transform(&tf.transform);
-                            #[cfg(feature = "ratpub")]
+                            #[cfg(feature = "mt_pubsub")]
                             let iso = prelio_io::tf_lh::isometry_from_transform(&tf.transform);
 
                             info!(
@@ -1124,7 +1124,7 @@ fn lio_with_ready_signal(
                         let msg = PointCloud2Msg::try_from_vec(items.to_vec()).expect("msg");
                         #[cfg(feature = "ros2-client")]
                         let out = impl_ros2_interfaces_jazzy_serde::from_pointcloud2_msg(msg);
-                        #[cfg(feature = "ratpub")]
+                        #[cfg(feature = "mt_pubsub")]
                         let out = impl_ros2_interfaces_jazzy_rkyv::from_pointcloud2_msg(msg);
                         #[cfg(feature = "r2r")]
                         let out = impl_r2r::from_pointcloud2_msg(msg);
@@ -1136,7 +1136,7 @@ fn lio_with_ready_signal(
                         let msg = PointCloud2Msg::try_from_vec(items.to_vec()).expect("msg");
                         #[cfg(feature = "ros2-client")]
                         let out = impl_ros2_interfaces_jazzy_serde::from_pointcloud2_msg(msg);
-                        #[cfg(feature = "ratpub")]
+                        #[cfg(feature = "mt_pubsub")]
                         let out = impl_ros2_interfaces_jazzy_rkyv::from_pointcloud2_msg(msg);
                         #[cfg(feature = "r2r")]
                         let out = impl_r2r::from_pointcloud2_msg(msg);
@@ -1154,7 +1154,7 @@ fn lio_with_ready_signal(
                         let msg = ros_pointcloud2::PointCloud2Msg::try_from_vec(buff).unwrap();
                         #[cfg(feature = "ros2-client")]
                         let out = impl_ros2_interfaces_jazzy_serde::from_pointcloud2_msg(msg);
-                        #[cfg(feature = "ratpub")]
+                        #[cfg(feature = "mt_pubsub")]
                         let out = impl_ros2_interfaces_jazzy_rkyv::from_pointcloud2_msg(msg);
                         #[cfg(feature = "r2r")]
                         let out = impl_r2r::from_pointcloud2_msg(msg);
@@ -1172,7 +1172,7 @@ fn lio_with_ready_signal(
                         let msg = ros_pointcloud2::PointCloud2Msg::try_from_vec(buff).unwrap();
                         #[cfg(feature = "ros2-client")]
                         let out = impl_ros2_interfaces_jazzy_serde::from_pointcloud2_msg(msg);
-                        #[cfg(feature = "ratpub")]
+                        #[cfg(feature = "mt_pubsub")]
                         let out = impl_ros2_interfaces_jazzy_rkyv::from_pointcloud2_msg(msg);
                         #[cfg(feature = "r2r")]
                         let out = impl_r2r::from_pointcloud2_msg(msg);
@@ -1202,7 +1202,7 @@ fn lio_with_ready_signal(
                     .unwrap();
             }
 
-            #[cfg(all(feature = "map", all(feature = "rerun", feature = "ratpub")))]
+            #[cfg(all(feature = "map", all(feature = "rerun", feature = "mt_pubsub")))]
             {
                 eval.start("pub_localmap").unwrap();
                 #[cfg(not(any(feature = "cuda", feature = "metal")))]
@@ -1228,7 +1228,7 @@ fn lio_with_ready_signal(
                 #[cfg(all(
                     not(feature = "no-viz"),
                     not(feature = "rerun"),
-                    not(feature = "ratpub") // currently no use of the total map in ratpub
+                    not(feature = "mt_pubsub") // currently no use of the total map in mt_pubsub
                 ))]
                 {
                     let mut total_map = PointCloud2Msg::try_from_vec(
@@ -1269,7 +1269,7 @@ fn lio_with_ready_signal(
                     },
                 },
             };
-            #[cfg(feature = "ratpub")]
+            #[cfg(feature = "mt_pubsub")]
             {
                 let inner_tf_broad = std::sync::Arc::clone(&tf_broadcaster);
                 std::thread::spawn(move || {
@@ -1280,7 +1280,7 @@ fn lio_with_ready_signal(
                     });
                 });
             }
-            #[cfg(not(feature = "ratpub"))]
+            #[cfg(not(feature = "mt_pubsub"))]
             tf_broadcaster
                 .send_transform(tf)
                 .expect("Failed to send transform");
@@ -1343,7 +1343,7 @@ fn lio_with_ready_signal(
             if let Some(ref rec) = rec {
                 #[cfg(feature = "ros2-client")]
                 let ps = impl_ros2_interfaces_jazzy_serde::to_pointcloud2_msg(cloud.clone());
-                #[cfg(feature = "ratpub")]
+                #[cfg(feature = "mt_pubsub")]
                 let ps = impl_ros2_interfaces_jazzy_rkyv::to_pointcloud2_msg(cloud.clone());
                 #[cfg(feature = "r2r")]
                 let ps = impl_r2r::to_pointcloud2_msg(cloud.clone());
@@ -1383,9 +1383,9 @@ fn lio_with_ready_signal(
                 }
             }
 
-            #[cfg(feature = "ratpub")]
+            #[cfg(feature = "mt_pubsub")]
             rt.as_ref()
-                .expect("rt always exists with ratpub feat")
+                .expect("rt always exists with mt_pubsub feat")
                 .block_on(async {
                     cloud_publisher
                         .publish(&cloud)
@@ -1397,7 +1397,7 @@ fn lio_with_ready_signal(
                         .await
                         .expect("Failed to publish odom");
                 });
-            #[cfg(not(feature = "ratpub"))]
+            #[cfg(not(feature = "mt_pubsub"))]
             {
                 cloud_publisher
                     .publish(&cloud)
@@ -1429,7 +1429,7 @@ fn lio_with_ready_signal(
                         error!("Error sending lidar path to rerun {err}");
                     }
                 }
-                #[cfg(all(not(feature = "no-viz"), not(feature = "ratpub")))]
+                #[cfg(all(not(feature = "no-viz"), not(feature = "mt_pubsub")))]
                 {
                     let lidar_path = Path {
                         header: Header {
@@ -1444,17 +1444,17 @@ fn lio_with_ready_signal(
                 }
             }
 
-            #[cfg(all(not(feature = "no-viz"), not(feature = "ratpub")))]
+            #[cfg(all(not(feature = "no-viz"), not(feature = "mt_pubsub")))]
             imu_odom_publisher
                 .publish(&imu_odom)
                 .expect("Failed to publish imu odom");
 
-            // #[cfg(all(not(feature = "no-viz"), not(feature = "ratpub")))]
+            // #[cfg(all(not(feature = "no-viz"), not(feature = "mt_pubsub")))]
             // imu_path_publisher
             //     .publish(&imu_path)
             //     .expect("Failed to publish imu path"); // TODO this will spam a lot, maybe also throttle like lidar_path
 
-            #[cfg(all(not(feature = "no-viz"), feature = "ratpub"))]
+            #[cfg(all(not(feature = "no-viz"), feature = "mt_pubsub"))]
             let pub_lidar_path = Path {
                 header: Header {
                     frame_id: lidar_path_frame_id.clone(),
@@ -1462,7 +1462,7 @@ fn lio_with_ready_signal(
                 },
                 poses: lidar_path_poses.iter().cloned().collect(),
             };
-            // #[cfg(all(not(feature = "no-viz"), feature = "ratpub"))]
+            // #[cfg(all(not(feature = "no-viz"), feature = "mt_pubsub"))]
             // let pub_imu_path = Path {
             //     header: Header {
             //         frame_id: imu_path_frame_id.clone(),
@@ -1470,9 +1470,9 @@ fn lio_with_ready_signal(
             //     },
             //     poses: imu_path_poses.iter().cloned().collect(),
             // };
-            #[cfg(all(not(feature = "no-viz"), feature = "ratpub"))]
+            #[cfg(all(not(feature = "no-viz"), feature = "mt_pubsub"))]
             rt.as_ref()
-                .expect("rt always exists with ratpub feat")
+                .expect("rt always exists with mt_pubsub feat")
                 .block_on(async {
                     lidar_path_publisher
                         .publish(&pub_lidar_path)
@@ -1532,7 +1532,7 @@ fn lio_with_ready_signal(
                 stats.record_comp_time(iteration_time_ms);
             }
 
-            #[cfg(feature = "ratpub")]
+            #[cfg(feature = "mt_pubsub")]
             if let Some(ref stats) = shared_stats {
                 if last_stats_pub.elapsed() >= Duration::from_millis(250) {
                     last_stats_pub = Instant::now();
@@ -1564,7 +1564,7 @@ fn lio_with_ready_signal(
                     let msg = RosString { data: payload };
                     let _ = rt
                         .as_ref()
-                        .expect("rt always exists with ratpub feat")
+                        .expect("rt always exists with mt_pubsub feat")
                         .block_on(async { stats_publisher.publish(&msg).await });
                 }
             }
@@ -1610,16 +1610,16 @@ fn lio_with_ready_signal(
         info!("--- END lifis tick ---");
     });
 
-    #[cfg(any(feature = "ratpub", feature = "r2r"))]
+    #[cfg(any(feature = "mt_pubsub", feature = "r2r"))]
     let spinner_shutdown_flag = shutdown_flag.clone();
 
-    #[cfg(feature = "ratpub")]
+    #[cfg(feature = "mt_pubsub")]
     {
         // Check shutdown flag periodically instead of parking forever
         loop {
             if let Some(ref flag) = spinner_shutdown_flag {
                 if flag.load(std::sync::atomic::Ordering::Relaxed) {
-                    info!("Shutdown flag detected in ratpub spinner");
+                    info!("Shutdown flag detected in mt_pubsub spinner");
                     break;
                 }
             }
@@ -1686,7 +1686,7 @@ fn lio_with_ready_signal(
         return Ok(());
     }
 
-    #[cfg(not(any(feature = "ratpub", feature = "ros2-client", feature = "r2r")))]
+    #[cfg(not(any(feature = "mt_pubsub", feature = "ros2-client", feature = "r2r")))]
     {
         let _ = processing_handle.join();
         Ok(())

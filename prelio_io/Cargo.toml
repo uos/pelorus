@@ -25,7 +25,7 @@ ros2-interfaces-jazzy-serde = { workspace = true, optional = true }
 thiserror.workspace = true
 r2r = { workspace = true, optional = true }
 rerun = { workspace = true, optional = true }
-ratpub = { workspace = true, optional = true }
+mt_pubsub = { workspace = true, optional = true }
 tokio = { workspace = true, optional = true, features = ["rt-multi-thread"] }
 mt_rat = { workspace = true, optional = true }
 libc = { workspace = true, optional = true }
@@ -38,8 +38,8 @@ cuda = ["prelio/cuda"]
 metal = ["prelio/metal"]
 no-imu-sync = ["prelio/no-imu-sync"]
 rerun = ["dep:rerun"]
-ratpub = [
-  "dep:ratpub",
+mt_pubsub = [
+  "dep:mt_pubsub",
   "dep:tokio",
   "dep:ros2-interfaces-jazzy-rkyv",
 ]
