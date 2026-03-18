@@ -553,7 +553,7 @@ impl PrelioNode {
             node.create_subscriber::<PointCloud2>(
                 node_params.cloud_src_topic.clone(),
                 10,
-                mt_pubsub::NodeMode::Reliable,
+                mt_pubsub::Qos::Reliable,
             )
             .await
             .unwrap()
@@ -568,7 +568,7 @@ impl PrelioNode {
             node.create_subscriber::<Odometry>(
                 node_params.wheel_src_topic.clone(),
                 10,
-                mt_pubsub::NodeMode::Reliable,
+                mt_pubsub::Qos::Reliable,
             )
             .await
             .unwrap()
@@ -895,7 +895,7 @@ impl PrelioNode {
                 node.create_subscriber::<Imu>(
                     node_params.imu_src_topic.clone(),
                     100,
-                    mt_pubsub::NodeMode::Reliable,
+                    mt_pubsub::Qos::Reliable,
                 )
                 .await
                 .unwrap()

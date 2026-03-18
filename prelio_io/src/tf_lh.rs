@@ -33,17 +33,17 @@ impl TfBroadcaster {
             let node_name = format!("pelorus_tf_pub_{}", std::process::id());
             let nodeconfig = mt_pubsub::NodeConfig {
                 name: node_name,
-                mode: mt_pubsub::NodeMode::BestEffort,
+                mode: mt_pubsub::Qos::BestEffort,
                 coord_mode: mt_pubsub::CoordMode::AutoStart,
             };
             match Node::create(nodeconfig).await {
                 Ok(node) => {
                     let node = Arc::new(node);
                     let dyn_pub = node
-                        .create_publisher::<TFMessage>(TF_TOPIC.to_owned())
+                        .create_publisher::<TFMessage>(TF_TOPIC.to_owned(), mt_pubsub::Qos::BestEffort)
                         .await;
                     let static_pub = node
-                        .create_publisher::<TFMessage>(TF_STATIC_TOPIC.to_owned())
+                        .create_publisher::<TFMessage>(TF_STATIC_TOPIC.to_owned(), mt_pubsub::Qos::BestEffort)
                         .await;
                     if dyn_pub.is_err() || static_pub.is_err() {
                         eprintln!(
@@ -259,7 +259,7 @@ impl TfListener {
             node.create_subscriber::<TFMessage>(
                 TF_TOPIC.to_owned(),
                 100,
-                mt_pubsub::NodeMode::BestEffort,
+                mt_pubsub::Qos::BestEffort,
             )
             .await
             .unwrap()
@@ -284,7 +284,7 @@ impl TfListener {
             node.create_subscriber::<TFMessage>(
                 TF_STATIC_TOPIC.to_owned(),
                 100,
-                mt_pubsub::NodeMode::BestEffort,
+                mt_pubsub::Qos::BestEffort,
             )
             .await
             .unwrap()

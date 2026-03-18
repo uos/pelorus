@@ -271,7 +271,7 @@ fn lio_with_ready_signal(
             .block_on(async {
                 Node::create(mt_pubsub::NodeConfig {
                     name: "pelorus_node".to_owned(),
-                    mode: mt_pubsub::NodeMode::Reliable,
+                    mode: mt_pubsub::Qos::Reliable,
                     coord_mode: mt_pubsub::CoordMode::AutoStart,
                 })
                 .await
@@ -503,7 +503,7 @@ fn lio_with_ready_signal(
         .as_ref()
         .expect("rt always exists with mt_pubsub feat")
         .block_on(async {
-            node.create_publisher::<PointCloud2>("registered".to_owned())
+            node.create_publisher::<PointCloud2>("registered".to_owned(), mt_pubsub::Qos::Reliable)
                 .await
                 .unwrap()
         });
@@ -514,7 +514,7 @@ fn lio_with_ready_signal(
         .as_ref()
         .expect("rt always exists with mt_pubsub feat")
         .block_on(async {
-            node.create_publisher::<Odometry>("odom".to_owned())
+            node.create_publisher::<Odometry>("odom".to_owned(), mt_pubsub::Qos::Reliable)
                 .await
                 .unwrap()
         });
@@ -525,7 +525,7 @@ fn lio_with_ready_signal(
         .as_ref()
         .expect("rt always exists with mt_pubsub feat")
         .block_on(async {
-            node.create_publisher::<Path>("path".to_owned())
+            node.create_publisher::<Path>("path".to_owned(), mt_pubsub::Qos::Reliable)
                 .await
                 .unwrap()
         });
@@ -537,7 +537,7 @@ fn lio_with_ready_signal(
         .as_ref()
         .expect("rt always exists with mt_pubsub feat")
         .block_on(async {
-            node.create_publisher::<Odometry>("imu_odom".to_owned())
+            node.create_publisher::<Odometry>("imu_odom".to_owned(), mt_pubsub::Qos::Reliable)
                 .await
                 .unwrap()
         });
@@ -546,7 +546,7 @@ fn lio_with_ready_signal(
         .as_ref()
         .expect("rt always exists with mt_pubsub feat")
         .block_on(async {
-            node.create_publisher::<RosString>("pelorus_stats".to_owned())
+            node.create_publisher::<RosString>("pelorus_stats".to_owned(), mt_pubsub::Qos::Reliable)
                 .await
                 .unwrap()
         });
