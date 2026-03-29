@@ -12,7 +12,7 @@ use log::{debug, error, info, warn};
 use pelorus_core::{
     ImuMsg, ImuPredictor, ImuPredictorUndistort, LidarVendor, LifisNodeParameters, LifisParameters,
     LivoxMid360Point, LivoxPoint, OdomMsg, OusterPoint, PointXYZIT, PrelioProcessedCloud,
-    RobosensePoint, VelodynePoint, timing::RuntimeEvaluator,
+    Reliability, RobosensePoint, VelodynePoint, timing::RuntimeEvaluator,
 };
 pub use prelio;
 
@@ -405,6 +405,16 @@ pub struct PrelioNode {
     pub logger: String,
 }
 
+#[cfg(feature = "mt_pubsub")]
+fn qos_to_mt(qos: pelorus_core::Qos) -> mt_pubsub::Qos {
+    match qos {
+        pelorus_core::Qos::Sensor(Reliability::Reliable) => mt_pubsub::Qos::Reliable,
+        pelorus_core::Qos::Sensor(Reliability::BestEffort) | pelorus_core::Qos::SystemDefault => {
+            mt_pubsub::Qos::BestEffort
+        }
+    }
+}
+
 #[cfg(feature = "ros2-client")]
 impl From<crate::Qos> for ros2::QosPolicies {
     fn from(value: crate::Qos) -> Self {
@@ -553,7 +563,7 @@ impl PrelioNode {
             node.create_subscriber::<PointCloud2>(
                 node_params.cloud_src_topic.clone(),
                 10,
-                mt_pubsub::Qos::Reliable,
+                qos_to_mt(node_params.cloud_qos),
             )
             .await
             .unwrap()
@@ -568,7 +578,7 @@ impl PrelioNode {
             node.create_subscriber::<Odometry>(
                 node_params.wheel_src_topic.clone(),
                 10,
-                mt_pubsub::Qos::Reliable,
+                qos_to_mt(node_params.wheel_qos),
             )
             .await
             .unwrap()
@@ -895,7 +905,7 @@ impl PrelioNode {
                 node.create_subscriber::<Imu>(
                     node_params.imu_src_topic.clone(),
                     100,
-                    mt_pubsub::Qos::Reliable,
+                    qos_to_mt(node_params.imu_qos),
                 )
                 .await
                 .unwrap()
