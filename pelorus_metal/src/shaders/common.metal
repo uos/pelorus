@@ -224,14 +224,22 @@ inline uint neighbor_cells(uint nbtype, int3 g, thread int3* out) {
         out[15] = g + int3( 0,  1,  1); out[16] = g + int3( 0, -1,  1);
         out[17] = g + int3( 0,  1, -1); out[18] = g + int3( 0, -1, -1);
         return 19;
-    } else { // Nearby26 (default)
-        uint n = 0;
-        for (int dz = -1; dz <= 1; dz++)
-        for (int dy = -1; dy <= 1; dy++)
-        for (int dx = -1; dx <= 1; dx++) {
-            out[n++] = g + int3(dx, dy, dz);
-        }
-        return n;
+    } else { // Nearby26 (default) — same order as CPU nearby_26()
+        out[ 0] = g;
+        out[ 1] = g + int3(-1,  0,  0); out[ 2] = g + int3( 1,  0,  0);
+        out[ 3] = g + int3( 0,  1,  0); out[ 4] = g + int3( 0, -1,  0);
+        out[ 5] = g + int3( 0,  0, -1); out[ 6] = g + int3( 0,  0,  1);
+        out[ 7] = g + int3( 1,  1,  0); out[ 8] = g + int3(-1,  1,  0);
+        out[ 9] = g + int3( 1, -1,  0); out[10] = g + int3(-1, -1,  0);
+        out[11] = g + int3( 1,  0,  1); out[12] = g + int3(-1,  0,  1);
+        out[13] = g + int3( 1,  0, -1); out[14] = g + int3(-1,  0, -1);
+        out[15] = g + int3( 0,  1,  1); out[16] = g + int3( 0, -1,  1);
+        out[17] = g + int3( 0,  1, -1); out[18] = g + int3( 0, -1, -1);
+        out[19] = g + int3( 1,  1,  1); out[20] = g + int3(-1,  1,  1);
+        out[21] = g + int3( 1, -1,  1); out[22] = g + int3( 1,  1, -1);
+        out[23] = g + int3(-1, -1,  1); out[24] = g + int3(-1,  1, -1);
+        out[25] = g + int3( 1, -1, -1); out[26] = g + int3(-1, -1, -1);
+        return 27;
     }
 }
 

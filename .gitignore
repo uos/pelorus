@@ -14,3 +14,4 @@ pelorus_c/examples/sync_blocking
 pelorus_c/examples/cpp_wrapper
 **/build/
 **/imgui.ini
+docs/site/**

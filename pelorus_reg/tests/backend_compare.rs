@@ -7,6 +7,11 @@ use serde::{Deserialize, Serialize};
 use spole::IVoxNearbyType;
 use std::fs;
 use std::path::PathBuf;
+#[cfg(feature = "metal")]
+use std::sync::Mutex;
+
+#[cfg(feature = "metal")]
+static METAL_MAP_MUTEX: Mutex<()> = Mutex::new(());
 
 #[derive(Serialize, Deserialize, Debug, PartialEq)]
 struct DumpedState {
@@ -86,6 +91,9 @@ fn create_complex_cloud() -> Vec<PointXYZIT> {
 
 #[test]
 fn test_backends() {
+    #[cfg(feature = "metal")]
+    let _lock = METAL_MAP_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+
     let params = ImuParameters::default();
     let map_resolution = 0.5;
     let mut state = RegistrationState::new(
@@ -204,8 +212,8 @@ fn test_backends() {
             .expect("Ground truth file missing. Run without GPU features first to generate it!");
         let expected_state: DumpedState = serde_json::from_str(&s).expect("Failed to parse GT");
 
-        let tolerance_t = 1e-4; // Back to strict tolerance
-        let tolerance_r = 1e-4;
+        let tolerance_t = 1e-6; // Back to strict tolerance
+        let tolerance_r = 1e-6;
         assert!(
             (output_state.translation[0] - expected_state.translation[0]).abs() < tolerance_t,
             "tx diff: {} vs {}",
@@ -250,4 +258,282 @@ fn test_backends() {
             expected_state.rotation[3]
         );
     }
+}
+
+#[cfg(feature = "metal")]
+#[test]
+fn test_planes_direct_equivalency() {
+    use ros_pointcloud2::points::{PointXYZ, PointXYZINormal};
+    let _lock = METAL_MAP_MUTEX.lock().unwrap();
+    let resolution = 0.5_f32;
+    let map_cloud = create_simple_cloud();
+    let query_cloud = create_complex_cloud();
+
+    // ── CPU path ────────────────────────────────────────────────────────────────
+    let mut cpu_map = spole::IVoxHashMap::new(resolution, 10000, IVoxNearbyType::Nearby26, 0.1);
+    cpu_map.add(&map_cloud, &Isometry3::identity());
+
+    let mut cpu_planes: Vec<PointXYZINormal> = Vec::new();
+    for pt in &query_cloud {
+        let q = PointXYZ::new(pt.x, pt.y, pt.z);
+        if let Some(plane) = cpu_map.plane_fit_from_distributions(&q) {
+            let pd2 = plane[0] * pt.x + plane[1] * pt.y + plane[2] * pt.z + plane[3];
+            let l2_sq = pt.x * pt.x + pt.y * pt.y + pt.z * pt.z;
+            let s = 1.0_f32 - 0.9 * pd2.abs() / l2_sq.max(1e-9_f32).sqrt().sqrt();
+            if s > 0.9 {
+                cpu_planes.push(PointXYZINormal::new(
+                    pt.x, pt.y, pt.z, pd2, plane[0], plane[1], plane[2],
+                ));
+            }
+        }
+    }
+
+    // ── Metal path ──────────────────────────────────────────────────────────────
+    let stream = pelorus_metal::Stream::new();
+    pelorus_metal::init_map(
+        &stream,
+        10000,
+        resolution,
+        0.1,
+        resolution / 4.0,
+        pelorus_metal::NeighborType::Neighbor26,
+    );
+
+    let gpu_map_cloud: LocatedBufferView<PointXYZIT> =
+        LocatedBufferView::copy_from_slice_metal(&stream, &map_cloud);
+    let LocatedBufferView::Metal {
+        buffer: ref map_buf,
+    } = gpu_map_cloud
+    else {
+        unreachable!()
+    };
+    pelorus_metal::add_to_map(
+        &stream,
+        map_buf,
+        &pelorus_metal::Vector3::new(0.0, 0.0, 0.0),
+        &pelorus_metal::Quaternion::default(),
+    );
+
+    let gpu_query_cloud: LocatedBufferView<PointXYZIT> =
+        LocatedBufferView::copy_from_slice_metal(&stream, &query_cloud);
+    let LocatedBufferView::Metal {
+        buffer: ref query_buf,
+    } = gpu_query_cloud
+    else {
+        unreachable!()
+    };
+
+    let mut metal_planes_out: Vec<PointXYZINormal> =
+        vec![PointXYZINormal::default(); query_cloud.len()];
+    let mut metal_planes_gpu = pelorus_metal::MetalBuffer::new(
+        &stream,
+        std::mem::size_of::<PointXYZINormal>(),
+        query_cloud.len(),
+    );
+
+    pelorus_metal::planes_metal(
+        &stream,
+        query_buf,
+        &pelorus_metal::Vector3::new(0.0, 0.0, 0.0),
+        &pelorus_metal::Quaternion::default(),
+        &pelorus_metal::Vector3::new(0.0, 0.0, 0.0),
+        &pelorus_metal::Quaternion::default(),
+        &mut metal_planes_out,
+        &mut metal_planes_gpu,
+    );
+
+    pelorus_metal::cleanup_map();
+
+    // ── Compare ─────────────────────────────────────────────────────────────────
+    println!(
+        "Plane counts — CPU: {}, Metal: {}",
+        cpu_planes.len(),
+        metal_planes_out.len()
+    );
+
+    assert_eq!(
+        cpu_planes.len(),
+        metal_planes_out.len(),
+        "Different number of valid planes: CPU={} Metal={}",
+        cpu_planes.len(),
+        metal_planes_out.len()
+    );
+
+    // Sort both by (x, y, z) to make comparison order-independent
+    let sort_key = |p: &PointXYZINormal| {
+        (
+            (p.x * 1000.0) as i32,
+            (p.y * 1000.0) as i32,
+            (p.z * 1000.0) as i32,
+        )
+    };
+    let mut cpu_sorted = cpu_planes.clone();
+    let mut metal_sorted = metal_planes_out.clone();
+    cpu_sorted.sort_by_key(&sort_key);
+    metal_sorted.sort_by_key(&sort_key);
+
+    let tol = 1e-6_f32;
+    let mut max_normal_diff: f32 = 0.0;
+    for (c, m) in cpu_sorted.iter().zip(metal_sorted.iter()) {
+        let diff_nx = (c.normal_x - m.normal_x).abs();
+        let diff_ny = (c.normal_y - m.normal_y).abs();
+        let diff_nz = (c.normal_z - m.normal_z).abs();
+        let diff_i = (c.intensity - m.intensity).abs();
+        let max_diff = diff_nx.max(diff_ny).max(diff_nz).max(diff_i);
+        if max_diff > max_normal_diff {
+            max_normal_diff = max_diff;
+        }
+        assert!(
+            max_diff < tol,
+            "Plane mismatch at ({},{},{}): CPU normal=({:.4},{:.4},{:.4},{:.4}) Metal=({:.4},{:.4},{:.4},{:.4}) diff={:.2e}",
+            c.x,
+            c.y,
+            c.z,
+            c.normal_x,
+            c.normal_y,
+            c.normal_z,
+            c.intensity,
+            m.normal_x,
+            m.normal_y,
+            m.normal_z,
+            m.intensity,
+            max_diff
+        );
+    }
+    println!("Max normal component diff: {:.2e}", max_normal_diff);
+}
+
+/// Tests the voxel UPDATE path: add the same cloud twice to both backends,
+/// then compare plane outputs. The second add triggers the Mahalanobis-gated
+/// blend in CPU `VoxelDistribution::update()` vs Metal `build_voxels` update branch.
+#[cfg(feature = "metal")]
+#[test]
+fn test_planes_after_voxel_update() {
+    use ros_pointcloud2::points::{PointXYZ, PointXYZINormal};
+    let _lock = METAL_MAP_MUTEX.lock().unwrap();
+    let resolution = 0.5_f32;
+    let map_cloud = create_simple_cloud();
+
+    // ── CPU path: add cloud twice ────────────────────────────────────────────────
+    let mut cpu_map = spole::IVoxHashMap::new(resolution, 10000, IVoxNearbyType::Nearby26, 0.1);
+    cpu_map.add(&map_cloud, &Isometry3::identity());
+    cpu_map.add(&map_cloud, &Isometry3::identity()); // second add → voxel UPDATE
+
+    let mut cpu_planes: Vec<PointXYZINormal> = Vec::new();
+    for pt in &map_cloud {
+        let q = PointXYZ::new(pt.x, pt.y, pt.z);
+        if let Some(plane) = cpu_map.plane_fit_from_distributions(&q) {
+            let pd2 = plane[0] * pt.x + plane[1] * pt.y + plane[2] * pt.z + plane[3];
+            let l2_sq = pt.x * pt.x + pt.y * pt.y + pt.z * pt.z;
+            let s = 1.0_f32 - 0.9 * pd2.abs() / l2_sq.max(1e-9_f32).sqrt().sqrt();
+            if s > 0.9 {
+                cpu_planes.push(PointXYZINormal::new(
+                    pt.x, pt.y, pt.z, pd2, plane[0], plane[1], plane[2],
+                ));
+            }
+        }
+    }
+
+    // ── Metal path: add cloud twice ──────────────────────────────────────────────
+    let stream = pelorus_metal::Stream::new();
+    pelorus_metal::init_map(
+        &stream,
+        10000,
+        resolution,
+        0.1,
+        resolution / 4.0,
+        pelorus_metal::NeighborType::Neighbor26,
+    );
+
+    let gpu_cloud: LocatedBufferView<PointXYZIT> =
+        LocatedBufferView::copy_from_slice_metal(&stream, &map_cloud);
+    let LocatedBufferView::Metal {
+        buffer: ref cloud_buf,
+    } = gpu_cloud
+    else {
+        unreachable!()
+    };
+
+    let zero_t = pelorus_metal::Vector3::new(0.0, 0.0, 0.0);
+    let identity_q = pelorus_metal::Quaternion::default();
+    pelorus_metal::add_to_map(&stream, cloud_buf, &zero_t, &identity_q);
+    pelorus_metal::add_to_map(&stream, cloud_buf, &zero_t, &identity_q); // second → UPDATE
+
+    let mut metal_out: Vec<PointXYZINormal> = vec![PointXYZINormal::default(); map_cloud.len()];
+    let mut metal_gpu_out = pelorus_metal::MetalBuffer::new(
+        &stream,
+        std::mem::size_of::<PointXYZINormal>(),
+        map_cloud.len(),
+    );
+    pelorus_metal::planes_metal(
+        &stream,
+        cloud_buf,
+        &zero_t,
+        &identity_q,
+        &zero_t,
+        &identity_q,
+        &mut metal_out,
+        &mut metal_gpu_out,
+    );
+    pelorus_metal::cleanup_map();
+
+    // ── Compare ─────────────────────────────────────────────────────────────────
+    println!(
+        "[update test] Plane counts — CPU: {}, Metal: {}",
+        cpu_planes.len(),
+        metal_out.len()
+    );
+
+    assert_eq!(
+        cpu_planes.len(),
+        metal_out.len(),
+        "After voxel update: different plane count CPU={} Metal={}",
+        cpu_planes.len(),
+        metal_out.len()
+    );
+
+    let sort_key = |p: &PointXYZINormal| {
+        (
+            (p.x * 1000.0) as i32,
+            (p.y * 1000.0) as i32,
+            (p.z * 1000.0) as i32,
+        )
+    };
+    let mut cpu_sorted = cpu_planes.clone();
+    let mut metal_sorted = metal_out.clone();
+    cpu_sorted.sort_by_key(&sort_key);
+    metal_sorted.sort_by_key(&sort_key);
+
+    let tol = 1e-6_f32;
+    let mut max_diff: f32 = 0.0;
+    for (c, m) in cpu_sorted.iter().zip(metal_sorted.iter()) {
+        let d = (c.normal_x - m.normal_x)
+            .abs()
+            .max((c.normal_y - m.normal_y).abs())
+            .max((c.normal_z - m.normal_z).abs())
+            .max((c.intensity - m.intensity).abs());
+        if d > max_diff {
+            max_diff = d;
+        }
+        assert!(
+            d < tol,
+            "After update — mismatch at ({:.2},{:.2},{:.2}): CPU=({:.4},{:.4},{:.4},{:.4}) Metal=({:.4},{:.4},{:.4},{:.4}) diff={:.2e}",
+            c.x,
+            c.y,
+            c.z,
+            c.normal_x,
+            c.normal_y,
+            c.normal_z,
+            c.intensity,
+            m.normal_x,
+            m.normal_y,
+            m.normal_z,
+            m.intensity,
+            d
+        );
+    }
+    println!(
+        "[update test] Max normal diff after voxel update: {:.2e}",
+        max_diff
+    );
 }

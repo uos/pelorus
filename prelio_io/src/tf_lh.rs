@@ -1,9 +1,9 @@
+use mt_pubsub::{Node, Publisher};
 /// Inlined tf_r2r crate as single module for R2R generated message compatibility over major versions.
 ///
 /// tf_r2r is written by Arjo Chakravarty <arjo129@gmail.com>, Michael Maerz <maerz@magazino.eu> and Mitsuharu Kojima <kojima@smilerobotics.com>.
 /// See this [repository](https://github.com/smilerobotics/tf_rosrust) or [crates.io](https://crates.io/crates/tf_r2r) for the original.
 use nalgebra::geometry::{Isometry3, Translation3, UnitQuaternion};
-use mt_pubsub::{Node, Publisher};
 use ros2_interfaces_jazzy_rkyv::{
     builtin_interfaces::msg::{Duration, Time},
     tf2_msgs::msg::TFMessage,
@@ -40,10 +40,16 @@ impl TfBroadcaster {
                 Ok(node) => {
                     let node = Arc::new(node);
                     let dyn_pub = node
-                        .create_publisher::<TFMessage>(TF_TOPIC.to_owned(), mt_pubsub::Qos::BestEffort)
+                        .create_publisher::<TFMessage>(
+                            TF_TOPIC.to_owned(),
+                            mt_pubsub::Qos::BestEffort,
+                        )
                         .await;
                     let static_pub = node
-                        .create_publisher::<TFMessage>(TF_STATIC_TOPIC.to_owned(), mt_pubsub::Qos::BestEffort)
+                        .create_publisher::<TFMessage>(
+                            TF_STATIC_TOPIC.to_owned(),
+                            mt_pubsub::Qos::BestEffort,
+                        )
                         .await;
                     if dyn_pub.is_err() || static_pub.is_err() {
                         eprintln!(

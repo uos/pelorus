@@ -1,0 +1,48 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/SchemaStore/schemastore/refs/heads/master/src/schemas/json/github-workflow.json
+# Metal equivalence test workflow - runs on every push and PR
+
+name: metal-equivalence
+
+on:
+  push:
+    branches:
+      - main
+      - dev
+      - "feature/*"
+      - "fix/*"
+  pull_request:
+    branches:
+      - main
+      - dev
+
+env:
+  RUST_FONTCONFIG_DLOPEN: 1
+  CARGO_BUILD_JOBS: 2
+
+jobs:
+  metal-equivalence-test:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Rust
+        run: |
+          rustup toolchain uninstall stable
+          rustup toolchain install stable
+      # - name: Install marina
+      #   run: |
+      #     brew tap uos/marina
+      #     brew install marina
+      # - name: Download dataset
+      #   run: |
+      #     marina pull -y wachsbleiche:hunter:parking_25
+      - name: Build Metal-enabled pelorus
+        run: |
+          export SDKROOT=/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk
+          export RUSTFLAGS="-C link-arg=-F${SDKROOT}/System/Library/Frameworks -C link-arg=-L${SDKROOT}/usr/lib -C link-arg=-isysroot -C link-arg=${SDKROOT}"
+          cargo build --release --package pelorus_cli --features metal
+      - name: Run Metal equivalence test
+        run: |
+          ./scripts/compare-backends-offline.bash "$(marina resolve -y wachsbleiche:hunter:parking_25)" pelorus.rl
+      # - name: Cleanup
+      #   run: |
+      #     marina clean --all -y

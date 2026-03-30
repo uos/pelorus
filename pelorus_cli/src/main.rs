@@ -31,6 +31,8 @@ use clap::{Parser, Subcommand};
 #[allow(unused_imports)]
 use futures_lite::future;
 use log::{debug, error, info, trace, warn};
+#[cfg(feature = "mt_pubsub")]
+use mt_pubsub::Node;
 use nalgebra::{Isometry3, Translation3, UnitQuaternion};
 #[cfg(feature = "r2r")]
 #[allow(unused_imports)]
@@ -43,8 +45,6 @@ use r2r::{
     std_msgs::msg::Header,
     visualization_msgs::msg::Marker,
 };
-#[cfg(feature = "mt_pubsub")]
-use mt_pubsub::Node;
 #[cfg(feature = "rerun")]
 use rerun::external::glam;
 #[cfg(feature = "ros2-client")]
@@ -143,8 +143,11 @@ pub struct OfflineArgs {
     pub minot_path: PathBuf,
 
     /// Export a TUM trajectory file.
-    #[arg(short, long)]
-    pub export_trajectory: bool,
+    /// If not provided, trajectory is not exported.
+    /// If provided without value, automatically generates a filename.
+    /// If provided with a path, exports to that exact location.
+    #[arg(short, long, value_name = "PATH", num_args = 0..=1)]
+    pub export_trajectory: Option<String>,
 }
 
 #[derive(Debug, Clone, Parser)]
@@ -155,8 +158,11 @@ pub struct ConfigArgs {
     pub config_path: Option<PathBuf>,
 
     /// Export a TUM trajectory file.
-    #[arg(short, long)]
-    pub export_trajectory: bool,
+    /// If not provided, trajectory is not exported.
+    /// If provided without value, automatically generates a filename.
+    /// If provided with a path, exports to that exact location.
+    #[arg(short, long, value_name = "PATH", num_args = 0..=1)]
+    pub export_trajectory: Option<String>,
 
     /// Publish tick_end checkpoint using ratlib from Minot.
     #[arg(short, long)]
@@ -220,7 +226,7 @@ struct RegisteredCloud {
 
 fn lio(
     config: LioConfig,
-    export_trajectory: bool,
+    export_trajectory: Option<String>,
     synchronous_mode: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     lio_with_ready_signal(
@@ -236,7 +242,7 @@ fn lio(
 fn lio_with_ready_signal(
     config: LioConfig,
     ready_signal: Option<std::sync::mpsc::Sender<()>>,
-    export_trajectory: bool,
+    export_trajectory: Option<String>,
     #[allow(unused_variables)] synchronous_mode: bool,
     shared_stats: Option<std::sync::Arc<SharedStats>>,
     // Optional flag that, when set to true, will cause the LIO loop to exit
@@ -696,20 +702,40 @@ fn lio_with_ready_signal(
             pelorus_metal::NeighborType::Neighbor26,
         );
 
-        let mut trajectory_file = {
-            if export_trajectory {
+        let mut trajectory_file = match export_trajectory {
+            Some(path_str) if path_str.is_empty() => {
+                // Auto-generate filename
                 let name = petname::petname(2, "_").unwrap();
                 let filename = format!(
-                    "pelorus_trajectory_{}_{}.txt",
+                    "pelorus_trajectory_{}_{}.tum",
                     std::time::SystemTime::now()
                         .duration_since(UNIX_EPOCH)
                         .expect("time goes forward")
                         .as_secs(),
                     name
                 );
-                log::info!("Saving trajectory to {}", &filename);
-                Some(std::fs::File::create(&filename).unwrap())
-            } else {
+                log::info!("Saving trajectory to {} (auto-generated)", &filename);
+                match std::fs::File::create(&filename) {
+                    Ok(f) => Some(f),
+                    Err(e) => {
+                        log::error!("Failed to create trajectory file {}: {}", &filename, e);
+                        None
+                    }
+                }
+            }
+            Some(path_str) => {
+                // Use explicit path
+                log::info!("Saving trajectory to {} (explicit path)", &path_str);
+                match std::fs::File::create(&path_str) {
+                    Ok(f) => Some(f),
+                    Err(e) => {
+                        log::error!("Failed to create trajectory file {}: {}", &path_str, e);
+                        None
+                    }
+                }
+            }
+            None => {
+                // No export
                 None
             }
         };
@@ -781,6 +807,10 @@ fn lio_with_ready_signal(
             }
             #[cfg(feature = "metal")]
             {
+                // Metal buffers use shared memory; synchronize before overwriting the
+                // persistent cloud buffer to avoid races with in-flight GPU kernels
+                // from the previous frame.
+                metal_stream.sync();
                 persistent_cloud_buf
                     .realloc_if_needed_metal(&metal_stream, lifis_tick.deskewed_cloud.len());
                 persistent_cloud_buf
@@ -1817,7 +1847,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     let _ = tui.run();
                 });
                 let lio_config = config.clone();
-                let lio_export = config_args.export_trajectory;
+                let lio_export = config_args.export_trajectory.clone();
                 let lio_sync = config_args.rat;
                 let lio_stats = Some(shared_stats);
 
@@ -2120,7 +2150,7 @@ pf! i 1
                     if let Err(e) = lio_with_ready_signal(
                         config,
                         Some(pelorus_ready_tx),
-                        offline_args.export_trajectory,
+                        offline_args.export_trajectory.clone(),
                         true,
                         Some(shared_stats_for_lio),
                         Some(lio_shutdown_flag_for_thread),

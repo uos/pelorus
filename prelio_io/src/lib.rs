@@ -19,6 +19,8 @@ pub use prelio;
 use anyhow::anyhow;
 use prelio::timestamp_to_secs;
 
+#[cfg(feature = "mt_pubsub")]
+use mt_pubsub::Node;
 #[cfg(feature = "r2r")]
 use r2r::{
     builtin_interfaces::msg::Time,
@@ -29,8 +31,6 @@ use r2r::{
     sensor_msgs::msg::{Imu, PointCloud2},
     std_msgs::msg::Header,
 };
-#[cfg(feature = "mt_pubsub")]
-use mt_pubsub::Node;
 use ros_pointcloud2::prelude::*;
 #[cfg(feature = "ros2-client")]
 use ros2_client::ros2;

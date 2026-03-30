@@ -708,17 +708,11 @@ impl crate::Registration for RegistrationState {
                                     + plane[1] * p_world.y as f32
                                     + plane[2] * p_world.z as f32
                                     + plane[3];
-                                let s = 1.0
-                                    - 0.9 * pd2.abs()
-                                        / nalgebra::Point3::new(
-                                            point_local.x,
-                                            point_local.y,
-                                            point_local.z,
-                                        )
-                                        .cast::<f64>()
-                                        .coords
-                                        .norm()
-                                        .sqrt() as f32;
+                                let l2_sq = point_local.x * point_local.x
+                                    + point_local.y * point_local.y
+                                    + point_local.z * point_local.z;
+                                let s =
+                                    1.0_f32 - 0.9 * pd2.abs() / l2_sq.max(1e-9_f32).sqrt().sqrt();
 
                                 if s <= 0.9 {
                                     None

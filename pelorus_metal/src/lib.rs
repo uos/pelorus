@@ -226,6 +226,7 @@ mod tests {
         let quat = Quaternion::default(); // identity rotation
 
         add_to_map(&stream, &gpu_cloud, &t, &quat);
+        stream.sync();
 
         let size = get_map_size();
         assert!(

@@ -1,0 +1,56 @@
+---
+icon: lucide/rocket
+---
+
+# Installation
+
+The Pelorus beta is currently available as precompiled binaries for Linux on x86_64 and aarch64 (ARM64).
+
+You can [setup the UOS PPA](https://codeberg.org/uos-robotics/ppa/src/branch/pages/README.md) for the Ubuntu LTS versions to install Pelorus and get updates automatically.
+
+```sh title="ROS 2 package for Humble and Jazzy"
+sudo apt install ros-$ROS_DISTRO-pelorus
+
+# or with CUDA support
+sudo apt install ros-$ROS_DISTRO-pelorus-cuda12-8
+sudo apt install ros-$ROS_DISTRO-pelorus-cuda13-1
+```
+
+```sh title="Standalone CLI and C library"
+sudo apt install pelorus
+
+# or with CUDA support
+sudo apt install pelorus-cuda12-8
+sudo apt install pelorus-cuda13-1
+```
+
+```sh title="GLIM odometry plugin"
+sudo apt install pelorus-glim-odometry
+
+# or with CUDA support
+sudo apt install pelorus-glim-odometry-cuda12-8
+sudo apt install pelorus-glim-odometry-cuda13-1
+```
+
+---
+
+Python packages are available on PyPI. We recommend `uv` to manage the installation. Get `uv` first if you don't have it already:
+
+```sh
+curl -LsSf https://astral.sh/uv/install.sh | sh
+
+# create a virtual environment for Pelorus
+uv venv .venv
+```
+
+```sh title="Python packages"
+# With rerun for visualization and standalone cli
+uv tool install "pelorus[all]"
+
+# or with CUDA support
+uv tool install "pelorus[all]" --extra-index-url https://uos-robotics.codeberg.page/ppa/pelorus/pypi/cuda12-8/simple
+uv tool install "pelorus[all]" --extra-index-url https://uos-robotics.codeberg.page/ppa/pelorus/pypi/cuda13-1/simple
+
+# Without uv (not recommended)
+pip install "pelorus[all]"
+```
