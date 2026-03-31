@@ -497,9 +497,8 @@ impl crate::Registration for RegistrationState {
                 };
 
                 let transl = &imu_transform.translation.vector.into();
-
-                let rotmat = imu_transform.rotation.to_rotation_matrix().matrix().clone();
-                pelorus_cuda::add_to_map(&stream, cloud, &transl, &rotmat.into());
+                let rot_quat: pelorus_cuda::Quaternion = imu_transform.rotation.into();
+                pelorus_cuda::add_to_map(&stream, cloud, &transl, &rot_quat);
             }
             #[cfg(feature = "metal")]
             {
@@ -616,6 +615,12 @@ impl crate::Registration for RegistrationState {
                         };
 
                         // call to cuda kernel
+                        let pose_q: pelorus_cuda::Quaternion = nalgebra::UnitQuaternion::from_matrix(
+                            &ekf_state.pose().rotation().matrix().clone(),
+                        ).into();
+                        let offset_q: pelorus_cuda::Quaternion = nalgebra::UnitQuaternion::from_matrix(
+                            &ekf_state.offset_r_l_i.matrix().clone(),
+                        ).into();
                         pelorus_cuda::planes_cuda(
                             &stream,
                             cloud,
@@ -624,13 +629,13 @@ impl crate::Registration for RegistrationState {
                                 ekf_state.pose().translation().y,
                                 ekf_state.pose().translation().z,
                             ),
-                            &ekf_state.pose().rotation().matrix().into(),
+                            &pose_q,
                             &pelorus_cuda::Vector3::new(
                                 ekf_state.offset_t_l_i.x,
                                 ekf_state.offset_t_l_i.y,
                                 ekf_state.offset_t_l_i.z,
                             ),
-                            &ekf_state.offset_r_l_i.matrix().into(),
+                            &offset_q,
                             planes,
                             planes_gpu,
                         );
@@ -852,12 +857,12 @@ impl crate::Registration for RegistrationState {
                 _ => unreachable!(),
             };
 
-            let rotmat = t_w_l.rotation.to_rotation_matrix().matrix().clone();
+            let rot_quat: pelorus_cuda::Quaternion = t_w_l.rotation.into();
             pelorus_cuda::add_to_map(
                 &stream,
                 cloud,
                 &t_w_l.translation.vector.into(),
-                &rotmat.into(),
+                &rot_quat,
             );
         }
         #[cfg(feature = "metal")]

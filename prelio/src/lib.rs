@@ -175,12 +175,16 @@ impl<T> LocatedBufferView<T> {
     #[cfg(feature = "cuda")]
     pub fn realloc_if_needed_cuda(&mut self, stream: &pelorus_cuda::Stream, len: usize) {
         match self {
-            LocatedBufferView::Cuda { buffer } if buffer.n < len => {
-                *buffer = pelorus_cuda::CudaBuffer::new(
-                    stream,
-                    size_of::<PointXYZIT>(),
-                    (len as f32 * 1.2) as usize,
-                );
+            LocatedBufferView::Cuda { buffer } => {
+                if buffer.n < len {
+                    *buffer = pelorus_cuda::CudaBuffer::new(
+                        stream,
+                        size_of::<PointXYZIT>(),
+                        (len as f32 * 1.2) as usize,
+                    );
+                } else {
+                    buffer.n = len;
+                }
             }
             _ => {}
         }

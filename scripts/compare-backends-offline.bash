@@ -73,6 +73,16 @@ has_nvidia_hardware() {
     return 1
 }
 
+float_gt() {
+    local lhs="$1" rhs="$2"
+    awk -v a="$lhs" -v b="$rhs" 'BEGIN { exit !(a > b) }'
+}
+
+float_outside_range() {
+    local x="$1" min="$2" max="$3"
+    awk -v x="$x" -v min="$min" -v max="$max" 'BEGIN { exit !((x < min) || (x > max)) }'
+}
+
 check_prerequisites() {
     log_info "Checking prerequisites..."
     
@@ -91,11 +101,6 @@ check_prerequisites() {
         fail "jq not found in PATH"
     fi
 
-    # Check bc availability
-    if ! command -v bc &> /dev/null; then
-        fail "bc not found in PATH"
-    fi
-    
     # Check bagfile exists
     if [[ ! -d "$BAGFILE" ]]; then
         fail "Bagfile not found at: $BAGFILE"
@@ -126,18 +131,11 @@ run_backend_test() {
     
     log_info "Running Pelorus $backend_name backend..."
     
-    local cmd="cargo run --release --bin pelorus"
+    local cmd=(cargo run --release --bin pelorus)
     if [[ -n "$feature_flag" ]]; then
-        cmd="$cmd --features $feature_flag"
+        cmd+=(--features "$feature_flag")
     fi
-    
-    cmd="$cmd -- offline"
-    cmd="$cmd -c $CONFIG_FILE"
-    cmd="$cmd $BAGFILE"
-    cmd="$cmd --export-trajectory $output_file"
-    
-    # Run with thread limiting for reproducibility
-    local thread_count="${RAYON_NUM_THREADS:-8}"
+    cmd+=(-- offline -c "$CONFIG_FILE" "$BAGFILE" --export-trajectory "$output_file")
     
     # macOS compatibility: use gtimeout if available, otherwise skip timeout
     local timeout_cmd=""
@@ -150,10 +148,13 @@ run_backend_test() {
     fi
     
     local exit_code=0
+    local run_log="${OUTPUT_DIR}/${backend_name,,}_run.log"
+    : > "$run_log"
     if [[ -n "$timeout_cmd" ]]; then
-        RAYON_NUM_THREADS="$thread_count" $timeout_cmd bash -c "$cmd" || exit_code=$?
+        # Pipe through tee so pelorus sees non-interactive stdout and skips TUI mode.
+        $timeout_cmd "${cmd[@]}" 2>&1 | tee -a "$run_log" || exit_code=${PIPESTATUS[0]}
     else
-        RAYON_NUM_THREADS="$thread_count" bash -c "$cmd" || exit_code=$?
+        "${cmd[@]}" 2>&1 | tee -a "$run_log" || exit_code=${PIPESTATUS[0]}
     fi
     
     # Check for timeout exit code (124 from timeout/gtimeout)
@@ -218,28 +219,28 @@ compare_trajectories() {
     # Check thresholds
     local all_pass=true
     
-    if (( $(echo "$ape_trans_rmse > $APE_TRANS_THRESHOLD_M" | bc -l) )); then
+    if float_gt "$ape_trans_rmse" "$APE_TRANS_THRESHOLD_M"; then
         log_error "APE Translational RMSE exceeds threshold: $ape_trans_rmse > $APE_TRANS_THRESHOLD_M"
         all_pass=false
     fi
     
-    if (( $(echo "$ape_rot_rmse_deg > $APE_ROT_THRESHOLD_DEG" | bc -l) )); then
+    if float_gt "$ape_rot_rmse_deg" "$APE_ROT_THRESHOLD_DEG"; then
         log_error "APE Rotational RMSE exceeds threshold: $ape_rot_rmse_deg > $APE_ROT_THRESHOLD_DEG"
         all_pass=false
     fi
     
-    if (( $(echo "$rpe_trans_rmse > $RPE_TRANS_THRESHOLD_M" | bc -l) )); then
+    if float_gt "$rpe_trans_rmse" "$RPE_TRANS_THRESHOLD_M"; then
         log_error "RPE Translational RMSE exceeds threshold: $rpe_trans_rmse > $RPE_TRANS_THRESHOLD_M"
         all_pass=false
     fi
     
-    if (( $(echo "$rpe_rot_rmse_deg > $RPE_ROT_THRESHOLD_DEG" | bc -l) )); then
+    if float_gt "$rpe_rot_rmse_deg" "$RPE_ROT_THRESHOLD_DEG"; then
         log_error "RPE Rotational RMSE exceeds threshold: $rpe_rot_rmse_deg > $RPE_ROT_THRESHOLD_DEG"
         all_pass=false
     fi
     
     # Warn on Umeyama scale
-    if (( $(echo "$umeyama_scale < $UMEYAMA_SCALE_MIN || $umeyama_scale > $UMEYAMA_SCALE_MAX" | bc -l) )); then
+    if float_outside_range "$umeyama_scale" "$UMEYAMA_SCALE_MIN" "$UMEYAMA_SCALE_MAX"; then
         log_warn "Umeyama scale outside expected range [${UMEYAMA_SCALE_MIN}, ${UMEYAMA_SCALE_MAX}]: $umeyama_scale"
     fi
     

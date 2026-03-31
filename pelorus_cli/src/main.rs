@@ -800,6 +800,9 @@ fn lio_with_ready_signal(
 
             #[cfg(feature = "cuda")]
             {
+                // Keep parity with Metal path: avoid overwriting the persistent cloud buffer
+                // while previous frame CUDA kernels may still be reading from it.
+                cuda_stream.sync();
                 persistent_cloud_buf
                     .realloc_if_needed_cuda(&cuda_stream, lifis_tick.deskewed_cloud.len());
                 persistent_cloud_buf

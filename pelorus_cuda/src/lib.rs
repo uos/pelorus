@@ -92,6 +92,10 @@ impl CudaBuffer {
 
     pub fn upload<T>(&mut self, stream: &Stream, buffer: &[T]) {
         assert!(size_of::<T>() == self.element_size, "Wrong alignment of T");
+        assert!(
+            buffer.len() <= self.n,
+            "Source buffer is larger than destination GPU buffer"
+        );
         let my_stream = stream.stream.raw;
         unsafe {
             ffi::cupcl_upload_buffer(
@@ -99,9 +103,10 @@ impl CudaBuffer {
                 self.gpu_ptr,
                 buffer.as_ptr() as *mut ::std::os::raw::c_void,
                 self.element_size as u32,
-                self.n as u32,
+                buffer.len() as u32,
             )
-        }
+        };
+        self.n = buffer.len();
     }
 
     pub fn download<T: Default + Clone>(&self, stream: &Stream) -> Vec<T> {
@@ -226,11 +231,10 @@ pub fn init_map(
     }
 }
 
-pub fn add_to_map(stream: &Stream, cloud: &CudaBuffer, ekf_pose_t: &Vector3, ekf_pose_r: &Matrix3) {
-    let pose_r = nalgebra::UnitQuaternion::from_matrix(&(*ekf_pose_r).into());
+pub fn add_to_map(stream: &Stream, cloud: &CudaBuffer, ekf_pose_t: &Vector3, ekf_pose_r: &Quaternion) {
     let pose = Pose {
         position: *ekf_pose_t,
-        orientation: Quaternion::new(pose_r.i, pose_r.j, pose_r.k, pose_r.w),
+        orientation: *ekf_pose_r,
     };
     let my_stream = stream.stream.raw;
     unsafe {
@@ -269,23 +273,21 @@ pub fn planes_cuda(
     stream: &Stream,
     cloud: &CudaBuffer,
     ekf_pose_t: &Vector3,
-    ekf_pose_r: &Matrix3,
+    ekf_pose_r: &Quaternion,
     ekf_imu_offset_t: &Vector3,
-    ekf_imu_offset_r: &Matrix3,
+    ekf_imu_offset_r: &Quaternion,
     out_buff: &mut Vec<PointXYZINormal>,
     out_buff_gpu: &mut CudaBuffer,
 ) {
     assert!(out_buff.len() >= cloud.n);
 
-    let ext_r_quat = nalgebra::UnitQuaternion::from_matrix(&(*ekf_imu_offset_r).into());
     let lidar_to_imu = Pose {
         position: *ekf_imu_offset_t,
-        orientation: Quaternion::new(ext_r_quat.i, ext_r_quat.j, ext_r_quat.k, ext_r_quat.w),
+        orientation: *ekf_imu_offset_r,
     };
-    let pose_r_quat = nalgebra::UnitQuaternion::from_matrix(&(*ekf_pose_r).into());
     let pose = Pose {
         position: *ekf_pose_t,
-        orientation: Quaternion::new(pose_r_quat.i, pose_r_quat.j, pose_r_quat.k, pose_r_quat.w),
+        orientation: *ekf_pose_r,
     };
 
     let _ = const {
@@ -307,10 +309,11 @@ pub fn planes_cuda(
         };
         size
     };
+    let size = (size as usize).min(out_buff.len()).min(out_buff_gpu.n);
 
     // copy to cpu side
     out_buff_gpu.download_into(stream, out_buff);
-    unsafe { out_buff.set_len(size as usize) };
+    unsafe { out_buff.set_len(size) };
 }
 
 #[cfg(test)]
