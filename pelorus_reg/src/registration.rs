@@ -864,6 +864,9 @@ impl crate::Registration for RegistrationState {
                 &t_w_l.translation.vector.into(),
                 &rot_quat,
             );
+            if std::env::var_os("PELORUS_CUDA_SYNC_MAP").is_some() {
+                stream.sync();
+            }
         }
         #[cfg(feature = "metal")]
         {

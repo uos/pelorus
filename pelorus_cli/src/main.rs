@@ -1650,6 +1650,10 @@ fn lio_with_ready_signal(
     {
         // Check shutdown flag periodically instead of parking forever
         loop {
+            if processing_handle.is_finished() {
+                info!("Processing thread finished in mt_pubsub spinner");
+                break;
+            }
             if let Some(ref flag) = spinner_shutdown_flag {
                 if flag.load(std::sync::atomic::Ordering::Relaxed) {
                     info!("Shutdown flag detected in mt_pubsub spinner");
@@ -2065,8 +2069,8 @@ pf! i 1
                 let (exit_tx, exit_rx) = std::sync::mpsc::channel();
 
                 // Thread for stdout
-                let exit_tx_clone = exit_tx.clone();
                 let ready_tx_clone = ready_tx.clone();
+                let exit_tx_clone = exit_tx.clone();
                 std::thread::spawn(move || {
                     let reader = BufReader::new(minot_stdout);
                     for line in reader.lines() {
@@ -2077,10 +2081,10 @@ pf! i 1
                                     log_minot_line(trimmed);
                                 }
 
-                                // detect end of bagfile; TODO unsure if this should really quit the program
                                 if line.to_lowercase().contains("end of bagfile") {
                                     let _ = exit_tx_clone.send(());
                                 }
+
                                 if line.contains("--sync")
                                     || line.to_lowercase().contains("waiting for input")
                                     || line.to_lowercase().contains("press enter")
@@ -2108,7 +2112,6 @@ pf! i 1
                                     log_minot_line(trimmed);
                                 }
 
-                                // detect end of bagfile on stderr (runner logs go here)
                                 if line.to_lowercase().contains("end of bagfile") {
                                     let _ = exit_tx.send(());
                                 }
@@ -2131,12 +2134,9 @@ pf! i 1
                     }
                 });
 
-                let got_ready = ready_rx
+                ready_rx
                     .recv_timeout(std::time::Duration::from_secs(30))
-                    .is_ok();
-                if !got_ready {
-                    info!("Did not receive explicit Minot ready; proceeding as fallback");
-                }
+                    .map_err(|_| anyhow!("Timed out waiting for Minot --sync readiness"))?;
 
                 info!("Minot is ready, starting pelorus offline processing...");
 
@@ -2165,12 +2165,10 @@ pf! i 1
                 });
 
                 info!("Waiting for pelorus to initialize...");
-                match pelorus_ready_rx.recv_timeout(std::time::Duration::from_secs(5)) {
-                    Ok(_) => info!("Pelorus is ready!"),
-                    Err(_) => info!(
-                        "Pelorus ready not received in 5s; proceeding to trigger minot anyway"
-                    ),
-                }
+                pelorus_ready_rx
+                    .recv_timeout(std::time::Duration::from_secs(30))
+                    .map_err(|_| anyhow!("Timed out waiting for Pelorus readiness"))?;
+                info!("Pelorus is ready!");
                 info!("Triggering minot to start processing...");
 
                 // Check if process is still alive before writing
@@ -2205,7 +2203,6 @@ pf! i 1
                 // wait loop - check for various exit conditions
                 loop {
                     if exit_rx.try_recv().is_ok() {
-                        // minot finished -> request stop
                         lio_shutdown_flag.store(true, std::sync::atomic::Ordering::SeqCst);
                         info!("minot finished, stopping TUI and LIO");
                         break;
@@ -2223,10 +2220,12 @@ pf! i 1
                     std::thread::sleep(std::time::Duration::from_millis(100));
                 }
 
-                lio_shutdown_flag.store(true, std::sync::atomic::Ordering::SeqCst);
+                if !lio_handle.is_finished() {
+                    lio_shutdown_flag.store(true, std::sync::atomic::Ordering::SeqCst);
+                }
 
                 let join_start = std::time::Instant::now();
-                let join_timeout = std::time::Duration::from_secs(3);
+                let join_timeout = std::time::Duration::from_secs(30);
                 loop {
                     if lio_handle.is_finished() {
                         match lio_handle.join() {
@@ -2237,8 +2236,10 @@ pf! i 1
                         break;
                     }
                     if join_start.elapsed() > join_timeout {
-                        warn!("LIO thread did not exit within timeout");
-                        break;
+                        return Err(anyhow!(
+                            "LIO thread did not exit within {}s timeout",
+                            join_timeout.as_secs()
+                        ));
                     }
                     std::thread::sleep(std::time::Duration::from_millis(100));
                 }

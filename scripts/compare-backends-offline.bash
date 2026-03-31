@@ -171,6 +171,15 @@ run_backend_test() {
     
     local line_count=$(wc -l < "$output_file")
     log_info "$backend_name trajectory: $output_file ($line_count poses)"
+    local first_ts last_ts
+    first_ts=$(awk 'NF{print $1; exit}' "$output_file")
+    last_ts=$(awk 'NF{t=$1} END{print t}' "$output_file")
+    log_info "$backend_name trajectory span: ${first_ts:-n/a} -> ${last_ts:-n/a}"
+    if grep -qi "reached end of bagfile" "$run_log"; then
+        log_info "$backend_name stop reason: reached end of bagfile"
+    else
+        log_warn "$backend_name stop reason: end-of-bag marker not detected in log"
+    fi
 }
 
 compare_trajectories() {
@@ -182,6 +191,18 @@ compare_trajectories() {
 
     log_info "Comparing trajectories with sounding: ${lhs_label} vs ${rhs_label}..."
     
+    local lhs_lines rhs_lines
+    lhs_lines=$(wc -l < "$lhs_traj")
+    rhs_lines=$(wc -l < "$rhs_traj")
+    if (( lhs_lines == 0 || rhs_lines == 0 )); then
+        fail "Cannot compare empty trajectories"
+    fi
+    local ratio
+    ratio=$(awk -v a="$lhs_lines" -v b="$rhs_lines" 'BEGIN{if (a>b) print a/b; else print b/a}')
+    if awk -v r="$ratio" 'BEGIN{exit !(r > 1.02)}'; then
+        fail "Trajectory length mismatch too large (${lhs_label}=${lhs_lines}, ${rhs_label}=${rhs_lines})"
+    fi
+
     # Run sounding and capture output (on non-TTY this is JSON)
     local sounding_output
     sounding_output=$(sounding trajectory "$lhs_traj" "$rhs_traj" --json) || {

@@ -62,7 +62,11 @@ __device__ __forceinline__ int3 grid_pos(float resolution, float3 p) {
 }
 
 __device__ __forceinline__ int hash_grid(int3 g) {
-    return (g.x * 73856093) + (g.y * 471943) + (g.z * 83492791);
+    // Match Rust/Metal wrapping i32 arithmetic exactly.
+    uint32_t h = (uint32_t)g.x * 73856093u;
+    h += (uint32_t)g.y * 471943u;
+    h += (uint32_t)g.z * 83492791u;
+    return (int32_t)h;
 }
 
 __device__ __forceinline__ uint32_t hash_fn(int key) {
@@ -328,7 +332,7 @@ __global__ void unpack_keys_kernel(const uint64_t* packed,
     uint32_t idx = blockIdx.x * blockDim.x + threadIdx.x;
     if (idx >= n_points) return;
     uint64_t p   = packed[idx];
-    keys[idx]    = (int)(uint32_t)(p >> 32);
+    keys[idx]    = (int32_t)(p >> 32);
     indices[idx] = (uint32_t)(p & 0xFFFFFFFFULL);
 }
 
@@ -651,6 +655,7 @@ struct CudaMapState {
     uint32_t pending_lru_scan_number;
 
     size_t scratch_cap;  // current allocated scratch capacity
+    bool   trace_map_debug;
 
     CudaMapState()
         : table_keys(nullptr), table_vals(nullptr),
@@ -664,7 +669,7 @@ struct CudaMapState {
           min_dist(0), scan_number(0), nbtype(26),
           add_cursor(0), lru_cursor(0),
           pending_lru_rebuild(false), pending_lru_scan_number(0),
-          scratch_cap(0) {}
+          scratch_cap(0), trace_map_debug(false) {}
 
     ~CudaMapState() {
         // Ignore errors during shutdown
@@ -841,6 +846,7 @@ void init_map_impl(cudaStream_t stream, uint32_t capacity, float voxel_size,
     s->key_to_index.reserve(dist_cap);
     s->pending_lru_rebuild     = false;
     s->pending_lru_scan_number = 0;
+    s->trace_map_debug         = (std::getenv("PELORUS_CUDA_TRACE_MAP") != nullptr);
 
     // Init hashmap
     hashmap_init_kernel<<<grid_dim(table_cap), 256, 0, stream>>>(s->table_keys, table_cap);
@@ -944,6 +950,7 @@ void add_to_map_impl(cudaStream_t stream, Point* points, uint32_t n_points, Pose
                                        (uint32_t)unique_keys.size(),
                                        target_indices, update_flags);
     uint32_t n_assigned = (uint32_t)target_indices.size();
+    uint32_t n_unique = (uint32_t)unique_keys.size();
     if (n_assigned == 0) return;
 
     unique_keys.resize(n_assigned);
@@ -984,6 +991,12 @@ void add_to_map_impl(cudaStream_t stream, Point* points, uint32_t n_points, Pose
     if (valid_size > 0) {
         rebuild_hashmap_keyed_kernel<<<grid_dim(valid_size), 256, 0, stream>>>(
             s->table_keys, s->table_vals, s->dist_keys, valid_size, s->table_cap);
+    }
+
+    if (s->trace_map_debug && ((scan_number % 100u) == 0u)) {
+        fprintf(stderr,
+                "[CUDA-MAP] scan=%u points=%u unique=%u assigned=%u add_cursor=%u lru_cursor=%u valid_size=%u\n",
+                scan_number, n_points, n_unique, n_assigned, s->add_cursor, s->lru_cursor, valid_size);
     }
 
     // Defer sync to start of next scan (mirrors Metal's deferred design)
