@@ -21,6 +21,8 @@ pub struct Pipeline {
     cuda_stream: pelorus_cuda::Stream,
     #[cfg(feature = "metal")]
     metal_stream: pelorus_metal::Stream,
+    #[cfg(feature = "vulkan")]
+    vulkan_stream: pelorus_vulkan::Stream,
 }
 
 /// Result from cloud registration and mapping
@@ -76,6 +78,8 @@ impl Pipeline {
             cuda_stream: pelorus_cuda::Stream::new(),
             #[cfg(feature = "metal")]
             metal_stream: pelorus_metal::Stream::new(),
+            #[cfg(feature = "vulkan")]
+            vulkan_stream: pelorus_vulkan::Stream::new(),
         }
     }
 
@@ -177,6 +181,8 @@ impl Pipeline {
                 &self.cuda_stream,
                 #[cfg(feature = "metal")]
                 &self.metal_stream,
+                #[cfg(feature = "vulkan")]
+                &self.vulkan_stream,
             ) {
                 Ok(Some(res)) => {
                     let state = map.get_state();

@@ -7,8 +7,10 @@ use pelorus_core::{
 use pelorus_cuda::CudaBuffer;
 #[cfg(feature = "metal")]
 use pelorus_metal::MetalBuffer;
+#[cfg(feature = "vulkan")]
+use pelorus_vulkan::VulkanBuffer;
 use prelio::LocatedBufferView;
-#[cfg(not(any(feature = "cuda", feature = "metal")))]
+#[cfg(not(any(feature = "cuda", feature = "metal", feature = "vulkan")))]
 use rayon::prelude::*;
 use ros_pointcloud2::{
     impl_pointxyz_for_nalgebra,
@@ -28,13 +30,15 @@ pub struct RegistrationState {
     laser_point_noise_cov: f64,
     ekf_max_iterations: usize,
     base_to_lidar: Isometry3<f64>,
-    #[cfg(any(feature = "cuda", feature = "metal"))]
+    #[cfg(any(feature = "cuda", feature = "metal", feature = "vulkan"))]
     planes_cpu_buffer: Vec<PointXYZINormal>,
     #[cfg(feature = "cuda")]
     planes_gpu_buffer: Option<CudaBuffer>,
     #[cfg(feature = "metal")]
     planes_gpu_buffer: Option<MetalBuffer>,
-    #[cfg(not(any(feature = "cuda", feature = "metal")))]
+    #[cfg(feature = "vulkan")]
+    planes_gpu_buffer: Option<VulkanBuffer>,
+    #[cfg(not(any(feature = "cuda", feature = "metal", feature = "vulkan")))]
     planes_buffer: Vec<PointXYZINormal>,
 }
 
@@ -86,18 +90,20 @@ impl RegistrationState {
             laser_point_noise_cov,
             ekf_max_iterations,
             base_to_lidar,
-            #[cfg(any(feature = "cuda", feature = "metal"))]
+            #[cfg(any(feature = "cuda", feature = "metal", feature = "vulkan"))]
             planes_cpu_buffer: Vec::new(),
             #[cfg(feature = "cuda")]
             planes_gpu_buffer: None,
             #[cfg(feature = "metal")]
             planes_gpu_buffer: None,
-            #[cfg(not(any(feature = "cuda", feature = "metal")))]
+            #[cfg(feature = "vulkan")]
+            planes_gpu_buffer: None,
+            #[cfg(not(any(feature = "cuda", feature = "metal", feature = "vulkan")))]
             planes_buffer: Vec::new(),
         }
     }
 
-    #[cfg(not(any(feature = "cuda", feature = "metal")))]
+    #[cfg(not(any(feature = "cuda", feature = "metal", feature = "vulkan")))]
     fn add_to_map(&mut self, cloud: &LocatedBufferView<PointXYZIT>, pose: Isometry3<f64>) {
         let LocatedBufferView::Ram(cloud) = cloud;
 
@@ -123,6 +129,8 @@ impl RegistrationState {
         pelorus_cuda::cleanup_map();
         #[cfg(feature = "metal")]
         pelorus_metal::cleanup_map();
+        #[cfg(feature = "vulkan")]
+        pelorus_vulkan::cleanup_map();
     }
 
     pub fn get_odometry_covariances(&self) -> ([f64; 36], [f64; 9]) {
@@ -477,22 +485,25 @@ impl crate::Registration for RegistrationState {
         eval: &mut RuntimeEvaluator,
         #[cfg(feature = "cuda")] stream: &pelorus_cuda::Stream,
         #[cfg(feature = "metal")] stream: &pelorus_metal::Stream,
+        #[cfg(feature = "vulkan")] stream: &pelorus_vulkan::Stream,
     ) -> anyhow::Result<Option<crate::CloudRegisterResult>> {
         let eval_outer = std::sync::Arc::new(std::sync::RwLock::new(eval));
         #[cfg(feature = "cuda")]
         let map_empty = pelorus_cuda::get_map_size() == 0;
         #[cfg(feature = "metal")]
         let map_empty = pelorus_metal::get_map_size() == 0;
+        #[cfg(feature = "vulkan")]
+        let map_empty = pelorus_vulkan::get_map_size() == 0;
 
         if map_only {
-            #[cfg(not(any(feature = "cuda", feature = "metal")))]
+            #[cfg(not(any(feature = "cuda", feature = "metal", feature = "vulkan")))]
             self.add_to_map(cloud, imu_transform);
             #[cfg(feature = "cuda")]
             {
                 let cloud = match cloud {
                     LocatedBufferView::Ram(_) => panic!("cuda buffer in cpu task"),
                     LocatedBufferView::Cuda { buffer } => buffer,
-                    #[cfg(feature = "metal")]
+                    #[cfg(any(feature = "metal", feature = "vulkan"))]
                     _ => unreachable!(),
                 };
 
@@ -505,7 +516,7 @@ impl crate::Registration for RegistrationState {
                 let cloud = match cloud {
                     LocatedBufferView::Ram(_) => panic!("metal buffer in cpu task"),
                     LocatedBufferView::Metal { buffer } => buffer,
-                    #[cfg(feature = "cuda")]
+                    #[cfg(any(feature = "cuda", feature = "vulkan"))]
                     _ => unreachable!(),
                 };
 
@@ -513,16 +524,30 @@ impl crate::Registration for RegistrationState {
                 let rot_quat: pelorus_metal::Quaternion = imu_transform.rotation.into();
                 pelorus_metal::add_to_map(&stream, cloud, &transl, &rot_quat);
             }
+            #[cfg(feature = "vulkan")]
+            {
+                let cloud = match cloud {
+                    LocatedBufferView::Ram(_) => panic!("vulkan buffer in cpu task"),
+                    LocatedBufferView::Vulkan { buffer } => buffer,
+                    #[cfg(any(feature = "cuda", feature = "metal"))]
+                    _ => unreachable!(),
+                };
+
+                let transl = &imu_transform.translation.vector.into();
+                let rot_quat: pelorus_vulkan::Quaternion = imu_transform.rotation.into();
+                pelorus_vulkan::add_to_map(&stream, cloud, &transl, &rot_quat);
+            }
 
             return Ok(None);
         }
 
-        #[cfg(not(any(feature = "cuda", feature = "metal")))]
+        #[cfg(not(any(feature = "cuda", feature = "metal", feature = "vulkan")))]
         let map_empty = self.map.is_empty();
         if !map_empty {
-            #[cfg(not(any(feature = "cuda", feature = "metal")))]
+            #[cfg(not(any(feature = "cuda", feature = "metal", feature = "vulkan")))]
             let map = &mut self.map;
-            const EXTRA: f32 = if cfg!(any(feature = "cuda", feature = "metal")) {
+            const EXTRA: f32 = if cfg!(any(feature = "cuda", feature = "metal", feature = "vulkan"))
+            {
                 1.7
             } else {
                 1.5
@@ -534,7 +559,7 @@ impl crate::Registration for RegistrationState {
 
             let eval_cb = eval_outer.clone();
 
-            #[cfg(any(feature = "cuda", feature = "metal"))]
+            #[cfg(any(feature = "cuda", feature = "metal", feature = "vulkan"))]
             {
                 if self.planes_cpu_buffer.capacity() < cloud.len() {
                     self.planes_cpu_buffer
@@ -558,13 +583,23 @@ impl crate::Registration for RegistrationState {
                 {
                     self.planes_gpu_buffer = Some(MetalBuffer::new(
                         stream,
-                        size_of::<PointXYZINormal>(),
+                        size_of::<pelorus_metal::PointNormal>(),
+                        cloud_len_alloc,
+                    ));
+                }
+                #[cfg(feature = "vulkan")]
+                if self.planes_gpu_buffer.is_none()
+                    || self.planes_gpu_buffer.as_ref().unwrap().n < cloud.len()
+                {
+                    self.planes_gpu_buffer = Some(VulkanBuffer::new_host_visible(
+                        stream,
+                        size_of::<pelorus_vulkan::PointNormal>(),
                         cloud_len_alloc,
                     ));
                 }
             }
 
-            #[cfg(not(any(feature = "cuda", feature = "metal")))]
+            #[cfg(not(any(feature = "cuda", feature = "metal", feature = "vulkan")))]
             {
                 if self.planes_buffer.capacity() < cloud.len() {
                     self.planes_buffer
@@ -572,12 +607,12 @@ impl crate::Registration for RegistrationState {
                 }
             }
 
-            #[cfg(any(feature = "cuda", feature = "metal"))]
+            #[cfg(any(feature = "cuda", feature = "metal", feature = "vulkan"))]
             let planes_cpu_buffer = std::ptr::addr_of_mut!(self.planes_cpu_buffer);
-            #[cfg(any(feature = "cuda", feature = "metal"))]
+            #[cfg(any(feature = "cuda", feature = "metal", feature = "vulkan"))]
             let planes_gpu_buffer = std::ptr::addr_of_mut!(self.planes_gpu_buffer);
 
-            #[cfg(not(any(feature = "cuda", feature = "metal")))]
+            #[cfg(not(any(feature = "cuda", feature = "metal", feature = "vulkan")))]
             let planes_buffer = std::ptr::addr_of_mut!(self.planes_buffer);
 
             self.ekf.correct(
@@ -594,9 +629,9 @@ impl crate::Registration for RegistrationState {
                     let mut eval = eval_cb.write().unwrap();
                     eval.start("ekf_correct/model/planes").unwrap();
 
-                    #[cfg(any(feature = "cuda", feature = "metal"))]
+                    #[cfg(any(feature = "cuda", feature = "metal", feature = "vulkan"))]
                     let planes = unsafe { &mut *planes_cpu_buffer };
-                    #[cfg(any(feature = "cuda", feature = "metal"))]
+                    #[cfg(any(feature = "cuda", feature = "metal", feature = "vulkan"))]
                     {
                         planes.clear();
                         unsafe { planes.set_len(cloud.len()) };
@@ -610,17 +645,21 @@ impl crate::Registration for RegistrationState {
                                 panic!("cloud not allocated on GPU")
                             }
                             LocatedBufferView::Cuda { buffer } => buffer,
-                            #[cfg(feature = "metal")]
+                            #[cfg(any(feature = "metal", feature = "vulkan"))]
                             _ => unreachable!(),
                         };
 
                         // call to cuda kernel
-                        let pose_q: pelorus_cuda::Quaternion = nalgebra::UnitQuaternion::from_matrix(
-                            &ekf_state.pose().rotation().matrix().clone(),
-                        ).into();
-                        let offset_q: pelorus_cuda::Quaternion = nalgebra::UnitQuaternion::from_matrix(
-                            &ekf_state.offset_r_l_i.matrix().clone(),
-                        ).into();
+                        let pose_q: pelorus_cuda::Quaternion =
+                            nalgebra::UnitQuaternion::from_matrix(
+                                &ekf_state.pose().rotation().matrix().clone(),
+                            )
+                            .into();
+                        let offset_q: pelorus_cuda::Quaternion =
+                            nalgebra::UnitQuaternion::from_matrix(
+                                &ekf_state.offset_r_l_i.matrix().clone(),
+                            )
+                            .into();
                         pelorus_cuda::planes_cuda(
                             &stream,
                             cloud,
@@ -651,7 +690,7 @@ impl crate::Registration for RegistrationState {
                                 panic!("cloud not allocated on GPU")
                             }
                             LocatedBufferView::Metal { buffer } => buffer,
-                            #[cfg(feature = "cuda")]
+                            #[cfg(any(feature = "cuda", feature = "vulkan"))]
                             _ => unreachable!(),
                         };
 
@@ -689,8 +728,50 @@ impl crate::Registration for RegistrationState {
 
                         planes
                     };
+                    #[cfg(feature = "vulkan")]
+                    let planes = {
+                        let planes_gpu = unsafe { (*planes_gpu_buffer).as_mut().unwrap() };
+                        let cloud = match cloud {
+                            LocatedBufferView::Ram(_) => {
+                                panic!("cloud not allocated on GPU")
+                            }
+                            LocatedBufferView::Vulkan { buffer } => buffer,
+                            #[cfg(any(feature = "cuda", feature = "metal"))]
+                            _ => unreachable!(),
+                        };
 
-                    #[cfg(not(any(feature = "cuda", feature = "metal")))]
+                        let pose_q: pelorus_vulkan::Quaternion =
+                            nalgebra::UnitQuaternion::from_matrix(
+                                &ekf_state.pose().rotation().matrix().clone(),
+                            )
+                            .into();
+                        let offset_q: pelorus_vulkan::Quaternion =
+                            nalgebra::UnitQuaternion::from_matrix(
+                                &ekf_state.offset_r_l_i.matrix().clone(),
+                            )
+                            .into();
+                        pelorus_vulkan::planes_vulkan(
+                            &stream,
+                            cloud,
+                            &pelorus_vulkan::Vector3::new(
+                                ekf_state.pose().translation().x,
+                                ekf_state.pose().translation().y,
+                                ekf_state.pose().translation().z,
+                            ),
+                            &pose_q,
+                            &pelorus_vulkan::Vector3::new(
+                                ekf_state.offset_t_l_i.x,
+                                ekf_state.offset_t_l_i.y,
+                                ekf_state.offset_t_l_i.z,
+                            ),
+                            &offset_q,
+                            planes,
+                            planes_gpu,
+                        );
+                        planes
+                    };
+
+                    #[cfg(not(any(feature = "cuda", feature = "metal", feature = "vulkan")))]
                     let planes = {
                         let LocatedBufferView::Ram(cloud) = cloud;
 
@@ -837,33 +918,27 @@ impl crate::Registration for RegistrationState {
         let t_w_b = t_w_l * self.base_to_lidar.inverse();
 
         // Signal prelio it can use the ekf again
-        ready_for_next
-            .expect("we need ready_for_next!")
-            .send(())
-            .unwrap();
+        if let Some(ready) = ready_for_next {
+            let _ = ready.send(());
+        }
 
         {
             eval_outer.write().unwrap().start("map_update").unwrap();
         }
 
-        #[cfg(not(any(feature = "cuda", feature = "metal")))]
+        #[cfg(not(any(feature = "cuda", feature = "metal", feature = "vulkan")))]
         self.add_to_map(cloud, t_w_l);
         #[cfg(feature = "cuda")]
         {
             let cloud = match cloud {
                 LocatedBufferView::Ram(_) => panic!("cuda buffer in cpu task"),
                 LocatedBufferView::Cuda { buffer } => buffer,
-                #[cfg(feature = "metal")]
+                #[cfg(any(feature = "metal", feature = "vulkan"))]
                 _ => unreachable!(),
             };
 
             let rot_quat: pelorus_cuda::Quaternion = t_w_l.rotation.into();
-            pelorus_cuda::add_to_map(
-                &stream,
-                cloud,
-                &t_w_l.translation.vector.into(),
-                &rot_quat,
-            );
+            pelorus_cuda::add_to_map(&stream, cloud, &t_w_l.translation.vector.into(), &rot_quat);
             if std::env::var_os("PELORUS_CUDA_SYNC_MAP").is_some() {
                 stream.sync();
             }
@@ -873,7 +948,7 @@ impl crate::Registration for RegistrationState {
             let cloud = match cloud {
                 LocatedBufferView::Ram(_) => panic!("metal buffer in cpu task"),
                 LocatedBufferView::Metal { buffer } => buffer,
-                #[cfg(feature = "cuda")]
+                #[cfg(any(feature = "cuda", feature = "vulkan"))]
                 _ => unreachable!(),
             };
 
@@ -884,6 +959,23 @@ impl crate::Registration for RegistrationState {
                 nalgebra::UnitQuaternion::from_matrix(&mat).into()
             };
             pelorus_metal::add_to_map(&stream, cloud, transl, &rot_quat);
+        }
+        #[cfg(feature = "vulkan")]
+        {
+            let cloud = match cloud {
+                LocatedBufferView::Ram(_) => panic!("vulkan buffer in cpu task"),
+                LocatedBufferView::Vulkan { buffer } => buffer,
+                #[cfg(any(feature = "cuda", feature = "metal"))]
+                _ => unreachable!(),
+            };
+
+            let transl = &t_w_l.translation.vector.into();
+            let rot_quat: pelorus_vulkan::Quaternion = {
+                let mat: nalgebra::Matrix3<f64> =
+                    t_w_l.rotation.to_rotation_matrix().matrix().clone();
+                nalgebra::UnitQuaternion::from_matrix(&mat).into()
+            };
+            pelorus_vulkan::add_to_map(&stream, cloud, transl, &rot_quat);
         }
         {
             eval_outer.write().unwrap().stop("map_update").unwrap();

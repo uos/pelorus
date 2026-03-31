@@ -1,0 +1,30 @@
+[package]
+name = "pelorus_vulkan"
+description = "Vulkan Accelerated Components for Pelorus Odometry."
+edition.workspace = true
+include.workspace = true
+keywords.workspace = true
+license.workspace = true
+repository.workspace = true
+version.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+ash = "0.38"
+bytemuck.workspace = true
+nalgebra.workspace = true
+ros_pointcloud2.workspace = true
+pelorus_core.workspace = true
+spole.workspace = true
+log.workspace = true
+libc.workspace = true
+shaderc = "0.8"
+
+[build-dependencies]
+pkg-config = "0.3"
+cc = "1.0"
+
+[features]
+vulkan_available = []
+vulkan_enable = []

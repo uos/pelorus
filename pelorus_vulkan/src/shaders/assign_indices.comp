@@ -1,0 +1,55 @@
+#version 450
+
+layout(local_size_x = 256) in;
+
+layout(std430, set = 0, binding = 4) readonly buffer UniqueKeys { int unique_keys[]; };
+layout(std430, set = 0, binding = 12) readonly buffer TableKeys { int table_keys[]; };
+layout(std430, set = 0, binding = 13) readonly buffer TableVals { uint table_vals[]; };
+layout(std430, set = 0, binding = 5) writeonly buffer TargetIndices { uint target_indices[]; };
+layout(std430, set = 0, binding = 8) writeonly buffer UpdateFlags { uint update_flags[]; };
+layout(std430, set = 0, binding = 14) buffer DistKeys { int dist_keys[]; };
+layout(std430, set = 0, binding = 10) buffer Counters {
+    uint unique_count;
+    uint add_cursor;
+    uint lru_cursor;
+};
+layout(std430, set = 0, binding = 11) readonly buffer LRUMapping { uint lru_mapping[]; };
+
+void main() {
+    uint j = gl_GlobalInvocationID.x;
+    if (j >= unique_count) return;
+
+    int key = unique_keys[j];
+    if (key == EMPTY_KEY) return;
+
+    // 1. Look up in hashmap
+    uint slot = hash_fn(key) & (pc.table_cap - 1);
+    int found_idx = -1;
+    for (uint i = 0; i < pc.table_cap; i++) {
+        int k = table_keys[slot];
+        if (k == EMPTY_KEY) break;
+        if (k == key) {
+            found_idx = int(table_vals[slot]);
+            break;
+        }
+        slot = (slot + 1) & (pc.table_cap - 1);
+    }
+
+    if (found_idx != -1) {
+        target_indices[j] = uint(found_idx);
+        update_flags[j] = 1;
+    } else {
+        update_flags[j] = 0;
+        uint idx;
+        uint old_add = atomicAdd(add_cursor, 1);
+        if (old_add < pc.dist_cap) {
+            idx = old_add;
+        } else {
+            // Use atomicAdd on lru_cursor to get a victim from the mapping
+            uint lru_idx = atomicAdd(lru_cursor, 1) % pc.dist_cap;
+            idx = lru_mapping[lru_idx];
+        }
+        target_indices[j] = idx;
+        dist_keys[idx] = key;
+    }
+}

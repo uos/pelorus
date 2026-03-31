@@ -1063,6 +1063,14 @@ impl PrelioNode {
         ))
     }
 
+    pub fn request_shutdown(&self) {
+        if let Ok(state) = self.state.lock() {
+            if let Ok(mut lifis) = state.lifis.lock() {
+                lifis.shutdown();
+            }
+        }
+    }
+
     /// Translates ROS types to Prelio Types
     pub fn transform_types(
         sender: std::sync::mpsc::Sender<Tick>,
@@ -1136,6 +1144,12 @@ impl PrelioNode {
                 return;
             }
         }
+    }
+}
+
+impl Drop for PrelioNode {
+    fn drop(&mut self) {
+        self.request_shutdown();
     }
 }
 

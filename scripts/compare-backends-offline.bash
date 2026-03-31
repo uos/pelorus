@@ -5,9 +5,11 @@ set -euo pipefail
 export LC_ALL=C
 
 # Script: compare-backends-offline.bash
-# Purpose: CPU vs Metal trajectory equivalence testing on real bagfile data
-# Usage: ./scripts/compare-backends-offline.bash <bagfile-specifier> [config-file]
-# Example: ./scripts/compare-backends-offline.bash "$(marina resolve wachsbleiche:hunter:parking_25)"
+# Purpose: CPU vs selected accelerator trajectory equivalence on real bagfile data
+# Usage:
+#   ./scripts/compare-backends-offline.bash [--backends <list|auto>] <bagfile-path> [config-file]
+# Example:
+#   ./scripts/compare-backends-offline.bash --backends vulkan "$(marina resolve wachsbleiche:hunter:parking_25)" pelorus-velodyne.rl
 
 # Color codes for output
 RED='\033[0;31m'
@@ -17,8 +19,9 @@ NC='\033[0m' # No Color
 
 # Configuration
 STRICT_MODE="${STRICT_MODE:-true}"
-BAGFILE="${1:?Usage: $0 <bagfile-path> [config-file]}"
-CONFIG_FILE="${2:-pelorus.rl}"
+BACKENDS_SPEC="auto"
+BAGFILE=""
+CONFIG_FILE="pelorus.rl"
 RUN_ID=$(date +%s)_$RANDOM
 OUTPUT_DIR="trajectory_comparison_${RUN_ID}"
 
@@ -36,8 +39,10 @@ UMEYAMA_SCALE_MAX=1.05
 TRAJ_CPU="${OUTPUT_DIR}/pelorus_traj_cpu_${RUN_ID}.tum"
 TRAJ_METAL="${OUTPUT_DIR}/pelorus_traj_metal_${RUN_ID}.tum"
 TRAJ_CUDA="${OUTPUT_DIR}/pelorus_traj_cuda_${RUN_ID}.tum"
+TRAJ_VULKAN="${OUTPUT_DIR}/pelorus_traj_vulkan_${RUN_ID}.tum"
 COMPARISON_JSON_METAL="${OUTPUT_DIR}/comparison_metrics_metal_vs_cpu_${RUN_ID}.json"
 COMPARISON_JSON_CUDA="${OUTPUT_DIR}/comparison_metrics_cuda_vs_cpu_${RUN_ID}.json"
+COMPARISON_JSON_VULKAN="${OUTPUT_DIR}/comparison_metrics_vulkan_vs_cpu_${RUN_ID}.json"
 
 # Helper functions
 log_info() {
@@ -71,6 +76,110 @@ has_nvidia_hardware() {
     fi
 
     return 1
+}
+
+parse_args() {
+    local positional=()
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --backends)
+                shift
+                [[ $# -gt 0 ]] || fail "--backends requires a value"
+                BACKENDS_SPEC="$1"
+                ;;
+            --help|-h)
+                cat <<EOF
+Usage: $0 [--backends <list|auto>] <bagfile-path> [config-file]
+
+Options:
+  --backends   Comma-separated list of backends to test against CPU.
+               Supported values: cuda,metal,vulkan
+               Special value: auto (default) -> run all available backends.
+EOF
+                exit 0
+                ;;
+            *)
+                positional+=("$1")
+                ;;
+        esac
+        shift
+    done
+
+    [[ ${#positional[@]} -ge 1 ]] || fail "Usage: $0 [--backends <list|auto>] <bagfile-path> [config-file]"
+    BAGFILE="${positional[0]}"
+    if [[ ${#positional[@]} -ge 2 ]]; then
+        CONFIG_FILE="${positional[1]}"
+    fi
+}
+
+is_valid_backend() {
+    case "$1" in
+        cuda|metal|vulkan) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
+has_vulkan_hardware() {
+    # Best signal: working Vulkan instance query.
+    if command -v vulkaninfo &> /dev/null; then
+        vulkaninfo --summary &> /dev/null && return 0
+    fi
+
+    # Fallback path when vulkaninfo isn't installed:
+    # 1) Vulkan loader library is present
+    # 2) A render node exists (typical for GPU compute access on Linux)
+    if command -v ldconfig &> /dev/null && ldconfig -p 2>/dev/null | grep -q 'libvulkan\.so'; then
+        if compgen -G "/dev/dri/renderD*" > /dev/null; then
+            return 0
+        fi
+    fi
+
+    return 1
+}
+
+backend_supported_on_host() {
+    case "$1" in
+        metal) is_macos ;;
+        cuda) has_nvidia_hardware ;;
+        vulkan) has_vulkan_hardware ;;
+        *) return 1 ;;
+    esac
+}
+
+backend_display_name() {
+    case "$1" in
+        metal) echo "Metal" ;;
+        cuda) echo "CUDA" ;;
+        vulkan) echo "Vulkan" ;;
+        *) echo "$1" ;;
+    esac
+}
+
+resolve_requested_backends() {
+    local spec="$1"
+    local -n out_arr="$2"
+    out_arr=()
+
+    if [[ "$spec" == "auto" ]]; then
+        for b in metal cuda vulkan; do
+            if backend_supported_on_host "$b"; then
+                out_arr+=("$b")
+            fi
+        done
+        return 0
+    fi
+
+    IFS=',' read -r -a requested <<< "$spec"
+    for raw in "${requested[@]}"; do
+        local b
+        b="$(echo "$raw" | tr '[:upper:]' '[:lower:]' | xargs)"
+        [[ -n "$b" ]] || continue
+        is_valid_backend "$b" || fail "Unknown backend '$b' (supported: cuda, metal, vulkan)"
+        # Deduplicate while preserving order
+        if [[ " ${out_arr[*]} " != *" $b "* ]]; then
+            out_arr+=("$b")
+        fi
+    done
 }
 
 float_gt() {
@@ -269,52 +378,62 @@ compare_trajectories() {
 }
 
 main() {
+    parse_args "$@"
     log_info "=========================================="
-    log_info "CPU vs Metal Trajectory Equivalence Test"
+    log_info "CPU vs Selected Backend Equivalence Test"
     log_info "=========================================="
     log_info "Bagfile: $BAGFILE"
     log_info "Config:  $CONFIG_FILE"
     log_info "Run ID:  $RUN_ID"
+    log_info "Backends: $BACKENDS_SPEC"
     
     check_prerequisites
     setup_output_dir
 
     local ran_gpu_comparison=false
+    local requested_backends=()
+    resolve_requested_backends "$BACKENDS_SPEC" requested_backends
     
     # Run CPU backend (no features)
     run_backend_test "CPU" "" "$TRAJ_CPU"
     
-    # Run Metal backend (macOS only)
-    if is_macos; then
-        run_backend_test "Metal" "metal" "$TRAJ_METAL"
+    for backend in "${requested_backends[@]}"; do
+        local backend_name
+        backend_name="$(backend_display_name "$backend")"
 
-        if ! compare_trajectories "Metal" "$TRAJ_METAL" "CPU" "$TRAJ_CPU" "$COMPARISON_JSON_METAL"; then
-            log_error "Trajectory comparison FAILED (Metal vs CPU)"
+        if ! backend_supported_on_host "$backend"; then
+            log_warn "Skipping $backend_name test (unsupported on this host)"
+            continue
+        fi
+
+        local traj_file comparison_json
+        case "$backend" in
+            metal)
+                traj_file="$TRAJ_METAL"
+                comparison_json="$COMPARISON_JSON_METAL"
+                ;;
+            cuda)
+                traj_file="$TRAJ_CUDA"
+                comparison_json="$COMPARISON_JSON_CUDA"
+                ;;
+            vulkan)
+                traj_file="$TRAJ_VULKAN"
+                comparison_json="$COMPARISON_JSON_VULKAN"
+                ;;
+            *)
+                fail "Unhandled backend: $backend"
+                ;;
+        esac
+
+        run_backend_test "$backend_name" "$backend" "$traj_file"
+        if ! compare_trajectories "$backend_name" "$traj_file" "CPU" "$TRAJ_CPU" "$comparison_json"; then
+            log_error "Trajectory comparison FAILED ($backend_name vs CPU)"
             log_error "Equivalence thresholds were exceeded"
             log_info "Trajectories and metrics saved to: $OUTPUT_DIR"
             exit 1
         fi
-
         ran_gpu_comparison=true
-    else
-        log_warn "Skipping Metal test (macOS only feature)"
-    fi
-
-    # Run CUDA backend only if NVIDIA hardware is present
-    if has_nvidia_hardware; then
-        run_backend_test "CUDA" "cuda" "$TRAJ_CUDA"
-
-        if ! compare_trajectories "CUDA" "$TRAJ_CUDA" "CPU" "$TRAJ_CPU" "$COMPARISON_JSON_CUDA"; then
-            log_error "Trajectory comparison FAILED (CUDA vs CPU)"
-            log_error "Equivalence thresholds were exceeded"
-            log_info "Trajectories and metrics saved to: $OUTPUT_DIR"
-            exit 1
-        fi
-
-        ran_gpu_comparison=true
-    else
-        log_warn "Skipping CUDA test (no NVIDIA hardware detected)"
-    fi
+    done
 
     if [[ "$ran_gpu_comparison" != "true" ]]; then
         log_warn "No GPU backend comparison was executed"

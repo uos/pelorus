@@ -3,7 +3,7 @@ mod naive_preint;
 mod naive_preint_eth;
 use rayon::prelude::*;
 
-use log::{error, info, warn};
+use log::{debug, error, info, warn};
 
 use nalgebra::*;
 use pelorus_core::log_debouncer::{set_default_debounce_secs, should_log_once_default};
@@ -15,11 +15,17 @@ use pelorus_core::{
     RobosensePointNoIntensity, Twist, VelodynePoint, VelodynePointNoIntensity, time_msg_from_secs,
     timing::RuntimeEvaluator,
 };
-#[cfg(all(feature = "cuda", feature = "metal"))]
-compile_error!("Features 'cuda' and 'metal' are mutually exclusive. Enable only one.");
+#[cfg(any(
+    all(feature = "cuda", feature = "metal"),
+    all(feature = "cuda", feature = "vulkan"),
+    all(feature = "metal", feature = "vulkan")
+))]
+compile_error!("Features 'cuda', 'metal' and 'vulkan' are mutually exclusive. Enable only one.");
 
 #[cfg(feature = "cuda")]
 use pelorus_cuda::CudaBuffer;
+#[cfg(feature = "vulkan")]
+use pelorus_vulkan::VulkanBuffer;
 use std::thread;
 
 use anyhow::Result;
@@ -39,6 +45,8 @@ pub trait BufferStream {}
 impl BufferStream for pelorus_cuda::Stream {}
 #[cfg(feature = "metal")]
 impl BufferStream for pelorus_metal::Stream {}
+#[cfg(feature = "vulkan")]
+impl BufferStream for pelorus_vulkan::Stream {}
 
 #[inline]
 fn safe_angle(angle: f64) -> f64 {
@@ -129,13 +137,17 @@ pub enum LocatedBufferView<T> {
     Metal {
         buffer: pelorus_metal::MetalBuffer,
     },
+    #[cfg(feature = "vulkan")]
+    Vulkan {
+        buffer: pelorus_vulkan::VulkanBuffer,
+    },
 }
 
 impl<T> LocatedBufferView<T> {
     #[cfg(feature = "cuda")]
     pub fn alloc_points_cuda(stream: &pelorus_cuda::Stream, len: usize) -> Self {
         Self::Cuda {
-            buffer: CudaBuffer::new(stream, size_of::<PointXYZI>(), len),
+            buffer: CudaBuffer::new(stream, size_of::<T>(), len),
         }
     }
     #[cfg(feature = "cuda")]
@@ -147,13 +159,25 @@ impl<T> LocatedBufferView<T> {
     #[cfg(feature = "metal")]
     pub fn alloc_points_metal(stream: &pelorus_metal::Stream, len: usize) -> Self {
         Self::Metal {
-            buffer: pelorus_metal::MetalBuffer::new(stream, size_of::<PointXYZI>(), len),
+            buffer: pelorus_metal::MetalBuffer::new(stream, size_of::<T>(), len),
         }
     }
     #[cfg(feature = "metal")]
     pub fn alloc_neighbors_metal(stream: &pelorus_metal::Stream, len: usize) -> Self {
         Self::Metal {
             buffer: pelorus_metal::MetalBuffer::new(stream, size_of::<usize>(), len),
+        }
+    }
+    #[cfg(feature = "vulkan")]
+    pub fn alloc_points_vulkan(stream: &pelorus_vulkan::Stream, len: usize) -> Self {
+        Self::Vulkan {
+            buffer: VulkanBuffer::new(stream, size_of::<T>(), len),
+        }
+    }
+    #[cfg(feature = "vulkan")]
+    pub fn alloc_neighbors_vulkan(stream: &pelorus_vulkan::Stream, len: usize) -> Self {
+        Self::Vulkan {
+            buffer: VulkanBuffer::new(stream, size_of::<usize>(), len),
         }
     }
     pub fn from_vec_cpu(src: Vec<T>) -> Self {
@@ -171,6 +195,12 @@ impl<T> LocatedBufferView<T> {
             buffer: pelorus_metal::MetalBuffer::from_cloud(stream, src),
         }
     }
+    #[cfg(feature = "vulkan")]
+    pub fn copy_from_slice_vulkan(stream: &pelorus_vulkan::Stream, src: &[PointXYZIT]) -> Self {
+        Self::Vulkan {
+            buffer: VulkanBuffer::from_cloud(stream, src),
+        }
+    }
 
     #[cfg(feature = "cuda")]
     pub fn realloc_if_needed_cuda(&mut self, stream: &pelorus_cuda::Stream, len: usize) {
@@ -179,7 +209,7 @@ impl<T> LocatedBufferView<T> {
                 if buffer.n < len {
                     *buffer = pelorus_cuda::CudaBuffer::new(
                         stream,
-                        size_of::<PointXYZIT>(),
+                        size_of::<T>(),
                         (len as f32 * 1.2) as usize,
                     );
                 } else {
@@ -197,9 +227,22 @@ impl<T> LocatedBufferView<T> {
                 if buffer.capacity() < len {
                     *buffer = pelorus_metal::MetalBuffer::new(
                         stream,
-                        size_of::<PointXYZIT>(),
+                        size_of::<T>(),
                         (len as f32 * 1.2) as usize,
                     );
+                }
+                buffer.n = len;
+            }
+            _ => {}
+        }
+    }
+    #[cfg(feature = "vulkan")]
+    pub fn realloc_if_needed_vulkan(&mut self, stream: &pelorus_vulkan::Stream, len: usize) {
+        match self {
+            LocatedBufferView::Vulkan { buffer } => {
+                if buffer.capacity() < len {
+                    *buffer =
+                        VulkanBuffer::new(stream, size_of::<T>(), (len as f32 * 1.2) as usize);
                 }
                 buffer.n = len;
             }
@@ -220,6 +263,16 @@ impl<T> LocatedBufferView<T> {
             buffer.upload(stream, src);
         }
     }
+    #[cfg(feature = "vulkan")]
+    pub fn upload_from_slice_vulkan(
+        &mut self,
+        stream: &pelorus_vulkan::Stream,
+        src: &[PointXYZIT],
+    ) {
+        if let LocatedBufferView::Vulkan { buffer } = self {
+            buffer.upload(stream, src);
+        }
+    }
 
     pub fn len(&self) -> usize {
         match self {
@@ -228,6 +281,8 @@ impl<T> LocatedBufferView<T> {
             LocatedBufferView::Cuda { buffer: cloud } => cloud.n,
             #[cfg(feature = "metal")]
             LocatedBufferView::Metal { buffer } => buffer.n,
+            #[cfg(feature = "vulkan")]
+            LocatedBufferView::Vulkan { buffer } => buffer.n,
         }
     }
 }
@@ -573,9 +628,9 @@ fn filter_downsample<const N: usize, P: PointXYZITimestamp<N>>(
 }
 
 pub struct Prelio {
-    preproc_sender: std::sync::mpsc::Sender<LabeledPointCloud2Msg>,
-    imu_sender: std::sync::mpsc::Sender<ImuMsg>,
-    odom_sender: std::sync::mpsc::Sender<OdomMsg>,
+    preproc_sender: Option<std::sync::mpsc::Sender<LabeledPointCloud2Msg>>,
+    imu_sender: Option<std::sync::mpsc::Sender<ImuMsg>>,
+    odom_sender: Option<std::sync::mpsc::Sender<OdomMsg>>,
     synced_receiver: Option<std::sync::mpsc::Receiver<PrelioProcessedCloud>>,
     last_cloud_time: f64,
     imu_filter_fusion: ImuMadgwick,
@@ -837,12 +892,6 @@ impl Prelio {
         let vendor = lidar_vendor;
         thread::spawn(move || {
             let mut eval = RuntimeEvaluator::new();
-            let trace_preproc = std::env::var_os("PELORUS_TRACE_PREPROC").is_some();
-            let trace_preproc_limit = std::env::var("PELORUS_TRACE_PREPROC_LIMIT")
-                .ok()
-                .and_then(|s| s.parse::<usize>().ok())
-                .unwrap_or(300);
-            let mut trace_preproc_count = 0usize;
             while let Ok(labeled) = preproc_rx.recv() {
                 eval.start("filter_downsample").unwrap();
 
@@ -891,17 +940,6 @@ impl Prelio {
 
                 match result {
                     Ok(Some(cloud_meta)) => {
-                        if trace_preproc && trace_preproc_count < trace_preproc_limit {
-                            trace_preproc_count += 1;
-                            eprintln!(
-                                "[PELORUS_TRACE_PREPROC] idx={} scan_id={} status=some n={} first_ts={:.9} last_ts={:.9}",
-                                trace_preproc_count,
-                                labeled.scan_id,
-                                cloud_meta.0.len(),
-                                cloud_meta.2,
-                                cloud_meta.3,
-                            );
-                        }
                         eval.stop("filter_downsample").unwrap();
                         if let Err(e) =
                             filtered_cloud_tx.send((cloud_meta, labeled.scan_id, eval.clone()))
@@ -911,13 +949,6 @@ impl Prelio {
                         }
                     }
                     Ok(None) => {
-                        if trace_preproc && trace_preproc_count < trace_preproc_limit {
-                            trace_preproc_count += 1;
-                            eprintln!(
-                                "[PELORUS_TRACE_PREPROC] idx={} scan_id={} status=none",
-                                trace_preproc_count, labeled.scan_id
-                            );
-                        }
                         eval.stop("filter_downsample").unwrap();
                         info!("Pointcloud was filtered out");
                     }
@@ -930,10 +961,10 @@ impl Prelio {
         });
 
         Ok(Prelio {
-            imu_sender: imu_tx,
-            odom_sender: odom_tx,
+            imu_sender: Some(imu_tx),
+            odom_sender: Some(odom_tx),
             synced_receiver: Some(synced_cloud_imu_rx),
-            preproc_sender: preproc_tx,
+            preproc_sender: Some(preproc_tx),
             last_cloud_time: 0.0,
             imu_filter_fusion: ImuMadgwick::new(gravity),
             last_imu_time: 0.0,
@@ -941,6 +972,12 @@ impl Prelio {
             imu_calibration_apply: imu_intrinsic_calibration,
             madgwick_filter,
         })
+    }
+
+    pub fn shutdown(&mut self) {
+        self.preproc_sender.take();
+        self.imu_sender.take();
+        self.odom_sender.take();
     }
 
     pub fn get_chan(&mut self) -> Option<std::sync::mpsc::Receiver<PrelioProcessedCloud>> {
@@ -952,7 +989,6 @@ impl Prelio {
     /// Add a point cloud to the buffer. Returns a `scan_id` assigned to this cloud.
     pub fn add_pointcloud(&mut self, cloud: PointCloud2Msg) -> u64 {
         let cloud_stamp = timestamp_to_secs(&cloud.header.stamp);
-        let cloud_points_n = (cloud.dimensions.width * cloud.dimensions.height) as usize;
 
         // TODO handle time jumps in the past?
         // let buff_cloud = if cloud_stamp < self.last_cloud_time {
@@ -974,28 +1010,18 @@ impl Prelio {
         // Generate a unique scan id and send a labeled cloud into preprocessing.
         static SCAN_ID_COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
         let scan_id = SCAN_ID_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        if std::env::var_os("PELORUS_TRACE_CLOUD_IN").is_some() {
-            static TRACE_CLOUD_IN_COUNT: std::sync::atomic::AtomicUsize =
-                std::sync::atomic::AtomicUsize::new(0);
-            let limit = std::env::var("PELORUS_TRACE_CLOUD_IN_LIMIT")
-                .ok()
-                .and_then(|s| s.parse::<usize>().ok())
-                .unwrap_or(300);
-            let idx = TRACE_CLOUD_IN_COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
-            if idx <= limit {
-                eprintln!(
-                    "[PELORUS_TRACE_CLOUD_IN] idx={} scan_id={} stamp={:.9} points_n={}",
-                    idx, scan_id, cloud_stamp, cloud_points_n
-                );
+        let labeled = LabeledPointCloud2Msg { scan_id, cloud };
+        match self.preproc_sender.as_ref() {
+            Some(sender) => match sender.send(labeled) {
+                Ok(_) => {}
+                Err(e) => {
+                    error!("Error sending pointcloud: {}", e);
+                }
+            },
+            None => {
+                debug!("Pointcloud ignored: pre-processing pipeline is shutting down");
             }
         }
-        let labeled = LabeledPointCloud2Msg { scan_id, cloud };
-        match self.preproc_sender.send(labeled) {
-            Ok(_) => {}
-            Err(e) => {
-                error!("Error sending pointcloud: {}", e);
-            }
-        };
         scan_id
     }
 
@@ -1059,13 +1085,18 @@ impl Prelio {
 
         // Add to buffer
         let imu_data = imu.clone();
-        match self.imu_sender.send(imu_data) {
-            Ok(_) => {}
-            Err(_) => {
+        match self.imu_sender.as_ref() {
+            Some(sender) => {
+                if sender.send(imu_data).is_err() {
+                    self.runtime_eval.stop("imu_pre").unwrap();
+                    return None;
+                }
+            }
+            None => {
                 self.runtime_eval.stop("imu_pre").unwrap();
                 return None;
             }
-        }
+        };
         self.runtime_eval.stop("imu_pre").unwrap();
 
         Some(imu)
@@ -1073,10 +1104,14 @@ impl Prelio {
 
     /// Add an odometry message to the buffer for synchronization with lidar.
     pub fn add_odom(&mut self, odom: OdomMsg) {
-        match self.odom_sender.send(odom) {
-            Ok(_) => {}
-            Err(e) => {
-                log::error!("Error while sending odom message to sync worker: {e}");
+        match self.odom_sender.as_ref() {
+            Some(sender) => {
+                if let Err(e) = sender.send(odom) {
+                    log::error!("Error while sending odom message to sync worker: {e}");
+                }
+            }
+            None => {
+                debug!("Odom ignored: sync worker is shutting down");
             }
         }
     }

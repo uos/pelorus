@@ -236,6 +236,7 @@ fn lio(
         synchronous_mode,
         None,
         None,
+        None,
     )
 }
 
@@ -247,6 +248,8 @@ fn lio_with_ready_signal(
     shared_stats: Option<std::sync::Arc<SharedStats>>,
     // Optional flag that, when set to true, will cause the LIO loop to exit
     shutdown_flag: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
+    // Optional blocking shutdown signal for immediate pipeline teardown.
+    shutdown_request_rx: Option<std::sync::mpsc::Receiver<()>>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     #[cfg(any(feature = "mt_pubsub", feature = "rat"))]
     let rt = if cfg!(feature = "mt_pubsub") || (synchronous_mode && cfg!(feature = "rat")) {
@@ -391,6 +394,15 @@ fn lio_with_ready_signal(
         rec.clone(),
         Some(ready_for_next_rx),
     )?;
+    let lifis_node = std::sync::Arc::new(lifis_node);
+    if let Some(stop_rx) = shutdown_request_rx {
+        let node_for_stop = std::sync::Arc::clone(&lifis_node);
+        std::thread::spawn(move || {
+            if stop_rx.recv().is_ok() {
+                node_for_stop.request_shutdown();
+            }
+        });
+    }
 
     // #[cfg(feature = "ros2-client")]
     // {
@@ -676,11 +688,15 @@ fn lio_with_ready_signal(
     let processing_handle = std::thread::spawn(move || {
         // Initialize Prelio prediction
         ready_for_next_tx.send(()).unwrap();
+        let mut ready_for_next_tx = Some(ready_for_next_tx);
+        let mut lifis_node = Some(lifis_node);
 
         #[cfg(feature = "cuda")]
         let cuda_stream = pelorus_cuda::Stream::new();
         #[cfg(feature = "metal")]
         let metal_stream = pelorus_metal::Stream::new();
+        #[cfg(feature = "vulkan")]
+        let vulkan_stream = pelorus_vulkan::Stream::new();
 
         // TODO avoid casting f32, maybe res needs f64?
         #[cfg(feature = "cuda")]
@@ -700,6 +716,15 @@ fn lio_with_ready_signal(
             config.dist_update_sensitivity,
             config.neighbor_max_range as f32,
             pelorus_metal::NeighborType::Neighbor26,
+        );
+        #[cfg(feature = "vulkan")]
+        pelorus_vulkan::init_map(
+            &vulkan_stream,
+            config.map_capacity,
+            config.map_resolution as f32,
+            config.dist_update_sensitivity,
+            config.neighbor_max_range as f32,
+            pelorus_vulkan::NeighborType::Neighbor26,
         );
 
         let mut trajectory_file = match export_trajectory {
@@ -763,48 +788,31 @@ fn lio_with_ready_signal(
                 100_000,
             ),
         };
+        #[cfg(feature = "vulkan")]
+        let mut persistent_cloud_buf = LocatedBufferView::Vulkan {
+            buffer: pelorus_vulkan::VulkanBuffer::new(
+                &vulkan_stream,
+                size_of::<pelorus_core::PointXYZIT>(),
+                100_000,
+            ),
+        };
 
         // Main processing loop. Use recv_timeout when a shutdown flag is provided so we can
         // check for shutdown requests periodically. If no shutdown flag is provided, block
         // on recv() as before.
-        let mut shutdown_seen_at: Option<std::time::Instant> = None;
-        let trace_ticks = std::env::var_os("PELORUS_TRACE_TICKS").is_some();
-        let trace_tick_limit = std::env::var("PELORUS_TRACE_TICKS_LIMIT")
-            .ok()
-            .and_then(|s| s.parse::<usize>().ok())
-            .unwrap_or(300);
-        let mut trace_tick_count = 0usize;
         loop {
             let lifis_tick = match processing_shutdown_flag.as_ref() {
                 Some(flag) => {
-                    // In offline/synchronous mode, briefly drain pending scans after shutdown
-                    // to reduce backend-dependent end-of-bag truncation.
                     if flag.load(std::sync::atomic::Ordering::Relaxed) {
-                        if shutdown_seen_at.is_none() {
-                            shutdown_seen_at = Some(std::time::Instant::now());
-                            info!("Shutdown flag detected, draining pending scans");
+                        if let Some(ref lifis_node) = lifis_node {
+                            lifis_node.request_shutdown();
                         }
-
-                        match synced_rx.recv_timeout(std::time::Duration::from_millis(50)) {
-                            Ok(t) => t,
-                            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
-                                let drained_enough = !synchronous_mode
-                                    || shutdown_seen_at
-                                        .map(|t| t.elapsed() >= std::time::Duration::from_secs(5))
-                                        .unwrap_or(false);
-                                if drained_enough {
-                                    info!("Shutdown drain complete, exiting processing loop");
-                                    break;
-                                }
-                                continue;
-                            }
-                            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
-                                info!("synced_rx disconnected, exiting processing loop");
-                                break;
-                            }
-                        }
+                        // Drop sync gate and node ownership so all producer chains can close.
+                        drop(ready_for_next_tx.take());
+                        drop(lifis_node.take());
+                        info!("Shutdown requested, exiting processing loop");
+                        break;
                     } else {
-                        shutdown_seen_at = None;
                         // Block with a short timeout so we can still respond promptly to shutdown signals.
                         match synced_rx.recv_timeout(std::time::Duration::from_millis(50)) {
                             Ok(t) => t,
@@ -849,28 +857,25 @@ fn lio_with_ready_signal(
                 persistent_cloud_buf
                     .upload_from_slice_metal(&metal_stream, lifis_tick.deskewed_cloud.as_slice());
             }
+            #[cfg(feature = "vulkan")]
+            {
+                vulkan_stream.sync();
+                persistent_cloud_buf
+                    .realloc_if_needed_vulkan(&vulkan_stream, lifis_tick.deskewed_cloud.len());
+                persistent_cloud_buf
+                    .upload_from_slice_vulkan(&vulkan_stream, lifis_tick.deskewed_cloud.as_slice());
+            }
 
-            #[cfg(any(feature = "cuda", feature = "metal"))]
+            #[cfg(any(feature = "cuda", feature = "metal", feature = "vulkan"))]
             let cloud_for_reg = &persistent_cloud_buf;
-            #[cfg(not(any(feature = "cuda", feature = "metal")))]
+            #[cfg(not(any(feature = "cuda", feature = "metal", feature = "vulkan")))]
             let cloud_for_reg = LocatedBufferView::Ram(lifis_tick.deskewed_cloud);
-            let cloud_len = cloud_for_reg.len();
 
             let cloud_out = lifis_tick.deskewed_cloud_passthrough;
 
             let orig_frame = lifis_tick.cloud_header.frame_id.clone();
             let orig_time = lifis_tick.cloud_header.stamp;
             let current_cloud_time = timestamp_to_secs(&lifis_tick.odom_time);
-            if trace_ticks && trace_tick_count < trace_tick_limit {
-                trace_tick_count += 1;
-                eprintln!(
-                    "[PELORUS_TRACE_TICK] idx={} ts={:.9} map_only={} cloud_n={}",
-                    trace_tick_count,
-                    current_cloud_time,
-                    lifis_tick.map_only,
-                    cloud_len,
-                );
-            }
             if let Some(existing_last_scan_time) = last_scan_time {
                 if current_cloud_time < existing_last_scan_time {
                     let mut map = map.lock().unwrap();
@@ -894,6 +899,15 @@ fn lio_with_ready_signal(
                         config.dist_update_sensitivity,
                         config.neighbor_max_range as f32,
                         pelorus_metal::NeighborType::Neighbor26,
+                    );
+                    #[cfg(feature = "vulkan")]
+                    pelorus_vulkan::init_map(
+                        &vulkan_stream,
+                        config.map_capacity,
+                        config.map_resolution as f32,
+                        config.dist_update_sensitivity,
+                        config.neighbor_max_range as f32,
+                        pelorus_vulkan::NeighborType::Neighbor26,
                     );
                     t_world = nalgebra::Isometry3::identity();
                     t_last_current = nalgebra::Isometry3::identity();
@@ -956,32 +970,25 @@ fn lio_with_ready_signal(
                     init_guess_lidar,
                     &cloud_for_reg,
                     current_cloud_time,
-                    Some(&ready_for_next_tx),
+                    ready_for_next_tx.as_ref(),
                     &mut eval,
                     #[cfg(feature = "cuda")]
                     &cuda_stream,
                     #[cfg(feature = "metal")]
                     &metal_stream,
+                    #[cfg(feature = "vulkan")]
+                    &vulkan_stream,
                 ) {
-                    Ok(Some(pose)) => {
-                        if trace_ticks && trace_tick_count <= trace_tick_limit {
-                            eprintln!(
-                                "[PELORUS_TRACE_REGISTER] idx={} ts={:.9} result=some",
-                                trace_tick_count, current_cloud_time
-                            );
-                        }
-                        (pose, map.get_state())
-                    }
+                    Ok(Some(pose)) => (pose, map.get_state()),
                     Ok(None) => {
-                        if trace_ticks && trace_tick_count <= trace_tick_limit {
-                            eprintln!(
-                                "[PELORUS_TRACE_REGISTER] idx={} ts={:.9} result=none",
-                                trace_tick_count, current_cloud_time
-                            );
-                        }
                         // mark to send new data even on init
                         #[cfg(feature = "rat")]
-                        if synchronous_mode {
+                        if synchronous_mode
+                            && processing_shutdown_flag
+                                .as_ref()
+                                .map(|flag| !flag.load(std::sync::atomic::Ordering::Relaxed))
+                                .unwrap_or(true)
+                        {
                             let now_ns = {
                                 let mut ts = libc::timespec {
                                     tv_sec: 0,
@@ -1004,16 +1011,15 @@ fn lio_with_ready_signal(
                         continue;
                     } // skip outputting trivial solutions on initialization
                     Err(err) => {
-                        if trace_ticks && trace_tick_count <= trace_tick_limit {
-                            eprintln!(
-                                "[PELORUS_TRACE_REGISTER] idx={} ts={:.9} result=err",
-                                trace_tick_count, current_cloud_time
-                            );
-                        }
                         error!("{err}");
                         // mark to send new data even on error
                         #[cfg(feature = "rat")]
-                        if synchronous_mode {
+                        if synchronous_mode
+                            && processing_shutdown_flag
+                                .as_ref()
+                                .map(|flag| !flag.load(std::sync::atomic::Ordering::Relaxed))
+                                .unwrap_or(true)
+                        {
                             let now_ns = {
                                 let mut ts = libc::timespec {
                                     tv_sec: 0,
@@ -1057,34 +1063,36 @@ fn lio_with_ready_signal(
 
             if !static_tf_published && config.base_link_frame.is_some() {
                 if config.base_to_lidar_tf_override {
-                    match lifis_node.tf_listener.lookup_transform(
-                        &child_frame,
-                        &orig_frame,
-                        Time {
-                            sec: orig_time.sec,
-                            nanosec: orig_time.nanosec,
-                        },
-                    ) {
-                        Ok(tf) => {
-                            #[cfg(feature = "r2r")]
-                            let iso = prelio_io::tf_r2r::isometry_from_transform(&tf.transform);
-                            #[cfg(feature = "ros2-client")]
-                            let iso = prelio_io::tf::isometry_from_transform(&tf.transform);
-                            #[cfg(feature = "mt_pubsub")]
-                            let iso = prelio_io::tf_lh::isometry_from_transform(&tf.transform);
+                    if let Some(ref lifis_node) = lifis_node {
+                        match lifis_node.tf_listener.lookup_transform(
+                            &child_frame,
+                            &orig_frame,
+                            Time {
+                                sec: orig_time.sec,
+                                nanosec: orig_time.nanosec,
+                            },
+                        ) {
+                            Ok(tf) => {
+                                #[cfg(feature = "r2r")]
+                                let iso = prelio_io::tf_r2r::isometry_from_transform(&tf.transform);
+                                #[cfg(feature = "ros2-client")]
+                                let iso = prelio_io::tf::isometry_from_transform(&tf.transform);
+                                #[cfg(feature = "mt_pubsub")]
+                                let iso = prelio_io::tf_lh::isometry_from_transform(&tf.transform);
 
-                            info!(
-                                "Updated base_link to lidar transform from TF: translation={:?}, rotation={:?}",
-                                iso.translation.vector, iso.rotation
-                            );
-                            // Update the local config and the registration's internal transform
-                            pipeline.set_base_to_lidar(iso);
-                        }
-                        Err(e) => {
-                            error!(
-                                "Failed to lookup base_link to lidar transform from TF: {}. Using manual config.",
-                                e
-                            );
+                                info!(
+                                    "Updated base_link to lidar transform from TF: translation={:?}, rotation={:?}",
+                                    iso.translation.vector, iso.rotation
+                                );
+                                // Update the local config and the registration's internal transform
+                                pipeline.set_base_to_lidar(iso);
+                            }
+                            Err(e) => {
+                                error!(
+                                    "Failed to lookup base_link to lidar transform from TF: {}. Using manual config.",
+                                    e
+                                );
+                            }
                         }
                     }
                 }
@@ -1273,6 +1281,24 @@ fn lio_with_ready_signal(
 
                         out
                     }
+                    #[cfg(feature = "vulkan")]
+                    (
+                        None,
+                        LocatedBufferView::Vulkan {
+                            buffer: cloud_for_reg,
+                        },
+                    ) => {
+                        let buff = cloud_for_reg.into_cloud(&vulkan_stream);
+                        let msg = ros_pointcloud2::PointCloud2Msg::try_from_vec(buff).unwrap();
+                        #[cfg(feature = "ros2-client")]
+                        let out = impl_ros2_interfaces_jazzy_serde::from_pointcloud2_msg(msg);
+                        #[cfg(feature = "mt_pubsub")]
+                        let out = impl_ros2_interfaces_jazzy_rkyv::from_pointcloud2_msg(msg);
+                        #[cfg(feature = "r2r")]
+                        let out = impl_r2r::from_pointcloud2_msg(msg);
+
+                        out
+                    }
                 }
             };
 
@@ -1299,12 +1325,14 @@ fn lio_with_ready_signal(
             #[cfg(all(feature = "map", all(feature = "rerun", feature = "mt_pubsub")))]
             {
                 eval.start("pub_localmap").unwrap();
-                #[cfg(not(any(feature = "cuda", feature = "metal")))]
+                #[cfg(not(any(feature = "cuda", feature = "metal", feature = "vulkan")))]
                 let total_map = map.lock().unwrap().get_entire_map();
                 #[cfg(feature = "cuda")]
                 let total_map = pelorus_cuda::get_map();
                 #[cfg(feature = "metal")]
                 let total_map = pelorus_metal::get_map();
+                #[cfg(feature = "vulkan")]
+                let total_map = pelorus_vulkan::get_map();
                 #[cfg(feature = "rerun")]
                 if let Some(ref rec) = rec {
                     let points = total_map.iter().map(|v| {
@@ -1681,7 +1709,12 @@ fn lio_with_ready_signal(
 
             // mark to send new data
             #[cfg(all(feature = "rat", not(feature = "mapping")))]
-            if synchronous_mode {
+            if synchronous_mode
+                && processing_shutdown_flag
+                    .as_ref()
+                    .map(|flag| !flag.load(std::sync::atomic::Ordering::Relaxed))
+                    .unwrap_or(true)
+            {
                 let now_ns = {
                     let mut ts = libc::timespec {
                         tv_sec: 0,
@@ -1700,6 +1733,24 @@ fn lio_with_ready_signal(
                 )
                 .unwrap();
             }
+        }
+
+        // Ensure backend work is quiesced and map state is released before GPU
+        // buffers/contexts in this thread are dropped.
+        #[cfg(feature = "cuda")]
+        {
+            cuda_stream.sync();
+            pelorus_cuda::cleanup_map();
+        }
+        #[cfg(feature = "metal")]
+        {
+            metal_stream.sync();
+            pelorus_metal::cleanup_map();
+        }
+        #[cfg(feature = "vulkan")]
+        {
+            vulkan_stream.sync();
+            pelorus_vulkan::cleanup_map();
         }
         info!("--- END lifis tick ---");
     });
@@ -1808,6 +1859,31 @@ fn log_minot_line(line: &str) {
     }
 }
 
+#[cfg(feature = "rat")]
+#[derive(Debug)]
+enum OfflineRuntimeEvent {
+    TuiShutdownRequested,
+    MinotReady,
+    MinotEndOfBag,
+    MinotExited(std::io::Result<std::process::ExitStatus>),
+    LioExited(Result<(), String>),
+}
+
+#[cfg(feature = "rat")]
+fn signal_process(pid: u32, signal: libc::c_int) -> std::io::Result<()> {
+    let rc = unsafe { libc::kill(pid as i32, signal) };
+    if rc == 0 {
+        return Ok(());
+    }
+
+    let err = std::io::Error::last_os_error();
+    if err.raw_os_error() == Some(libc::ESRCH) {
+        Ok(())
+    } else {
+        Err(err)
+    }
+}
+
 fn set_backend_from_config(shared_stats: &SharedStats, config: &LioConfig) {
     let backend = if config.num_threads > 0 {
         format!("CPU ({} cores)", config.num_threads)
@@ -1820,6 +1896,8 @@ fn set_backend_from_config(shared_stats: &SharedStats, config: &LioConfig) {
         accelerator = Some("CUDA".to_string());
     } else if cfg!(feature = "metal") {
         accelerator = Some("Metal".to_string());
+    } else if cfg!(feature = "vulkan") {
+        accelerator = Some("Vulkan".to_string());
     }
 
     shared_stats.set_backend_info(backend, accelerator);
@@ -1931,6 +2009,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         lio_sync,
                         lio_stats,
                         Some(lio_shutdown_flag_for_thread),
+                        None,
                     )
                     .map_err(|e| e.to_string())
                 });
@@ -2005,7 +2084,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
             let config = {
                 let mut config = ast_to_config(default_ast, user_ast)?;
-                config.show_tui = true;
                 config.prelio_node_params.synchronous_mode = true;
                 config
             };
@@ -2085,6 +2163,7 @@ pf! i 1
                     let _ = tui.run();
                 }))
             } else {
+                drop(shutdown_tx);
                 None
             };
 
@@ -2107,7 +2186,8 @@ pf! i 1
                     .spawn()
                     .map_err(|e| anyhow!("Failed to spawn minot: {}", e))?;
 
-                info!("Spawned minot process with PID: {}", minot_child.id());
+                let minot_pid = minot_child.id();
+                info!("Spawned minot process with PID: {}", minot_pid);
 
                 let mut minot_stdin = minot_child
                     .stdin
@@ -2125,12 +2205,12 @@ pf! i 1
                 info!("Waiting for minot to be ready...");
                 use std::io::{BufRead, BufReader};
 
-                let (ready_tx, ready_rx) = std::sync::mpsc::channel();
-                let (exit_tx, exit_rx) = std::sync::mpsc::channel();
+                let (runtime_tx, runtime_rx) = std::sync::mpsc::channel::<OfflineRuntimeEvent>();
+                let ready_notified = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
 
                 // Thread for stdout
-                let ready_tx_clone = ready_tx.clone();
-                let exit_tx_clone = exit_tx.clone();
+                let runtime_tx_stdout = runtime_tx.clone();
+                let ready_notified_stdout = ready_notified.clone();
                 std::thread::spawn(move || {
                     let reader = BufReader::new(minot_stdout);
                     for line in reader.lines() {
@@ -2142,7 +2222,8 @@ pf! i 1
                                 }
 
                                 if line.to_lowercase().contains("end of bagfile") {
-                                    let _ = exit_tx_clone.send(());
+                                    let _ =
+                                        runtime_tx_stdout.send(OfflineRuntimeEvent::MinotEndOfBag);
                                 }
 
                                 if line.contains("--sync")
@@ -2150,7 +2231,12 @@ pf! i 1
                                     || line.to_lowercase().contains("press enter")
                                     || line.to_lowercase().contains("stdin")
                                 {
-                                    let _ = ready_tx_clone.send(true);
+                                    if !ready_notified_stdout
+                                        .swap(true, std::sync::atomic::Ordering::SeqCst)
+                                    {
+                                        let _ =
+                                            runtime_tx_stdout.send(OfflineRuntimeEvent::MinotReady);
+                                    }
                                 }
                             }
                             Err(e) => {
@@ -2162,6 +2248,8 @@ pf! i 1
                 });
 
                 // Thread for stderr
+                let runtime_tx_stderr = runtime_tx.clone();
+                let ready_notified_stderr = ready_notified.clone();
                 std::thread::spawn(move || {
                     let reader = BufReader::new(minot_stderr);
                     for line in reader.lines() {
@@ -2173,7 +2261,8 @@ pf! i 1
                                 }
 
                                 if line.to_lowercase().contains("end of bagfile") {
-                                    let _ = exit_tx.send(());
+                                    let _ =
+                                        runtime_tx_stderr.send(OfflineRuntimeEvent::MinotEndOfBag);
                                 }
 
                                 // detect readiness on stderr
@@ -2183,7 +2272,12 @@ pf! i 1
                                     || line.to_lowercase().contains("press enter")
                                     || line.to_lowercase().contains("stdin")
                                 {
-                                    let _ = ready_tx.send(true);
+                                    if !ready_notified_stderr
+                                        .swap(true, std::sync::atomic::Ordering::SeqCst)
+                                    {
+                                        let _ =
+                                            runtime_tx_stderr.send(OfflineRuntimeEvent::MinotReady);
+                                    }
                                 }
                             }
                             Err(e) => {
@@ -2194,9 +2288,41 @@ pf! i 1
                     }
                 });
 
-                ready_rx
-                    .recv_timeout(std::time::Duration::from_secs(30))
-                    .map_err(|_| anyhow!("Timed out waiting for Minot --sync readiness"))?;
+                let runtime_tx_wait = runtime_tx.clone();
+                std::thread::spawn(move || {
+                    let status = minot_child.wait();
+                    let _ = runtime_tx_wait.send(OfflineRuntimeEvent::MinotExited(status));
+                });
+
+                let runtime_tx_tui = runtime_tx.clone();
+                std::thread::spawn(move || {
+                    if shutdown_rx.recv().is_ok() {
+                        let _ = runtime_tx_tui.send(OfflineRuntimeEvent::TuiShutdownRequested);
+                    }
+                });
+
+                loop {
+                    match runtime_rx
+                        .recv()
+                        .map_err(|_| anyhow!("Failed while waiting for Minot readiness"))?
+                    {
+                        OfflineRuntimeEvent::MinotReady => break,
+                        OfflineRuntimeEvent::TuiShutdownRequested => {
+                            let _ = signal_process(minot_pid, libc::SIGKILL);
+                            return Ok(());
+                        }
+                        OfflineRuntimeEvent::MinotExited(Ok(status)) => {
+                            return Err(anyhow!(
+                                "Minot exited before readiness handshake: {}",
+                                status
+                            ));
+                        }
+                        OfflineRuntimeEvent::MinotExited(Err(e)) => {
+                            return Err(anyhow!("Failed to wait on Minot: {}", e));
+                        }
+                        OfflineRuntimeEvent::MinotEndOfBag | OfflineRuntimeEvent::LioExited(_) => {}
+                    }
+                }
 
                 info!("Minot is ready, starting pelorus offline processing...");
 
@@ -2207,35 +2333,35 @@ pf! i 1
                 let lio_shutdown_flag =
                     std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
                 let lio_shutdown_flag_for_thread = lio_shutdown_flag.clone();
+                let (lio_stop_tx, lio_stop_rx) = std::sync::mpsc::channel::<()>();
                 let shared_stats_for_lio = shared_stats.clone();
+                let runtime_tx_lio = runtime_tx.clone();
 
                 let lio_handle = std::thread::spawn(move || {
-                    if let Err(e) = lio_with_ready_signal(
-                        config,
-                        Some(pelorus_ready_tx),
-                        offline_args.export_trajectory.clone(),
-                        true,
-                        Some(shared_stats_for_lio),
-                        Some(lio_shutdown_flag_for_thread),
-                    ) {
-                        error!("Odometry failed: {}", e);
-                        return Err(format!("Odometry failed: {}", e));
-                    }
-                    Ok(())
+                    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                        lio_with_ready_signal(
+                            config,
+                            Some(pelorus_ready_tx),
+                            offline_args.export_trajectory.clone(),
+                            true,
+                            Some(shared_stats_for_lio),
+                            Some(lio_shutdown_flag_for_thread),
+                            Some(lio_stop_rx),
+                        )
+                    }))
+                    .map_err(|_| "LIO thread panicked".to_string())
+                    .and_then(|res| res.map_err(|e| format!("Odometry failed: {}", e)));
+
+                    let _ = runtime_tx_lio.send(OfflineRuntimeEvent::LioExited(result.clone()));
+                    result
                 });
 
                 info!("Waiting for pelorus to initialize...");
                 pelorus_ready_rx
-                    .recv_timeout(std::time::Duration::from_secs(30))
-                    .map_err(|_| anyhow!("Timed out waiting for Pelorus readiness"))?;
+                    .recv()
+                    .map_err(|_| anyhow!("Failed to receive Pelorus readiness signal"))?;
                 info!("Pelorus is ready!");
                 info!("Triggering minot to start processing...");
-
-                // Check if process is still alive before writing
-                if let Ok(Some(status)) = minot_child.try_wait() {
-                    error!("Minot process has already exited with status: {}", status);
-                    return Err(anyhow!("Minot exited prematurely: {}", status));
-                }
 
                 use std::io::Write;
                 minot_stdin
@@ -2245,66 +2371,75 @@ pf! i 1
                     .flush()
                     .map_err(|e| anyhow!("Failed to flush minot stdin: {}", e))?;
 
-                /*
-                // TUI is already running from the start of the block
-                let (tui_stop_tx, tui_stop_rx) = std::sync::mpsc::channel();
-                let (shutdown_tx, shutdown_rx) = std::sync::mpsc::channel();
+                let mut lio_shutdown_requested = false;
+                let mut minot_force_stopped = false;
+                let mut user_shutdown_requested = false;
+                let mut wait_for_minot_exit = true;
+                let mut lio_exit_result: Option<Result<(), String>> = None;
+                let mut minot_exit_result: Option<std::io::Result<std::process::ExitStatus>> = None;
 
-                let tui_thread = std::thread::spawn(move || {
-                    let mut tui = StatsTui::new(
-                        stats_for_tui,
-                    )
-                    .with_stop_receiver(tui_stop_rx)
-                    .with_shutdown_sender(shutdown_tx);
-                    let _ = tui.run();
-                });
-                */
-
-                // wait loop - check for various exit conditions
-                loop {
-                    if exit_rx.try_recv().is_ok() {
-                        lio_shutdown_flag.store(true, std::sync::atomic::Ordering::SeqCst);
-                        info!("minot finished, stopping TUI and LIO");
-                        break;
-                    }
-                    if lio_handle.is_finished() {
-                        log::info!("LIO finished, stopping TUI");
-                        break;
-                    }
-                    if shutdown_rx.try_recv().is_ok() {
-                        // TUI requested shutdown -> request LIO to stop
-                        lio_shutdown_flag.store(true, std::sync::atomic::Ordering::SeqCst);
-                        info!("TUI requested shutdown, stopping LIO");
-                        break;
-                    }
-                    std::thread::sleep(std::time::Duration::from_millis(100));
-                }
-
-                if !lio_handle.is_finished() {
-                    lio_shutdown_flag.store(true, std::sync::atomic::Ordering::SeqCst);
-                }
-
-                let join_start = std::time::Instant::now();
-                let join_timeout = std::time::Duration::from_secs(30);
-                loop {
-                    if lio_handle.is_finished() {
-                        match lio_handle.join() {
-                            Ok(Ok(())) => info!("LIO thread joined successfully"),
-                            Ok(Err(e)) => warn!("LIO thread exited with error: {}", e),
-                            Err(_) => warn!("LIO thread panicked"),
+                while lio_exit_result.is_none()
+                    || (wait_for_minot_exit && minot_exit_result.is_none())
+                {
+                    match runtime_rx
+                        .recv()
+                        .map_err(|_| anyhow!("Offline runtime channel closed unexpectedly"))?
+                    {
+                        OfflineRuntimeEvent::TuiShutdownRequested => {
+                            user_shutdown_requested = true;
+                            if !lio_shutdown_requested {
+                                lio_shutdown_flag.store(true, std::sync::atomic::Ordering::SeqCst);
+                                lio_shutdown_requested = true;
+                            }
                         }
-                        break;
+                        OfflineRuntimeEvent::MinotEndOfBag => {
+                            info!("Minot reached end of bagfile");
+                            if !lio_shutdown_requested {
+                                lio_shutdown_flag.store(true, std::sync::atomic::Ordering::SeqCst);
+                                let _ = lio_stop_tx.send(());
+                                lio_shutdown_requested = true;
+                            }
+                        }
+                        OfflineRuntimeEvent::MinotExited(status) => {
+                            minot_exit_result = Some(status);
+                            if !lio_shutdown_requested {
+                                lio_shutdown_flag.store(true, std::sync::atomic::Ordering::SeqCst);
+                                let _ = lio_stop_tx.send(());
+                                lio_shutdown_requested = true;
+                            }
+                        }
+                        OfflineRuntimeEvent::LioExited(result) => {
+                            lio_exit_result = Some(result);
+                            if user_shutdown_requested && minot_exit_result.is_none() && !minot_force_stopped {
+                                signal_process(minot_pid, libc::SIGKILL)
+                                    .map_err(|e| anyhow!("Failed to terminate Minot: {}", e))?;
+                                minot_force_stopped = true;
+                                // On user interrupt, once LIO is down we don't wait on child
+                                // wait-notification delivery to avoid deadlocks.
+                                wait_for_minot_exit = false;
+                            } else if minot_exit_result.is_none() && !minot_force_stopped {
+                                signal_process(minot_pid, libc::SIGKILL)
+                                    .map_err(|e| anyhow!("Failed to terminate Minot: {}", e))?;
+                                minot_force_stopped = true;
+                            }
+                        }
+                        OfflineRuntimeEvent::MinotReady => {}
                     }
-                    if join_start.elapsed() > join_timeout {
-                        return Err(anyhow!(
-                            "LIO thread did not exit within {}s timeout",
-                            join_timeout.as_secs()
-                        ));
-                    }
-                    std::thread::sleep(std::time::Duration::from_millis(100));
                 }
 
-                let _ = minot_child.kill();
+                match lio_handle.join() {
+                    Ok(Ok(())) => {}
+                    Ok(Err(e)) => return Err(anyhow!("{}", e)),
+                    Err(_) => return Err(anyhow!("LIO thread panicked")),
+                }
+
+                if wait_for_minot_exit {
+                    match minot_exit_result.expect("minot exit must be observed before completion") {
+                        Ok(status) if status.success() || minot_force_stopped => {}
+                        Ok(status) => return Err(anyhow!("Minot exited with status {}", status)),
+                        Err(e) => return Err(anyhow!("Failed to wait for Minot exit: {}", e)),
+                    }
+                }
 
                 Ok(())
             };
@@ -2319,7 +2454,6 @@ pf! i 1
                 }
                 Err(e) => {
                     error!("Offline run failed: {}", e);
-                    std::thread::sleep(std::time::Duration::from_secs(2)); // Give time for user to read error
                     let _ = tui_stop_tx.send(());
                     if let Some(handle) = tui_thread {
                         let _ = handle.join();

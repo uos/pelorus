@@ -1,0 +1,153 @@
+#version 450
+
+layout(local_size_x = 256, local_size_y = 1, local_size_z = 1) in;
+
+layout(std430, set = 0, binding = 0) readonly buffer CloudIn { Point cloud[]; };
+layout(std430, set = 0, binding = 12) buffer TableKeys { int table_keys[]; };
+layout(std430, set = 0, binding = 13) readonly buffer TableVals { uint table_vals[]; };
+layout(std430, set = 0, binding = 9) readonly buffer Dists { VoxelDistribution dists[]; };
+layout(std430, set = 0, binding = 10) buffer OutSize { uint out_size; };
+layout(std430, set = 0, binding = 15) buffer OutPoints { PointNormal out_buff[]; };
+
+float plane_point_dist(vec4 plane, vec3 p) {
+    return plane.x * p.x + plane.y * p.y + plane.z * p.z + plane.w;
+}
+
+uint hashmap_lookup(uint table_capacity, int key) {
+    if (key == EMPTY_KEY) {
+        return 0xFFFFFFFFu;
+    }
+    uint slot = hash_fn(key) & (table_capacity - 1u);
+    for (uint i = 0; i < table_capacity; i++) {
+        int cur = table_keys[slot];
+        if (cur == key) {
+            return table_vals[slot];
+        }
+        if (cur == EMPTY_KEY) {
+            return 0xFFFFFFFFu;
+        }
+        slot = (slot + 1u) & (table_capacity - 1u);
+    }
+    return 0xFFFFFFFFu;
+}
+
+bool plane_fit(uint point_count, in float mean[3], in float cov[9], float sphericity_threshold, out vec4 plane_eq) {
+    if (point_count < 3u) {
+        return false;
+    }
+
+    vec3 ev = symmetric_eigen_3x3(cov);
+
+    float v0 = ev.x;
+    float v1 = ev.y;
+    float v2 = ev.z;
+    if (v0 > v1) { float t = v0; v0 = v1; v1 = t; }
+    if (v1 > v2) { float t = v1; v1 = v2; v2 = t; }
+    if (v0 > v1) { float t = v0; v0 = v1; v1 = t; }
+
+    float lambda_0 = v0;
+    float lambda_2 = v2;
+    if (lambda_2 < 1e-9) {
+        return false;
+    }
+    if ((lambda_0 / lambda_2) > sphericity_threshold) {
+        return false;
+    }
+
+    float M[9];
+    for (int i = 0; i < 9; i++) {
+        M[i] = cov[i];
+    }
+    M[0] -= lambda_0;
+    M[4] -= lambda_0;
+    M[8] -= lambda_0;
+
+    vec3 row0 = vec3(M[0], M[1], M[2]);
+    vec3 row1 = vec3(M[3], M[4], M[5]);
+    vec3 row2 = vec3(M[6], M[7], M[8]);
+
+    vec3 v01 = cross(row0, row1);
+    vec3 v12 = cross(row1, row2);
+    vec3 v20 = cross(row2, row0);
+
+    float m01 = dot(v01, v01);
+    float m12 = dot(v12, v12);
+    float m20 = dot(v20, v20);
+
+    vec3 normal = (m01 > m12 && m01 > m20) ? v01 : ((m12 > m20) ? v12 : v20);
+    float mag = length(normal);
+    if (mag < 1e-9) {
+        return false;
+    }
+    normal /= mag;
+
+    vec3 mean_p = vec3(mean[0], mean[1], mean[2]);
+    float d = -dot(normal, mean_p);
+    plane_eq = vec4(normal, d);
+    return true;
+}
+
+void main() {
+    uint idx = gl_GlobalInvocationID.x;
+    if (idx >= pc.unique_key_count) {
+        return;
+    }
+
+    vec4 ext_q = vec4(pc.lidar_to_imu_quat[0], pc.lidar_to_imu_quat[1], pc.lidar_to_imu_quat[2], pc.lidar_to_imu_quat[3]);
+    vec3 ext_t = vec3(pc.lidar_to_imu_pos[0], pc.lidar_to_imu_pos[1], pc.lidar_to_imu_pos[2]);
+    vec4 q = vec4(pc.pose_quat[0], pc.pose_quat[1], pc.pose_quat[2], pc.pose_quat[3]);
+    vec3 t = vec3(pc.pose_trans[0], pc.pose_trans[1], pc.pose_trans[2]);
+
+    Point p_raw = cloud[idx];
+    vec3 p_local = vec3(p_raw.x, p_raw.y, p_raw.z);
+    vec3 p_imu = iso_transform(ext_q, ext_t, p_local);
+    vec3 p_global = iso_transform(q, t, p_imu);
+
+    ivec3 grid = grid_pos(pc.resolution, p_global);
+    ivec3 neighbors[27];
+    uint nb_count = neighbor_cells(pc.nbtype, grid, neighbors);
+
+    uint merged_point_count = 0u;
+    float merged_mean[3] = {0.0, 0.0, 0.0};
+    float merged_cov[9] = {0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0};
+
+    for (uint i = 0u; i < nb_count; i++) {
+        int nb_key = hash_grid(neighbors[i]);
+        uint buf_idx = hashmap_lookup(pc.table_cap, nb_key);
+        if (buf_idx == 0xFFFFFFFFu) {
+            continue;
+        }
+        VoxelDistribution nd = dists[buf_idx];
+        if (nd.point_count == 0u) {
+            continue;
+        }
+        pool_dist(merged_point_count, merged_mean, merged_cov, nd);
+    }
+
+    vec4 plane;
+    if (!plane_fit(merged_point_count, merged_mean, merged_cov, pc.sphericity_threshold, plane)) {
+        return;
+    }
+
+    float pd2 = plane_point_dist(plane, p_global);
+    float l2_sq = dot(p_local, p_local);
+    float s = 1.0 - 0.9 * abs(pd2) / sqrt(sqrt(max(l2_sq, 1e-9)));
+    if (s <= 0.9) {
+        return;
+    }
+
+    uint out_idx = atomicAdd(out_size, 1u);
+    if (out_idx >= pc.unique_key_count) {
+        return;
+    }
+    PointNormal pn;
+    pn.x = p_local.x;
+    pn.y = p_local.y;
+    pn.z = p_local.z;
+    pn.intensity = pd2;
+    pn.nx = plane.x;
+    pn.ny = plane.y;
+    pn.nz = plane.z;
+    pn._pad = 0.0;
+    out_buff[out_idx] = pn;
+}

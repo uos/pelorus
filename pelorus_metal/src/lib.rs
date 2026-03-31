@@ -15,7 +15,7 @@ mod shaders;
 
 pub use buffer::MetalBuffer;
 pub use stream::Stream;
-pub use types::{Matrix3, NeighborType, Pose, Quaternion, Vector3};
+pub use types::{Matrix3, NeighborType, Point, PointNormal, Pose, Quaternion, Vector3};
 
 use pelorus_core::PointXYZIT;
 use ros_pointcloud2::points::PointXYZINormal;

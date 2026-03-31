@@ -16,6 +16,10 @@
 #include <unordered_map>
 #include <vector>
 
+#include <cub/cub.cuh>
+#include <thrust/sort.h>
+#include <thrust/execution_policy.h>
+
 #include <lib.h>
 #include <localmap.cuh>
 
@@ -290,50 +294,71 @@ __global__ void rebuild_hashmap_keyed_kernel(int*        table_keys,
     }
 }
 
-// bitonic.metal: pack_keys — (int32 key, uint32 index) → uint64
-__global__ void pack_keys_kernel(const int*      keys,
-                                 const uint32_t* indices,
-                                 uint64_t*       packed,
-                                 uint32_t        n_points) {
+__global__ void assign_target_indices_kernel(const int*      unique_keys,
+                                             const uint32_t* n_unique_ptr,
+                                             const int*      table_keys,
+                                             const uint32_t* table_vals,
+                                             uint32_t        table_cap,
+                                             int*            dist_keys,
+                                             uint32_t*       d_add_cursor,
+                                             uint32_t*       d_lru_cursor,
+                                             const uint32_t* d_lru_mapping,
+                                             uint32_t        dist_cap,
+                                             uint32_t*       out_target_indices,
+                                             uint32_t*       out_update_flags) {
+    uint32_t n_unique = *n_unique_ptr;
     uint32_t idx = blockIdx.x * blockDim.x + threadIdx.x;
-    if (idx >= n_points) return;
-    uint32_t ku   = (uint32_t)keys[idx];
-    packed[idx]   = ((uint64_t)ku << 32) | (uint64_t)indices[idx];
-}
+    if (idx >= n_unique) return;
 
-// bitonic.metal: init_pad — fill [start, total_cap) with 0xFFFFFFFFFFFFFFFF
-__global__ void init_pad_kernel(uint64_t* packed, uint32_t start, uint32_t total_cap) {
-    uint32_t idx = blockIdx.x * blockDim.x + threadIdx.x;
-    uint32_t pos = start + idx;
-    if (pos < total_cap) packed[pos] = 0xFFFFFFFFFFFFFFFFULL;
-}
+    int key = unique_keys[idx];
+    if (key == EMPTY_KEY) {
+        out_target_indices[idx] = INVALID_IDX;
+        out_update_flags[idx]   = 0;
+        return;
+    }
 
-// bitonic.metal: bitonic_step
-__global__ void bitonic_step_kernel(uint64_t* data, uint32_t j, uint32_t k, uint32_t n) {
-    uint32_t idx = blockIdx.x * blockDim.x + threadIdx.x;
-    if (idx >= n) return;
+    uint32_t found_idx = hashmap_lookup(table_keys, table_vals, table_cap, key);
 
-    uint32_t l = idx ^ j;
-    if (l <= idx) return;
-
-    bool ascending = ((idx & k) == 0);
-    if ((data[idx] > data[l]) == ascending) {
-        uint64_t tmp = data[idx];
-        data[idx]    = data[l];
-        data[l]      = tmp;
+    if (found_idx != INVALID_IDX) {
+        out_target_indices[idx] = found_idx;
+        out_update_flags[idx]   = 1;
+    } else {
+        uint32_t add_idx = atomicAdd(d_add_cursor, 1u);
+        if (add_idx < dist_cap) {
+            dist_keys[add_idx] = key;
+            out_target_indices[idx] = add_idx;
+            out_update_flags[idx]   = 0;
+        } else {
+            uint32_t lru_idx = atomicAdd(d_lru_cursor, 1u);
+            if (lru_idx < dist_cap) {
+                uint32_t victim = d_lru_mapping[lru_idx];
+                dist_keys[victim] = key;
+                out_target_indices[idx] = victim;
+                out_update_flags[idx]   = 0;
+            } else {
+                out_target_indices[idx] = INVALID_IDX;
+                out_update_flags[idx]   = 0;
+            }
+        }
     }
 }
 
-// bitonic.metal: unpack_keys
-__global__ void unpack_keys_kernel(const uint64_t* packed,
-                                   int*            keys,
-                                   uint32_t*       indices,
-                                   uint32_t        n_points) {
+__global__ void compute_scores_kernel(const GpuVoxelDist* dist_buf,
+                                      uint32_t*           d_lru_mapping,
+                                      float*              d_lru_scores,
+                                      uint32_t            dist_cap,
+                                      uint32_t            scan_number) {
     uint32_t idx = blockIdx.x * blockDim.x + threadIdx.x;
-    if (idx >= n_points) return;
-    uint64_t p   = packed[idx];
-    keys[idx]    = (int32_t)(p >> 32);
-    indices[idx] = (uint32_t)(p & 0xFFFFFFFFULL);
+    if (idx >= dist_cap) return;
+
+    const GpuVoxelDist& item = dist_buf[idx];
+    if (item.point_count == 0) {
+        d_lru_scores[idx] = 1e20f; // best for eviction
+    } else {
+        uint32_t td = (scan_number >= item.last_scan) ? (scan_number - item.last_scan) : 0u;
+        d_lru_scores[idx] = (float)td / (float)item.point_count;
+    }
+    d_lru_mapping[idx] = idx;
 }
 
 // localmap.metal: calculate_keys
@@ -386,21 +411,23 @@ __global__ void reorder_points_kernel(const Point*      src,
 // unique_key_count is used here as n_assigned
 __global__ void build_voxels_kernel(const Point*      cloud,
                                     const uint32_t*   run_starts,
-                                    const uint32_t*   run_ends,
+                                    const uint32_t*   run_counts,
                                     const int*        unique_keys,
                                     const uint32_t*   target_indices,
                                     const uint32_t*   update_flags,
                                     GpuVoxelDist*     dists,
+                                    const uint32_t*   n_unique_ptr,
                                     BuildVoxelsParams params) {
+    uint32_t n_unique = *n_unique_ptr;
     uint32_t idx = blockIdx.x * blockDim.x + threadIdx.x;
-    if (idx >= params.unique_key_count) return;
+    if (idx >= n_unique) return;
 
     int      voxel_key = unique_keys[idx];
     uint32_t start     = run_starts[idx];
-    uint32_t end       = run_ends[idx];
-    uint32_t count     = end - start;
+    uint32_t count     = run_counts[idx];
+    uint32_t end       = start + count;
 
-    if (count == 0 || voxel_key == EMPTY_KEY) return;
+    if (count == 0 || voxel_key == EMPTY_KEY || target_indices[idx] == INVALID_IDX) return;
 
     // ── 1. Compute scan mean/covariance (two-pass, points already in global frame) ──
     float sx = 0.0f, sy = 0.0f, sz = 0.0f;
@@ -611,30 +638,40 @@ __global__ void plane_kernel(const Point*        cloud,
 
 // ── CPU state ─────────────────────────────────────────────────────────────────
 
-struct SortKey {
-    uint32_t index;
-    uint64_t temporal_dist;
-    uint64_t point_count;
-};
-
 struct CudaMapState {
     // GPU-only (device memory)
     int*      table_keys;   // size: table_cap
     uint32_t* table_vals;   // size: table_cap
-    // CPU+GPU shared (managed memory)
-    GpuVoxelDist* dist_buf;  // size: dist_cap
-    int*          dist_keys; // size: dist_cap
-    // Scratch (managed: CPU reads keys after sort, writes run arrays)
+
+    // Managed (CPU+GPU shared)
+    GpuVoxelDist* dist_buf;     // size: dist_cap
+    int*          dist_keys;    // size: dist_cap
+    uint32_t*     counter;      // managed: atomic planes output counter
+    uint32_t*     d_add_cursor; // managed
+    uint32_t*     d_lru_cursor; // managed
+    uint32_t*     d_num_unique; // managed
+
+    // Scratch (device memory)
     int*      scratch_keys;
+    int*      scratch_keys_alt;
     uint32_t* scratch_indices;
-    uint64_t* scratch_packed;
+    uint32_t* scratch_indices_alt;
     uint32_t* scratch_run_starts;
-    uint32_t* scratch_run_ends;
+    uint32_t* scratch_run_counts;
     int*      scratch_unique_keys;
     uint32_t* scratch_target_indices;
     uint32_t* scratch_update_flags;
     Point*    scratch_sorted_points;
-    uint32_t* counter;  // managed: atomic planes output counter
+
+    // LRU on GPU (device memory)
+    uint32_t* d_lru_mapping;
+    uint32_t* d_lru_mapping_alt;
+    float*    d_lru_scores;
+    float*    d_lru_scores_alt;
+
+    // CUB temp storage
+    void*     d_cub_temp_storage;
+    size_t    cub_temp_storage_bytes;
 
     // Config
     uint32_t dist_cap;
@@ -645,48 +682,49 @@ struct CudaMapState {
     uint32_t scan_number;
     uint32_t nbtype;
 
-    // CPU LRU (mirrors Metal map.rs MetalMapState)
-    uint32_t add_cursor;
-    uint32_t lru_cursor;
-    std::vector<uint32_t> lru_mapping;
-    std::vector<SortKey>  lru_mapping_keys;
-    std::unordered_map<int32_t, uint32_t> key_to_index;
-    bool     pending_lru_rebuild;
-    uint32_t pending_lru_scan_number;
-
-    size_t scratch_cap;  // current allocated scratch capacity
+    size_t scratch_cap;  // current allocated scratch capacity (max n_points)
     bool   trace_map_debug;
 
     CudaMapState()
         : table_keys(nullptr), table_vals(nullptr),
-          dist_buf(nullptr), dist_keys(nullptr),
-          scratch_keys(nullptr), scratch_indices(nullptr),
-          scratch_packed(nullptr), scratch_run_starts(nullptr),
-          scratch_run_ends(nullptr), scratch_unique_keys(nullptr),
-          scratch_target_indices(nullptr), scratch_update_flags(nullptr),
-          scratch_sorted_points(nullptr), counter(nullptr),
+          dist_buf(nullptr), dist_keys(nullptr), counter(nullptr),
+          d_add_cursor(nullptr), d_lru_cursor(nullptr), d_num_unique(nullptr),
+          scratch_keys(nullptr), scratch_keys_alt(nullptr),
+          scratch_indices(nullptr), scratch_indices_alt(nullptr),
+          scratch_run_starts(nullptr), scratch_run_counts(nullptr),
+          scratch_unique_keys(nullptr), scratch_target_indices(nullptr),
+          scratch_update_flags(nullptr), scratch_sorted_points(nullptr),
+          d_lru_mapping(nullptr), d_lru_mapping_alt(nullptr),
+          d_lru_scores(nullptr), d_lru_scores_alt(nullptr),
+          d_cub_temp_storage(nullptr), cub_temp_storage_bytes(0),
           dist_cap(0), table_cap(0), resolution(0), sensitivity(0),
           min_dist(0), scan_number(0), nbtype(26),
-          add_cursor(0), lru_cursor(0),
-          pending_lru_rebuild(false), pending_lru_scan_number(0),
           scratch_cap(0), trace_map_debug(false) {}
 
     ~CudaMapState() {
-        // Ignore errors during shutdown
         if (table_keys)             cudaFree(table_keys);
         if (table_vals)             cudaFree(table_vals);
         if (dist_buf)               cudaFree(dist_buf);
         if (dist_keys)              cudaFree(dist_keys);
+        if (counter)                cudaFree(counter);
+        if (d_add_cursor)           cudaFree(d_add_cursor);
+        if (d_lru_cursor)           cudaFree(d_lru_cursor);
+        if (d_num_unique)           cudaFree(d_num_unique);
         if (scratch_keys)           cudaFree(scratch_keys);
+        if (scratch_keys_alt)       cudaFree(scratch_keys_alt);
         if (scratch_indices)        cudaFree(scratch_indices);
-        if (scratch_packed)         cudaFree(scratch_packed);
+        if (scratch_indices_alt)    cudaFree(scratch_indices_alt);
         if (scratch_run_starts)     cudaFree(scratch_run_starts);
-        if (scratch_run_ends)       cudaFree(scratch_run_ends);
+        if (scratch_run_counts)     cudaFree(scratch_run_counts);
         if (scratch_unique_keys)    cudaFree(scratch_unique_keys);
         if (scratch_target_indices) cudaFree(scratch_target_indices);
         if (scratch_update_flags)   cudaFree(scratch_update_flags);
         if (scratch_sorted_points)  cudaFree(scratch_sorted_points);
-        if (counter)                cudaFree(counter);
+        if (d_lru_mapping)          cudaFree(d_lru_mapping);
+        if (d_lru_mapping_alt)      cudaFree(d_lru_mapping_alt);
+        if (d_lru_scores)           cudaFree(d_lru_scores);
+        if (d_lru_scores_alt)       cudaFree(d_lru_scores_alt);
+        if (d_cub_temp_storage)     cudaFree(d_cub_temp_storage);
     }
 };
 
@@ -698,107 +736,28 @@ static inline int grid_dim(uint32_t n) { return (n + 255) / 256; }
 
 static void alloc_scratch(CudaMapState* s, size_t new_cap) {
     if (s->scratch_keys)           CUDA_CHECK(cudaFree(s->scratch_keys));
+    if (s->scratch_keys_alt)       CUDA_CHECK(cudaFree(s->scratch_keys_alt));
     if (s->scratch_indices)        CUDA_CHECK(cudaFree(s->scratch_indices));
-    if (s->scratch_packed)         CUDA_CHECK(cudaFree(s->scratch_packed));
+    if (s->scratch_indices_alt)    CUDA_CHECK(cudaFree(s->scratch_indices_alt));
     if (s->scratch_run_starts)     CUDA_CHECK(cudaFree(s->scratch_run_starts));
-    if (s->scratch_run_ends)       CUDA_CHECK(cudaFree(s->scratch_run_ends));
+    if (s->scratch_run_counts)     CUDA_CHECK(cudaFree(s->scratch_run_counts));
     if (s->scratch_unique_keys)    CUDA_CHECK(cudaFree(s->scratch_unique_keys));
     if (s->scratch_target_indices) CUDA_CHECK(cudaFree(s->scratch_target_indices));
     if (s->scratch_update_flags)   CUDA_CHECK(cudaFree(s->scratch_update_flags));
     if (s->scratch_sorted_points)  CUDA_CHECK(cudaFree(s->scratch_sorted_points));
 
-    CUDA_CHECK(cudaMallocManaged(&s->scratch_keys,           new_cap * sizeof(int)));
-    CUDA_CHECK(cudaMallocManaged(&s->scratch_indices,        new_cap * sizeof(uint32_t)));
-    CUDA_CHECK(cudaMallocManaged(&s->scratch_packed,         new_cap * sizeof(uint64_t)));
-    CUDA_CHECK(cudaMallocManaged(&s->scratch_run_starts,     new_cap * sizeof(uint32_t)));
-    CUDA_CHECK(cudaMallocManaged(&s->scratch_run_ends,       new_cap * sizeof(uint32_t)));
-    CUDA_CHECK(cudaMallocManaged(&s->scratch_unique_keys,    new_cap * sizeof(int)));
-    CUDA_CHECK(cudaMallocManaged(&s->scratch_target_indices, new_cap * sizeof(uint32_t)));
-    CUDA_CHECK(cudaMallocManaged(&s->scratch_update_flags,   new_cap * sizeof(uint32_t)));
-    CUDA_CHECK(cudaMallocManaged(&s->scratch_sorted_points,  new_cap * sizeof(Point)));
+    CUDA_CHECK(cudaMalloc(&s->scratch_keys,           new_cap * sizeof(int)));
+    CUDA_CHECK(cudaMalloc(&s->scratch_keys_alt,       new_cap * sizeof(int)));
+    CUDA_CHECK(cudaMalloc(&s->scratch_indices,        new_cap * sizeof(uint32_t)));
+    CUDA_CHECK(cudaMalloc(&s->scratch_indices_alt,    new_cap * sizeof(uint32_t)));
+    CUDA_CHECK(cudaMalloc(&s->scratch_run_starts,     new_cap * sizeof(uint32_t)));
+    CUDA_CHECK(cudaMalloc(&s->scratch_run_counts,     new_cap * sizeof(uint32_t)));
+    CUDA_CHECK(cudaMalloc(&s->scratch_unique_keys,    new_cap * sizeof(int)));
+    CUDA_CHECK(cudaMalloc(&s->scratch_target_indices, new_cap * sizeof(uint32_t)));
+    CUDA_CHECK(cudaMalloc(&s->scratch_update_flags,   new_cap * sizeof(uint32_t)));
+    CUDA_CHECK(cudaMalloc(&s->scratch_sorted_points,  new_cap * sizeof(Point)));
 
     s->scratch_cap = new_cap;
-}
-
-// Mirrors Metal map.rs assign_target_indices_with_cpu_lru
-static void assign_target_indices_with_cpu_lru(
-    CudaMapState*         s,
-    const int*            unique_keys,
-    uint32_t              n_unique,
-    std::vector<uint32_t>& target_indices,
-    std::vector<uint32_t>& update_flags)
-{
-    target_indices.clear();
-    update_flags.clear();
-    target_indices.reserve(n_unique);
-    update_flags.reserve(n_unique);
-
-    uint32_t dist_cap = s->dist_cap;
-
-    for (uint32_t i = 0; i < n_unique; i++) {
-        int key = unique_keys[i];
-
-        auto it = s->key_to_index.find(key);
-        if (it != s->key_to_index.end()) {
-            target_indices.push_back(it->second);
-            update_flags.push_back(1);
-            continue;
-        }
-
-        if (s->add_cursor < dist_cap) {
-            uint32_t idx = s->add_cursor++;
-            s->dist_keys[idx] = key;
-            s->key_to_index[key] = idx;
-            target_indices.push_back(idx);
-            update_flags.push_back(0);
-            continue;
-        }
-
-        if (s->lru_cursor >= dist_cap) {
-            fprintf(stderr, "[CUDA] WARNING: LRU evicted all slots — increase map capacity\n");
-            break;
-        }
-
-        uint32_t victim  = s->lru_mapping[s->lru_cursor++];
-        int      old_key = s->dist_keys[victim];
-        if (old_key != EMPTY_KEY) s->key_to_index.erase(old_key);
-        s->dist_keys[victim] = key;
-        s->key_to_index[key] = victim;
-
-        target_indices.push_back(victim);
-        update_flags.push_back(0);
-    }
-
-    if (s->add_cursor > dist_cap) s->add_cursor = dist_cap;
-}
-
-// Mirrors Metal map.rs rebuild_cpu_lru_order — sort descending by temporal_dist/point_count
-static void rebuild_cpu_lru_order(CudaMapState* s, uint32_t scan_number) {
-    if (s->add_cursor < s->dist_cap) return;
-
-    for (size_t i = 0; i < s->lru_mapping.size(); i++) {
-        uint32_t idx = s->lru_mapping[i];
-        const GpuVoxelDist& item = s->dist_buf[idx];
-        uint64_t td = (scan_number >= item.last_scan)
-                    ? (uint64_t)(scan_number - item.last_scan) : 0ULL;
-        s->lru_mapping_keys[i] = SortKey{ idx, td, (uint64_t)item.point_count };
-    }
-
-    std::sort(s->lru_mapping_keys.begin(), s->lru_mapping_keys.end(),
-        [](const SortKey& a, const SortKey& b) {
-            // a < b means a is a better eviction candidate
-            if (a.point_count == 0 && b.point_count == 0) return false;
-            if (a.point_count == 0) return true;
-            if (b.point_count == 0) return false;
-            // descending by td/pc: a < b iff a.td*b.pc > b.td*a.pc
-            unsigned __int128 left  = (unsigned __int128)a.temporal_dist * b.point_count;
-            unsigned __int128 right = (unsigned __int128)b.temporal_dist * a.point_count;
-            return left > right;
-        });
-
-    for (size_t i = 0; i < s->lru_mapping_keys.size(); i++)
-        s->lru_mapping[i] = s->lru_mapping_keys[i].index;
-    s->lru_cursor = 0;
 }
 
 // ── Public impl functions (declared in localmap.cuh) ─────────────────────────
@@ -817,36 +776,46 @@ void init_map_impl(cudaStream_t stream, uint32_t capacity, float voxel_size,
     CUDA_CHECK(cudaMalloc(&s->table_keys, table_cap * sizeof(int)));
     CUDA_CHECK(cudaMalloc(&s->table_vals, table_cap * sizeof(uint32_t)));
 
-    // Managed (CPU+GPU) buffers
-    CUDA_CHECK(cudaMallocManaged(&s->dist_buf,  dist_cap * sizeof(GpuVoxelDist)));
-    CUDA_CHECK(cudaMallocManaged(&s->dist_keys, dist_cap * sizeof(int)));
-    CUDA_CHECK(cudaMallocManaged(&s->counter,   sizeof(uint32_t)));
+    // Managed (CPU+GPU shared) buffers
+    CUDA_CHECK(cudaMallocManaged(&s->dist_buf,     dist_cap * sizeof(GpuVoxelDist)));
+    CUDA_CHECK(cudaMallocManaged(&s->dist_keys,    dist_cap * sizeof(int)));
+    CUDA_CHECK(cudaMallocManaged(&s->counter,      sizeof(uint32_t)));
+    CUDA_CHECK(cudaMallocManaged(&s->d_add_cursor, sizeof(uint32_t)));
+    CUDA_CHECK(cudaMallocManaged(&s->d_lru_cursor, sizeof(uint32_t)));
+    CUDA_CHECK(cudaMallocManaged(&s->d_num_unique, sizeof(uint32_t)));
+
+    // LRU buffers
+    CUDA_CHECK(cudaMalloc(&s->d_lru_mapping,     dist_cap * sizeof(uint32_t)));
+    CUDA_CHECK(cudaMalloc(&s->d_lru_mapping_alt, dist_cap * sizeof(uint32_t)));
+    CUDA_CHECK(cudaMalloc(&s->d_lru_scores,      dist_cap * sizeof(float)));
+    CUDA_CHECK(cudaMalloc(&s->d_lru_scores_alt,  dist_cap * sizeof(float)));
 
     // Zero dist_buf; fill dist_keys with EMPTY_KEY
     CUDA_CHECK(cudaMemsetAsync(s->dist_buf, 0, dist_cap * sizeof(GpuVoxelDist), stream));
-    for (uint32_t i = 0; i < dist_cap; i++) s->dist_keys[i] = EMPTY_KEY;
-    *s->counter = 0;
+    std::vector<int> h_keys(dist_cap, EMPTY_KEY);
+    CUDA_CHECK(cudaMemcpyAsync(s->dist_keys, h_keys.data(), dist_cap * sizeof(int), cudaMemcpyHostToDevice, stream));
+
+    // Initial LRU mapping: 0, 1, 2, ...
+    std::vector<uint32_t> h_lru(dist_cap);
+    for (uint32_t i = 0; i < dist_cap; i++) h_lru[i] = i;
+    CUDA_CHECK(cudaMemcpyAsync(s->d_lru_mapping, h_lru.data(), dist_cap * sizeof(uint32_t), cudaMemcpyHostToDevice, stream));
+
+    *s->counter      = 0;
+    *s->d_add_cursor = 0;
+    *s->d_lru_cursor = 0;
+    *s->d_num_unique = 0;
 
     // Scratch buffers (minimum size; will grow on first add_to_map_impl)
     alloc_scratch(s, 1);
 
-    s->dist_cap  = dist_cap;
-    s->table_cap = table_cap;
+    s->dist_cap     = dist_cap;
+    s->table_cap    = table_cap;
     s->resolution   = voxel_size;
     s->sensitivity  = sensitivity;
     s->min_dist     = min_dist;
     s->scan_number  = 0;
     s->nbtype       = nbtype;
-    s->add_cursor   = 0;
-    s->lru_cursor   = 0;
-
-    s->lru_mapping.resize(dist_cap);
-    for (uint32_t i = 0; i < dist_cap; i++) s->lru_mapping[i] = i;
-    s->lru_mapping_keys.resize(dist_cap);
-    s->key_to_index.reserve(dist_cap);
-    s->pending_lru_rebuild     = false;
-    s->pending_lru_scan_number = 0;
-    s->trace_map_debug         = (std::getenv("PELORUS_CUDA_TRACE_MAP") != nullptr);
+    s->trace_map_debug = (std::getenv("PELORUS_CUDA_TRACE_MAP") != nullptr);
 
     // Init hashmap
     hashmap_init_kernel<<<grid_dim(table_cap), 256, 0, stream>>>(s->table_keys, table_cap);
@@ -857,27 +826,42 @@ void add_to_map_impl(cudaStream_t stream, Point* points, uint32_t n_points, Pose
     CudaMapState* s = g_state;
     assert(s != nullptr);
 
-    // Deferred LRU rebuild: sync GPU work from previous scan, then read dist_buf
-    if (s->pending_lru_rebuild) {
-        CUDA_CHECK(cudaStreamSynchronize(stream));
-        rebuild_cpu_lru_order(s, s->pending_lru_scan_number);
-        s->pending_lru_rebuild = false;
-    }
-
     if (n_points == 0) return;
 
     s->scan_number++;
     uint32_t scan_number = s->scan_number;
 
-    // Compute padded_n for bitonic sort BEFORE scratch resize check
-    uint32_t padded_n = 1;
-    while (padded_n < n_points) padded_n <<= 1;
+    // Scratch must hold at least n_points elements
+    if (s->scratch_cap < (size_t)n_points) {
+        alloc_scratch(s, n_points + n_points / 2);
+    }
 
-    // Scratch must hold at least padded_n elements (for packed buffer)
-    if (s->scratch_cap < (size_t)padded_n) {
-        // Use at least 1.5× padded_n to reduce future reallocations
-        size_t new_cap = padded_n + padded_n / 2;
-        alloc_scratch(s, new_cap);
+    // ── 1. Calculate temp storage requirements for CUB ──
+    size_t temp_storage_bytes = 0;
+    cub::DeviceRadixSort::SortPairs(nullptr, temp_storage_bytes,
+        s->scratch_keys, s->scratch_keys_alt, s->scratch_indices, s->scratch_indices_alt, n_points);
+    size_t sort_bytes = temp_storage_bytes;
+
+    temp_storage_bytes = 0;
+    cub::DeviceRunLengthEncode::Encode(nullptr, temp_storage_bytes,
+        s->scratch_keys_alt, s->scratch_unique_keys, s->scratch_run_counts, s->d_num_unique, n_points);
+    size_t encode_bytes = temp_storage_bytes;
+
+    temp_storage_bytes = 0;
+    cub::DeviceScan::ExclusiveSum(nullptr, temp_storage_bytes,
+        s->scratch_run_counts, s->scratch_run_starts, n_points);
+    size_t scan_bytes = temp_storage_bytes;
+
+    temp_storage_bytes = 0;
+    cub::DeviceRadixSort::SortPairsDescending(nullptr, temp_storage_bytes,
+        s->d_lru_scores, s->d_lru_scores_alt, s->d_lru_mapping, s->d_lru_mapping_alt, s->dist_cap);
+    size_t lru_bytes = temp_storage_bytes;
+
+    size_t max_cub_bytes = std::max({sort_bytes, encode_bytes, scan_bytes, lru_bytes});
+    if (s->cub_temp_storage_bytes < max_cub_bytes) {
+        if (s->d_cub_temp_storage) CUDA_CHECK(cudaFree(s->d_cub_temp_storage));
+        CUDA_CHECK(cudaMalloc(&s->d_cub_temp_storage, max_cub_bytes));
+        s->cub_temp_storage_bytes = max_cub_bytes;
     }
 
     BuildVoxelsParams params;
@@ -893,7 +877,7 @@ void add_to_map_impl(cudaStream_t stream, Point* points, uint32_t n_points, Pose
     params.scan_number    = scan_number;
     params.sensitivity    = s->sensitivity;
     params.min_dist       = s->min_dist;
-    params.unique_key_count = n_points;  // cloud_size for calculate_keys
+    params.unique_key_count = n_points;  // cloud_size
     params.table_cap      = s->table_cap;
     params.dist_cap       = s->dist_cap;
     params._pad1          = 0;
@@ -902,106 +886,59 @@ void add_to_map_impl(cudaStream_t stream, Point* points, uint32_t n_points, Pose
     calculate_keys_kernel<<<grid_dim(n_points), 256, 0, stream>>>(
         points, s->scratch_keys, s->scratch_indices, params);
 
-    // ── Step 2: Bitonic sort of (key, index) pairs ────────────────────────────
-    pack_keys_kernel<<<grid_dim(n_points), 256, 0, stream>>>(
-        s->scratch_keys, s->scratch_indices, s->scratch_packed, n_points);
+    // ── Step 2: Sort (key, index) pairs ───────────────────────────────────────
+    temp_storage_bytes = s->cub_temp_storage_bytes;
+    cub::DeviceRadixSort::SortPairs(s->d_cub_temp_storage, temp_storage_bytes,
+        s->scratch_keys, s->scratch_keys_alt, s->scratch_indices, s->scratch_indices_alt, n_points, 0, 32, stream);
 
-    if (n_points < padded_n) {
-        uint32_t diff = padded_n - n_points;
-        init_pad_kernel<<<grid_dim(diff), 256, 0, stream>>>(
-            s->scratch_packed, n_points, (uint32_t)s->scratch_cap);
-    }
+    // ── Step 3: Run-length encode ─────────────────────────────────────────────
+    CUDA_CHECK(cudaMemsetAsync(s->scratch_run_counts, 0, n_points * sizeof(uint32_t), stream));
+    temp_storage_bytes = s->cub_temp_storage_bytes;
+    cub::DeviceRunLengthEncode::Encode(s->d_cub_temp_storage, temp_storage_bytes,
+        s->scratch_keys_alt, s->scratch_unique_keys, s->scratch_run_counts, s->d_num_unique, n_points, stream);
 
-    for (uint32_t k = 2; k <= padded_n; k <<= 1)
-        for (uint32_t j = k >> 1; j > 0; j >>= 1)
-            bitonic_step_kernel<<<grid_dim(padded_n), 256, 0, stream>>>(
-                s->scratch_packed, j, k, padded_n);
+    // ── Step 4: Exclusive scan for run starts ─────────────────────────────────
+    temp_storage_bytes = s->cub_temp_storage_bytes;
+    cub::DeviceScan::ExclusiveSum(s->d_cub_temp_storage, temp_storage_bytes,
+        s->scratch_run_counts, s->scratch_run_starts, n_points, stream);
 
-    unpack_keys_kernel<<<grid_dim(n_points), 256, 0, stream>>>(
-        s->scratch_packed, s->scratch_keys, s->scratch_indices, n_points);
+    // ── Step 5: Assign target indices ─────────────────────────────────────────
+    *s->d_lru_cursor = 0;
+    assign_target_indices_kernel<<<grid_dim(n_points), 256, 0, stream>>>(
+        s->scratch_unique_keys, s->d_num_unique, s->table_keys, s->table_vals, s->table_cap,
+        s->dist_keys, s->d_add_cursor, s->d_lru_cursor, s->d_lru_mapping, s->dist_cap,
+        s->scratch_target_indices, s->scratch_update_flags);
 
-    // Sync: CPU needs to read sorted keys
-    CUDA_CHECK(cudaStreamSynchronize(stream));
-
-    // ── Step 3: CPU run computation ───────────────────────────────────────────
-    std::vector<int>      unique_keys;
-    std::vector<uint32_t> run_starts, run_ends;
-
-    if (n_points > 0) {
-        int      cur_key   = s->scratch_keys[0];
-        uint32_t start_idx = 0;
-        for (uint32_t i = 1; i < n_points; i++) {
-            if (s->scratch_keys[i] != cur_key) {
-                unique_keys.push_back(cur_key);
-                run_starts.push_back(start_idx);
-                run_ends.push_back(i);
-                cur_key   = s->scratch_keys[i];
-                start_idx = i;
-            }
-        }
-        unique_keys.push_back(cur_key);
-        run_starts.push_back(start_idx);
-        run_ends.push_back(n_points);
-    }
-
-    // ── Step 4: CPU LRU assignment ────────────────────────────────────────────
-    std::vector<uint32_t> target_indices, update_flags;
-    assign_target_indices_with_cpu_lru(s, unique_keys.data(),
-                                       (uint32_t)unique_keys.size(),
-                                       target_indices, update_flags);
-    uint32_t n_assigned = (uint32_t)target_indices.size();
-    uint32_t n_unique = (uint32_t)unique_keys.size();
-    if (n_assigned == 0) return;
-
-    unique_keys.resize(n_assigned);
-    run_starts.resize(n_assigned);
-    run_ends.resize(n_assigned);
-
-    // Copy CPU arrays into managed scratch buffers (GPU will read them)
-    memcpy(s->scratch_run_starts,     run_starts.data(),     n_assigned * sizeof(uint32_t));
-    memcpy(s->scratch_run_ends,       run_ends.data(),       n_assigned * sizeof(uint32_t));
-    memcpy(s->scratch_unique_keys,    unique_keys.data(),    n_assigned * sizeof(int));
-    memcpy(s->scratch_target_indices, target_indices.data(), n_assigned * sizeof(uint32_t));
-    memcpy(s->scratch_update_flags,   update_flags.data(),   n_assigned * sizeof(uint32_t));
-
-    // ── Step 5: reorder_points ────────────────────────────────────────────────
-    BuildVoxelsParams params_reorder = params;
-    params_reorder.unique_key_count  = n_points;  // cloud_size
+    // ── Step 6: reorder_points ────────────────────────────────────────────────
     reorder_points_kernel<<<grid_dim(n_points), 256, 0, stream>>>(
-        points, s->scratch_sorted_points, s->scratch_indices, params_reorder);
+        points, s->scratch_sorted_points, s->scratch_indices_alt, params);
 
-    // ── Step 6: build_voxels (one thread per unique voxel) ───────────────────
-    BuildVoxelsParams params_vox = params;
-    params_vox.unique_key_count  = n_assigned;
-    build_voxels_kernel<<<grid_dim(n_assigned), 256, 0, stream>>>(
-        s->scratch_sorted_points,
-        s->scratch_run_starts,
-        s->scratch_run_ends,
-        s->scratch_unique_keys,
-        s->scratch_target_indices,
-        s->scratch_update_flags,
-        s->dist_buf,
-        params_vox);
+    // ── Step 7: build_voxels ──────────────────────────────────────────────────
+    build_voxels_kernel<<<grid_dim(n_points), 256, 0, stream>>>(
+        s->scratch_sorted_points, s->scratch_run_starts, s->scratch_run_counts,
+        s->scratch_unique_keys, s->scratch_target_indices, s->scratch_update_flags,
+        s->dist_buf, s->d_num_unique, params);
 
-    // ── Step 7: Rebuild hashmap ───────────────────────────────────────────────
+    // ── Step 8: Rebuild hashmap ───────────────────────────────────────────────
     hashmap_init_kernel<<<grid_dim(s->table_cap), 256, 0, stream>>>(
         s->table_keys, s->table_cap);
+    rebuild_hashmap_keyed_kernel<<<grid_dim(s->dist_cap), 256, 0, stream>>>(
+        s->table_keys, s->table_vals, s->dist_keys, s->dist_cap, s->table_cap);
 
-    uint32_t valid_size = (s->add_cursor < s->dist_cap) ? s->add_cursor : s->dist_cap;
-    if (valid_size > 0) {
-        rebuild_hashmap_keyed_kernel<<<grid_dim(valid_size), 256, 0, stream>>>(
-            s->table_keys, s->table_vals, s->dist_keys, valid_size, s->table_cap);
-    }
+    // ── Step 9: LRU scores and sort ───────────────────────────────────────────
+    compute_scores_kernel<<<grid_dim(s->dist_cap), 256, 0, stream>>>(
+        s->dist_buf, s->d_lru_mapping, s->d_lru_scores, s->dist_cap, scan_number);
+    temp_storage_bytes = s->cub_temp_storage_bytes;
+    cub::DeviceRadixSort::SortPairsDescending(s->d_cub_temp_storage, temp_storage_bytes,
+        s->d_lru_scores, s->d_lru_scores_alt, s->d_lru_mapping, s->d_lru_mapping_alt, s->dist_cap, 0, 32, stream);
+    CUDA_CHECK(cudaMemcpyAsync(s->d_lru_mapping, s->d_lru_mapping_alt, s->dist_cap * sizeof(uint32_t), cudaMemcpyDeviceToDevice, stream));
 
     if (s->trace_map_debug && ((scan_number % 100u) == 0u)) {
+        CUDA_CHECK(cudaStreamSynchronize(stream));
         fprintf(stderr,
-                "[CUDA-MAP] scan=%u points=%u unique=%u assigned=%u add_cursor=%u lru_cursor=%u valid_size=%u\n",
-                scan_number, n_points, n_unique, n_assigned, s->add_cursor, s->lru_cursor, valid_size);
+                "[CUDA-MAP] scan=%u points=%u unique=%u add_cursor=%u lru_cursor=%u\n",
+                scan_number, n_points, *s->d_num_unique, *s->d_add_cursor, *s->d_lru_cursor);
     }
-
-    // Defer sync to start of next scan (mirrors Metal's deferred design)
-    s->pending_lru_rebuild     = true;
-    s->pending_lru_scan_number = scan_number;
 }
 
 uint32_t planes_impl(cudaStream_t stream, Point* cloud, uint32_t cloud_size,
@@ -1051,7 +988,8 @@ void get_map_impl(Point* points, uint32_t* size) {
     if (!g_state) { *size = 0; return; }
     CudaMapState* s = g_state;
 
-    uint32_t valid = (s->add_cursor < s->dist_cap) ? s->add_cursor : s->dist_cap;
+    uint32_t add_cursor = *s->d_add_cursor;
+    uint32_t valid = (add_cursor < s->dist_cap) ? add_cursor : s->dist_cap;
     uint32_t count = 0;
     for (uint32_t i = 0; i < valid; i++) {
         if (s->dist_buf[i].point_count > 0) {
@@ -1072,7 +1010,8 @@ uint32_t get_map_capacity_impl() {
 
 uint32_t get_map_size_impl() {
     if (!g_state) return 0;
-    return (g_state->add_cursor < g_state->dist_cap) ? g_state->add_cursor : g_state->dist_cap;
+    uint32_t add_cursor = *g_state->d_add_cursor;
+    return (add_cursor < g_state->dist_cap) ? add_cursor : g_state->dist_cap;
 }
 
 void cleanup_map_impl() {

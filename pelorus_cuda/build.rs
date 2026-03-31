@@ -23,6 +23,7 @@ fn main() {
                 "src/src/hashmap.cu",
                 "src/src/localmap.cu",
             ];
+            let use_thrust_sort = env::var("CARGO_FEATURE_CUDA_SORT_THRUST").is_ok();
             let include_paths = vec!["src/include"];
 
             // orin: 87
@@ -103,6 +104,11 @@ fn main() {
 
                     for path in &include_paths {
                         nvcc_compile_cmd.arg(format!("-I{}", path));
+                    }
+                    if use_thrust_sort {
+                        nvcc_compile_cmd
+                            .arg("-DPELORUS_CUDA_SORT_THRUST=1")
+                            .arg("--extended-lambda");
                     }
 
                     let cmd = nvcc_compile_cmd

@@ -1,0 +1,30 @@
+#version 450
+
+layout(local_size_x = 256, local_size_y = 1, local_size_z = 1) in;
+
+layout(std430, set = 0, binding = 0) readonly buffer SrcCloud { Point src[]; };
+layout(std430, set = 0, binding = 1) buffer DstCloud { Point dst[]; };
+layout(std430, set = 0, binding = 3) readonly buffer SortedIndices { uint sorted_indices[]; };
+
+void main() {
+    uint idx = gl_GlobalInvocationID.x;
+    if (idx >= pc.n) {
+        return;
+    }
+
+    vec4 q = vec4(pc.pose_quat[0], pc.pose_quat[1], pc.pose_quat[2], pc.pose_quat[3]);
+    vec3 t = vec3(pc.pose_trans[0], pc.pose_trans[1], pc.pose_trans[2]);
+
+    uint src_idx = sorted_indices[idx];
+    if (src_idx >= pc.n) {
+        return;
+    }
+    Point p_raw = src[src_idx];
+    vec3 p_global = iso_transform(q, t, vec3(p_raw.x, p_raw.y, p_raw.z));
+
+    Point p_out = p_raw;
+    p_out.x = p_global.x;
+    p_out.y = p_global.y;
+    p_out.z = p_global.z;
+    dst[idx] = p_out;
+}

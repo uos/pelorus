@@ -16,6 +16,7 @@ pelorus_core.workspace = true
 prelio.workspace = true
 pelorus_cuda = { workspace = true, optional = true }
 pelorus_metal = { workspace = true, optional = true }
+pelorus_vulkan = { workspace = true, optional = true }
 ros_pointcloud2.workspace = true
 anyhow.workspace = true
 nalgebra.workspace = true
@@ -32,6 +33,7 @@ default = []
 nn_kdt = ["spole/nn_kdt"]
 cuda = ["dep:pelorus_cuda", "pelorus_cuda/cuda_available", "pelorus_cuda/cuda_enable", "prelio/cuda"]
 metal = ["dep:pelorus_metal", "pelorus_metal/metal_available", "pelorus_metal/metal_enable", "prelio/metal"]
+vulkan = ["dep:pelorus_vulkan", "pelorus_vulkan/vulkan_available", "pelorus_vulkan/vulkan_enable", "prelio/vulkan"]
 
 [dev-dependencies]
 serde_json = "1.0.149"

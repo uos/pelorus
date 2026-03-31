@@ -25,3 +25,4 @@ rayon = "1"
 [features]
 cuda_available = []
 cuda_enable = []
+cuda_sort_thrust = []

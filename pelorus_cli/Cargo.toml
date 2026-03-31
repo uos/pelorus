@@ -15,6 +15,7 @@ pelorus_core.workspace = true
 prelio_io.workspace = true
 pelorus_cuda = { optional = true, workspace = true }
 pelorus_metal = { optional = true, workspace = true }
+pelorus_vulkan = { optional = true, workspace = true }
 prelio.workspace = true
 pelorus_reg.workspace = true
 ros_pointcloud2.workspace = true
@@ -78,8 +79,10 @@ mt_pubsub = [
 downsample = ["prelio_io/downsample"]
 
 # Build and use CUDA accelerations
-cuda = ["prelio_io/cuda", "dep:pelorus_cuda", "pelorus_reg/cuda"]
+cuda = ["prelio_io/cuda", "dep:pelorus_cuda", "pelorus_reg/cuda", "pelorus_cuda/cuda_enable"]
+cuda-sort-thrust = ["cuda", "pelorus_cuda/cuda_sort_thrust"]
 metal = ["prelio_io/metal", "prelio/metal", "dep:pelorus_metal", "pelorus_reg/metal", "pelorus_metal/metal_available", "pelorus_metal/metal_enable"]
+vulkan = ["prelio_io/vulkan", "prelio/vulkan", "dep:pelorus_vulkan", "pelorus_reg/vulkan", "pelorus_vulkan/vulkan_available", "pelorus_vulkan/vulkan_enable"]
 
 # Lidar + IMU with naiive kdtree for neighborsearch. Currently slow and unstable. Use only with good reason.
 kdtree = ["pelorus_reg/nn_kdt"]

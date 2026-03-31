@@ -231,7 +231,12 @@ pub fn init_map(
     }
 }
 
-pub fn add_to_map(stream: &Stream, cloud: &CudaBuffer, ekf_pose_t: &Vector3, ekf_pose_r: &Quaternion) {
+pub fn add_to_map(
+    stream: &Stream,
+    cloud: &CudaBuffer,
+    ekf_pose_t: &Vector3,
+    ekf_pose_r: &Quaternion,
+) {
     let pose = Pose {
         position: *ekf_pose_t,
         orientation: *ekf_pose_r,

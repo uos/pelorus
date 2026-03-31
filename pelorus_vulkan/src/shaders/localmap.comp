@@ -1,0 +1,178 @@
+#version 450
+
+layout(local_size_x = 256, local_size_y = 1, local_size_z = 1) in;
+
+layout(std430, set = 0, binding = 0) readonly buffer PointsIn { Point points_in[]; };
+layout(std430, set = 0, binding = 1) buffer SortedPoints { Point sorted_points[]; };
+layout(std430, set = 0, binding = 2) buffer Keys { int keys[]; };
+layout(std430, set = 0, binding = 3) buffer Indices { uint indices[]; };
+layout(std430, set = 0, binding = 4) readonly buffer UniqueKeys { int unique_keys[]; };
+layout(std430, set = 0, binding = 5) readonly buffer TargetIndices { uint target_indices[]; };
+layout(std430, set = 0, binding = 6) readonly buffer RunStarts { uint run_starts[]; };
+layout(std430, set = 0, binding = 7) readonly buffer RunEnds { uint run_ends[]; };
+layout(std430, set = 0, binding = 8) readonly buffer UpdateFlags { uint update_flags[]; };
+layout(std430, set = 0, binding = 9) buffer Dists { VoxelDistribution dists[]; };
+layout(std430, set = 0, binding = 10) buffer Counters {
+    uint unique_count;
+    uint add_cursor;
+    uint lru_cursor;
+};
+
+void main() {
+    uint idx = gl_GlobalInvocationID.x;
+#ifdef CALCULATE_KEYS
+    if (idx >= pc.n) {
+        return;
+    }
+
+    vec4 q = vec4(pc.pose_quat[0], pc.pose_quat[1], pc.pose_quat[2], pc.pose_quat[3]);
+    vec3 t = vec3(pc.pose_trans[0], pc.pose_trans[1], pc.pose_trans[2]);
+
+    Point p_raw = points_in[idx];
+    vec3 p_local = vec3(p_raw.x, p_raw.y, p_raw.z);
+    vec3 p_global = iso_transform(q, t, p_local);
+
+    ivec3 grid = grid_pos(pc.resolution, p_global);
+    keys[idx] = hash_grid(grid);
+    indices[idx] = idx;
+#endif
+#ifdef BUILD_VOXELS
+    if (idx >= unique_count) {
+        return;
+    }
+
+    int voxel_key = unique_keys[idx];
+    uint start = run_starts[idx];
+    uint end = run_ends[idx];
+    uint count = end - start;
+
+    if (count == 0u || voxel_key == EMPTY_KEY) {
+        return;
+    }
+
+    vec3 sum = vec3(0.0);
+    for (uint i = start; i < end; i++) {
+        Point p = sorted_points[i];
+        sum += vec3(p.x, p.y, p.z);
+    }
+
+    float fn = float(count);
+    vec3 scan_mean = sum / fn;
+
+    float s_xx = 0.0;
+    float s_xy = 0.0;
+    float s_xz = 0.0;
+    float s_yy = 0.0;
+    float s_yz = 0.0;
+    float s_zz = 0.0;
+
+    for (uint i = start; i < end; i++) {
+        Point p = sorted_points[i];
+        vec3 d = vec3(p.x, p.y, p.z) - scan_mean;
+        s_xx += d.x * d.x;
+        s_xy += d.x * d.y;
+        s_xz += d.x * d.z;
+        s_yy += d.y * d.y;
+        s_yz += d.y * d.z;
+        s_zz += d.z * d.z;
+    }
+
+    float scan_cov[9];
+    scan_cov[0] = s_xx / fn; scan_cov[1] = s_xy / fn; scan_cov[2] = s_xz / fn;
+    scan_cov[3] = scan_cov[1]; scan_cov[4] = s_yy / fn; scan_cov[5] = s_yz / fn;
+    scan_cov[6] = scan_cov[2]; scan_cov[7] = scan_cov[5]; scan_cov[8] = s_zz / fn;
+
+    uint buf_idx = target_indices[idx];
+    bool is_update = (update_flags[idx] != 0u);
+
+    if (is_update) {
+        VoxelDistribution d = dists[buf_idx];
+        d.last_scan = pc.scan_number;
+
+        vec3 d_mean = vec3(d.mean[0], d.mean[1], d.mean[2]);
+        vec3 mean_diff = d_mean - scan_mean;
+        float fn_d = float(d.point_count);
+        float maturity_decay = max(1.0, log(fn_d));
+        float effective_sensitivity = pc.sensitivity / maturity_decay;
+
+        float reg_cov[9];
+        for (int i = 0; i < 9; i++) {
+            reg_cov[i] = d.cov[i];
+        }
+        regularize_cov(reg_cov);
+
+        float L_reg[9];
+        float m_sq;
+        if (cholesky_3x3(reg_cov, L_reg)) {
+            m_sq = mahalanobis_sq(mean_diff, L_reg);
+        } else {
+            m_sq = dot(mean_diff, mean_diff);
+        }
+
+        float alpha = exp(-m_sq / (2.0 * effective_sensitivity));
+        if (alpha >= 1e-5) {
+            vec3 new_mean = d_mean * (1.0 - alpha) + scan_mean * alpha;
+
+            float outer[9];
+            for (int r = 0; r < 3; r++) {
+                for (int c = 0; c < 3; c++) {
+                    outer[r * 3 + c] = mean_diff[r] * mean_diff[c];
+                }
+            }
+
+            for (int i = 0; i < 9; i++) {
+                d.cov[i] = d.cov[i] * (1.0 - alpha) + scan_cov[i] * alpha + outer[i] * (alpha * (1.0 - alpha));
+            }
+
+            d.mean[0] = new_mean.x;
+            d.mean[1] = new_mean.y;
+            d.mean[2] = new_mean.z;
+
+            float next_L[9];
+            for (int i = 0; i < 9; i++) {
+                next_L[i] = 0.0;
+            }
+            if (!cholesky_3x3(d.cov, next_L)) {
+                vec3 ev = symmetric_eigen_3x3(d.cov);
+                next_L[0] = sqrt(max(0.0, ev.x));
+                next_L[4] = sqrt(max(0.0, ev.y));
+                next_L[8] = sqrt(max(0.0, ev.z));
+            }
+            for (int i = 0; i < 9; i++) {
+                d.transform[i] = next_L[i];
+            }
+
+            d.point_count += count;
+            dists[buf_idx] = d;
+        }
+    } else {
+        VoxelDistribution d;
+        d.lock_flag = 0;
+        for (int i = 0; i < 9; i++) {
+            d.transform[i] = 0.0;
+            d.cov[i] = scan_cov[i];
+        }
+        d.point_count = count;
+        d.mean[0] = scan_mean.x;
+        d.mean[1] = scan_mean.y;
+        d.mean[2] = scan_mean.z;
+        d.last_scan = pc.scan_number;
+
+        float scan_L[9];
+        for (int i = 0; i < 9; i++) {
+            scan_L[i] = 0.0;
+        }
+        if (!cholesky_3x3(scan_cov, scan_L)) {
+            vec3 ev = symmetric_eigen_3x3(scan_cov);
+            scan_L[0] = sqrt(max(0.0, ev.x));
+            scan_L[4] = sqrt(max(0.0, ev.y));
+            scan_L[8] = sqrt(max(0.0, ev.z));
+        }
+        for (int i = 0; i < 9; i++) {
+            d.transform[i] = scan_L[i];
+        }
+
+        dists[buf_idx] = d;
+    }
+#endif
+}

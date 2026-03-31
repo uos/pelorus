@@ -36,6 +36,7 @@ rat = ["dep:mt_rat", "dep:libc"]
 downsample = ["prelio/downsample"]
 cuda = ["prelio/cuda"]
 metal = ["prelio/metal"]
+vulkan = ["prelio/vulkan"]
 no-imu-sync = ["prelio/no-imu-sync"]
 rerun = ["dep:rerun"]
 mt_pubsub = [

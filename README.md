@@ -4,7 +4,7 @@ Ressource-aware 3D Lidar-based Odometry for robots.
 
 Supporting various 3D Lidar sensors, IMUs, odometry sources and kinematic models, Pelorus provides real-time performance on embedded hardware while exceeding State-of-the-Art accuracy.
 
-Scale your compute down to single-core CPUs or up to full parallel compute on CPU and GPU with CUDA acceleration.
+Scale your compute down to single-core CPU usage or up to full parallel compute on CPU and **GPU** supporting NVIDIA, AMD, Intel and Apple Silicon.
 
 
 ## ROS 2

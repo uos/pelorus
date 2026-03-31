@@ -255,11 +255,11 @@ pub struct TuiStats {
     pub num_cores: usize,
 
     // GPU (CUDA/Metal/Jetson) - Process-local buffer usage
-    #[cfg(any(feature = "cuda", feature = "metal"))]
+    #[cfg(any(feature = "cuda", feature = "metal", feature = "vulkan"))]
     pub gpu_memory_used_mb: f64,
-    #[cfg(any(feature = "cuda", feature = "metal"))]
+    #[cfg(any(feature = "cuda", feature = "metal", feature = "vulkan"))]
     pub gpu_memory_total_mb: f64,
-    #[cfg(any(feature = "cuda", feature = "metal"))]
+    #[cfg(any(feature = "cuda", feature = "metal", feature = "vulkan"))]
     pub gpu_utilization: f64,
 
     // Elapsed
@@ -503,7 +503,7 @@ impl SharedStats {
         stats.avg_cpu_percent = avg_cpu;
         stats.max_cpu_percent = max_cpu;
 
-        #[cfg(any(feature = "cuda", feature = "metal"))]
+        #[cfg(any(feature = "cuda", feature = "metal", feature = "vulkan"))]
         {
             let (gpu_used, gpu_total, gpu_util) = get_gpu_stats();
             stats.gpu_memory_used_mb = gpu_used;
@@ -620,7 +620,7 @@ fn get_cpu_usage_macos(last: Option<(u64, f64)>) -> (f64, (u64, f64)) {
     (-1.0, current)
 }
 
-#[cfg(any(feature = "cuda", feature = "metal"))]
+#[cfg(any(feature = "cuda", feature = "metal", feature = "vulkan"))]
 fn get_gpu_stats() -> (f64, f64, f64) {
     #[cfg(feature = "metal")]
     {
@@ -650,6 +650,12 @@ fn get_gpu_stats() -> (f64, f64, f64) {
         } else {
             get_nvidia_gpu_stats()
         }
+    }
+
+    #[cfg(feature = "vulkan")]
+    {
+        let used = pelorus_vulkan::get_used_memory() as f64 / (1024.0 * 1024.0);
+        (used, 0.0, 0.0)
     }
 }
 
@@ -1513,7 +1519,7 @@ impl StatsTui {
             ]),
         ];
 
-        #[cfg(any(feature = "cuda", feature = "metal"))]
+        #[cfg(any(feature = "cuda", feature = "metal", feature = "vulkan"))]
         {
             if stats.gpu_utilization > 0.0 {
                 lines.push(Line::from(vec![

@@ -1,0 +1,33 @@
+#version 450
+
+layout(local_size_x = 256) in;
+
+layout(std430, set = 0, binding = 9) readonly buffer DistBuf {
+    VoxelDistribution voxels[];
+};
+layout(std430, set = 0, binding = 2) writeonly buffer LruKeys { uint lru_keys[]; };
+layout(std430, set = 0, binding = 11) writeonly buffer LruVals { uint lru_vals[]; };
+
+void main() {
+    uint i = gl_GlobalInvocationID.x;
+    if (i >= pc.dist_cap) return;
+
+    uint pt_count = voxels[i].point_count;
+    uint last_scan = voxels[i].last_scan;
+    uint temporal_dist = pc.scan_number - last_scan;
+
+    // We want empty voxels (pt_count == 0) first (smallest keys).
+    // Then voxels with small (pt_count / (temporal_dist + 1)) first.
+    
+    uint key;
+    if (pt_count == 0) {
+        key = 0;
+    } else {
+        // Range [1, 2^30-1]
+        float score = float(pt_count) / float(temporal_dist + 1);
+        key = (1u << 30) | uint(clamp(score * 1000.0, 0.0, float((1u << 30) - 1u)));
+    }
+    
+    lru_keys[i] = key;
+    lru_vals[i] = i;
+}

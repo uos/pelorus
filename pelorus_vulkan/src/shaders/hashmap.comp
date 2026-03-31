@@ -1,0 +1,32 @@
+#version 450
+
+layout(local_size_x = 256, local_size_y = 1, local_size_z = 1) in;
+
+layout(std430, set = 0, binding = 12) buffer TableKeys { int table_keys[]; };
+layout(std430, set = 0, binding = 13) buffer TableVals { uint table_vals[]; };
+layout(std430, set = 0, binding = 14) readonly buffer DistKeys { int dist_keys[]; };
+
+void main() {
+    uint idx = gl_GlobalInvocationID.x;
+#ifdef HASHMAP_INIT
+    if (idx >= pc.cap) return;
+    table_keys[idx] = EMPTY_KEY;
+#endif
+
+#ifdef REBUILD_HASHMAP_KEYED
+    if (idx >= pc.dist_cap) return;
+
+    int key = dist_keys[idx];
+    if (key == EMPTY_KEY) return;
+
+    uint slot = hash_fn(key) & (pc.table_cap - 1u);
+    for (uint i = 0; i < pc.table_cap; i++) {
+        int prev = atomicCompSwap(table_keys[slot], EMPTY_KEY, key);
+        if (prev == EMPTY_KEY) {
+            table_vals[slot] = idx;
+            return;
+        }
+        slot = (slot + 1u) & (pc.table_cap - 1u);
+    }
+#endif
+}
