@@ -837,6 +837,12 @@ impl Prelio {
         let vendor = lidar_vendor;
         thread::spawn(move || {
             let mut eval = RuntimeEvaluator::new();
+            let trace_preproc = std::env::var_os("PELORUS_TRACE_PREPROC").is_some();
+            let trace_preproc_limit = std::env::var("PELORUS_TRACE_PREPROC_LIMIT")
+                .ok()
+                .and_then(|s| s.parse::<usize>().ok())
+                .unwrap_or(300);
+            let mut trace_preproc_count = 0usize;
             while let Ok(labeled) = preproc_rx.recv() {
                 eval.start("filter_downsample").unwrap();
 
@@ -885,6 +891,17 @@ impl Prelio {
 
                 match result {
                     Ok(Some(cloud_meta)) => {
+                        if trace_preproc && trace_preproc_count < trace_preproc_limit {
+                            trace_preproc_count += 1;
+                            eprintln!(
+                                "[PELORUS_TRACE_PREPROC] idx={} scan_id={} status=some n={} first_ts={:.9} last_ts={:.9}",
+                                trace_preproc_count,
+                                labeled.scan_id,
+                                cloud_meta.0.len(),
+                                cloud_meta.2,
+                                cloud_meta.3,
+                            );
+                        }
                         eval.stop("filter_downsample").unwrap();
                         if let Err(e) =
                             filtered_cloud_tx.send((cloud_meta, labeled.scan_id, eval.clone()))
@@ -894,6 +911,13 @@ impl Prelio {
                         }
                     }
                     Ok(None) => {
+                        if trace_preproc && trace_preproc_count < trace_preproc_limit {
+                            trace_preproc_count += 1;
+                            eprintln!(
+                                "[PELORUS_TRACE_PREPROC] idx={} scan_id={} status=none",
+                                trace_preproc_count, labeled.scan_id
+                            );
+                        }
                         eval.stop("filter_downsample").unwrap();
                         info!("Pointcloud was filtered out");
                     }
@@ -928,6 +952,7 @@ impl Prelio {
     /// Add a point cloud to the buffer. Returns a `scan_id` assigned to this cloud.
     pub fn add_pointcloud(&mut self, cloud: PointCloud2Msg) -> u64 {
         let cloud_stamp = timestamp_to_secs(&cloud.header.stamp);
+        let cloud_points_n = (cloud.dimensions.width * cloud.dimensions.height) as usize;
 
         // TODO handle time jumps in the past?
         // let buff_cloud = if cloud_stamp < self.last_cloud_time {
@@ -949,6 +974,21 @@ impl Prelio {
         // Generate a unique scan id and send a labeled cloud into preprocessing.
         static SCAN_ID_COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
         let scan_id = SCAN_ID_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        if std::env::var_os("PELORUS_TRACE_CLOUD_IN").is_some() {
+            static TRACE_CLOUD_IN_COUNT: std::sync::atomic::AtomicUsize =
+                std::sync::atomic::AtomicUsize::new(0);
+            let limit = std::env::var("PELORUS_TRACE_CLOUD_IN_LIMIT")
+                .ok()
+                .and_then(|s| s.parse::<usize>().ok())
+                .unwrap_or(300);
+            let idx = TRACE_CLOUD_IN_COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+            if idx <= limit {
+                eprintln!(
+                    "[PELORUS_TRACE_CLOUD_IN] idx={} scan_id={} stamp={:.9} points_n={}",
+                    idx, scan_id, cloud_stamp, cloud_points_n
+                );
+            }
+        }
         let labeled = LabeledPointCloud2Msg { scan_id, cloud };
         match self.preproc_sender.send(labeled) {
             Ok(_) => {}

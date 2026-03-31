@@ -854,7 +854,9 @@ impl PrelioNode {
                                 let delta = curr_stamp - init_time;
                                 if delta < init_imu_time {
                                     if let Some(ref mut buffer) = init_state.buffer {
-                                        buffer.push(imu_lifis);
+                                        // Buffer IMU for EKF init callback, but still forward it
+                                        // to prelio so scan/IMU sync is not backend-timing dependent.
+                                        buffer.push(imu_lifis.clone());
 
                                         #[cfg(feature = "rat")]
                                         if synchronous_mode {
@@ -865,10 +867,7 @@ impl PrelioNode {
                                             )
                                             .unwrap();
                                         }
-
-                                        continue; // skip adding to lifis if we are still in the init phase
                                     }
-                                    // we are only here, if there was an initial buffer, but it was already consumed so skip init and continue with normal processing
                                 } else {
                                     // apply the init buffer
                                     if let Some(buffer) = init_state.buffer.take() {
@@ -880,7 +879,7 @@ impl PrelioNode {
                         }
 
                         let state = state_clone.lock().unwrap();
-                        let filtered = state.lifis.lock().unwrap().add_imu(imu_to_lifis(msg));
+                        let filtered = state.lifis.lock().unwrap().add_imu(imu_lifis);
                         match (filtered, imu_filtered_publisher.as_ref()) {
                             (Some(filtered), Some(imu_filtered_publisher)) => {
                                 imu_filtered_publisher
@@ -941,7 +940,9 @@ impl PrelioNode {
                             let delta = curr_stamp - init_time;
                             if delta < init_imu_time {
                                 if let Some(ref mut buffer) = init_state.buffer {
-                                    buffer.push(imu_lifis);
+                                    // Buffer IMU for EKF init callback, but still forward it
+                                    // to prelio so scan/IMU sync is not backend-timing dependent.
+                                    buffer.push(imu_lifis.clone());
 
                                     #[cfg(feature = "rat")]
                                     if synchronous_mode {
@@ -952,10 +953,7 @@ impl PrelioNode {
                                         )
                                         .unwrap();
                                     }
-
-                                    continue; // skip adding to lifis if we are still in the init phase
                                 }
-                                // we are only here, if there was an initial buffer, but it was already consumed so skip init and continue with normal processing
                             } else {
                                 // apply the init buffer
                                 if let Some(buffer) = init_state.buffer.take() {
@@ -967,7 +965,7 @@ impl PrelioNode {
                     }
 
                     // outputs filtered imu msg to pub again but we can not right now
-                    let _ = state.lifis.lock().unwrap().add_imu(imu_to_lifis(msg));
+                    let _ = state.lifis.lock().unwrap().add_imu(imu_lifis);
 
                     // let filtered = {
                     //     let state = state_clone.lock().unwrap();
@@ -1016,7 +1014,9 @@ impl PrelioNode {
                         let delta = curr_stamp - init_time;
                         if delta < init_imu_time {
                             if let Some(ref mut buffer) = init_state.buffer {
-                                buffer.push(imu_lifis);
+                                // Buffer IMU for EKF init callback, but still forward it
+                                // to prelio so scan/IMU sync is not backend-timing dependent.
+                                buffer.push(imu_lifis.clone());
 
                                 #[cfg(feature = "rat")]
                                 if synchronous_mode {
@@ -1027,10 +1027,7 @@ impl PrelioNode {
                                     )
                                     .unwrap();
                                 }
-
-                                continue; // skip adding to lifis if we are still in the init phase
                             }
-                            // we are only here, if there was an initial buffer, but it was already consumed so skip init and continue with normal processing
                         } else {
                             // apply the init buffer
                             if let Some(buffer) = init_state.buffer.take() {
@@ -1041,7 +1038,7 @@ impl PrelioNode {
                     }
                 }
 
-                let filtered = state.lifis.lock().unwrap().add_imu(imu_to_lifis(msg));
+                let filtered = state.lifis.lock().unwrap().add_imu(imu_lifis);
                 match (filtered, imu_filtered_publisher.as_ref()) {
                     (Some(filtered), Some(imu_filtered_publisher)) => {
                         imu_filtered_publisher

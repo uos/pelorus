@@ -7,11 +7,13 @@ use serde::{Deserialize, Serialize};
 use spole::IVoxNearbyType;
 use std::fs;
 use std::path::PathBuf;
-#[cfg(feature = "metal")]
+#[cfg(any(feature = "metal", feature = "cuda"))]
 use std::sync::Mutex;
 
 #[cfg(feature = "metal")]
 static METAL_MAP_MUTEX: Mutex<()> = Mutex::new(());
+#[cfg(feature = "cuda")]
+static CUDA_MAP_MUTEX: Mutex<()> = Mutex::new(());
 
 #[derive(Serialize, Deserialize, Debug, PartialEq)]
 struct DumpedState {
@@ -93,6 +95,8 @@ fn create_complex_cloud() -> Vec<PointXYZIT> {
 fn test_backends() {
     #[cfg(feature = "metal")]
     let _lock = METAL_MAP_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+    #[cfg(feature = "cuda")]
+    let _lock = CUDA_MAP_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
 
     let params = ImuParameters::default();
     let map_resolution = 0.5;
@@ -256,6 +260,251 @@ fn test_backends() {
             "qw diff: {} vs {}",
             output_state.rotation[3],
             expected_state.rotation[3]
+        );
+    }
+
+    #[cfg(feature = "cuda")]
+    pelorus_cuda::cleanup_map();
+    #[cfg(feature = "metal")]
+    pelorus_metal::cleanup_map();
+}
+
+#[cfg(feature = "cuda")]
+#[test]
+fn test_planes_direct_equivalency_cuda() {
+    use ros_pointcloud2::points::{PointXYZ, PointXYZINormal};
+    let _lock = CUDA_MAP_MUTEX.lock().unwrap();
+    let resolution = 0.5_f32;
+    let map_cloud = create_simple_cloud();
+    let query_cloud = create_complex_cloud();
+
+    let mut cpu_map = spole::IVoxHashMap::new(resolution, 10000, IVoxNearbyType::Nearby26, 0.1);
+    cpu_map.add(&map_cloud, &Isometry3::identity());
+
+    let mut cpu_planes: Vec<PointXYZINormal> = Vec::new();
+    for pt in &query_cloud {
+        let q = PointXYZ::new(pt.x, pt.y, pt.z);
+        if let Some(plane) = cpu_map.plane_fit_from_distributions(&q) {
+            let pd2 = plane[0] * pt.x + plane[1] * pt.y + plane[2] * pt.z + plane[3];
+            let l2_sq = pt.x * pt.x + pt.y * pt.y + pt.z * pt.z;
+            let s = 1.0_f32 - 0.9 * pd2.abs() / l2_sq.max(1e-9_f32).sqrt().sqrt();
+            if s > 0.9 {
+                cpu_planes.push(PointXYZINormal::new(
+                    pt.x, pt.y, pt.z, pd2, plane[0], plane[1], plane[2],
+                ));
+            }
+        }
+    }
+
+    let stream = pelorus_cuda::Stream::new();
+    pelorus_cuda::init_map(
+        &stream,
+        10000,
+        resolution,
+        0.1,
+        resolution / 4.0,
+        pelorus_cuda::NeighborType::Neighbor26,
+    );
+
+    let gpu_map_cloud: LocatedBufferView<PointXYZIT> =
+        LocatedBufferView::copy_from_slice_cuda(&stream, &map_cloud);
+    let LocatedBufferView::Cuda {
+        buffer: ref map_buf,
+    } = gpu_map_cloud
+    else {
+        unreachable!()
+    };
+    pelorus_cuda::add_to_map(
+        &stream,
+        map_buf,
+        &pelorus_cuda::Vector3::new(0.0, 0.0, 0.0),
+        &pelorus_cuda::Quaternion::default(),
+    );
+
+    let gpu_query_cloud: LocatedBufferView<PointXYZIT> =
+        LocatedBufferView::copy_from_slice_cuda(&stream, &query_cloud);
+    let LocatedBufferView::Cuda {
+        buffer: ref query_buf,
+    } = gpu_query_cloud
+    else {
+        unreachable!()
+    };
+
+    let mut cuda_planes_out: Vec<PointXYZINormal> = vec![PointXYZINormal::default(); query_cloud.len()];
+    let mut cuda_planes_gpu = pelorus_cuda::CudaBuffer::new(
+        &stream,
+        std::mem::size_of::<PointXYZINormal>(),
+        query_cloud.len(),
+    );
+    pelorus_cuda::planes_cuda(
+        &stream,
+        query_buf,
+        &pelorus_cuda::Vector3::new(0.0, 0.0, 0.0),
+        &pelorus_cuda::Quaternion::default(),
+        &pelorus_cuda::Vector3::new(0.0, 0.0, 0.0),
+        &pelorus_cuda::Quaternion::default(),
+        &mut cuda_planes_out,
+        &mut cuda_planes_gpu,
+    );
+    pelorus_cuda::cleanup_map();
+
+    assert_eq!(
+        cpu_planes.len(),
+        cuda_planes_out.len(),
+        "Different number of valid planes: CPU={} CUDA={}",
+        cpu_planes.len(),
+        cuda_planes_out.len()
+    );
+
+    let sort_key = |p: &PointXYZINormal| {
+        (
+            (p.x * 1000.0) as i32,
+            (p.y * 1000.0) as i32,
+            (p.z * 1000.0) as i32,
+        )
+    };
+    let mut cpu_sorted = cpu_planes.clone();
+    let mut cuda_sorted = cuda_planes_out.clone();
+    cpu_sorted.sort_by_key(&sort_key);
+    cuda_sorted.sort_by_key(&sort_key);
+
+    let tol = 1e-6_f32;
+    for (c, g) in cpu_sorted.iter().zip(cuda_sorted.iter()) {
+        let max_diff = (c.normal_x - g.normal_x)
+            .abs()
+            .max((c.normal_y - g.normal_y).abs())
+            .max((c.normal_z - g.normal_z).abs())
+            .max((c.intensity - g.intensity).abs());
+        assert!(
+            max_diff < tol,
+            "Plane mismatch at ({},{},{}): CPU=({:.4},{:.4},{:.4},{:.4}) CUDA=({:.4},{:.4},{:.4},{:.4}) diff={:.2e}",
+            c.x,
+            c.y,
+            c.z,
+            c.normal_x,
+            c.normal_y,
+            c.normal_z,
+            c.intensity,
+            g.normal_x,
+            g.normal_y,
+            g.normal_z,
+            g.intensity,
+            max_diff
+        );
+    }
+}
+
+#[cfg(feature = "cuda")]
+#[test]
+fn test_planes_after_voxel_update_cuda() {
+    use ros_pointcloud2::points::{PointXYZ, PointXYZINormal};
+    let _lock = CUDA_MAP_MUTEX.lock().unwrap();
+    let resolution = 0.5_f32;
+    let map_cloud = create_simple_cloud();
+
+    let mut cpu_map = spole::IVoxHashMap::new(resolution, 10000, IVoxNearbyType::Nearby26, 0.1);
+    cpu_map.add(&map_cloud, &Isometry3::identity());
+    cpu_map.add(&map_cloud, &Isometry3::identity());
+
+    let mut cpu_planes: Vec<PointXYZINormal> = Vec::new();
+    for pt in &map_cloud {
+        let q = PointXYZ::new(pt.x, pt.y, pt.z);
+        if let Some(plane) = cpu_map.plane_fit_from_distributions(&q) {
+            let pd2 = plane[0] * pt.x + plane[1] * pt.y + plane[2] * pt.z + plane[3];
+            let l2_sq = pt.x * pt.x + pt.y * pt.y + pt.z * pt.z;
+            let s = 1.0_f32 - 0.9 * pd2.abs() / l2_sq.max(1e-9_f32).sqrt().sqrt();
+            if s > 0.9 {
+                cpu_planes.push(PointXYZINormal::new(
+                    pt.x, pt.y, pt.z, pd2, plane[0], plane[1], plane[2],
+                ));
+            }
+        }
+    }
+
+    let stream = pelorus_cuda::Stream::new();
+    pelorus_cuda::init_map(
+        &stream,
+        10000,
+        resolution,
+        0.1,
+        resolution / 4.0,
+        pelorus_cuda::NeighborType::Neighbor26,
+    );
+
+    let gpu_cloud: LocatedBufferView<PointXYZIT> =
+        LocatedBufferView::copy_from_slice_cuda(&stream, &map_cloud);
+    let LocatedBufferView::Cuda {
+        buffer: ref cloud_buf,
+    } = gpu_cloud
+    else {
+        unreachable!()
+    };
+
+    let zero_t = pelorus_cuda::Vector3::new(0.0, 0.0, 0.0);
+    let identity_q = pelorus_cuda::Quaternion::default();
+    pelorus_cuda::add_to_map(&stream, cloud_buf, &zero_t, &identity_q);
+    pelorus_cuda::add_to_map(&stream, cloud_buf, &zero_t, &identity_q);
+
+    let mut cuda_out: Vec<PointXYZINormal> = vec![PointXYZINormal::default(); map_cloud.len()];
+    let mut cuda_gpu_out = pelorus_cuda::CudaBuffer::new(
+        &stream,
+        std::mem::size_of::<PointXYZINormal>(),
+        map_cloud.len(),
+    );
+    pelorus_cuda::planes_cuda(
+        &stream,
+        cloud_buf,
+        &zero_t,
+        &identity_q,
+        &zero_t,
+        &identity_q,
+        &mut cuda_out,
+        &mut cuda_gpu_out,
+    );
+    pelorus_cuda::cleanup_map();
+
+    assert_eq!(
+        cpu_planes.len(),
+        cuda_out.len(),
+        "After voxel update: different plane count CPU={} CUDA={}",
+        cpu_planes.len(),
+        cuda_out.len()
+    );
+
+    let sort_key = |p: &PointXYZINormal| {
+        (
+            (p.x * 1000.0) as i32,
+            (p.y * 1000.0) as i32,
+            (p.z * 1000.0) as i32,
+        )
+    };
+    let mut cpu_sorted = cpu_planes.clone();
+    let mut cuda_sorted = cuda_out.clone();
+    cpu_sorted.sort_by_key(&sort_key);
+    cuda_sorted.sort_by_key(&sort_key);
+
+    let tol = 1e-6_f32;
+    for (c, g) in cpu_sorted.iter().zip(cuda_sorted.iter()) {
+        let d = (c.normal_x - g.normal_x)
+            .abs()
+            .max((c.normal_y - g.normal_y).abs())
+            .max((c.normal_z - g.normal_z).abs())
+            .max((c.intensity - g.intensity).abs());
+        assert!(
+            d < tol,
+            "After update — mismatch at ({:.2},{:.2},{:.2}): CPU=({:.4},{:.4},{:.4},{:.4}) CUDA=({:.4},{:.4},{:.4},{:.4}) diff={:.2e}",
+            c.x,
+            c.y,
+            c.z,
+            c.normal_x,
+            c.normal_y,
+            c.normal_z,
+            c.intensity,
+            g.normal_x,
+            g.normal_y,
+            g.normal_z,
+            g.intensity,
+            d
         );
     }
 }

@@ -767,22 +767,52 @@ fn lio_with_ready_signal(
         // Main processing loop. Use recv_timeout when a shutdown flag is provided so we can
         // check for shutdown requests periodically. If no shutdown flag is provided, block
         // on recv() as before.
+        let mut shutdown_seen_at: Option<std::time::Instant> = None;
+        let trace_ticks = std::env::var_os("PELORUS_TRACE_TICKS").is_some();
+        let trace_tick_limit = std::env::var("PELORUS_TRACE_TICKS_LIMIT")
+            .ok()
+            .and_then(|s| s.parse::<usize>().ok())
+            .unwrap_or(300);
+        let mut trace_tick_count = 0usize;
         loop {
             let lifis_tick = match processing_shutdown_flag.as_ref() {
                 Some(flag) => {
-                    // First check if shutdown was already requested to avoid blocking.
+                    // In offline/synchronous mode, briefly drain pending scans after shutdown
+                    // to reduce backend-dependent end-of-bag truncation.
                     if flag.load(std::sync::atomic::Ordering::Relaxed) {
-                        info!("Shutdown flag detected, exiting processing loop");
-                        break;
-                    }
+                        if shutdown_seen_at.is_none() {
+                            shutdown_seen_at = Some(std::time::Instant::now());
+                            info!("Shutdown flag detected, draining pending scans");
+                        }
 
-                    // Block with a short timeout so we can still respond promptly to shutdown signals.
-                    match synced_rx.recv_timeout(std::time::Duration::from_millis(50)) {
-                        Ok(t) => t,
-                        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => continue,
-                        Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
-                            info!("synced_rx disconnected, exiting processing loop");
-                            break;
+                        match synced_rx.recv_timeout(std::time::Duration::from_millis(50)) {
+                            Ok(t) => t,
+                            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                                let drained_enough = !synchronous_mode
+                                    || shutdown_seen_at
+                                        .map(|t| t.elapsed() >= std::time::Duration::from_secs(5))
+                                        .unwrap_or(false);
+                                if drained_enough {
+                                    info!("Shutdown drain complete, exiting processing loop");
+                                    break;
+                                }
+                                continue;
+                            }
+                            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                                info!("synced_rx disconnected, exiting processing loop");
+                                break;
+                            }
+                        }
+                    } else {
+                        shutdown_seen_at = None;
+                        // Block with a short timeout so we can still respond promptly to shutdown signals.
+                        match synced_rx.recv_timeout(std::time::Duration::from_millis(50)) {
+                            Ok(t) => t,
+                            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => continue,
+                            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                                info!("synced_rx disconnected, exiting processing loop");
+                                break;
+                            }
                         }
                     }
                 }
@@ -824,12 +854,23 @@ fn lio_with_ready_signal(
             let cloud_for_reg = &persistent_cloud_buf;
             #[cfg(not(any(feature = "cuda", feature = "metal")))]
             let cloud_for_reg = LocatedBufferView::Ram(lifis_tick.deskewed_cloud);
+            let cloud_len = cloud_for_reg.len();
 
             let cloud_out = lifis_tick.deskewed_cloud_passthrough;
 
             let orig_frame = lifis_tick.cloud_header.frame_id.clone();
             let orig_time = lifis_tick.cloud_header.stamp;
             let current_cloud_time = timestamp_to_secs(&lifis_tick.odom_time);
+            if trace_ticks && trace_tick_count < trace_tick_limit {
+                trace_tick_count += 1;
+                eprintln!(
+                    "[PELORUS_TRACE_TICK] idx={} ts={:.9} map_only={} cloud_n={}",
+                    trace_tick_count,
+                    current_cloud_time,
+                    lifis_tick.map_only,
+                    cloud_len,
+                );
+            }
             if let Some(existing_last_scan_time) = last_scan_time {
                 if current_cloud_time < existing_last_scan_time {
                     let mut map = map.lock().unwrap();
@@ -922,8 +963,22 @@ fn lio_with_ready_signal(
                     #[cfg(feature = "metal")]
                     &metal_stream,
                 ) {
-                    Ok(Some(pose)) => (pose, map.get_state()),
+                    Ok(Some(pose)) => {
+                        if trace_ticks && trace_tick_count <= trace_tick_limit {
+                            eprintln!(
+                                "[PELORUS_TRACE_REGISTER] idx={} ts={:.9} result=some",
+                                trace_tick_count, current_cloud_time
+                            );
+                        }
+                        (pose, map.get_state())
+                    }
                     Ok(None) => {
+                        if trace_ticks && trace_tick_count <= trace_tick_limit {
+                            eprintln!(
+                                "[PELORUS_TRACE_REGISTER] idx={} ts={:.9} result=none",
+                                trace_tick_count, current_cloud_time
+                            );
+                        }
                         // mark to send new data even on init
                         #[cfg(feature = "rat")]
                         if synchronous_mode {
@@ -949,6 +1004,12 @@ fn lio_with_ready_signal(
                         continue;
                     } // skip outputting trivial solutions on initialization
                     Err(err) => {
+                        if trace_ticks && trace_tick_count <= trace_tick_limit {
+                            eprintln!(
+                                "[PELORUS_TRACE_REGISTER] idx={} ts={:.9} result=err",
+                                trace_tick_count, current_cloud_time
+                            );
+                        }
                         error!("{err}");
                         // mark to send new data even on error
                         #[cfg(feature = "rat")]
@@ -2001,8 +2062,7 @@ _bag.{{
 _start_locked = false
 
 # Setting triggers for topics.
-# After receiving one message of l or i, playback will pause until a 'tick_end' signal is received.
-pf! [i, l], l 1 tick_end
+# Advance one message for each topic on tick_end.
 pf! l 1 tick_end
 pf! i 1 tick_end
 
