@@ -2337,24 +2337,25 @@ pf! i 1
                 let shared_stats_for_lio = shared_stats.clone();
                 let runtime_tx_lio = runtime_tx.clone();
 
-                let lio_handle = std::thread::spawn(move || {
-                    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                        lio_with_ready_signal(
-                            config,
-                            Some(pelorus_ready_tx),
-                            offline_args.export_trajectory.clone(),
-                            true,
-                            Some(shared_stats_for_lio),
-                            Some(lio_shutdown_flag_for_thread),
-                            Some(lio_stop_rx),
-                        )
-                    }))
-                    .map_err(|_| "LIO thread panicked".to_string())
-                    .and_then(|res| res.map_err(|e| format!("Odometry failed: {}", e)));
+        let lio_handle = std::thread::spawn(move || {
+            let synchronous_mode = config.prelio_node_params.synchronous_mode;
+            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                lio_with_ready_signal(
+                    config,
+                    Some(pelorus_ready_tx),
+                    offline_args.export_trajectory.clone(),
+                    synchronous_mode,
+                    Some(shared_stats_for_lio),
+                    Some(lio_shutdown_flag_for_thread),
+                    Some(lio_stop_rx),
+                )
+            }))
+            .map_err(|_| "LIO thread panicked".to_string())
+            .and_then(|res| res.map_err(|e| format!("Odometry failed: {}", e)));
 
-                    let _ = runtime_tx_lio.send(OfflineRuntimeEvent::LioExited(result.clone()));
-                    result
-                });
+            let _ = runtime_tx_lio.send(OfflineRuntimeEvent::LioExited(result.clone()));
+            result
+        });
 
                 info!("Waiting for pelorus to initialize...");
                 pelorus_ready_rx
@@ -2388,6 +2389,10 @@ pf! i 1
                         OfflineRuntimeEvent::TuiShutdownRequested => {
                             user_shutdown_requested = true;
                             if !lio_shutdown_requested {
+                                // User interrupt path:
+                                // 1) request internal shutdown,
+                                // 2) finish current in-flight frame,
+                                // 3) terminate Minot only after LIO exits.
                                 lio_shutdown_flag.store(true, std::sync::atomic::Ordering::SeqCst);
                                 lio_shutdown_requested = true;
                             }
@@ -2411,6 +2416,8 @@ pf! i 1
                         OfflineRuntimeEvent::LioExited(result) => {
                             lio_exit_result = Some(result);
                             if user_shutdown_requested && minot_exit_result.is_none() && !minot_force_stopped {
+                                // Stop external data source only after current-frame processing
+                                // has completed and LIO has exited.
                                 signal_process(minot_pid, libc::SIGKILL)
                                     .map_err(|e| anyhow!("Failed to terminate Minot: {}", e))?;
                                 minot_force_stopped = true;
