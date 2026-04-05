@@ -1695,7 +1695,10 @@ fn lio_with_ready_signal(
             if let Some(debug_interval) = debug_render_interval {
                 if last_render.elapsed() > debug_interval {
                     last_render = std::time::Instant::now();
-                    if shared_stats.is_none() {
+                    // Only print debug output if TUI is not running
+                    // TUI runs when show_tui is true AND we're in a terminal
+                    let tui_is_running = config.show_tui && std::io::stdout().is_terminal();
+                    if !tui_is_running {
                         println!(
                             "{}[2J{}[1;L{}\n{}",
                             27 as char,
