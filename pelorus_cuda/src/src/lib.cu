@@ -229,4 +229,39 @@ u_int32_t planes(void *stream, Point *cloud, uint32_t cloud_size,
   }
 }
 
+// CUDA Event timing functions
+void *cupcl_event_create() {
+  cudaEvent_t *event = new cudaEvent_t;
+  RM_CUDA_CHECK(cudaEventCreate(event));
+  return (void *)event;
+}
+
+void cupcl_event_destroy(void *event) {
+  if (event != NULL) {
+    cudaEvent_t *evt = (cudaEvent_t *)event;
+    cudaEventDestroy(*evt);
+    delete evt;
+  }
+}
+
+void cupcl_event_record(void *event, void *stream) {
+  rm::CudaStream *stream_ = (rm::CudaStream *)stream;
+  cudaEvent_t *evt = (cudaEvent_t *)event;
+  RM_CUDA_CHECK(cudaEventRecord(*evt, stream_->handle()));
+}
+
+float cupcl_event_elapsed(void *start, void *stop) {
+  cudaEvent_t *start_evt = (cudaEvent_t *)start;
+  cudaEvent_t *stop_evt = (cudaEvent_t *)stop;
+  float ms = 0.0f;
+  RM_CUDA_CHECK(cudaEventElapsedTime(&ms, *start_evt, *stop_evt));
+  return ms;
+}
+
+int cupcl_event_query(void *event) {
+  cudaEvent_t *evt = (cudaEvent_t *)event;
+  cudaError_t err = cudaEventQuery(*evt);
+  return (err == cudaSuccess) ? 1 : 0;
+}
+
 } // extern "C"

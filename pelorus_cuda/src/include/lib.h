@@ -97,6 +97,13 @@ void init_map(void *stream, uint32_t map_capacity, float sensitivity,
 
 void cleanup_map();
 
+// CUDA Event timing functions
+void *cupcl_event_create();
+void cupcl_event_destroy(void *event);
+void cupcl_event_record(void *event, void *stream);
+float cupcl_event_elapsed(void *start, void *stop);
+int cupcl_event_query(void *event);
+
 #ifdef __cplusplus
 }
 #endif

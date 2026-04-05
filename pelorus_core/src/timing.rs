@@ -248,6 +248,44 @@ impl RuntimeEvaluator {
         Err(anyhow::anyhow!("Evaluation not found"))
     }
 
+    /// Add an externally-measured timing (e.g., from GPU timestamps).
+    /// Similar to stop() but the measurement is provided rather than measured.
+    /// The duration should be provided in milliseconds.
+    pub fn add_external_measurement(&mut self, name: &str, duration_ms: f64) {
+        self.pause();
+
+        let duration = Duration::from_micros((duration_ms * 1000.0) as u64);
+
+        let found = self.evaluations.iter_mut().find(|e| e.name == name);
+        if let Some(e) = found {
+            e.num_measurements += 1;
+            e.last_measurement = duration;
+            e.sum_time += duration;
+
+            let micros = duration.as_micros() as f64;
+            e.filter.update(micros);
+
+            let delta = micros - e.mean_for_variance;
+            e.mean_for_variance += delta / e.num_measurements as f64;
+            let delta2 = micros - e.mean_for_variance;
+            e.m2 += delta * delta2;
+
+            if duration > e.max_time && e.num_measurements != 1 {
+                e.max_time = duration;
+            }
+        } else {
+            let mut eval = EvaluationFormular::new(name);
+            eval.active = false; // Mark as inactive since this is a completed measurement
+            eval.num_measurements = 1;
+            eval.last_measurement = duration;
+            eval.sum_time = duration;
+            eval.filter.update(duration.as_micros() as f64);
+            self.evaluations.push(eval);
+        }
+
+        self.resume();
+    }
+
     pub fn get_last_total_time_ms(&self) -> Option<f64> {
         for e in self.evaluations.iter() {
             if e.name == "total" && e.num_measurements > 0 {

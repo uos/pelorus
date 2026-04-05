@@ -1,7 +1,7 @@
 use faer::Mat as FaerMat;
 use nalgebra::*;
 use pelorus_core::{
-    ImuParameters, KinematicModel, LidarVendor, OdomMsg, PointXYZIT, timing::RuntimeEvaluator,
+    timing::RuntimeEvaluator, ImuParameters, KinematicModel, LidarVendor, OdomMsg, PointXYZIT,
 };
 #[cfg(feature = "cuda")]
 use pelorus_cuda::CudaBuffer;
@@ -629,6 +629,43 @@ impl crate::Registration for RegistrationState {
                     let mut eval = eval_cb.write().unwrap();
                     eval.start("ekf_correct/model/planes").unwrap();
 
+                    // Try to retrieve previous GPU timing measurements (non-blocking)
+                    #[cfg(feature = "cuda")]
+                    if let Some((planes_ms, add_to_map_ms)) = pelorus_cuda::try_get_gpu_timings() {
+                        log::debug!(
+                            "GPU timings retrieved: planes={}ms, add_to_map={}ms",
+                            planes_ms,
+                            add_to_map_ms
+                        );
+                        if planes_ms > 0.0 {
+                            eval.add_external_measurement(
+                                "ekf_correct/model/planes/gpu",
+                                planes_ms,
+                            );
+                        }
+                        if add_to_map_ms > 0.0 {
+                            eval.add_external_measurement("map_update/gpu", add_to_map_ms);
+                        }
+                    }
+                    #[cfg(all(not(feature = "cuda"), feature = "vulkan"))]
+                    if let Some((planes_ms, add_to_map_ms)) = pelorus_vulkan::try_get_gpu_timings()
+                    {
+                        log::debug!(
+                            "GPU timings retrieved: planes={}ms, add_to_map={}ms",
+                            planes_ms,
+                            add_to_map_ms
+                        );
+                        if planes_ms > 0.0 {
+                            eval.add_external_measurement(
+                                "ekf_correct/model/planes/gpu",
+                                planes_ms,
+                            );
+                        }
+                        if add_to_map_ms > 0.0 {
+                            eval.add_external_measurement("map_update/gpu", add_to_map_ms);
+                        }
+                    }
+
                     #[cfg(any(feature = "cuda", feature = "metal", feature = "vulkan"))]
                     let planes = unsafe { &mut *planes_cpu_buffer };
                     #[cfg(any(feature = "cuda", feature = "metal", feature = "vulkan"))]
@@ -939,9 +976,8 @@ impl crate::Registration for RegistrationState {
 
             let rot_quat: pelorus_cuda::Quaternion = t_w_l.rotation.into();
             pelorus_cuda::add_to_map(&stream, cloud, &t_w_l.translation.vector.into(), &rot_quat);
-            if std::env::var_os("PELORUS_CUDA_SYNC_MAP").is_some() {
-                stream.sync();
-            }
+            // Always sync when measuring timing to get accurate total
+            stream.sync();
         }
         #[cfg(feature = "metal")]
         {
@@ -959,6 +995,8 @@ impl crate::Registration for RegistrationState {
                 nalgebra::UnitQuaternion::from_matrix(&mat).into()
             };
             pelorus_metal::add_to_map(&stream, cloud, transl, &rot_quat);
+            // Always sync when measuring timing to get accurate total
+            stream.sync();
         }
         #[cfg(feature = "vulkan")]
         {
@@ -976,6 +1014,8 @@ impl crate::Registration for RegistrationState {
                 nalgebra::UnitQuaternion::from_matrix(&mat).into()
             };
             pelorus_vulkan::add_to_map(&stream, cloud, transl, &rot_quat);
+            // Always sync when measuring timing to get accurate total
+            stream.sync();
         }
         {
             eval_outer.write().unwrap().stop("map_update").unwrap();

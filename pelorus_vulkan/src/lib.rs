@@ -1,6 +1,6 @@
 #![cfg(vulkan_available)]
 
-use ash::{Device, Entry, Instance, vk};
+use ash::{vk, Device, Entry, Instance};
 use bytemuck::{Pod, Zeroable};
 use pelorus_core::PointXYZIT;
 use ros_pointcloud2::points::PointXYZINormal;
@@ -1017,6 +1017,20 @@ struct VulkanGpuMapState {
     nbtype: u32,
     add_cursor: u32,
     lru_cursor: u32,
+    timestamp_pool: vk::QueryPool,
+    timestamp_period: f32,
+    pending_planes_timing: std::sync::atomic::AtomicBool,
+    pending_add_to_map_timing: std::sync::atomic::AtomicBool,
+}
+
+impl Drop for VulkanGpuMapState {
+    fn drop(&mut self) {
+        unsafe {
+            self.context
+                .device
+                .destroy_query_pool(self.timestamp_pool, None);
+        }
+    }
 }
 
 struct HostMapState {
@@ -1191,7 +1205,11 @@ fn build_pipelines(context: Arc<VulkanContext>) -> Arc<VulkanComputePipelines> {
 }
 
 fn div_ceil_u32(v: u32, d: u32) -> u32 {
-    if v == 0 { 0 } else { 1 + (v - 1) / d }
+    if v == 0 {
+        0
+    } else {
+        1 + (v - 1) / d
+    }
 }
 
 struct ComputeCommandSession<'a> {
@@ -1358,6 +1376,17 @@ impl<'a> ComputeCommandSession<'a> {
         }
     }
 
+    fn write_timestamp(&self, timestamp_pool: vk::QueryPool, query_index: u32) {
+        unsafe {
+            self.context.device.cmd_write_timestamp(
+                self.command_buffer,
+                vk::PipelineStageFlags::COMPUTE_SHADER,
+                timestamp_pool,
+                query_index,
+            );
+        }
+    }
+
     fn submit(self) {
         unsafe {
             self.context
@@ -1484,6 +1513,26 @@ pub fn init_map(
             );
             session.submit();
 
+            // Create timestamp query pool for GPU timing measurements
+            // Query indices: 0-1 for planes, 2-3 for add_to_map
+            let query_pool_ci = vk::QueryPoolCreateInfo::default()
+                .query_type(vk::QueryType::TIMESTAMP)
+                .query_count(4);
+            let timestamp_pool = unsafe {
+                context
+                    .device
+                    .create_query_pool(&query_pool_ci, None)
+                    .expect("failed to create timestamp query pool")
+            };
+
+            // Get timestamp period (nanoseconds per timestamp tick)
+            let props = unsafe {
+                context
+                    .instance
+                    .get_physical_device_properties(context.physical_device)
+            };
+            let timestamp_period = props.limits.timestamp_period;
+
             MapBackendState::Vulkan(VulkanGpuMapState {
                 context: Arc::clone(context),
                 compute,
@@ -1502,6 +1551,10 @@ pub fn init_map(
                 nbtype: nearby_search_strategy.as_u32(),
                 add_cursor: 0,
                 lru_cursor: 0,
+                timestamp_pool,
+                timestamp_period,
+                pending_planes_timing: std::sync::atomic::AtomicBool::new(false),
+                pending_add_to_map_timing: std::sync::atomic::AtomicBool::new(false),
             })
         }
         StreamBackend::Host(_) => {
@@ -1708,6 +1761,16 @@ pub fn add_to_map(
             ];
 
             let mut session = ComputeCommandSession::begin(&state.context, &state.compute);
+            // Reset timestamp queries for add_to_map (queries 2-3)
+            unsafe {
+                state.context.device.cmd_reset_query_pool(
+                    session.command_buffer,
+                    state.timestamp_pool,
+                    2,
+                    2,
+                );
+            }
+            session.write_timestamp(state.timestamp_pool, 2);
 
             // 1. Calculate Keys
             session.dispatch(
@@ -1813,7 +1876,11 @@ pub fn add_to_map(
                 );
             }
 
+            session.write_timestamp(state.timestamp_pool, 3);
             session.submit();
+            state
+                .pending_add_to_map_timing
+                .store(true, std::sync::atomic::Ordering::Release);
 
             // Download counters to update host-side state
             let counters_result: Vec<u32> = state.scratch.counter.download(stream);
@@ -1993,6 +2060,16 @@ pub fn planes_vulkan(
             ];
 
             let session = ComputeCommandSession::begin(&state.context, &state.compute);
+            // Reset timestamp queries for this operation
+            unsafe {
+                state.context.device.cmd_reset_query_pool(
+                    session.command_buffer,
+                    state.timestamp_pool,
+                    0,
+                    4,
+                );
+            }
+            session.write_timestamp(state.timestamp_pool, 0);
             session.dispatch(
                 &state.compute,
                 state.compute.plane_krnl,
@@ -2000,7 +2077,11 @@ pub fn planes_vulkan(
                 &params,
                 cloud.n as u32,
             );
+            session.write_timestamp(state.timestamp_pool, 1);
             session.submit();
+            state
+                .pending_planes_timing
+                .store(true, std::sync::atomic::Ordering::Release);
             log::debug!("vulkan planes: kernel complete, downloading counter");
 
             state.scratch.counter.n = 1;
@@ -2053,6 +2134,75 @@ pub(crate) fn decrement_allocation(bytes: u64) {
 
 pub fn get_used_memory() -> u64 {
     ALLOCATED_BYTES.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// Try to retrieve GPU timing measurements from previous operations.
+/// Returns (planes_ms, add_to_map_ms) if timing results are available.
+/// This is non-blocking - returns None if queries are not ready.
+pub fn try_get_gpu_timings() -> Option<(f64, f64)> {
+    with_state(|state| match &mut state.backend {
+        MapBackendState::Host(_) => None,
+        MapBackendState::Vulkan(gpu) => {
+            let mut planes_ms = None;
+            let mut add_to_map_ms = None;
+
+            // Check planes timing (queries 0-1)
+            if gpu
+                .pending_planes_timing
+                .load(std::sync::atomic::Ordering::Acquire)
+            {
+                if let Some(ms) = get_query_result(&gpu, 0) {
+                    log::debug!("Vulkan planes GPU timing: {}ms", ms);
+                    gpu.pending_planes_timing
+                        .store(false, std::sync::atomic::Ordering::Release);
+                    planes_ms = Some(ms);
+                } else {
+                    log::debug!("Vulkan planes GPU timing not ready yet");
+                }
+            }
+
+            // Check add_to_map timing (queries 2-3)
+            if gpu
+                .pending_add_to_map_timing
+                .load(std::sync::atomic::Ordering::Acquire)
+            {
+                if let Some(ms) = get_query_result(&gpu, 2) {
+                    log::debug!("Vulkan add_to_map GPU timing: {}ms", ms);
+                    gpu.pending_add_to_map_timing
+                        .store(false, std::sync::atomic::Ordering::Release);
+                    add_to_map_ms = Some(ms);
+                } else {
+                    log::debug!("Vulkan add_to_map GPU timing not ready yet");
+                }
+            }
+
+            match (planes_ms, add_to_map_ms) {
+                (Some(p), Some(a)) => Some((p, a)),
+                (Some(p), None) => Some((p, 0.0)),
+                (None, Some(a)) => Some((0.0, a)),
+                (None, None) => None,
+            }
+        }
+    })
+}
+
+fn get_query_result(state: &VulkanGpuMapState, start_query: u32) -> Option<f64> {
+    let mut timestamps = [0u64; 2];
+    let result = unsafe {
+        state.context.device.get_query_pool_results(
+            state.timestamp_pool,
+            start_query,
+            &mut timestamps,
+            vk::QueryResultFlags::TYPE_64,
+        )
+    };
+
+    if result.is_ok() {
+        let elapsed_ns = (timestamps[1] - timestamps[0]) as f64 * state.timestamp_period as f64;
+        Some(elapsed_ns / 1_000_000.0)
+    } else {
+        None
+    }
 }
 
 impl Drop for VulkanBuffer {
