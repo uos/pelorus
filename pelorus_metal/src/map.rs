@@ -333,6 +333,7 @@ pub fn add_to_map_impl(
     use std::time::Instant;
 
     let start_all = Instant::now();
+    let mut total_gpu_time_ms: f64 = 0.0;
 
     // Rebuild CPU-side LRU ordering from the previous scan once GPU writes are complete.
     // This removes a forced wait at the end of each frame while keeping identical eviction logic.
@@ -419,6 +420,8 @@ pub fn add_to_map_impl(
         enc.endEncoding();
     }
     cb.commit();
+    cb.waitUntilCompleted();
+    total_gpu_time_ms += (cb.GPUEndTime() - cb.GPUStartTime()) * 1000.0;
     let dur_keys = t_keys.elapsed();
 
     let t_sort = Instant::now();
@@ -508,6 +511,7 @@ pub fn add_to_map_impl(
     enc.endEncoding();
     cb.commit();
     cb.waitUntilCompleted();
+    total_gpu_time_ms += (cb.GPUEndTime() - cb.GPUStartTime()) * 1000.0;
 
     let sorted_keys_gpu = state.scratch.keys.as_slice::<i32>();
     let sorted_keys = &sorted_keys_gpu[..n_points];
@@ -659,10 +663,9 @@ pub fn add_to_map_impl(
         enc.endEncoding();
         cb.commit();
         cb.waitUntilCompleted();
-        let start = cb.GPUStartTime();
-        let end = cb.GPUEndTime();
-        (end - start) * 1000.0
+        (cb.GPUEndTime() - cb.GPUStartTime()) * 1000.0
     };
+    total_gpu_time_ms += gpu_time_ms;
     let dur_build = t_build.elapsed();
     state.pending_lru_rebuild = true;
     state.pending_lru_scan_number = scan_number;
@@ -673,10 +676,10 @@ pub fn add_to_map_impl(
         dur_keys,
         dur_sort,
         dur_build,
-        gpu_time_ms
+        total_gpu_time_ms
     );
 
-    gpu_time_ms
+    total_gpu_time_ms
 }
 
 #[cfg(test)]
