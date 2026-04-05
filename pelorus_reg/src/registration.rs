@@ -647,7 +647,24 @@ impl crate::Registration for RegistrationState {
                             eval.add_external_measurement("map_update/gpu", add_to_map_ms);
                         }
                     }
-                    #[cfg(all(not(feature = "cuda"), feature = "vulkan"))]
+                    #[cfg(all(not(feature = "cuda"), feature = "metal"))]
+                    if let Some((planes_ms, add_to_map_ms)) = pelorus_metal::try_get_gpu_timings() {
+                        log::debug!(
+                            "GPU timings retrieved: planes={}ms, add_to_map={}ms",
+                            planes_ms,
+                            add_to_map_ms
+                        );
+                        if planes_ms > 0.0 {
+                            eval.add_external_measurement(
+                                "ekf_correct/model/planes/gpu",
+                                planes_ms,
+                            );
+                        }
+                        if add_to_map_ms > 0.0 {
+                            eval.add_external_measurement("map_update/gpu", add_to_map_ms);
+                        }
+                    }
+                    #[cfg(all(not(feature = "cuda"), not(feature = "metal"), feature = "vulkan"))]
                     if let Some((planes_ms, add_to_map_ms)) = pelorus_vulkan::try_get_gpu_timings()
                     {
                         log::debug!(

@@ -40,6 +40,36 @@ pub fn get_used_memory() -> u64 {
     ALLOCATED_BYTES.load(std::sync::atomic::Ordering::Relaxed)
 }
 
+// ── GPU Timing State ──────────────────────────────────────────────────────────
+
+static LAST_PLANES_GPU_MS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+static LAST_ADD_TO_MAP_GPU_MS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+pub(crate) fn record_planes_gpu_time(ms: f64) {
+    LAST_PLANES_GPU_MS.store(ms.to_bits(), std::sync::atomic::Ordering::Release);
+}
+
+pub(crate) fn record_add_to_map_gpu_time(ms: f64) {
+    LAST_ADD_TO_MAP_GPU_MS.store(ms.to_bits(), std::sync::atomic::Ordering::Release);
+}
+
+/// Try to retrieve GPU timing measurements from previous operations.
+/// Returns (planes_ms, add_to_map_ms) if timing results are available.
+/// This is non-blocking - returns the most recently measured values.
+pub fn try_get_gpu_timings() -> Option<(f64, f64)> {
+    let planes_bits = LAST_PLANES_GPU_MS.load(std::sync::atomic::Ordering::Acquire);
+    let add_to_map_bits = LAST_ADD_TO_MAP_GPU_MS.load(std::sync::atomic::Ordering::Acquire);
+
+    let planes_ms = f64::from_bits(planes_bits);
+    let add_to_map_ms = f64::from_bits(add_to_map_bits);
+
+    if planes_ms > 0.0 || add_to_map_ms > 0.0 {
+        Some((planes_ms, add_to_map_ms))
+    } else {
+        None
+    }
+}
+
 // ── Size checks ───────────────────────────────────────────────────────────────
 
 const _: () = {
@@ -82,7 +112,8 @@ pub fn add_to_map(
     ekf_pose_t: &Vector3,
     ekf_pose_r: &Quaternion,
 ) {
-    map::add_to_map_impl(stream, cloud, ekf_pose_t, ekf_pose_r);
+    let gpu_time_ms = map::add_to_map_impl(stream, cloud, ekf_pose_t, ekf_pose_r);
+    record_add_to_map_gpu_time(gpu_time_ms);
 }
 
 /// Return the voxel map means as a `Vec<Point3<f32>>`.
@@ -120,7 +151,7 @@ pub fn planes_metal(
     out_buff: &mut Vec<PointXYZINormal>,
     out_buff_gpu: &mut MetalBuffer,
 ) {
-    map::planes_metal_impl(
+    let gpu_time_ms = map::planes_metal_impl(
         stream,
         cloud,
         ekf_pose_t,
@@ -130,6 +161,7 @@ pub fn planes_metal(
         out_buff,
         out_buff_gpu,
     );
+    record_planes_gpu_time(gpu_time_ms);
 }
 
 // ── Cleanup registration ──────────────────────────────────────────────────────

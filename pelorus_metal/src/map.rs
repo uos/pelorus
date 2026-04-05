@@ -328,7 +328,7 @@ pub fn add_to_map_impl(
     cloud_buf: &crate::buffer::MetalBuffer,
     pose_t: &crate::types::Vector3,
     pose_r: &crate::types::Quaternion,
-) {
+) -> f64 {
     use nalgebra::UnitQuaternion;
     use std::time::Instant;
 
@@ -362,7 +362,7 @@ pub fn add_to_map_impl(
 
     let n_points = cloud_buf.n;
     if n_points == 0 {
-        return;
+        return 0.0;
     }
 
     if state.scratch.capacity < n_points {
@@ -541,7 +541,7 @@ pub fn add_to_map_impl(
     assign_target_indices_with_cpu_lru(state, &unique_keys, &mut target_indices, &mut update_flags);
     let n_assigned = target_indices.len();
     if n_assigned == 0 {
-        return;
+        return 0.0;
     }
 
     unique_keys.truncate(n_assigned);
@@ -577,8 +577,7 @@ pub fn add_to_map_impl(
     );
 
     let t_build = Instant::now();
-
-    {
+    let gpu_time_ms = {
         let pipes = get_pipelines(&*stream.device);
         let cb = stream.queue.commandBuffer().expect("cb");
         let enc = cb.computeCommandEncoder().expect("enc");
@@ -659,18 +658,25 @@ pub fn add_to_map_impl(
 
         enc.endEncoding();
         cb.commit();
-    }
+        cb.waitUntilCompleted();
+        let start = cb.GPUStartTime();
+        let end = cb.GPUEndTime();
+        (end - start) * 1000.0
+    };
     let dur_build = t_build.elapsed();
     state.pending_lru_rebuild = true;
     state.pending_lru_scan_number = scan_number;
 
     log::info!(
-        "[Metal] add_to_map: total={:?}, keys={:?}, sort={:?}, build+rebuild_submit={:?}",
+        "[Metal] add_to_map: total={:?}, keys={:?}, sort={:?}, build+rebuild_submit={:?}, gpu_time={:.2}ms",
         start_all.elapsed(),
         dur_keys,
         dur_sort,
-        dur_build
+        dur_build,
+        gpu_time_ms
     );
+
+    gpu_time_ms
 }
 
 #[cfg(test)]
@@ -767,7 +773,7 @@ pub fn planes_metal_impl(
     ekf_imu_offset_r: &crate::types::Quaternion,
     out_buff: &mut Vec<ros_pointcloud2::points::PointXYZINormal>,
     out_buff_gpu: &mut crate::buffer::MetalBuffer,
-) {
+) -> f64 {
     use nalgebra::UnitQuaternion;
     use std::time::Instant;
 
@@ -823,7 +829,7 @@ pub fn planes_metal_impl(
     };
 
     let t_gpu = Instant::now();
-    {
+    let gpu_time_ms = {
         let pipes = get_pipelines(&*stream.device);
         let cb = stream.queue.commandBuffer().expect("cb");
         let enc = cb.computeCommandEncoder().expect("enc");
@@ -845,7 +851,10 @@ pub fn planes_metal_impl(
         }
         cb.commit();
         cb.waitUntilCompleted();
-    }
+        let start = cb.GPUStartTime();
+        let end = cb.GPUEndTime();
+        (end - start) * 1000.0
+    };
     let dur_gpu = t_gpu.elapsed();
 
     let t_copy = Instant::now();
@@ -874,10 +883,13 @@ pub fn planes_metal_impl(
     let dur_copy = t_copy.elapsed();
 
     log::info!(
-        "[Metal] planes: total={:?}, gpu={:?}, copy={:?}, size={}",
+        "[Metal] planes: total={:?}, gpu={:?}, gpu_time={:.2}ms, copy={:?}, size={}",
         t_all.elapsed(),
         dur_gpu,
+        gpu_time_ms,
         dur_copy,
         out_size
     );
+
+    gpu_time_ms
 }
