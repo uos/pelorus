@@ -157,29 +157,42 @@ backend_display_name() {
 
 resolve_requested_backends() {
     local spec="$1"
-    local -n out_arr="$2"
-    out_arr=()
-
+    
+    local result=""
+    
     if [[ "$spec" == "auto" ]]; then
         for b in metal cuda vulkan; do
             if backend_supported_on_host "$b"; then
-                out_arr+=("$b")
+                if [[ -z "$result" ]]; then
+                    result="$b"
+                else
+                    result="$result $b"
+                fi
             fi
         done
+        echo "$result"
         return 0
     fi
-
-    IFS=',' read -r -a requested <<< "$spec"
+    
+    local IFS=','
+    local requested
+    read -r -a requested <<< "$spec"
     for raw in "${requested[@]}"; do
         local b
         b="$(echo "$raw" | tr '[:upper:]' '[:lower:]' | xargs)"
         [[ -n "$b" ]] || continue
         is_valid_backend "$b" || fail "Unknown backend '$b' (supported: cuda, metal, vulkan)"
         # Deduplicate while preserving order
-        if [[ " ${out_arr[*]} " != *" $b "* ]]; then
-            out_arr+=("$b")
+        if [[ " $result " != *" $b "* ]]; then
+            if [[ -z "$result" ]]; then
+                result="$b"
+            else
+                result="$result $b"
+            fi
         fi
     done
+    
+    echo "$result"
 }
 
 float_gt() {
@@ -257,7 +270,9 @@ run_backend_test() {
     fi
     
     local exit_code=0
-    local run_log="${OUTPUT_DIR}/${backend_name,,}_run.log"
+    local backend_lower
+    backend_lower="$(echo "$backend_name" | tr '[:upper:]' '[:lower:]')"
+    local run_log="${OUTPUT_DIR}/${backend_lower}_run.log"
     : > "$run_log"
     if [[ -n "$timeout_cmd" ]]; then
         # Pipe through tee so pelorus sees non-interactive stdout and skips TUI mode.
@@ -299,17 +314,17 @@ compare_trajectories() {
     local comparison_json="$5"
 
     log_info "Comparing trajectories with sounding: ${lhs_label} vs ${rhs_label}..."
-    
+
     local lhs_lines rhs_lines
-    lhs_lines=$(wc -l < "$lhs_traj")
-    rhs_lines=$(wc -l < "$rhs_traj")
+    lhs_lines=$(wc -l < "$lhs_traj" | tr -d ' ')
+    rhs_lines=$(wc -l < "$rhs_traj" | tr -d ' ')
     if (( lhs_lines == 0 || rhs_lines == 0 )); then
         fail "Cannot compare empty trajectories"
     fi
-    local ratio
-    ratio=$(awk -v a="$lhs_lines" -v b="$rhs_lines" 'BEGIN{if (a>b) print a/b; else print b/a}')
-    if awk -v r="$ratio" 'BEGIN{exit !(r > 1.02)}'; then
-        fail "Trajectory length mismatch too large (${lhs_label}=${lhs_lines}, ${rhs_label}=${rhs_lines})"
+    
+    # Require exact match - no tolerance
+    if (( lhs_lines != rhs_lines )); then
+        fail "Trajectory length mismatch: ${lhs_label}=${lhs_lines} vs ${rhs_label}=${rhs_lines} (must be equal)"
     fi
 
     # Run sounding and capture output (on non-TTY this is JSON)
@@ -390,11 +405,13 @@ main() {
     check_prerequisites
     setup_output_dir
 
-    local ran_gpu_comparison=false
-    local requested_backends=()
-    resolve_requested_backends "$BACKENDS_SPEC" requested_backends
-    
-    # Run CPU backend (no features)
+local ran_gpu_comparison=false
+local requested_backends_str
+requested_backends_str="$(resolve_requested_backends "$BACKENDS_SPEC")"
+local requested_backends
+read -r -a requested_backends <<< "$requested_backends_str"
+
+# Run CPU backend (no features)
     run_backend_test "CPU" "" "$TRAJ_CPU"
     
     for backend in "${requested_backends[@]}"; do
