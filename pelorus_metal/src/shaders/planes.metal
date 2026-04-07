@@ -38,7 +38,7 @@ inline bool plane_fit(uint point_count, thread const float* mean, thread const f
     const float lambda_0 = v0; // smallest
     const float lambda_2 = v2; // largest
 
-    if (lambda_2 < 1e-9) return false;
+    if (lambda_2 < 1e-9f) return false;
     if (lambda_0 / lambda_2 > sphericity_threshold) return false;
 
     // Eigenvector for lambda_0: null space of (cov - lambda_0 * I)
@@ -64,7 +64,7 @@ inline bool plane_fit(uint point_count, thread const float* mean, thread const f
     else                              normal = v20;
 
     float mag = length(normal);
-    if (mag < 1e-9) return false;
+    if (mag < 1e-9f) return false;
     normal /= mag;
 
     float3 mean_p = float3(mean[0], mean[1], mean[2]);
@@ -74,9 +74,9 @@ inline bool plane_fit(uint point_count, thread const float* mean, thread const f
 }
 
 kernel void plane_krnl(
-    device const Point*          cloud      [[buffer(0)]],
-    device const atomic_int*     table_keys [[buffer(1)]],
-    device const uint*           table_vals [[buffer(2)]],
+    device const Point* cloud [[buffer(0)]],
+    device const int* table_keys [[buffer(1)]],
+    device const uint* table_vals [[buffer(2)]],
     device const VoxelDistribution* dists   [[buffer(3)]],
     device atomic_uint*          out_size   [[buffer(4)]],
     device PointNormal*          out_buff   [[buffer(5)]],
@@ -126,8 +126,8 @@ kernel void plane_krnl(
     // Score filter (same formula as CUDA/CPU)
     float pd2 = plane_point_dist(plane, p_global);
     float l2_sq = p_local.x*p_local.x + p_local.y*p_local.y + p_local.z*p_local.z;
-    float s   = 1.0 - 0.9 * fabs(pd2) / sqrt(sqrt(max(l2_sq, 1e-9f)));
-    if (s <= 0.9) return;
+    float s   = 1.0f - 0.9f * fabs(pd2) / sqrt(sqrt(max(l2_sq, 1e-9f)));
+    if (s <= 0.9f) return;
 
     // Atomic output write
     uint out_idx = atomic_fetch_add_explicit(out_size, 1u, memory_order_relaxed);
@@ -140,7 +140,7 @@ kernel void plane_krnl(
     pn.nx        = plane.x;
     pn.ny        = plane.y;
     pn.nz        = plane.z;
-    pn._pad      = 0.0;
+    pn._pad      = 0.0f;
 
     out_buff[out_idx] = pn;
 }

@@ -109,68 +109,74 @@ kernel void build_voxels(
     uint buf_idx = target_indices[idx];
     bool is_update = (update_flags[idx] != 0u);
 
-    if (is_update) {
-        device VoxelDistribution& d = dists[buf_idx];
-        d.last_scan = params.scan_number;
+	if (is_update) {
+		// Update existing voxel - use local copy for atomic writeback (matches Vulkan pattern)
+		VoxelDistribution d = dists[buf_idx];
+		d.last_scan = params.scan_number;
 
-        float3 d_mean = float3(d.mean[0], d.mean[1], d.mean[2]);
-        float3 mean_diff = d_mean - scan_mean;
-        float fn_d = float(d.point_count);
-        float maturity_decay = max(1.0f, log(fn_d));
-        float effective_sensitivity = params.sensitivity / maturity_decay;
+		float3 d_mean = float3(d.mean[0], d.mean[1], d.mean[2]);
+		float3 mean_diff = d_mean - scan_mean;
+		float fn_d = float(d.point_count);
+		float maturity_decay = max(1.0f, log(fn_d));
+		float effective_sensitivity = params.sensitivity / maturity_decay;
 
-        float reg_cov[9];
-        for (int i=0; i<9; i++) reg_cov[i] = d.cov[i];
-        regularize_cov(reg_cov);
+		float reg_cov[9];
+		for (int i=0; i<9; i++) reg_cov[i] = d.cov[i];
+		regularize_cov(reg_cov);
 
-        float L_reg[9];
-        float m_sq;
-        if (cholesky_3x3(reg_cov, L_reg)) {
-            m_sq = mahalanobis_sq(mean_diff, L_reg);
-        } else {
-            m_sq = dot(mean_diff, mean_diff);
-        }
+		float L_reg[9];
+		float m_sq;
+		if (cholesky_3x3(reg_cov, L_reg)) {
+			m_sq = mahalanobis_sq(mean_diff, L_reg);
+		} else {
+			m_sq = dot(mean_diff, mean_diff);
+		}
 
-        float alpha = exp(-m_sq / (2.0f * effective_sensitivity));
+		float alpha = exp(-m_sq / (2.0f * effective_sensitivity));
 
-        if (alpha >= 1e-5f) {
-            float3 new_mean = d_mean * (1.0f - alpha) + scan_mean * alpha;
-            float outer[9];
-            float dv[3] = { mean_diff.x, mean_diff.y, mean_diff.z };
-            for (int r=0; r<3; r++)
-                for (int c=0; c<3; c++)
-                    outer[r*3+c] = dv[r] * dv[c];
+		if (alpha >= 1e-5f) {
+			float3 new_mean = d_mean * (1.0f - alpha) + scan_mean * alpha;
+			float outer[9];
+			float dv[3] = { mean_diff.x, mean_diff.y, mean_diff.z };
+			for (int r=0; r<3; r++)
+			for (int c=0; c<3; c++)
+				outer[r*3+c] = dv[r] * dv[c];
 
-            for (int i=0; i<9; i++) {
-                d.cov[i] = d.cov[i] * (1.0f - alpha) + scan_cov[i] * alpha +
-                           outer[i] * (alpha * (1.0f - alpha));
-            }
-            d.mean[0] = new_mean.x; d.mean[1] = new_mean.y; d.mean[2] = new_mean.z;
+			for (int i=0; i<9; i++) {
+				d.cov[i] = d.cov[i] * (1.0f - alpha) + scan_cov[i] * alpha +
+				           outer[i] * (alpha * (1.0f - alpha));
+			}
+			d.mean[0] = new_mean.x; d.mean[1] = new_mean.y; d.mean[2] = new_mean.z;
 
-            float next_L[9] = {0};
-            if (!cholesky_3x3_device(d.cov, next_L)) {
-                float3 ev = symmetric_eigen_3x3_device(d.cov);
-                next_L[0] = sqrt(max(0.0f, ev.x)); next_L[4] = sqrt(max(0.0f, ev.y)); next_L[8] = sqrt(max(0.0f, ev.z));
-            }
-            for (int i=0; i<9; i++) d.transform[i] = next_L[i];
+			float next_L[9] = {0};
+			if (!cholesky_3x3(d.cov, next_L)) {
+				float3 ev = symmetric_eigen_3x3(d.cov);
+				next_L[0] = sqrt(max(0.0f, ev.x)); next_L[4] = sqrt(max(0.0f, ev.y)); next_L[8] = sqrt(max(0.0f, ev.z));
+			}
+			for (int i=0; i<9; i++) d.transform[i] = next_L[i];
 
-            d.point_count += count;
-        }
-    } else {
-        // Insert new/replacement slot pre-selected by host-side CPU LRU logic.
-        device VoxelDistribution& d = dists[buf_idx];
-        d.mean[0] = scan_mean.x; d.mean[1] = scan_mean.y; d.mean[2] = scan_mean.z;
-        for (int i=0; i<9; i++) d.cov[i] = scan_cov[i];
-        d.point_count = count;
-        d.last_scan = params.scan_number;
-        
-        float scan_L[9] = {0};
-        if (!cholesky_3x3(scan_cov, scan_L)) {
-            float3 ev = symmetric_eigen_3x3(scan_cov);
-            scan_L[0] = sqrt(max(0.0f, ev.x)); scan_L[4] = sqrt(max(0.0f, ev.y)); scan_L[8] = sqrt(max(0.0f, ev.z));
-        }
-        for (int i=0; i<9; i++) d.transform[i] = scan_L[i];
+			d.point_count += count;
+			dists[buf_idx] = d; // Single writeback (matches Vulkan)
+		}
+	} else {
+		// Insert new voxel - use local copy for atomic writeback (matches Vulkan pattern)
+		VoxelDistribution d;
+		d.lock_flag = 0;
+		for (int i=0; i<9; i++) {
+			d.transform[i] = 0.0f;
+			d.cov[i] = scan_cov[i];
+		}
+		d.point_count = count;
+		d.mean[0] = scan_mean.x; d.mean[1] = scan_mean.y; d.mean[2] = scan_mean.z;
+		d.last_scan = params.scan_number;
 
-        atomic_store_explicit(&d.lock_flag, 0, memory_order_relaxed);
-    }
+		float scan_L[9] = {0};
+		if (!cholesky_3x3(scan_cov, scan_L)) {
+			float3 ev = symmetric_eigen_3x3(scan_cov);
+			scan_L[0] = sqrt(max(0.0f, ev.x)); scan_L[4] = sqrt(max(0.0f, ev.y)); scan_L[8] = sqrt(max(0.0f, ev.z));
+		}
+		for (int i=0; i<9; i++) d.transform[i] = scan_L[i];
+
+		dists[buf_idx] = d; // Single writeback (matches Vulkan)
+	}
 }

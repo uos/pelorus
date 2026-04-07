@@ -20,12 +20,12 @@ struct PointNormal {
 
 // VoxelDistribution layout (must match Rust GpuVoxelDist exactly)
 struct VoxelDistribution {
-    atomic_int lock_flag;
-    float transform[9];  // Cholesky factor L
-    uint  point_count;
-    float mean[3];
-    float cov[9];        // row-major 3x3 covariance
-    uint  last_scan;
+	int lock_flag;
+	float transform[9]; // Cholesky factor L
+	uint point_count;
+	float mean[3];
+	float cov[9]; // row-major 3x3 covariance
+	uint last_scan;
 };
 
 // ── Math helpers ─────────────────────────────────────────────────────────────
@@ -185,6 +185,7 @@ inline float3 symmetric_eigen_3x3_device(device const float* A) {
 // ── Hashmap lookup ────────────────────────────────────────────────────────────
 
 // Returns buffer index for key, or UINT_MAX if not found.
+// Atomic version for concurrent access during hashmap rebuild
 inline uint hashmap_lookup(device const atomic_int* table_keys,
                            device const uint* table_vals,
                            uint table_capacity,
@@ -193,7 +194,22 @@ inline uint hashmap_lookup(device const atomic_int* table_keys,
     uint slot = hash_fn(key) & (table_capacity - 1);
     for (;;) {
         int cur = atomic_load_explicit(&table_keys[slot], memory_order_relaxed);
-        if (cur == key)       return table_vals[slot];
+        if (cur == key) return table_vals[slot];
+        if (cur == EMPTY_KEY) return UINT_MAX;
+        slot = (slot + 1) & (table_capacity - 1);
+    }
+}
+
+// Non-atomic version for read-only access (e.g., in planes kernel after rebuild)
+inline uint hashmap_lookup(device const int* table_keys,
+                           device const uint* table_vals,
+                           uint table_capacity,
+                           int key) {
+    if (key == EMPTY_KEY) return UINT_MAX;
+    uint slot = hash_fn(key) & (table_capacity - 1);
+    for (;;) {
+        int cur = table_keys[slot];
+        if (cur == key) return table_vals[slot];
         if (cur == EMPTY_KEY) return UINT_MAX;
         slot = (slot + 1) & (table_capacity - 1);
     }
