@@ -57,7 +57,6 @@ jobs:
     strategy:
       matrix:
         include:
-          - runner: bookworm
           - runner: macos-latest
     runs-on: ${{ matrix.runner }}
     steps:
@@ -170,7 +169,6 @@ jobs:
     strategy:
       matrix:
         include:
-          - runner: bookworm
           - runner: macos-latest
     runs-on: ${{ matrix.runner }}
     steps:
@@ -340,7 +338,6 @@ jobs:
     strategy:
       matrix:
         include:
-          - runner: bookworm
           - runner: macos-latest
     runs-on: ${{ matrix.runner }}
     steps:
@@ -463,7 +460,6 @@ jobs:
     strategy:
       matrix:
         include:
-          - runner: bookworm
           - runner: macos-latest
     runs-on: ${{ matrix.runner }}
     steps:
@@ -586,7 +582,6 @@ jobs:
     strategy:
       matrix:
         include:
-          - runner: bookworm
           - runner: macos-latest
     runs-on: ${{ matrix.runner }}
     steps:
@@ -689,7 +684,6 @@ jobs:
     strategy:
       matrix:
         include:
-          - runner: bookworm
           - runner: macos-latest
     runs-on: ${{ matrix.runner }}
     steps:
@@ -767,7 +761,6 @@ jobs:
     strategy:
       matrix:
         include:
-          - runner: bookworm
           - runner: macos-latest
     runs-on: ${{ matrix.runner }}
     steps:
@@ -845,7 +838,6 @@ jobs:
     strategy:
       matrix:
         include:
-          - runner: bookworm
           - runner: macos-latest
     runs-on: ${{ matrix.runner }}
     steps:
@@ -923,7 +915,6 @@ jobs:
     strategy:
       matrix:
         include:
-          - runner: bookworm
           - runner: macos-latest
     runs-on: ${{ matrix.runner }}
     steps:
@@ -1051,7 +1042,6 @@ jobs:
     strategy:
       matrix:
         include:
-          - runner: bookworm
           - runner: macos-latest
     runs-on: ${{ matrix.runner }}
     steps:
@@ -1124,7 +1114,6 @@ jobs:
     strategy:
       matrix:
         include:
-          - runner: bookworm
           - runner: macos-latest
     runs-on: ${{ matrix.runner }}
     steps:
@@ -1170,7 +1159,6 @@ jobs:
     strategy:
       matrix:
         include:
-          - runner: bookworm
           - runner: macos-latest
     runs-on: ${{ matrix.runner }}
     steps:
@@ -1216,7 +1204,6 @@ jobs:
     strategy:
       matrix:
         include:
-          - runner: bookworm
           - runner: macos-latest
     runs-on: ${{ matrix.runner }}
     steps:
@@ -1262,7 +1249,6 @@ jobs:
     strategy:
       matrix:
         include:
-          - runner: bookworm
           - runner: macos-latest
     runs-on: ${{ matrix.runner }}
     steps:
@@ -1602,7 +1588,7 @@ jobs:
           echo "Wheels: pip install pelorus --extra-index-url https://codeberg.org/uos-robotics/ppa/raw/branch/main/whl/cpu/"
           echo "CUDA:   pip install pelorus --extra-index-url https://codeberg.org/uos-robotics/ppa/raw/branch/main/whl/cu126/"
 
-aur:
+  aur:
     runs-on: ubuntu-dev-noble
     needs:
       - release
@@ -1613,7 +1599,7 @@ aur:
       - name: Deps
         run: |
           pacman -Sy --noconfirm openssh git nodejs sudo base-devel
-          
+
           useradd -m build
           echo "build ALL=(ALL) NOPASSWD: ALL" > /etc/sudoers.d/build
 
@@ -1627,7 +1613,7 @@ aur:
           printf '%s\n' "$AUR_SSH_KEY" > /home/build/.ssh/aur_key
           chmod 600 /home/build/.ssh/aur_key
           ssh-keyscan aur.archlinux.org >> /home/build/.ssh/known_hosts
-          
+
           chown -R build:build . /home/build/.ssh
 
           sudo -u build bash << 'EOF'
