@@ -52,10 +52,11 @@ inline int3 grid_pos(float resolution, float3 p) {
 
 // Map grid cell → int32 hash key (aligned with CUDA hash_grid)
 inline int hash_grid(int3 g) {
-    int h = (g.x * 73856093) +
-            (g.y * 471943) +
-            (g.z * 83492791);
-    return h;
+    // Match CPU/CUDA wrapping i32 arithmetic exactly.
+    uint h = uint(g.x) * 73856093u;
+    h += uint(g.y) * 471943u;
+    h += uint(g.z) * 83492791u;
+    return int(h);
 }
 
 // Murmur3-inspired hash for open-addressing (same as CUDA hash_function)

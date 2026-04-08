@@ -207,7 +207,7 @@ pub fn init_map_impl(
         sensitivity,
         min_dist,
         scan_number: 0,
-        nbtype: _nbtype as u32,
+        nbtype: _nbtype.as_u32(),
         add_cursor: 0,
         lru_cursor: 0,
     };

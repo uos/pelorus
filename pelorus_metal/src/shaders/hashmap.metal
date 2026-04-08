@@ -26,7 +26,13 @@ kernel void rebuild_hashmap_keyed(
     if (key == EMPTY_KEY) return;
 
     uint slot = hash_fn(key) & (table_cap - 1);
-    for (;;) {
+    for (uint i = 0; i < table_cap; i++) {
+        int cur = atomic_load_explicit(&table_keys[slot], memory_order_relaxed);
+        if (cur == key) {
+            table_vals[slot] = idx;
+            return;
+        }
+
         int expected = EMPTY_KEY;
         if (atomic_compare_exchange_weak_explicit(
             &table_keys[slot], &expected, key,
@@ -34,7 +40,6 @@ kernel void rebuild_hashmap_keyed(
             table_vals[slot] = idx;
             return;
         }
-        // Slot taken by someone else (should not collide in rebuild if keys are unique)
         slot = (slot + 1) & (table_cap - 1);
     }
 }
