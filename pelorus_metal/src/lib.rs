@@ -8,6 +8,7 @@
 mod buffer;
 mod map;
 mod pipeline;
+mod radix_sort;
 mod stream;
 mod types;
 

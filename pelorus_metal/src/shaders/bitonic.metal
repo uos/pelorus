@@ -19,9 +19,8 @@ kernel void pack_keys(
         return; 
     }
     
-    // We treat the int32 key as uint32 for sorting. 
-    // This preserves grouping of identical keys, which is all we need.
-    uint k = as_type<uint>(keys[idx]);
+    // Flip the sign bit so lexicographic integer compare matches signed i32 order.
+    uint k = as_type<uint>(keys[idx]) ^ 0x80000000u;
     uint i = indices[idx];
     
     packed[idx] = ((ulong)k << 32) | i;
@@ -37,11 +36,36 @@ kernel void unpack_keys(
     if (idx >= n) return;
     
     ulong p = packed[idx];
-    uint k_u = (uint)(p >> 32);
+    uint k_u = ((uint)(p >> 32)) ^ 0x80000000u;
     uint i   = (uint)(p & 0xFFFFFFFF);
     
     keys[idx] = as_type<int>(k_u);
     indices[idx] = i;
+}
+
+kernel void pack_u32_pairs(
+    device const uint* keys    [[buffer(0)]],
+    device const uint* values  [[buffer(1)]],
+    device ulong*      packed  [[buffer(2)]],
+    constant uint&     n       [[buffer(3)]],
+    uint               idx     [[thread_position_in_grid]])
+{
+    if (idx >= n) return;
+    packed[idx] = ((ulong)keys[idx] << 32) | values[idx];
+}
+
+kernel void unpack_u32_pairs(
+    device const ulong* packed  [[buffer(0)]],
+    device uint*        keys    [[buffer(1)]],
+    device uint*        values  [[buffer(2)]],
+    constant uint&      n       [[buffer(3)]],
+    uint                idx     [[thread_position_in_grid]])
+{
+    if (idx >= n) return;
+
+    ulong p = packed[idx];
+    keys[idx] = (uint)(p >> 32);
+    values[idx] = (uint)(p & 0xFFFFFFFF);
 }
 
 kernel void init_pad(

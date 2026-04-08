@@ -1,7 +1,6 @@
 use bytemuck::{Pod, Zeroable};
 #[cfg(feature = "metal_enable")]
 use rayon::prelude::*;
-use std::collections::HashMap;
 use std::sync::{Mutex, MutexGuard, OnceLock};
 
 use crate::pipeline::{get_pipelines, grid1d, group1d};
@@ -32,29 +31,23 @@ pub struct GpuVoxelDist {
 }
 
 const _: () = assert!(size_of::<GpuVoxelDist>() == 96);
+#[cfg(test)]
 const EMPTY_KEY: i32 = i32::MIN;
-
-#[derive(Clone, Copy, Default)]
-struct SortKey {
-    index: u32,
-    temporal_dist: u64,
-    point_count: u64,
-}
 
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]
 pub struct BuildVoxelsParams {
-    pub pose_quat: [f32; 4],   // 16 bytes, offset 0
-    pub pose_trans: [f32; 3],  // 12 bytes, offset 16
-    pub _pad0: f32,            // 4 bytes, offset 28
-    pub resolution: f32,       // 4 bytes, offset 32
-    pub scan_number: u32,      // 4 bytes, offset 36
-    pub sensitivity: f32,      // 4 bytes, offset 40
-    pub min_dist: f32,         // 4 bytes, offset 44
-    pub unique_key_count: u32, // 4 bytes, offset 48
-    pub table_cap: u32,        // 4 bytes, offset 52
-    pub dist_cap: u32,         // 4 bytes, offset 56
-    pub _pad1: u32,            // 4 bytes, offset 60 -> Total 64
+    pub pose_quat: [f32; 4],
+    pub pose_trans: [f32; 3],
+    pub _pad0: f32,
+    pub resolution: f32,
+    pub scan_number: u32,
+    pub sensitivity: f32,
+    pub min_dist: f32,
+    pub unique_key_count: u32,
+    pub table_cap: u32,
+    pub dist_cap: u32,
+    pub n_points: u32,
 }
 
 #[repr(C)]
@@ -80,7 +73,7 @@ pub(crate) static TEST_MAP_MUTEX: std::sync::Mutex<()> = std::sync::Mutex::new((
 pub struct ScratchBuffers {
     pub keys: crate::buffer::MetalBuffer,
     pub indices: crate::buffer::MetalBuffer,
-    pub packed: crate::buffer::MetalBuffer,
+    pub radix: crate::radix_sort::RadixSortBuffers,
     pub run_starts: crate::buffer::MetalBuffer,
     pub run_ends: crate::buffer::MetalBuffer,
     pub unique_keys: crate::buffer::MetalBuffer,
@@ -88,6 +81,8 @@ pub struct ScratchBuffers {
     pub update_flags: crate::buffer::MetalBuffer,
     pub sorted_points: crate::buffer::MetalBuffer,
     pub counter: crate::buffer::MetalBuffer,
+    pub lru_keys: crate::buffer::MetalBuffer,
+    pub lru_mapping: crate::buffer::MetalBuffer,
     pub capacity: usize,
 }
 
@@ -96,7 +91,6 @@ pub struct MetalMapState {
     pub values_buf: crate::buffer::MetalBuffer,
     pub dist_buf: crate::buffer::MetalBuffer,
     pub dist_keys_buf: crate::buffer::MetalBuffer,
-    pub add_cursor_buf: crate::buffer::MetalBuffer,
     pub scratch: ScratchBuffers,
     pub dist_cap: u32,
     pub table_cap: u32,
@@ -107,11 +101,6 @@ pub struct MetalMapState {
     pub nbtype: u32,
     add_cursor: u32,
     lru_cursor: u32,
-    lru_mapping: Vec<u32>,
-    lru_mapping_keys: Vec<SortKey>,
-    key_to_index: HashMap<i32, u32>,
-    pending_lru_rebuild: bool,
-    pending_lru_scan_number: u32,
 }
 
 static MAP_STATE: OnceLock<Mutex<Option<MetalMapState>>> = OnceLock::new();
@@ -142,7 +131,6 @@ pub fn init_map_impl(
         crate::buffer::MetalBuffer::new(stream, size_of::<GpuVoxelDist>(), dist_cap as usize);
     let dist_keys_buf =
         crate::buffer::MetalBuffer::new(stream, size_of::<i32>(), dist_cap as usize);
-    let add_cursor_buf = crate::buffer::MetalBuffer::new(stream, size_of::<u32>(), 1);
 
     unsafe {
         std::ptr::write_bytes(
@@ -155,11 +143,6 @@ pub fn init_map_impl(
             dist_cap as usize,
         );
         slice.fill(i32::MIN);
-        std::ptr::write_bytes(
-            add_cursor_buf.buf.contents().as_ptr().cast::<u8>(),
-            0,
-            add_cursor_buf.buf.length() as usize,
-        );
     }
 
     // Initial scratch buffers with capacity 1; these will be resized on demand in add_to_map_impl.
@@ -168,7 +151,7 @@ pub fn init_map_impl(
     let scratch = ScratchBuffers {
         keys: crate::buffer::MetalBuffer::new(stream, size_of::<i32>(), scratch_cap),
         indices: crate::buffer::MetalBuffer::new(stream, size_of::<u32>(), scratch_cap),
-        packed: crate::buffer::MetalBuffer::new(stream, size_of::<u64>(), scratch_cap),
+        radix: crate::radix_sort::RadixSortBuffers::new(stream, scratch_cap),
         run_starts: crate::buffer::MetalBuffer::new(stream, size_of::<u32>(), scratch_cap),
         run_ends: crate::buffer::MetalBuffer::new(stream, size_of::<u32>(), scratch_cap),
         unique_keys: crate::buffer::MetalBuffer::new(stream, size_of::<i32>(), scratch_cap),
@@ -179,10 +162,18 @@ pub fn init_map_impl(
             size_of::<crate::types::Point>(),
             scratch_cap,
         ),
-        counter: crate::buffer::MetalBuffer::new(stream, size_of::<u32>(), 1),
+        counter: crate::buffer::MetalBuffer::new(stream, size_of::<u32>(), 3),
+        lru_keys: crate::buffer::MetalBuffer::new(stream, size_of::<u32>(), dist_cap as usize),
+        lru_mapping: crate::buffer::MetalBuffer::new(stream, size_of::<u32>(), dist_cap as usize),
         // keep the logical capacity zero so resize logic still fires immediately
         capacity: 0,
     };
+
+    let initial_lru_mapping: Vec<u32> = (0..dist_cap).collect();
+    let counter_init = [0u32, 0u32, 0u32];
+    let mut scratch = scratch;
+    scratch.lru_mapping.upload(stream, &initial_lru_mapping);
+    scratch.counter.upload(stream, &counter_init);
 
     {
         let pipes = get_pipelines(&*stream.device);
@@ -209,7 +200,6 @@ pub fn init_map_impl(
         values_buf,
         dist_buf,
         dist_keys_buf,
-        add_cursor_buf,
         scratch,
         dist_cap,
         table_cap,
@@ -220,107 +210,9 @@ pub fn init_map_impl(
         nbtype: _nbtype as u32,
         add_cursor: 0,
         lru_cursor: 0,
-        lru_mapping: (0..dist_cap).collect(),
-        lru_mapping_keys: vec![SortKey::default(); dist_cap as usize],
-        key_to_index: HashMap::with_capacity(dist_cap as usize),
-        pending_lru_rebuild: false,
-        pending_lru_scan_number: 0,
     };
 
     *get_state() = Some(state);
-}
-
-fn assign_target_indices_with_cpu_lru(
-    state: &mut MetalMapState,
-    unique_keys: &[i32],
-    target_indices: &mut Vec<u32>,
-    update_flags: &mut Vec<u32>,
-) {
-    target_indices.clear();
-    update_flags.clear();
-    target_indices.reserve(unique_keys.len());
-    update_flags.reserve(unique_keys.len());
-
-    let dist_cap = state.dist_cap;
-    let dist_keys_mut = state.dist_keys_buf.as_slice_mut::<i32>();
-    for &key in unique_keys {
-        if let Some(&idx) = state.key_to_index.get(&key) {
-            target_indices.push(idx);
-            update_flags.push(1);
-            continue;
-        }
-
-        if state.add_cursor < dist_cap {
-            let idx = state.add_cursor;
-            state.add_cursor += 1;
-            dist_keys_mut[idx as usize] = key;
-            state.key_to_index.insert(key, idx);
-            target_indices.push(idx);
-            update_flags.push(0);
-            continue;
-        }
-
-        if state.lru_cursor >= dist_cap {
-            log::warn!("Replacing too many points inside LRU Cache. Increase the map capacity!");
-            break;
-        }
-
-        let victim = state.lru_mapping[state.lru_cursor as usize];
-        state.lru_cursor += 1;
-
-        let old_key = dist_keys_mut[victim as usize];
-        if old_key != EMPTY_KEY {
-            state.key_to_index.remove(&old_key);
-        }
-        dist_keys_mut[victim as usize] = key;
-        state.key_to_index.insert(key, victim);
-
-        target_indices.push(victim);
-        update_flags.push(0);
-    }
-
-    state.add_cursor = state.add_cursor.min(dist_cap);
-    let add_cursor_ptr = state.add_cursor_buf.buf.contents().as_ptr().cast::<u32>();
-    unsafe {
-        *add_cursor_ptr = state.add_cursor;
-    }
-}
-
-fn rebuild_cpu_lru_order(state: &mut MetalMapState, scan_number: u32) {
-    if state.add_cursor < state.dist_cap {
-        return;
-    }
-
-    let dists = state.dist_buf.as_slice::<GpuVoxelDist>();
-    for (i, &idx) in state.lru_mapping.iter().enumerate() {
-        let item = &dists[idx as usize];
-        state.lru_mapping_keys[i] = SortKey {
-            index: idx,
-            temporal_dist: scan_number.saturating_sub(item.last_scan) as u64,
-            point_count: item.point_count as u64,
-        };
-    }
-
-    state.lru_mapping_keys.sort_unstable_by(|a, b| {
-        if a.point_count == 0 && b.point_count == 0 {
-            return std::cmp::Ordering::Equal;
-        }
-        if a.point_count == 0 {
-            return std::cmp::Ordering::Less;
-        }
-        if b.point_count == 0 {
-            return std::cmp::Ordering::Greater;
-        }
-
-        let left = (a.temporal_dist as u128) * (b.point_count as u128);
-        let right = (b.temporal_dist as u128) * (a.point_count as u128);
-        right.cmp(&left)
-    });
-
-    for (i, key) in state.lru_mapping_keys.iter().enumerate() {
-        state.lru_mapping[i] = key.index;
-    }
-    state.lru_cursor = 0;
 }
 
 pub fn add_to_map_impl(
@@ -333,19 +225,7 @@ pub fn add_to_map_impl(
     use std::time::Instant;
 
     let start_all = Instant::now();
-    let mut total_gpu_time_ms: f64 = 0.0;
-
-    // Rebuild CPU-side LRU ordering from the previous scan once GPU writes are complete.
-    // This removes a forced wait at the end of each frame while keeping identical eviction logic.
-    {
-        let mut guard = get_state();
-        let state = guard.as_mut().expect("Map not initialised");
-        if state.pending_lru_rebuild {
-            stream.sync();
-            rebuild_cpu_lru_order(state, state.pending_lru_scan_number);
-            state.pending_lru_rebuild = false;
-        }
-    }
+    let mut total_gpu_time_ms = 0.0;
 
     let mut guard = get_state();
     let state = guard.as_mut().expect("Map not initialised");
@@ -366,15 +246,11 @@ pub fn add_to_map_impl(
         return 0.0;
     }
 
-    // The packed buffer used by the bitonic sort must hold at least
-    // `n_points.next_power_of_two()` elements (padded to a power of two).
-    // All other scratch buffers only need `n_points` capacity.
-    let padded_n = n_points.next_power_of_two();
     if state.scratch.capacity < n_points {
-        let new_cap = padded_n.max((n_points as f32 * 1.5) as usize);
+        let new_cap = (n_points as f32 * 1.5) as usize;
         state.scratch.keys = crate::buffer::MetalBuffer::new(stream, size_of::<i32>(), new_cap);
         state.scratch.indices = crate::buffer::MetalBuffer::new(stream, size_of::<u32>(), new_cap);
-        state.scratch.packed = crate::buffer::MetalBuffer::new(stream, size_of::<u64>(), new_cap);
+        state.scratch.radix = crate::radix_sort::RadixSortBuffers::new(stream, new_cap.max(state.dist_cap as usize));
         state.scratch.run_starts =
             crate::buffer::MetalBuffer::new(stream, size_of::<u32>(), new_cap);
         state.scratch.run_ends = crate::buffer::MetalBuffer::new(stream, size_of::<u32>(), new_cap);
@@ -387,11 +263,12 @@ pub fn add_to_map_impl(
         state.scratch.sorted_points =
             crate::buffer::MetalBuffer::new(stream, size_of::<crate::types::Point>(), new_cap);
         state.scratch.capacity = new_cap;
-    } else if state.scratch.packed.capacity() < padded_n {
-        // Capacity is sufficient for n_points but the packed buffer needs power-of-two size
-        // for the bitonic sort. Only reallocate the packed buffer.
-        state.scratch.packed =
-            crate::buffer::MetalBuffer::new(stream, size_of::<u64>(), padded_n);
+    }
+    if state.scratch.radix.max_elements < n_points.max(state.dist_cap as usize) {
+        state.scratch.radix = crate::radix_sort::RadixSortBuffers::new(
+            stream,
+            n_points.max(state.dist_cap as usize),
+        );
     }
 
     let params = BuildVoxelsParams {
@@ -402,118 +279,169 @@ pub fn add_to_map_impl(
         scan_number,
         sensitivity: state.sensitivity,
         min_dist: state.min_dist,
-        unique_key_count: n_points as u32,
+        unique_key_count: 0,
         table_cap,
         dist_cap,
-        _pad1: 0,
+        n_points: n_points as u32,
     };
-
-    let t_keys = Instant::now();
+    let counters_host = [0u32, state.add_cursor, state.lru_cursor];
+    state.scratch.counter.upload(stream, &counters_host);
+    let map_was_full = state.add_cursor >= state.dist_cap;
 
     let pipes = get_pipelines(&*stream.device);
     let cb = stream.queue.commandBuffer().expect("cb");
     let enc = cb.computeCommandEncoder().expect("enc");
+
     enc.setComputePipelineState(&pipes.calculate_keys);
-    let mut pk = params;
-    pk.unique_key_count = n_points as u32; // cloud size
     unsafe {
         enc.setBuffer_offset_atIndex(Some(cloud_buf.metal_buffer()), 0, 0);
         enc.setBuffer_offset_atIndex(Some(state.scratch.keys.metal_buffer()), 0, 1);
         enc.setBuffer_offset_atIndex(Some(state.scratch.indices.metal_buffer()), 0, 2);
         enc.setBytes_length_atIndex(
-            std::ptr::NonNull::new(&pk as *const _ as *mut _).unwrap(),
+            std::ptr::NonNull::new(&params as *const _ as *mut _).unwrap(),
             size_of::<BuildVoxelsParams>(),
             3,
         );
         enc.dispatchThreads_threadsPerThreadgroup(grid1d(n_points), group1d());
-        enc.endEncoding();
     }
-    cb.commit();
-    cb.waitUntilCompleted();
-    total_gpu_time_ms += (cb.GPUEndTime() - cb.GPUStartTime()) * 1000.0;
-    let dur_keys = t_keys.elapsed();
+    enc.memoryBarrierWithScope(MTLBarrierScope::Buffers);
 
-    let t_sort = Instant::now();
+    crate::radix_sort::dispatch_radix_sort_u32_pairs(
+        stream,
+        &enc,
+        &state.scratch.keys,
+        &state.scratch.indices,
+        &state.scratch.radix,
+        n_points,
+        0x8000_0000,
+    );
+    enc.memoryBarrierWithScope(MTLBarrierScope::Buffers);
 
-    let pipes = get_pipelines(&*stream.device);
-    let cb = stream.queue.commandBuffer().expect("cb");
-    let enc = cb.computeCommandEncoder().expect("enc");
-
-    enc.setComputePipelineState(&pipes.pack_keys);
-    let n_u32 = n_points as u32;
+    enc.setComputePipelineState(&pipes.rle);
     unsafe {
         enc.setBuffer_offset_atIndex(Some(state.scratch.keys.metal_buffer()), 0, 0);
-        enc.setBuffer_offset_atIndex(Some(state.scratch.indices.metal_buffer()), 0, 1);
-        enc.setBuffer_offset_atIndex(Some(state.scratch.packed.metal_buffer()), 0, 2);
+        enc.setBuffer_offset_atIndex(Some(state.scratch.unique_keys.metal_buffer()), 0, 1);
+        enc.setBuffer_offset_atIndex(Some(state.scratch.run_starts.metal_buffer()), 0, 2);
+        enc.setBuffer_offset_atIndex(Some(state.scratch.run_ends.metal_buffer()), 0, 3);
+        enc.setBuffer_offset_atIndex(Some(state.scratch.counter.metal_buffer()), 0, 4);
         enc.setBytes_length_atIndex(
-            std::ptr::NonNull::new(&n_u32 as *const u32 as *mut _).unwrap(),
-            size_of::<u32>(),
-            3,
+            std::ptr::NonNull::new(&params as *const _ as *mut _).unwrap(),
+            size_of::<BuildVoxelsParams>(),
+            5,
         );
         enc.dispatchThreads_threadsPerThreadgroup(grid1d(n_points), group1d());
     }
-
-    if n_points < padded_n {
-        enc.setComputePipelineState(&pipes.init_pad);
-        let diff = (padded_n - n_points) as u32;
-        let cap_u32 = state.scratch.packed.capacity() as u32;
-        unsafe {
-            enc.setBuffer_offset_atIndex(Some(state.scratch.packed.metal_buffer()), 0, 0);
-            enc.setBytes_length_atIndex(
-                std::ptr::NonNull::new(&n_u32 as *const u32 as *mut _).unwrap(),
-                size_of::<u32>(),
-                1,
-            );
-            enc.setBytes_length_atIndex(
-                std::ptr::NonNull::new(&cap_u32 as *const u32 as *mut _).unwrap(),
-                size_of::<u32>(),
-                2,
-            );
-            enc.dispatchThreads_threadsPerThreadgroup(grid1d(diff as usize), group1d());
-        }
-    }
-
-    // Barrier: pack/pad wrote packed buffer, bitonic reads+writes it
     enc.memoryBarrierWithScope(MTLBarrierScope::Buffers);
-    enc.setComputePipelineState(&pipes.bitonic_step);
-    let mut k = 2;
-    while k <= padded_n {
-        let mut j = k >> 1;
-        while j > 0 {
-            let k_u32 = k as u32;
-            let j_u32 = j as u32;
-            unsafe {
-                enc.setBuffer_offset_atIndex(Some(state.scratch.packed.metal_buffer()), 0, 0);
-                enc.setBytes_length_atIndex(
-                    std::ptr::NonNull::new(&j_u32 as *const u32 as *mut _).unwrap(),
-                    size_of::<u32>(),
-                    1,
-                );
-                enc.setBytes_length_atIndex(
-                    std::ptr::NonNull::new(&k_u32 as *const u32 as *mut _).unwrap(),
-                    size_of::<u32>(),
-                    2,
-                );
-                enc.dispatchThreads_threadsPerThreadgroup(grid1d(padded_n), group1d());
-            }
-            // Barrier between each bitonic step (read-write dependency on packed)
-            enc.memoryBarrierWithScope(MTLBarrierScope::Buffers);
-            j >>= 1;
-        }
-        k <<= 1;
-    }
 
-    enc.setComputePipelineState(&pipes.unpack_keys);
+    enc.setComputePipelineState(&pipes.assign_indices);
     unsafe {
-        enc.setBuffer_offset_atIndex(Some(state.scratch.packed.metal_buffer()), 0, 0);
-        enc.setBuffer_offset_atIndex(Some(state.scratch.keys.metal_buffer()), 0, 1);
+        enc.setBuffer_offset_atIndex(Some(state.scratch.unique_keys.metal_buffer()), 0, 0);
+        enc.setBuffer_offset_atIndex(Some(state.keys_buf.metal_buffer()), 0, 1);
+        enc.setBuffer_offset_atIndex(Some(state.values_buf.metal_buffer()), 0, 2);
+        enc.setBuffer_offset_atIndex(Some(state.dist_keys_buf.metal_buffer()), 0, 3);
+        enc.setBuffer_offset_atIndex(Some(state.scratch.lru_mapping.metal_buffer()), 0, 4);
+        enc.setBuffer_offset_atIndex(Some(state.scratch.target_indices.metal_buffer()), 0, 5);
+        enc.setBuffer_offset_atIndex(Some(state.scratch.update_flags.metal_buffer()), 0, 6);
+        enc.setBuffer_offset_atIndex(Some(state.scratch.counter.metal_buffer()), 0, 7);
+        enc.setBytes_length_atIndex(
+            std::ptr::NonNull::new(&params as *const _ as *mut _).unwrap(),
+            size_of::<BuildVoxelsParams>(),
+            8,
+        );
+        enc.dispatchThreads_threadsPerThreadgroup(grid1d(n_points), group1d());
+    }
+    enc.memoryBarrierWithScope(MTLBarrierScope::Buffers);
+
+    enc.setComputePipelineState(&pipes.reorder_points);
+    unsafe {
+        enc.setBuffer_offset_atIndex(Some(cloud_buf.metal_buffer()), 0, 0);
+        enc.setBuffer_offset_atIndex(Some(state.scratch.sorted_points.metal_buffer()), 0, 1);
         enc.setBuffer_offset_atIndex(Some(state.scratch.indices.metal_buffer()), 0, 2);
         enc.setBytes_length_atIndex(
-            std::ptr::NonNull::new(&n_u32 as *const u32 as *mut _).unwrap(),
-            size_of::<u32>(),
+            std::ptr::NonNull::new(&params as *const _ as *mut _).unwrap(),
+            size_of::<BuildVoxelsParams>(),
             3,
         );
         enc.dispatchThreads_threadsPerThreadgroup(grid1d(n_points), group1d());
+    }
+    enc.memoryBarrierWithScope(MTLBarrierScope::Buffers);
+
+    enc.setComputePipelineState(&pipes.build_voxels);
+    unsafe {
+        enc.setBuffer_offset_atIndex(Some(state.scratch.sorted_points.metal_buffer()), 0, 0);
+        enc.setBuffer_offset_atIndex(Some(state.scratch.indices.metal_buffer()), 0, 1);
+        enc.setBuffer_offset_atIndex(Some(state.scratch.run_starts.metal_buffer()), 0, 2);
+        enc.setBuffer_offset_atIndex(Some(state.scratch.run_ends.metal_buffer()), 0, 3);
+        enc.setBuffer_offset_atIndex(Some(state.scratch.unique_keys.metal_buffer()), 0, 4);
+        enc.setBuffer_offset_atIndex(Some(state.scratch.target_indices.metal_buffer()), 0, 5);
+        enc.setBuffer_offset_atIndex(Some(state.scratch.update_flags.metal_buffer()), 0, 6);
+        enc.setBuffer_offset_atIndex(Some(state.dist_buf.metal_buffer()), 0, 7);
+        enc.setBuffer_offset_atIndex(Some(state.scratch.counter.metal_buffer()), 0, 8);
+        enc.setBytes_length_atIndex(
+            std::ptr::NonNull::new(&params as *const _ as *mut _).unwrap(),
+            size_of::<BuildVoxelsParams>(),
+            9,
+        );
+        enc.dispatchThreads_threadsPerThreadgroup(grid1d(n_points), group1d());
+    }
+    enc.memoryBarrierWithScope(MTLBarrierScope::Buffers);
+
+    enc.setComputePipelineState(&pipes.hashmap_init);
+    let table_cap_u32 = state.table_cap;
+    unsafe {
+        enc.setBuffer_offset_atIndex(Some(state.keys_buf.metal_buffer()), 0, 0);
+        enc.setBytes_length_atIndex(
+            std::ptr::NonNull::new(&table_cap_u32 as *const u32 as *mut _).unwrap(),
+            size_of::<u32>(),
+            1,
+        );
+        enc.dispatchThreads_threadsPerThreadgroup(grid1d(state.table_cap as usize), group1d());
+    }
+    enc.memoryBarrierWithScope(MTLBarrierScope::Buffers);
+
+    enc.setComputePipelineState(&pipes.rebuild_hashmap_keyed);
+    let valid_size_u32 = state.dist_cap;
+    unsafe {
+        enc.setBuffer_offset_atIndex(Some(state.keys_buf.metal_buffer()), 0, 0);
+        enc.setBuffer_offset_atIndex(Some(state.values_buf.metal_buffer()), 0, 1);
+        enc.setBuffer_offset_atIndex(Some(state.dist_keys_buf.metal_buffer()), 0, 2);
+        enc.setBytes_length_atIndex(
+            std::ptr::NonNull::new(&valid_size_u32 as *const u32 as *mut _).unwrap(),
+            size_of::<u32>(),
+            3,
+        );
+        enc.setBytes_length_atIndex(
+            std::ptr::NonNull::new(&table_cap_u32 as *const u32 as *mut _).unwrap(),
+            size_of::<u32>(),
+            4,
+        );
+        enc.dispatchThreads_threadsPerThreadgroup(grid1d(valid_size_u32 as usize), group1d());
+    }
+
+    if map_was_full {
+        enc.memoryBarrierWithScope(MTLBarrierScope::Buffers);
+        enc.setComputePipelineState(&pipes.lru_score);
+        unsafe {
+            enc.setBuffer_offset_atIndex(Some(state.dist_buf.metal_buffer()), 0, 0);
+            enc.setBuffer_offset_atIndex(Some(state.scratch.lru_keys.metal_buffer()), 0, 1);
+            enc.setBuffer_offset_atIndex(Some(state.scratch.lru_mapping.metal_buffer()), 0, 2);
+            enc.setBytes_length_atIndex(
+                std::ptr::NonNull::new(&params as *const _ as *mut _).unwrap(),
+                size_of::<BuildVoxelsParams>(),
+                3,
+            );
+            enc.dispatchThreads_threadsPerThreadgroup(grid1d(state.dist_cap as usize), group1d());
+        }
+
+        crate::radix_sort::dispatch_radix_sort_u32_pairs(
+            stream,
+            &enc,
+            &state.scratch.lru_keys,
+            &state.scratch.lru_mapping,
+            &state.scratch.radix,
+            state.dist_cap as usize,
+            0,
+        );
     }
 
     enc.endEncoding();
@@ -521,169 +449,17 @@ pub fn add_to_map_impl(
     cb.waitUntilCompleted();
     total_gpu_time_ms += (cb.GPUEndTime() - cb.GPUStartTime()) * 1000.0;
 
-    let sorted_keys_gpu = state.scratch.keys.as_slice::<i32>();
-    let sorted_keys = &sorted_keys_gpu[..n_points];
-
-    let mut unique_keys: Vec<i32> = Vec::new();
-    let mut run_starts: Vec<u32> = Vec::new();
-    let mut run_ends: Vec<u32> = Vec::new();
-
-    if !sorted_keys.is_empty() {
-        let mut current_key = sorted_keys[0];
-        let mut start_idx = 0;
-
-        for (i, &key) in sorted_keys.iter().enumerate().skip(1) {
-            if key != current_key {
-                unique_keys.push(current_key);
-                run_starts.push(start_idx as u32);
-                run_ends.push(i as u32);
-                current_key = key;
-                start_idx = i;
-            }
-        }
-        unique_keys.push(current_key);
-        run_starts.push(start_idx as u32);
-        run_ends.push(n_points as u32);
-    }
-
-    let dur_sort = t_sort.elapsed();
-
-    let mut target_indices: Vec<u32> = Vec::with_capacity(unique_keys.len());
-    let mut update_flags: Vec<u32> = Vec::with_capacity(unique_keys.len());
-    assign_target_indices_with_cpu_lru(state, &unique_keys, &mut target_indices, &mut update_flags);
-    let n_assigned = target_indices.len();
-    if n_assigned == 0 {
-        return 0.0;
-    }
-
-    unique_keys.truncate(n_assigned);
-    run_starts.truncate(n_assigned);
-    run_ends.truncate(n_assigned);
-
-    let copy_to = |dst: &crate::buffer::MetalBuffer, src: &[u8]| unsafe {
-        std::ptr::copy_nonoverlapping(
-            src.as_ptr(),
-            dst.buf.contents().as_ptr().cast::<u8>(),
-            src.len(),
-        );
-    };
-    copy_to(
-        &state.scratch.run_starts,
-        bytemuck::cast_slice::<u32, u8>(&run_starts),
-    );
-    copy_to(
-        &state.scratch.run_ends,
-        bytemuck::cast_slice::<u32, u8>(&run_ends),
-    );
-    copy_to(
-        &state.scratch.unique_keys,
-        bytemuck::cast_slice::<i32, u8>(&unique_keys),
-    );
-    copy_to(
-        &state.scratch.target_indices,
-        bytemuck::cast_slice::<u32, u8>(&target_indices),
-    );
-    copy_to(
-        &state.scratch.update_flags,
-        bytemuck::cast_slice::<u32, u8>(&update_flags),
-    );
-
-    let t_build = Instant::now();
-    let gpu_time_ms = {
-        let pipes = get_pipelines(&*stream.device);
-        let cb = stream.queue.commandBuffer().expect("cb");
-        let enc = cb.computeCommandEncoder().expect("enc");
-
-        enc.setComputePipelineState(&pipes.reorder_points);
-        unsafe {
-            enc.setBuffer_offset_atIndex(Some(cloud_buf.metal_buffer()), 0, 0);
-            enc.setBuffer_offset_atIndex(Some(state.scratch.sorted_points.metal_buffer()), 0, 1);
-            enc.setBuffer_offset_atIndex(Some(state.scratch.indices.metal_buffer()), 0, 2);
-            enc.setBytes_length_atIndex(
-                std::ptr::NonNull::new(&params as *const _ as *mut _).unwrap(),
-                size_of::<BuildVoxelsParams>(),
-                3,
-            );
-            enc.dispatchThreads_threadsPerThreadgroup(grid1d(n_points), group1d());
-        }
-
-        // Barrier: reorder_points writes sorted_points, build_voxels reads it
-        enc.memoryBarrierWithScope(MTLBarrierScope::Buffers);
-
-        let mut pb = params;
-        pb.unique_key_count = n_assigned as u32;
-
-        enc.setComputePipelineState(&pipes.build_voxels);
-        unsafe {
-            enc.setBuffer_offset_atIndex(Some(state.scratch.sorted_points.metal_buffer()), 0, 0);
-            enc.setBuffer_offset_atIndex(Some(state.scratch.indices.metal_buffer()), 0, 1);
-            enc.setBuffer_offset_atIndex(Some(state.scratch.run_starts.metal_buffer()), 0, 2);
-            enc.setBuffer_offset_atIndex(Some(state.scratch.run_ends.metal_buffer()), 0, 3);
-            enc.setBuffer_offset_atIndex(Some(state.scratch.unique_keys.metal_buffer()), 0, 4);
-            enc.setBuffer_offset_atIndex(Some(state.scratch.target_indices.metal_buffer()), 0, 5);
-            enc.setBuffer_offset_atIndex(Some(state.scratch.update_flags.metal_buffer()), 0, 6);
-            enc.setBuffer_offset_atIndex(Some(state.dist_buf.metal_buffer()), 0, 7);
-            enc.setBytes_length_atIndex(
-                std::ptr::NonNull::new(&pb as *const _ as *mut _).unwrap(),
-                size_of::<BuildVoxelsParams>(),
-                8,
-            );
-            enc.dispatchThreads_threadsPerThreadgroup(grid1d(n_assigned), group1d());
-        }
-
-        // Barrier: build_voxels writes dists/dist_keys, hashmap rebuild reads them
-        enc.memoryBarrierWithScope(MTLBarrierScope::Buffers);
-
-        enc.setComputePipelineState(&pipes.hashmap_init);
-        let table_cap_u32 = state.table_cap;
-        unsafe {
-            enc.setBuffer_offset_atIndex(Some(state.keys_buf.metal_buffer()), 0, 0);
-            enc.setBytes_length_atIndex(
-                std::ptr::NonNull::new(&table_cap_u32 as *const u32 as *mut _).unwrap(),
-                size_of::<u32>(),
-                1,
-            );
-            enc.dispatchThreads_threadsPerThreadgroup(grid1d(state.table_cap as usize), group1d());
-        }
-
-        // Barrier: hashmap_init writes table_keys, rebuild reads them
-        enc.memoryBarrierWithScope(MTLBarrierScope::Buffers);
-
-        enc.setComputePipelineState(&pipes.rebuild_hashmap_keyed);
-        let valid_size_u32 = state.add_cursor.min(state.dist_cap);
-        unsafe {
-            enc.setBuffer_offset_atIndex(Some(state.keys_buf.metal_buffer()), 0, 0);
-            enc.setBuffer_offset_atIndex(Some(state.values_buf.metal_buffer()), 0, 1);
-            enc.setBuffer_offset_atIndex(Some(state.dist_keys_buf.metal_buffer()), 0, 2);
-            enc.setBytes_length_atIndex(
-                std::ptr::NonNull::new(&valid_size_u32 as *const u32 as *mut _).unwrap(),
-                size_of::<u32>(),
-                3,
-            );
-            enc.setBytes_length_atIndex(
-                std::ptr::NonNull::new(&table_cap_u32 as *const u32 as *mut _).unwrap(),
-                size_of::<u32>(),
-                4,
-            );
-            enc.dispatchThreads_threadsPerThreadgroup(grid1d(valid_size_u32 as usize), group1d());
-        }
-
-        enc.endEncoding();
-        cb.commit();
-        cb.waitUntilCompleted();
-        (cb.GPUEndTime() - cb.GPUStartTime()) * 1000.0
-    };
-    total_gpu_time_ms += gpu_time_ms;
-    let dur_build = t_build.elapsed();
-    state.pending_lru_rebuild = true;
-    state.pending_lru_scan_number = scan_number;
-
+    let counters_result = state.scratch.counter.as_slice::<u32>();
+    let unique_count = counters_result[0] as usize;
+    state.add_cursor = counters_result[1].min(state.dist_cap);
+    state.lru_cursor = counters_result[2].min(state.dist_cap);
     log::info!(
-        "[Metal] add_to_map: total={:?}, keys={:?}, sort={:?}, build+rebuild_submit={:?}, gpu_time={:.2}ms",
+        "[Metal] add_to_map: total={:?}, points={}, unique={}, add_cursor={}, lru_cursor={}, gpu_time={:.2}ms",
         start_all.elapsed(),
-        dur_keys,
-        dur_sort,
-        dur_build,
+        n_points,
+        unique_count,
+        state.add_cursor,
+        state.lru_cursor,
         total_gpu_time_ms
     );
 
@@ -701,6 +477,67 @@ pub(crate) fn acquire_test_lock() -> std::sync::MutexGuard<'static, ()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::HashMap;
+
+    fn cpu_rle(sorted_keys: &[i32]) -> (Vec<i32>, Vec<u32>, Vec<u32>) {
+        let mut unique_keys = Vec::new();
+        let mut run_starts = Vec::new();
+        let mut run_ends = Vec::new();
+
+        for (idx, &key) in sorted_keys.iter().enumerate() {
+            if key == EMPTY_KEY {
+                continue;
+            }
+            if idx > 0 && sorted_keys[idx - 1] == key {
+                continue;
+            }
+            let end = sorted_keys.partition_point(|candidate| *candidate <= key);
+            unique_keys.push(key);
+            run_starts.push(idx as u32);
+            run_ends.push(end as u32);
+        }
+
+        (unique_keys, run_starts, run_ends)
+    }
+
+    fn cpu_assign_indices_vulkan_style(
+        unique_keys: &[i32],
+        existing: &HashMap<i32, u32>,
+        dist_cap: u32,
+        add_cursor: u32,
+        lru_cursor: u32,
+        lru_mapping: &[u32],
+    ) -> (Vec<u32>, Vec<u32>, Vec<i32>, u32, u32) {
+        let mut target_indices = Vec::with_capacity(unique_keys.len());
+        let mut update_flags = Vec::with_capacity(unique_keys.len());
+        let mut dist_keys = vec![EMPTY_KEY; dist_cap as usize];
+        let mut add_cursor = add_cursor;
+        let mut lru_cursor = lru_cursor;
+
+        for &key in unique_keys {
+            if let Some(&idx) = existing.get(&key) {
+                target_indices.push(idx);
+                update_flags.push(1);
+                continue;
+            }
+
+            let old_add = add_cursor;
+            add_cursor = add_cursor.saturating_add(1);
+            let idx = if old_add < dist_cap {
+                old_add
+            } else {
+                let map_idx = lru_mapping[(lru_cursor % dist_cap) as usize];
+                lru_cursor = lru_cursor.saturating_add(1);
+                map_idx
+            };
+
+            dist_keys[idx as usize] = key;
+            target_indices.push(idx);
+            update_flags.push(0);
+        }
+
+        (target_indices, update_flags, dist_keys, add_cursor, lru_cursor)
+    }
 
     #[test]
     fn cpu_sort_matches_gpu_semantics() {
@@ -716,14 +553,14 @@ mod tests {
         // sort
         let mut packed: Vec<u64> = Vec::with_capacity(n_points);
         for i in 0..n_points {
-            let k_u = keys_slice[i] as u32;
+            let k_u = (keys_slice[i] as u32) ^ 0x8000_0000;
             let idx = inds_slice[i];
             packed.push(((k_u as u64) << 32) | (idx as u64));
         }
         packed.sort_unstable();
 
         for (i, p) in packed.into_iter().enumerate() {
-            let k_u = (p >> 32) as u32;
+            let k_u = ((p >> 32) as u32) ^ 0x8000_0000;
             let idx = (p & 0xFFFFFFFF) as u32;
             keys_slice[i] = k_u as i32;
             inds_slice[i] = idx;
@@ -733,13 +570,79 @@ mod tests {
         let mut expected: Vec<(i32, u32)> =
             keys.iter().copied().zip(idxs.iter().copied()).collect();
         expected.sort_unstable_by_key(|&(k, idx)| {
-            let k_u = k as u32;
+            let k_u = (k as u32) ^ 0x8000_0000;
             ((k_u as u64) << 32) | (idx as u64)
         });
 
         for i in 0..n_points {
             assert_eq!(keys_slice[i], expected[i].0);
             assert_eq!(inds_slice[i], expected[i].1);
+        }
+    }
+
+    #[test]
+    fn cpu_rle_matches_expected_runs() {
+        let _lock = acquire_test_lock();
+        let sorted_keys = vec![-9, -9, 1, 1, 4, 7, 7, 9];
+        let (unique, starts, ends) = cpu_rle(&sorted_keys);
+        assert_eq!(unique, vec![-9, 1, 4, 7, 9]);
+        assert_eq!(starts, vec![0, 2, 4, 5, 7]);
+        assert_eq!(ends, vec![2, 4, 5, 7, 8]);
+    }
+
+    #[test]
+    fn cpu_assign_indices_uses_updates_then_lru_victims() {
+        let _lock = acquire_test_lock();
+        let existing = HashMap::from([(11, 3u32)]);
+        let lru_mapping = vec![2u32, 1u32, 0u32, 3u32];
+        let (targets, flags, dist_keys, add_cursor, lru_cursor) =
+            cpu_assign_indices_vulkan_style(&[11, 22, 33, 44], &existing, 4, 4, 0, &lru_mapping);
+
+        assert_eq!(targets, vec![3, 2, 1, 0]);
+        assert_eq!(flags, vec![1, 0, 0, 0]);
+        assert_eq!(dist_keys[1], 33);
+        assert_eq!(add_cursor, 7);
+        assert_eq!(lru_cursor, 3);
+    }
+
+    #[test]
+    fn gpu_radix_sort_matches_cpu_reference() {
+        let _lock = acquire_test_lock();
+        let stream = crate::stream::Stream::new();
+        let keys: Vec<i32> = vec![3, -1, 2, -1, 0, i32::MIN, i32::MAX, 7, -9, 3, 2];
+        let idxs: Vec<u32> = (0..keys.len() as u32).collect();
+
+        let mut key_buf = crate::buffer::MetalBuffer::new(&stream, size_of::<i32>(), keys.len());
+        key_buf.as_slice_mut::<i32>().copy_from_slice(&keys);
+        let mut idx_buf = crate::buffer::MetalBuffer::new(&stream, size_of::<u32>(), idxs.len());
+        idx_buf.as_slice_mut::<u32>().copy_from_slice(&idxs);
+        let radix = crate::radix_sort::RadixSortBuffers::new(&stream, keys.len());
+
+        let cb = stream.queue.commandBuffer().expect("cb");
+        let enc = cb.computeCommandEncoder().expect("enc");
+        crate::radix_sort::dispatch_radix_sort_u32_pairs(
+            &stream,
+            &enc,
+            &key_buf,
+            &idx_buf,
+            &radix,
+            keys.len(),
+            0x8000_0000,
+        );
+        enc.endEncoding();
+        cb.commit();
+        cb.waitUntilCompleted();
+
+        let got_keys = key_buf.as_slice::<i32>().to_vec();
+        let got_idxs = idx_buf.as_slice::<u32>().to_vec();
+
+        let mut expected: Vec<(i32, u32)> =
+            keys.iter().copied().zip(idxs.iter().copied()).collect();
+        expected.sort_by_key(|&(k, idx)| (((k as u32) ^ 0x8000_0000) as u64) << 32 | idx as u64);
+
+        for (i, (exp_k, exp_idx)) in expected.into_iter().enumerate() {
+            assert_eq!(got_keys[i], exp_k, "key mismatch at {i}");
+            assert_eq!(got_idxs[i], exp_idx, "idx mismatch at {i}");
         }
     }
 }

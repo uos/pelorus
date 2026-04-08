@@ -12,7 +12,7 @@ struct BuildVoxelsParams {
     uint  unique_key_count;
     uint  table_cap;
     uint  dist_cap;
-    uint  _pad1;
+    uint  n_points;
 };
 
 // calculate_keys: Transform points to global frame and compute voxel keys.
@@ -23,7 +23,7 @@ kernel void calculate_keys(
     constant BuildVoxelsParams&  params         [[buffer(3)]],
     uint                         idx            [[thread_position_in_grid]])
 {
-    if (idx >= params.unique_key_count) return; // reused for cloud_size
+    if (idx >= params.n_points) return;
 
     float4 q = float4(params.pose_quat[0], params.pose_quat[1], params.pose_quat[2], params.pose_quat[3]);
     float3 t = float3(params.pose_trans[0], params.pose_trans[1], params.pose_trans[2]);
@@ -44,7 +44,7 @@ kernel void reorder_points(
     constant BuildVoxelsParams&  params         [[buffer(3)]],
     uint                         idx            [[thread_position_in_grid]])
 {
-    if (idx >= params.unique_key_count) return; // unique_key_count reused for cloud size
+    if (idx >= params.n_points) return;
 
     float4 q = float4(params.pose_quat[0], params.pose_quat[1], params.pose_quat[2], params.pose_quat[3]);
     float3 t = float3(params.pose_trans[0], params.pose_trans[1], params.pose_trans[2]);
@@ -56,6 +56,105 @@ kernel void reorder_points(
     Point p_out = p_raw;
     p_out.x = p_global.x; p_out.y = p_global.y; p_out.z = p_global.z;
     dst[idx] = p_out;
+}
+
+kernel void rle(
+    device const int*            sorted_keys   [[buffer(0)]],
+    device int*                  unique_keys   [[buffer(1)]],
+    device uint*                 run_starts    [[buffer(2)]],
+    device uint*                 run_ends      [[buffer(3)]],
+    device atomic_uint*          counters      [[buffer(4)]],
+    constant BuildVoxelsParams&  params        [[buffer(5)]],
+    uint                         idx           [[thread_position_in_grid]])
+{
+    if (idx >= params.n_points) return;
+
+    int key = sorted_keys[idx];
+    if (key == EMPTY_KEY) return;
+
+    bool is_start = (idx == 0) || (sorted_keys[idx - 1] != key);
+    if (!is_start) return;
+
+    uint left = idx;
+    uint right = params.n_points;
+    while (left < right) {
+        uint mid = left + (right - left) / 2;
+        if (sorted_keys[mid] <= key) {
+            left = mid + 1;
+        } else {
+            right = mid;
+        }
+    }
+
+    uint slot = atomic_fetch_add_explicit(&counters[0], 1u, memory_order_relaxed);
+    run_starts[slot] = idx;
+    run_ends[slot] = left;
+    unique_keys[slot] = key;
+}
+
+kernel void assign_indices(
+    device const int*            unique_keys     [[buffer(0)]],
+    device const atomic_int*     table_keys      [[buffer(1)]],
+    device const uint*           table_vals      [[buffer(2)]],
+    device int*                  dist_keys       [[buffer(3)]],
+    device const uint*           lru_mapping     [[buffer(4)]],
+    device uint*                 target_indices  [[buffer(5)]],
+    device uint*                 update_flags    [[buffer(6)]],
+    device atomic_uint*          counters        [[buffer(7)]],
+    constant BuildVoxelsParams&  params          [[buffer(8)]],
+    uint                         idx             [[thread_position_in_grid]])
+{
+    uint unique_count = atomic_load_explicit(&counters[0], memory_order_relaxed);
+    if (idx >= unique_count) return;
+
+    int key = unique_keys[idx];
+    if (key == EMPTY_KEY) {
+        target_indices[idx] = UINT_MAX;
+        update_flags[idx] = 0u;
+        return;
+    }
+
+    uint found_idx = hashmap_lookup(table_keys, table_vals, params.table_cap, key);
+    if (found_idx != UINT_MAX) {
+        target_indices[idx] = found_idx;
+        update_flags[idx] = 1u;
+        return;
+    }
+
+    update_flags[idx] = 0u;
+    uint old_add = atomic_fetch_add_explicit(&counters[1], 1u, memory_order_relaxed);
+    uint assign_idx = old_add;
+    if (old_add >= params.dist_cap) {
+        uint lru_idx = atomic_fetch_add_explicit(&counters[2], 1u, memory_order_relaxed);
+        assign_idx = lru_mapping[lru_idx % params.dist_cap];
+    }
+
+    target_indices[idx] = assign_idx;
+    dist_keys[assign_idx] = key;
+}
+
+kernel void lru_score(
+    device const VoxelDistribution* dists        [[buffer(0)]],
+    device uint*                    lru_keys     [[buffer(1)]],
+    device uint*                    lru_mapping  [[buffer(2)]],
+    constant BuildVoxelsParams&     params       [[buffer(3)]],
+    uint                            idx          [[thread_position_in_grid]])
+{
+    if (idx >= params.dist_cap) return;
+
+    uint point_count = dists[idx].point_count;
+    uint temporal_dist = params.scan_number - dists[idx].last_scan;
+
+    uint key;
+    if (point_count == 0u) {
+        key = 0u;
+    } else {
+        float score = float(point_count) / float(temporal_dist + 1u);
+        key = (1u << 30) | uint(clamp(score * 1000.0f, 0.0f, float((1u << 30) - 1u)));
+    }
+
+    lru_keys[idx] = key;
+    lru_mapping[idx] = idx;
 }
 
 // build_voxels: one thread per unique voxel.
@@ -70,17 +169,19 @@ kernel void build_voxels(
     device const uint*           target_indices [[buffer(5)]],
     device const uint*           update_flags   [[buffer(6)]],
     device VoxelDistribution*    dists          [[buffer(7)]],
-    constant BuildVoxelsParams&  params         [[buffer(8)]],
+    device const atomic_uint*    counters       [[buffer(8)]],
+    constant BuildVoxelsParams&  params         [[buffer(9)]],
     uint                         idx            [[thread_position_in_grid]])
 {
-    if (idx >= params.unique_key_count) return;
+    uint unique_count = atomic_load_explicit(&counters[0], memory_order_relaxed);
+    if (idx >= unique_count) return;
 
     int   voxel_key  = unique_keys[idx];
     uint  start      = run_starts[idx];
     uint  end        = run_ends[idx];
     uint  count      = end - start;
 
-    if (count == 0 || voxel_key == EMPTY_KEY) return;
+    if (count == 0 || voxel_key == EMPTY_KEY || target_indices[idx] == UINT_MAX) return;
 
     // ── 1. Create scan_voxel (two-pass biased covariance for stability) ──
     float3 sum = float3(0, 0, 0);
