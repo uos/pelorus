@@ -1,11 +1,11 @@
 #![cfg(vulkan_available)]
 
-use ash::{vk, Device, Entry, Instance};
+use ash::{khr::push_descriptor, vk, Device, Entry, Instance};
 use bytemuck::{Pod, Zeroable};
 use pelorus_core::PointXYZIT;
 use ros_pointcloud2::points::PointXYZINormal;
 use spole::{IVoxHashMap, IVoxNearbyType};
-use std::ffi::CString;
+use std::ffi::{CStr, CString};
 use std::mem::size_of;
 use std::sync::{Arc, Mutex, OnceLock};
 
@@ -112,6 +112,27 @@ impl VulkanContext {
                 continue;
             }
 
+            let device_extensions = unsafe {
+                instance
+                    .enumerate_device_extension_properties(physical)
+                    .map_err(|e| format!("failed to enumerate Vulkan device extensions: {e}"))?
+            };
+            let has_push_descriptor = device_extensions.iter().any(|ext| unsafe {
+                CStr::from_ptr(ext.extension_name.as_ptr()) == push_descriptor::NAME
+            });
+            if !has_push_descriptor {
+                continue;
+            }
+
+            let mut push_desc_props = vk::PhysicalDevicePushDescriptorPropertiesKHR::default();
+            let mut props2 = vk::PhysicalDeviceProperties2::default().push_next(&mut push_desc_props);
+            unsafe {
+                instance.get_physical_device_properties2(physical, &mut props2);
+            }
+            if push_desc_props.max_push_descriptors == 0 {
+                continue;
+            }
+
             let families =
                 unsafe { instance.get_physical_device_queue_family_properties(physical) };
 
@@ -144,7 +165,10 @@ impl VulkanContext {
 
         let Some((physical_device, queue_family_index, _)) = selected else {
             unsafe { instance.destroy_instance(None) };
-            return Err("no Vulkan 1.2 physical device with compute and bufferDeviceAddress support available".to_string());
+            return Err(
+                "no Vulkan device with compute + bufferDeviceAddress + VK_KHR_push_descriptor support available"
+                    .to_string(),
+            );
         };
 
         let queue_priorities = [1.0_f32];
@@ -155,8 +179,10 @@ impl VulkanContext {
         let mut features12 = vk::PhysicalDeviceVulkan12Features::default()
             .buffer_device_address(true)
             .scalar_block_layout(true);
+        let enabled_device_extensions = [push_descriptor::NAME.as_ptr()];
         let device_ci = vk::DeviceCreateInfo::default()
             .queue_create_infos(std::slice::from_ref(&queue_ci))
+            .enabled_extension_names(&enabled_device_extensions)
             .push_next(&mut features12);
 
         let device = match unsafe { instance.create_device(physical_device, &device_ci, None) } {
@@ -1427,6 +1453,15 @@ pub fn init_map(
     nearby_search_strategy: NeighborType,
 ) {
     assert!(capacity > 0, "capacity must be > 0");
+    if cfg!(target_os = "macos")
+        && std::env::var_os("PELORUS_VULKAN_ALLOW_MACOS_UNSAFE").is_none()
+    {
+        panic!(
+            "Vulkan radix-sort path is not safely supported on macOS/MoltenVK in this build. \
+             Refusing to run Vulkan backend to avoid segmentation faults. \
+             Set PELORUS_VULKAN_ALLOW_MACOS_UNSAFE=1 to bypass at your own risk."
+        );
+    }
 
     {
         let guard = global_state().lock().expect("vulkan map mutex poisoned");
@@ -1455,12 +1490,25 @@ pub fn init_map(
             };
             let mut sorter = VrdxSorter(0);
             unsafe { vrdxCreateSorter(&sorter_ci, &mut sorter) };
+            assert!(
+                sorter.0 != 0,
+                "vk_radix_sort initialization failed: sorter handle is null. \
+                 This backend requires VK_KHR_push_descriptor support and a compatible Vulkan implementation."
+            );
 
             let mut requirements = VrdxSorterStorageRequirements {
                 size: 0,
                 usage: vk::BufferUsageFlags::empty(),
             };
             unsafe { vrdxGetSorterKeyValueStorageRequirements(sorter, 1, &mut requirements) };
+            assert!(
+                requirements.size > 0
+                    && requirements
+                        .usage
+                        .contains(vk::BufferUsageFlags::STORAGE_BUFFER),
+                "vk_radix_sort reported invalid storage requirements. \
+                 Refusing to continue to avoid undefined behavior."
+            );
 
             let mut scratch = ScratchBuffers {
                 keys: VulkanBuffer::new_host_visible(stream, size_of::<i32>(), 1),
