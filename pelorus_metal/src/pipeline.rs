@@ -38,7 +38,7 @@ impl Pipelines {
         let opts = MTLCompileOptions::new();
         // Enable optimizations in release builds
         if !cfg!(debug_assertions) {
-            opts.setMathMode(MTLMathMode::Fast);
+            opts.setMathMode(MTLMathMode::Safe);
             opts.setOptimizationLevel(MTLLibraryOptimizationLevel::Default);
         } else {
             opts.setOptimizationLevel(MTLLibraryOptimizationLevel::Default);

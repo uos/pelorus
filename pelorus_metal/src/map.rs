@@ -366,8 +366,12 @@ pub fn add_to_map_impl(
         return 0.0;
     }
 
+    // The packed buffer used by the bitonic sort must hold at least
+    // `n_points.next_power_of_two()` elements (padded to a power of two).
+    // All other scratch buffers only need `n_points` capacity.
+    let padded_n = n_points.next_power_of_two();
     if state.scratch.capacity < n_points {
-        let new_cap = (n_points as f32 * 1.5) as usize; // Slight over-allocation
+        let new_cap = padded_n.max((n_points as f32 * 1.5) as usize);
         state.scratch.keys = crate::buffer::MetalBuffer::new(stream, size_of::<i32>(), new_cap);
         state.scratch.indices = crate::buffer::MetalBuffer::new(stream, size_of::<u32>(), new_cap);
         state.scratch.packed = crate::buffer::MetalBuffer::new(stream, size_of::<u64>(), new_cap);
@@ -383,6 +387,11 @@ pub fn add_to_map_impl(
         state.scratch.sorted_points =
             crate::buffer::MetalBuffer::new(stream, size_of::<crate::types::Point>(), new_cap);
         state.scratch.capacity = new_cap;
+    } else if state.scratch.packed.capacity() < padded_n {
+        // Capacity is sufficient for n_points but the packed buffer needs power-of-two size
+        // for the bitonic sort. Only reallocate the packed buffer.
+        state.scratch.packed =
+            crate::buffer::MetalBuffer::new(stream, size_of::<u64>(), padded_n);
     }
 
     let params = BuildVoxelsParams {
@@ -426,7 +435,6 @@ pub fn add_to_map_impl(
 
     let t_sort = Instant::now();
 
-    let padded_n = n_points.next_power_of_two();
     let pipes = get_pipelines(&*stream.device);
     let cb = stream.queue.commandBuffer().expect("cb");
     let enc = cb.computeCommandEncoder().expect("enc");
@@ -448,7 +456,7 @@ pub fn add_to_map_impl(
     if n_points < padded_n {
         enc.setComputePipelineState(&pipes.init_pad);
         let diff = (padded_n - n_points) as u32;
-        let cap_u32 = state.scratch.capacity as u32;
+        let cap_u32 = state.scratch.packed.capacity() as u32;
         unsafe {
             enc.setBuffer_offset_atIndex(Some(state.scratch.packed.metal_buffer()), 0, 0);
             enc.setBytes_length_atIndex(

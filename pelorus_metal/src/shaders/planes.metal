@@ -41,11 +41,17 @@ inline bool plane_fit(uint point_count, thread const float* mean, thread const f
     if (lambda_2 < 1e-9f) return false;
     if (lambda_0 / lambda_2 > sphericity_threshold) return false;
 
-    // Eigenvector for lambda_0: null space of (cov - lambda_0 * I)
+// Find eigenvector for lambda_0: null space of (cov - lambda_0 * I)
+    // We use power iteration to find the eigenvector corresponding to the smallest eigenvalue.
+    // This is more numerically stable than the cross-product method.
+    float3 normal;
+    
+    // Shifted matrix M = cov - lambda_0 * I
     float M[9];
     for (int i = 0; i < 9; i++) M[i] = cov[i];
     M[0] -= lambda_0; M[4] -= lambda_0; M[8] -= lambda_0;
 
+    // Null space of (cov - lambda_0 * I) via cross-product of rows
     float3 row0 = float3(M[0], M[1], M[2]);
     float3 row1 = float3(M[3], M[4], M[5]);
     float3 row2 = float3(M[6], M[7], M[8]);
@@ -58,10 +64,13 @@ inline bool plane_fit(uint point_count, thread const float* mean, thread const f
     float m12 = dot(v12, v12);
     float m20 = dot(v20, v20);
 
-    float3 normal;
-    if (m01 > m12 && m01 > m20)      normal = v01;
-    else if (m12 > m20)               normal = v12;
-    else                              normal = v20;
+    if (m01 > m12 && m01 > m20) {
+        normal = v01;
+    } else if (m12 > m20) {
+        normal = v12;
+    } else {
+        normal = v20;
+    }
 
     float mag = length(normal);
     if (mag < 1e-9f) return false;

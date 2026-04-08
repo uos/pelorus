@@ -156,8 +156,8 @@ kernel void build_voxels(
 			for (int i=0; i<9; i++) d.transform[i] = next_L[i];
 
 			d.point_count += count;
-			dists[buf_idx] = d; // Single writeback (matches Vulkan)
 		}
+		dists[buf_idx] = d; // Always write back: at minimum persists last_scan (matches CUDA/spole)
 	} else {
 		// Insert new voxel - use local copy for atomic writeback (matches Vulkan pattern)
 		VoxelDistribution d;

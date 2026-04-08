@@ -143,8 +143,8 @@ void main() {
             }
 
             d.point_count += count;
-            dists[buf_idx] = d;
         }
+        dists[buf_idx] = d; // Always write back: at minimum persists last_scan (matches CUDA/spole)
     } else {
         VoxelDistribution d;
         d.lock_flag = 0;
