@@ -15,12 +15,6 @@ use pelorus_core::{
     RobosensePointNoIntensity, Twist, VelodynePoint, VelodynePointNoIntensity, time_msg_from_secs,
     timing::RuntimeEvaluator,
 };
-#[cfg(any(
-    all(feature = "cuda", feature = "metal"),
-    all(feature = "cuda", feature = "vulkan"),
-    all(feature = "metal", feature = "vulkan")
-))]
-compile_error!("Features 'cuda', 'metal' and 'vulkan' are mutually exclusive. Enable only one.");
 
 #[cfg(feature = "cuda")]
 use pelorus_cuda::CudaBuffer;

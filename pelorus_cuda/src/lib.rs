@@ -46,6 +46,10 @@ impl Stream {
     }
 }
 
+pub fn is_available() -> bool {
+    unsafe { ffi::cupcl_is_available() }
+}
+
 // GPU Timing state
 static TIMING_STATE: std::sync::OnceLock<std::sync::Mutex<CudaTimingState>> =
     std::sync::OnceLock::new();

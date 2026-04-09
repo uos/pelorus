@@ -5,13 +5,8 @@ use pelorus_core::{
 use prelio::LocatedBufferView;
 use ros_pointcloud2::prelude::*;
 
-#[cfg(any(
-    all(feature = "cuda", feature = "metal"),
-    all(feature = "cuda", feature = "vulkan"),
-    all(feature = "metal", feature = "vulkan")
-))]
-compile_error!("Features 'cuda', 'metal' and 'vulkan' are mutually exclusive. Enable only one.");
-
+pub mod backend;
+pub use backend::ActiveBackend;
 pub mod iekf;
 pub mod imu;
 pub mod pipeline;
@@ -80,9 +75,7 @@ pub trait Registration {
         lidar_timestamp: f64,
         ready_for_next: Option<&std::sync::mpsc::Sender<()>>,
         eval: &mut RuntimeEvaluator,
-        #[cfg(feature = "cuda")] stream: &pelorus_cuda::Stream,
-        #[cfg(feature = "metal")] stream: &pelorus_metal::Stream,
-        #[cfg(feature = "vulkan")] stream: &pelorus_vulkan::Stream,
+        backend: &ActiveBackend,
     ) -> Result<Option<CloudRegisterResult>>;
     fn requested_register_and_map_cloud_type(&self) -> LocatedBufferView<PointXYZ>;
 

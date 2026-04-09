@@ -286,6 +286,12 @@ impl Clone for StreamBackend {
 static GLOBAL_VULKAN_CONTEXT: OnceLock<Result<Arc<VulkanContext>, String>> = OnceLock::new();
 static GLOBAL_HOST_CONTEXT: OnceLock<Arc<HostContext>> = OnceLock::new();
 
+pub fn is_available() -> bool {
+    GLOBAL_VULKAN_CONTEXT
+        .get_or_init(|| VulkanContext::try_new().map(Arc::new))
+        .is_ok()
+}
+
 impl Stream {
     pub fn new() -> Self {
         let vulkan_res =

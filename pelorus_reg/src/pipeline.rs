@@ -11,18 +11,13 @@ use pelorus_core::{
 use prelio::Prelio;
 use spole::IVoxNearbyType;
 
-use crate::{Registration, registration::RegistrationState};
+use crate::{ActiveBackend, Registration, registration::RegistrationState};
 
 pub struct Pipeline {
     map: Arc<Mutex<RegistrationState>>,
     ext_lidar_to_imu: Isometry3<f64>,
     pub config: LioConfig,
-    #[cfg(feature = "cuda")]
-    cuda_stream: pelorus_cuda::Stream,
-    #[cfg(feature = "metal")]
-    metal_stream: pelorus_metal::Stream,
-    #[cfg(feature = "vulkan")]
-    vulkan_stream: pelorus_vulkan::Stream,
+    active_backend: ActiveBackend,
 }
 
 /// Result from cloud registration and mapping
@@ -46,7 +41,7 @@ pub struct PelorusOutput {
 }
 
 impl Pipeline {
-    pub fn new(config: &LioConfig) -> Self {
+    pub fn new(config: &LioConfig, cpu_only: bool) -> Self {
         let ext_lidar_to_imu = Isometry3::from_parts(
             Translation3::new(
                 config.imu_params.initial_translation_lidar_to_imu.x,
@@ -74,12 +69,7 @@ impl Pipeline {
             map: Arc::new(Mutex::new(map)),
             ext_lidar_to_imu,
             config: config.clone(),
-            #[cfg(feature = "cuda")]
-            cuda_stream: pelorus_cuda::Stream::new(),
-            #[cfg(feature = "metal")]
-            metal_stream: pelorus_metal::Stream::new(),
-            #[cfg(feature = "vulkan")]
-            vulkan_stream: pelorus_vulkan::Stream::new(),
+            active_backend: ActiveBackend::detect(cpu_only),
         }
     }
 
@@ -177,12 +167,7 @@ impl Pipeline {
                 lidar_timestamp,
                 ready_for_next,
                 &mut eval,
-                #[cfg(feature = "cuda")]
-                &self.cuda_stream,
-                #[cfg(feature = "metal")]
-                &self.metal_stream,
-                #[cfg(feature = "vulkan")]
-                &self.vulkan_stream,
+                &self.active_backend,
             ) {
                 Ok(Some(res)) => {
                     let state = map.get_state();

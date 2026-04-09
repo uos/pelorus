@@ -28,6 +28,13 @@ static uint32_t nbtype_to_count(NearbyType t) {
 
 extern "C" {
 
+bool cupcl_is_available() {
+  CUresult r = cuInit(0);
+  if (r != CUDA_SUCCESS) return false;
+  CUdevice dev;
+  return cuDeviceGet(&dev, 0) == CUDA_SUCCESS;
+}
+
 void *cupcl_create_empty_buffer(void *stream, unsigned int element_size,
                                 unsigned int n) {
   try {

@@ -9,6 +9,7 @@ use pelorus_core::config::{ast_to_config, ast_to_config_with_user_usage};
 use pelorus_core::timing::RuntimeEvaluator;
 use pelorus_core::{LioConfig, timestamp_to_secs};
 use pelorus_reg::pipeline::Pipeline;
+use pelorus_reg::ActiveBackend;
 #[cfg(feature = "r2r")]
 use prelio_io::impl_r2r;
 #[cfg(feature = "ros2-client")]
@@ -148,6 +149,10 @@ pub struct OfflineArgs {
     /// If provided with a path, exports to that exact location.
     #[arg(short, long, value_name = "PATH", num_args = 0..=1)]
     pub export_trajectory: Option<String>,
+
+    /// Force CPU-only processing regardless of available GPU backends.
+    #[arg(long, default_value_t = false)]
+    pub cpu_only: bool,
 }
 
 #[derive(Debug, Clone, Parser)]
@@ -167,6 +172,10 @@ pub struct ConfigArgs {
     /// Publish tick_end checkpoint using ratlib from Minot.
     #[arg(short, long)]
     pub rat: bool,
+
+    /// Force CPU-only processing regardless of available GPU backends.
+    #[arg(long, default_value_t = false)]
+    pub cpu_only: bool,
 }
 
 #[derive(Debug, Clone, Subcommand)]
@@ -228,6 +237,7 @@ fn lio(
     config: LioConfig,
     export_trajectory: Option<String>,
     synchronous_mode: bool,
+    cpu_only: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     lio_with_ready_signal(
         config,
@@ -237,6 +247,7 @@ fn lio(
         None,
         None,
         None,
+        cpu_only,
     )
 }
 
@@ -250,6 +261,7 @@ fn lio_with_ready_signal(
     shutdown_flag: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
     // Optional blocking shutdown signal for immediate pipeline teardown.
     shutdown_request_rx: Option<std::sync::mpsc::Receiver<()>>,
+    cpu_only: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     #[cfg(any(feature = "mt_pubsub", feature = "rat"))]
     let rt = if cfg!(feature = "mt_pubsub") || (synchronous_mode && cfg!(feature = "rat")) {
@@ -310,7 +322,7 @@ fn lio_with_ready_signal(
             .clone(),
     ));
 
-    let mut pipeline = Pipeline::new(&config);
+    let mut pipeline = Pipeline::new(&config, cpu_only);
     let map = pipeline.map();
     let ext = pipeline.ext();
     let _odom_ext = Isometry3::from_parts(
@@ -691,41 +703,39 @@ fn lio_with_ready_signal(
         let mut ready_for_next_tx = Some(ready_for_next_tx);
         let mut lifis_node = Some(lifis_node);
 
-        #[cfg(feature = "cuda")]
-        let cuda_stream = pelorus_cuda::Stream::new();
-        #[cfg(feature = "metal")]
-        let metal_stream = pelorus_metal::Stream::new();
-        #[cfg(feature = "vulkan")]
-        let vulkan_stream = pelorus_vulkan::Stream::new();
+        let active_backend = ActiveBackend::detect(cpu_only);
 
         // TODO avoid casting f32, maybe res needs f64?
-        #[cfg(feature = "cuda")]
-        pelorus_cuda::init_map(
-            &cuda_stream,
-            config.map_capacity,
-            config.map_resolution as f32,
-            config.dist_update_sensitivity,
-            config.neighbor_max_range as f32,
-            pelorus_cuda::NeighborType::Neighbor26,
-        );
-        #[cfg(feature = "metal")]
-        pelorus_metal::init_map(
-            &metal_stream,
-            config.map_capacity,
-            config.map_resolution as f32,
-            config.dist_update_sensitivity,
-            config.neighbor_max_range as f32,
-            pelorus_metal::NeighborType::Neighbor26,
-        );
-        #[cfg(feature = "vulkan")]
-        pelorus_vulkan::init_map(
-            &vulkan_stream,
-            config.map_capacity,
-            config.map_resolution as f32,
-            config.dist_update_sensitivity,
-            config.neighbor_max_range as f32,
-            pelorus_vulkan::NeighborType::Neighbor26,
-        );
+        match &active_backend {
+            ActiveBackend::Cpu => {}
+            #[cfg(feature = "cuda")]
+            ActiveBackend::Cuda(stream) => pelorus_cuda::init_map(
+                stream,
+                config.map_capacity,
+                config.map_resolution as f32,
+                config.dist_update_sensitivity,
+                config.neighbor_max_range as f32,
+                pelorus_cuda::NeighborType::Neighbor26,
+            ),
+            #[cfg(feature = "metal")]
+            ActiveBackend::Metal(stream) => pelorus_metal::init_map(
+                stream,
+                config.map_capacity,
+                config.map_resolution as f32,
+                config.dist_update_sensitivity,
+                config.neighbor_max_range as f32,
+                pelorus_metal::NeighborType::Neighbor26,
+            ),
+            #[cfg(feature = "vulkan")]
+            ActiveBackend::Vulkan(stream) => pelorus_vulkan::init_map(
+                stream,
+                config.map_capacity,
+                config.map_resolution as f32,
+                config.dist_update_sensitivity,
+                config.neighbor_max_range as f32,
+                pelorus_vulkan::NeighborType::Neighbor26,
+            ),
+        }
 
         let mut trajectory_file = match export_trajectory {
             Some(path_str) if path_str.is_empty() => {
@@ -772,29 +782,33 @@ fn lio_with_ready_signal(
         let mut static_tf_published = false;
 
         // Reusable buffer for the point cloud on GPU
-        #[cfg(feature = "cuda")]
-        let mut persistent_cloud_buf = LocatedBufferView::Cuda {
-            buffer: pelorus_cuda::CudaBuffer::new(
-                &cuda_stream,
-                size_of::<pelorus_core::PointXYZIT>(),
-                100_000,
-            ),
-        };
-        #[cfg(feature = "metal")]
-        let mut persistent_cloud_buf = LocatedBufferView::Metal {
-            buffer: pelorus_metal::MetalBuffer::new(
-                &metal_stream,
-                size_of::<pelorus_core::PointXYZIT>(),
-                100_000,
-            ),
-        };
-        #[cfg(feature = "vulkan")]
-        let mut persistent_cloud_buf = LocatedBufferView::Vulkan {
-            buffer: pelorus_vulkan::VulkanBuffer::new(
-                &vulkan_stream,
-                size_of::<pelorus_core::PointXYZIT>(),
-                100_000,
-            ),
+        #[allow(unused_mut)]
+        let mut persistent_cloud_buf = match &active_backend {
+            ActiveBackend::Cpu => LocatedBufferView::Ram(Vec::new()),
+            #[cfg(feature = "cuda")]
+            ActiveBackend::Cuda(stream) => LocatedBufferView::Cuda {
+                buffer: pelorus_cuda::CudaBuffer::new(
+                    stream,
+                    size_of::<pelorus_core::PointXYZIT>(),
+                    100_000,
+                ),
+            },
+            #[cfg(feature = "metal")]
+            ActiveBackend::Metal(stream) => LocatedBufferView::Metal {
+                buffer: pelorus_metal::MetalBuffer::new(
+                    stream,
+                    size_of::<pelorus_core::PointXYZIT>(),
+                    100_000,
+                ),
+            },
+            #[cfg(feature = "vulkan")]
+            ActiveBackend::Vulkan(stream) => LocatedBufferView::Vulkan {
+                buffer: pelorus_vulkan::VulkanBuffer::new(
+                    stream,
+                    size_of::<pelorus_core::PointXYZIT>(),
+                    100_000,
+                ),
+            },
         };
 
         // Main processing loop. Use recv_timeout when a shutdown flag is provided so we can
@@ -836,40 +850,46 @@ fn lio_with_ready_signal(
 
             eval.merge(&lifis_tick.runtime_eval);
 
-            #[cfg(feature = "cuda")]
-            {
-                // Keep parity with Metal path: avoid overwriting the persistent cloud buffer
-                // while previous frame CUDA kernels may still be reading from it.
-                cuda_stream.sync();
-                persistent_cloud_buf
-                    .realloc_if_needed_cuda(&cuda_stream, lifis_tick.deskewed_cloud.len());
-                persistent_cloud_buf
-                    .upload_from_slice_cuda(&cuda_stream, lifis_tick.deskewed_cloud.as_slice());
-            }
-            #[cfg(feature = "metal")]
-            {
-                // Metal buffers use shared memory; synchronize before overwriting the
-                // persistent cloud buffer to avoid races with in-flight GPU kernels
-                // from the previous frame.
-                metal_stream.sync();
-                persistent_cloud_buf
-                    .realloc_if_needed_metal(&metal_stream, lifis_tick.deskewed_cloud.len());
-                persistent_cloud_buf
-                    .upload_from_slice_metal(&metal_stream, lifis_tick.deskewed_cloud.as_slice());
-            }
-            #[cfg(feature = "vulkan")]
-            {
-                vulkan_stream.sync();
-                persistent_cloud_buf
-                    .realloc_if_needed_vulkan(&vulkan_stream, lifis_tick.deskewed_cloud.len());
-                persistent_cloud_buf
-                    .upload_from_slice_vulkan(&vulkan_stream, lifis_tick.deskewed_cloud.as_slice());
+            match &active_backend {
+                ActiveBackend::Cpu => {}
+                #[cfg(feature = "cuda")]
+                ActiveBackend::Cuda(stream) => {
+                    // Avoid overwriting while previous frame CUDA kernels may still be reading.
+                    stream.sync();
+                    persistent_cloud_buf
+                        .realloc_if_needed_cuda(stream, lifis_tick.deskewed_cloud.len());
+                    persistent_cloud_buf
+                        .upload_from_slice_cuda(stream, lifis_tick.deskewed_cloud.as_slice());
+                }
+                #[cfg(feature = "metal")]
+                ActiveBackend::Metal(stream) => {
+                    // Metal uses shared memory; sync before overwriting to avoid races.
+                    stream.sync();
+                    persistent_cloud_buf
+                        .realloc_if_needed_metal(stream, lifis_tick.deskewed_cloud.len());
+                    persistent_cloud_buf
+                        .upload_from_slice_metal(stream, lifis_tick.deskewed_cloud.as_slice());
+                }
+                #[cfg(feature = "vulkan")]
+                ActiveBackend::Vulkan(stream) => {
+                    stream.sync();
+                    persistent_cloud_buf
+                        .realloc_if_needed_vulkan(stream, lifis_tick.deskewed_cloud.len());
+                    persistent_cloud_buf
+                        .upload_from_slice_vulkan(stream, lifis_tick.deskewed_cloud.as_slice());
+                }
             }
 
-            #[cfg(any(feature = "cuda", feature = "metal", feature = "vulkan"))]
-            let cloud_for_reg = &persistent_cloud_buf;
-            #[cfg(not(any(feature = "cuda", feature = "metal", feature = "vulkan")))]
-            let cloud_for_reg = LocatedBufferView::Ram(lifis_tick.deskewed_cloud);
+            let ram_cloud;
+            #[allow(unreachable_patterns)]
+            let cloud_for_reg: &LocatedBufferView<pelorus_core::PointXYZIT> = match &active_backend
+            {
+                ActiveBackend::Cpu => {
+                    ram_cloud = LocatedBufferView::Ram(lifis_tick.deskewed_cloud);
+                    &ram_cloud
+                }
+                _ => &persistent_cloud_buf,
+            };
 
             let cloud_out = lifis_tick.deskewed_cloud_passthrough;
 
@@ -879,36 +899,39 @@ fn lio_with_ready_signal(
             if let Some(existing_last_scan_time) = last_scan_time {
                 if current_cloud_time < existing_last_scan_time {
                     let mut map = map.lock().unwrap();
-                    map.clear_localmap();
+                    map.clear_localmap(&active_backend);
 
                     info!("Resetting map");
-                    #[cfg(feature = "cuda")]
-                    pelorus_cuda::init_map(
-                        &cuda_stream,
-                        config.map_capacity,
-                        config.map_resolution as f32,
-                        config.dist_update_sensitivity,
-                        config.neighbor_max_range as f32,
-                        pelorus_cuda::NeighborType::Neighbor26,
-                    );
-                    #[cfg(feature = "metal")]
-                    pelorus_metal::init_map(
-                        &metal_stream,
-                        config.map_capacity,
-                        config.map_resolution as f32,
-                        config.dist_update_sensitivity,
-                        config.neighbor_max_range as f32,
-                        pelorus_metal::NeighborType::Neighbor26,
-                    );
-                    #[cfg(feature = "vulkan")]
-                    pelorus_vulkan::init_map(
-                        &vulkan_stream,
-                        config.map_capacity,
-                        config.map_resolution as f32,
-                        config.dist_update_sensitivity,
-                        config.neighbor_max_range as f32,
-                        pelorus_vulkan::NeighborType::Neighbor26,
-                    );
+                    match &active_backend {
+                        ActiveBackend::Cpu => {}
+                        #[cfg(feature = "cuda")]
+                        ActiveBackend::Cuda(stream) => pelorus_cuda::init_map(
+                            stream,
+                            config.map_capacity,
+                            config.map_resolution as f32,
+                            config.dist_update_sensitivity,
+                            config.neighbor_max_range as f32,
+                            pelorus_cuda::NeighborType::Neighbor26,
+                        ),
+                        #[cfg(feature = "metal")]
+                        ActiveBackend::Metal(stream) => pelorus_metal::init_map(
+                            stream,
+                            config.map_capacity,
+                            config.map_resolution as f32,
+                            config.dist_update_sensitivity,
+                            config.neighbor_max_range as f32,
+                            pelorus_metal::NeighborType::Neighbor26,
+                        ),
+                        #[cfg(feature = "vulkan")]
+                        ActiveBackend::Vulkan(stream) => pelorus_vulkan::init_map(
+                            stream,
+                            config.map_capacity,
+                            config.map_resolution as f32,
+                            config.dist_update_sensitivity,
+                            config.neighbor_max_range as f32,
+                            pelorus_vulkan::NeighborType::Neighbor26,
+                        ),
+                    };
                     t_world = nalgebra::Isometry3::identity();
                     t_last_current = nalgebra::Isometry3::identity();
                 }
@@ -968,16 +991,11 @@ fn lio_with_ready_signal(
                 match map.register_and_map(
                     lifis_tick.map_only,
                     init_guess_lidar,
-                    &cloud_for_reg,
+                    cloud_for_reg,
                     current_cloud_time,
                     ready_for_next_tx.as_ref(),
                     &mut eval,
-                    #[cfg(feature = "cuda")]
-                    &cuda_stream,
-                    #[cfg(feature = "metal")]
-                    &metal_stream,
-                    #[cfg(feature = "vulkan")]
-                    &vulkan_stream,
+                    &active_backend,
                 ) {
                     Ok(Some(pose)) => (pose, map.get_state()),
                     Ok(None) => {
@@ -1245,50 +1263,24 @@ fn lio_with_ready_signal(
 
                         out
                     }
-                    #[cfg(feature = "cuda")]
-                    (
-                        None,
-                        LocatedBufferView::Cuda {
-                            buffer: cloud_for_reg,
-                        },
-                    ) => {
-                        let buff = cloud_for_reg.into_cloud(&cuda_stream);
-                        let msg = ros_pointcloud2::PointCloud2Msg::try_from_vec(buff).unwrap();
-                        #[cfg(feature = "ros2-client")]
-                        let out = impl_ros2_interfaces_jazzy_serde::from_pointcloud2_msg(msg);
-                        #[cfg(feature = "mt_pubsub")]
-                        let out = impl_ros2_interfaces_jazzy_rkyv::from_pointcloud2_msg(msg);
-                        #[cfg(feature = "r2r")]
-                        let out = impl_r2r::from_pointcloud2_msg(msg);
-
-                        out
-                    }
-                    #[cfg(feature = "metal")]
-                    (
-                        None,
-                        LocatedBufferView::Metal {
-                            buffer: cloud_for_reg,
-                        },
-                    ) => {
-                        let buff = cloud_for_reg.into_cloud(&metal_stream);
-                        let msg = ros_pointcloud2::PointCloud2Msg::try_from_vec(buff).unwrap();
-                        #[cfg(feature = "ros2-client")]
-                        let out = impl_ros2_interfaces_jazzy_serde::from_pointcloud2_msg(msg);
-                        #[cfg(feature = "mt_pubsub")]
-                        let out = impl_ros2_interfaces_jazzy_rkyv::from_pointcloud2_msg(msg);
-                        #[cfg(feature = "r2r")]
-                        let out = impl_r2r::from_pointcloud2_msg(msg);
-
-                        out
-                    }
-                    #[cfg(feature = "vulkan")]
-                    (
-                        None,
-                        LocatedBufferView::Vulkan {
-                            buffer: cloud_for_reg,
-                        },
-                    ) => {
-                        let buff = cloud_for_reg.into_cloud(&vulkan_stream);
+                    #[cfg(any(feature = "cuda", feature = "metal", feature = "vulkan"))]
+                    (None, gpu_cloud) => {
+                        let buff = match (gpu_cloud, &active_backend) {
+                            #[cfg(feature = "cuda")]
+                            (LocatedBufferView::Cuda { buffer }, ActiveBackend::Cuda(stream)) => {
+                                buffer.into_cloud(stream)
+                            }
+                            #[cfg(feature = "metal")]
+                            (LocatedBufferView::Metal { buffer }, ActiveBackend::Metal(stream)) => {
+                                buffer.into_cloud(stream)
+                            }
+                            #[cfg(feature = "vulkan")]
+                            (
+                                LocatedBufferView::Vulkan { buffer },
+                                ActiveBackend::Vulkan(stream),
+                            ) => buffer.into_cloud(stream),
+                            _ => unreachable!("buffer/backend mismatch"),
+                        };
                         let msg = ros_pointcloud2::PointCloud2Msg::try_from_vec(buff).unwrap();
                         #[cfg(feature = "ros2-client")]
                         let out = impl_ros2_interfaces_jazzy_serde::from_pointcloud2_msg(msg);
@@ -1740,20 +1732,15 @@ fn lio_with_ready_signal(
 
         // Ensure backend work is quiesced and map state is released before GPU
         // buffers/contexts in this thread are dropped.
-        #[cfg(feature = "cuda")]
-        {
-            cuda_stream.sync();
-            pelorus_cuda::cleanup_map();
-        }
-        #[cfg(feature = "metal")]
-        {
-            metal_stream.sync();
-            pelorus_metal::cleanup_map();
-        }
-        #[cfg(feature = "vulkan")]
-        {
-            vulkan_stream.sync();
-            pelorus_vulkan::cleanup_map();
+        active_backend.stream_sync();
+        match &active_backend {
+            ActiveBackend::Cpu => {}
+            #[cfg(feature = "cuda")]
+            ActiveBackend::Cuda(_) => pelorus_cuda::cleanup_map(),
+            #[cfg(feature = "metal")]
+            ActiveBackend::Metal(_) => pelorus_metal::cleanup_map(),
+            #[cfg(feature = "vulkan")]
+            ActiveBackend::Vulkan(_) => pelorus_vulkan::cleanup_map(),
         }
         info!("--- END lifis tick ---");
     });
@@ -1998,6 +1985,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let lio_config = config.clone();
                 let lio_export = config_args.export_trajectory.clone();
                 let lio_sync = config_args.rat;
+                let cpu_only = config_args.cpu_only;
                 let lio_stats = Some(shared_stats);
 
                 let lio_shutdown_flag =
@@ -2013,6 +2001,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         lio_stats,
                         Some(lio_shutdown_flag_for_thread),
                         None,
+                        cpu_only,
                     )
                     .map_err(|e| e.to_string())
                 });
@@ -2051,7 +2040,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     Err(_) => Err(anyhow!("LIO thread panicked").into()),
                 }
             } else {
-                lio(config, config_args.export_trajectory, config_args.rat)
+                lio(config, config_args.export_trajectory, config_args.rat, config_args.cpu_only)
             }
         }
         #[cfg(feature = "rat")]
@@ -2351,6 +2340,7 @@ pf! i 1
                     Some(shared_stats_for_lio),
                     Some(lio_shutdown_flag_for_thread),
                     Some(lio_stop_rx),
+                    offline_args.cpu_only,
                 )
             }))
             .map_err(|_| "LIO thread panicked".to_string())
