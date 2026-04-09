@@ -286,10 +286,64 @@ impl Clone for StreamBackend {
 static GLOBAL_VULKAN_CONTEXT: OnceLock<Result<Arc<VulkanContext>, String>> = OnceLock::new();
 static GLOBAL_HOST_CONTEXT: OnceLock<Arc<HostContext>> = OnceLock::new();
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct VulkanVersion {
+    pub major: u32,
+    pub minor: u32,
+    pub patch: u32,
+}
+
+impl VulkanVersion {
+    fn from_vk_encoded(version: u32) -> Self {
+        Self {
+            major: vk::api_version_major(version),
+            minor: vk::api_version_minor(version),
+            patch: vk::api_version_patch(version),
+        }
+    }
+}
+
+impl std::fmt::Display for VulkanVersion {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}.{}.{}", self.major, self.minor, self.patch)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VulkanMetadata {
+    pub device_name: String,
+    pub api_version: VulkanVersion,
+    pub driver_version: VulkanVersion,
+    pub driver_version_raw: u32,
+}
+
 pub fn is_available() -> bool {
     GLOBAL_VULKAN_CONTEXT
         .get_or_init(|| VulkanContext::try_new().map(Arc::new))
         .is_ok()
+}
+
+pub fn get_vulkan_metadata() -> Option<VulkanMetadata> {
+    let context = GLOBAL_VULKAN_CONTEXT
+        .get_or_init(|| VulkanContext::try_new().map(Arc::new))
+        .as_ref()
+        .ok()?;
+
+    let properties = unsafe {
+        context
+            .instance
+            .get_physical_device_properties(context.physical_device)
+    };
+    let device_name = unsafe { CStr::from_ptr(properties.device_name.as_ptr()) }
+        .to_string_lossy()
+        .into_owned();
+
+    Some(VulkanMetadata {
+        device_name,
+        api_version: VulkanVersion::from_vk_encoded(properties.api_version),
+        driver_version: VulkanVersion::from_vk_encoded(properties.driver_version),
+        driver_version_raw: properties.driver_version,
+    })
 }
 
 impl Stream {
