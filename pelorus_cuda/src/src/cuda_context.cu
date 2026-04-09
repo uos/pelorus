@@ -1,4 +1,5 @@
 #include <core/cuda_context.cuh>
+#include <cstring>
 #include <iostream>
 
 #include <core/cuda_stream.cuh>
@@ -14,6 +15,36 @@ void cuda_initialize() {
   cuda_initialized_ = true;
 }
 
+extern "C" CudaVersion get_cuda_versions() {
+    cuda_initialize();
+    CudaVersion v;
+    cudaDriverGetVersion(&v.driver);
+    cudaRuntimeGetVersion(&v.runtime);
+    return v;
+}
+
+extern "C" bool get_cuda_device_name(char* out, size_t out_len) {
+    if (out == nullptr || out_len == 0) {
+        return false;
+    }
+    out[0] = '\0';
+
+    cuda_initialize();
+    int device = 0;
+    if (cudaGetDevice(&device) != cudaSuccess) {
+      device = 0;
+    }
+
+    cudaDeviceProp prop;
+    if (cudaGetDeviceProperties(&prop, device) != cudaSuccess) {
+      return false;
+    }
+
+    std::strncpy(out, prop.name, out_len - 1);
+    out[out_len - 1] = '\0';
+    return true;
+}
+
 CudaContext::CudaContext(int device_id) {
   if (!cuda_initialized()) {
     printCudaInfo();
@@ -21,8 +52,6 @@ CudaContext::CudaContext(int device_id) {
   }
 
   cudaDeviceProp info = cuda::getDeviceInfo(device_id);
-  std::cerr << "[Pelorus - CudaContext] Construct context on device "
-            << device_id << " - " << info.name << " " << info.luid << std::endl;
 
 #if CUDA_VERSION >= 13000
   cuCtxCreate(&m_context, 0, 0, device_id);
@@ -140,16 +169,8 @@ std::ostream &operator<<(std::ostream &os, const CudaContext &ctx) {
   return os;
 }
 
-CudaContextPtr cuda_def_ctx(new CudaContext(0));
-
 CudaContextPtr cuda_current_context() {
-  // if(!cuda_def_ctx->defaultStream())
-  // {
-  //     std::cout << "initDefaultStream" << std::endl;
-  //     cuda_def_ctx->initDefaultStream();
-  //     std::cout << "initDefaultStream done." << std::endl;
-  // }
-
+  static CudaContextPtr cuda_def_ctx(new CudaContext(0));
   return cuda_def_ctx;
 }
 

@@ -208,3 +208,14 @@ impl From<NeighborType> for NearbyType {
         }
     }
 }
+
+unsafe extern "C" {
+    pub fn get_cuda_versions() -> CudaVersion;
+    pub fn get_cuda_device_name(out: *mut std::os::raw::c_char, out_len: usize) -> bool;
+}
+
+#[repr(C)]
+pub struct CudaVersion {
+    pub driver: i32,
+    pub runtime: i32,
+}

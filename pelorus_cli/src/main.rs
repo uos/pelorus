@@ -8,8 +8,8 @@ use mimalloc::MiMalloc;
 use pelorus_core::config::{ast_to_config, ast_to_config_with_user_usage};
 use pelorus_core::timing::RuntimeEvaluator;
 use pelorus_core::{LioConfig, timestamp_to_secs};
-use pelorus_reg::pipeline::Pipeline;
 use pelorus_reg::ActiveBackend;
+use pelorus_reg::pipeline::Pipeline;
 #[cfg(feature = "r2r")]
 use prelio_io::impl_r2r;
 #[cfg(feature = "ros2-client")]
@@ -704,6 +704,9 @@ fn lio_with_ready_signal(
         let mut lifis_node = Some(lifis_node);
 
         let active_backend = ActiveBackend::detect(cpu_only);
+        if let Some(ref stats) = shared_stats {
+            set_backend_from_runtime(stats, &config, &active_backend);
+        }
 
         // TODO avoid casting f32, maybe res needs f64?
         match &active_backend {
@@ -1874,23 +1877,131 @@ fn signal_process(pid: u32, signal: libc::c_int) -> std::io::Result<()> {
     }
 }
 
-fn set_backend_from_config(shared_stats: &SharedStats, config: &LioConfig) {
-    let backend = if config.num_threads > 0 {
+fn cpu_backend_label(config: &LioConfig) -> String {
+    if config.num_threads > 0 {
         format!("CPU ({} cores)", config.num_threads)
     } else {
         format!("CPU ({} cores)", num_cpus::get())
+    }
+}
+
+fn set_backend_from_config(shared_stats: &SharedStats, config: &LioConfig, _cpu_only: bool) {
+    let backend = cpu_backend_label(config);
+    shared_stats.set_backend_info(backend, None, None);
+}
+
+#[cfg(feature = "cuda")]
+fn format_cuda_metadata_details(metadata: &pelorus_cuda::CudaMetadata) -> String {
+    let primary = metadata
+        .runtime_version
+        .or(metadata.driver_version)
+        .map(|v| v.to_string())
+        .unwrap_or_else(|| "unknown".to_string());
+
+    let maybe_driver_suffix = match (metadata.runtime_version, metadata.driver_version) {
+        (Some(runtime), Some(driver)) if runtime != driver => format!(" (driver {})", driver),
+        _ => String::new(),
     };
 
-    let mut accelerator = None;
-    if cfg!(feature = "cuda") {
-        accelerator = Some("CUDA".to_string());
-    } else if cfg!(feature = "metal") {
-        accelerator = Some("Metal".to_string());
-    } else if cfg!(feature = "vulkan") {
-        accelerator = Some("Vulkan".to_string());
+    format!(
+        "v{}{} - {}",
+        primary, maybe_driver_suffix, metadata.device_name
+    )
+}
+
+#[cfg(feature = "vulkan")]
+fn format_vulkan_metadata_details(metadata: &pelorus_vulkan::VulkanMetadata) -> String {
+    format!("v{} - {}", metadata.api_version, metadata.device_name)
+}
+
+#[cfg(all(test, feature = "cuda"))]
+mod backend_details_tests {
+    use super::format_cuda_metadata_details;
+
+    #[test]
+    fn cuda_details_show_runtime_only_when_runtime_equals_driver() {
+        let details = format_cuda_metadata_details(&pelorus_cuda::CudaMetadata {
+            device_name: "NVIDIA GeForce RTX 4060 Ti".to_string(),
+            runtime_version: Some(pelorus_cuda::CudaSemanticVersion {
+                major: 13,
+                minor: 2,
+                patch: 0,
+            }),
+            driver_version: Some(pelorus_cuda::CudaSemanticVersion {
+                major: 13,
+                minor: 2,
+                patch: 0,
+            }),
+        });
+        assert_eq!(details, "v13.2.0 - NVIDIA GeForce RTX 4060 Ti");
     }
 
-    shared_stats.set_backend_info(backend, accelerator);
+    #[test]
+    fn cuda_details_append_driver_when_versions_differ() {
+        let details = format_cuda_metadata_details(&pelorus_cuda::CudaMetadata {
+            device_name: "NVIDIA RTX".to_string(),
+            runtime_version: Some(pelorus_cuda::CudaSemanticVersion {
+                major: 12,
+                minor: 4,
+                patch: 1,
+            }),
+            driver_version: Some(pelorus_cuda::CudaSemanticVersion {
+                major: 13,
+                minor: 0,
+                patch: 0,
+            }),
+        });
+        assert_eq!(details, "v12.4.1 (driver 13.0.0) - NVIDIA RTX");
+    }
+}
+
+#[cfg(all(test, feature = "vulkan"))]
+mod vulkan_backend_details_tests {
+    use super::format_vulkan_metadata_details;
+
+    #[test]
+    fn vulkan_details_show_api_version_and_gpu_name() {
+        let details = format_vulkan_metadata_details(&pelorus_vulkan::VulkanMetadata {
+            device_name: "NVIDIA Vulkan GPU".to_string(),
+            api_version: pelorus_vulkan::VulkanVersion {
+                major: 1,
+                minor: 3,
+                patch: 0,
+            },
+            driver_version: pelorus_vulkan::VulkanVersion {
+                major: 550,
+                minor: 40,
+                patch: 0,
+            },
+            driver_version_raw: 0,
+        });
+        assert_eq!(details, "v1.3.0 - NVIDIA Vulkan GPU");
+    }
+}
+
+fn set_backend_from_runtime(
+    shared_stats: &SharedStats,
+    config: &LioConfig,
+    active: &ActiveBackend,
+) {
+    let backend = cpu_backend_label(config);
+    let (accelerator, details) = match active {
+        ActiveBackend::Cpu => (None, None),
+        #[cfg(feature = "cuda")]
+        ActiveBackend::Cuda(_) => (
+            Some("CUDA".to_string()),
+            pelorus_cuda::get_cuda_metadata().map(|m| format_cuda_metadata_details(&m)),
+        ),
+        #[cfg(feature = "metal")]
+        ActiveBackend::Metal(_) => (Some("Metal".to_string()), None),
+        #[cfg(feature = "vulkan")]
+        ActiveBackend::Vulkan(_) => (
+            Some("Vulkan".to_string()),
+            pelorus_vulkan::get_vulkan_metadata().map(|m| format_vulkan_metadata_details(&m)),
+        ),
+    };
+
+    shared_stats.set_backend_info(backend, accelerator, details);
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -1968,7 +2079,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             if show_tui {
                 let shared_stats = std::sync::Arc::new(SharedStats::new());
                 shared_stats.set_mode("Online");
-                set_backend_from_config(&shared_stats, &config);
+                set_backend_from_config(&shared_stats, &config, config_args.cpu_only);
                 let stats_for_tui = shared_stats.clone();
 
                 shared_stats.set_target_lidar_rate(10.0); // will be updated when first scan arrives
@@ -2080,7 +2191,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 config
             };
 
-            set_backend_from_config(&shared_stats, &config);
+            set_backend_from_config(&shared_stats, &config, offline_args.cpu_only);
 
             if config.num_threads > 0 {
                 if let Err(e) = rayon::ThreadPoolBuilder::new()

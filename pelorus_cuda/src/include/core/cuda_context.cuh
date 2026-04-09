@@ -37,6 +37,7 @@
 
 #include <cuda.h>
 #include <cuda_runtime.h>
+#include <cstddef>
 #include <iostream>
 #include <memory>
 #include <sstream>
@@ -48,26 +49,24 @@
 namespace rmagine {
 
 static void printCudaInfo() {
-  int driver;
-  cudaDriverGetVersion(&driver);
-  int cuda_version;
-  cudaRuntimeGetVersion(&cuda_version);
+  // Removed prints to prevent bleeding into TUI
+}
 
-  std::stringstream driver_version_str, cuda_version_str;
-  driver_version_str << driver / 1000 << "." << (driver % 1000) / 10 << "."
-                     << driver % 10;
-  cuda_version_str << cuda_version / 1000 << "." << (cuda_version % 1000) / 10
-                   << "." << cuda_version % 10;
+struct CudaVersion {
+    int driver;
+    int runtime;
+};
 
-  std::cerr << "[Pelorus - CudaContext] CUDA Driver Version / Runtime Version: "
-            << driver_version_str.str() << " / " << cuda_version_str.str()
-            << std::endl;
+extern "C" {
+    CudaVersion get_cuda_versions();
+    bool get_cuda_device_name(char* out, size_t out_len);
 }
 
 bool cuda_initialized();
 void cuda_initialize();
 
 class CudaContext : std::enable_shared_from_this<CudaContext> {
+
 public:
   CudaContext(int device_id = 0);
   CudaContext(CUcontext ctx);

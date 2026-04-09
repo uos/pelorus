@@ -1,7 +1,7 @@
 use faer::Mat as FaerMat;
 use nalgebra::*;
 use pelorus_core::{
-    timing::RuntimeEvaluator, ImuParameters, KinematicModel, LidarVendor, OdomMsg, PointXYZIT,
+    ImuParameters, KinematicModel, LidarVendor, OdomMsg, PointXYZIT, timing::RuntimeEvaluator,
 };
 #[cfg(feature = "cuda")]
 use pelorus_cuda::CudaBuffer;
@@ -600,13 +600,12 @@ impl crate::Registration for RegistrationState {
                         _ => true,
                     };
                     if needs_alloc {
-                        self.planes_gpu_buffer = Some(GpuPlanesBuffer::Vulkan(
-                            VulkanBuffer::new_host_visible(
+                        self.planes_gpu_buffer =
+                            Some(GpuPlanesBuffer::Vulkan(VulkanBuffer::new_host_visible(
                                 stream,
                                 size_of::<pelorus_vulkan::PointNormal>(),
                                 cloud_len_alloc,
-                            ),
-                        ));
+                            )));
                     }
                 }
             }
@@ -689,8 +688,8 @@ impl crate::Registration for RegistrationState {
                                 let l2_sq = point_local.x * point_local.x
                                     + point_local.y * point_local.y
                                     + point_local.z * point_local.z;
-                                let s = 1.0_f32
-                                    - 0.9 * pd2.abs() / l2_sq.max(1e-9_f32).sqrt().sqrt();
+                                let s =
+                                    1.0_f32 - 0.9 * pd2.abs() / l2_sq.max(1e-9_f32).sqrt().sqrt();
                                 if s <= 0.9 {
                                     None
                                 } else {
@@ -949,7 +948,12 @@ impl crate::Registration for RegistrationState {
                     panic!("CUDA backend requires CUDA buffer");
                 };
                 let rot_quat: pelorus_cuda::Quaternion = t_w_l.rotation.into();
-                pelorus_cuda::add_to_map(stream, buffer, &t_w_l.translation.vector.into(), &rot_quat);
+                pelorus_cuda::add_to_map(
+                    stream,
+                    buffer,
+                    &t_w_l.translation.vector.into(),
+                    &rot_quat,
+                );
                 stream.sync();
             }
             #[cfg(feature = "metal")]

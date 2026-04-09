@@ -1,7 +1,7 @@
 use crate::buffer::MetalBuffer;
-use crate::pipeline::{get_pipelines, grid1d, group1d, THREADS_PER_GROUP};
-use objc2_metal::MTLSize;
+use crate::pipeline::{THREADS_PER_GROUP, get_pipelines, grid1d, group1d};
 use objc2_metal::MTLComputeCommandEncoder;
+use objc2_metal::MTLSize;
 
 pub const RADIX_SIZE: usize = 256;
 

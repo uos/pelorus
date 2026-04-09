@@ -369,7 +369,8 @@ pub fn add_to_map_impl(
         let new_cap = (n_points as f32 * 1.5) as usize;
         state.scratch.keys = crate::buffer::MetalBuffer::new(stream, size_of::<i32>(), new_cap);
         state.scratch.indices = crate::buffer::MetalBuffer::new(stream, size_of::<u32>(), new_cap);
-        state.scratch.radix = crate::radix_sort::RadixSortBuffers::new(stream, new_cap.max(state.dist_cap as usize));
+        state.scratch.radix =
+            crate::radix_sort::RadixSortBuffers::new(stream, new_cap.max(state.dist_cap as usize));
         state.scratch.run_starts =
             crate::buffer::MetalBuffer::new(stream, size_of::<u32>(), new_cap);
         state.scratch.run_ends = crate::buffer::MetalBuffer::new(stream, size_of::<u32>(), new_cap);
@@ -384,10 +385,8 @@ pub fn add_to_map_impl(
         state.scratch.capacity = new_cap;
     }
     if state.scratch.radix.max_elements < n_points.max(state.dist_cap as usize) {
-        state.scratch.radix = crate::radix_sort::RadixSortBuffers::new(
-            stream,
-            n_points.max(state.dist_cap as usize),
-        );
+        state.scratch.radix =
+            crate::radix_sort::RadixSortBuffers::new(stream, n_points.max(state.dist_cap as usize));
     }
 
     let params = BuildVoxelsParams {
@@ -595,7 +594,10 @@ pub fn add_to_map_impl(
                     size_of::<BuildVoxelsParams>(),
                     3,
                 );
-                enc.dispatchThreads_threadsPerThreadgroup(grid1d(state.dist_cap as usize), group1d());
+                enc.dispatchThreads_threadsPerThreadgroup(
+                    grid1d(state.dist_cap as usize),
+                    group1d(),
+                );
             }
 
             crate::radix_sort::dispatch_radix_sort_u32_pairs(
@@ -631,9 +633,14 @@ pub fn add_to_map_impl(
             let unique_keys = &state.scratch.unique_keys.as_slice::<i32>()[..unique_count];
             let run_starts = &state.scratch.run_starts.as_slice::<u32>()[..unique_count];
             let run_ends = &state.scratch.run_ends.as_slice::<u32>()[..unique_count];
-            if let Some(problem) = validate_sorted_runs(sorted_keys, unique_keys, run_starts, run_ends)
+            if let Some(problem) =
+                validate_sorted_runs(sorted_keys, unique_keys, run_starts, run_ends)
             {
-                log::error!("[Metal-Parity] scan={} run-check FAILED: {}", scan_number, problem);
+                log::error!(
+                    "[Metal-Parity] scan={} run-check FAILED: {}",
+                    scan_number,
+                    problem
+                );
             }
             log::warn!(
                 "[Metal-Parity] scan={} unique={} updates={} inserts={} add_cursor={} lru_cursor={} map_full={} dist_hash={:016x} cpu_assign=1",
@@ -793,8 +800,13 @@ pub fn add_to_map_impl(
         let unique_keys = &state.scratch.unique_keys.as_slice::<i32>()[..unique_count];
         let run_starts = &state.scratch.run_starts.as_slice::<u32>()[..unique_count];
         let run_ends = &state.scratch.run_ends.as_slice::<u32>()[..unique_count];
-        if let Some(problem) = validate_sorted_runs(sorted_keys, unique_keys, run_starts, run_ends) {
-            log::error!("[Metal-Parity] scan={} run-check FAILED: {}", scan_number, problem);
+        if let Some(problem) = validate_sorted_runs(sorted_keys, unique_keys, run_starts, run_ends)
+        {
+            log::error!(
+                "[Metal-Parity] scan={} run-check FAILED: {}",
+                scan_number,
+                problem
+            );
         }
         log::warn!(
             "[Metal-Parity] scan={} unique={} updates={} inserts={} add_cursor={} lru_cursor={} map_full={} dist_hash={:016x}",
@@ -891,7 +903,13 @@ mod tests {
             update_flags.push(0);
         }
 
-        (target_indices, update_flags, dist_keys, add_cursor, lru_cursor)
+        (
+            target_indices,
+            update_flags,
+            dist_keys,
+            add_cursor,
+            lru_cursor,
+        )
     }
 
     #[test]

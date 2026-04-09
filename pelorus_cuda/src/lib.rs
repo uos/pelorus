@@ -50,6 +50,67 @@ pub fn is_available() -> bool {
     unsafe { ffi::cupcl_is_available() }
 }
 
+pub fn get_cuda_versions() -> ffi::CudaVersion {
+    unsafe { ffi::get_cuda_versions() }
+}
+
+pub fn get_cuda_device_name() -> Option<String> {
+    let mut out = [0 as std::os::raw::c_char; 256];
+    let ok = unsafe { ffi::get_cuda_device_name(out.as_mut_ptr(), out.len()) };
+    if !ok {
+        return None;
+    }
+
+    let name = unsafe { std::ffi::CStr::from_ptr(out.as_ptr()) }
+        .to_string_lossy()
+        .into_owned();
+    if name.is_empty() { None } else { Some(name) }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CudaSemanticVersion {
+    pub major: u32,
+    pub minor: u32,
+    pub patch: u32,
+}
+
+impl std::fmt::Display for CudaSemanticVersion {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}.{}.{}", self.major, self.minor, self.patch)
+    }
+}
+
+impl CudaSemanticVersion {
+    fn from_cuda_encoded(version: i32) -> Option<Self> {
+        if version <= 0 {
+            return None;
+        }
+        let version = version as u32;
+        Some(Self {
+            major: version / 1000,
+            minor: (version % 1000) / 10,
+            patch: version % 10,
+        })
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CudaMetadata {
+    pub device_name: String,
+    pub runtime_version: Option<CudaSemanticVersion>,
+    pub driver_version: Option<CudaSemanticVersion>,
+}
+
+pub fn get_cuda_metadata() -> Option<CudaMetadata> {
+    let versions = get_cuda_versions();
+    let device_name = get_cuda_device_name()?;
+    Some(CudaMetadata {
+        device_name,
+        runtime_version: CudaSemanticVersion::from_cuda_encoded(versions.runtime),
+        driver_version: CudaSemanticVersion::from_cuda_encoded(versions.driver),
+    })
+}
+
 // GPU Timing state
 static TIMING_STATE: std::sync::OnceLock<std::sync::Mutex<CudaTimingState>> =
     std::sync::OnceLock::new();

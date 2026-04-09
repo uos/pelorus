@@ -222,6 +222,7 @@ pub struct TuiStats {
     // Backend info
     pub backend: String,
     pub accelerator: Option<String>,
+    pub accelerator_details: Option<String>,
 
     // Sensor info
     pub lidar_vendor: Option<LidarVendor>,
@@ -324,10 +325,16 @@ impl SharedStats {
         stats.bagfile = Some(bagfile.into());
     }
 
-    pub fn set_backend_info(&self, backend: String, accelerator: Option<String>) {
+    pub fn set_backend_info(
+        &self,
+        backend: String,
+        accelerator: Option<String>,
+        accelerator_details: Option<String>,
+    ) {
         let mut stats = self.inner.lock().unwrap();
         stats.backend = backend;
         stats.accelerator = accelerator;
+        stats.accelerator_details = accelerator_details;
     }
 
     pub fn get(&self) -> TuiStats {
@@ -626,15 +633,10 @@ fn get_gpu_stats() -> (f64, f64, f64) {
     {
         #[cfg(target_os = "macos")]
         {
-            // Process-specific Metal allocation
             let used = pelorus_metal::get_used_memory() as f64 / (1024.0 * 1024.0);
-            // We only track process-local memory for Metal.
-            // System-wide total/utilization is often misleading or unavailable per-process.
-            (used, 0.0, 0.0)
-        }
-        #[cfg(not(target_os = "macos"))]
-        {
-            (0.0, 0.0, 0.0)
+            if used > 0.0 {
+                return (used, 0.0, 0.0);
+            }
         }
     }
 
@@ -645,18 +647,25 @@ fn get_gpu_stats() -> (f64, f64, f64) {
                 .map(|s| s.to_lowercase().contains("jetson"))
                 .unwrap_or(false);
 
-        if is_jetson {
+        let stats = if is_jetson {
             get_jetson_gpu_stats()
         } else {
             get_nvidia_gpu_stats()
+        };
+        if stats != (0.0, 0.0, 0.0) {
+            return stats;
         }
     }
 
     #[cfg(feature = "vulkan")]
     {
         let used = pelorus_vulkan::get_used_memory() as f64 / (1024.0 * 1024.0);
-        (used, 0.0, 0.0)
+        if used > 0.0 {
+            return (used, 0.0, 0.0);
+        }
     }
+
+    (0.0, 0.0, 0.0)
 }
 
 #[cfg(feature = "cuda")]
@@ -1322,6 +1331,12 @@ impl StatsTui {
                 accel,
                 Style::default().fg(color).add_modifier(Modifier::BOLD),
             ));
+
+            if let Some(details) = &stats.accelerator_details {
+                info_line.push(Span::raw(" ("));
+                info_line.push(Span::styled(details, Style::default().fg(Color::Gray)));
+                info_line.push(Span::raw(")"));
+            }
         }
 
         let lines = vec![
