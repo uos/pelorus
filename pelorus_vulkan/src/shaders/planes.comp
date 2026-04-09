@@ -144,7 +144,7 @@ void main() {
     pn.x = p_local.x;
     pn.y = p_local.y;
     pn.z = p_local.z;
-    pn.intensity = pd2;
+    pn.intensity = plane.w;
     pn.nx = plane.x;
     pn.ny = plane.y;
     pn.nz = plane.z;

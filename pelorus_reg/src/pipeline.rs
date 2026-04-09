@@ -9,9 +9,8 @@ use pelorus_core::{
     PrelioProcessedCloud, RobosensePoint, VelodynePoint,
 };
 use prelio::Prelio;
-use spole::IVoxNearbyType;
-
 use crate::{ActiveBackend, Registration, registration::RegistrationState};
+use spole::{IVoxHashMap, IVoxNearbyType};
 
 pub struct Pipeline {
     map: Arc<Mutex<RegistrationState>>,
@@ -51,18 +50,22 @@ impl Pipeline {
             UnitQuaternion::from_matrix(&config.imu_params.initial_rotation_lidar_to_imu),
         );
 
-        let map = RegistrationState::new(
-            config.map_resolution,
+        let ivox = IVoxHashMap::new(
+            config.map_resolution as f32,
             config.map_capacity,
-            config.prelio_params.imu.gravity,
-            &config.imu_params,
-            config.lidar_odom_cov,
-            config.neighbor_max_range,
-            ext_lidar_to_imu,
-            config.base_to_lidar,
             IVoxNearbyType::Nearby26,
-            config.dist_update_sensitivity,
+            config.dist_update_sensitivity as f32,
+        );
+
+        let map = RegistrationState::new(
+            ivox,
+            &config.imu_params,
+            &ext_lidar_to_imu,
+            &config.base_to_lidar,
+            config.prelio_params.imu.gravity,
+            config.lidar_odom_cov,
             config.ekf_max_iterations,
+            None,
         );
 
         Self {

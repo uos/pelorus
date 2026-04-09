@@ -145,11 +145,10 @@ kernel void plane_krnl(
     pn.x         = p_local.x;
     pn.y         = p_local.y;
     pn.z         = p_local.z;
-    pn.intensity = pd2;
+    pn.intensity = plane.w;
     pn.nx        = plane.x;
     pn.ny        = plane.y;
     pn.nz        = plane.z;
     pn._pad      = 0.0f;
-
     out_buff[out_idx] = pn;
 }

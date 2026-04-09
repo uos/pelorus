@@ -629,7 +629,7 @@ __global__ void plane_kernel(const Point*        cloud,
     pn.x        = p_local.x;
     pn.y        = p_local.y;
     pn.z        = p_local.z;
-    pn.intensity = pd2;
+    pn.intensity = d_val;
     pn.normal_x  = normal.x;
     pn.normal_y  = normal.y;
     pn.normal_z  = normal.z;
