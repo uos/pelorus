@@ -4180,6 +4180,8 @@ checksum = "96a1fe2275b68991faded2c80aa4a33dba398b77d276038b8f50701a22e55918"
 [[package]]
 name = "mt_coord"
 version = "0.7.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2d96d2a22f2727a789c11b127f6eec1478179e95bbe101a44516187403a85048"
 dependencies = [
  "anyhow",
  "fs2",
@@ -4193,6 +4195,8 @@ dependencies = [
 [[package]]
 name = "mt_net"
 version = "0.7.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "913c17359852b03321d9852014d53c18c5fb8acd3b26d5a70768321cfec2220e"
 dependencies = [
  "anyhow",
  "rkyv",
@@ -4203,6 +4207,8 @@ dependencies = [
 [[package]]
 name = "mt_pubsub"
 version = "0.7.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "71d7b83795e4d6b188815029ec5d168ef9979e0d866b178465fd8ce8c7c10401"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -4221,6 +4227,8 @@ dependencies = [
 [[package]]
 name = "mt_rat"
 version = "0.7.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "811bc3da8daf1f62e9e2b3793949496f556644e19f5f5830ec2c49d34e176b18"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -4236,6 +4244,8 @@ dependencies = [
 [[package]]
 name = "mt_scope"
 version = "0.7.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "814de8c894aa8526b3418a71068ab59878818eb0ef2c65ab5ad4f6428e947141"
 dependencies = [
  "anyhow",
  "env_logger",
@@ -4250,6 +4260,8 @@ dependencies = [
 [[package]]
 name = "mt_sea"
 version = "0.7.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e1c0dd1ef0f7b072f8a9a1479128d8057c4ee06b5a9fff1405be3d3350984011"
 dependencies = [
  "anyhow",
  "async-trait",

@@ -101,6 +101,7 @@ pub struct MetalMapState {
     pub nbtype: u32,
     add_cursor: u32,
     lru_cursor: u32,
+    parity_trace_enabled: bool,
 }
 
 static MAP_STATE: OnceLock<Mutex<Option<MetalMapState>>> = OnceLock::new();
@@ -111,6 +112,123 @@ fn global_state() -> &'static Mutex<Option<MetalMapState>> {
 
 pub fn get_state() -> MutexGuard<'static, Option<MetalMapState>> {
     global_state().lock().unwrap()
+}
+
+fn parity_trace_enabled() -> bool {
+    std::env::var("PELORUS_METAL_PARITY_TRACE")
+        .map(|v| {
+            let v = v.trim().to_ascii_lowercase();
+            v == "1" || v == "true" || v == "yes" || v == "on"
+        })
+        .unwrap_or(false)
+}
+
+fn cpu_assign_trace_enabled() -> bool {
+    std::env::var("PELORUS_METAL_CPU_ASSIGN")
+        .map(|v| {
+            let v = v.trim().to_ascii_lowercase();
+            v == "1" || v == "true" || v == "yes" || v == "on"
+        })
+        .unwrap_or(false)
+}
+
+fn host_hash_fn(key: i32) -> u32 {
+    let mut h = key as u32;
+    h ^= h >> 16;
+    h = h.wrapping_mul(0x85ebca6b);
+    h ^= h >> 13;
+    h = h.wrapping_mul(0xc2b2ae35);
+    h ^= h >> 16;
+    h
+}
+
+fn host_hashmap_lookup(table_keys: &[i32], table_vals: &[u32], table_cap: u32, key: i32) -> u32 {
+    if key == i32::MIN {
+        return u32::MAX;
+    }
+    let mut slot = (host_hash_fn(key) & (table_cap - 1)) as usize;
+    for _ in 0..table_cap {
+        let cur = table_keys[slot];
+        if cur == key {
+            return table_vals[slot];
+        }
+        if cur == i32::MIN {
+            return u32::MAX;
+        }
+        slot = (slot + 1) & ((table_cap - 1) as usize);
+    }
+    u32::MAX
+}
+
+fn sample_hash_i32(data: &[i32]) -> u64 {
+    // Fast FNV-1a over a bounded prefix for low debug overhead.
+    const FNV_OFFSET: u64 = 0xcbf29ce484222325;
+    const FNV_PRIME: u64 = 0x100000001b3;
+    let mut h = FNV_OFFSET;
+    for &x in data.iter().take(4096) {
+        h ^= x as u32 as u64;
+        h = h.wrapping_mul(FNV_PRIME);
+    }
+    h
+}
+
+fn validate_sorted_runs(
+    sorted_keys: &[i32],
+    unique_keys: &[i32],
+    run_starts: &[u32],
+    run_ends: &[u32],
+) -> Option<String> {
+    for i in 1..sorted_keys.len() {
+        if sorted_keys[i - 1] > sorted_keys[i] {
+            return Some(format!(
+                "sorted_keys not monotonic at i={} prev={} cur={}",
+                i,
+                sorted_keys[i - 1],
+                sorted_keys[i]
+            ));
+        }
+    }
+
+    let n = sorted_keys.len();
+    for i in 0..unique_keys.len() {
+        let start = run_starts[i] as usize;
+        let end = run_ends[i] as usize;
+        if start >= n || end > n || start >= end {
+            return Some(format!(
+                "invalid run bounds at i={} start={} end={} n={}",
+                i, start, end, n
+            ));
+        }
+        let key = unique_keys[i];
+        if sorted_keys[start] != key {
+            return Some(format!(
+                "run start key mismatch at i={} start={} key={} sorted={}",
+                i, start, key, sorted_keys[start]
+            ));
+        }
+        if start > 0 && sorted_keys[start - 1] == key {
+            return Some(format!(
+                "run start is not first occurrence at i={} start={} key={}",
+                i, start, key
+            ));
+        }
+        if sorted_keys[end - 1] != key {
+            return Some(format!(
+                "run end key mismatch at i={} end={} key={} sorted={}",
+                i,
+                end,
+                key,
+                sorted_keys[end - 1]
+            ));
+        }
+        if end < n && sorted_keys[end] == key {
+            return Some(format!(
+                "run end is not last occurrence at i={} end={} key={}",
+                i, end, key
+            ));
+        }
+    }
+    None
 }
 
 pub fn init_map_impl(
@@ -162,7 +280,7 @@ pub fn init_map_impl(
             size_of::<crate::types::Point>(),
             scratch_cap,
         ),
-        counter: crate::buffer::MetalBuffer::new(stream, size_of::<u32>(), 3),
+        counter: crate::buffer::MetalBuffer::new(stream, size_of::<u32>(), 5),
         lru_keys: crate::buffer::MetalBuffer::new(stream, size_of::<u32>(), dist_cap as usize),
         lru_mapping: crate::buffer::MetalBuffer::new(stream, size_of::<u32>(), dist_cap as usize),
         // keep the logical capacity zero so resize logic still fires immediately
@@ -170,7 +288,7 @@ pub fn init_map_impl(
     };
 
     let initial_lru_mapping: Vec<u32> = (0..dist_cap).collect();
-    let counter_init = [0u32, 0u32, 0u32];
+    let counter_init = [0u32, 0u32, 0u32, 0u32, 0u32];
     let mut scratch = scratch;
     scratch.lru_mapping.upload(stream, &initial_lru_mapping);
     scratch.counter.upload(stream, &counter_init);
@@ -210,6 +328,7 @@ pub fn init_map_impl(
         nbtype: _nbtype.as_u32(),
         add_cursor: 0,
         lru_cursor: 0,
+        parity_trace_enabled: parity_trace_enabled(),
     };
 
     *get_state() = Some(state);
@@ -284,7 +403,7 @@ pub fn add_to_map_impl(
         dist_cap,
         n_points: n_points as u32,
     };
-    let counters_host = [0u32, state.add_cursor, state.lru_cursor];
+    let counters_host = [0u32, state.add_cursor, state.lru_cursor, 0u32, 0u32];
     state.scratch.counter.upload(stream, &counters_host);
     let map_was_full = state.add_cursor >= state.dist_cap;
 
@@ -332,6 +451,214 @@ pub fn add_to_map_impl(
         enc.dispatchThreads_threadsPerThreadgroup(grid1d(n_points), group1d());
     }
     enc.memoryBarrierWithScope(MTLBarrierScope::Buffers);
+
+    if cpu_assign_trace_enabled() {
+        enc.endEncoding();
+        cb.commit();
+        cb.waitUntilCompleted();
+        total_gpu_time_ms += (cb.GPUEndTime() - cb.GPUStartTime()) * 1000.0;
+
+        let counters_result = state.scratch.counter.as_slice::<u32>();
+        let unique_count = counters_result[0] as usize;
+        if unique_count == 0 {
+            return total_gpu_time_ms;
+        }
+
+        let unique_keys = state.scratch.unique_keys.as_slice::<i32>()[..unique_count].to_vec();
+        let table_keys = state.keys_buf.as_slice::<i32>().to_vec();
+        let table_vals = state.values_buf.as_slice::<u32>().to_vec();
+        let lru_mapping = state.scratch.lru_mapping.as_slice::<u32>().to_vec();
+        let mut target_indices = Vec::with_capacity(unique_count);
+        let mut update_flags = Vec::with_capacity(unique_count);
+        let mut updates = 0u32;
+        let mut inserts = 0u32;
+
+        {
+            let dist_cap = state.dist_cap;
+            let dist_keys = state.dist_keys_buf.as_slice_mut::<i32>();
+            for &key in &unique_keys {
+                let found = host_hashmap_lookup(&table_keys, &table_vals, state.table_cap, key);
+                if found != u32::MAX {
+                    updates = updates.saturating_add(1);
+                    target_indices.push(found);
+                    update_flags.push(1);
+                    continue;
+                }
+
+                inserts = inserts.saturating_add(1);
+                let old_add = state.add_cursor;
+                state.add_cursor = state.add_cursor.saturating_add(1);
+                let assign_idx = if old_add < dist_cap {
+                    old_add
+                } else {
+                    let lru_idx = state.lru_cursor;
+                    state.lru_cursor = state.lru_cursor.saturating_add(1);
+                    lru_mapping[(lru_idx % dist_cap) as usize]
+                };
+                target_indices.push(assign_idx);
+                update_flags.push(0);
+                dist_keys[assign_idx as usize] = key;
+            }
+        }
+
+        state.scratch.target_indices.upload(stream, &target_indices);
+        state.scratch.update_flags.upload(stream, &update_flags);
+        state.scratch.counter.upload(
+            stream,
+            &[
+                unique_count as u32,
+                state.add_cursor,
+                state.lru_cursor,
+                updates,
+                inserts,
+            ],
+        );
+
+        let cb = stream.queue.commandBuffer().expect("cb");
+        let enc = cb.computeCommandEncoder().expect("enc");
+
+        enc.setComputePipelineState(&pipes.reorder_points);
+        unsafe {
+            enc.setBuffer_offset_atIndex(Some(cloud_buf.metal_buffer()), 0, 0);
+            enc.setBuffer_offset_atIndex(Some(state.scratch.sorted_points.metal_buffer()), 0, 1);
+            enc.setBuffer_offset_atIndex(Some(state.scratch.indices.metal_buffer()), 0, 2);
+            enc.setBytes_length_atIndex(
+                std::ptr::NonNull::new(&params as *const _ as *mut _).unwrap(),
+                size_of::<BuildVoxelsParams>(),
+                3,
+            );
+            enc.dispatchThreads_threadsPerThreadgroup(grid1d(n_points), group1d());
+        }
+        enc.memoryBarrierWithScope(MTLBarrierScope::Buffers);
+
+        enc.setComputePipelineState(&pipes.build_voxels);
+        unsafe {
+            enc.setBuffer_offset_atIndex(Some(state.scratch.sorted_points.metal_buffer()), 0, 0);
+            enc.setBuffer_offset_atIndex(Some(state.scratch.indices.metal_buffer()), 0, 1);
+            enc.setBuffer_offset_atIndex(Some(state.scratch.run_starts.metal_buffer()), 0, 2);
+            enc.setBuffer_offset_atIndex(Some(state.scratch.run_ends.metal_buffer()), 0, 3);
+            enc.setBuffer_offset_atIndex(Some(state.scratch.unique_keys.metal_buffer()), 0, 4);
+            enc.setBuffer_offset_atIndex(Some(state.scratch.target_indices.metal_buffer()), 0, 5);
+            enc.setBuffer_offset_atIndex(Some(state.scratch.update_flags.metal_buffer()), 0, 6);
+            enc.setBuffer_offset_atIndex(Some(state.dist_buf.metal_buffer()), 0, 7);
+            enc.setBuffer_offset_atIndex(Some(state.scratch.counter.metal_buffer()), 0, 8);
+            enc.setBytes_length_atIndex(
+                std::ptr::NonNull::new(&params as *const _ as *mut _).unwrap(),
+                size_of::<BuildVoxelsParams>(),
+                9,
+            );
+            enc.dispatchThreads_threadsPerThreadgroup(grid1d(n_points), group1d());
+        }
+        enc.memoryBarrierWithScope(MTLBarrierScope::Buffers);
+
+        enc.setComputePipelineState(&pipes.hashmap_init);
+        let table_cap_u32 = state.table_cap;
+        unsafe {
+            enc.setBuffer_offset_atIndex(Some(state.keys_buf.metal_buffer()), 0, 0);
+            enc.setBytes_length_atIndex(
+                std::ptr::NonNull::new(&table_cap_u32 as *const u32 as *mut _).unwrap(),
+                size_of::<u32>(),
+                1,
+            );
+            enc.dispatchThreads_threadsPerThreadgroup(grid1d(state.table_cap as usize), group1d());
+        }
+        enc.memoryBarrierWithScope(MTLBarrierScope::Buffers);
+
+        enc.setComputePipelineState(&pipes.rebuild_hashmap_keyed);
+        let valid_size_u32 = state.dist_cap;
+        unsafe {
+            enc.setBuffer_offset_atIndex(Some(state.keys_buf.metal_buffer()), 0, 0);
+            enc.setBuffer_offset_atIndex(Some(state.values_buf.metal_buffer()), 0, 1);
+            enc.setBuffer_offset_atIndex(Some(state.dist_keys_buf.metal_buffer()), 0, 2);
+            enc.setBytes_length_atIndex(
+                std::ptr::NonNull::new(&valid_size_u32 as *const u32 as *mut _).unwrap(),
+                size_of::<u32>(),
+                3,
+            );
+            enc.setBytes_length_atIndex(
+                std::ptr::NonNull::new(&table_cap_u32 as *const u32 as *mut _).unwrap(),
+                size_of::<u32>(),
+                4,
+            );
+            enc.dispatchThreads_threadsPerThreadgroup(grid1d(valid_size_u32 as usize), group1d());
+        }
+
+        if map_was_full {
+            enc.memoryBarrierWithScope(MTLBarrierScope::Buffers);
+            enc.setComputePipelineState(&pipes.lru_score);
+            unsafe {
+                enc.setBuffer_offset_atIndex(Some(state.dist_buf.metal_buffer()), 0, 0);
+                enc.setBuffer_offset_atIndex(Some(state.scratch.lru_keys.metal_buffer()), 0, 1);
+                enc.setBuffer_offset_atIndex(Some(state.scratch.lru_mapping.metal_buffer()), 0, 2);
+                enc.setBytes_length_atIndex(
+                    std::ptr::NonNull::new(&params as *const _ as *mut _).unwrap(),
+                    size_of::<BuildVoxelsParams>(),
+                    3,
+                );
+                enc.dispatchThreads_threadsPerThreadgroup(grid1d(state.dist_cap as usize), group1d());
+            }
+
+            crate::radix_sort::dispatch_radix_sort_u32_pairs(
+                stream,
+                &enc,
+                &state.scratch.lru_keys,
+                &state.scratch.lru_mapping,
+                &state.scratch.radix,
+                state.dist_cap as usize,
+                0,
+            );
+        }
+
+        enc.endEncoding();
+        cb.commit();
+        cb.waitUntilCompleted();
+        total_gpu_time_ms += (cb.GPUEndTime() - cb.GPUStartTime()) * 1000.0;
+
+        let counters_result = state.scratch.counter.as_slice::<u32>();
+        let unique_count = counters_result[0] as usize;
+        state.add_cursor = counters_result[1].min(state.dist_cap);
+        state.lru_cursor = counters_result[2].min(state.dist_cap);
+        if state.parity_trace_enabled
+            && (scan_number <= 600 && scan_number % 50 == 0 || scan_number % 200 == 0)
+        {
+            let active = state.add_cursor.min(state.dist_cap) as usize;
+            let dist_keys = state.dist_keys_buf.as_slice::<i32>();
+            let dist_key_hash = sample_hash_i32(&dist_keys[..active.min(dist_keys.len())]);
+            let updates = counters_result[3];
+            let inserts = counters_result[4];
+            let unique_count = unique_count.min(n_points);
+            let sorted_keys = &state.scratch.keys.as_slice::<i32>()[..n_points];
+            let unique_keys = &state.scratch.unique_keys.as_slice::<i32>()[..unique_count];
+            let run_starts = &state.scratch.run_starts.as_slice::<u32>()[..unique_count];
+            let run_ends = &state.scratch.run_ends.as_slice::<u32>()[..unique_count];
+            if let Some(problem) = validate_sorted_runs(sorted_keys, unique_keys, run_starts, run_ends)
+            {
+                log::error!("[Metal-Parity] scan={} run-check FAILED: {}", scan_number, problem);
+            }
+            log::warn!(
+                "[Metal-Parity] scan={} unique={} updates={} inserts={} add_cursor={} lru_cursor={} map_full={} dist_hash={:016x} cpu_assign=1",
+                scan_number,
+                unique_count,
+                updates,
+                inserts,
+                state.add_cursor,
+                state.lru_cursor,
+                state.add_cursor >= state.dist_cap,
+                dist_key_hash
+            );
+        }
+        log::info!(
+            "[Metal] add_to_map: total={:?}, points={}, unique={}, add_cursor={}, lru_cursor={}, gpu_time={:.2}ms",
+            start_all.elapsed(),
+            n_points,
+            unique_count,
+            state.add_cursor,
+            state.lru_cursor,
+            total_gpu_time_ms
+        );
+
+        return total_gpu_time_ms;
+    }
 
     enc.setComputePipelineState(&pipes.assign_indices);
     unsafe {
@@ -453,6 +780,34 @@ pub fn add_to_map_impl(
     let unique_count = counters_result[0] as usize;
     state.add_cursor = counters_result[1].min(state.dist_cap);
     state.lru_cursor = counters_result[2].min(state.dist_cap);
+    if state.parity_trace_enabled
+        && (scan_number <= 600 && scan_number % 50 == 0 || scan_number % 200 == 0)
+    {
+        let active = state.add_cursor.min(state.dist_cap) as usize;
+        let dist_keys = state.dist_keys_buf.as_slice::<i32>();
+        let dist_key_hash = sample_hash_i32(&dist_keys[..active.min(dist_keys.len())]);
+        let updates = counters_result[3];
+        let inserts = counters_result[4];
+        let unique_count = unique_count.min(n_points);
+        let sorted_keys = &state.scratch.keys.as_slice::<i32>()[..n_points];
+        let unique_keys = &state.scratch.unique_keys.as_slice::<i32>()[..unique_count];
+        let run_starts = &state.scratch.run_starts.as_slice::<u32>()[..unique_count];
+        let run_ends = &state.scratch.run_ends.as_slice::<u32>()[..unique_count];
+        if let Some(problem) = validate_sorted_runs(sorted_keys, unique_keys, run_starts, run_ends) {
+            log::error!("[Metal-Parity] scan={} run-check FAILED: {}", scan_number, problem);
+        }
+        log::warn!(
+            "[Metal-Parity] scan={} unique={} updates={} inserts={} add_cursor={} lru_cursor={} map_full={} dist_hash={:016x}",
+            scan_number,
+            unique_count,
+            updates,
+            inserts,
+            state.add_cursor,
+            state.lru_cursor,
+            state.add_cursor >= state.dist_cap,
+            dist_key_hash
+        );
+    }
     log::info!(
         "[Metal] add_to_map: total={:?}, points={}, unique={}, add_cursor={}, lru_cursor={}, gpu_time={:.2}ms",
         start_all.elapsed(),

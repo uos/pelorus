@@ -118,10 +118,12 @@ kernel void assign_indices(
     if (found_idx != UINT_MAX) {
         target_indices[idx] = found_idx;
         update_flags[idx] = 1u;
+        atomic_fetch_add_explicit(&counters[3], 1u, memory_order_relaxed);
         return;
     }
 
     update_flags[idx] = 0u;
+    atomic_fetch_add_explicit(&counters[4], 1u, memory_order_relaxed);
     uint old_add = atomic_fetch_add_explicit(&counters[1], 1u, memory_order_relaxed);
     uint assign_idx = old_add;
     if (old_add >= params.dist_cap) {
