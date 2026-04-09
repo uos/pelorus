@@ -46,7 +46,7 @@ void main() {
     uint end = run_ends[idx];
     uint count = end - start;
 
-    if (count == 0u || voxel_key == EMPTY_KEY) {
+    if (count == 0u || voxel_key == EMPTY_KEY || target_indices[idx] == 0xFFFFFFFFu) {
         return;
     }
 

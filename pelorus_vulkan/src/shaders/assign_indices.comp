@@ -20,7 +20,11 @@ void main() {
     if (j >= unique_count) return;
 
     int key = unique_keys[j];
-    if (key == EMPTY_KEY) return;
+    if (key == EMPTY_KEY) {
+        target_indices[j] = 0xFFFFFFFFu;
+        update_flags[j] = 0u;
+        return;
+    }
 
     // 1. Look up in hashmap
     uint slot = hash_fn(key) & (pc.table_cap - 1);
@@ -37,17 +41,21 @@ void main() {
 
     if (found_idx != -1) {
         target_indices[j] = uint(found_idx);
-        update_flags[j] = 1;
+        update_flags[j] = 1u;
     } else {
-        update_flags[j] = 0;
+        update_flags[j] = 0u;
         uint idx;
         uint old_add = atomicAdd(add_cursor, 1);
         if (old_add < pc.dist_cap) {
             idx = old_add;
         } else {
-            // Use atomicAdd on lru_cursor to get a victim from the mapping
-            uint lru_idx = atomicAdd(lru_cursor, 1) % pc.dist_cap;
-            idx = lru_mapping[lru_idx];
+            uint lru_idx = atomicAdd(lru_cursor, 1);
+            if (lru_idx < pc.dist_cap) {
+                idx = lru_mapping[lru_idx];
+            } else {
+                target_indices[j] = 0xFFFFFFFFu;
+                return;
+            }
         }
         target_indices[j] = idx;
         dist_keys[idx] = key;

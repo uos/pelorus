@@ -2151,7 +2151,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     Err(_) => Err(anyhow!("LIO thread panicked").into()),
                 }
             } else {
-                lio(config, config_args.export_trajectory, config_args.rat, config_args.cpu_only)
+                lio(
+                    config,
+                    config_args.export_trajectory,
+                    config_args.rat,
+                    config_args.cpu_only,
+                )
             }
         }
         #[cfg(feature = "rat")]
@@ -2440,26 +2445,26 @@ pf! i 1
                 let shared_stats_for_lio = shared_stats.clone();
                 let runtime_tx_lio = runtime_tx.clone();
 
-        let lio_handle = std::thread::spawn(move || {
-            let synchronous_mode = config.prelio_node_params.synchronous_mode;
-            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                lio_with_ready_signal(
-                    config,
-                    Some(pelorus_ready_tx),
-                    offline_args.export_trajectory.clone(),
-                    synchronous_mode,
-                    Some(shared_stats_for_lio),
-                    Some(lio_shutdown_flag_for_thread),
-                    Some(lio_stop_rx),
-                    offline_args.cpu_only,
-                )
-            }))
-            .map_err(|_| "LIO thread panicked".to_string())
-            .and_then(|res| res.map_err(|e| format!("Odometry failed: {}", e)));
+                let lio_handle = std::thread::spawn(move || {
+                    let synchronous_mode = config.prelio_node_params.synchronous_mode;
+                    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                        lio_with_ready_signal(
+                            config,
+                            Some(pelorus_ready_tx),
+                            offline_args.export_trajectory.clone(),
+                            synchronous_mode,
+                            Some(shared_stats_for_lio),
+                            Some(lio_shutdown_flag_for_thread),
+                            Some(lio_stop_rx),
+                            offline_args.cpu_only,
+                        )
+                    }))
+                    .map_err(|_| "LIO thread panicked".to_string())
+                    .and_then(|res| res.map_err(|e| format!("Odometry failed: {}", e)));
 
-            let _ = runtime_tx_lio.send(OfflineRuntimeEvent::LioExited(result.clone()));
-            result
-        });
+                    let _ = runtime_tx_lio.send(OfflineRuntimeEvent::LioExited(result.clone()));
+                    result
+                });
 
                 info!("Waiting for pelorus to initialize...");
                 pelorus_ready_rx
@@ -2519,7 +2524,10 @@ pf! i 1
                         }
                         OfflineRuntimeEvent::LioExited(result) => {
                             lio_exit_result = Some(result);
-                            if user_shutdown_requested && minot_exit_result.is_none() && !minot_force_stopped {
+                            if user_shutdown_requested
+                                && minot_exit_result.is_none()
+                                && !minot_force_stopped
+                            {
                                 // Stop external data source only after current-frame processing
                                 // has completed and LIO has exited.
                                 signal_process(minot_pid, libc::SIGKILL)
@@ -2545,7 +2553,8 @@ pf! i 1
                 }
 
                 if wait_for_minot_exit {
-                    match minot_exit_result.expect("minot exit must be observed before completion") {
+                    match minot_exit_result.expect("minot exit must be observed before completion")
+                    {
                         Ok(status) if status.success() || minot_force_stopped => {}
                         Ok(status) => return Err(anyhow!("Minot exited with status {}", status)),
                         Err(e) => return Err(anyhow!("Failed to wait for Minot exit: {}", e)),

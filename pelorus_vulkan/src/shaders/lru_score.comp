@@ -16,18 +16,10 @@ void main() {
     uint last_scan = voxels[i].last_scan;
     uint temporal_dist = pc.scan_number - last_scan;
 
-    // We want empty voxels (pt_count == 0) first (smallest keys).
-    // Then voxels with small (pt_count / (temporal_dist + 1)) first.
-    
-    uint key;
-    if (pt_count == 0) {
-        key = 0;
-    } else {
-        // Range [1, 2^30-1]
-        float score = float(pt_count) / float(temporal_dist + 1);
-        key = (1u << 30) | uint(clamp(score * 1000.0, 0.0, float((1u << 30) - 1u)));
-    }
-    
-    lru_keys[i] = key;
+    // Match CUDA semantics:
+    // score = temporal_dist / point_count, empty voxels = huge score, then sort by score descending.
+    // Radix sort here is ascending, so invert bits to emulate descending order.
+    float score = (pt_count == 0u) ? 1e20 : (float(temporal_dist) / float(pt_count));
+    lru_keys[i] = ~floatBitsToUint(score);
     lru_vals[i] = i;
 }

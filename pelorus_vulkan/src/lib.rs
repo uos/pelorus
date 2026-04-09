@@ -1,6 +1,6 @@
 #![cfg(vulkan_available)]
 
-use ash::{khr::push_descriptor, vk, Device, Entry, Instance};
+use ash::{Device, Entry, Instance, khr::push_descriptor, vk};
 use bytemuck::{Pod, Zeroable};
 use pelorus_core::PointXYZIT;
 use ros_pointcloud2::points::PointXYZINormal;
@@ -125,7 +125,8 @@ impl VulkanContext {
             }
 
             let mut push_desc_props = vk::PhysicalDevicePushDescriptorPropertiesKHR::default();
-            let mut props2 = vk::PhysicalDeviceProperties2::default().push_next(&mut push_desc_props);
+            let mut props2 =
+                vk::PhysicalDeviceProperties2::default().push_next(&mut push_desc_props);
             unsafe {
                 instance.get_physical_device_properties2(physical, &mut props2);
             }
@@ -1291,11 +1292,7 @@ fn build_pipelines(context: Arc<VulkanContext>) -> Arc<VulkanComputePipelines> {
 }
 
 fn div_ceil_u32(v: u32, d: u32) -> u32 {
-    if v == 0 {
-        0
-    } else {
-        1 + (v - 1) / d
-    }
+    if v == 0 { 0 } else { 1 + (v - 1) / d }
 }
 
 struct ComputeCommandSession<'a> {
@@ -1513,8 +1510,7 @@ pub fn init_map(
     nearby_search_strategy: NeighborType,
 ) {
     assert!(capacity > 0, "capacity must be > 0");
-    if cfg!(target_os = "macos")
-        && std::env::var_os("PELORUS_VULKAN_ALLOW_MACOS_UNSAFE").is_none()
+    if cfg!(target_os = "macos") && std::env::var_os("PELORUS_VULKAN_ALLOW_MACOS_UNSAFE").is_none()
     {
         panic!(
             "Vulkan radix-sort path is not safely supported on macOS/MoltenVK in this build. \
@@ -1582,11 +1578,8 @@ pub fn init_map(
                 sorted_points: VulkanBuffer::new(stream, size_of::<crate::types::Point>(), 1),
                 counter: VulkanBuffer::new_host_visible(stream, size_of::<u32>(), 3),
                 sorter_scratch: VulkanBuffer::new(stream, 1, requirements.size as usize),
-                lru_mapping: VulkanBuffer::new_host_visible(
-                    stream,
-                    size_of::<u32>(),
-                    dist_cap as usize,
-                ),
+                // This buffer is hot in map-full replacement and LRU sort; keep it device-local.
+                lru_mapping: VulkanBuffer::new(stream, size_of::<u32>(), dist_cap as usize),
                 lru_keys: VulkanBuffer::new(stream, size_of::<u32>(), dist_cap as usize),
                 sorter,
                 capacity: 0,
@@ -1811,6 +1804,7 @@ pub fn add_to_map(
             ensure_scratch_capacity(state, stream, n_points);
             state.scan_number += 1;
             let scan_number = state.scan_number;
+            let map_was_full = state.add_cursor >= state.dist_cap;
 
             let q: nalgebra::UnitQuaternion<f64> = (*ekf_pose_r).into();
             let mut params = PushConstants {
@@ -1910,7 +1904,8 @@ pub fn add_to_map(
             session.barrier();
 
             // 3. GPU Run-Length Encoding
-            let counters_host = [0u32, state.add_cursor, state.lru_cursor];
+            // Match CUDA semantics: start each scan with fresh LRU consumption.
+            let counters_host = [0u32, state.add_cursor, 0u32];
             state.scratch.counter.upload(stream, &counters_host);
 
             session.dispatch(
@@ -1973,7 +1968,7 @@ pub fn add_to_map(
             );
             session.barrier();
 
-            if state.add_cursor >= state.dist_cap {
+            if map_was_full {
                 rebuild_gpu_lru_order(
                     &state.compute,
                     &mut state.scratch,
@@ -2333,5 +2328,108 @@ impl Drop for VulkanBuffer {
                 decrement_allocation(data.len() as u64);
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod map_full_tests {
+    use std::collections::HashMap;
+
+    const EMPTY_KEY: i32 = i32::MIN;
+    const INVALID_INDEX: u32 = u32::MAX;
+
+    fn assign_indices_cuda_style(
+        unique_keys: &[i32],
+        existing: &HashMap<i32, u32>,
+        dist_cap: u32,
+        add_cursor_start: u32,
+        lru_mapping: &[u32],
+    ) -> (Vec<u32>, Vec<u32>, Vec<i32>, u32, u32) {
+        let mut target_indices = Vec::with_capacity(unique_keys.len());
+        let mut update_flags = Vec::with_capacity(unique_keys.len());
+        let mut dist_keys = vec![EMPTY_KEY; dist_cap as usize];
+        let mut add_cursor = add_cursor_start;
+        let mut lru_cursor = 0u32;
+
+        for &key in unique_keys {
+            if key == EMPTY_KEY {
+                target_indices.push(INVALID_INDEX);
+                update_flags.push(0);
+                continue;
+            }
+
+            if let Some(&idx) = existing.get(&key) {
+                target_indices.push(idx);
+                update_flags.push(1);
+                continue;
+            }
+
+            let old_add = add_cursor;
+            add_cursor = add_cursor.saturating_add(1);
+
+            if old_add < dist_cap {
+                target_indices.push(old_add);
+                update_flags.push(0);
+                dist_keys[old_add as usize] = key;
+                continue;
+            }
+
+            let lru_idx = lru_cursor;
+            lru_cursor = lru_cursor.saturating_add(1);
+            if lru_idx < dist_cap {
+                let victim = lru_mapping[lru_idx as usize];
+                target_indices.push(victim);
+                update_flags.push(0);
+                dist_keys[victim as usize] = key;
+            } else {
+                target_indices.push(INVALID_INDEX);
+                update_flags.push(0);
+            }
+        }
+
+        (
+            target_indices,
+            update_flags,
+            dist_keys,
+            add_cursor,
+            lru_cursor,
+        )
+    }
+
+    #[test]
+    fn map_full_assign_stops_when_lru_candidates_exhausted() {
+        let existing = HashMap::new();
+        let lru_mapping = vec![2u32, 1u32, 0u32, 3u32];
+        let (targets, flags, dist_keys, add_cursor, lru_cursor) =
+            assign_indices_cuda_style(&[11, 22, 33, 44, 55, 66], &existing, 4, 4, &lru_mapping);
+
+        assert_eq!(
+            targets,
+            vec![2, 1, 0, 3, INVALID_INDEX, INVALID_INDEX],
+            "replacements must not wrap and overwrite earlier victims in a single scan"
+        );
+        assert_eq!(flags, vec![0, 0, 0, 0, 0, 0]);
+        assert_eq!(add_cursor, 10);
+        assert_eq!(lru_cursor, 6);
+        assert_eq!(dist_keys[2], 11);
+        assert_eq!(dist_keys[1], 22);
+        assert_eq!(dist_keys[0], 33);
+        assert_eq!(dist_keys[3], 44);
+    }
+
+    #[test]
+    fn map_full_assign_resets_lru_consumption_each_scan() {
+        let existing = HashMap::new();
+        let lru_mapping = vec![3u32, 2u32, 1u32, 0u32];
+
+        let (first_targets, _, _, _, first_lru_cursor) =
+            assign_indices_cuda_style(&[10, 20], &existing, 4, 4, &lru_mapping);
+        let (second_targets, _, _, _, second_lru_cursor) =
+            assign_indices_cuda_style(&[30, 40], &existing, 4, 4, &lru_mapping);
+
+        assert_eq!(first_targets, vec![3, 2]);
+        assert_eq!(second_targets, vec![3, 2]);
+        assert_eq!(first_lru_cursor, 2);
+        assert_eq!(second_lru_cursor, 2);
     }
 }

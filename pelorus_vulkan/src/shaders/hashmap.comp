@@ -22,7 +22,7 @@ void main() {
     uint slot = hash_fn(key) & (pc.table_cap - 1u);
     for (uint i = 0; i < pc.table_cap; i++) {
         int prev = atomicCompSwap(table_keys[slot], EMPTY_KEY, key);
-        if (prev == EMPTY_KEY) {
+        if (prev == EMPTY_KEY || prev == key) {
             table_vals[slot] = idx;
             return;
         }
