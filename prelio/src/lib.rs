@@ -329,9 +329,34 @@ fn find_medoid_in_slice(points: &[(i32, PointXYZIT)]) -> PointXYZIT {
             let dist_b = (b.x - centroid.x).powi(2)
                 + (b.y - centroid.y).powi(2)
                 + (b.z - centroid.z).powi(2);
-            dist_a.partial_cmp(&dist_b).unwrap()
+            dist_a
+                .partial_cmp(&dist_b)
+                .unwrap_or(std::cmp::Ordering::Equal)
         })
         .unwrap()
+}
+
+type DownsampleCloudMeta = (
+    Vec<PointXYZIT>,
+    Option<Vec<PointXYZIT>>,
+    f64,
+    f64,
+    HeaderMsg,
+);
+
+#[derive(Debug, Clone, Copy, Default)]
+struct DownsamplePhaseTimings {
+    filter_map_down_us: u64,
+    keyed_sort_us: u64,
+    medoid_reduce_us: u64,
+    timestamp_sort_us: u64,
+    bypass_filter_map_us: u64,
+    bypass_sort_us: u64,
+}
+
+#[inline]
+fn elapsed_us(start: std::time::Instant) -> u64 {
+    start.elapsed().as_micros() as u64
 }
 
 fn filter_downsample_with_fallback<
@@ -342,15 +367,7 @@ fn filter_downsample_with_fallback<
 >(
     cloud: PointCloud2Msg,
     lifis_params: &LifisParameters,
-) -> Result<
-    Option<(
-        Vec<PointXYZIT>,
-        Option<Vec<PointXYZIT>>,
-        f64,
-        f64,
-        HeaderMsg,
-    )>,
-> {
+) -> Result<Option<(DownsampleCloudMeta, DownsamplePhaseTimings)>> {
     let result = filter_downsample::<N, P>(&cloud, lifis_params);
 
     match result {
@@ -366,40 +383,10 @@ fn filter_downsample_with_fallback<
     }
 }
 
-enum EitherParIter<L, R> {
-    Left(L),
-    Right(R),
-}
-
-impl<L, R> rayon::iter::ParallelIterator for EitherParIter<L, R>
-where
-    L: rayon::iter::ParallelIterator,
-    R: rayon::iter::ParallelIterator<Item = L::Item>,
-{
-    type Item = L::Item;
-    fn drive_unindexed<C>(self, consumer: C) -> C::Result
-    where
-        C: rayon::iter::plumbing::UnindexedConsumer<Self::Item>,
-    {
-        match self {
-            EitherParIter::Left(l) => l.drive_unindexed(consumer),
-            EitherParIter::Right(r) => r.drive_unindexed(consumer),
-        }
-    }
-}
-
 fn filter_downsample<const N: usize, P: PointXYZITimestamp<N>>(
     cloud: &PointCloud2Msg,
     lifis_params: &LifisParameters,
-) -> Result<
-    Option<(
-        Vec<PointXYZIT>,
-        Option<Vec<PointXYZIT>>,
-        f64,
-        f64,
-        HeaderMsg,
-    )>,
-> {
+) -> Result<Option<(DownsampleCloudMeta, DownsamplePhaseTimings)>> {
     let bypass_output_downsample = lifis_params.downsample.bypass_output_downsample;
     let header = cloud.header.clone();
     let voxel_size = lifis_params.downsample.voxel_size;
@@ -434,6 +421,10 @@ fn filter_downsample<const N: usize, P: PointXYZITimestamp<N>>(
     };
 
     let filter = |point: PointXYZIT| -> Option<PointXYZIT> {
+        if !(point.x.is_finite() && point.y.is_finite() && point.z.is_finite()) {
+            return None;
+        }
+
         let params = &lifis_params.passthrough_filter;
         let p_t = params.filter_frame_transform * nalgebra::Point3::new(point.x, point.y, point.z);
 
@@ -509,6 +500,14 @@ fn filter_downsample<const N: usize, P: PointXYZITimestamp<N>>(
         return Some((key, out));
     };
 
+    let map_down_ref_from_bypass = |point: &PointXYZIT| {
+        let key = hash(
+            &nalgebra::Point3::new(point.x, point.y, point.z),
+            voxel_size,
+        );
+        Some((key, *point))
+    };
+
     let map_down = |point: PointXYZIT| map_down_ref(&point);
 
     let filter_map_down = |point| map_down(filter(point)?);
@@ -539,58 +538,92 @@ fn filter_downsample<const N: usize, P: PointXYZITimestamp<N>>(
     };
 
     // --- Processing ---
+    let mut phase_timings = DownsamplePhaseTimings::default();
     {
         let point_skip = lifis_params.downsample.point_skip.max(1);
-        let iter = if point_skip == 1 {
-            EitherParIter::Left(cloud.try_into_par_iter()?.map(map_to_non_trait))
-        } else {
-            EitherParIter::Right(
-                cloud
-                    .try_into_iter()?
-                    .step_by(point_skip)
-                    .map(map_to_non_trait)
-                    .par_bridge(),
-            )
-        };
 
         if let Some((bypass, bypass_iter)) = raw_out.as_mut() {
             let bypass_iter = bypass_iter.try_into_par_iter()?.map(map_to_non_trait);
-            rayon::scope(|scope| {
-                // spawn bypass
-                scope.spawn(|_| {
-                    bypass.par_extend(bypass_iter.filter_map(filter_map_non_down));
-                    bypass.par_sort_unstable_by(cmp);
-                });
 
-                // spawn normal downsampling
-                scope.spawn(|_| {
-                    keyed_points.par_extend(iter.filter_map(filter_map_down));
-                    keyed_points.par_sort_unstable_by_key(|(key, _)| *key); // TODO takes a long time
+            let start = std::time::Instant::now();
+            bypass.par_extend(bypass_iter.filter_map(filter_map_non_down));
+            phase_timings.bypass_filter_map_us = elapsed_us(start);
 
-                    // Non-par because it is measured to be faster on a single core
-                    downsampled.extend(
-                        keyed_points
-                            .chunk_by(|a, b| a.0 == b.0)
-                            .map(find_medoid_in_slice),
-                    );
+            let start = std::time::Instant::now();
+            if point_skip == 1 {
+                keyed_points.par_extend(bypass.par_iter().filter_map(map_down_ref_from_bypass));
+            } else {
+                keyed_points.par_extend(
+                    bypass
+                        .par_iter()
+                        .enumerate()
+                        .filter_map(|(idx, p)| (idx % point_skip == 0).then(|| (idx, p)))
+                        .filter_map(|(_, p)| map_down_ref_from_bypass(p)),
+                );
+            }
+            phase_timings.filter_map_down_us = elapsed_us(start);
 
-                    // Sort again by timestamps because we could have merged multiple timestamps
-                    downsampled.par_sort_unstable_by(cmp);
-                });
-            });
-        } else {
-            keyed_points.par_extend(iter.filter_map(filter_map_down));
+            let start = std::time::Instant::now();
             keyed_points.par_sort_unstable_by_key(|(key, _)| *key); // TODO takes a long time
+            phase_timings.keyed_sort_us = elapsed_us(start);
 
             // Non-par because it is measured to be faster on a single core
+            let start = std::time::Instant::now();
             downsampled.extend(
                 keyed_points
                     .chunk_by(|a, b| a.0 == b.0)
                     .map(find_medoid_in_slice),
             );
+            phase_timings.medoid_reduce_us = elapsed_us(start);
 
             // Sort again by timestamps because we could have merged multiple timestamps
+            let start = std::time::Instant::now();
             downsampled.par_sort_unstable_by(cmp);
+            phase_timings.timestamp_sort_us = elapsed_us(start);
+
+            let start = std::time::Instant::now();
+            bypass.par_sort_unstable_by(cmp);
+            phase_timings.bypass_sort_us = elapsed_us(start);
+        } else {
+            let start = std::time::Instant::now();
+            if point_skip == 1 {
+                keyed_points.par_extend(
+                    cloud
+                        .try_into_par_iter()?
+                        .map(map_to_non_trait)
+                        .filter_map(filter_map_down),
+                );
+            } else {
+                let skipped_points: Vec<PointXYZIT> = cloud
+                    .try_into_iter()?
+                    .step_by(point_skip)
+                    .map(map_to_non_trait)
+                    .collect();
+                keyed_points.par_extend(
+                    skipped_points
+                        .into_par_iter()
+                        .filter_map(filter_map_down),
+                );
+            }
+            phase_timings.filter_map_down_us = elapsed_us(start);
+
+            let start = std::time::Instant::now();
+            keyed_points.par_sort_unstable_by_key(|(key, _)| *key); // TODO takes a long time
+            phase_timings.keyed_sort_us = elapsed_us(start);
+
+            // Non-par because it is measured to be faster on a single core
+            let start = std::time::Instant::now();
+            downsampled.extend(
+                keyed_points
+                    .chunk_by(|a, b| a.0 == b.0)
+                    .map(find_medoid_in_slice),
+            );
+            phase_timings.medoid_reduce_us = elapsed_us(start);
+
+            // Sort again by timestamps because we could have merged multiple timestamps
+            let start = std::time::Instant::now();
+            downsampled.par_sort_unstable_by(cmp);
+            phase_timings.timestamp_sort_us = elapsed_us(start);
         }
     }
     let (first, last) = match (&downsampled.first(), &downsampled.last()) {
@@ -613,11 +646,14 @@ fn filter_downsample<const N: usize, P: PointXYZITimestamp<N>>(
 
     // TODO back to keeping the timestamp f64, only testing right now because of artefacts
     Ok(Some((
-        downsampled,
-        raw_out,
-        first as f64,
-        last as f64,
-        header,
+        (
+            downsampled,
+            raw_out,
+            first as f64,
+            last as f64,
+            header,
+        ),
+        phase_timings,
     )))
 }
 
@@ -933,7 +969,36 @@ impl Prelio {
                 };
 
                 match result {
-                    Ok(Some(cloud_meta)) => {
+                    Ok(Some((cloud_meta, phase_timings))) => {
+                        eval.add_external_measurement(
+                            "filter_downsample/filter_map_down",
+                            phase_timings.filter_map_down_us as f64 / 1000.0,
+                        );
+                        eval.add_external_measurement(
+                            "filter_downsample/keyed_sort",
+                            phase_timings.keyed_sort_us as f64 / 1000.0,
+                        );
+                        eval.add_external_measurement(
+                            "filter_downsample/medoid_reduce",
+                            phase_timings.medoid_reduce_us as f64 / 1000.0,
+                        );
+                        eval.add_external_measurement(
+                            "filter_downsample/timestamp_sort",
+                            phase_timings.timestamp_sort_us as f64 / 1000.0,
+                        );
+                        if phase_timings.bypass_filter_map_us > 0 {
+                            eval.add_external_measurement(
+                                "filter_downsample/bypass_filter_map",
+                                phase_timings.bypass_filter_map_us as f64 / 1000.0,
+                            );
+                        }
+                        if phase_timings.bypass_sort_us > 0 {
+                            eval.add_external_measurement(
+                                "filter_downsample/bypass_sort",
+                                phase_timings.bypass_sort_us as f64 / 1000.0,
+                            );
+                        }
+
                         eval.stop("filter_downsample").unwrap();
                         if let Err(e) =
                             filtered_cloud_tx.send((cloud_meta, labeled.scan_id, eval.clone()))
