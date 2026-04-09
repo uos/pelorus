@@ -100,7 +100,12 @@ impl RegistrationState {
         }
     }
 
-    fn add_to_map(&mut self, cloud: &LocatedBufferView<PointXYZIT>, pose: Isometry3<f64>) {
+    fn add_to_map(
+        &mut self,
+        cloud: &LocatedBufferView<PointXYZIT>,
+        pose: Isometry3<f64>,
+        scan_id: usize,
+    ) {
         #[allow(irrefutable_let_patterns)]
         let LocatedBufferView::Ram(cloud) = cloud else {
             panic!("CPU add_to_map called with non-RAM buffer");
@@ -108,12 +113,12 @@ impl RegistrationState {
 
         #[cfg(feature = "nn_kdt")]
         {
-            self.map.add(cloud, &pose);
+            self.map.add(cloud, &pose, scan_id);
         }
 
         #[cfg(not(feature = "nn_kdt"))]
         {
-            self.map.add(cloud, &pose);
+            self.map.add(cloud, &pose, scan_id);
         }
     }
 
@@ -483,6 +488,7 @@ impl crate::Registration for RegistrationState {
         imu_transform: Isometry3<f64>,
         cloud: &LocatedBufferView<PointXYZIT>,
         lidar_timestamp: f64,
+        scan_id: usize,
         ready_for_next: Option<&std::sync::mpsc::Sender<()>>,
         eval: &mut RuntimeEvaluator,
         backend: &ActiveBackend,
@@ -501,7 +507,7 @@ impl crate::Registration for RegistrationState {
 
         if map_only {
             match backend {
-                ActiveBackend::Cpu => self.add_to_map(cloud, imu_transform),
+                ActiveBackend::Cpu => self.add_to_map(cloud, imu_transform, scan_id),
                 #[cfg(feature = "cuda")]
                 ActiveBackend::Cuda(stream) => {
                     let LocatedBufferView::Cuda { buffer } = cloud else {
@@ -509,7 +515,7 @@ impl crate::Registration for RegistrationState {
                     };
                     let transl = &imu_transform.translation.vector.into();
                     let rot_quat: pelorus_cuda::Quaternion = imu_transform.rotation.into();
-                    pelorus_cuda::add_to_map(stream, buffer, &transl, &rot_quat);
+                    pelorus_cuda::add_to_map(stream, buffer, &transl, &rot_quat, scan_id);
                 }
                 #[cfg(feature = "metal")]
                 ActiveBackend::Metal(stream) => {
@@ -518,7 +524,7 @@ impl crate::Registration for RegistrationState {
                     };
                     let transl = &imu_transform.translation.vector.into();
                     let rot_quat: pelorus_metal::Quaternion = imu_transform.rotation.into();
-                    pelorus_metal::add_to_map(stream, buffer, &transl, &rot_quat);
+                    pelorus_metal::add_to_map(stream, buffer, &transl, &rot_quat, scan_id);
                 }
                 #[cfg(feature = "vulkan")]
                 ActiveBackend::Vulkan(stream) => {
@@ -527,7 +533,7 @@ impl crate::Registration for RegistrationState {
                     };
                     let transl = &imu_transform.translation.vector.into();
                     let rot_quat: pelorus_vulkan::Quaternion = imu_transform.rotation.into();
-                    pelorus_vulkan::add_to_map(stream, buffer, &transl, &rot_quat);
+                    pelorus_vulkan::add_to_map(stream, buffer, &transl, &rot_quat, scan_id);
                 }
             }
             return Ok(None);
@@ -600,12 +606,11 @@ impl crate::Registration for RegistrationState {
                         _ => true,
                     };
                     if needs_alloc {
-                        self.planes_gpu_buffer =
-                            Some(GpuPlanesBuffer::Vulkan(VulkanBuffer::new(
-                                stream,
-                                size_of::<pelorus_vulkan::PointNormal>(),
-                                cloud_len_alloc,
-                            )));
+                        self.planes_gpu_buffer = Some(GpuPlanesBuffer::Vulkan(VulkanBuffer::new(
+                            stream,
+                            size_of::<pelorus_vulkan::PointNormal>(),
+                            cloud_len_alloc,
+                        )));
                     }
                 }
             }
@@ -688,9 +693,9 @@ impl crate::Registration for RegistrationState {
                                 let l2_sq = point_local.x * point_local.x
                                     + point_local.y * point_local.y
                                     + point_local.z * point_local.z;
-                                let s =
-                                    1.0_f32 - 0.9 * pd2.abs() / l2_sq.max(1e-9_f32).sqrt().sqrt();
-                                if s <= 0.9 {
+                                let s = 1.0_f32
+                                    - 0.9_f32 * pd2.abs() / l2_sq.max(1e-9_f32).sqrt().sqrt();
+                                if s <= 0.9_f32 {
                                     None
                                 } else {
                                     Some(PointXYZINormal::new(
@@ -941,7 +946,7 @@ impl crate::Registration for RegistrationState {
         }
 
         match backend {
-            ActiveBackend::Cpu => self.add_to_map(cloud, t_w_l),
+            ActiveBackend::Cpu => self.add_to_map(cloud, t_w_l, scan_id),
             #[cfg(feature = "cuda")]
             ActiveBackend::Cuda(stream) => {
                 let LocatedBufferView::Cuda { buffer } = cloud else {
@@ -953,6 +958,7 @@ impl crate::Registration for RegistrationState {
                     buffer,
                     &t_w_l.translation.vector.into(),
                     &rot_quat,
+                    scan_id,
                 );
                 stream.sync();
             }
@@ -967,7 +973,7 @@ impl crate::Registration for RegistrationState {
                         t_w_l.rotation.to_rotation_matrix().matrix().clone();
                     nalgebra::UnitQuaternion::from_matrix(&mat).into()
                 };
-                pelorus_metal::add_to_map(stream, buffer, transl, &rot_quat);
+                pelorus_metal::add_to_map(stream, buffer, transl, &rot_quat, scan_id);
                 stream.sync();
             }
             #[cfg(feature = "vulkan")]
@@ -981,7 +987,7 @@ impl crate::Registration for RegistrationState {
                         t_w_l.rotation.to_rotation_matrix().matrix().clone();
                     nalgebra::UnitQuaternion::from_matrix(&mat).into()
                 };
-                pelorus_vulkan::add_to_map(stream, buffer, transl, &rot_quat);
+                pelorus_vulkan::add_to_map(stream, buffer, transl, &rot_quat, scan_id);
                 stream.sync();
             }
         }

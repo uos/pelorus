@@ -397,6 +397,7 @@ pub fn add_to_map(
     cloud: &CudaBuffer,
     ekf_pose_t: &Vector3,
     ekf_pose_r: &Quaternion,
+    scan_id: usize,
 ) {
     let pose = Pose {
         position: *ekf_pose_t,
@@ -411,6 +412,7 @@ pub fn add_to_map(
             cloud.gpu_ptr as *mut ffi::Point,
             cloud.n as u32,
             pose,
+            scan_id as u32,
         );
         ffi::cupcl_event_record(timing_state.add_to_map_stop, my_stream);
     }

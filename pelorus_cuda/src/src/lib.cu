@@ -181,11 +181,11 @@ void cupcl_destroy_stream(void *stream) {
 }
 
 void add_to_map(void *stream, Point *points, u_int32_t size,
-                Pose registered_pose) {
+                Pose registered_pose, uint32_t scan_id) {
   try {
     assert(stream != NULL);
     rm::CudaStream *stream_ = (rm::CudaStream *)stream;
-    add_to_map_impl(stream_->handle(), points, size, registered_pose);
+    add_to_map_impl(stream_->handle(), points, size, registered_pose, scan_id);
   } catch (const std::exception &e) {
     std::cerr << "Caught exception: " << e.what() << std::endl;
     std::exit(1);

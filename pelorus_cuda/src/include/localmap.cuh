@@ -54,7 +54,7 @@ extern "C++" {
 
 void     init_map_impl(cudaStream_t stream, uint32_t capacity, float voxel_size,
                        float sensitivity, float min_dist, uint32_t nbtype);
-void     add_to_map_impl(cudaStream_t stream, Point* points, uint32_t n_points, Pose pose);
+void     add_to_map_impl(cudaStream_t stream, Point* points, uint32_t n_points, Pose pose, uint32_t scan_id);
 uint32_t planes_impl(cudaStream_t stream, Point* cloud, uint32_t cloud_size,
                      Pose lidar_to_imu, Pose pose, PointNormal* out_buff);
 void     get_map_impl(Point* points, uint32_t* size);

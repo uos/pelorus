@@ -467,8 +467,9 @@ impl IVoxHashMap {
         &mut self,
         points: &[pelorus_core::PointXYZIT],
         transform: &nalgebra::Isometry3<f64>,
+        scan_id: usize,
     ) {
-        self.scan_number += 1;
+        self.scan_number = scan_id;
 
         #[cfg(feature = "nn_kdt")]
         {
@@ -791,9 +792,59 @@ impl IVoxHashMap {
         let mut merged_dist = VoxelDistribution::new();
 
         let grid = self.pos2grid(query);
-        let neighbor_grids = Self::nearby_26(grid); // Or any other nearby type
+        let neighbor_grids = match self.nearby_type {
+            IVoxNearbyType::Center => [
+                (grid.0, grid.1, grid.2),
+                (0, 0, 0),
+                (0, 0, 0),
+                (0, 0, 0),
+                (0, 0, 0),
+                (0, 0, 0),
+                (0, 0, 0),
+                (0, 0, 0),
+                (0, 0, 0),
+                (0, 0, 0),
+                (0, 0, 0),
+                (0, 0, 0),
+                (0, 0, 0),
+                (0, 0, 0),
+                (0, 0, 0),
+                (0, 0, 0),
+                (0, 0, 0),
+                (0, 0, 0),
+                (0, 0, 0),
+                (0, 0, 0),
+                (0, 0, 0),
+                (0, 0, 0),
+                (0, 0, 0),
+                (0, 0, 0),
+                (0, 0, 0),
+                (0, 0, 0),
+                (0, 0, 0),
+            ],
+            IVoxNearbyType::Nearby6 => {
+                let n6 = Self::nearby_6(grid);
+                let mut res = [(0, 0, 0); 27];
+                res[..7].copy_from_slice(&n6);
+                res
+            }
+            IVoxNearbyType::Nearby18 => {
+                let n18 = Self::nearby_18(grid);
+                let mut res = [(0, 0, 0); 27];
+                res[..19].copy_from_slice(&n18);
+                res
+            }
+            IVoxNearbyType::Nearby26 => Self::nearby_26(grid),
+        };
 
-        for g in neighbor_grids.iter() {
+        let n_cells = match self.nearby_type {
+            IVoxNearbyType::Center => 1,
+            IVoxNearbyType::Nearby6 => 7,
+            IVoxNearbyType::Nearby18 => 19,
+            IVoxNearbyType::Nearby26 => 27,
+        };
+
+        for g in neighbor_grids[..n_cells].iter() {
             let k = Self::hash_grid(g);
             if let Some(dist) = self.livodish.find(&k) {
                 merged_dist.pool(dist);
@@ -894,9 +945,59 @@ impl IVoxHashMap {
             gy.div_euclid(res_factor),
             gz.div_euclid(res_factor),
         );
-        let neighbor_grids = Self::nearby_26(lr_grid); // Or any other nearby type
+        let neighbor_grids = match self.nearby_type {
+            IVoxNearbyType::Center => [
+                (lr_grid.0, lr_grid.1, lr_grid.2),
+                (0, 0, 0),
+                (0, 0, 0),
+                (0, 0, 0),
+                (0, 0, 0),
+                (0, 0, 0),
+                (0, 0, 0),
+                (0, 0, 0),
+                (0, 0, 0),
+                (0, 0, 0),
+                (0, 0, 0),
+                (0, 0, 0),
+                (0, 0, 0),
+                (0, 0, 0),
+                (0, 0, 0),
+                (0, 0, 0),
+                (0, 0, 0),
+                (0, 0, 0),
+                (0, 0, 0),
+                (0, 0, 0),
+                (0, 0, 0),
+                (0, 0, 0),
+                (0, 0, 0),
+                (0, 0, 0),
+                (0, 0, 0),
+                (0, 0, 0),
+                (0, 0, 0),
+            ],
+            IVoxNearbyType::Nearby6 => {
+                let n6 = Self::nearby_6(lr_grid);
+                let mut res = [(0, 0, 0); 27];
+                res[..7].copy_from_slice(&n6);
+                res
+            }
+            IVoxNearbyType::Nearby18 => {
+                let n18 = Self::nearby_18(lr_grid);
+                let mut res = [(0, 0, 0); 27];
+                res[..19].copy_from_slice(&n18);
+                res
+            }
+            IVoxNearbyType::Nearby26 => Self::nearby_26(lr_grid),
+        };
 
-        for g in neighbor_grids.iter() {
+        let n_cells = match self.nearby_type {
+            IVoxNearbyType::Center => 1,
+            IVoxNearbyType::Nearby6 => 7,
+            IVoxNearbyType::Nearby18 => 19,
+            IVoxNearbyType::Nearby26 => 27,
+        };
+
+        for g in neighbor_grids[..n_cells].iter() {
             if let Some(dist) = lower_res_voxel(g) {
                 merged_dist.pool(dist);
             }

@@ -996,6 +996,7 @@ fn lio_with_ready_signal(
                     init_guess_lidar,
                     cloud_for_reg,
                     current_cloud_time,
+                    lifis_tick.scan_id as usize,
                     ready_for_next_tx.as_ref(),
                     &mut eval,
                     &active_backend,

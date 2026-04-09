@@ -1,6 +1,6 @@
 #version 450
 
-const int EMPTY_KEY = -2147483648;
+const int EMPTY_KEY = int(0x80000000);
 
 struct Point {
     float x;
@@ -73,7 +73,10 @@ ivec3 grid_pos(float resolution, vec3 p) {
 }
 
 int hash_grid(ivec3 g) {
-    return (g.x * 73856093) + (g.y * 471943) + (g.z * 83492791);
+    uint h = uint(g.x) * 73856093u;
+    h += uint(g.y) * 471943u;
+    h += uint(g.z) * 83492791u;
+    return int(h);
 }
 
 uint hash_fn(int key) {
@@ -162,13 +165,13 @@ vec3 symmetric_eigen_3x3(in float A[9]) {
     float b_d = (2.0 * p * p * p - 9.0 * p * q + 27.0 * r) / 27.0;
 
     float angle = 0.0;
-    if (a_d != 0.0) {
+    if (a_d < -1e-7) {
         float arg = (-b_d / 2.0) / sqrt(-a_d * a_d * a_d / 27.0);
         arg = clamp(arg, -1.0, 1.0);
         angle = acos(arg);
     }
 
-    float two_s = 2.0 * sqrt(-a_d / 3.0);
+    float two_s = 2.0 * sqrt(max(0.0, -a_d / 3.0));
     float p3 = p / 3.0;
     float pi2 = 6.28318530718;
 
@@ -237,27 +240,30 @@ void pool_dist(inout uint acc_point_count, inout float acc_mean[3], inout float 
         return;
     }
 
-    float n1 = float(acc_point_count);
-    float n2 = float(other.point_count);
-    float total_points = n1 + n2;
-
     vec3 mean1 = vec3(acc_mean[0], acc_mean[1], acc_mean[2]);
     vec3 mean2 = vec3(other.mean[0], other.mean[1], other.mean[2]);
-    vec3 new_mean = (n1 * mean1 + n2 * mean2) / total_points;
+
+    float n1 = float(acc_point_count);
+    float n2 = float(other.point_count);
+    float total = n1 + n2;
+
+    float nm0 = (n1 * acc_mean[0] + n2 * other.mean[0]) / total;
+    float nm1 = (n1 * acc_mean[1] + n2 * other.mean[1]) / total;
+    float nm2 = (n1 * acc_mean[2] + n2 * other.mean[2]) / total;
 
     vec3 delta = mean1 - mean2;
-    float delta_weight = (n1 * n2 / total_points);
+    float w = (n1 * n2) / total;
 
     for (int r = 0; r < 3; r++) {
         for (int c = 0; c < 3; c++) {
             float c1 = acc_cov[r * 3 + c];
             float c2 = other.cov[r * 3 + c];
-            acc_cov[r * 3 + c] = (n1 * c1 + n2 * c2 + delta[r] * delta[c] * delta_weight) / total_points;
+            acc_cov[r * 3 + c] = (n1 * c1 + n2 * c2 + delta[r] * delta[c] * w) / total;
         }
     }
 
-    acc_mean[0] = new_mean.x;
-    acc_mean[1] = new_mean.y;
-    acc_mean[2] = new_mean.z;
-    acc_point_count = uint(total_points);
+    acc_mean[0] = nm0;
+    acc_mean[1] = nm1;
+    acc_mean[2] = nm2;
+    acc_point_count = uint(total);
 }

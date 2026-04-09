@@ -599,11 +599,7 @@ fn filter_downsample<const N: usize, P: PointXYZITimestamp<N>>(
                     .step_by(point_skip)
                     .map(map_to_non_trait)
                     .collect();
-                keyed_points.par_extend(
-                    skipped_points
-                        .into_par_iter()
-                        .filter_map(filter_map_down),
-                );
+                keyed_points.par_extend(skipped_points.into_par_iter().filter_map(filter_map_down));
             }
             phase_timings.filter_map_down_us = elapsed_us(start);
 
@@ -646,13 +642,7 @@ fn filter_downsample<const N: usize, P: PointXYZITimestamp<N>>(
 
     // TODO back to keeping the timestamp f64, only testing right now because of artefacts
     Ok(Some((
-        (
-            downsampled,
-            raw_out,
-            first as f64,
-            last as f64,
-            header,
-        ),
+        (downsampled, raw_out, first as f64, last as f64, header),
         phase_timings,
     )))
 }

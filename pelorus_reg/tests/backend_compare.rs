@@ -198,13 +198,9 @@ fn test_backends() {
             imu_transform,
             &simple_view,
             0.0,
+            1,
             Some(&sender),
             &mut eval,
-            #[cfg(feature = "cuda")]
-            &stream,
-            #[cfg(feature = "metal")]
-            &stream,
-            #[cfg(feature = "vulkan")]
             &stream,
         )
         .unwrap();
@@ -215,13 +211,9 @@ fn test_backends() {
             imu_transform,
             &complex_view,
             0.1,
+            2,
             Some(&sender),
             &mut eval,
-            #[cfg(feature = "cuda")]
-            &stream,
-            #[cfg(feature = "metal")]
-            &stream,
-            #[cfg(feature = "vulkan")]
             &stream,
         )
         .unwrap();

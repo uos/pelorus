@@ -452,6 +452,7 @@ impl From<crate::Qos> for ros2::QosPolicies {
 
 #[derive(Debug)]
 pub struct Tick {
+    pub scan_id: u64,
     pub deskewed_cloud: Vec<PointXYZIT>,
     pub deskewed_cloud_passthrough: Option<Vec<PointXYZIT>>,
     pub map_only: bool,
@@ -1130,6 +1131,7 @@ impl PrelioNode {
             };
 
             let res = Tick {
+                scan_id: synced_data.scan_id,
                 map_only: synced_data.should_map_only,
                 deskewed_cloud: synced_data.cloud,
                 deskewed_cloud_passthrough: synced_data.passthrough,

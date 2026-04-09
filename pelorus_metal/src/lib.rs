@@ -112,8 +112,9 @@ pub fn add_to_map(
     cloud: &MetalBuffer,
     ekf_pose_t: &Vector3,
     ekf_pose_r: &Quaternion,
+    scan_id: usize,
 ) {
-    let gpu_time_ms = map::add_to_map_impl(stream, cloud, ekf_pose_t, ekf_pose_r);
+    let gpu_time_ms = map::add_to_map_impl(stream, cloud, ekf_pose_t, ekf_pose_r, scan_id);
     record_add_to_map_gpu_time(gpu_time_ms);
 }
 

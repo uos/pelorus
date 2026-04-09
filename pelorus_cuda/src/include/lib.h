@@ -86,7 +86,7 @@ u_int32_t planes(void *stream, Point *cloud, uint32_t cloud_size,
                  Pose ekf_lidar_to_imu, Pose ekf_pose, PointNormal *out_buff);
 
 void add_to_map(void *stream, Point *points, u_int32_t size,
-                Pose registered_pose);
+                Pose registered_pose, uint32_t scan_id);
 
 uint32_t get_map_capacity();
 void get_map(Point *points, uint32_t *points_size);

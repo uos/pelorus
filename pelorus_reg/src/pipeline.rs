@@ -165,6 +165,7 @@ impl Pipeline {
                 self.ext_lidar_to_imu,
                 &cloud_view,
                 lidar_timestamp,
+                processed.scan_id as usize,
                 ready_for_next,
                 &mut eval,
                 &self.active_backend,

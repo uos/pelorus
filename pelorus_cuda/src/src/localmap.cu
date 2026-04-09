@@ -822,13 +822,13 @@ void init_map_impl(cudaStream_t stream, uint32_t capacity, float voxel_size,
     CUDA_CHECK(cudaStreamSynchronize(stream));
 }
 
-void add_to_map_impl(cudaStream_t stream, Point* points, uint32_t n_points, Pose pose) {
+void add_to_map_impl(cudaStream_t stream, Point* points, uint32_t n_points, Pose pose, uint32_t scan_id) {
     CudaMapState* s = g_state;
     assert(s != nullptr);
 
     if (n_points == 0) return;
 
-    s->scan_number++;
+    s->scan_number = scan_id;
     uint32_t scan_number = s->scan_number;
 
     // Scratch must hold at least n_points elements

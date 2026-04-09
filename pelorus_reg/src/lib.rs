@@ -73,6 +73,7 @@ pub trait Registration {
         imu_transform: Isometry3<f64>,
         cloud: &LocatedBufferView<PointXYZIT>,
         lidar_timestamp: f64,
+        scan_id: usize,
         ready_for_next: Option<&std::sync::mpsc::Sender<()>>,
         eval: &mut RuntimeEvaluator,
         backend: &ActiveBackend,

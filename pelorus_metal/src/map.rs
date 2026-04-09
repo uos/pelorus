@@ -339,6 +339,7 @@ pub fn add_to_map_impl(
     cloud_buf: &crate::buffer::MetalBuffer,
     pose_t: &crate::types::Vector3,
     pose_r: &crate::types::Quaternion,
+    scan_id: usize,
 ) -> f64 {
     use nalgebra::UnitQuaternion;
     use std::time::Instant;
@@ -349,7 +350,7 @@ pub fn add_to_map_impl(
     let mut guard = get_state();
     let state = guard.as_mut().expect("Map not initialised");
 
-    state.scan_number += 1;
+    state.scan_number = scan_id as u32;
     let scan_number = state.scan_number;
     let resolution = state.resolution;
     let dist_cap = state.dist_cap;

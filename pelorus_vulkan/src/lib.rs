@@ -1691,8 +1691,7 @@ fn ensure_scratch_capacity(state: &mut VulkanGpuMapState, stream: &Stream, n_poi
     state.scratch.run_starts = VulkanBuffer::new(stream, size_of::<u32>(), new_cap);
     state.scratch.run_ends = VulkanBuffer::new(stream, size_of::<u32>(), new_cap);
     state.scratch.unique_keys = VulkanBuffer::new(stream, size_of::<i32>(), new_cap);
-    state.scratch.target_indices =
-        VulkanBuffer::new(stream, size_of::<u32>(), new_cap);
+    state.scratch.target_indices = VulkanBuffer::new(stream, size_of::<u32>(), new_cap);
     state.scratch.update_flags = VulkanBuffer::new(stream, size_of::<u32>(), new_cap);
     state.scratch.sorted_points =
         VulkanBuffer::new(stream, size_of::<crate::types::Point>(), new_cap);
@@ -1777,6 +1776,7 @@ pub fn add_to_map(
     cloud: &VulkanBuffer,
     ekf_pose_t: &Vector3,
     ekf_pose_r: &Quaternion,
+    scan_id: usize,
 ) {
     with_state(|state| match &mut state.backend {
         MapBackendState::Host(host) => {
@@ -1785,7 +1785,7 @@ pub fn add_to_map(
                 nalgebra::Translation3::new(ekf_pose_t.x, ekf_pose_t.y, ekf_pose_t.z),
                 nalgebra::UnitQuaternion::from(*ekf_pose_r),
             );
-            host.map.add(&cloud_cpu, &pose);
+            host.map.add(&cloud_cpu, &pose, scan_id);
         }
         MapBackendState::Vulkan(state) => {
             let n_points = cloud.n;
@@ -1802,7 +1802,7 @@ pub fn add_to_map(
             );
 
             ensure_scratch_capacity(state, stream, n_points);
-            state.scan_number += 1;
+            state.scan_number = scan_id as u32;
             let scan_number = state.scan_number;
             let map_was_full = state.add_cursor >= state.dist_cap;
 
@@ -2068,8 +2068,8 @@ pub fn planes_vulkan(
                     let l2_sq = point_local.x * point_local.x
                         + point_local.y * point_local.y
                         + point_local.z * point_local.z;
-                    let s = 1.0_f32 - 0.9 * pd2.abs() / l2_sq.max(1e-9_f32).sqrt().sqrt();
-                    if s > 0.9 {
+                    let s = 1.0_f32 - 0.9_f32 * pd2.abs() / l2_sq.max(1e-9_f32).sqrt().sqrt();
+                    if s > 0.9_f32 {
                         planes.push(PointXYZINormal::new(
                             point_local.x,
                             point_local.y,
