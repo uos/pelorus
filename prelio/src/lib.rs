@@ -513,7 +513,7 @@ fn filter_downsample<const N: usize, P: PointXYZITimestamp<N>>(
     let filter_map_down = |point| map_down(filter(point)?);
 
     let filter_map_non_down = |point: PointXYZIT| {
-        let mut point = undistort(point)?;
+        let mut point = filter(point)?;
         point.intensity *= 255.0;
         Some(point)
     };
