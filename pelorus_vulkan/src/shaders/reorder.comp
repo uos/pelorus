@@ -12,8 +12,8 @@ void main() {
         return;
     }
 
-    vec4 q = vec4(pc.pose_quat[0], pc.pose_quat[1], pc.pose_quat[2], pc.pose_quat[3]);
-    vec3 t = vec3(pc.pose_trans[0], pc.pose_trans[1], pc.pose_trans[2]);
+    vec4 q = pc.pose_quat;
+    vec3 t = pc.pose_trans;
 
     uint src_idx = sorted_indices[idx];
     if (src_idx >= pc.n) {

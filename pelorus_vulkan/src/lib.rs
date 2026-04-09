@@ -1567,14 +1567,14 @@ pub fn init_map(
             );
 
             let mut scratch = ScratchBuffers {
-                keys: VulkanBuffer::new_host_visible(stream, size_of::<i32>(), 1),
-                indices: VulkanBuffer::new_host_visible(stream, size_of::<u32>(), 1),
+                keys: VulkanBuffer::new(stream, size_of::<i32>(), 1),
+                indices: VulkanBuffer::new(stream, size_of::<u32>(), 1),
                 packed: VulkanBuffer::new(stream, size_of::<u64>(), 1),
-                run_starts: VulkanBuffer::new_host_visible(stream, size_of::<u32>(), 1),
-                run_ends: VulkanBuffer::new_host_visible(stream, size_of::<u32>(), 1),
-                unique_keys: VulkanBuffer::new_host_visible(stream, size_of::<i32>(), 1),
-                target_indices: VulkanBuffer::new_host_visible(stream, size_of::<u32>(), 1),
-                update_flags: VulkanBuffer::new_host_visible(stream, size_of::<u32>(), 1),
+                run_starts: VulkanBuffer::new(stream, size_of::<u32>(), 1),
+                run_ends: VulkanBuffer::new(stream, size_of::<u32>(), 1),
+                unique_keys: VulkanBuffer::new(stream, size_of::<i32>(), 1),
+                target_indices: VulkanBuffer::new(stream, size_of::<u32>(), 1),
+                update_flags: VulkanBuffer::new(stream, size_of::<u32>(), 1),
                 sorted_points: VulkanBuffer::new(stream, size_of::<crate::types::Point>(), 1),
                 counter: VulkanBuffer::new_host_visible(stream, size_of::<u32>(), 3),
                 sorter_scratch: VulkanBuffer::new(stream, 1, requirements.size as usize),
@@ -1685,15 +1685,15 @@ fn ensure_scratch_capacity(state: &mut VulkanGpuMapState, stream: &Stream, n_poi
         return;
     }
     let new_cap = (((n_points as f32) * 1.5).ceil() as usize).max(n_points.next_power_of_two());
-    state.scratch.keys = VulkanBuffer::new_host_visible(stream, size_of::<i32>(), new_cap);
-    state.scratch.indices = VulkanBuffer::new_host_visible(stream, size_of::<u32>(), new_cap);
+    state.scratch.keys = VulkanBuffer::new(stream, size_of::<i32>(), new_cap);
+    state.scratch.indices = VulkanBuffer::new(stream, size_of::<u32>(), new_cap);
     state.scratch.packed = VulkanBuffer::new(stream, size_of::<u64>(), new_cap);
-    state.scratch.run_starts = VulkanBuffer::new_host_visible(stream, size_of::<u32>(), new_cap);
-    state.scratch.run_ends = VulkanBuffer::new_host_visible(stream, size_of::<u32>(), new_cap);
-    state.scratch.unique_keys = VulkanBuffer::new_host_visible(stream, size_of::<i32>(), new_cap);
+    state.scratch.run_starts = VulkanBuffer::new(stream, size_of::<u32>(), new_cap);
+    state.scratch.run_ends = VulkanBuffer::new(stream, size_of::<u32>(), new_cap);
+    state.scratch.unique_keys = VulkanBuffer::new(stream, size_of::<i32>(), new_cap);
     state.scratch.target_indices =
-        VulkanBuffer::new_host_visible(stream, size_of::<u32>(), new_cap);
-    state.scratch.update_flags = VulkanBuffer::new_host_visible(stream, size_of::<u32>(), new_cap);
+        VulkanBuffer::new(stream, size_of::<u32>(), new_cap);
+    state.scratch.update_flags = VulkanBuffer::new(stream, size_of::<u32>(), new_cap);
     state.scratch.sorted_points =
         VulkanBuffer::new(stream, size_of::<crate::types::Point>(), new_cap);
 

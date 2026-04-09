@@ -601,7 +601,7 @@ impl crate::Registration for RegistrationState {
                     };
                     if needs_alloc {
                         self.planes_gpu_buffer =
-                            Some(GpuPlanesBuffer::Vulkan(VulkanBuffer::new_host_visible(
+                            Some(GpuPlanesBuffer::Vulkan(VulkanBuffer::new(
                                 stream,
                                 size_of::<pelorus_vulkan::PointNormal>(),
                                 cloud_len_alloc,

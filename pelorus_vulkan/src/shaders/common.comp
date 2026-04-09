@@ -31,11 +31,11 @@ struct VoxelDistribution {
 };
 
 layout(push_constant) uniform PushConstants {
-    float pose_quat[4];
-    float pose_trans[3];
+    vec4 pose_quat;
+    vec3 pose_trans;
     float _pad0;
-    float lidar_to_imu_quat[4];
-    float lidar_to_imu_pos[3];
+    vec4 lidar_to_imu_quat;
+    vec3 lidar_to_imu_pos;
     float _pad1;
     float resolution;
     uint scan_number;
