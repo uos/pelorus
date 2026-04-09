@@ -149,6 +149,8 @@ impl crate::Registration for RegistrationState {
         eval: &mut RuntimeEvaluator,
         backend: &ActiveBackend,
     ) -> anyhow::Result<Option<crate::CloudRegisterResult>> {
+        let eval_cb = Arc::new(RwLock::new(eval));
+
         let map_empty = match backend {
             ActiveBackend::Cpu => self.map.is_empty(),
             #[cfg(feature = "cuda")]
@@ -201,7 +203,7 @@ impl crate::Registration for RegistrationState {
             };
             let cloud_len_alloc = (extra * cloud.len() as f32).ceil() as usize;
             {
-                eval.start("ekf_correct").unwrap();
+                eval_cb.write().unwrap().start("ekf_correct").unwrap();
             }
 
             // Allocate / grow buffers based on the active backend
@@ -270,12 +272,9 @@ impl crate::Registration for RegistrationState {
 
             let planes_cpu_buffer_ptr = std::ptr::addr_of_mut!(self.planes_cpu_buffer);
             let planes_gpu_buffer_ptr = std::ptr::addr_of_mut!(self.planes_gpu_buffer);
-            #[cfg(not(any(feature = "cuda", feature = "metal", feature = "vulkan")))]
-            let _ = planes_gpu_buffer_ptr;
             let map_ptr = std::ptr::addr_of!(self.map);
 
             let mut cached_planes: Option<Vec<PointXYZINormal>> = None;
-            let eval_cb: Arc<RwLock<&mut RuntimeEvaluator>> = Arc::new(RwLock::new(eval));
             let eval_cb_inner = eval_cb.clone();
 
             self.ekf.correct(
@@ -328,13 +327,13 @@ impl crate::Registration for RegistrationState {
                                     .par_iter()
                                     .flat_map(|point_local| {
                                         let p_l = nalgebra::Point3::new(
-                                            point_local.x,
-                                            point_local.y,
-                                            point_local.z,
+                                            point_local.x as f64,
+                                            point_local.y as f64,
+                                            point_local.z as f64,
                                         );
-                                        let p_imu = ekf_state.offset_r_l_i.matrix() * p_l.cast()
+                                        let p_imu = ekf_state.offset_r_l_i.matrix() * p_l.coords
                                             + ekf_state.offset_t_l_i;
-                                        let p_world = ekf_state.pose().transform(p_imu.coords);
+                                        let p_world = ekf_state.pose().transform(p_imu);
                                         let query_point = PointXYZ::new(
                                             p_world.x as f32,
                                             p_world.y as f32,
@@ -389,13 +388,14 @@ impl crate::Registration for RegistrationState {
                                         &ekf_state.offset_r_l_i.matrix().clone(),
                                     )
                                     .into();
+                                let pose_t = ekf_state.pose().translation();
                                 pelorus_cuda::planes_cuda(
                                     stream,
                                     buffer,
                                     &pelorus_cuda::Vector3::new(
-                                        ekf_state.pose().translation().x,
-                                        ekf_state.pose().translation().y,
-                                        ekf_state.pose().translation().z,
+                                        pose_t.x,
+                                        pose_t.y,
+                                        pose_t.z,
                                     ),
                                     &pose_q,
                                     &pelorus_cuda::Vector3::new(
@@ -431,13 +431,14 @@ impl crate::Registration for RegistrationState {
                                         ekf_state.offset_r_l_i.matrix().clone();
                                     UnitQuaternion::from_matrix(&mat).into()
                                 };
+                                let pose_t = ekf_state.pose().translation();
                                 pelorus_metal::planes_metal(
                                     stream,
                                     buffer,
                                     &pelorus_metal::Vector3::new(
-                                        ekf_state.pose().translation().x,
-                                        ekf_state.pose().translation().y,
-                                        ekf_state.pose().translation().z,
+                                        pose_t.x,
+                                        pose_t.y,
+                                        pose_t.z,
                                     ),
                                     &pose_q,
                                     &pelorus_metal::Vector3::new(
@@ -473,13 +474,14 @@ impl crate::Registration for RegistrationState {
                                         &ekf_state.offset_r_l_i.matrix().clone(),
                                     )
                                     .into();
+                                let pose_t = ekf_state.pose().translation();
                                 pelorus_vulkan::planes_vulkan(
                                     stream,
                                     buffer,
                                     &pelorus_vulkan::Vector3::new(
-                                        ekf_state.pose().translation().x,
-                                        ekf_state.pose().translation().y,
-                                        ekf_state.pose().translation().z,
+                                        pose_t.x,
+                                        pose_t.y,
+                                        pose_t.z,
                                     ),
                                     &pose_q,
                                     &pelorus_vulkan::Vector3::new(
@@ -574,7 +576,7 @@ impl crate::Registration for RegistrationState {
         }
 
         {
-            eval.start("map_update").unwrap();
+            eval_cb.write().unwrap().start("map_update").unwrap();
         }
 
         match backend {
@@ -630,7 +632,7 @@ impl crate::Registration for RegistrationState {
             }
         }
         {
-            eval.stop("map_update").unwrap();
+            eval_cb.write().unwrap().stop("map_update").unwrap();
         }
 
         Ok(Some(crate::CloudRegisterResult {
