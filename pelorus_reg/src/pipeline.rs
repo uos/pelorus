@@ -1,5 +1,6 @@
 use std::sync::{Arc, Mutex};
 
+use crate::{ActiveBackend, Registration, registration::RegistrationState};
 use anyhow::anyhow;
 use either::Either;
 use nalgebra::{Isometry3, Translation3, UnitQuaternion};
@@ -9,7 +10,6 @@ use pelorus_core::{
     PrelioProcessedCloud, RobosensePoint, VelodynePoint,
 };
 use prelio::Prelio;
-use crate::{ActiveBackend, Registration, registration::RegistrationState};
 use spole::{IVoxHashMap, IVoxNearbyType};
 
 pub struct Pipeline {

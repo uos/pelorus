@@ -539,7 +539,11 @@ fn filter_downsample<const N: usize, P: PointXYZITimestamp<N>>(
         // 2. Stage 2: Hash and Medoid Reduction
         let start = std::time::Instant::now();
         if point_skip == 1 {
-            keyed_points.par_extend(filtered_cloud.par_iter().filter_map(map_down_ref_from_bypass));
+            keyed_points.par_extend(
+                filtered_cloud
+                    .par_iter()
+                    .filter_map(map_down_ref_from_bypass),
+            );
         } else {
             keyed_points.par_extend(
                 filtered_cloud

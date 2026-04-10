@@ -12,6 +12,8 @@ use pelorus_reg::ActiveBackend;
 use pelorus_reg::pipeline::Pipeline;
 #[cfg(feature = "r2r")]
 use prelio_io::impl_r2r;
+#[cfg(feature = "mt_pubsub")]
+use prelio_io::impl_ros2_interfaces_jazzy_rkyv;
 #[cfg(feature = "ros2-client")]
 use ros2_interfaces_jazzy_serde::{
     builtin_interfaces::msg::Time,
@@ -20,8 +22,6 @@ use ros2_interfaces_jazzy_serde::{
     sensor_msgs::msg::PointCloud2,
     std_msgs::msg::Header,
 };
-#[cfg(feature = "mt_pubsub")]
-use prelio_io::impl_ros2_interfaces_jazzy_rkyv;
 #[cfg(feature = "rat")]
 use std::fs;
 #[cfg(feature = "rat")]
@@ -1243,7 +1243,8 @@ fn lio_with_ready_signal(
                     (None, LocatedBufferView::Ram(items)) => {
                         let msg = PointCloud2Msg::try_from_vec(items.to_vec()).expect("msg");
                         #[cfg(feature = "ros2-client")]
-                        let out = prelio_io::impl_ros2_interfaces_jazzy_serde::from_pointcloud2_msg(msg);
+                        let out =
+                            prelio_io::impl_ros2_interfaces_jazzy_serde::from_pointcloud2_msg(msg);
                         #[cfg(feature = "mt_pubsub")]
                         let out = impl_ros2_interfaces_jazzy_rkyv::from_pointcloud2_msg(msg);
                         #[cfg(feature = "r2r")]
@@ -1255,7 +1256,8 @@ fn lio_with_ready_signal(
                     (Some(items), _) => {
                         let msg = PointCloud2Msg::try_from_vec(items.to_vec()).expect("msg");
                         #[cfg(feature = "ros2-client")]
-                        let out = prelio_io::impl_ros2_interfaces_jazzy_serde::from_pointcloud2_msg(msg);
+                        let out =
+                            prelio_io::impl_ros2_interfaces_jazzy_serde::from_pointcloud2_msg(msg);
                         #[cfg(feature = "mt_pubsub")]
                         let out = impl_ros2_interfaces_jazzy_rkyv::from_pointcloud2_msg(msg);
                         #[cfg(feature = "r2r")]
@@ -1283,7 +1285,8 @@ fn lio_with_ready_signal(
                         };
                         let msg = ros_pointcloud2::PointCloud2Msg::try_from_vec(buff).unwrap();
                         #[cfg(feature = "ros2-client")]
-                        let out = prelio_io::impl_ros2_interfaces_jazzy_serde::from_pointcloud2_msg(msg);
+                        let out =
+                            prelio_io::impl_ros2_interfaces_jazzy_serde::from_pointcloud2_msg(msg);
                         #[cfg(feature = "mt_pubsub")]
                         let out = impl_ros2_interfaces_jazzy_rkyv::from_pointcloud2_msg(msg);
                         #[cfg(feature = "r2r")]
@@ -2170,11 +2173,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     Err(_) => Err(anyhow!("LIO thread panicked").into()),
                 }
             } else {
-                lio(
-                    config,
-                    config_args.export_trajectory,
-                    config_args.rat,
-                )
+                lio(config, config_args.export_trajectory, config_args.rat)
             }
         }
         #[cfg(feature = "rat")]

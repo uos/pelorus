@@ -34,7 +34,11 @@ use r2r::{
 use ros_pointcloud2::prelude::*;
 #[cfg(feature = "ros2-client")]
 use ros2_client::ros2;
-#[cfg(all(feature = "mt_pubsub", not(feature = "r2r"), not(feature = "ros2-client")))]
+#[cfg(all(
+    feature = "mt_pubsub",
+    not(feature = "r2r"),
+    not(feature = "ros2-client")
+))]
 use ros2_interfaces_jazzy_rkyv::{
     builtin_interfaces::msg::Time,
     geometry_msgs::msg::{
@@ -409,9 +413,8 @@ pub struct PrelioNode {
 fn qos_to_mt(qos: pelorus_core::Qos) -> mt_pubsub::Qos {
     match qos {
         pelorus_core::Qos::Sensor(pelorus_core::Reliability::Reliable) => mt_pubsub::Qos::Reliable,
-        pelorus_core::Qos::Sensor(pelorus_core::Reliability::BestEffort) | pelorus_core::Qos::SystemDefault => {
-            mt_pubsub::Qos::BestEffort
-        }
+        pelorus_core::Qos::Sensor(pelorus_core::Reliability::BestEffort)
+        | pelorus_core::Qos::SystemDefault => mt_pubsub::Qos::BestEffort,
     }
 }
 

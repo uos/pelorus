@@ -605,7 +605,8 @@ fn ast_to_config_inner(
                 }
             }
         };
-        let cpu_only = resolve_var!(parallelism_ns, "cpu_only", as bool, Rhs::Val(Val::BoolVal(b)) => { b })?;
+        let cpu_only =
+            resolve_var!(parallelism_ns, "cpu_only", as bool, Rhs::Val(Val::BoolVal(b)) => { b })?;
         (num_threads, cpu_only)
     };
 

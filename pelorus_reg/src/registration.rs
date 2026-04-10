@@ -1,10 +1,10 @@
 use crate::ActiveBackend;
-use crate::iekf::{Iekf, skew_symmetric_na, SO3};
-use crate::imu::ImuProcessing;
 use crate::ImuEkfPrediction;
+use crate::iekf::{Iekf, SO3, skew_symmetric_na};
+use crate::imu::ImuProcessing;
 use nalgebra::*;
 use pelorus_core::timing::RuntimeEvaluator;
-use pelorus_core::{KinematicModel, PointXYZIT, LidarVendor, ImuParameters, ImuMsg, OdomMsg};
+use pelorus_core::{ImuMsg, ImuParameters, KinematicModel, LidarVendor, OdomMsg, PointXYZIT};
 use prelio::LocatedBufferView;
 use rayon::prelude::*;
 use ros_pointcloud2::prelude::*;
@@ -52,21 +52,25 @@ impl RegistrationState {
         let mut ekf = Iekf::new(gravity, base_to_lidar.clone());
         if let Some(guess) = initial_guess {
             ekf.state.pos = guess.pose.translation.vector;
-            ekf.state.rot = SO3::try_from_mat(guess.pose.rotation.to_rotation_matrix().matrix()).unwrap();
+            ekf.state.rot =
+                SO3::try_from_mat(guess.pose.rotation.to_rotation_matrix().matrix()).unwrap();
             ekf.state.vel = guess.linear_velocity;
             ekf.state.ba = guess.accel_bias;
             ekf.state.bg = guess.gyro_bias;
-            ekf.state.offset_r_l_i = SO3::try_from_mat(guess.lidar_imu_extrinsic.rotation.to_rotation_matrix().matrix()).unwrap();
+            ekf.state.offset_r_l_i = SO3::try_from_mat(
+                guess
+                    .lidar_imu_extrinsic
+                    .rotation
+                    .to_rotation_matrix()
+                    .matrix(),
+            )
+            .unwrap();
             ekf.state.offset_t_l_i = guess.lidar_imu_extrinsic.translation.vector;
         }
 
         Self {
             ekf,
-            imu_processing: ImuProcessing::new(
-                imu_params,
-                lidar_to_imu,
-                base_to_lidar,
-            ),
+            imu_processing: ImuProcessing::new(imu_params, lidar_to_imu, base_to_lidar),
             map,
             laser_point_noise_cov,
             ekf_max_iterations,
@@ -260,11 +264,12 @@ impl crate::Registration for RegistrationState {
                         _ => true,
                     };
                     if needs_alloc {
-                        self.planes_gpu_buffer = Some(GpuPlanesBuffer::Vulkan(pelorus_vulkan::VulkanBuffer::new(
-                            stream,
-                            std::mem::size_of::<pelorus_vulkan::PointNormal>(),
-                            cloud_len_alloc,
-                        )));
+                        self.planes_gpu_buffer =
+                            Some(GpuPlanesBuffer::Vulkan(pelorus_vulkan::VulkanBuffer::new(
+                                stream,
+                                std::mem::size_of::<pelorus_vulkan::PointNormal>(),
+                                cloud_len_alloc,
+                            )));
                     }
                 }
             }
@@ -339,7 +344,8 @@ impl crate::Registration for RegistrationState {
                                             p_world.y as f32,
                                             p_world.z as f32,
                                         );
-                                        let plane = map.plane_fit_from_distributions(&query_point)?;
+                                        let plane =
+                                            map.plane_fit_from_distributions(&query_point)?;
                                         let pd2 = plane[0] * p_world.x as f32
                                             + plane[1] * p_world.y as f32
                                             + plane[2] * p_world.z as f32
@@ -378,25 +384,25 @@ impl crate::Registration for RegistrationState {
                                 let LocatedBufferView::Cuda { buffer } = cloud else {
                                     panic!("CUDA backend requires CUDA buffer");
                                 };
-                                let pose_q: pelorus_cuda::Quaternion =
-                                    UnitQuaternion::from_matrix(
-                                        &ekf_state.pose().rotation().matrix().clone(),
-                                    )
-                                    .into();
+                                let pose_q: pelorus_cuda::Quaternion = UnitQuaternion::from_matrix(
+                                    &ekf_state.pose().rotation().matrix().clone(),
+                                )
+                                .into();
                                 let offset_q: pelorus_cuda::Quaternion =
                                     UnitQuaternion::from_matrix(
                                         &ekf_state.offset_r_l_i.matrix().clone(),
                                     )
                                     .into();
-                                let pose_t = ekf_state.pose().matrix().column(3).fixed_rows::<3>(0).into_owned();
+                                let pose_t = ekf_state
+                                    .pose()
+                                    .matrix()
+                                    .column(3)
+                                    .fixed_rows::<3>(0)
+                                    .into_owned();
                                 pelorus_cuda::planes_cuda(
                                     stream,
                                     buffer,
-                                    &pelorus_cuda::Vector3::new(
-                                        pose_t.x,
-                                        pose_t.y,
-                                        pose_t.z,
-                                    ),
+                                    &pelorus_cuda::Vector3::new(pose_t.x, pose_t.y, pose_t.z),
                                     &pose_q,
                                     &pelorus_cuda::Vector3::new(
                                         ekf_state.offset_t_l_i.x,
@@ -427,19 +433,19 @@ impl crate::Registration for RegistrationState {
                                     UnitQuaternion::from_matrix(&mat).into()
                                 };
                                 let offset_q: pelorus_metal::Quaternion = {
-                                    let mat: Matrix3<f64> =
-                                        ekf_state.offset_r_l_i.matrix().clone();
+                                    let mat: Matrix3<f64> = ekf_state.offset_r_l_i.matrix().clone();
                                     UnitQuaternion::from_matrix(&mat).into()
                                 };
-                                let pose_t = ekf_state.pose().matrix().column(3).fixed_rows::<3>(0).into_owned();
+                                let pose_t = ekf_state
+                                    .pose()
+                                    .matrix()
+                                    .column(3)
+                                    .fixed_rows::<3>(0)
+                                    .into_owned();
                                 pelorus_metal::planes_metal(
                                     stream,
                                     buffer,
-                                    &pelorus_metal::Vector3::new(
-                                        pose_t.x,
-                                        pose_t.y,
-                                        pose_t.z,
-                                    ),
+                                    &pelorus_metal::Vector3::new(pose_t.x, pose_t.y, pose_t.z),
                                     &pose_q,
                                     &pelorus_metal::Vector3::new(
                                         ekf_state.offset_t_l_i.x,
@@ -474,15 +480,16 @@ impl crate::Registration for RegistrationState {
                                         &ekf_state.offset_r_l_i.matrix().clone(),
                                     )
                                     .into();
-                                let pose_t = ekf_state.pose().matrix().column(3).fixed_rows::<3>(0).into_owned();
+                                let pose_t = ekf_state
+                                    .pose()
+                                    .matrix()
+                                    .column(3)
+                                    .fixed_rows::<3>(0)
+                                    .into_owned();
                                 pelorus_vulkan::planes_vulkan(
                                     stream,
                                     buffer,
-                                    &pelorus_vulkan::Vector3::new(
-                                        pose_t.x,
-                                        pose_t.y,
-                                        pose_t.z,
-                                    ),
+                                    &pelorus_vulkan::Vector3::new(pose_t.x, pose_t.y, pose_t.z),
                                     &pose_q,
                                     &pelorus_vulkan::Vector3::new(
                                         ekf_state.offset_t_l_i.x,
@@ -520,7 +527,11 @@ impl crate::Registration for RegistrationState {
                     }
 
                     for (i, normal_point) in planes.iter().enumerate() {
-                        let point_local = Vector3::new(normal_point.x as f64, normal_point.y as f64, normal_point.z as f64);
+                        let point_local = Vector3::new(
+                            normal_point.x as f64,
+                            normal_point.y as f64,
+                            normal_point.z as f64,
+                        );
                         let norm = Vector3::new(
                             normal_point.normal_x as f64,
                             normal_point.normal_y as f64,
@@ -528,8 +539,8 @@ impl crate::Registration for RegistrationState {
                         );
                         let plane_d = normal_point.intensity as f64;
 
-                        let p_imu = ekf_state.offset_r_l_i.matrix() * point_local
-                            + ekf_state.offset_t_l_i;
+                        let p_imu =
+                            ekf_state.offset_r_l_i.matrix() * point_local + ekf_state.offset_t_l_i;
 
                         let p_world = ekf_state.pose().transform(p_imu);
                         let pd2 = norm.dot(&p_world) + plane_d;
@@ -605,8 +616,7 @@ impl crate::Registration for RegistrationState {
                 };
                 let transl = &t_w_l.translation.vector.into();
                 let rot_quat: pelorus_metal::Quaternion = {
-                    let mat: Matrix3<f64> =
-                        t_w_l.rotation.to_rotation_matrix().matrix().clone();
+                    let mat: Matrix3<f64> = t_w_l.rotation.to_rotation_matrix().matrix().clone();
                     UnitQuaternion::from_matrix(&mat).into()
                 };
                 pelorus_metal::add_to_map(stream, buffer, transl, &rot_quat, scan_id);
@@ -619,17 +629,10 @@ impl crate::Registration for RegistrationState {
                 };
                 let transl = &t_w_l.translation.vector.into();
                 let rot_quat: pelorus_vulkan::Quaternion = {
-                    let mat: Matrix3<f64> =
-                        t_w_l.rotation.to_rotation_matrix().matrix().clone();
+                    let mat: Matrix3<f64> = t_w_l.rotation.to_rotation_matrix().matrix().clone();
                     UnitQuaternion::from_matrix(&mat).into()
                 };
-                pelorus_vulkan::add_to_map(
-                    stream,
-                    buffer,
-                    transl,
-                    &rot_quat,
-                    scan_id,
-                );
+                pelorus_vulkan::add_to_map(stream, buffer, transl, &rot_quat, scan_id);
                 stream.sync();
             }
         }
@@ -695,7 +698,7 @@ impl crate::Registration for RegistrationState {
             cloud_end_time,
             cloud,
             cloud_passthrough,
-            lidar_vendor
+            lidar_vendor,
         );
     }
 
