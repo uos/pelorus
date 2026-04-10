@@ -280,5 +280,5 @@ parallelism {
   num_threads = 3
 
   # Force CPU-only processing regardless of available GPU backends.
-  parallelism.cpu_only = false
+  cpu_only = false
 }
