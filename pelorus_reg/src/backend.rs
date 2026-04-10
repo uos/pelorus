@@ -1,3 +1,5 @@
+use pelorus_core::LioConfig;
+
 /// Runtime-selected GPU backend.
 ///
 /// Constructed once at startup via `ActiveBackend::detect` and then held
@@ -17,14 +19,14 @@ impl ActiveBackend {
     /// Select the best available backend at runtime.
     ///
     /// Precedence:
-    /// 1. `cpu_only == true`  → always `Cpu`
+    /// 1. `config.cpu_only == true`  → always `Cpu`
     /// 2. macOS + metal       → `Metal` (Metal is macOS-only; the `target_os` cfg makes this compile-time-safe)
     /// 3. cuda + device found → `Cuda`
     /// 4. vulkan + device     → `Vulkan`
     /// 5. else                → `Cpu`
     #[allow(unreachable_code)]
-    pub fn detect(cpu_only: bool) -> Self {
-        if cpu_only {
+    pub fn detect(config: &LioConfig) -> Self {
+        if config.cpu_only {
             log::info!("Backend: CPU (forced)");
             return Self::Cpu;
         }

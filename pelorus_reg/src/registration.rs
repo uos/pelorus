@@ -10,7 +10,6 @@ use rayon::prelude::*;
 use ros_pointcloud2::prelude::*;
 use spole::*;
 use std::sync::{Arc, RwLock};
-use sophus_lie::IsAffineGroup;
 
 #[cfg(feature = "cuda")]
 use pelorus_cuda::CudaBuffer;
@@ -149,7 +148,7 @@ impl crate::Registration for RegistrationState {
         eval: &mut RuntimeEvaluator,
         backend: &ActiveBackend,
     ) -> anyhow::Result<Option<crate::CloudRegisterResult>> {
-        let eval_cb = Arc::new(RwLock::new(eval));
+        let eval_cb = Arc::new(RwLock::new(&mut *eval));
 
         let map_empty = match backend {
             ActiveBackend::Cpu => self.map.is_empty(),
@@ -270,8 +269,8 @@ impl crate::Registration for RegistrationState {
                 }
             }
 
-            let planes_cpu_buffer_ptr = std::ptr::addr_of_mut!(self.planes_cpu_buffer);
-            let planes_gpu_buffer_ptr = std::ptr::addr_of_mut!(self.planes_gpu_buffer);
+            let _planes_cpu_buffer_ptr = std::ptr::addr_of_mut!(self.planes_cpu_buffer);
+            let _planes_gpu_buffer_ptr = std::ptr::addr_of_mut!(self.planes_gpu_buffer);
             let map_ptr = std::ptr::addr_of!(self.map);
 
             let mut cached_planes: Option<Vec<PointXYZINormal>> = None;
@@ -288,8 +287,9 @@ impl crate::Registration for RegistrationState {
                       h: &mut faer::Col<f64>,
                       h_x: &mut faer::Mat<f64>,
                       num_measurements: &mut usize| {
-                    let mut eval = eval_cb_inner.write().unwrap();
-                    eval.start("ekf_correct/model/planes").unwrap();
+                    let mut eval_guard = eval_cb_inner.write().unwrap();
+                    let eval_actual = &mut **eval_guard;
+                    eval_actual.start("ekf_correct/model/planes").unwrap();
 
                     // Try to retrieve previous GPU timing measurements (non-blocking)
                     let gpu_timings = match backend {
@@ -303,13 +303,13 @@ impl crate::Registration for RegistrationState {
                     };
                     if let Some((planes_ms, add_to_map_ms)) = gpu_timings {
                         if planes_ms > 0.0 {
-                            eval.add_external_measurement(
+                            eval_actual.add_external_measurement(
                                 "ekf_correct/model/planes/gpu",
                                 planes_ms,
                             );
                         }
                         if add_to_map_ms > 0.0 {
-                            eval.add_external_measurement("map_update/gpu", add_to_map_ms);
+                            eval_actual.add_external_measurement("map_update/gpu", add_to_map_ms);
                         }
                     }
 
@@ -368,10 +368,10 @@ impl crate::Registration for RegistrationState {
                             }
                             #[cfg(feature = "cuda")]
                             ActiveBackend::Cuda(stream) => {
-                                let planes_buf = unsafe { &mut *planes_cpu_buffer_ptr };
+                                let planes_buf = unsafe { &mut *_planes_cpu_buffer_ptr };
                                 planes_buf.clear();
                                 unsafe { planes_buf.set_len(cloud.len()) };
-                                let planes_gpu = match unsafe { &mut *planes_gpu_buffer_ptr } {
+                                let planes_gpu = match unsafe { &mut *_planes_gpu_buffer_ptr } {
                                     Some(GpuPlanesBuffer::Cuda(buf)) => buf,
                                     _ => panic!("CUDA backend: GPU planes buffer not allocated"),
                                 };
@@ -388,7 +388,7 @@ impl crate::Registration for RegistrationState {
                                         &ekf_state.offset_r_l_i.matrix().clone(),
                                     )
                                     .into();
-                                let pose_t = ekf_state.pose().translation();
+                                let pose_t = ekf_state.pose().matrix().column(3).fixed_rows::<3>(0).into_owned();
                                 pelorus_cuda::planes_cuda(
                                     stream,
                                     buffer,
@@ -411,10 +411,10 @@ impl crate::Registration for RegistrationState {
                             }
                             #[cfg(feature = "metal")]
                             ActiveBackend::Metal(stream) => {
-                                let planes_buf = unsafe { &mut *planes_cpu_buffer_ptr };
+                                let planes_buf = unsafe { &mut *_planes_cpu_buffer_ptr };
                                 planes_buf.clear();
                                 unsafe { planes_buf.set_len(cloud.len()) };
-                                let planes_gpu = match unsafe { &mut *planes_gpu_buffer_ptr } {
+                                let planes_gpu = match unsafe { &mut *_planes_gpu_buffer_ptr } {
                                     Some(GpuPlanesBuffer::Metal(buf)) => buf,
                                     _ => panic!("Metal backend: GPU planes buffer not allocated"),
                                 };
@@ -431,7 +431,7 @@ impl crate::Registration for RegistrationState {
                                         ekf_state.offset_r_l_i.matrix().clone();
                                     UnitQuaternion::from_matrix(&mat).into()
                                 };
-                                let pose_t = ekf_state.pose().translation();
+                                let pose_t = ekf_state.pose().matrix().column(3).fixed_rows::<3>(0).into_owned();
                                 pelorus_metal::planes_metal(
                                     stream,
                                     buffer,
@@ -454,10 +454,10 @@ impl crate::Registration for RegistrationState {
                             }
                             #[cfg(feature = "vulkan")]
                             ActiveBackend::Vulkan(stream) => {
-                                let planes_buf = unsafe { &mut *planes_cpu_buffer_ptr };
+                                let planes_buf = unsafe { &mut *_planes_cpu_buffer_ptr };
                                 planes_buf.clear();
                                 unsafe { planes_buf.set_len(cloud.len()) };
-                                let planes_gpu = match unsafe { &mut *planes_gpu_buffer_ptr } {
+                                let planes_gpu = match unsafe { &mut *_planes_gpu_buffer_ptr } {
                                     Some(GpuPlanesBuffer::Vulkan(buf)) => buf,
                                     _ => panic!("Vulkan backend: GPU planes buffer not allocated"),
                                 };
@@ -474,7 +474,7 @@ impl crate::Registration for RegistrationState {
                                         &ekf_state.offset_r_l_i.matrix().clone(),
                                     )
                                     .into();
-                                let pose_t = ekf_state.pose().translation();
+                                let pose_t = ekf_state.pose().matrix().column(3).fixed_rows::<3>(0).into_owned();
                                 pelorus_vulkan::planes_vulkan(
                                     stream,
                                     buffer,
@@ -500,7 +500,7 @@ impl crate::Registration for RegistrationState {
                         cached_planes.as_ref().unwrap()
                     };
 
-                    eval.stop("ekf_correct/model/planes").unwrap();
+                    eval_actual.stop("ekf_correct/model/planes").unwrap();
 
                     if planes.is_empty() {
                         *valid = false;
@@ -510,7 +510,7 @@ impl crate::Registration for RegistrationState {
 
                     *num_measurements = planes.len();
 
-                    eval.start("ekf_correct/model/jacobian").unwrap();
+                    eval_actual.start("ekf_correct/model/jacobian").unwrap();
 
                     if planes.len() > h.nrows() {
                         *h = faer::Col::<f64>::zeros(cloud_len_alloc);
@@ -548,7 +548,7 @@ impl crate::Registration for RegistrationState {
 
                         h[i] = -pd2;
                     }
-                    eval.stop("ekf_correct/model/jacobian").unwrap();
+                    eval_actual.stop("ekf_correct/model/jacobian").unwrap();
                 },
             );
             eval_cb.write().unwrap().stop("ekf_correct").unwrap();
@@ -576,7 +576,9 @@ impl crate::Registration for RegistrationState {
         }
 
         {
-            eval_cb.write().unwrap().start("map_update").unwrap();
+            let mut eval_guard = eval_cb.write().unwrap();
+            let eval_actual = &mut **eval_guard;
+            eval_actual.start("map_update").unwrap();
         }
 
         match backend {
@@ -632,7 +634,9 @@ impl crate::Registration for RegistrationState {
             }
         }
         {
-            eval_cb.write().unwrap().stop("map_update").unwrap();
+            let mut eval_guard = eval_cb.write().unwrap();
+            let eval_actual = &mut **eval_guard;
+            eval_actual.stop("map_update").unwrap();
         }
 
         Ok(Some(crate::CloudRegisterResult {

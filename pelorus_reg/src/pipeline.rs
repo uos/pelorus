@@ -40,7 +40,7 @@ pub struct PelorusOutput {
 }
 
 impl Pipeline {
-    pub fn new(config: &LioConfig, cpu_only: bool) -> Self {
+    pub fn new(config: &LioConfig) -> Self {
         let ext_lidar_to_imu = Isometry3::from_parts(
             Translation3::new(
                 config.imu_params.initial_translation_lidar_to_imu.x,
@@ -72,7 +72,7 @@ impl Pipeline {
             map: Arc::new(Mutex::new(map)),
             ext_lidar_to_imu,
             config: config.clone(),
-            active_backend: ActiveBackend::detect(cpu_only),
+            active_backend: ActiveBackend::detect(config),
         }
     }
 

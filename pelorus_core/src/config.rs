@@ -591,18 +591,22 @@ fn ast_to_config_inner(
         )
     };
 
-    let num_threads = {
+    let (num_threads, cpu_only) = {
         let parallelism_ns = asts.filter_ns(&["parallelism"]);
-        let rhs = resolve_var!(parallelism_ns, "num_threads", as &Rhs, r => { r })?;
-        match rhs {
-            Rhs::Val(Val::NumVal(NumVal::Integer(i))) => i as usize,
-            Rhs::Val(Val::StringVal(s)) if s.eq_ignore_ascii_case("all") => 0usize,
-            _ => {
-                return Err(anyhow!(
-                    "parallelism.num_threads must be an integer or 'all'"
-                ));
+        let num_threads = {
+            let rhs = resolve_var!(parallelism_ns, "num_threads", as &Rhs, r => { r })?;
+            match rhs {
+                Rhs::Val(Val::NumVal(NumVal::Integer(i))) => i as usize,
+                Rhs::Val(Val::StringVal(s)) if s.eq_ignore_ascii_case("all") => 0usize,
+                _ => {
+                    return Err(anyhow!(
+                        "parallelism.num_threads must be an integer or 'all'"
+                    ));
+                }
             }
-        }
+        };
+        let cpu_only = resolve_var!(parallelism_ns, "cpu_only", as bool, Rhs::Val(Val::BoolVal(b)) => { b })?;
+        (num_threads, cpu_only)
     };
 
     let final_config = LioConfig {
@@ -624,6 +628,7 @@ fn ast_to_config_inner(
         base_link_frame,
         base_to_lidar,
         base_to_lidar_tf_override,
+        cpu_only,
         prelio_node_params: LifisNodeParameters {
             wheel_qos,
             wheel_src_topic,

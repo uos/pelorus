@@ -12,7 +12,7 @@ use log::{debug, error, info, warn};
 use pelorus_core::{
     ImuMsg, ImuPredictor, ImuPredictorUndistort, LidarVendor, LifisNodeParameters, LifisParameters,
     LivoxMid360Point, LivoxPoint, OdomMsg, OusterPoint, PointXYZIT, PrelioProcessedCloud,
-    Reliability, RobosensePoint, VelodynePoint, timing::RuntimeEvaluator,
+    RobosensePoint, VelodynePoint, timing::RuntimeEvaluator,
 };
 pub use prelio;
 
@@ -34,7 +34,7 @@ use r2r::{
 use ros_pointcloud2::prelude::*;
 #[cfg(feature = "ros2-client")]
 use ros2_client::ros2;
-#[cfg(feature = "mt_pubsub")]
+#[cfg(all(feature = "mt_pubsub", not(feature = "r2r"), not(feature = "ros2-client")))]
 use ros2_interfaces_jazzy_rkyv::{
     builtin_interfaces::msg::Time,
     geometry_msgs::msg::{
@@ -44,7 +44,7 @@ use ros2_interfaces_jazzy_rkyv::{
     sensor_msgs::msg::{Imu, PointCloud2},
     std_msgs::msg::Header,
 };
-#[cfg(feature = "ros2-client")]
+#[cfg(all(feature = "ros2-client", not(feature = "r2r")))]
 use ros2_interfaces_jazzy_serde::{
     builtin_interfaces::msg::Time,
     geometry_msgs::msg::{
@@ -408,45 +408,43 @@ pub struct PrelioNode {
 #[cfg(feature = "mt_pubsub")]
 fn qos_to_mt(qos: pelorus_core::Qos) -> mt_pubsub::Qos {
     match qos {
-        pelorus_core::Qos::Sensor(Reliability::Reliable) => mt_pubsub::Qos::Reliable,
-        pelorus_core::Qos::Sensor(Reliability::BestEffort) | pelorus_core::Qos::SystemDefault => {
+        pelorus_core::Qos::Sensor(pelorus_core::Reliability::Reliable) => mt_pubsub::Qos::Reliable,
+        pelorus_core::Qos::Sensor(pelorus_core::Reliability::BestEffort) | pelorus_core::Qos::SystemDefault => {
             mt_pubsub::Qos::BestEffort
         }
     }
 }
 
 #[cfg(feature = "ros2-client")]
-impl From<crate::Qos> for ros2::QosPolicies {
-    fn from(value: crate::Qos) -> Self {
-        match value {
-            Qos::Sensor(rel) => ros2::QosPolicyBuilder::new()
-                .durability(ros2::policy::Durability::Volatile)
-                .deadline(ros2::policy::Deadline(ros2::Duration::INFINITE))
-                .ownership(ros2::policy::Ownership::Shared)
-                .reliability(match rel {
-                    Reliability::Reliable => ros2::policy::Reliability::Reliable {
-                        max_blocking_time: ros2::Duration::INFINITE,
-                    },
-                    Reliability::BestEffort => ros2::policy::Reliability::BestEffort,
-                })
-                .history(ros2::policy::History::KeepLast { depth: 5 })
-                .lifespan(ros2::policy::Lifespan {
-                    duration: ros2::Duration::INFINITE,
-                })
-                .build(),
-            _ => ros2::QosPolicyBuilder::new()
-                .durability(ros2::policy::Durability::Volatile)
-                .deadline(ros2::policy::Deadline(ros2::Duration::INFINITE))
-                .ownership(ros2::policy::Ownership::Shared)
-                .reliability(ros2::policy::Reliability::Reliable {
-                    max_blocking_time: ros2::Duration::from_millis(100),
-                })
-                .history(ros2::policy::History::KeepLast { depth: 1 })
-                .lifespan(ros2::policy::Lifespan {
-                    duration: ros2::Duration::INFINITE,
-                })
-                .build(),
-        }
+pub fn qos_to_ros2(value: pelorus_core::Qos) -> ros2::QosPolicies {
+    match value {
+        pelorus_core::Qos::Sensor(rel) => ros2::QosPolicyBuilder::new()
+            .durability(ros2::policy::Durability::Volatile)
+            .deadline(ros2::policy::Deadline(ros2::Duration::INFINITE))
+            .ownership(ros2::policy::Ownership::Shared)
+            .reliability(match rel {
+                pelorus_core::Reliability::Reliable => ros2::policy::Reliability::Reliable {
+                    max_blocking_time: ros2::Duration::INFINITE,
+                },
+                pelorus_core::Reliability::BestEffort => ros2::policy::Reliability::BestEffort,
+            })
+            .history(ros2::policy::History::KeepLast { depth: 5 })
+            .lifespan(ros2::policy::Lifespan {
+                duration: ros2::Duration::INFINITE,
+            })
+            .build(),
+        _ => ros2::QosPolicyBuilder::new()
+            .durability(ros2::policy::Durability::Volatile)
+            .deadline(ros2::policy::Deadline(ros2::Duration::INFINITE))
+            .ownership(ros2::policy::Ownership::Shared)
+            .reliability(ros2::policy::Reliability::Reliable {
+                max_blocking_time: ros2::Duration::from_millis(100),
+            })
+            .history(ros2::policy::History::KeepLast { depth: 1 })
+            .lifespan(ros2::policy::Lifespan {
+                duration: ros2::Duration::INFINITE,
+            })
+            .build(),
     }
 }
 
@@ -548,10 +546,10 @@ impl PrelioNode {
                         )
                         .unwrap(),
                         ros2_client::MessageTypeName::new("sensor_msgs", "PointCloud2"),
-                        &node_params.cloud_qos.into(),
+                        &qos_to_ros2(node_params.cloud_qos),
                     )
                     .unwrap(),
-                Some(node_params.cloud_qos.into()),
+                Some(qos_to_ros2(node_params.cloud_qos)),
             )
             .unwrap();
 
@@ -773,7 +771,7 @@ impl PrelioNode {
                         )
                         .unwrap(),
                         ros2_client::MessageTypeName::new("sensor_msgs", "Imu"),
-                        &node_params.imu_qos.into(),
+                        &qos_to_ros2(node_params.imu_qos),
                     )
                     .unwrap(),
                 None,
@@ -801,7 +799,7 @@ impl PrelioNode {
                             )
                             .unwrap(),
                             ros2_client::MessageTypeName::new("sensor_msgs", "Imu"),
-                            &node_params.imu_filtered_qos.into(),
+                            &qos_to_ros2(node_params.imu_filtered_qos),
                         )
                         .unwrap(),
                     None,

@@ -244,7 +244,7 @@ impl PelorusHandle {
         // Ensure Rust logging works when used from Python (RUST_LOG env var)
         let _ = env_logger::try_init();
 
-        let pipeline = Pipeline::new(&config, false);
+        let pipeline = Pipeline::new(&config);
 
         let imu_init_cb = Some(pipeline.build_init_callback());
         let imu_predictor_init_time_sec = config.prelio_node_params.imu_predictor_init_time_sec;

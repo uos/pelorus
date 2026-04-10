@@ -272,8 +272,13 @@ output {
   logger_prefix = "pelorus"
 }
 
-# @recommended
-# Maximum number of CPU threads used for parallel point-cloud processing.
-# Set to `all` to use all available cores or specify a number like `4` for a fixed number.
-# High numbers will result in more substantial CPU load.
-parallelism.num_threads = 3
+parallelism {
+  # @recommended
+  # Maximum number of CPU threads used for parallel point-cloud processing.
+  # Set to `all` to use all available cores or specify a number like `4` for a fixed number.
+  # High numbers will result in more substantial CPU load.
+  num_threads = 3
+
+  # Force CPU-only processing regardless of available GPU backends.
+  parallelism.cpu_only = false
+}

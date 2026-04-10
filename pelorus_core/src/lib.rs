@@ -439,6 +439,7 @@ pub struct LioConfig {
     pub base_link_frame: Option<String>,
     pub base_to_lidar: Isometry3<f64>,
     pub base_to_lidar_tf_override: bool,
+    pub cpu_only: bool,
     pub num_threads: usize,
 }
 

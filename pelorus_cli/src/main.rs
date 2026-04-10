@@ -13,7 +13,13 @@ use pelorus_reg::pipeline::Pipeline;
 #[cfg(feature = "r2r")]
 use prelio_io::impl_r2r;
 #[cfg(feature = "ros2-client")]
-use prelio_io::impl_ros2_interfaces_jazzy_jazzy;
+use ros2_interfaces_jazzy_serde::{
+    builtin_interfaces::msg::Time,
+    geometry_msgs::msg::{PoseStamped, Quaternion, Transform, TransformStamped, Vector3},
+    nav_msgs::msg::{Odometry, Path},
+    sensor_msgs::msg::PointCloud2,
+    std_msgs::msg::Header,
+};
 #[cfg(feature = "mt_pubsub")]
 use prelio_io::impl_ros2_interfaces_jazzy_rkyv;
 #[cfg(feature = "rat")]
@@ -60,16 +66,6 @@ use ros2_interfaces_jazzy_rkyv::{
     std_msgs::msg::{Header, String as RosString},
     visualization_msgs::msg::Marker,
 };
-#[cfg(feature = "ros2-client")]
-#[allow(unused_imports)]
-use ros2_interfaces_jazzy_serde::{
-    builtin_interfaces::msg::Time,
-    geometry_msgs::msg::{Point, PoseStamped, Quaternion, Transform, TransformStamped, Vector3},
-    nav_msgs::msg::Path,
-    sensor_msgs::msg::PointCloud2,
-    std_msgs::msg::Header,
-    visualization_msgs::msg::Marker,
-};
 use std::collections::VecDeque;
 use std::io::IsTerminal;
 
@@ -88,7 +84,9 @@ use std::path::PathBuf;
 use pelorus_cli::stats_tui::{
     SharedStats, StatsTui, init_logger, set_tui_active, update_log_level,
 };
-use std::time::{Duration, Instant, UNIX_EPOCH};
+#[cfg(feature = "mt_pubsub")]
+use std::time::Duration;
+use std::time::{Instant, UNIX_EPOCH};
 
 #[allow(dead_code)]
 fn lerp_color(c1: (f32, f32, f32), c2: (f32, f32, f32), t: f32) -> (f32, f32, f32) {
@@ -237,7 +235,6 @@ fn lio(
     config: LioConfig,
     export_trajectory: Option<String>,
     synchronous_mode: bool,
-    cpu_only: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     lio_with_ready_signal(
         config,
@@ -247,7 +244,6 @@ fn lio(
         None,
         None,
         None,
-        cpu_only,
     )
 }
 
@@ -261,7 +257,6 @@ fn lio_with_ready_signal(
     shutdown_flag: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
     // Optional blocking shutdown signal for immediate pipeline teardown.
     shutdown_request_rx: Option<std::sync::mpsc::Receiver<()>>,
-    cpu_only: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     #[cfg(any(feature = "mt_pubsub", feature = "rat"))]
     let rt = if cfg!(feature = "mt_pubsub") || (synchronous_mode && cfg!(feature = "rat")) {
@@ -322,7 +317,7 @@ fn lio_with_ready_signal(
             .clone(),
     ));
 
-    let mut pipeline = Pipeline::new(&config, cpu_only);
+    let mut pipeline = Pipeline::new(&config);
     let map = pipeline.map();
     let ext = pipeline.ext();
     let _odom_ext = Isometry3::from_parts(
@@ -441,10 +436,10 @@ fn lio_with_ready_signal(
                 .create_topic(
                     &ros2_client::Name::new(&namespace, "registered").unwrap(),
                     ros2_client::MessageTypeName::new("sensor_msgs", "PointCloud2"),
-                    &config.registered_cloud_qos.into(),
+                    &prelio_io::qos_to_ros2(config.registered_cloud_qos),
                 )
                 .unwrap(),
-            None,
+            Some(prelio_io::qos_to_ros2(config.registered_cloud_qos)),
         )
         .unwrap();
     #[cfg(any(feature = "ros2-client"))]
@@ -454,10 +449,10 @@ fn lio_with_ready_signal(
                 .create_topic(
                     &ros2_client::Name::new(&namespace, "odom").unwrap(),
                     ros2_client::MessageTypeName::new("nav_msgs", "Odometry"),
-                    &config.odom_qos.into(),
+                    &prelio_io::qos_to_ros2(config.odom_qos),
                 )
                 .unwrap(),
-            None,
+            Some(prelio_io::qos_to_ros2(config.odom_qos)),
         )
         .unwrap();
     #[cfg(all(not(feature = "no-viz"), feature = "ros2-client"))]
@@ -467,10 +462,10 @@ fn lio_with_ready_signal(
                 .create_topic(
                     &ros2_client::Name::new(&namespace, "path").unwrap(),
                     ros2_client::MessageTypeName::new("nav_msgs", "Path"),
-                    &config.path_qos.into(),
+                    &prelio_io::qos_to_ros2(config.path_qos),
                 )
                 .unwrap(),
-            None,
+            Some(prelio_io::qos_to_ros2(config.path_qos)),
         )
         .unwrap();
     #[cfg(all(not(feature = "no-viz"), feature = "ros2-client"))]
@@ -480,10 +475,10 @@ fn lio_with_ready_signal(
                 .create_topic(
                     &ros2_client::Name::new(&namespace, "imu_odom").unwrap(),
                     ros2_client::MessageTypeName::new("nav_msgs", "Odometry"),
-                    &config.imu_odom_qos.into(),
+                    &prelio_io::qos_to_ros2(config.imu_odom_qos),
                 )
                 .unwrap(),
-            None,
+            Some(prelio_io::qos_to_ros2(config.imu_odom_qos)),
         )
         .unwrap();
 
@@ -603,6 +598,7 @@ fn lio_with_ready_signal(
 
     let mut t_world = nalgebra::Isometry3::identity();
     let mut t_last_current = nalgebra::Isometry3::identity();
+    #[cfg(feature = "mt_pubsub")]
     let mut last_stats_pub = Instant::now();
 
     // Use VecDeque for efficient removal from front (O(1) instead of O(n))
@@ -703,7 +699,7 @@ fn lio_with_ready_signal(
         let mut ready_for_next_tx = Some(ready_for_next_tx);
         let mut lifis_node = Some(lifis_node);
 
-        let active_backend = ActiveBackend::detect(cpu_only);
+        let active_backend = ActiveBackend::detect(&config);
         if let Some(ref stats) = shared_stats {
             set_backend_from_runtime(stats, &config, &active_backend);
         }
@@ -1247,7 +1243,7 @@ fn lio_with_ready_signal(
                     (None, LocatedBufferView::Ram(items)) => {
                         let msg = PointCloud2Msg::try_from_vec(items.to_vec()).expect("msg");
                         #[cfg(feature = "ros2-client")]
-                        let out = impl_ros2_interfaces_jazzy_serde::from_pointcloud2_msg(msg);
+                        let out = prelio_io::impl_ros2_interfaces_jazzy_serde::from_pointcloud2_msg(msg);
                         #[cfg(feature = "mt_pubsub")]
                         let out = impl_ros2_interfaces_jazzy_rkyv::from_pointcloud2_msg(msg);
                         #[cfg(feature = "r2r")]
@@ -1259,7 +1255,7 @@ fn lio_with_ready_signal(
                     (Some(items), _) => {
                         let msg = PointCloud2Msg::try_from_vec(items.to_vec()).expect("msg");
                         #[cfg(feature = "ros2-client")]
-                        let out = impl_ros2_interfaces_jazzy_serde::from_pointcloud2_msg(msg);
+                        let out = prelio_io::impl_ros2_interfaces_jazzy_serde::from_pointcloud2_msg(msg);
                         #[cfg(feature = "mt_pubsub")]
                         let out = impl_ros2_interfaces_jazzy_rkyv::from_pointcloud2_msg(msg);
                         #[cfg(feature = "r2r")]
@@ -1287,7 +1283,7 @@ fn lio_with_ready_signal(
                         };
                         let msg = ros_pointcloud2::PointCloud2Msg::try_from_vec(buff).unwrap();
                         #[cfg(feature = "ros2-client")]
-                        let out = impl_ros2_interfaces_jazzy_serde::from_pointcloud2_msg(msg);
+                        let out = prelio_io::impl_ros2_interfaces_jazzy_serde::from_pointcloud2_msg(msg);
                         #[cfg(feature = "mt_pubsub")]
                         let out = impl_ros2_interfaces_jazzy_rkyv::from_pointcloud2_msg(msg);
                         #[cfg(feature = "r2r")]
@@ -1778,7 +1774,7 @@ fn lio_with_ready_signal(
         // ros2-client doesn't have a simple way to break the spinner, so we run it in a thread
         // and check the shutdown flag periodically
         let spinner_shutdown = shutdown_flag.clone();
-        let spinner_handle = std::thread::spawn(move || {
+        let _spinner_handle = std::thread::spawn(move || {
             future::block_on(async {
                 match node.spinner().unwrap().spin().await {
                     Err(e) => {
@@ -1886,9 +1882,30 @@ fn cpu_backend_label(config: &LioConfig) -> String {
     }
 }
 
-fn set_backend_from_config(shared_stats: &SharedStats, config: &LioConfig, _cpu_only: bool) {
-    let backend = cpu_backend_label(config);
-    shared_stats.set_backend_info(backend, None, None);
+fn set_backend_from_config(shared_stats: &SharedStats, config: &LioConfig) {
+    let (backend, accelerator, details) = match ActiveBackend::detect(config) {
+        ActiveBackend::Cpu => (cpu_backend_label(config), None, None),
+        #[cfg(feature = "cuda")]
+        ActiveBackend::Cuda(_) => (
+            cpu_backend_label(config),
+            Some("CUDA".to_string()),
+            pelorus_cuda::get_cuda_metadata().map(|m| format_cuda_metadata_details(&m)),
+        ),
+        #[cfg(feature = "metal")]
+        ActiveBackend::Metal(_) => (
+            cpu_backend_label(config),
+            Some("Metal".to_string()),
+            None, // Metal metadata not implemented
+        ),
+        #[cfg(feature = "vulkan")]
+        ActiveBackend::Vulkan(_) => (
+            cpu_backend_label(config),
+            Some("Vulkan".to_string()),
+            pelorus_vulkan::get_vulkan_metadata().map(|m| format_vulkan_metadata_details(&m)),
+        ),
+    };
+
+    shared_stats.set_backend_info(backend, accelerator, details);
 }
 
 #[cfg(feature = "cuda")]
@@ -2049,7 +2066,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 ratslang::compile_code("")?
             };
 
-            let config = ast_to_config(default_ast, user_ast)?;
+            let mut config = ast_to_config(default_ast, user_ast)?;
+            if config_args.cpu_only {
+                config.cpu_only = true;
+            }
 
             if config.num_threads > 0 {
                 if let Err(e) = rayon::ThreadPoolBuilder::new()
@@ -2080,7 +2100,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             if show_tui {
                 let shared_stats = std::sync::Arc::new(SharedStats::new());
                 shared_stats.set_mode("Online");
-                set_backend_from_config(&shared_stats, &config, config_args.cpu_only);
+                set_backend_from_config(&shared_stats, &config);
                 let stats_for_tui = shared_stats.clone();
 
                 shared_stats.set_target_lidar_rate(10.0); // will be updated when first scan arrives
@@ -2097,7 +2117,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let lio_config = config.clone();
                 let lio_export = config_args.export_trajectory.clone();
                 let lio_sync = config_args.rat;
-                let cpu_only = config_args.cpu_only;
                 let lio_stats = Some(shared_stats);
 
                 let lio_shutdown_flag =
@@ -2113,7 +2132,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         lio_stats,
                         Some(lio_shutdown_flag_for_thread),
                         None,
-                        cpu_only,
                     )
                     .map_err(|e| e.to_string())
                 });
@@ -2156,7 +2174,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     config,
                     config_args.export_trajectory,
                     config_args.rat,
-                    config_args.cpu_only,
                 )
             }
         }
@@ -2194,10 +2211,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let config = {
                 let mut config = ast_to_config(default_ast, user_ast)?;
                 config.prelio_node_params.synchronous_mode = true;
+                if offline_args.cpu_only {
+                    config.cpu_only = true;
+                }
                 config
             };
 
-            set_backend_from_config(&shared_stats, &config, offline_args.cpu_only);
+            set_backend_from_config(&shared_stats, &config);
 
             if config.num_threads > 0 {
                 if let Err(e) = rayon::ThreadPoolBuilder::new()
@@ -2457,7 +2477,6 @@ pf! i 1
                             Some(shared_stats_for_lio),
                             Some(lio_shutdown_flag_for_thread),
                             Some(lio_stop_rx),
-                            offline_args.cpu_only,
                         )
                     }))
                     .map_err(|_| "LIO thread panicked".to_string())

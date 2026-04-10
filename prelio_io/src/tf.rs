@@ -43,10 +43,12 @@ impl TfBroadcaster {
                         .create_topic(
                             &ros2_client::Name::new("/", "tf_static").unwrap(),
                             ros2_client::MessageTypeName::new("tf2_msgs", "TFMessage"),
-                            &ros2_client::QosPolicyBuilder::new()
-                                .durability(ros2_client::DurabilityPolicy::TransientLocal)
-                                .reliability(ros2_client::ReliabilityPolicy::Reliable)
-                                .history(ros2_client::HistoryPolicy::KeepLast { depth: 1 })
+                            &ros2_client::ros2::QosPolicyBuilder::new()
+                                .durability(ros2_client::ros2::policy::Durability::TransientLocal)
+                                .reliability(ros2_client::ros2::policy::Reliability::Reliable {
+                                    max_blocking_time: ros2_client::ros2::Duration::INFINITE,
+                                })
+                                .history(ros2_client::ros2::policy::History::KeepLast { depth: 1 })
                                 .build(),
                         )
                         .unwrap(),
@@ -272,10 +274,12 @@ impl TfListener {
                     .create_topic(
                         &ros2_client::Name::new("/", "tf_static").unwrap(),
                         ros2_client::MessageTypeName::new("tf2_msgs", "TFMessage"),
-                        &ros2_client::QosPolicyBuilder::new()
-                            .durability(ros2_client::DurabilityPolicy::TransientLocal)
-                            .reliability(ros2_client::ReliabilityPolicy::Reliable)
-                            .history(ros2_client::HistoryPolicy::KeepLast { depth: 1 })
+                        &ros2_client::ros2::QosPolicyBuilder::new()
+                            .durability(ros2_client::ros2::policy::Durability::TransientLocal)
+                            .reliability(ros2_client::ros2::policy::Reliability::Reliable {
+                                max_blocking_time: ros2_client::ros2::Duration::INFINITE,
+                            })
+                            .history(ros2_client::ros2::policy::History::KeepLast { depth: 1 })
                             .build(),
                     )
                     .unwrap(),

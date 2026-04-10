@@ -487,19 +487,6 @@ fn filter_downsample<const N: usize, P: PointXYZITimestamp<N>>(
         undistort(point)
     };
 
-    let map_down_ref = |point: &PointXYZIT| {
-        let key = hash(
-            &nalgebra::Point3::new(point.x, point.y, point.z),
-            voxel_size,
-        );
-
-        let mut out = point.clone();
-
-        out.intensity *= 255.0;
-
-        return Some((key, out));
-    };
-
     let map_down_ref_from_bypass = |point: &PointXYZIT| {
         let key = hash(
             &nalgebra::Point3::new(point.x, point.y, point.z),
@@ -507,10 +494,6 @@ fn filter_downsample<const N: usize, P: PointXYZITimestamp<N>>(
         );
         Some((key, *point))
     };
-
-    let map_down = |point: PointXYZIT| map_down_ref(&point);
-
-    let filter_map_down = |point| map_down(filter(point)?);
 
     let filter_map_non_down = |point: PointXYZIT| {
         let mut point = filter(point)?;
@@ -542,84 +525,54 @@ fn filter_downsample<const N: usize, P: PointXYZITimestamp<N>>(
     {
         let point_skip = lifis_params.downsample.point_skip.max(1);
 
-        if let Some((bypass, bypass_iter)) = raw_out.as_mut() {
-            let bypass_iter = bypass_iter.try_into_par_iter()?.map(map_to_non_trait);
+        // 1. Stage 1: Filter and Undistort (Always happens first)
+        let mut filtered_cloud: Vec<PointXYZIT> = Vec::with_capacity(cloud.dimensions.len());
+        let start = std::time::Instant::now();
+        filtered_cloud.par_extend(
+            cloud
+                .try_into_par_iter()?
+                .map(map_to_non_trait)
+                .filter_map(filter_map_non_down),
+        );
+        phase_timings.bypass_filter_map_us = elapsed_us(start);
 
-            let start = std::time::Instant::now();
-            bypass.par_extend(bypass_iter.filter_map(filter_map_non_down));
-            phase_timings.bypass_filter_map_us = elapsed_us(start);
-
-            let start = std::time::Instant::now();
-            if point_skip == 1 {
-                keyed_points.par_extend(bypass.par_iter().filter_map(map_down_ref_from_bypass));
-            } else {
-                keyed_points.par_extend(
-                    bypass
-                        .par_iter()
-                        .enumerate()
-                        .filter_map(|(idx, p)| (idx % point_skip == 0).then(|| (idx, p)))
-                        .filter_map(|(_, p)| map_down_ref_from_bypass(p)),
-                );
-            }
-            phase_timings.filter_map_down_us = elapsed_us(start);
-
-            let start = std::time::Instant::now();
-            keyed_points.par_sort_unstable_by_key(|(key, _)| *key); // TODO takes a long time
-            phase_timings.keyed_sort_us = elapsed_us(start);
-
-            // Non-par because it is measured to be faster on a single core
-            let start = std::time::Instant::now();
-            downsampled.extend(
-                keyed_points
-                    .chunk_by(|a, b| a.0 == b.0)
-                    .map(find_medoid_in_slice),
-            );
-            phase_timings.medoid_reduce_us = elapsed_us(start);
-
-            // Sort again by timestamps because we could have merged multiple timestamps
-            let start = std::time::Instant::now();
-            downsampled.par_sort_unstable_by(cmp);
-            phase_timings.timestamp_sort_us = elapsed_us(start);
-
-            let start = std::time::Instant::now();
-            bypass.par_sort_unstable_by(cmp);
-            phase_timings.bypass_sort_us = elapsed_us(start);
+        // 2. Stage 2: Hash and Medoid Reduction
+        let start = std::time::Instant::now();
+        if point_skip == 1 {
+            keyed_points.par_extend(filtered_cloud.par_iter().filter_map(map_down_ref_from_bypass));
         } else {
-            let start = std::time::Instant::now();
-            if point_skip == 1 {
-                keyed_points.par_extend(
-                    cloud
-                        .try_into_par_iter()?
-                        .map(map_to_non_trait)
-                        .filter_map(filter_map_down),
-                );
-            } else {
-                let skipped_points: Vec<PointXYZIT> = cloud
-                    .try_into_iter()?
-                    .step_by(point_skip)
-                    .map(map_to_non_trait)
-                    .collect();
-                keyed_points.par_extend(skipped_points.into_par_iter().filter_map(filter_map_down));
-            }
-            phase_timings.filter_map_down_us = elapsed_us(start);
-
-            let start = std::time::Instant::now();
-            keyed_points.par_sort_unstable_by_key(|(key, _)| *key); // TODO takes a long time
-            phase_timings.keyed_sort_us = elapsed_us(start);
-
-            // Non-par because it is measured to be faster on a single core
-            let start = std::time::Instant::now();
-            downsampled.extend(
-                keyed_points
-                    .chunk_by(|a, b| a.0 == b.0)
-                    .map(find_medoid_in_slice),
+            keyed_points.par_extend(
+                filtered_cloud
+                    .par_iter()
+                    .enumerate()
+                    .filter_map(|(idx, p)| (idx % point_skip == 0).then(|| (idx, p)))
+                    .filter_map(|(_, p)| map_down_ref_from_bypass(p)),
             );
-            phase_timings.medoid_reduce_us = elapsed_us(start);
+        }
+        phase_timings.filter_map_down_us = elapsed_us(start);
 
-            // Sort again by timestamps because we could have merged multiple timestamps
+        let start = std::time::Instant::now();
+        keyed_points.par_sort_unstable_by_key(|(key, _)| *key);
+        phase_timings.keyed_sort_us = elapsed_us(start);
+
+        let start = std::time::Instant::now();
+        downsampled.extend(
+            keyed_points
+                .chunk_by(|a, b| a.0 == b.0)
+                .map(find_medoid_in_slice),
+        );
+        phase_timings.medoid_reduce_us = elapsed_us(start);
+
+        let start = std::time::Instant::now();
+        downsampled.par_sort_unstable_by(cmp);
+        phase_timings.timestamp_sort_us = elapsed_us(start);
+
+        // 3. Handle Bypass Output
+        if bypass_output_downsample {
             let start = std::time::Instant::now();
-            downsampled.par_sort_unstable_by(cmp);
-            phase_timings.timestamp_sort_us = elapsed_us(start);
+            filtered_cloud.par_sort_unstable_by(cmp);
+            phase_timings.bypass_sort_us = elapsed_us(start);
+            raw_out = Some((filtered_cloud, cloud.clone()));
         }
     }
     let (first, last) = match (&downsampled.first(), &downsampled.last()) {
