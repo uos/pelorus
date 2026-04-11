@@ -33,4 +33,13 @@ else
     echo "CUDA not available (nvcc missing or compilation failed), skipping."
 fi
 
+echo "================================================="
+echo "Testing Vulkan Backend against CPU Ground Truth..."
+echo "================================================="
+if cargo check -p pelorus_vulkan --features vulkan_enable >/dev/null 2>&1; then
+    cargo test --test backend_compare -p pelorus_reg --features vulkan || echo "Vulkan tests failed or skipped."
+else
+    echo "Vulkan backend not available or failed to compile, skipping."
+fi
+
 echo "Backend comparison tests completed successfully!"

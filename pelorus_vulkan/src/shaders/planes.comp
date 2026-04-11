@@ -93,6 +93,14 @@ void main() {
         return;
     }
 
+    // Sentinel: zero this slot.
+    PointNormal inv;
+    inv.x = 0.0; inv.y = 0.0; inv.z = 0.0;
+    inv.intensity = 0.0;
+    inv.nx = 0.0; inv.ny = 0.0; inv.nz = 0.0;
+    inv._pad = 0.0;
+    out_buff[idx] = inv;
+
     vec4 ext_q = pc.lidar_to_imu_quat;
     vec3 ext_t = pc.lidar_to_imu_pos;
     vec4 q = pc.pose_quat;
@@ -136,10 +144,6 @@ void main() {
         return;
     }
 
-    uint out_idx = atomicAdd(out_size, 1u);
-    if (out_idx >= pc.unique_key_count) {
-        return;
-    }
     PointNormal pn;
     pn.x = p_local.x;
     pn.y = p_local.y;
@@ -149,5 +153,5 @@ void main() {
     pn.ny = plane.y;
     pn.nz = plane.z;
     pn._pad = 0.0;
-    out_buff[out_idx] = pn;
+    out_buff[idx] = pn;
 }

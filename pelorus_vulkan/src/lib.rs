@@ -2185,25 +2185,32 @@ pub fn planes_vulkan(
             state
                 .pending_planes_timing
                 .store(true, std::sync::atomic::Ordering::Release);
-            log::debug!("vulkan planes: kernel complete, downloading counter");
+            log::debug!("vulkan planes: kernel complete");
 
-            state.scratch.counter.n = 1;
-            let out_size = state.scratch.counter.download::<u32>(stream)[0] as usize;
-            assert!(
-                out_size <= cloud.n,
-                "plane kernel produced out_size={} for cloud size={}",
-                out_size,
-                cloud.n
-            );
-            log::debug!("vulkan planes done: out_size={}", out_size);
-            let capped = out_size.min(out_buff.len());
+            let downloaded = cloud.n.min(out_buff.len()).min(out_buff_gpu.n);
+            out_buff_gpu.n = downloaded;
 
-            out_buff_gpu.n = capped;
-            let mut gpu_normals = vec![crate::types::PointNormal::default(); capped];
+            // Download all `cloud.n` slots; the kernel writes a per-thread sentinel
+            // (zero normal) for invalid points and the actual plane for valid ones.
+            let mut gpu_normals = vec![crate::types::PointNormal::default(); downloaded];
             out_buff_gpu.download_into(stream, &mut gpu_normals);
 
             out_buff.clear();
             out_buff.extend(gpu_normals.into_iter().map(PointXYZINormal::from));
+
+            // Compact in-place, preserving cloud-input order. This makes the residual
+            // ordering deterministic across runs and matches the CPU/CUDA backend, which is
+            // required for backend equivalence (the IEKF normal-equation solve is
+            // floating-point sensitive to row order).
+            let mut write_pos = 0usize;
+            for read_pos in 0..downloaded {
+                let p = out_buff[read_pos];
+                if p.normal_x != 0.0 || p.normal_y != 0.0 || p.normal_z != 0.0 {
+                    out_buff[write_pos] = p;
+                    write_pos += 1;
+                }
+            }
+            out_buff.truncate(write_pos);
         }
     });
 }
