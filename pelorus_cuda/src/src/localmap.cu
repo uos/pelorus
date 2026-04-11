@@ -127,6 +127,44 @@ __device__ float mahalanobis_sq(float3 diff, const float* __restrict__ L) {
     return diff.x * sol.x + diff.y * sol.y + diff.z * sol.z;
 }
 
+// Explicit 3×3 cofactor inverse — matches nalgebra::Matrix3::try_inverse semantics
+// used by spole::VoxelDistribution::update on the CPU. Cholesky was previously
+// used here but its failure mode (L[i] sq ≤ 0) differs from LU/cofactor and
+// caused the update to fall back to Euclidean Mahalanobis when CPU did not.
+__device__ bool invert_3x3(const float* __restrict__ A, float* __restrict__ inv) {
+    const float a = A[0], b = A[1], c = A[2];
+    const float d = A[3], e = A[4], f = A[5];
+    const float g = A[6], h = A[7], i = A[8];
+
+    const float m0 = e*i - f*h;
+    const float m1 = d*i - f*g;
+    const float m2 = d*h - e*g;
+
+    const float det = a*m0 - b*m1 + c*m2;
+    if (!isfinite(det) || fabsf(det) < 1e-30f) return false;
+    const float inv_det = 1.0f / det;
+
+    inv[0] =  m0 * inv_det;
+    inv[1] = -(b*i - c*h) * inv_det;
+    inv[2] =  (b*f - c*e) * inv_det;
+    inv[3] = -m1 * inv_det;
+    inv[4] =  (a*i - c*g) * inv_det;
+    inv[5] = -(a*f - c*d) * inv_det;
+    inv[6] =  m2 * inv_det;
+    inv[7] = -(a*h - b*g) * inv_det;
+    inv[8] =  (a*e - b*d) * inv_det;
+    return true;
+}
+
+__device__ float mahalanobis_sq_from_inv(float3 diff, const float* __restrict__ inv_cov) {
+    float3 v = make_float3(
+        inv_cov[0]*diff.x + inv_cov[1]*diff.y + inv_cov[2]*diff.z,
+        inv_cov[3]*diff.x + inv_cov[4]*diff.y + inv_cov[5]*diff.z,
+        inv_cov[6]*diff.x + inv_cov[7]*diff.y + inv_cov[8]*diff.z
+    );
+    return diff.x*v.x + diff.y*v.y + diff.z*v.z;
+}
+
 __device__ void regularize_cov(float* __restrict__ cov) {
     const float eps = 1e-6f;
     cov[0] += eps;
@@ -294,18 +332,26 @@ __global__ void rebuild_hashmap_keyed_kernel(int*        table_keys,
     }
 }
 
-__global__ void assign_target_indices_kernel(const int*      unique_keys,
-                                             const uint32_t* n_unique_ptr,
-                                             const int*      table_keys,
-                                             const uint32_t* table_vals,
-                                             uint32_t        table_cap,
-                                             int*            dist_keys,
-                                             uint32_t*       d_add_cursor,
-                                             uint32_t*       d_lru_cursor,
-                                             const uint32_t* d_lru_mapping,
-                                             uint32_t        dist_cap,
-                                             uint32_t*       out_target_indices,
-                                             uint32_t*       out_update_flags) {
+// Deterministic target-index assignment (three-pass, no atomics):
+//   1. classify_keys_kernel      — hashmap lookup, flag new vs existing.
+//   2. cub::DeviceScan::ExclusiveSum on is_new[] -> new_offset[].
+//   3. assign_new_targets_kernel — each new key maps to a deterministic slot
+//      based on prev add_cursor + its prefix-sum position. Overflow falls back
+//      to the LRU mapping (also a deterministic function of the prefix sum).
+//   4. finalize_cursors_kernel   — single-thread updates d_add_cursor and
+//      d_lru_cursor based on total_new from the last scan element.
+//
+// The result is independent of thread scheduling because every assignment is
+// a pure function of the sorted unique_keys array.
+
+__global__ void classify_keys_kernel(const int*      unique_keys,
+                                     const uint32_t* n_unique_ptr,
+                                     const int*      table_keys,
+                                     const uint32_t* table_vals,
+                                     uint32_t        table_cap,
+                                     uint32_t*       out_target_indices,
+                                     uint32_t*       out_update_flags,
+                                     uint32_t*       out_is_new) {
     uint32_t n_unique = *n_unique_ptr;
     uint32_t idx = blockIdx.x * blockDim.x + threadIdx.x;
     if (idx >= n_unique) return;
@@ -314,33 +360,78 @@ __global__ void assign_target_indices_kernel(const int*      unique_keys,
     if (key == EMPTY_KEY) {
         out_target_indices[idx] = INVALID_IDX;
         out_update_flags[idx]   = 0;
+        out_is_new[idx]         = 0;
         return;
     }
 
     uint32_t found_idx = hashmap_lookup(table_keys, table_vals, table_cap, key);
-
     if (found_idx != INVALID_IDX) {
         out_target_indices[idx] = found_idx;
         out_update_flags[idx]   = 1;
+        out_is_new[idx]         = 0;
     } else {
-        uint32_t add_idx = atomicAdd(d_add_cursor, 1u);
-        if (add_idx < dist_cap) {
-            dist_keys[add_idx] = key;
-            out_target_indices[idx] = add_idx;
-            out_update_flags[idx]   = 0;
+        out_target_indices[idx] = INVALID_IDX; // resolved by assign_new_targets_kernel
+        out_update_flags[idx]   = 0;
+        out_is_new[idx]         = 1;
+    }
+}
+
+__global__ void assign_new_targets_kernel(const int*      unique_keys,
+                                          const uint32_t* n_unique_ptr,
+                                          const uint32_t* is_new,
+                                          const uint32_t* new_offset,
+                                          const uint32_t* d_add_cursor_in,
+                                          int*            dist_keys,
+                                          const uint32_t* d_lru_mapping,
+                                          uint32_t        dist_cap,
+                                          uint32_t*       out_target_indices) {
+    uint32_t n_unique = *n_unique_ptr;
+    uint32_t idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx >= n_unique) return;
+    if (is_new[idx] == 0u) return;
+
+    int key = unique_keys[idx];
+    uint32_t prev_add = *d_add_cursor_in;
+    uint32_t cum      = new_offset[idx];
+    uint64_t abs_pos  = (uint64_t)prev_add + cum;
+
+    if (abs_pos < (uint64_t)dist_cap) {
+        uint32_t slot = (uint32_t)abs_pos;
+        dist_keys[slot] = key;
+        out_target_indices[idx] = slot;
+    } else {
+        uint64_t lru_pos = abs_pos - dist_cap;
+        if (lru_pos < (uint64_t)dist_cap) {
+            uint32_t victim = d_lru_mapping[(uint32_t)lru_pos];
+            dist_keys[victim] = key;
+            out_target_indices[idx] = victim;
         } else {
-            uint32_t lru_idx = atomicAdd(d_lru_cursor, 1u);
-            if (lru_idx < dist_cap) {
-                uint32_t victim = d_lru_mapping[lru_idx];
-                dist_keys[victim] = key;
-                out_target_indices[idx] = victim;
-                out_update_flags[idx]   = 0;
-            } else {
-                out_target_indices[idx] = INVALID_IDX;
-                out_update_flags[idx]   = 0;
-            }
+            out_target_indices[idx] = INVALID_IDX;
         }
     }
+}
+
+__global__ void finalize_cursors_kernel(const uint32_t* n_unique_ptr,
+                                        const uint32_t* is_new,
+                                        const uint32_t* new_offset,
+                                        uint32_t*       d_add_cursor,
+                                        uint32_t*       d_lru_cursor,
+                                        uint32_t        dist_cap) {
+    uint32_t n_unique = *n_unique_ptr;
+    uint32_t total_new = 0u;
+    if (n_unique > 0u) {
+        total_new = is_new[n_unique - 1u] + new_offset[n_unique - 1u];
+    }
+
+    uint32_t prev = *d_add_cursor;
+    uint64_t end  = (uint64_t)prev + total_new;
+    uint32_t new_add = (end > (uint64_t)dist_cap) ? dist_cap : (uint32_t)end;
+    *d_add_cursor = new_add;
+
+    uint32_t consumed_new = new_add - prev;
+    uint32_t evictions    = total_new - consumed_new;
+    if (evictions > dist_cap) evictions = dist_cap;
+    *d_lru_cursor = evictions;
 }
 
 __global__ void compute_scores_kernel(const GpuVoxelDist* dist_buf,
@@ -538,6 +629,17 @@ __global__ void plane_kernel(const Point*        cloud,
     uint32_t idx = blockIdx.x * blockDim.x + threadIdx.x;
     if (idx >= params.cloud_size) return;
 
+    // Sentinel: zero this slot. Any early-exit below leaves it as invalid so
+    // CPU-side compaction (which walks slots in order) skips it. This keeps
+    // GPU plane output deterministic and aligned with cloud-input order.
+    {
+        PointNormal inv;
+        inv.x = 0.0f; inv.y = 0.0f; inv.z = 0.0f;
+        inv.intensity = 0.0f;
+        inv.normal_x = 0.0f; inv.normal_y = 0.0f; inv.normal_z = 0.0f;
+        out_buff[idx] = inv;
+    }
+
     float4 ext_q = make_float4(params.lidar_to_imu_quat[0], params.lidar_to_imu_quat[1],
                                 params.lidar_to_imu_quat[2], params.lidar_to_imu_quat[3]);
     float3 ext_t = make_float3(params.lidar_to_imu_pos[0], params.lidar_to_imu_pos[1],
@@ -624,7 +726,6 @@ __global__ void plane_kernel(const Point*        cloud,
     float s     = 1.0f - 0.9f * fabsf(pd2) / sqrtf(sqrtf(fmaxf(l2_sq, 1e-9f)));
     if (s <= 0.9f) return;
 
-    uint32_t out_idx = atomicAdd(out_size, 1u);
     PointNormal pn;
     pn.x        = p_local.x;
     pn.y        = p_local.y;
@@ -633,7 +734,7 @@ __global__ void plane_kernel(const Point*        cloud,
     pn.normal_x  = normal.x;
     pn.normal_y  = normal.y;
     pn.normal_z  = normal.z;
-    out_buff[out_idx] = pn;
+    out_buff[idx] = pn;
 }
 
 // ── CPU state ─────────────────────────────────────────────────────────────────
@@ -661,6 +762,8 @@ struct CudaMapState {
     int*      scratch_unique_keys;
     uint32_t* scratch_target_indices;
     uint32_t* scratch_update_flags;
+    uint32_t* scratch_is_new;
+    uint32_t* scratch_new_offset;
     Point*    scratch_sorted_points;
 
     // LRU on GPU (device memory)
@@ -693,7 +796,8 @@ struct CudaMapState {
           scratch_indices(nullptr), scratch_indices_alt(nullptr),
           scratch_run_starts(nullptr), scratch_run_counts(nullptr),
           scratch_unique_keys(nullptr), scratch_target_indices(nullptr),
-          scratch_update_flags(nullptr), scratch_sorted_points(nullptr),
+          scratch_update_flags(nullptr), scratch_is_new(nullptr),
+          scratch_new_offset(nullptr), scratch_sorted_points(nullptr),
           d_lru_mapping(nullptr), d_lru_mapping_alt(nullptr),
           d_lru_scores(nullptr), d_lru_scores_alt(nullptr),
           d_cub_temp_storage(nullptr), cub_temp_storage_bytes(0),
@@ -719,6 +823,8 @@ struct CudaMapState {
         if (scratch_unique_keys)    cudaFree(scratch_unique_keys);
         if (scratch_target_indices) cudaFree(scratch_target_indices);
         if (scratch_update_flags)   cudaFree(scratch_update_flags);
+        if (scratch_is_new)         cudaFree(scratch_is_new);
+        if (scratch_new_offset)     cudaFree(scratch_new_offset);
         if (scratch_sorted_points)  cudaFree(scratch_sorted_points);
         if (d_lru_mapping)          cudaFree(d_lru_mapping);
         if (d_lru_mapping_alt)      cudaFree(d_lru_mapping_alt);
@@ -744,6 +850,8 @@ static void alloc_scratch(CudaMapState* s, size_t new_cap) {
     if (s->scratch_unique_keys)    CUDA_CHECK(cudaFree(s->scratch_unique_keys));
     if (s->scratch_target_indices) CUDA_CHECK(cudaFree(s->scratch_target_indices));
     if (s->scratch_update_flags)   CUDA_CHECK(cudaFree(s->scratch_update_flags));
+    if (s->scratch_is_new)         CUDA_CHECK(cudaFree(s->scratch_is_new));
+    if (s->scratch_new_offset)     CUDA_CHECK(cudaFree(s->scratch_new_offset));
     if (s->scratch_sorted_points)  CUDA_CHECK(cudaFree(s->scratch_sorted_points));
 
     CUDA_CHECK(cudaMalloc(&s->scratch_keys,           new_cap * sizeof(int)));
@@ -755,6 +863,8 @@ static void alloc_scratch(CudaMapState* s, size_t new_cap) {
     CUDA_CHECK(cudaMalloc(&s->scratch_unique_keys,    new_cap * sizeof(int)));
     CUDA_CHECK(cudaMalloc(&s->scratch_target_indices, new_cap * sizeof(uint32_t)));
     CUDA_CHECK(cudaMalloc(&s->scratch_update_flags,   new_cap * sizeof(uint32_t)));
+    CUDA_CHECK(cudaMalloc(&s->scratch_is_new,         new_cap * sizeof(uint32_t)));
+    CUDA_CHECK(cudaMalloc(&s->scratch_new_offset,     new_cap * sizeof(uint32_t)));
     CUDA_CHECK(cudaMalloc(&s->scratch_sorted_points,  new_cap * sizeof(Point)));
 
     s->scratch_cap = new_cap;
@@ -902,12 +1012,23 @@ void add_to_map_impl(cudaStream_t stream, Point* points, uint32_t n_points, Pose
     cub::DeviceScan::ExclusiveSum(s->d_cub_temp_storage, temp_storage_bytes,
         s->scratch_run_counts, s->scratch_run_starts, n_points, stream);
 
-    // ── Step 5: Assign target indices ─────────────────────────────────────────
-    *s->d_lru_cursor = 0;
-    assign_target_indices_kernel<<<grid_dim(n_points), 256, 0, stream>>>(
+    // ── Step 5: Assign target indices (deterministic: classify → scan → assign → finalize)
+    classify_keys_kernel<<<grid_dim(n_points), 256, 0, stream>>>(
         s->scratch_unique_keys, s->d_num_unique, s->table_keys, s->table_vals, s->table_cap,
-        s->dist_keys, s->d_add_cursor, s->d_lru_cursor, s->d_lru_mapping, s->dist_cap,
-        s->scratch_target_indices, s->scratch_update_flags);
+        s->scratch_target_indices, s->scratch_update_flags, s->scratch_is_new);
+
+    temp_storage_bytes = s->cub_temp_storage_bytes;
+    cub::DeviceScan::ExclusiveSum(s->d_cub_temp_storage, temp_storage_bytes,
+        s->scratch_is_new, s->scratch_new_offset, n_points, stream);
+
+    assign_new_targets_kernel<<<grid_dim(n_points), 256, 0, stream>>>(
+        s->scratch_unique_keys, s->d_num_unique, s->scratch_is_new, s->scratch_new_offset,
+        s->d_add_cursor, s->dist_keys, s->d_lru_mapping, s->dist_cap,
+        s->scratch_target_indices);
+
+    finalize_cursors_kernel<<<1, 1, 0, stream>>>(
+        s->d_num_unique, s->scratch_is_new, s->scratch_new_offset,
+        s->d_add_cursor, s->d_lru_cursor, s->dist_cap);
 
     // ── Step 6: reorder_points ────────────────────────────────────────────────
     reorder_points_kernel<<<grid_dim(n_points), 256, 0, stream>>>(
@@ -949,9 +1070,6 @@ uint32_t planes_impl(cudaStream_t stream, Point* cloud, uint32_t cloud_size,
     // Ensure previous add_to_map GPU work (hashmap rebuild) is visible
     CUDA_CHECK(cudaStreamSynchronize(stream));
 
-    // Zero atomic counter (CPU write safe now — stream is idle)
-    *s->counter = 0;
-
     PlanesParams params;
     params.lidar_to_imu_quat[0] = (float)lidar_to_imu.orientation.x;
     params.lidar_to_imu_quat[1] = (float)lidar_to_imu.orientation.y;
@@ -981,7 +1099,9 @@ uint32_t planes_impl(cudaStream_t stream, Point* cloud, uint32_t cloud_size,
 
     CUDA_CHECK(cudaStreamSynchronize(stream));
 
-    return *s->counter;
+    // Each cloud slot now holds either a valid plane or a sentinel (zero
+    // normal). Caller compacts in cloud-input order.
+    return cloud_size;
 }
 
 void get_map_impl(Point* points, uint32_t* size) {

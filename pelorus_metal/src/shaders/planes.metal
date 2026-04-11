@@ -94,6 +94,18 @@ kernel void plane_krnl(
 {
     if (idx >= params.cloud_size) return;
 
+    // Sentinel: zero this slot. Any early-exit below leaves it as invalid so
+    // CPU-side compaction (which walks slots in order) skips it. This keeps
+    // GPU plane output deterministic and aligned with cloud-input order.
+    {
+        PointNormal inv;
+        inv.x = 0.0f; inv.y = 0.0f; inv.z = 0.0f;
+        inv.intensity = 0.0f;
+        inv.nx = 0.0f; inv.ny = 0.0f; inv.nz = 0.0f;
+        inv._pad = 0.0f;
+        out_buff[idx] = inv;
+    }
+
     float4 ext_q = float4(params.lidar_to_imu_quat[0], params.lidar_to_imu_quat[1], params.lidar_to_imu_quat[2], params.lidar_to_imu_quat[3]);
     float3 ext_t = float3(params.lidar_to_imu_pos[0], params.lidar_to_imu_pos[1], params.lidar_to_imu_pos[2]);
     float4 q = float4(params.pose_quat[0], params.pose_quat[1], params.pose_quat[2], params.pose_quat[3]);
@@ -138,9 +150,6 @@ kernel void plane_krnl(
     float s   = 1.0f - 0.9f * fabs(pd2) / sqrt(sqrt(max(l2_sq, 1e-9f)));
     if (s <= 0.9f) return;
 
-    // Atomic output write
-    uint out_idx = atomic_fetch_add_explicit(out_size, 1u, memory_order_relaxed);
-
     PointNormal pn;
     pn.x         = p_local.x;
     pn.y         = p_local.y;
@@ -150,5 +159,5 @@ kernel void plane_krnl(
     pn.ny        = plane.y;
     pn.nz        = plane.z;
     pn._pad      = 0.0f;
-    out_buff[out_idx] = pn;
+    out_buff[idx] = pn;
 }

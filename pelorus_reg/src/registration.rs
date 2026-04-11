@@ -328,27 +328,50 @@ impl crate::Registration for RegistrationState {
                                     panic!("CPU backend requires RAM buffer");
                                 };
                                 let map = unsafe { &*map_ptr };
+
+                                // Match the GPU backends' f32 transform precision so CPU↔GPU
+                                // plane selection stays numerically equivalent. GPU shaders do
+                                // the lidar→imu→world transform in f32 (via UnitQuaternion cast
+                                // from the f64 pose rotation matrix); doing the same here keeps
+                                // the query point, pd2 and score bit-close to the GPU path.
+                                let offset_q_f32: nalgebra::UnitQuaternion<f32> =
+                                    nalgebra::UnitQuaternion::from_matrix(
+                                        &ekf_state.offset_r_l_i.matrix().clone(),
+                                    )
+                                    .cast();
+                                let offset_t_f32: nalgebra::Vector3<f32> =
+                                    ekf_state.offset_t_l_i.cast();
+                                let pose_q_f32: nalgebra::UnitQuaternion<f32> =
+                                    nalgebra::UnitQuaternion::from_matrix(
+                                        &ekf_state.pose().rotation().matrix().clone(),
+                                    )
+                                    .cast();
+                                let pose_t_f32: nalgebra::Vector3<f32> = ekf_state
+                                    .pose()
+                                    .matrix()
+                                    .column(3)
+                                    .fixed_rows::<3>(0)
+                                    .into_owned()
+                                    .cast();
+
                                 cloud_pts
                                     .par_iter()
                                     .flat_map(|point_local| {
                                         let p_l = nalgebra::Point3::new(
-                                            point_local.x as f64,
-                                            point_local.y as f64,
-                                            point_local.z as f64,
+                                            point_local.x,
+                                            point_local.y,
+                                            point_local.z,
                                         );
-                                        let p_imu = ekf_state.offset_r_l_i.matrix() * p_l.coords
-                                            + ekf_state.offset_t_l_i;
-                                        let p_world = ekf_state.pose().transform(p_imu);
+                                        let p_imu = offset_q_f32 * p_l + offset_t_f32;
+                                        let p_world = pose_q_f32 * p_imu + pose_t_f32;
                                         let query_point = PointXYZ::new(
-                                            p_world.x as f32,
-                                            p_world.y as f32,
-                                            p_world.z as f32,
+                                            p_world.x, p_world.y, p_world.z,
                                         );
                                         let plane =
                                             map.plane_fit_from_distributions(&query_point)?;
-                                        let pd2 = plane[0] * p_world.x as f32
-                                            + plane[1] * p_world.y as f32
-                                            + plane[2] * p_world.z as f32
+                                        let pd2 = plane[0] * p_world.x
+                                            + plane[1] * p_world.y
+                                            + plane[2] * p_world.z
                                             + plane[3];
                                         let l2_sq = point_local.x * point_local.x
                                             + point_local.y * point_local.y

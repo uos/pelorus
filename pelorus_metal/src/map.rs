@@ -1,6 +1,5 @@
 use bytemuck::{Pod, Zeroable};
 #[cfg(feature = "metal_enable")]
-use rayon::prelude::*;
 use std::sync::{Mutex, MutexGuard, OnceLock};
 
 use crate::pipeline::{get_pipelines, grid1d, group1d};
@@ -1098,7 +1097,8 @@ pub fn planes_metal_impl(
     ];
 
     unsafe {
-        *(out_buff_gpu.buf.contents().as_ptr().cast::<u32>()) = 0;
+        // counter binding kept for descriptor compatibility but unused — kernel
+        // now writes deterministically per slot.
         *(state.scratch.counter.buf.contents().as_ptr().cast::<u32>()) = 0;
     }
 
@@ -1146,37 +1146,30 @@ pub fn planes_metal_impl(
     let dur_gpu = t_gpu.elapsed();
 
     let t_copy = Instant::now();
-    let out_size =
-        unsafe { *(state.scratch.counter.buf.contents().as_ptr().cast::<u32>()) } as usize;
+    // Deterministic plane output: kernel writes a per-thread sentinel (zero
+    // normal) for invalid points and the actual plane for valid ones. Walk
+    // slots in cloud-input order and copy valid entries; this keeps residual
+    // ordering reproducible run-to-run and matched with the CPU backend (the
+    // IEKF normal-equation solve is FP-sensitive to row order).
     let gpu_normals = out_buff_gpu.as_slice::<crate::types::PointNormal>();
-    let gpu_normals = &gpu_normals[..out_size.min(out_buff.len())];
+    let slot_count = cloud.n.min(gpu_normals.len()).min(out_buff.capacity());
 
-    unsafe { out_buff.set_len(out_size.min(out_buff.capacity())) };
-
-    #[cfg(feature = "metal_enable")]
-    {
-        out_buff
-            .par_iter_mut()
-            .zip(gpu_normals.par_iter())
-            .for_each(|(dst, src)| {
-                *dst = (*src).into();
-            });
-    }
-    #[cfg(not(feature = "metal_enable"))]
-    {
-        for (dst, src) in out_buff.iter_mut().zip(gpu_normals.iter()) {
-            *dst = (*src).into();
+    out_buff.clear();
+    for src in gpu_normals.iter().take(slot_count) {
+        if src.nx != 0.0 || src.ny != 0.0 || src.nz != 0.0 {
+            out_buff.push((*src).into());
         }
     }
+    let valid = out_buff.len();
     let dur_copy = t_copy.elapsed();
 
     log::info!(
-        "[Metal] planes: total={:?}, gpu={:?}, gpu_time={:.2}ms, copy={:?}, size={}",
+        "[Metal] planes: total={:?}, gpu={:?}, gpu_time={:.2}ms, copy={:?}, valid={}",
         t_all.elapsed(),
         dur_gpu,
         gpu_time_ms,
         dur_copy,
-        out_size
+        valid
     );
 
     gpu_time_ms

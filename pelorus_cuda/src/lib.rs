@@ -511,11 +511,26 @@ pub fn planes_cuda(
             size
         }
     };
-    let size = (size as usize).min(out_buff.len()).min(out_buff_gpu.n);
+    let downloaded = (size as usize).min(out_buff.len()).min(out_buff_gpu.n);
 
-    // copy to cpu side
+    // Download all `cloud.n` slots; the kernel writes a per-thread sentinel
+    // (zero normal) for invalid points and the actual plane for valid ones.
     out_buff_gpu.download_into(stream, out_buff);
-    unsafe { out_buff.set_len(size) };
+    unsafe { out_buff.set_len(downloaded) };
+
+    // Compact in-place, preserving cloud-input order. This makes the residual
+    // ordering deterministic across runs and matches the CPU backend, which is
+    // required for backend equivalence (the IEKF normal-equation solve is
+    // floating-point sensitive to row order).
+    let mut write_pos = 0usize;
+    for read_pos in 0..downloaded {
+        let p = out_buff[read_pos];
+        if p.normal_x != 0.0 || p.normal_y != 0.0 || p.normal_z != 0.0 {
+            out_buff[write_pos] = p;
+            write_pos += 1;
+        }
+    }
+    unsafe { out_buff.set_len(write_pos) };
 }
 
 #[cfg(test)]
