@@ -364,9 +364,8 @@ impl crate::Registration for RegistrationState {
                                         );
                                         let p_imu = offset_q_f32 * p_l + offset_t_f32;
                                         let p_world = pose_q_f32 * p_imu + pose_t_f32;
-                                        let query_point = PointXYZ::new(
-                                            p_world.x, p_world.y, p_world.z,
-                                        );
+                                        let query_point =
+                                            PointXYZ::new(p_world.x, p_world.y, p_world.z);
                                         let plane =
                                             map.plane_fit_from_distributions(&query_point)?;
                                         let pd2 = plane[0] * p_world.x

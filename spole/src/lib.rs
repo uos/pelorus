@@ -189,12 +189,10 @@ impl VoxelDistribution {
         let regularization_factor = 1e-6;
         let regularized_cov = self.covariance + Matrix3::identity() * regularization_factor;
 
-        // Calculate the squared Mahalanobis distance.
-        // D^2 = (x - μ)^T * Σ^-1 * (x - μ)
-        let mahalanobis_sq = if let Some(inv_cov) = regularized_cov.try_inverse() {
-            // The result of the matrix multiplication is a 1x1 matrix.
-            // We extract the scalar value from it using [0].
-            (mean_diff.transpose() * inv_cov * mean_diff)[0]
+        // Calculate the squared Mahalanobis distance using Cholesky decomposition.
+        // D^2 = (x - μ)^T * Σ^-1 * (x - μ) = ||L^-1 * (x - μ)||^2
+        let mahalanobis_sq = if let Some(chol) = Cholesky::new(regularized_cov) {
+            chol.solve(&mean_diff).dot(&mean_diff)
         } else {
             // Fallback to squared Euclidean distance if covariance is singular.
             mean_diff.norm_squared()
@@ -416,9 +414,11 @@ pub fn encompassing_voxel_iter(grid_key: (i32, i32, i32), factor: i32) -> Encomp
 
 #[cfg(not(feature = "nn_kdt"))]
 fn hash(point: &Point3<f32>, voxel_size: f32) -> i32 {
-    const PRIME_1: i32 = 73_856_093;
-    const PRIME_2: i32 = 471_943;
-    const PRIME_3: i32 = 83_492_791;
+    // Match GPU arithmetic: cast to u32 before multiply for consistent hashing.
+    // See hash_grid for details.
+    const PRIME_1: u32 = 73_856_093;
+    const PRIME_2: u32 = 471_943;
+    const PRIME_3: u32 = 83_492_791;
 
     let xyz = point * (1.0 / voxel_size);
 
@@ -426,11 +426,12 @@ fn hash(point: &Point3<f32>, voxel_size: f32) -> i32 {
     let y = xyz.y.floor() as i32;
     let z = xyz.z.floor() as i32;
 
-    let mut hash = x.wrapping_mul(PRIME_1);
-    hash = hash.wrapping_add(y.wrapping_mul(PRIME_2));
-    hash = hash.wrapping_add(z.wrapping_mul(PRIME_3));
+    let h = (x as u32)
+        .wrapping_mul(PRIME_1)
+        .wrapping_add((y as u32).wrapping_mul(PRIME_2))
+        .wrapping_add((z as u32).wrapping_mul(PRIME_3));
 
-    hash
+    h as i32
 }
 
 impl IVoxHashMap {
@@ -566,9 +567,8 @@ impl IVoxHashMap {
             let mut keyed_points = points
                 .iter()
                 .map(|p| {
-                    let global_p = transform
-                        .transform_point(&nalgebra::Point3::new(p.x, p.y, p.z).cast())
-                        .cast();
+                    let transform_f32: nalgebra::Isometry3<f32> = transform.cast();
+                    let global_p = transform_f32.transform_point(&Point3::new(p.x, p.y, p.z));
                     (global_p, hash(&global_p, self.resolution))
                 })
                 .collect::<Vec<_>>();
@@ -1265,22 +1265,32 @@ impl IVoxHashMap {
 
     #[inline(always)]
     pub fn hash_grid(grid_key: &(i32, i32, i32)) -> i32 {
-        const PRIME_1: i32 = 73856093;
-        const PRIME_2: i32 = 471943;
-        const PRIME_3: i32 = 83492791;
+        // Match GPU arithmetic: cast to u32 before multiply for consistent hashing
+        // regardless of coordinate sign/quadrant. GPU shaders use:
+        //   uint32_t h = (uint32_t)g.x * 73856093u;
+        //   h += (uint32_t)g.y * 471943u;
+        //   h += (uint32_t)g.z * 83492791u;
+        //   return (int32_t)h;
+        // This ensures negative coordinates produce the same hash on CPU and GPU.
+        const PRIME_1: u32 = 73856093;
+        const PRIME_2: u32 = 471943;
+        const PRIME_3: u32 = 83492791;
 
-        let mut hash = grid_key.0.wrapping_mul(PRIME_1);
-        hash = hash.wrapping_add(grid_key.1.wrapping_mul(PRIME_2));
-        hash = hash.wrapping_add(grid_key.2.wrapping_mul(PRIME_3));
+        let h = (grid_key.0 as u32)
+            .wrapping_mul(PRIME_1)
+            .wrapping_add((grid_key.1 as u32).wrapping_mul(PRIME_2))
+            .wrapping_add((grid_key.2 as u32).wrapping_mul(PRIME_3));
 
-        hash
+        h as i32 // Reinterpret bit pattern (matches GPU)
     }
 
     #[inline(always)]
     pub fn hash(point: &nalgebra::Point3<f32>, voxel_size: f32) -> i32 {
-        const PRIME_1: i32 = 73_856_093;
-        const PRIME_2: i32 = 471_943;
-        const PRIME_3: i32 = 83_492_791;
+        // Match GPU arithmetic: cast to u32 before multiply for consistent hashing.
+        // See hash_grid for details.
+        const PRIME_1: u32 = 73_856_093;
+        const PRIME_2: u32 = 471_943;
+        const PRIME_3: u32 = 83_492_791;
 
         let xyz = point * (1.0 / voxel_size);
 
@@ -1288,11 +1298,12 @@ impl IVoxHashMap {
         let y = xyz.y.floor() as i32;
         let z = xyz.z.floor() as i32;
 
-        let mut hash = x.wrapping_mul(PRIME_1);
-        hash = hash.wrapping_add(y.wrapping_mul(PRIME_2));
-        hash = hash.wrapping_add(z.wrapping_mul(PRIME_3));
+        let h = (x as u32)
+            .wrapping_mul(PRIME_1)
+            .wrapping_add((y as u32).wrapping_mul(PRIME_2))
+            .wrapping_add((z as u32).wrapping_mul(PRIME_3));
 
-        hash
+        h as i32
     }
 
     pub fn clear(&mut self) {
