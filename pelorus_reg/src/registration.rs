@@ -274,11 +274,13 @@ impl crate::Registration for RegistrationState {
                 }
             }
 
-            let _planes_cpu_buffer_ptr = std::ptr::addr_of_mut!(self.planes_cpu_buffer);
-            let _planes_gpu_buffer_ptr = std::ptr::addr_of_mut!(self.planes_gpu_buffer);
+            let planes_cpu_buffer_ptr = std::ptr::addr_of_mut!(self.planes_cpu_buffer);
+            let planes_gpu_buffer_ptr = std::ptr::addr_of_mut!(self.planes_gpu_buffer);
             let map_ptr = std::ptr::addr_of!(self.map);
 
-            let mut cached_planes: Option<Vec<PointXYZINormal>> = None;
+            #[cfg(not(any(feature = "cuda", feature = "metal", feature = "vulkan")))]
+            let _ = planes_gpu_buffer_ptr;
+
             let eval_cb_inner = eval_cb.clone();
 
             self.ekf.correct(
@@ -318,215 +320,206 @@ impl crate::Registration for RegistrationState {
                         }
                     }
 
-                    let planes: &Vec<PointXYZINormal> = if let Some(ref p) = cached_planes {
-                        p
-                    } else {
-                        let retrieved_planes = match backend {
-                            ActiveBackend::Cpu => {
-                                #[allow(irrefutable_let_patterns)]
-                                let LocatedBufferView::Ram(cloud_pts) = cloud else {
-                                    panic!("CPU backend requires RAM buffer");
-                                };
-                                let map = unsafe { &*map_ptr };
+                    // Recompute planes on every IEKF iteration - correspondence must be
+                    // updated as the state estimate changes.
+                    let planes: &mut Vec<PointXYZINormal> = match backend {
+                        ActiveBackend::Cpu => {
+                            #[allow(irrefutable_let_patterns)]
+                            let LocatedBufferView::Ram(cloud_pts) = cloud else {
+                                panic!("CPU backend requires RAM buffer");
+                            };
+                            let planes_buf = unsafe { &mut *planes_cpu_buffer_ptr };
+                            planes_buf.clear();
+                            let map = unsafe { &*map_ptr };
 
-                                // Match the GPU backends' f32 transform precision so CPU↔GPU
-                                // plane selection stays numerically equivalent. GPU shaders do
-                                // the lidar→imu→world transform in f32 (via UnitQuaternion cast
-                                // from the f64 pose rotation matrix); doing the same here keeps
-                                // the query point, pd2 and score bit-close to the GPU path.
-                                let offset_q_f32: nalgebra::UnitQuaternion<f32> =
-                                    nalgebra::UnitQuaternion::from_matrix(
-                                        &ekf_state.offset_r_l_i.matrix().clone(),
-                                    )
-                                    .cast();
-                                let offset_t_f32: nalgebra::Vector3<f32> =
-                                    ekf_state.offset_t_l_i.cast();
-                                let pose_q_f32: nalgebra::UnitQuaternion<f32> =
-                                    nalgebra::UnitQuaternion::from_matrix(
-                                        &ekf_state.pose().rotation().matrix().clone(),
-                                    )
-                                    .cast();
-                                let pose_t_f32: nalgebra::Vector3<f32> = ekf_state
-                                    .pose()
-                                    .matrix()
-                                    .column(3)
-                                    .fixed_rows::<3>(0)
-                                    .into_owned()
-                                    .cast();
-
-                                cloud_pts
-                                    .par_iter()
-                                    .flat_map(|point_local| {
-                                        let p_l = nalgebra::Point3::new(
-                                            point_local.x,
-                                            point_local.y,
-                                            point_local.z,
-                                        );
-                                        let p_imu = offset_q_f32 * p_l + offset_t_f32;
-                                        let p_world = pose_q_f32 * p_imu + pose_t_f32;
-                                        let query_point =
-                                            PointXYZ::new(p_world.x, p_world.y, p_world.z);
-                                        let plane =
-                                            map.plane_fit_from_distributions(&query_point)?;
-                                        let pd2 = plane[0] * p_world.x
-                                            + plane[1] * p_world.y
-                                            + plane[2] * p_world.z
-                                            + plane[3];
-                                        let l2_sq = point_local.x * point_local.x
-                                            + point_local.y * point_local.y
-                                            + point_local.z * point_local.z;
-                                        let s = 1.0_f32
-                                            - 0.9_f32 * pd2.abs()
-                                                / l2_sq.max(1e-9_f32).sqrt().sqrt();
-                                        if s <= 0.9_f32 {
-                                            None
-                                        } else {
-                                            Some(PointXYZINormal::new(
-                                                point_local.x,
-                                                point_local.y,
-                                                point_local.z,
-                                                plane[3],
-                                                plane[0],
-                                                plane[1],
-                                                plane[2],
-                                            ))
-                                        }
-                                    })
-                                    .collect()
-                            }
-                            #[cfg(feature = "cuda")]
-                            ActiveBackend::Cuda(stream) => {
-                                let planes_buf = unsafe { &mut *_planes_cpu_buffer_ptr };
-                                planes_buf.clear();
-                                unsafe { planes_buf.set_len(cloud.len()) };
-                                let planes_gpu = match unsafe { &mut *_planes_gpu_buffer_ptr } {
-                                    Some(GpuPlanesBuffer::Cuda(buf)) => buf,
-                                    _ => panic!("CUDA backend: GPU planes buffer not allocated"),
-                                };
-                                let LocatedBufferView::Cuda { buffer } = cloud else {
-                                    panic!("CUDA backend requires CUDA buffer");
-                                };
-                                let pose_q: pelorus_cuda::Quaternion = UnitQuaternion::from_matrix(
+                            // Match the GPU backends' f32 transform precision so CPU↔GPU
+                            // plane selection stays numerically equivalent. GPU shaders do
+                            // the lidar→imu→world transform in f32 (via UnitQuaternion cast
+                            // from the f64 pose rotation matrix); doing the same here keeps
+                            // the query point, pd2 and score bit-close to the GPU path.
+                            let offset_q_f32: nalgebra::UnitQuaternion<f32> =
+                                nalgebra::UnitQuaternion::from_matrix(
+                                    &ekf_state.offset_r_l_i.matrix().clone(),
+                                )
+                                .cast();
+                            let offset_t_f32: nalgebra::Vector3<f32> =
+                                ekf_state.offset_t_l_i.cast();
+                            let pose_q_f32: nalgebra::UnitQuaternion<f32> =
+                                nalgebra::UnitQuaternion::from_matrix(
                                     &ekf_state.pose().rotation().matrix().clone(),
                                 )
-                                .into();
-                                let offset_q: pelorus_cuda::Quaternion =
-                                    UnitQuaternion::from_matrix(
-                                        &ekf_state.offset_r_l_i.matrix().clone(),
-                                    )
-                                    .into();
-                                let pose_t = ekf_state
-                                    .pose()
-                                    .matrix()
-                                    .column(3)
-                                    .fixed_rows::<3>(0)
-                                    .into_owned();
-                                pelorus_cuda::planes_cuda(
-                                    stream,
-                                    buffer,
-                                    &pelorus_cuda::Vector3::new(pose_t.x, pose_t.y, pose_t.z),
-                                    &pose_q,
-                                    &pelorus_cuda::Vector3::new(
-                                        ekf_state.offset_t_l_i.x,
-                                        ekf_state.offset_t_l_i.y,
-                                        ekf_state.offset_t_l_i.z,
-                                    ),
-                                    &offset_q,
-                                    planes_buf,
-                                    planes_gpu,
+                                .cast();
+                            let pose_t_f32: nalgebra::Vector3<f32> = ekf_state
+                                .pose()
+                                .matrix()
+                                .column(3)
+                                .fixed_rows::<3>(0)
+                                .into_owned()
+                                .cast();
+
+                            let pm = cloud_pts.par_iter().flat_map(|point_local| {
+                                let p_l = nalgebra::Point3::new(
+                                    point_local.x,
+                                    point_local.y,
+                                    point_local.z,
                                 );
-                                planes_buf.clone()
-                            }
-                            #[cfg(feature = "metal")]
-                            ActiveBackend::Metal(stream) => {
-                                let planes_buf = unsafe { &mut *_planes_cpu_buffer_ptr };
-                                planes_buf.clear();
-                                unsafe { planes_buf.set_len(cloud.len()) };
-                                let planes_gpu = match unsafe { &mut *_planes_gpu_buffer_ptr } {
-                                    Some(GpuPlanesBuffer::Metal(buf)) => buf,
-                                    _ => panic!("Metal backend: GPU planes buffer not allocated"),
-                                };
-                                let LocatedBufferView::Metal { buffer } = cloud else {
-                                    panic!("Metal backend requires Metal buffer");
-                                };
-                                let pose_q: pelorus_metal::Quaternion = {
-                                    let mat: Matrix3<f64> =
-                                        ekf_state.pose().rotation().matrix().clone();
-                                    UnitQuaternion::from_matrix(&mat).into()
-                                };
-                                let offset_q: pelorus_metal::Quaternion = {
-                                    let mat: Matrix3<f64> = ekf_state.offset_r_l_i.matrix().clone();
-                                    UnitQuaternion::from_matrix(&mat).into()
-                                };
-                                let pose_t = ekf_state
-                                    .pose()
-                                    .matrix()
-                                    .column(3)
-                                    .fixed_rows::<3>(0)
-                                    .into_owned();
-                                pelorus_metal::planes_metal(
-                                    stream,
-                                    buffer,
-                                    &pelorus_metal::Vector3::new(pose_t.x, pose_t.y, pose_t.z),
-                                    &pose_q,
-                                    &pelorus_metal::Vector3::new(
-                                        ekf_state.offset_t_l_i.x,
-                                        ekf_state.offset_t_l_i.y,
-                                        ekf_state.offset_t_l_i.z,
-                                    ),
-                                    &offset_q,
-                                    planes_buf,
-                                    planes_gpu,
-                                );
-                                planes_buf.clone()
-                            }
-                            #[cfg(feature = "vulkan")]
-                            ActiveBackend::Vulkan(stream) => {
-                                let planes_buf = unsafe { &mut *_planes_cpu_buffer_ptr };
-                                planes_buf.clear();
-                                unsafe { planes_buf.set_len(cloud.len()) };
-                                let planes_gpu = match unsafe { &mut *_planes_gpu_buffer_ptr } {
-                                    Some(GpuPlanesBuffer::Vulkan(buf)) => buf,
-                                    _ => panic!("Vulkan backend: GPU planes buffer not allocated"),
-                                };
-                                let LocatedBufferView::Vulkan { buffer } = cloud else {
-                                    panic!("Vulkan backend requires Vulkan buffer");
-                                };
-                                let pose_q: pelorus_vulkan::Quaternion =
-                                    UnitQuaternion::from_matrix(
-                                        &ekf_state.pose().rotation().matrix().clone(),
-                                    )
-                                    .into();
-                                let offset_q: pelorus_vulkan::Quaternion =
-                                    UnitQuaternion::from_matrix(
-                                        &ekf_state.offset_r_l_i.matrix().clone(),
-                                    )
-                                    .into();
-                                let pose_t = ekf_state
-                                    .pose()
-                                    .matrix()
-                                    .column(3)
-                                    .fixed_rows::<3>(0)
-                                    .into_owned();
-                                pelorus_vulkan::planes_vulkan(
-                                    stream,
-                                    buffer,
-                                    &pelorus_vulkan::Vector3::new(pose_t.x, pose_t.y, pose_t.z),
-                                    &pose_q,
-                                    &pelorus_vulkan::Vector3::new(
-                                        ekf_state.offset_t_l_i.x,
-                                        ekf_state.offset_t_l_i.y,
-                                        ekf_state.offset_t_l_i.z,
-                                    ),
-                                    &offset_q,
-                                    planes_buf,
-                                    planes_gpu,
-                                );
-                                planes_buf.clone()
-                            }
-                        };
-                        cached_planes = Some(retrieved_planes);
-                        cached_planes.as_ref().unwrap()
+                                let p_imu = offset_q_f32 * p_l + offset_t_f32;
+                                let p_world = pose_q_f32 * p_imu + pose_t_f32;
+                                let query_point = PointXYZ::new(p_world.x, p_world.y, p_world.z);
+                                let plane = map.plane_fit_from_distributions(&query_point)?;
+                                let pd2 = plane[0] * p_world.x
+                                    + plane[1] * p_world.y
+                                    + plane[2] * p_world.z
+                                    + plane[3];
+                                let l2_sq = point_local.x * point_local.x
+                                    + point_local.y * point_local.y
+                                    + point_local.z * point_local.z;
+                                let s = 1.0_f32
+                                    - 0.9_f32 * pd2.abs() / l2_sq.max(1e-9_f32).sqrt().sqrt();
+                                if s <= 0.9_f32 {
+                                    None
+                                } else {
+                                    Some(PointXYZINormal::new(
+                                        point_local.x,
+                                        point_local.y,
+                                        point_local.z,
+                                        plane[3],
+                                        plane[0],
+                                        plane[1],
+                                        plane[2],
+                                    ))
+                                }
+                            });
+                            planes_buf.par_extend(pm);
+                            planes_buf
+                        }
+                        #[cfg(feature = "cuda")]
+                        ActiveBackend::Cuda(stream) => {
+                            let planes_buf = unsafe { &mut *planes_cpu_buffer_ptr };
+                            planes_buf.clear();
+                            unsafe { planes_buf.set_len(cloud.len()) };
+                            let planes_gpu = match unsafe { &mut *planes_gpu_buffer_ptr } {
+                                Some(GpuPlanesBuffer::Cuda(buf)) => buf,
+                                _ => panic!("CUDA backend: GPU planes buffer not allocated"),
+                            };
+                            let LocatedBufferView::Cuda { buffer } = cloud else {
+                                panic!("CUDA backend requires CUDA buffer");
+                            };
+                            let pose_q: pelorus_cuda::Quaternion = UnitQuaternion::from_matrix(
+                                &ekf_state.pose().rotation().matrix().clone(),
+                            )
+                            .into();
+                            let offset_q: pelorus_cuda::Quaternion = UnitQuaternion::from_matrix(
+                                &ekf_state.offset_r_l_i.matrix().clone(),
+                            )
+                            .into();
+                            let pose_t = ekf_state
+                                .pose()
+                                .matrix()
+                                .column(3)
+                                .fixed_rows::<3>(0)
+                                .into_owned();
+                            pelorus_cuda::planes_cuda(
+                                stream,
+                                buffer,
+                                &pelorus_cuda::Vector3::new(pose_t.x, pose_t.y, pose_t.z),
+                                &pose_q,
+                                &pelorus_cuda::Vector3::new(
+                                    ekf_state.offset_t_l_i.x,
+                                    ekf_state.offset_t_l_i.y,
+                                    ekf_state.offset_t_l_i.z,
+                                ),
+                                &offset_q,
+                                planes_buf,
+                                planes_gpu,
+                            );
+                            planes_buf
+                        }
+                        #[cfg(feature = "metal")]
+                        ActiveBackend::Metal(stream) => {
+                            let planes_buf = unsafe { &mut *planes_cpu_buffer_ptr };
+                            planes_buf.clear();
+                            unsafe { planes_buf.set_len(cloud.len()) };
+                            let planes_gpu = match unsafe { &mut *planes_gpu_buffer_ptr } {
+                                Some(GpuPlanesBuffer::Metal(buf)) => buf,
+                                _ => panic!("Metal backend: GPU planes buffer not allocated"),
+                            };
+                            let LocatedBufferView::Metal { buffer } = cloud else {
+                                panic!("Metal backend requires Metal buffer");
+                            };
+                            let pose_q: pelorus_metal::Quaternion = {
+                                let mat: Matrix3<f64> =
+                                    ekf_state.pose().rotation().matrix().clone();
+                                UnitQuaternion::from_matrix(&mat).into()
+                            };
+                            let offset_q: pelorus_metal::Quaternion = {
+                                let mat: Matrix3<f64> = ekf_state.offset_r_l_i.matrix().clone();
+                                UnitQuaternion::from_matrix(&mat).into()
+                            };
+                            let pose_t = ekf_state
+                                .pose()
+                                .matrix()
+                                .column(3)
+                                .fixed_rows::<3>(0)
+                                .into_owned();
+                            pelorus_metal::planes_metal(
+                                stream,
+                                buffer,
+                                &pelorus_metal::Vector3::new(pose_t.x, pose_t.y, pose_t.z),
+                                &pose_q,
+                                &pelorus_metal::Vector3::new(
+                                    ekf_state.offset_t_l_i.x,
+                                    ekf_state.offset_t_l_i.y,
+                                    ekf_state.offset_t_l_i.z,
+                                ),
+                                &offset_q,
+                                planes_buf,
+                                planes_gpu,
+                            );
+                            planes_buf
+                        }
+                        #[cfg(feature = "vulkan")]
+                        ActiveBackend::Vulkan(stream) => {
+                            let planes_buf = unsafe { &mut *planes_cpu_buffer_ptr };
+                            planes_buf.clear();
+                            unsafe { planes_buf.set_len(cloud.len()) };
+                            let planes_gpu = match unsafe { &mut *planes_gpu_buffer_ptr } {
+                                Some(GpuPlanesBuffer::Vulkan(buf)) => buf,
+                                _ => panic!("Vulkan backend: GPU planes buffer not allocated"),
+                            };
+                            let LocatedBufferView::Vulkan { buffer } = cloud else {
+                                panic!("Vulkan backend requires Vulkan buffer");
+                            };
+                            let pose_q: pelorus_vulkan::Quaternion = UnitQuaternion::from_matrix(
+                                &ekf_state.pose().rotation().matrix().clone(),
+                            )
+                            .into();
+                            let offset_q: pelorus_vulkan::Quaternion = UnitQuaternion::from_matrix(
+                                &ekf_state.offset_r_l_i.matrix().clone(),
+                            )
+                            .into();
+                            let pose_t = ekf_state
+                                .pose()
+                                .matrix()
+                                .column(3)
+                                .fixed_rows::<3>(0)
+                                .into_owned();
+                            pelorus_vulkan::planes_vulkan(
+                                stream,
+                                buffer,
+                                &pelorus_vulkan::Vector3::new(pose_t.x, pose_t.y, pose_t.z),
+                                &pose_q,
+                                &pelorus_vulkan::Vector3::new(
+                                    ekf_state.offset_t_l_i.x,
+                                    ekf_state.offset_t_l_i.y,
+                                    ekf_state.offset_t_l_i.z,
+                                ),
+                                &offset_q,
+                                planes_buf,
+                                planes_gpu,
+                            );
+                            planes_buf
+                        }
                     };
 
                     eval_actual.stop("ekf_correct/model/planes").unwrap();
