@@ -2814,9 +2814,9 @@ pf! i 1
                     None
                 };
 
-                // --- imu.from_lidar_transform ---
-                if let (Some(lf), Some(imuf)) = (&lidar_frame, &imu_frame) {
-                    match tf_listener.lookup_transform(lf, imuf, t0.clone()) {
+// --- imu.from_lidar_transform ---
+if let (Some(lf), Some(imuf)) = (&lidar_frame, &imu_frame) {
+    match tf_listener.lookup_transform(lf, imuf, t0.clone()) {
                         Ok(tf) => {
                             let iso = isometry_from_transform(&tf.transform);
                             let t = &iso.translation;
@@ -2878,9 +2878,9 @@ pf! i 1
                     }
                 }
 
-                // --- output.base_link.from_lidar_transform ---
-                if let (Some(lf), Some(blf)) = (&lidar_frame, &lio_config.base_link_frame) {
-                    match tf_listener.lookup_transform(lf, blf, t0) {
+// --- output.base_link.from_lidar_transform ---
+if let (Some(lf), Some(blf)) = (&lidar_frame, &lio_config.base_link_frame) {
+    match tf_listener.lookup_transform(lf, blf, t0) {
                         Ok(tf) => {
                             let iso = isometry_from_transform(&tf.transform);
                             let t = &iso.translation;

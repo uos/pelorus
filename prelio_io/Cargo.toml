@@ -30,6 +30,7 @@ tokio = { workspace = true, optional = true, features = ["rt-multi-thread"] }
 mt_rat = { workspace = true, optional = true }
 libc = { workspace = true, optional = true }
 ros2-interfaces-jazzy-rkyv = { workspace = true, optional = true }
+transforms.workspace = true
 
 [features]
 rat = ["dep:mt_rat", "dep:libc"]
@@ -40,12 +41,12 @@ vulkan = ["prelio/vulkan"]
 no-imu-sync = ["prelio/no-imu-sync"]
 rerun = ["dep:rerun"]
 mt_pubsub = [
-  "dep:mt_pubsub",
-  "dep:tokio",
-  "dep:ros2-interfaces-jazzy-rkyv",
+    "dep:mt_pubsub",
+    "dep:tokio",
+    "dep:ros2-interfaces-jazzy-rkyv",
 ]
 ros2-client = [
-  "dep:ros2-client",
-  "dep:ros2-interfaces-jazzy-serde",
+    "dep:ros2-client",
+    "dep:ros2-interfaces-jazzy-serde",
 ]
 r2r = ["dep:r2r", "pelorus_core/r2r"]

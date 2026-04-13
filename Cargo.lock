@@ -5566,6 +5566,7 @@ dependencies = [
  "ros_pointcloud2",
  "thiserror 2.0.18",
  "tokio",
+ "transforms",
 ]
 
 [[package]]
@@ -8772,6 +8773,17 @@ dependencies = [
  "tracing-core",
  "tracing-log",
  "tracing-serde",
+]
+
+[[package]]
+name = "transforms"
+version = "1.4.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f6f0aa27a20fa3de2a1b06a62d6451d3e2503b17896da8e03826df78395ec7a9"
+dependencies = [
+ "approx",
+ "hashbrown 0.16.1",
+ "thiserror 2.0.18",
 ]
 
 [[package]]

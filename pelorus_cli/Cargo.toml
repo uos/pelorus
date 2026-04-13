@@ -67,10 +67,10 @@ ros2-rust = ["ros2-client"]
 
 # Custom Rust-only pub/sub implementation used in my offline-mapping, development and debugging workflow (see https://uos.github.io/minot/#native-publishsubscribe).
 mt_pubsub = [
-  "dep:mt_pubsub",
-  "dep:tokio",
-  "dep:ros2-interfaces-jazzy-rkyv",
-  "prelio_io/mt_pubsub",
+    "dep:mt_pubsub",
+    "dep:tokio",
+    "dep:ros2-interfaces-jazzy-rkyv",
+    "prelio_io/mt_pubsub",
 ]
 
 # -#-#-#-#-#- Performance and Methods -#-#-#-#-#-
@@ -119,9 +119,9 @@ rat = ["dep:mt_rat", "dep:tokio", "prelio_io/rat"]
 
 # Use native ROS2 as pub/sub system
 ros2-client = [
-  "dep:ros2-client",
-  "dep:ros2-interfaces-jazzy-serde",
-  "prelio_io/ros2-client",
+    "dep:ros2-client",
+    "dep:ros2-interfaces-jazzy-serde",
+    "prelio_io/ros2-client",
 ]
 
 # Use rclc bindings as pub/sub system
