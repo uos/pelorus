@@ -10,6 +10,7 @@ wheels
 pelorus_trajectory*
 pelorus_c/examples/basic_usage
 pelorus_c/examples/async_callback
+pelorus_c/examples/pico_equality
 pelorus_c/examples/sync_blocking
 pelorus_c/examples/cpp_wrapper
 **/build/

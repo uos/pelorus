@@ -18,8 +18,8 @@ int main()
 
     try
     {
-        pelorus::Pelorus pelorus("./no-accum.rl");
-        std::cout << "Created Pelorus instance with default config\n\n";
+        pelorus::Pelorus pelorus("./pico-equality.rl");
+        std::cout << "Created Pelorus instance with comparison config\n\n";
 
         const int32_t base_sec = 1000;
 
@@ -46,7 +46,7 @@ int main()
             pelorus.add_imu(imu);
         }
 
-        constexpr int NUM_POINTS = 64;
+        constexpr int NUM_POINTS = 512;
 
         // Scan 1
         auto scan1 = ::pcl::PointCloud<pelorus::pcl::PointXYZIT>::Ptr(
@@ -57,13 +57,29 @@ int main()
         scan1->is_dense = false;
         for (int i = 0; i < NUM_POINTS; i++)
         {
-            const float angle = (float)i / NUM_POINTS * 6.28318f;
-            const float range = 5.0f + 0.5f * (i % 8);
+            float x, y, z;
+            if (i < NUM_POINTS / 2)
+            {
+                const int u = i % 16;
+                const int v = i / 16;
+                x = 4.0f + 0.12f * u;
+                y = -1.0f + 0.12f * v;
+                z = 0.01f * ((u + v) % 2);
+            }
+            else
+            {
+                const int j = i - NUM_POINTS / 2;
+                const int u = j % 16;
+                const int v = j / 16;
+                x = 6.0f + 0.005f * ((u + v) % 2);
+                y = -1.0f + 0.12f * u;
+                z = 0.10f + 0.12f * v;
+            }
 
             auto &p = scan1->points[i];
-            p.x = range * std::cos(angle);
-            p.y = range * std::sin(angle);
-            p.z = 0.2f * std::sin(angle * 3);
+            p.x = x;
+            p.y = y;
+            p.z = z;
             p.intensity = 0.0f;
             p.t = static_cast<uint32_t>(((float)i / NUM_POINTS) * 100000000.0f);
         }
@@ -101,13 +117,31 @@ int main()
         scan2->is_dense = false;
         for (int i = 0; i < NUM_POINTS; i++)
         {
-            const float angle = (float)i / NUM_POINTS * 6.28318f + 0.1f; // match other examples
-            const float range = 5.0f + 0.5f * (i % 8) + 0.05f;
+            float x, y, z;
+            if (i < NUM_POINTS / 2)
+            {
+                const int u = i % 16;
+                const int v = i / 16;
+                x = 4.0f + 0.12f * u;
+                y = -1.0f + 0.12f * v;
+                z = 0.01f * ((u + v) % 2);
+            }
+            else
+            {
+                const int j = i - NUM_POINTS / 2;
+                const int u = j % 16;
+                const int v = j / 16;
+                x = 6.0f + 0.005f * ((u + v) % 2);
+                y = -1.0f + 0.12f * u;
+                z = 0.10f + 0.12f * v;
+            }
+            const float c = 0.996802f; // cos(0.08 rad)
+            const float s = 0.079915f; // sin(0.08 rad)
 
             auto &p = scan2->points[i];
-            p.x = range * std::cos(angle);
-            p.y = range * std::sin(angle);
-            p.z = 0.2f * std::sin(angle * 3);
+            p.x = c * x - s * y + 0.18f;
+            p.y = s * x + c * y - 0.12f;
+            p.z = z + 0.03f;
             p.intensity = 0.0f;
             p.t = static_cast<uint32_t>(((float)i / NUM_POINTS) * 100000000.0f);
         }

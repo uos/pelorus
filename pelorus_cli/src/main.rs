@@ -86,7 +86,7 @@ use pelorus_cli::stats_tui::{
 };
 #[cfg(feature = "mt_pubsub")]
 use std::time::Duration;
-use std::time::{Instant, UNIX_EPOCH};
+use std::time::UNIX_EPOCH;
 
 #[allow(dead_code)]
 fn lerp_color(c1: (f32, f32, f32), c2: (f32, f32, f32), t: f32) -> (f32, f32, f32) {
@@ -599,7 +599,7 @@ fn lio_with_ready_signal(
     let mut t_world = nalgebra::Isometry3::identity();
     let mut t_last_current = nalgebra::Isometry3::identity();
     #[cfg(feature = "mt_pubsub")]
-    let mut last_stats_pub = Instant::now();
+    let mut last_stats_pub = std::time::Instant::now();
 
     // Use VecDeque for efficient removal from front (O(1) instead of O(n))
     let mut lidar_path_poses: VecDeque<PoseStamped> = VecDeque::new();
@@ -1652,7 +1652,7 @@ fn lio_with_ready_signal(
             #[cfg(feature = "mt_pubsub")]
             if let Some(ref stats) = shared_stats {
                 if last_stats_pub.elapsed() >= Duration::from_millis(250) {
-                    last_stats_pub = Instant::now();
+                    last_stats_pub = std::time::Instant::now();
                     let snapshot = stats.get();
                     let payload = format!(
                         "elapsed={:.2};lidar_hz={:.2};proc_hz={:.2};rt={:.2};cpu={:.1};ram={:.1};comp_ms={:.2};comp_avg={:.2};pos={:.3},{:.3},{:.3};ori={:.5},{:.5},{:.5},{:.5};vel={:.3},{:.3},{:.3};ang={:.4},{:.4},{:.4}",
@@ -2814,9 +2814,9 @@ pf! i 1
                     None
                 };
 
-// --- imu.from_lidar_transform ---
-if let (Some(lf), Some(imuf)) = (&lidar_frame, &imu_frame) {
-    match tf_listener.lookup_transform(lf, imuf, t0.clone()) {
+                // --- imu.from_lidar_transform ---
+                if let (Some(lf), Some(imuf)) = (&lidar_frame, &imu_frame) {
+                    match tf_listener.lookup_transform(lf, imuf, t0.clone()) {
                         Ok(tf) => {
                             let iso = isometry_from_transform(&tf.transform);
                             let t = &iso.translation;
@@ -2878,9 +2878,9 @@ if let (Some(lf), Some(imuf)) = (&lidar_frame, &imu_frame) {
                     }
                 }
 
-// --- output.base_link.from_lidar_transform ---
-if let (Some(lf), Some(blf)) = (&lidar_frame, &lio_config.base_link_frame) {
-    match tf_listener.lookup_transform(lf, blf, t0) {
+                // --- output.base_link.from_lidar_transform ---
+                if let (Some(lf), Some(blf)) = (&lidar_frame, &lio_config.base_link_frame) {
+                    match tf_listener.lookup_transform(lf, blf, t0) {
                         Ok(tf) => {
                             let iso = isometry_from_transform(&tf.transform);
                             let t = &iso.translation;

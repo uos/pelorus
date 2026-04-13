@@ -7,12 +7,12 @@ use crossterm::{
 use ratatui::{
     Terminal,
     backend::CrosstermBackend,
-    layout::{Constraint, Direction, Layout, Rect},
+    layout::{Alignment, Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     symbols::Marker,
     text::{Line, Span},
     widgets::{
-        Block, Borders, List, ListItem, Paragraph, Tabs,
+        Block, Borders, Clear, List, ListItem, Paragraph, Tabs,
         canvas::{Canvas, Line as CanvasLine, Points},
     },
 };
@@ -712,6 +712,13 @@ fn get_nvidia_gpu_stats() -> (f64, f64, f64) {
 // ============================================================================
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
+const MERGED_TABS_MIN_WIDTH: u16 = 150;
+const MERGED_TABS_MIN_HEIGHT: u16 = 42;
+const HYBRID_MERGED_MIN_HEIGHT: u16 = 30;
+const STATS_FULL_MIN_HEIGHT: u16 = 24;
+const LOGS_MIN_HEIGHT: u16 = 8;
+const DOCKED_HELP_PANEL_MIN_WIDTH: u16 = 38;
+const DOCKED_HELP_PANEL_MAX_WIDTH: u16 = 72;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Tab {
@@ -726,18 +733,179 @@ enum ViewMode {
     FitAll,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum TrajectoryPaneMode {
+    Split,
+    LeftOnly,
+    RightOnly,
+}
+
 pub struct StatsTui {
     stats: Arc<SharedStats>,
     stop_rx: Option<std::sync::mpsc::Receiver<()>>,
     shutdown_tx: Option<std::sync::mpsc::Sender<()>>,
     current_tab: Tab,
     view_mode: ViewMode,
+    trajectory_pane_mode: TrajectoryPaneMode,
     log_scroll: Option<usize>, // None = auto-follow (show latest), Some(n) = manual scroll position
     log_buffer: Arc<Mutex<LogBuffer>>,
     show_minot_logs: bool,
+    show_help_overlay: bool,
 }
 
 impl StatsTui {
+    fn use_merged_tabs_layout(area: Rect) -> bool {
+        area.width >= MERGED_TABS_MIN_WIDTH && area.height >= MERGED_TABS_MIN_HEIGHT
+    }
+
+    fn use_hybrid_merged_layout(area: Rect) -> bool {
+        area.width >= MERGED_TABS_MIN_WIDTH
+            && area.height >= HYBRID_MERGED_MIN_HEIGHT
+            && area.height < MERGED_TABS_MIN_HEIGHT
+    }
+
+    fn render_stats_with_optional_logs(
+        &self,
+        f: &mut ratatui::Frame,
+        area: Rect,
+        stats: &TuiStats,
+    ) {
+        if Self::stats_shows_logs(area) {
+            let chunks = Layout::default()
+                .direction(Direction::Vertical)
+                .constraints([
+                    Constraint::Length(STATS_FULL_MIN_HEIGHT),
+                    Constraint::Length(1),
+                    Constraint::Min(1),
+                ])
+                .split(area);
+            self.render_stats_tab(f, chunks[0], stats);
+            self.render_section_divider(f, chunks[1]);
+            self.render_logs_tab(f, chunks[2]);
+        } else {
+            self.render_stats_tab(f, area, stats);
+        }
+    }
+
+    fn stats_shows_logs(area: Rect) -> bool {
+        area.height >= STATS_FULL_MIN_HEIGHT + 1 + LOGS_MIN_HEIGHT
+    }
+
+    fn logs_integrated_visible(&self, size: Rect) -> bool {
+        if Self::use_merged_tabs_layout(size) {
+            let chunks = Layout::default()
+                .direction(Direction::Vertical)
+                .constraints([
+                    Constraint::Length(1), // Header
+                    Constraint::Min(10),   // Content
+                    Constraint::Length(1), // Help bar
+                ])
+                .split(size);
+            let content_chunks = Layout::default()
+                .direction(Direction::Horizontal)
+                .constraints([Constraint::Percentage(42), Constraint::Percentage(58)])
+                .split(chunks[1]);
+            return Self::stats_shows_logs(content_chunks[0]);
+        }
+
+        if Self::use_hybrid_merged_layout(size) {
+            let chunks = Layout::default()
+                .direction(Direction::Vertical)
+                .constraints([
+                    Constraint::Length(1), // Header
+                    Constraint::Length(3), // Tabs
+                    Constraint::Min(10),   // Content
+                    Constraint::Length(1), // Help bar
+                ])
+                .split(size);
+            let content_chunks = Layout::default()
+                .direction(Direction::Horizontal)
+                .constraints([Constraint::Percentage(60), Constraint::Percentage(40)])
+                .split(chunks[2]);
+            return Self::stats_shows_logs(content_chunks[0]);
+        }
+
+        // Standard tabbed layout
+        let chunks = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([
+                Constraint::Length(1), // Header
+                Constraint::Length(3), // Tabs
+                Constraint::Min(10),   // Content
+                Constraint::Length(1), // Help bar
+            ])
+            .split(size);
+        let logs_integrated = Self::stats_shows_logs(chunks[2]);
+        let show_logs_tab = !logs_integrated;
+        let effective_tab = if !show_logs_tab && self.current_tab == Tab::Logs {
+            Tab::Stats
+        } else {
+            self.current_tab
+        };
+        effective_tab == Tab::Stats && logs_integrated
+    }
+
+    fn show_trajectory_tab_for_size(&self, size: Rect) -> bool {
+        !(Self::use_merged_tabs_layout(size) || Self::use_hybrid_merged_layout(size))
+    }
+
+    fn show_logs_tab_for_size(&self, size: Rect) -> bool {
+        if Self::use_merged_tabs_layout(size) {
+            return false;
+        }
+
+        if Self::use_hybrid_merged_layout(size) {
+            let chunks = Layout::default()
+                .direction(Direction::Vertical)
+                .constraints([
+                    Constraint::Length(1), // Header
+                    Constraint::Length(3), // Tabs
+                    Constraint::Min(10),   // Content
+                    Constraint::Length(1), // Help bar
+                ])
+                .split(size);
+            return !Self::stats_shows_logs(chunks[2]);
+        }
+
+        let chunks = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([
+                Constraint::Length(1), // Header
+                Constraint::Length(3), // Tabs
+                Constraint::Min(10),   // Content
+                Constraint::Length(1), // Help bar
+            ])
+            .split(size);
+        !Self::stats_shows_logs(chunks[2])
+    }
+
+    fn trajectory_visible_for_size(&self, size: Rect) -> bool {
+        if Self::use_merged_tabs_layout(size) {
+            return true;
+        }
+
+        if Self::use_hybrid_merged_layout(size) {
+            return true;
+        }
+
+        self.current_tab == Tab::Trajectory
+    }
+
+    fn visible_tab_count(show_trajectory_tab: bool, show_logs_tab: bool) -> u8 {
+        1 + u8::from(show_trajectory_tab) + u8::from(show_logs_tab)
+    }
+
+    fn render_section_divider(&self, f: &mut ratatui::Frame, area: Rect) {
+        if area.width == 0 || area.height == 0 {
+            return;
+        }
+        let line = "─".repeat(area.width as usize);
+        f.render_widget(
+            Paragraph::new(Span::styled(line, Style::default().fg(Color::DarkGray))),
+            area,
+        );
+    }
+
     pub fn new(stats: Arc<SharedStats>) -> Self {
         Self {
             stats,
@@ -745,9 +913,11 @@ impl StatsTui {
             shutdown_tx: None,
             current_tab: Tab::Stats,
             view_mode: ViewMode::FollowCurrent,
+            trajectory_pane_mode: TrajectoryPaneMode::Split,
             log_scroll: None, // Auto-follow by default
             log_buffer: get_log_buffer(),
             show_minot_logs: true,
+            show_help_overlay: false,
         }
     }
 
@@ -828,51 +998,119 @@ impl StatsTui {
                             return Ok(());
                         }
                         KeyCode::Char('1') => self.current_tab = Tab::Stats,
-                        KeyCode::Char('2') => self.current_tab = Tab::Trajectory,
-                        KeyCode::Char('3') => self.current_tab = Tab::Logs,
+                        KeyCode::Char('2') => {
+                            let size = terminal.size()?;
+                            let area = Rect::new(0, 0, size.width, size.height);
+                            if self.show_trajectory_tab_for_size(area) {
+                                self.current_tab = Tab::Trajectory;
+                            } else if self.show_logs_tab_for_size(area) {
+                                self.current_tab = Tab::Logs;
+                            }
+                        }
+                        KeyCode::Char('3') => {
+                            let size = terminal.size()?;
+                            let area = Rect::new(0, 0, size.width, size.height);
+                            if self.show_trajectory_tab_for_size(area)
+                                && self.show_logs_tab_for_size(area)
+                            {
+                                self.current_tab = Tab::Logs;
+                            }
+                        }
                         KeyCode::Tab => {
-                            self.current_tab = match self.current_tab {
-                                Tab::Stats => Tab::Trajectory,
-                                Tab::Trajectory => Tab::Logs,
-                                Tab::Logs => Tab::Stats,
-                            };
+                            let size = terminal.size()?;
+                            let area = Rect::new(0, 0, size.width, size.height);
+                            let show_trajectory_tab = self.show_trajectory_tab_for_size(area);
+                            let show_logs_tab = self.show_logs_tab_for_size(area);
+                            self.current_tab =
+                                match (show_trajectory_tab, show_logs_tab, self.current_tab) {
+                                    (true, true, Tab::Stats) => Tab::Trajectory,
+                                    (true, true, Tab::Trajectory) => Tab::Logs,
+                                    (true, true, Tab::Logs) => Tab::Stats,
+                                    (true, false, Tab::Stats) => Tab::Trajectory,
+                                    (true, false, Tab::Trajectory) => Tab::Stats,
+                                    (true, false, Tab::Logs) => Tab::Stats,
+                                    (false, true, Tab::Stats) => Tab::Logs,
+                                    (false, true, Tab::Logs) => Tab::Stats,
+                                    (false, true, Tab::Trajectory) => Tab::Stats,
+                                    (false, false, _) => Tab::Stats,
+                                };
                         }
-                        KeyCode::Char('f') if self.current_tab == Tab::Trajectory => {
-                            self.view_mode = match self.view_mode {
-                                ViewMode::FollowCurrent => ViewMode::FitAll,
-                                ViewMode::FitAll => ViewMode::FollowCurrent,
-                            };
+                        KeyCode::Char('?') => {
+                            self.show_help_overlay = !self.show_help_overlay;
                         }
-                        KeyCode::Char('k') if self.current_tab == Tab::Logs => {
-                            self.scroll_logs_up();
+                        KeyCode::Char('f') => {
+                            let size = terminal.size()?;
+                            let area = Rect::new(0, 0, size.width, size.height);
+                            if self.trajectory_visible_for_size(area) {
+                                self.view_mode = match self.view_mode {
+                                    ViewMode::FollowCurrent => ViewMode::FitAll,
+                                    ViewMode::FitAll => ViewMode::FollowCurrent,
+                                };
+                            }
                         }
-                        KeyCode::Up if self.current_tab == Tab::Logs => {
-                            self.scroll_logs_up();
+                        KeyCode::Char('v') => {
+                            let size = terminal.size()?;
+                            let area = Rect::new(0, 0, size.width, size.height);
+                            if self.trajectory_visible_for_size(area) {
+                                self.trajectory_pane_mode = match self.trajectory_pane_mode {
+                                    TrajectoryPaneMode::Split => TrajectoryPaneMode::LeftOnly,
+                                    TrajectoryPaneMode::LeftOnly => TrajectoryPaneMode::RightOnly,
+                                    TrajectoryPaneMode::RightOnly => TrajectoryPaneMode::Split,
+                                };
+                            }
                         }
-                        KeyCode::Char('j') if self.current_tab == Tab::Logs => {
-                            self.scroll_logs_down();
-                        }
-                        KeyCode::Down if self.current_tab == Tab::Logs => {
-                            self.scroll_logs_down();
-                        }
-                        KeyCode::PageUp if self.current_tab == Tab::Logs => {
-                            for _ in 0..20 {
+                        KeyCode::Char('k') | KeyCode::Up => {
+                            let size = terminal.size()?;
+                            let area = Rect::new(0, 0, size.width, size.height);
+                            if self.current_tab == Tab::Logs || self.logs_integrated_visible(area) {
                                 self.scroll_logs_up();
                             }
                         }
-                        KeyCode::PageDown if self.current_tab == Tab::Logs => {
-                            for _ in 0..20 {
+                        KeyCode::Char('j') | KeyCode::Down => {
+                            let size = terminal.size()?;
+                            let area = Rect::new(0, 0, size.width, size.height);
+                            if self.current_tab == Tab::Logs || self.logs_integrated_visible(area) {
                                 self.scroll_logs_down();
                             }
                         }
-                        KeyCode::Home if self.current_tab == Tab::Logs => {
-                            self.log_scroll = Some(0);
+                        KeyCode::PageUp => {
+                            let size = terminal.size()?;
+                            let area = Rect::new(0, 0, size.width, size.height);
+                            if self.current_tab == Tab::Logs || self.logs_integrated_visible(area) {
+                                for _ in 0..20 {
+                                    self.scroll_logs_up();
+                                }
+                            }
                         }
-                        KeyCode::End if self.current_tab == Tab::Logs => {
-                            self.log_scroll = None; // Auto-follow = show latest
+                        KeyCode::PageDown => {
+                            let size = terminal.size()?;
+                            let area = Rect::new(0, 0, size.width, size.height);
+                            if self.current_tab == Tab::Logs || self.logs_integrated_visible(area) {
+                                for _ in 0..20 {
+                                    self.scroll_logs_down();
+                                }
+                            }
                         }
-                        KeyCode::Char('m') if self.current_tab == Tab::Logs => {
-                            self.show_minot_logs = !self.show_minot_logs;
+                        KeyCode::Home => {
+                            let size = terminal.size()?;
+                            let area = Rect::new(0, 0, size.width, size.height);
+                            if self.current_tab == Tab::Logs || self.logs_integrated_visible(area) {
+                                self.log_scroll = Some(0);
+                            }
+                        }
+                        KeyCode::End => {
+                            let size = terminal.size()?;
+                            let area = Rect::new(0, 0, size.width, size.height);
+                            if self.current_tab == Tab::Logs || self.logs_integrated_visible(area) {
+                                self.log_scroll = None; // Auto-follow = show latest
+                            }
+                        }
+                        KeyCode::Char('m') => {
+                            let size = terminal.size()?;
+                            let area = Rect::new(0, 0, size.width, size.height);
+                            if self.current_tab == Tab::Logs || self.logs_integrated_visible(area) {
+                                self.show_minot_logs = !self.show_minot_logs;
+                            }
                         }
                         _ => {}
                     }
@@ -898,26 +1136,283 @@ impl StatsTui {
     fn render(&self, f: &mut ratatui::Frame, stats: &TuiStats) {
         let size = f.area();
 
-        let chunks = Layout::default()
-            .direction(Direction::Vertical)
-            .constraints([
-                Constraint::Length(1), // Header
-                Constraint::Length(3), // Tabs
-                Constraint::Min(10),   // Content
-                Constraint::Length(1), // Help bar
-            ])
-            .split(size);
+        if Self::use_merged_tabs_layout(size) {
+            let chunks = Layout::default()
+                .direction(Direction::Vertical)
+                .constraints([
+                    Constraint::Length(1), // Header
+                    Constraint::Min(10),   // Content
+                    Constraint::Length(1), // Help bar
+                ])
+                .split(size);
 
-        self.render_title_bar(f, chunks[0], stats);
-        self.render_tabs(f, chunks[1]);
+            self.render_title_bar(f, chunks[0], stats);
 
-        match self.current_tab {
-            Tab::Stats => self.render_stats_tab(f, chunks[2], stats),
-            Tab::Trajectory => self.render_trajectory_tab(f, chunks[2], stats),
-            Tab::Logs => self.render_logs_tab(f, chunks[2]),
+            let content_chunks = Layout::default()
+                .direction(Direction::Horizontal)
+                .constraints([Constraint::Percentage(42), Constraint::Percentage(58)])
+                .split(chunks[1]);
+
+            self.render_stats_with_optional_logs(f, content_chunks[0], stats);
+
+            self.render_trajectory_tab(f, content_chunks[1], stats, true);
+            self.render_help_bar_merged(f, chunks[2]);
+            self.render_help_overlay(
+                f,
+                chunks[1],
+                self.help_overlay_items(
+                    Tab::Stats,
+                    Self::stats_shows_logs(content_chunks[0]),
+                    false,
+                    false,
+                    true,
+                    true,
+                ),
+            );
+        } else if Self::use_hybrid_merged_layout(size) {
+            let pre_chunks = Layout::default()
+                .direction(Direction::Vertical)
+                .constraints([
+                    Constraint::Length(1), // Header
+                    Constraint::Length(3), // Tabs
+                    Constraint::Min(10),   // Content
+                    Constraint::Length(1), // Help bar
+                ])
+                .split(size);
+            let pre_logs_integrated = Self::stats_shows_logs(pre_chunks[2]);
+            let pre_show_logs_tab = !pre_logs_integrated;
+            let show_tabs_row = Self::visible_tab_count(false, pre_show_logs_tab) > 1;
+
+            let chunks = Layout::default()
+                .direction(Direction::Vertical)
+                .constraints([
+                    Constraint::Length(1),                                 // Header
+                    Constraint::Length(if show_tabs_row { 3 } else { 0 }), // Tabs
+                    Constraint::Min(10),                                   // Content
+                    Constraint::Length(1),                                 // Help bar
+                ])
+                .split(size);
+
+            self.render_title_bar(f, chunks[0], stats);
+            let logs_integrated = Self::stats_shows_logs(chunks[2]);
+            let show_trajectory_tab = false;
+            let show_logs_tab = !logs_integrated;
+            let effective_tab = if self.current_tab == Tab::Trajectory {
+                Tab::Stats
+            } else if !show_logs_tab && self.current_tab == Tab::Logs {
+                Tab::Stats
+            } else {
+                self.current_tab
+            };
+            if Self::visible_tab_count(show_trajectory_tab, show_logs_tab) > 1 {
+                self.render_tabs(
+                    f,
+                    chunks[1],
+                    show_trajectory_tab,
+                    show_logs_tab,
+                    effective_tab,
+                );
+            }
+
+            if effective_tab == Tab::Logs && show_logs_tab {
+                self.render_logs_tab(f, chunks[2]);
+            } else {
+                // In hybrid mode keep stats(+maybe integrated logs) and trajectory visible together.
+                let content_chunks = Layout::default()
+                    .direction(Direction::Horizontal)
+                    .constraints([Constraint::Percentage(60), Constraint::Percentage(40)])
+                    .split(chunks[2]);
+
+                self.render_stats_with_optional_logs(f, content_chunks[0], stats);
+                self.render_trajectory_tab(f, content_chunks[1], stats, true);
+            }
+
+            self.render_help_bar_context(
+                f,
+                chunks[3],
+                effective_tab,
+                logs_integrated,
+                show_trajectory_tab,
+                show_logs_tab,
+                true,
+            );
+            self.render_help_overlay(
+                f,
+                chunks[2],
+                self.help_overlay_items(
+                    effective_tab,
+                    logs_integrated,
+                    show_trajectory_tab,
+                    show_logs_tab,
+                    effective_tab != Tab::Logs,
+                    false,
+                ),
+            );
+        } else {
+            let pre_chunks = Layout::default()
+                .direction(Direction::Vertical)
+                .constraints([
+                    Constraint::Length(1), // Header
+                    Constraint::Length(3), // Tabs
+                    Constraint::Min(10),   // Content
+                    Constraint::Length(1), // Help bar
+                ])
+                .split(size);
+            let pre_logs_integrated = Self::stats_shows_logs(pre_chunks[2]);
+            let show_tabs_row = Self::visible_tab_count(true, !pre_logs_integrated) > 1;
+
+            let chunks = Layout::default()
+                .direction(Direction::Vertical)
+                .constraints([
+                    Constraint::Length(1),                                 // Header
+                    Constraint::Length(if show_tabs_row { 3 } else { 0 }), // Tabs
+                    Constraint::Min(10),                                   // Content
+                    Constraint::Length(1),                                 // Help bar
+                ])
+                .split(size);
+
+            self.render_title_bar(f, chunks[0], stats);
+            let logs_integrated = Self::stats_shows_logs(chunks[2]);
+            let show_trajectory_tab = true;
+            let show_logs_tab = !logs_integrated;
+            let effective_tab = if !show_logs_tab && self.current_tab == Tab::Logs {
+                Tab::Stats
+            } else {
+                self.current_tab
+            };
+            if Self::visible_tab_count(show_trajectory_tab, show_logs_tab) > 1 {
+                self.render_tabs(
+                    f,
+                    chunks[1],
+                    show_trajectory_tab,
+                    show_logs_tab,
+                    effective_tab,
+                );
+            }
+
+            match effective_tab {
+                Tab::Stats => self.render_stats_with_optional_logs(f, chunks[2], stats),
+                Tab::Trajectory => self.render_trajectory_tab(f, chunks[2], stats, false),
+                Tab::Logs => self.render_logs_tab(f, chunks[2]),
+            }
+
+            self.render_help_bar_context(
+                f,
+                chunks[3],
+                effective_tab,
+                logs_integrated,
+                show_trajectory_tab,
+                show_logs_tab,
+                effective_tab == Tab::Trajectory,
+            );
+            self.render_help_overlay(
+                f,
+                chunks[2],
+                self.help_overlay_items(
+                    effective_tab,
+                    logs_integrated,
+                    show_trajectory_tab,
+                    show_logs_tab,
+                    effective_tab == Tab::Trajectory,
+                    false,
+                ),
+            );
+        }
+    }
+
+    fn help_overlay_items(
+        &self,
+        active_tab: Tab,
+        logs_integrated: bool,
+        show_trajectory_tab: bool,
+        show_logs_tab: bool,
+        trajectory_visible: bool,
+        merged: bool,
+    ) -> Vec<String> {
+        let mut items = vec![];
+        if merged {
+            items.push("f  Toggle Follow/Fit".to_string());
+            items.push("v  Cycle Trajectory Pane Layout".to_string());
+            items.push("j/k, PgUp/PgDn, Home/End  Scroll Logs".to_string());
+            items.push("m  Toggle Minot Logs".to_string());
+            items.push("?  Close Help".to_string());
+            items.push("q / Esc / Ctrl+C  Quit".to_string());
+            return items;
         }
 
-        self.render_help_bar(f, chunks[3]);
+        let tab_hint = match (show_trajectory_tab, show_logs_tab) {
+            (true, true) => "Tab or 1-3",
+            (true, false) => "Tab or 1-2",
+            (false, true) => "Tab or 1-2",
+            (false, false) => "1",
+        };
+        items.push(format!("{}  Switch Tab", tab_hint));
+
+        match active_tab {
+            Tab::Stats => {
+                if trajectory_visible {
+                    items.push("f  Toggle Follow/Fit (Trajectory)".to_string());
+                    items.push("v  Cycle Trajectory Pane Layout".to_string());
+                }
+                if logs_integrated {
+                    items.push("j/k, PgUp/PgDn, Home/End  Scroll Logs".to_string());
+                    items.push("m  Toggle Minot Logs".to_string());
+                }
+            }
+            Tab::Trajectory => {
+                items.push("f  Toggle Follow/Fit".to_string());
+                items.push("v  Cycle Pane Layout".to_string());
+            }
+            Tab::Logs => {
+                items.push("j/k or Up/Down  Scroll".to_string());
+                items.push("PgUp/PgDn, Home/End  Jump".to_string());
+                items.push("m  Toggle Minot Logs".to_string());
+            }
+        }
+
+        items.push("?  Close Help".to_string());
+        items.push("q / Esc / Ctrl+C  Quit".to_string());
+        items
+    }
+
+    fn render_help_overlay(&self, f: &mut ratatui::Frame, area: Rect, items: Vec<String>) {
+        if !self.show_help_overlay || area.width < 20 || area.height < 6 {
+            return;
+        }
+
+        let max_item_width = items.iter().map(|s| s.chars().count()).max().unwrap_or(20) as u16;
+        let width = (max_item_width + 4)
+            .min(DOCKED_HELP_PANEL_MAX_WIDTH)
+            .min(area.width.saturating_sub(2))
+            .max(DOCKED_HELP_PANEL_MIN_WIDTH);
+        let height = ((items.len() as u16) + 2)
+            .min(area.height.saturating_sub(2))
+            .max(5);
+        // Dock-style help panel: fixed to bottom-right of the active content area.
+        let x = area.x + area.width.saturating_sub(width + 1);
+        let y = area.y + area.height.saturating_sub(height + 1);
+        let overlay = Rect {
+            x,
+            y,
+            width,
+            height,
+        };
+
+        let lines: Vec<Line> = items.into_iter().map(Line::from).collect();
+        let panel = Paragraph::new(lines).block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(Color::DarkGray))
+                .title(Span::styled(
+                    " Help (? close) ",
+                    Style::default()
+                        .fg(Color::Yellow)
+                        .add_modifier(Modifier::BOLD),
+                )),
+        );
+
+        f.render_widget(Clear, overlay);
+        f.render_widget(panel, overlay);
     }
 
     fn render_title_bar(&self, f: &mut ratatui::Frame, area: Rect, stats: &TuiStats) {
@@ -943,23 +1438,53 @@ impl StatsTui {
         f.render_widget(paragraph, area);
     }
 
-    fn render_tabs(&self, f: &mut ratatui::Frame, area: Rect) {
-        let titles = vec![
-            Line::from(" 1 Stats "),
-            Line::from(" 2 Trajectory "),
-            Line::from(" 3 Logs "),
-        ];
+    fn render_tabs(
+        &self,
+        f: &mut ratatui::Frame,
+        area: Rect,
+        show_trajectory_tab: bool,
+        show_logs_tab: bool,
+        selected_tab: Tab,
+    ) {
+        if Self::visible_tab_count(show_trajectory_tab, show_logs_tab) <= 1 {
+            return;
+        }
 
-        let selected = match self.current_tab {
+        let mut titles = vec![Line::from(" 1 Stats ")];
+        if show_trajectory_tab {
+            titles.push(Line::from(" 2 Trajectory "));
+        }
+        if show_logs_tab {
+            let label = if show_trajectory_tab {
+                " 3 Logs "
+            } else {
+                " 2 Logs "
+            };
+            titles.push(Line::from(label));
+        }
+
+        let selected = match selected_tab {
             Tab::Stats => 0,
-            Tab::Trajectory => 1,
-            Tab::Logs => 2,
+            Tab::Trajectory => {
+                if show_trajectory_tab {
+                    1
+                } else {
+                    0
+                }
+            }
+            Tab::Logs => {
+                if show_logs_tab {
+                    if show_trajectory_tab { 2 } else { 1 }
+                } else {
+                    0
+                }
+            }
         };
 
         let tabs = Tabs::new(titles)
             .block(
                 Block::default()
-                    .borders(Borders::ALL)
+                    .borders(Borders::TOP)
                     .border_style(Style::default().fg(Color::DarkGray)),
             )
             .select(selected)
@@ -990,17 +1515,42 @@ impl StatsTui {
         self.render_performance(f, chunks[3], stats);
     }
 
-    fn render_trajectory_tab(&self, f: &mut ratatui::Frame, area: Rect, stats: &TuiStats) {
-        let chunks = Layout::default()
-            .direction(Direction::Horizontal)
-            .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
-            .split(area);
+    fn render_trajectory_tab(
+        &self,
+        f: &mut ratatui::Frame,
+        area: Rect,
+        stats: &TuiStats,
+        left_divider: bool,
+    ) {
+        match self.trajectory_pane_mode {
+            TrajectoryPaneMode::Split => {
+                let chunks = Layout::default()
+                    .direction(Direction::Horizontal)
+                    .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
+                    .split(area);
 
-        // Left: Top-down view (X-Y)
-        self.render_trajectory_view(f, chunks[0], stats, "Top (X-Y)", 0, 1);
+                // Left: Top-down view (X-Y)
+                self.render_trajectory_view(
+                    f,
+                    chunks[0],
+                    stats,
+                    "Top (X-Y)",
+                    0,
+                    1,
+                    false,
+                    left_divider,
+                );
 
-        // Right: Side view (X-Z)
-        self.render_trajectory_view(f, chunks[1], stats, "Side (X-Z)", 0, 2);
+                // Right: Side view (X-Z) + shared top stats overlay
+                self.render_trajectory_view(f, chunks[1], stats, "Side (X-Z)", 0, 2, true, true);
+            }
+            TrajectoryPaneMode::LeftOnly => {
+                self.render_trajectory_view(f, area, stats, "Top (X-Y)", 0, 1, true, left_divider);
+            }
+            TrajectoryPaneMode::RightOnly => {
+                self.render_trajectory_view(f, area, stats, "Side (X-Z)", 0, 2, true, left_divider);
+            }
+        }
     }
 
     fn render_trajectory_view(
@@ -1011,10 +1561,18 @@ impl StatsTui {
         title: &str,
         axis_h: usize,
         axis_v: usize,
+        show_top_stats: bool,
+        show_left_divider: bool,
     ) {
+        let panel_borders = if show_left_divider {
+            Borders::LEFT
+        } else {
+            Borders::NONE
+        };
+
         if stats.trajectory.is_empty() {
             let block = Block::default()
-                .borders(Borders::ALL)
+                .borders(panel_borders)
                 .border_style(Style::default().fg(Color::DarkGray))
                 .title(Span::styled(
                     format!(" {} ", title),
@@ -1111,20 +1669,14 @@ impl StatsTui {
             ViewMode::FitAll => "Fit All",
         };
 
-        let (rt_color, _) = get_realtime_color_and_status(stats.real_time_factor);
+        let (rt_color, rt_status) = get_realtime_color_and_status(stats.real_time_factor);
         let vel_mag = (stats.linear_velocity[0].powi(2)
             + stats.linear_velocity[1].powi(2)
             + stats.linear_velocity[2].powi(2))
         .sqrt();
 
-        // Calculate text positions relative to view bounds
         let range_h = max_h - min_h;
         let range_v = max_v - min_v;
-        // Align text exactly to the left edge to avoid jitter from floating point padding
-        let text_x = min_h;
-        let text_y_1 = max_v - range_v * 0.03;
-        let text_y_2 = max_v - range_v * 0.06;
-        let text_y_3 = max_v - range_v * 0.09;
 
         // Axis labels
         let axis_h_label = ["X", "Y", "Z"][axis_h];
@@ -1133,7 +1685,7 @@ impl StatsTui {
         let canvas = Canvas::default()
             .block(
                 Block::default()
-                    .borders(Borders::ALL)
+                    .borders(panel_borders)
                     .border_style(Style::default().fg(Color::DarkGray))
                     .title(Span::styled(
                         format!(" {} [{}] ", title, mode_str),
@@ -1192,108 +1744,159 @@ impl StatsTui {
                     color: Color::Red,
                 });
 
-                // Corner info - position
-                ctx.print(
-                    text_x,
-                    text_y_1,
-                    Line::from(vec![
-                        Span::styled("X", Style::default().fg(Color::Red)),
-                        Span::styled(
-                            format!("{:.1} ", stats.position[0]),
-                            Style::default().fg(Color::White),
-                        ),
-                        Span::styled("Y", Style::default().fg(Color::LightGreen)),
-                        Span::styled(
-                            format!("{:.1} ", stats.position[1]),
-                            Style::default().fg(Color::White),
-                        ),
-                        Span::styled("Z", Style::default().fg(Color::Cyan)),
-                        Span::styled(
-                            format!("{:.1}", stats.position[2]),
-                            Style::default().fg(Color::White),
-                        ),
-                    ]),
-                );
-
-                // Corner info - velocity
-                ctx.print(
-                    text_x,
-                    text_y_2,
-                    Line::from(vec![
-                        Span::styled("V: ", Style::default().fg(Color::DarkGray)),
-                        Span::styled(
-                            format!("{:.2} m/s", vel_mag),
-                            Style::default().fg(Color::Green),
-                        ),
-                    ]),
-                );
-
-                // Corner info - RT factor
-                ctx.print(
-                    text_x,
-                    text_y_3,
-                    Line::from(vec![
-                        Span::styled("RT: ", Style::default().fg(Color::DarkGray)),
-                        Span::styled(
-                            format!("{:.2}x", stats.real_time_factor),
-                            Style::default().fg(rt_color),
-                        ),
-                    ]),
-                );
-
                 // Scale labels on edges
-                // Bottom left - min values
-                ctx.print(
-                    min_h,
-                    min_v + range_v * 0.02,
-                    Line::from(Span::styled(
-                        format!("{}: {:.1}m", axis_h_label, min_h),
-                        Style::default().fg(Color::DarkGray),
-                    )),
-                );
-
-                // Bottom right - max H
-                ctx.print(
-                    max_h - range_h * 0.25,
-                    min_v + range_v * 0.02,
-                    Line::from(Span::styled(
-                        format!("{}: {:.1}m", axis_h_label, max_h),
-                        Style::default().fg(Color::DarkGray),
-                    )),
-                );
-
-                // Left side - min V (bottom)
-                ctx.print(
-                    min_h,
-                    min_v + range_v * 0.05,
-                    Line::from(Span::styled(
-                        format!("{}: {:.1}m", axis_v_label, min_v),
-                        Style::default().fg(Color::DarkGray),
-                    )),
-                );
-
-                // Left side - max V (top area, below info)
-                ctx.print(
-                    min_h,
-                    max_v - range_v * 0.13,
-                    Line::from(Span::styled(
-                        format!("{}: {:.1}m", axis_v_label, max_v),
-                        Style::default().fg(Color::DarkGray),
-                    )),
-                );
-
-                // Show total range in corner
-                ctx.print(
-                    max_h - range_h * 0.35,
-                    max_v - range_v * 0.03,
-                    Line::from(Span::styled(
-                        format!("Δ{:.1}m × Δ{:.1}m", range_h, range_v),
-                        Style::default().fg(Color::DarkGray),
-                    )),
-                );
             });
 
         f.render_widget(canvas, area);
+
+        // Overlay the corner stats in screen space so they stay tightly packed
+        // and keep a stable left/right pairing.
+        if area.width > 2 && area.height > 7 {
+            let inner_width = area.width.saturating_sub(2);
+            if show_top_stats {
+                let top_x = area.x + 1;
+                let top_w = inner_width;
+                let top_right_w = inner_width.min(30);
+                let top_right_x = area.x + 1 + inner_width.saturating_sub(top_right_w);
+
+                // Left: pose readout
+                let top_left_line = Line::from(vec![
+                    Span::styled("X", Style::default().fg(Color::Red)),
+                    Span::styled(
+                        format!("{:.1} ", stats.position[0]),
+                        Style::default().fg(Color::White),
+                    ),
+                    Span::styled("Y", Style::default().fg(Color::LightGreen)),
+                    Span::styled(
+                        format!("{:.1} ", stats.position[1]),
+                        Style::default().fg(Color::White),
+                    ),
+                    Span::styled("Z", Style::default().fg(Color::Cyan)),
+                    Span::styled(
+                        format!("{:.1}", stats.position[2]),
+                        Style::default().fg(Color::White),
+                    ),
+                ]);
+
+                f.render_widget(
+                    Paragraph::new(top_left_line).alignment(Alignment::Left),
+                    Rect {
+                        x: top_x,
+                        y: area.y + 1,
+                        width: top_w,
+                        height: 1,
+                    },
+                );
+
+                // Right: velocity + real-time factor panel
+                let top_right_lines = [
+                    Line::from(vec![
+                        Span::styled(
+                            "VEL",
+                            Style::default()
+                                .fg(Color::Green)
+                                .add_modifier(Modifier::BOLD),
+                        ),
+                        Span::styled(" ", Style::default().fg(Color::DarkGray)),
+                        Span::styled(
+                            format!("{:.2} m/s", vel_mag),
+                            Style::default()
+                                .fg(Color::Green)
+                                .add_modifier(Modifier::BOLD),
+                        ),
+                    ]),
+                    Line::from(vec![
+                        Span::styled(
+                            "RT",
+                            Style::default().fg(rt_color).add_modifier(Modifier::BOLD),
+                        ),
+                        Span::styled(" ", Style::default().fg(Color::DarkGray)),
+                        Span::styled(
+                            format!("{:.2}x", stats.real_time_factor),
+                            Style::default().fg(rt_color).add_modifier(Modifier::BOLD),
+                        ),
+                        Span::styled(format!(" {}", rt_status), Style::default().fg(rt_color)),
+                    ]),
+                ];
+
+                for (idx, line) in top_right_lines.into_iter().enumerate() {
+                    let y = area.y + 1 + idx as u16;
+                    f.render_widget(
+                        Paragraph::new(line).alignment(Alignment::Right),
+                        Rect {
+                            x: top_right_x,
+                            y,
+                            width: top_right_w,
+                            height: 1,
+                        },
+                    );
+                }
+            }
+
+            let axis_color = |axis: &str| match axis {
+                "X" => Color::Red,
+                "Y" => Color::Green,
+                "Z" => Color::Cyan,
+                _ => Color::DarkGray,
+            };
+
+            let left_legend_label = Line::from(vec![
+                Span::styled(axis_v_label, Style::default().fg(axis_color(axis_v_label))),
+                Span::styled(" ", Style::default().fg(Color::DarkGray)),
+                Span::styled(
+                    format!("{:.1}m / {:.1}m", max_v, min_v),
+                    Style::default().fg(Color::White),
+                ),
+            ]);
+            let right_legend_label = Line::from(vec![
+                Span::styled(axis_h_label, Style::default().fg(axis_color(axis_h_label))),
+                Span::styled(" ", Style::default().fg(Color::DarkGray)),
+                Span::styled(
+                    format!("{:.1}m / {:.1}m", max_h, min_h),
+                    Style::default().fg(Color::White),
+                ),
+            ]);
+            let range_label = format!("Δ{:.1}m × Δ{:.1}m", range_h, range_v);
+
+            let col_width = inner_width.min(24);
+            let left_x = area.x + 1;
+            let right_x = area.x + 1 + inner_width.saturating_sub(col_width);
+            let legend_y = area.y + area.height.saturating_sub(2);
+            let delta_y = legend_y.saturating_sub(1);
+
+            f.render_widget(
+                Paragraph::new(left_legend_label).alignment(Alignment::Left),
+                Rect {
+                    x: left_x,
+                    y: legend_y,
+                    width: col_width,
+                    height: 1,
+                },
+            );
+            f.render_widget(
+                Paragraph::new(right_legend_label).alignment(Alignment::Right),
+                Rect {
+                    x: right_x,
+                    y: legend_y,
+                    width: col_width,
+                    height: 1,
+                },
+            );
+
+            f.render_widget(
+                Paragraph::new(Line::from(Span::styled(
+                    range_label,
+                    Style::default().fg(Color::DarkGray),
+                )))
+                .alignment(Alignment::Right),
+                Rect {
+                    x: right_x,
+                    y: delta_y,
+                    width: col_width,
+                    height: 1,
+                },
+            );
+        }
     }
 
     fn render_header(&self, f: &mut ratatui::Frame, area: Rect, stats: &TuiStats) {
@@ -1351,7 +1954,7 @@ impl StatsTui {
         ];
 
         let block = Block::default()
-            .borders(Borders::ALL)
+            .borders(Borders::NONE)
             .border_style(Style::default().fg(Color::DarkGray))
             .title(Span::styled(
                 " Info ",
@@ -1420,7 +2023,7 @@ impl StatsTui {
         ];
 
         let block = Block::default()
-            .borders(Borders::ALL)
+            .borders(Borders::NONE)
             .border_style(Style::default().fg(Color::DarkGray))
             .title(Span::styled(
                 " State ",
@@ -1453,7 +2056,7 @@ impl StatsTui {
         ];
 
         let block = Block::default()
-            .borders(Borders::ALL)
+            .borders(Borders::NONE)
             .border_style(Style::default().fg(Color::DarkGray))
             .title(Span::styled(
                 " Navigation ",
@@ -1548,7 +2151,7 @@ impl StatsTui {
         }
 
         let block = Block::default()
-            .borders(Borders::ALL)
+            .borders(Borders::NONE)
             .border_style(Style::default().fg(Color::DarkGray))
             .title(Span::styled(
                 " Performance ",
@@ -1574,8 +2177,8 @@ impl StatsTui {
             .filter(|(_, e)| self.show_minot_logs || !Self::is_minot_log(e))
             .collect();
 
-        let visible_height = area.height.saturating_sub(2) as usize; // -2 for borders
-        let content_width = area.width.saturating_sub(2) as usize; // -2 for borders
+        let visible_height = area.height.saturating_sub(1) as usize; // top separator only
+        let content_width = area.width as usize; // no left/right separators
         let total_entries = filtered_entries.len();
 
         // Prefix length: "   45.47s WARN  " = 16 chars
@@ -1733,7 +2336,7 @@ impl StatsTui {
         };
 
         let block = Block::default()
-            .borders(Borders::ALL)
+            .borders(Borders::NONE)
             .border_style(Style::default().fg(Color::DarkGray))
             .title(Span::styled(
                 logs_title,
@@ -1754,45 +2357,96 @@ impl StatsTui {
         f.render_widget(list, area);
     }
 
-    fn render_help_bar(&self, f: &mut ratatui::Frame, area: Rect) {
-        let help = match self.current_tab {
-            Tab::Stats => Line::from(vec![
-                Span::styled(
-                    " Tab",
-                    Style::default()
-                        .fg(Color::Yellow)
-                        .add_modifier(Modifier::BOLD),
-                ),
-                Span::styled("/", Style::default().fg(Color::DarkGray)),
-                Span::styled(
-                    "1-3",
-                    Style::default()
-                        .fg(Color::Yellow)
-                        .add_modifier(Modifier::BOLD),
-                ),
-                Span::styled(" Switch  ", Style::default().fg(Color::DarkGray)),
-                Span::styled(
-                    "q",
-                    Style::default()
-                        .fg(Color::Yellow)
-                        .add_modifier(Modifier::BOLD),
-                ),
-                Span::styled("/", Style::default().fg(Color::DarkGray)),
-                Span::styled(
-                    "Esc",
-                    Style::default()
-                        .fg(Color::Yellow)
-                        .add_modifier(Modifier::BOLD),
-                ),
-                Span::styled(" Quit  ", Style::default().fg(Color::DarkGray)),
-                Span::styled(
-                    "Ctrl+C",
-                    Style::default()
-                        .fg(Color::Yellow)
-                        .add_modifier(Modifier::BOLD),
-                ),
-                Span::styled(" Stop", Style::default().fg(Color::DarkGray)),
-            ]),
+    fn render_help_bar_context(
+        &self,
+        f: &mut ratatui::Frame,
+        area: Rect,
+        active_tab: Tab,
+        logs_integrated: bool,
+        show_trajectory_tab: bool,
+        show_logs_tab: bool,
+        trajectory_visible: bool,
+    ) {
+        let tab_hint = match (show_trajectory_tab, show_logs_tab) {
+            (true, true) => "1-3",
+            (true, false) => "1-2",
+            (false, true) => "1-2",
+            (false, false) => "1",
+        };
+
+        let left = match active_tab {
+            Tab::Stats => {
+                let mut spans = vec![
+                    Span::styled(
+                        " Tab",
+                        Style::default()
+                            .fg(Color::Yellow)
+                            .add_modifier(Modifier::BOLD),
+                    ),
+                    Span::styled("/", Style::default().fg(Color::DarkGray)),
+                    Span::styled(
+                        tab_hint,
+                        Style::default()
+                            .fg(Color::Yellow)
+                            .add_modifier(Modifier::BOLD),
+                    ),
+                    Span::styled(" Switch  ", Style::default().fg(Color::DarkGray)),
+                ];
+
+                if trajectory_visible {
+                    spans.extend([
+                        Span::styled(
+                            "f",
+                            Style::default()
+                                .fg(Color::Yellow)
+                                .add_modifier(Modifier::BOLD),
+                        ),
+                        Span::styled(" Follow/Fit  ", Style::default().fg(Color::DarkGray)),
+                        Span::styled(
+                            "v",
+                            Style::default()
+                                .fg(Color::Yellow)
+                                .add_modifier(Modifier::BOLD),
+                        ),
+                        Span::styled(" Pane Layout  ", Style::default().fg(Color::DarkGray)),
+                    ]);
+                }
+
+                if logs_integrated {
+                    spans.extend([
+                        Span::styled(
+                            "j/k",
+                            Style::default()
+                                .fg(Color::Yellow)
+                                .add_modifier(Modifier::BOLD),
+                        ),
+                        Span::styled(" Scroll Logs  ", Style::default().fg(Color::DarkGray)),
+                        Span::styled(
+                            "PgUp/PgDn",
+                            Style::default()
+                                .fg(Color::Yellow)
+                                .add_modifier(Modifier::BOLD),
+                        ),
+                        Span::styled(" Page  ", Style::default().fg(Color::DarkGray)),
+                        Span::styled(
+                            "Home/End",
+                            Style::default()
+                                .fg(Color::Yellow)
+                                .add_modifier(Modifier::BOLD),
+                        ),
+                        Span::styled(" Jump  ", Style::default().fg(Color::DarkGray)),
+                        Span::styled(
+                            "m",
+                            Style::default()
+                                .fg(Color::Yellow)
+                                .add_modifier(Modifier::BOLD),
+                        ),
+                        Span::styled(" Minot  ", Style::default().fg(Color::DarkGray)),
+                    ]);
+                }
+
+                Line::from(spans)
+            }
             Tab::Trajectory => Line::from(vec![
                 Span::styled(
                     " Tab",
@@ -1802,7 +2456,7 @@ impl StatsTui {
                 ),
                 Span::styled("/", Style::default().fg(Color::DarkGray)),
                 Span::styled(
-                    "1-3",
+                    tab_hint,
                     Style::default()
                         .fg(Color::Yellow)
                         .add_modifier(Modifier::BOLD),
@@ -1814,21 +2468,21 @@ impl StatsTui {
                         .fg(Color::Yellow)
                         .add_modifier(Modifier::BOLD),
                 ),
-                Span::styled(" Toggle View  ", Style::default().fg(Color::DarkGray)),
+                Span::styled(" Toggle Follow/Fit  ", Style::default().fg(Color::DarkGray)),
                 Span::styled(
-                    "q",
+                    "v",
                     Style::default()
                         .fg(Color::Yellow)
                         .add_modifier(Modifier::BOLD),
                 ),
-                Span::styled("/", Style::default().fg(Color::DarkGray)),
+                Span::styled(" Pane Layout  ", Style::default().fg(Color::DarkGray)),
                 Span::styled(
-                    "Esc",
+                    "Ctrl+C",
                     Style::default()
                         .fg(Color::Yellow)
                         .add_modifier(Modifier::BOLD),
                 ),
-                Span::styled(" Quit", Style::default().fg(Color::DarkGray)),
+                Span::styled(" Stop", Style::default().fg(Color::DarkGray)),
             ]),
             Tab::Logs => Line::from(vec![
                 Span::styled(
@@ -1839,7 +2493,7 @@ impl StatsTui {
                 ),
                 Span::styled("/", Style::default().fg(Color::DarkGray)),
                 Span::styled(
-                    "1-3",
+                    tab_hint,
                     Style::default()
                         .fg(Color::Yellow)
                         .add_modifier(Modifier::BOLD),
@@ -1881,16 +2535,84 @@ impl StatsTui {
                 ),
                 Span::styled(" Minot  ", Style::default().fg(Color::DarkGray)),
                 Span::styled(
-                    "q",
+                    "Ctrl+C",
                     Style::default()
                         .fg(Color::Yellow)
                         .add_modifier(Modifier::BOLD),
                 ),
-                Span::styled(" Quit", Style::default().fg(Color::DarkGray)),
+                Span::styled(" Stop", Style::default().fg(Color::DarkGray)),
             ]),
         };
-        let paragraph = Paragraph::new(help);
-        f.render_widget(paragraph, area);
+
+        let right = Line::from(vec![
+            Span::styled(
+                " ? ",
+                Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled("Help  ", Style::default().fg(Color::DarkGray)),
+            Span::styled(
+                "q/Esc",
+                Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(" Quit", Style::default().fg(Color::DarkGray)),
+        ]);
+        f.render_widget(Paragraph::new(left).alignment(Alignment::Left), area);
+        f.render_widget(Paragraph::new(right).alignment(Alignment::Right), area);
+    }
+
+    fn render_help_bar_merged(&self, f: &mut ratatui::Frame, area: Rect) {
+        let left = Line::from(vec![
+            Span::styled(
+                " f ",
+                Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled("Follow/Fit  ", Style::default().fg(Color::DarkGray)),
+            Span::styled(
+                " v ",
+                Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled("Pane Layout  ", Style::default().fg(Color::DarkGray)),
+            Span::styled(
+                " j/k ",
+                Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled("Scroll Logs  ", Style::default().fg(Color::DarkGray)),
+            Span::styled(
+                " m ",
+                Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled("Minot", Style::default().fg(Color::DarkGray)),
+        ]);
+        let right = Line::from(vec![
+            Span::styled(
+                " ? ",
+                Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled("Help  ", Style::default().fg(Color::DarkGray)),
+            Span::styled(
+                " q/Esc ",
+                Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled("Quit", Style::default().fg(Color::DarkGray)),
+        ]);
+        f.render_widget(Paragraph::new(left).alignment(Alignment::Left), area);
+        f.render_widget(Paragraph::new(right).alignment(Alignment::Right), area);
     }
 }
 

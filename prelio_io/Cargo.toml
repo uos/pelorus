@@ -30,7 +30,7 @@ tokio = { workspace = true, optional = true, features = ["rt-multi-thread"] }
 mt_rat = { workspace = true, optional = true }
 libc = { workspace = true, optional = true }
 ros2-interfaces-jazzy-rkyv = { workspace = true, optional = true }
-transforms.workspace = true
+transforms_io = { workspace = true }
 
 [features]
 rat = ["dep:mt_rat", "dep:libc"]
@@ -44,9 +44,11 @@ mt_pubsub = [
     "dep:mt_pubsub",
     "dep:tokio",
     "dep:ros2-interfaces-jazzy-rkyv",
+    "transforms_io/mt-pubsub",
 ]
 ros2-client = [
     "dep:ros2-client",
     "dep:ros2-interfaces-jazzy-serde",
+    "transforms_io/ros2-client",
 ]
-r2r = ["dep:r2r", "pelorus_core/r2r"]
+r2r = ["dep:r2r", "pelorus_core/r2r", "transforms_io/r2r"]

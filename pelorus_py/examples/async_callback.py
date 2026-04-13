@@ -10,7 +10,7 @@ DUMP_ALL = os.getenv("PELORUS_DUMP_ALL_POINTS") is not None
 
 def main():
     print("Version:", pelorus.__version__)
-    config_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".." , "pelorus_c", "examples", "no-accum.rl"))
+    config_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".." , "pelorus_c", "examples", "pico-equality.rl"))
     lio = pelorus.Handle(config_path=config_path, device_specific_pointcloud2=False)
 
     done_event = threading.Event()
@@ -35,8 +35,8 @@ def main():
 
         print(f"Callback invoked! Odometry #1 received (scan_id={odom.get('scan_id',0)})")
         print(f"  Timestamp: {odom['timestamp_sec']}.{odom['timestamp_nanosec']:09d}")
-        print(f"  Position: [{pos[0]:.3f}, {pos[1]:.3f}, {pos[2]:.3f}]")
-        print(f"  Linear velocity: [{lv[0]:.3f}, {lv[1]:.3f}, {lv[2]:.3f}]")
+        print(f"  Position: [{pos[0]:.6f}, {pos[1]:.6f}, {pos[2]:.6f}]")
+        print(f"  Linear velocity: [{lv[0]:.6f}, {lv[1]:.6f}, {lv[2]:.6f}]")
         print(f"  Point cloud: {len(pts)} points")
 
         matched_odom['odom'] = {
@@ -70,21 +70,30 @@ def main():
             timestamp_nanosec=i * 5000000,
             orientation=[1.0, 0.0, 0.0, 0.0],
             orientation_covariance=[0.01] + [0.0] * 8,
-            angular_velocity=[0.001 * (i % 3 - 1), 0.001 * ((i + 1) % 3 - 1), 0.002 * ((i + 2) % 3 - 1)],
+            angular_velocity=[0.004 + 0.001 * (i % 3 - 1), -0.002 + 0.001 * ((i + 1) % 3 - 1), 0.010 + 0.002 * ((i + 2) % 3 - 1)],
             angular_velocity_covariance=[0.001] + [0.0] * 8,
-            linear_acceleration=[0.01 * (i % 5 - 2), 0.01 * ((i + 1) % 5 - 2), 9.81 + 0.01 * ((i + 2) % 5 - 2)],
+            linear_acceleration=[0.03 + 0.01 * (i % 5 - 2), -0.015 + 0.01 * ((i + 1) % 5 - 2), 9.81 + 0.02 + 0.01 * ((i + 2) % 5 - 2)],
             linear_acceleration_covariance=[0.01] + [0.0] * 8,
         )
 
     # Scan 1: Nx4 [x,y,z,t]
-    NUM_POINTS = 64
+    NUM_POINTS = 512
     idx = np.arange(NUM_POINTS, dtype=np.float32)
-    angles = idx / NUM_POINTS * 6.28318
-    rng = 5.0 + 0.5 * (idx % 8)
+    half = NUM_POINTS // 2
+    idx_a = idx[:half]
+    idx_b = idx[half:] - half
     scan1 = np.empty((NUM_POINTS, 4), dtype=np.float32)
-    scan1[:, 0] = rng * np.cos(angles)
-    scan1[:, 1] = rng * np.sin(angles)
-    scan1[:, 2] = 0.2 * np.sin(angles * 3)
+    u_a = np.mod(idx_a, 16)
+    v_a = np.floor_divide(idx_a, 16)
+    scan1[:half, 0] = 4.0 + 0.12 * u_a
+    scan1[:half, 1] = -1.0 + 0.12 * v_a
+    scan1[:half, 2] = 0.01 * np.mod(u_a + v_a, 2)
+
+    u_b = np.mod(idx_b, 16)
+    v_b = np.floor_divide(idx_b, 16)
+    scan1[half:, 0] = 6.0 + 0.005 * np.mod(u_b + v_b, 2)
+    scan1[half:, 1] = -1.0 + 0.12 * u_b
+    scan1[half:, 2] = 0.10 + 0.12 * v_b
     scan1[:, 3] = (idx / NUM_POINTS * 100000000.0).astype(np.float32)
 
     scan1_id = lio.add_pointcloud(scan1, timestamp_sec=base_sec, timestamp_nanosec=600000000)
@@ -100,20 +109,35 @@ def main():
             timestamp_nanosec=i * 5000000,
             orientation=[1.0, 0.0, 0.0, 0.0],
             orientation_covariance=[0.01] + [0.0] * 8,
-            angular_velocity=[0.001 * (i % 3 - 1), 0.001 * ((i + 1) % 3 - 1), 0.002 * ((i + 2) % 3 - 1)],
+            angular_velocity=[0.004 + 0.001 * (i % 3 - 1), -0.002 + 0.001 * ((i + 1) % 3 - 1), 0.010 + 0.002 * ((i + 2) % 3 - 1)],
             angular_velocity_covariance=[0.001] + [0.0] * 8,
-            linear_acceleration=[0.01 * (i % 5 - 2), 0.01 * ((i + 1) % 5 - 2), 9.81 + 0.01 * ((i + 2) % 5 - 2)],
+            linear_acceleration=[0.03 + 0.01 * (i % 5 - 2), -0.015 + 0.01 * ((i + 1) % 5 - 2), 9.81 + 0.02 + 0.01 * ((i + 2) % 5 - 2)],
             linear_acceleration_covariance=[0.01] + [0.0] * 8,
         )
 
     # Scan 2: Nx5 [x,y,z,intensity,t]
     idx2 = np.arange(NUM_POINTS, dtype=np.float32)
-    angles2 = idx2 / NUM_POINTS * 6.28318 + 0.1
-    rng2 = 5.0 + 0.5 * (idx2 % 8) + 0.05
+    idx2_a = idx2[:half]
+    idx2_b = idx2[half:] - half
+    x = np.empty(NUM_POINTS, dtype=np.float32)
+    y = np.empty(NUM_POINTS, dtype=np.float32)
+    z = np.empty(NUM_POINTS, dtype=np.float32)
+    u2_a = np.mod(idx2_a, 16)
+    v2_a = np.floor_divide(idx2_a, 16)
+    x[:half] = 4.0 + 0.12 * u2_a
+    y[:half] = -1.0 + 0.12 * v2_a
+    z[:half] = 0.01 * np.mod(u2_a + v2_a, 2)
+    u2_b = np.mod(idx2_b, 16)
+    v2_b = np.floor_divide(idx2_b, 16)
+    x[half:] = 6.0 + 0.005 * np.mod(u2_b + v2_b, 2)
+    y[half:] = -1.0 + 0.12 * u2_b
+    z[half:] = 0.10 + 0.12 * v2_b
+    c = 0.996802
+    s = 0.079915
     scan2 = np.empty((NUM_POINTS, 5), dtype=np.float32)
-    scan2[:, 0] = rng2 * np.cos(angles2)
-    scan2[:, 1] = rng2 * np.sin(angles2)
-    scan2[:, 2] = 0.2 * np.sin(angles2 * 3)
+    scan2[:, 0] = c * x - s * y + 0.18
+    scan2[:, 1] = s * x + c * y - 0.12
+    scan2[:, 2] = z + 0.03
     scan2[:, 3] = 0.0
     scan2[:, 4] = (idx2 / NUM_POINTS * 100000000.0).astype(np.float32)
 

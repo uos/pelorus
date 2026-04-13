@@ -36,7 +36,7 @@ prelio = { path = "prelio", version = "0.0.4" }
 prelio_io = { path = "prelio_io", version = "0.0.4" }
 spole = { path = "spole", version = "0.0.4" }
 pelorus_cuda = { path = "pelorus_cuda", version = "0.0.4" }
-transforms = "1.4"
+transforms_io = "0.1"
 pelorus_metal = { path = "pelorus_metal", version = "0.0.4" }
 pelorus_vulkan = { path = "pelorus_vulkan", version = "0.0.4" }
 

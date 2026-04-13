@@ -45,9 +45,9 @@ void odometry_callback(const pelorus_odometry *odom, void *user_data)
 
     printf("Callback invoked! Odometry #%d received (scan_id=%llu)\n", ctx->count, (unsigned long long)odom->scan_id);
     printf("  Timestamp: %d.%09u\n", odom->timestamp_sec, odom->timestamp_nanosec);
-    printf("  Position: [%.3f, %.3f, %.3f]\n",
+    printf("  Position: [%.6f, %.6f, %.6f]\n",
            odom->position[0], odom->position[1], odom->position[2]);
-    printf("  Linear velocity: [%.3f, %.3f, %.3f]\n",
+    printf("  Linear velocity: [%.6f, %.6f, %.6f]\n",
            odom->linear_velocity[0], odom->linear_velocity[1], odom->linear_velocity[2]);
     printf("  Point cloud: %zu points\n", odom->num_points);
 
@@ -77,14 +77,15 @@ int main(void)
 {
     printf("Version: %s\n\n", pelorus_version());
 
-    // Create Pelorus handle with default configuration.
-    PelorusHandle *pelorus = pelorus_create("./no-accum.rl");
+    // Use the comparison config so binding/backend comparisons all bypass the
+    // optional imu-fusion preprocessing in the same way.
+    PelorusHandle *pelorus = pelorus_create("./pico-equality.rl");
     if (!pelorus)
     {
         fprintf(stderr, "Failed to create Pelorus handle\n");
         return 1;
     }
-    printf("Created Pelorus handle with default config\n");
+    printf("Created Pelorus handle with comparison config\n");
 
     // Set up user context
     UserContext ctx = {.count = 0};
@@ -125,14 +126,14 @@ int main(void)
         imu.orientation[3] = 0.0; // z
 
         // Small angular velocity (nearly stationary)
-        imu.angular_velocity[0] = 0.001 * (i % 3 - 1);
-        imu.angular_velocity[1] = 0.001 * ((i + 1) % 3 - 1);
-        imu.angular_velocity[2] = 0.002 * ((i + 2) % 3 - 1);
+        imu.angular_velocity[0] = 0.004 + 0.001 * (i % 3 - 1);
+        imu.angular_velocity[1] = -0.002 + 0.001 * ((i + 1) % 3 - 1);
+        imu.angular_velocity[2] = 0.010 + 0.002 * ((i + 2) % 3 - 1);
 
         // Gravity in z direction
-        imu.linear_acceleration[0] = 0.01 * (i % 5 - 2);
-        imu.linear_acceleration[1] = 0.01 * ((i + 1) % 5 - 2);
-        imu.linear_acceleration[2] = 9.81 + 0.01 * ((i + 2) % 5 - 2);
+        imu.linear_acceleration[0] = 0.03 + 0.01 * (i % 5 - 2);
+        imu.linear_acceleration[1] = -0.015 + 0.01 * ((i + 1) % 5 - 2);
+        imu.linear_acceleration[2] = 9.81 + 0.02 + 0.01 * ((i + 2) % 5 - 2);
 
         fill_identity_cov(imu.orientation_covariance, 0.01);
         fill_identity_cov(imu.angular_velocity_covariance, 0.001);
@@ -149,18 +150,34 @@ int main(void)
 
 // Create first scan with multiple points distributed in space.
 // Each point has per-point timestamp relative to scan start.
-#define NUM_POINTS_SCAN 64
+#define NUM_POINTS_SCAN 512
     float scan1_data[NUM_POINTS_SCAN * 4];
 
     printf("Generating first scan with %d points...\n", NUM_POINTS_SCAN);
     for (int i = 0; i < NUM_POINTS_SCAN; i++)
     {
-        float angle = (float)i / NUM_POINTS_SCAN * 6.28318f; // Full circle
-        float range = 5.0f + 0.5f * (i % 8);                 // Range 5-9m
+        float x, y, z;
+        if (i < NUM_POINTS_SCAN / 2)
+        {
+            int u = i % 16;
+            int v = i / 16;
+            x = 4.0f + 0.12f * u;
+            y = -1.0f + 0.12f * v;
+            z = 0.01f * ((u + v) % 2);
+        }
+        else
+        {
+            int j = i - NUM_POINTS_SCAN / 2;
+            int u = j % 16;
+            int v = j / 16;
+            x = 6.0f + 0.005f * ((u + v) % 2);
+            y = -1.0f + 0.12f * u;
+            z = 0.10f + 0.12f * v;
+        }
 
-        scan1_data[i * 4 + 0] = range * cosf(angle);                       // x
-        scan1_data[i * 4 + 1] = range * sinf(angle);                       // y
-        scan1_data[i * 4 + 2] = 0.2f * sinf(angle * 3);                    // z
+        scan1_data[i * 4 + 0] = x;
+        scan1_data[i * 4 + 1] = y;
+        scan1_data[i * 4 + 2] = z;
         scan1_data[i * 4 + 3] = (float)i / NUM_POINTS_SCAN * 100000000.0f; // t (ns offset)
     }
 
@@ -190,12 +207,12 @@ int main(void)
         imu.frame_id = NULL;
 
         imu.orientation[0] = 1.0;
-        imu.angular_velocity[0] = 0.001 * (i % 3 - 1);
-        imu.angular_velocity[1] = 0.001 * ((i + 1) % 3 - 1);
-        imu.angular_velocity[2] = 0.002 * ((i + 2) % 3 - 1);
-        imu.linear_acceleration[0] = 0.01 * (i % 5 - 2);
-        imu.linear_acceleration[1] = 0.01 * ((i + 1) % 5 - 2);
-        imu.linear_acceleration[2] = 9.81 + 0.01 * ((i + 2) % 5 - 2);
+        imu.angular_velocity[0] = 0.004 + 0.001 * (i % 3 - 1);
+        imu.angular_velocity[1] = -0.002 + 0.001 * ((i + 1) % 3 - 1);
+        imu.angular_velocity[2] = 0.010 + 0.002 * ((i + 2) % 3 - 1);
+        imu.linear_acceleration[0] = 0.03 + 0.01 * (i % 5 - 2);
+        imu.linear_acceleration[1] = -0.015 + 0.01 * ((i + 1) % 5 - 2);
+        imu.linear_acceleration[2] = 9.81 + 0.02 + 0.01 * ((i + 2) % 5 - 2);
 
         fill_identity_cov(imu.orientation_covariance, 0.01);
         fill_identity_cov(imu.angular_velocity_covariance, 0.001);
@@ -211,12 +228,34 @@ int main(void)
     printf("Generating second scan with %d points...\n", NUM_POINTS_SCAN);
     for (int i = 0; i < NUM_POINTS_SCAN; i++)
     {
-        float angle = (float)i / NUM_POINTS_SCAN * 6.28318f + 0.1f; // Slight rotation
-        float range = 5.0f + 0.5f * (i % 8) + 0.05f;                // Slight movement
+        float x, y, z;
+        if (i < NUM_POINTS_SCAN / 2)
+        {
+            int u = i % 16;
+            int v = i / 16;
+            x = 4.0f + 0.12f * u;
+            y = -1.0f + 0.12f * v;
+            z = 0.01f * ((u + v) % 2);
+        }
+        else
+        {
+            int j = i - NUM_POINTS_SCAN / 2;
+            int u = j % 16;
+            int v = j / 16;
+            x = 6.0f + 0.005f * ((u + v) % 2);
+            y = -1.0f + 0.12f * u;
+            z = 0.10f + 0.12f * v;
+        }
 
-        scan2_data[i * 5 + 0] = range * cosf(angle);
-        scan2_data[i * 5 + 1] = range * sinf(angle);
-        scan2_data[i * 5 + 2] = 0.2f * sinf(angle * 3);
+        const float c = 0.996802f; // cos(0.08 rad)
+        const float s = 0.079915f; // sin(0.08 rad)
+        float x2 = c * x - s * y + 0.18f;
+        float y2 = s * x + c * y - 0.12f;
+        float z2 = z + 0.03f;
+
+        scan2_data[i * 5 + 0] = x2;
+        scan2_data[i * 5 + 1] = y2;
+        scan2_data[i * 5 + 2] = z2;
         scan2_data[i * 5 + 3] = 0.0f; // intensity
         scan2_data[i * 5 + 4] = (float)i / NUM_POINTS_SCAN * 100000000.0f;
     }

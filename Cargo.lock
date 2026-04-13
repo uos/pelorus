@@ -3533,6 +3533,15 @@ dependencies = [
 
 [[package]]
 name = "itertools"
+version = "0.11.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b1c173a5686ce8bfa551b3563d0c2170bf24ca44da99c7ca4bfdab5418c3fe57"
+dependencies = [
+ "either",
+]
+
+[[package]]
+name = "itertools"
 version = "0.13.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "413ee7dfc52ee1a4949ceeb7dbc8a33f2d6c088194d9f922fb8318faf1f01186"
@@ -5005,7 +5014,7 @@ dependencies = [
  "ratslang",
  "rayon",
  "rerun",
- "ros2-client",
+ "ros2-client 0.8.2",
  "ros2-interfaces-jazzy-rkyv",
  "ros2-interfaces-jazzy-serde",
  "ros_pointcloud2",
@@ -5560,13 +5569,13 @@ dependencies = [
  "prelio",
  "r2r",
  "rerun",
- "ros2-client",
+ "ros2-client 0.8.2",
  "ros2-interfaces-jazzy-rkyv",
  "ros2-interfaces-jazzy-serde",
  "ros_pointcloud2",
  "thiserror 2.0.18",
  "tokio",
- "transforms",
+ "transforms_io",
 ]
 
 [[package]]
@@ -7151,6 +7160,34 @@ dependencies = [
 
 [[package]]
 name = "ros2-client"
+version = "0.7.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f61210ef51dba9c55d90e2eadd5753a9c4611013827645289384c44552b03f7d"
+dependencies = [
+ "async-channel",
+ "bstr",
+ "bytes",
+ "cdr-encoding-size",
+ "chrono",
+ "clap",
+ "futures",
+ "itertools 0.11.0",
+ "lazy_static",
+ "libc",
+ "log",
+ "mio 0.6.23",
+ "mio-extras",
+ "nom 7.1.3",
+ "pin-utils",
+ "rustdds",
+ "serde",
+ "serde_repr",
+ "uuid",
+ "widestring",
+]
+
+[[package]]
+name = "ros2-client"
 version = "0.8.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d57a4ff0179262099ae1656739d04f6ea928913a242b2f0465ba158a55723b0b"
@@ -7193,7 +7230,7 @@ version = "0.0.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "de18ba74e333de437e1472b84bc60bed824cd5b4477df13077522b0ce87c0a7e"
 dependencies = [
- "ros2-client",
+ "ros2-client 0.8.2",
  "serde",
  "serde_with",
 ]
@@ -8784,6 +8821,25 @@ dependencies = [
  "approx",
  "hashbrown 0.16.1",
  "thiserror 2.0.18",
+]
+
+[[package]]
+name = "transforms_io"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d69d711a151a616e009144b50b2893141d3e60787d36d12cec69b1d2af0c4b4e"
+dependencies = [
+ "futures-lite",
+ "log",
+ "mt_pubsub",
+ "nalgebra 0.33.2",
+ "r2r",
+ "ros2-client 0.7.6",
+ "ros2-interfaces-jazzy-rkyv",
+ "ros2-interfaces-jazzy-serde",
+ "thiserror 1.0.69",
+ "tokio",
+ "transforms",
 ]
 
 [[package]]

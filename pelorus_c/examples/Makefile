@@ -12,7 +12,10 @@ ifeq ($(UNAME_S),Darwin)
     LDFLAGS += -Wl,-rpath,$(TARGET_DIR)
 endif
 
-EXAMPLES = async_callback sync_blocking cpp_wrapper
+PICO_SRCS = $(wildcard ../../pelorus_pico/src/*.c)
+PICO_FLAGS = -I../../pelorus_pico/include
+
+EXAMPLES = async_callback sync_blocking pico_equality cpp_wrapper
 CPP_BUILD_DIR ?= build
 
 all: $(EXAMPLES)
@@ -22,6 +25,9 @@ async_callback: async_callback.c ../pelorus.h
 
 sync_blocking: sync_blocking.c ../pelorus.h
 	$(CC) $(CFLAGS) $< $(LDFLAGS) -o $@
+
+pico_equality: pico_equality.c ../pelorus.h $(PICO_SRCS)
+	$(CC) $(CFLAGS) $(PICO_FLAGS) $(PICO_SRCS) $< $(LDFLAGS) -o $@
 
 # Build C++ example using CMake so it can find PCL/Eigen and use proper flags
 cpp_wrapper:

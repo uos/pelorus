@@ -17,14 +17,15 @@ int main(void)
 {
     printf("Version: %s\n\n", pelorus_version());
 
-    // Create Pelorus handle with default configuration.
-    PelorusHandle *pelorus = pelorus_create("./no-accum.rl");
+    // Use the comparison config so binding/backend comparisons all bypass the
+    // optional imu-fusion preprocessing in the same way.
+    PelorusHandle *pelorus = pelorus_create("./pico-equality.rl");
     if (!pelorus)
     {
         fprintf(stderr, "Failed to create Pelorus handle\n");
         return 1;
     }
-    printf("Created Pelorus handle with default config\n\n");
+    printf("Created Pelorus handle with comparison config\n\n");
 
     // The library handles threading internally; this example stays single-threaded.
     // We just feed IMU + point clouds in sequence and then call `pelorus_recv()`.
@@ -41,12 +42,12 @@ int main(void)
         imu.frame_id = NULL;
 
         imu.orientation[0] = 1.0;
-        imu.angular_velocity[0] = 0.001 * (i % 3 - 1);
-        imu.angular_velocity[1] = 0.001 * ((i + 1) % 3 - 1);
-        imu.angular_velocity[2] = 0.002 * ((i + 2) % 3 - 1);
-        imu.linear_acceleration[0] = 0.01 * (i % 5 - 2);
-        imu.linear_acceleration[1] = 0.01 * ((i + 1) % 5 - 2);
-        imu.linear_acceleration[2] = 9.81 + 0.01 * ((i + 2) % 5 - 2);
+        imu.angular_velocity[0] = 0.004 + 0.001 * (i % 3 - 1);
+        imu.angular_velocity[1] = -0.002 + 0.001 * ((i + 1) % 3 - 1);
+        imu.angular_velocity[2] = 0.010 + 0.002 * ((i + 2) % 3 - 1);
+        imu.linear_acceleration[0] = 0.03 + 0.01 * (i % 5 - 2);
+        imu.linear_acceleration[1] = -0.015 + 0.01 * ((i + 1) % 5 - 2);
+        imu.linear_acceleration[2] = 9.81 + 0.02 + 0.01 * ((i + 2) % 5 - 2);
 
         fill_identity_cov(imu.orientation_covariance, 0.01);
         fill_identity_cov(imu.angular_velocity_covariance, 0.001);
@@ -55,18 +56,34 @@ int main(void)
         pelorus_add_imu(pelorus, &imu);
     }
 
-#define NUM_POINTS 64
+#define NUM_POINTS 512
 
     // Scan 1
     float scan1_data[NUM_POINTS * 4];
     for (int i = 0; i < NUM_POINTS; i++)
     {
-        float angle = (float)i / NUM_POINTS * 6.28318f;
-        float range = 5.0f + 0.5f * (i % 8);
+        float x, y, z;
+        if (i < NUM_POINTS / 2)
+        {
+            int u = i % 16;
+            int v = i / 16;
+            x = 4.0f + 0.12f * u;
+            y = -1.0f + 0.12f * v;
+            z = 0.01f * ((u + v) % 2);
+        }
+        else
+        {
+            int j = i - NUM_POINTS / 2;
+            int u = j % 16;
+            int v = j / 16;
+            x = 6.0f + 0.005f * ((u + v) % 2);
+            y = -1.0f + 0.12f * u;
+            z = 0.10f + 0.12f * v;
+        }
 
-        scan1_data[i * 4 + 0] = range * cosf(angle);
-        scan1_data[i * 4 + 1] = range * sinf(angle);
-        scan1_data[i * 4 + 2] = 0.2f * sinf(angle * 3);
+        scan1_data[i * 4 + 0] = x;
+        scan1_data[i * 4 + 1] = y;
+        scan1_data[i * 4 + 2] = z;
         scan1_data[i * 4 + 3] = (float)i / NUM_POINTS * 100000000.0f;
     }
     uint64_t scan1_id = pelorus_add_points_xyzt_f32(
@@ -93,12 +110,12 @@ int main(void)
         imu.timestamp_nanosec = i * 5000000;
         imu.frame_id = NULL;
         imu.orientation[0] = 1.0;
-        imu.angular_velocity[0] = 0.001 * (i % 3 - 1);
-        imu.angular_velocity[1] = 0.001 * ((i + 1) % 3 - 1);
-        imu.angular_velocity[2] = 0.002 * ((i + 2) % 3 - 1);
-        imu.linear_acceleration[0] = 0.01 * (i % 5 - 2);
-        imu.linear_acceleration[1] = 0.01 * ((i + 1) % 5 - 2);
-        imu.linear_acceleration[2] = 9.81 + 0.01 * ((i + 2) % 5 - 2);
+        imu.angular_velocity[0] = 0.004 + 0.001 * (i % 3 - 1);
+        imu.angular_velocity[1] = -0.002 + 0.001 * ((i + 1) % 3 - 1);
+        imu.angular_velocity[2] = 0.010 + 0.002 * ((i + 2) % 3 - 1);
+        imu.linear_acceleration[0] = 0.03 + 0.01 * (i % 5 - 2);
+        imu.linear_acceleration[1] = -0.015 + 0.01 * ((i + 1) % 5 - 2);
+        imu.linear_acceleration[2] = 9.81 + 0.02 + 0.01 * ((i + 2) % 5 - 2);
         fill_identity_cov(imu.orientation_covariance, 0.01);
         fill_identity_cov(imu.angular_velocity_covariance, 0.001);
         fill_identity_cov(imu.linear_acceleration_covariance, 0.01);
@@ -109,12 +126,34 @@ int main(void)
     float scan2_data[NUM_POINTS * 5]; // Nx5: x,y,z,intensity,t
     for (int i = 0; i < NUM_POINTS; i++)
     {
-        float angle = (float)i / NUM_POINTS * 6.28318f + 0.1f;
-        float range = 5.0f + 0.5f * (i % 8) + 0.05f;
+        float x, y, z;
+        if (i < NUM_POINTS / 2)
+        {
+            int u = i % 16;
+            int v = i / 16;
+            x = 4.0f + 0.12f * u;
+            y = -1.0f + 0.12f * v;
+            z = 0.01f * ((u + v) % 2);
+        }
+        else
+        {
+            int j = i - NUM_POINTS / 2;
+            int u = j % 16;
+            int v = j / 16;
+            x = 6.0f + 0.005f * ((u + v) % 2);
+            y = -1.0f + 0.12f * u;
+            z = 0.10f + 0.12f * v;
+        }
 
-        scan2_data[i * 5 + 0] = range * cosf(angle);
-        scan2_data[i * 5 + 1] = range * sinf(angle);
-        scan2_data[i * 5 + 2] = 0.2f * sinf(angle * 3);
+        const float c = 0.996802f; // cos(0.08 rad)
+        const float s = 0.079915f; // sin(0.08 rad)
+        float x2 = c * x - s * y + 0.18f;
+        float y2 = s * x + c * y - 0.12f;
+        float z2 = z + 0.03f;
+
+        scan2_data[i * 5 + 0] = x2;
+        scan2_data[i * 5 + 1] = y2;
+        scan2_data[i * 5 + 2] = z2;
         scan2_data[i * 5 + 3] = 0.0f; // intensity
         scan2_data[i * 5 + 4] = (float)i / NUM_POINTS * 100000000.0f;
     }
@@ -148,14 +187,14 @@ int main(void)
             if (odom.scan_id == scan2_id)
             {
                 printf("  Timestamp: %d.%09u\n", odom.timestamp_sec, odom.timestamp_nanosec);
-                printf("  Position: [%.3f, %.3f, %.3f] (scan_id=%llu)\n",
+                printf("  Position: [%.6f, %.6f, %.6f] (scan_id=%llu)\n",
                        odom.position[0], odom.position[1], odom.position[2], (unsigned long long)odom.scan_id);
-                printf("  Orientation: [%.3f, %.3f, %.3f, %.3f]\n",
+                printf("  Orientation: [%.6f, %.6f, %.6f, %.6f]\n",
                        odom.orientation[0], odom.orientation[1],
                        odom.orientation[2], odom.orientation[3]);
-                printf("  Linear velocity: [%.3f, %.3f, %.3f]\n",
+                printf("  Linear velocity: [%.6f, %.6f, %.6f]\n",
                        odom.linear_velocity[0], odom.linear_velocity[1], odom.linear_velocity[2]);
-                printf("  Angular velocity: [%.3f, %.3f, %.3f]\n",
+                printf("  Angular velocity: [%.6f, %.6f, %.6f]\n",
                        odom.angular_velocity[0], odom.angular_velocity[1], odom.angular_velocity[2]);
                 printf("  Point cloud: %zu points\n", odom.num_points);
 
