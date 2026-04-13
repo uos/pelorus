@@ -1,0 +1,47 @@
+#version 450
+
+layout(local_size_x = 256) in;
+
+layout(std430, set = 0, binding = 4) readonly buffer UniqueKeys { int unique_keys[]; };
+layout(std430, set = 0, binding = 12) readonly buffer TableKeys { int table_keys[]; };
+layout(std430, set = 0, binding = 13) readonly buffer TableVals { uint table_vals[]; };
+layout(std430, set = 0, binding = 5) writeonly buffer TargetIndices { uint target_indices[]; };
+layout(std430, set = 0, binding = 8) writeonly buffer UpdateFlags { uint update_flags[]; };
+layout(std430, set = 0, binding = 15) writeonly buffer IsNew { uint is_new[]; };
+layout(std430, set = 0, binding = 10) readonly buffer Counters { uint unique_count; };
+
+void main() {
+    uint idx = gl_GlobalInvocationID.x;
+    if (idx >= unique_count) return;
+
+    int key = unique_keys[idx];
+    if (key == EMPTY_KEY) {
+        target_indices[idx] = 0xFFFFFFFFu;
+        update_flags[idx] = 0u;
+        is_new[idx] = 0u;
+        return;
+    }
+
+    // Hashmap lookup
+    uint slot = hash_fn(key) & (pc.table_cap - 1u);
+    int found_idx = -1;
+    for (uint i = 0u; i < pc.table_cap; i++) {
+        int k = table_keys[slot];
+        if (k == EMPTY_KEY) break;
+        if (k == key) {
+            found_idx = int(table_vals[slot]);
+            break;
+        }
+        slot = (slot + 1u) & (pc.table_cap - 1u);
+    }
+
+    if (found_idx != -1) {
+        target_indices[idx] = uint(found_idx);
+        update_flags[idx] = 1u;
+        is_new[idx] = 0u;
+    } else {
+        target_indices[idx] = 0xFFFFFFFFu; // Resolved later by assign_new_targets
+        update_flags[idx] = 0u;
+        is_new[idx] = 1u;
+    }
+}

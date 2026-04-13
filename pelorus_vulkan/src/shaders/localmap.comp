@@ -33,7 +33,7 @@ void main() {
     vec3 p_global = iso_transform(q, t, p_local);
 
     ivec3 grid = grid_pos(pc.resolution, p_global);
-    keys[idx] = hash_grid(grid);
+	keys[idx] = hash_grid(grid) ^ 0x80000000; // Convert to unsigned-order for radix sort
     indices[idx] = idx;
 #endif
 #ifdef BUILD_VOXELS
@@ -95,11 +95,11 @@ void main() {
         float maturity_decay = max(1.0, log(fn_d));
         float effective_sensitivity = pc.sensitivity / maturity_decay;
 
-        float reg_cov[9];
-        for (int i = 0; i < 9; i++) {
-            reg_cov[i] = d.cov[i];
-        }
-        regularize_cov(reg_cov);
+    float reg_cov[9];
+    for (int i = 0; i < 9; i++) {
+        reg_cov[i] = d.cov[i];
+    }
+    regularize_cov(reg_cov);
 
         float L_reg[9];
         float m_sq;

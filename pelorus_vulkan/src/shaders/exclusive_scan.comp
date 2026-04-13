@@ -1,0 +1,72 @@
+#version 450
+
+// Local exclusive prefix sum (Blelloch algorithm)
+// First pass: each workgroup computes local scan and stores block sum
+
+layout(local_size_x = 256) in;
+
+layout(std430, set = 0, binding = 15) readonly buffer IsNew { uint is_new[]; };
+layout(std430, set = 0, binding = 16) buffer NewOffset { uint new_offset[]; };
+layout(std430, set = 0, binding = 17) buffer BlockSums { uint block_sums[]; };
+layout(std430, set = 0, binding = 10) readonly buffer Counters { uint unique_count; };
+
+shared uint shared_data[512];
+
+void main() {
+    uint lid = gl_LocalInvocationID.x;
+    uint group_size = gl_WorkGroupSize.x;
+    uint group_id = gl_WorkGroupID.x;
+    uint n = unique_count;
+
+    if (n == 0u) return;
+
+    // Each workgroup processes 2 * group_size elements
+    uint base = group_id * 2u * group_size;
+    uint idx1 = base + lid;
+    uint idx2 = base + lid + group_size;
+
+    // Load into shared memory
+    shared_data[lid] = (idx1 < n) ? is_new[idx1] : 0u;
+    shared_data[lid + group_size] = (idx2 < n) ? is_new[idx2] : 0u;
+
+    barrier();
+
+    // Upsweep (reduce) phase
+    uint offset = 1u;
+    for (uint d = group_size; d > 0u; d >>= 1u) {
+        if (lid < d) {
+            uint ai = offset * (2u * lid + 1u) - 1u;
+            uint bi = offset * (2u * lid + 2u) - 1u;
+            shared_data[bi] += shared_data[ai];
+        }
+        barrier();
+        offset *= 2u;
+    }
+
+    // Store total sum for this block, then clear last element
+    if (lid == 0u) {
+        block_sums[group_id] = shared_data[2u * group_size - 1u];
+        shared_data[2u * group_size - 1u] = 0u;
+    }
+
+    barrier();
+
+    // Downsweep phase
+    for (uint d = 1u; d < 2u * group_size; d *= 2u) {
+        offset >>= 1u;
+        barrier();
+        if (lid < d) {
+            uint ai = offset * (2u * lid + 1u) - 1u;
+            uint bi = offset * (2u * lid + 2u) - 1u;
+            uint t = shared_data[ai];
+            shared_data[ai] = shared_data[bi];
+            shared_data[bi] += t;
+        }
+    }
+
+    barrier();
+
+    // Write local exclusive scan results
+    if (idx1 < n) new_offset[idx1] = shared_data[lid];
+    if (idx2 < n) new_offset[idx2] = shared_data[lid + group_size];
+}

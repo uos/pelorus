@@ -1,0 +1,38 @@
+#version 450
+
+// Single-thread kernel to finalize cursors after deterministic slot assignment
+// Matches CUDA's finalize_cursors_kernel exactly
+
+layout(local_size_x = 1) in;
+
+layout(std430, set = 0, binding = 15) readonly buffer IsNew { uint is_new[]; };
+layout(std430, set = 0, binding = 16) readonly buffer NewOffset { uint new_offset[]; };
+layout(std430, set = 0, binding = 10) buffer Counters {
+    uint unique_count;
+    uint add_cursor;
+    uint lru_cursor;
+};
+
+void main() {
+    // Only thread 0 executes
+    if (gl_GlobalInvocationID.x != 0u) return;
+
+    uint n_unique = unique_count;
+    uint prev = add_cursor;
+    uint total_new = 0u;
+    if (n_unique > 0u) {
+        total_new = is_new[n_unique - 1u] + new_offset[n_unique - 1u];
+    }
+
+    // Prevent overflow: dist_cap is typically 131072, total_new is typically
+    // < 30000 per scan. prev + total_new fits in u32 for realistic inputs.
+    // If overflow were possible, we'd need u64 extensions (GL_ARB_gpu_shader_int64).
+    uint end = prev + total_new;
+    uint new_add = (end > pc.dist_cap || end < prev) ? pc.dist_cap : end;
+    add_cursor = new_add;
+
+    uint consumed_new = new_add - prev;
+    uint evictions = total_new - consumed_new;
+    if (evictions > pc.dist_cap) evictions = pc.dist_cap;
+    lru_cursor = evictions;
+}

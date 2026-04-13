@@ -14,7 +14,8 @@ void main() {
 
     uint pt_count = voxels[i].point_count;
     uint last_scan = voxels[i].last_scan;
-    uint temporal_dist = pc.scan_number - last_scan;
+    // Guard against underflow: if last_scan > scan_number, treat as 0
+    uint temporal_dist = (pc.scan_number >= last_scan) ? (pc.scan_number - last_scan) : 0u;
 
     // Match CUDA semantics:
     // score = temporal_dist / point_count, empty voxels = huge score, then sort by score descending.

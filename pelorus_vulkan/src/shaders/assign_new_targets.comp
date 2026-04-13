@@ -1,0 +1,39 @@
+#version 450
+
+layout(local_size_x = 256) in;
+
+layout(std430, set = 0, binding = 4) readonly buffer UniqueKeys { int unique_keys[]; };
+layout(std430, set = 0, binding = 15) readonly buffer IsNew { uint is_new[]; };
+layout(std430, set = 0, binding = 16) readonly buffer NewOffset { uint new_offset[]; };
+layout(std430, set = 0, binding = 10) readonly buffer Counters {
+    uint unique_count;
+    uint add_cursor_in;  // Previous add_cursor value (snapshot before this scan)
+    uint lru_cursor;
+};
+layout(std430, set = 0, binding = 14) buffer DistKeys { int dist_keys[]; };
+layout(std430, set = 0, binding = 11) readonly buffer LRUMapping { uint lru_mapping[]; };
+layout(std430, set = 0, binding = 5) buffer TargetIndices { uint target_indices[]; };
+
+void main() {
+    uint idx = gl_GlobalInvocationID.x;
+    if (idx >= unique_count) return;
+    if (is_new[idx] == 0u) return; // Only process new keys
+
+    int key = unique_keys[idx];
+    uint prev_add = add_cursor_in;
+    uint cum = new_offset[idx];
+    uint abs_pos = prev_add + cum;
+
+    if (abs_pos < pc.dist_cap) {
+        // Normal slot within capacity
+        uint slot = abs_pos;
+        dist_keys[slot] = key;
+        target_indices[idx] = slot;
+    } else {
+        // Overflow: use LRU eviction
+        uint lru_pos = abs_pos - pc.dist_cap;
+        uint victim = lru_mapping[lru_pos % pc.dist_cap]; // Match Metal: wrap around
+        dist_keys[victim] = key;
+        target_indices[idx] = victim;
+    }
+}

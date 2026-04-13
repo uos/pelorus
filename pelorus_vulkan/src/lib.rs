@@ -1043,6 +1043,12 @@ struct VulkanComputePipelines {
     rle: vk::Pipeline,
     assign_indices: vk::Pipeline,
     lru_score: vk::Pipeline,
+    classify_keys: vk::Pipeline,
+    exclusive_scan: vk::Pipeline,
+    assign_new_targets: vk::Pipeline,
+    finalize_cursors: vk::Pipeline,
+    scan_block_sums: vk::Pipeline,
+    add_block_prefix: vk::Pipeline,
     shader_modules: Vec<vk::ShaderModule>,
 }
 
@@ -1059,6 +1065,12 @@ impl Drop for VulkanComputePipelines {
             device.destroy_pipeline(self.rle, None);
             device.destroy_pipeline(self.assign_indices, None);
             device.destroy_pipeline(self.lru_score, None);
+            device.destroy_pipeline(self.classify_keys, None);
+            device.destroy_pipeline(self.exclusive_scan, None);
+            device.destroy_pipeline(self.assign_new_targets, None);
+            device.destroy_pipeline(self.finalize_cursors, None);
+            device.destroy_pipeline(self.scan_block_sums, None);
+            device.destroy_pipeline(self.add_block_prefix, None);
             for module in self.shader_modules.drain(..) {
                 device.destroy_shader_module(module, None);
             }
@@ -1082,6 +1094,9 @@ struct ScratchBuffers {
     sorter_scratch: VulkanBuffer,
     lru_mapping: VulkanBuffer,
     lru_keys: VulkanBuffer,
+    is_new: VulkanBuffer,
+    new_offset: VulkanBuffer,
+    block_sums: VulkanBuffer,
     sorter: VrdxSorter,
     capacity: usize,
 }
@@ -1203,7 +1218,7 @@ fn create_compute_pipeline(
 }
 
 fn build_pipelines(context: Arc<VulkanContext>) -> Arc<VulkanComputePipelines> {
-    let bindings: Vec<_> = (0..16)
+    let bindings: Vec<_> = (0..18)
         .map(|i| {
             vk::DescriptorSetLayoutBinding::default()
                 .binding(i)
@@ -1243,6 +1258,12 @@ fn build_pipelines(context: Arc<VulkanContext>) -> Arc<VulkanComputePipelines> {
     let rle_src = shaders::source_with_common(shaders::RLE);
     let assign_indices_src = shaders::source_with_common(shaders::ASSIGN_INDICES);
     let lru_score_src = shaders::source_with_common(shaders::LRU_SCORE);
+    let classify_keys_src = shaders::source_with_common(shaders::CLASSIFY_KEYS);
+    let exclusive_scan_src = shaders::source_with_common(shaders::EXCLUSIVE_SCAN);
+    let assign_new_targets_src = shaders::source_with_common(shaders::ASSIGN_NEW_TARGETS);
+    let finalize_cursors_src = shaders::source_with_common(shaders::FINALIZE_CURSORS);
+    let scan_block_sums_src = shaders::source_with_common(shaders::SCAN_BLOCK_SUMS);
+    let add_block_prefix_src = shaders::source_with_common(shaders::ADD_BLOCK_PREFIX);
 
     let shader_defs = [
         ("hashmap_init", &hashmap_src, vec![("HASHMAP_INIT", None)]),
@@ -1262,6 +1283,12 @@ fn build_pipelines(context: Arc<VulkanContext>) -> Arc<VulkanComputePipelines> {
         ("rle", &rle_src, vec![]),
         ("assign_indices", &assign_indices_src, vec![]),
         ("lru_score", &lru_score_src, vec![]),
+        ("classify_keys", &classify_keys_src, vec![]),
+        ("exclusive_scan", &exclusive_scan_src, vec![]),
+        ("assign_new_targets", &assign_new_targets_src, vec![]),
+        ("finalize_cursors", &finalize_cursors_src, vec![]),
+        ("scan_block_sums", &scan_block_sums_src, vec![]),
+        ("add_block_prefix", &add_block_prefix_src, vec![]),
     ];
 
     let mut modules = Vec::with_capacity(shader_defs.len());
@@ -1287,6 +1314,12 @@ fn build_pipelines(context: Arc<VulkanContext>) -> Arc<VulkanComputePipelines> {
         rle: pipelines[6],
         assign_indices: pipelines[7],
         lru_score: pipelines[8],
+        classify_keys: pipelines[9],
+        exclusive_scan: pipelines[10],
+        assign_new_targets: pipelines[11],
+        finalize_cursors: pipelines[12],
+        scan_block_sums: pipelines[13],
+        add_block_prefix: pipelines[14],
         shader_modules: modules,
     })
 }
@@ -1334,11 +1367,11 @@ impl<'a> ComputeCommandSession<'a> {
                 .expect("failed to begin command buffer");
         }
 
-        // We allow up to 16 dispatches per session to avoid descriptor set overwrite bugs
-        let max_dispatches = 16;
+        // We allow up to 20 dispatches per session to avoid descriptor set overwrite bugs
+        let max_dispatches = 20;
         let pool_sizes = [vk::DescriptorPoolSize {
             ty: vk::DescriptorType::STORAGE_BUFFER,
-            descriptor_count: 16 * max_dispatches,
+            descriptor_count: 18 * max_dispatches,
         }];
         let pool_ci = vk::DescriptorPoolCreateInfo::default()
             .max_sets(max_dispatches)
@@ -1581,6 +1614,9 @@ pub fn init_map(
                 // This buffer is hot in map-full replacement and LRU sort; keep it device-local.
                 lru_mapping: VulkanBuffer::new(stream, size_of::<u32>(), dist_cap as usize),
                 lru_keys: VulkanBuffer::new(stream, size_of::<u32>(), dist_cap as usize),
+                is_new: VulkanBuffer::new(stream, size_of::<u32>(), 1),
+                new_offset: VulkanBuffer::new(stream, size_of::<u32>(), 1),
+                block_sums: VulkanBuffer::new(stream, size_of::<u32>(), 1),
                 sorter,
                 capacity: 0,
             };
@@ -1695,6 +1731,11 @@ fn ensure_scratch_capacity(state: &mut VulkanGpuMapState, stream: &Stream, n_poi
     state.scratch.update_flags = VulkanBuffer::new(stream, size_of::<u32>(), new_cap);
     state.scratch.sorted_points =
         VulkanBuffer::new(stream, size_of::<crate::types::Point>(), new_cap);
+    state.scratch.is_new = VulkanBuffer::new(stream, size_of::<u32>(), new_cap);
+    state.scratch.new_offset = VulkanBuffer::new(stream, size_of::<u32>(), new_cap);
+    // block_sums needs ceil(new_cap / 512) elements, round up to next power of 2 for safety
+    let block_sums_cap = (new_cap / 512 + 1).next_power_of_two().max(1024);
+    state.scratch.block_sums = VulkanBuffer::new(stream, size_of::<u32>(), block_sums_cap);
 
     let mut requirements = VrdxSorterStorageRequirements {
         size: 0,
@@ -1804,7 +1845,6 @@ pub fn add_to_map(
             ensure_scratch_capacity(state, stream, n_points);
             state.scan_number = scan_id as u32;
             let scan_number = state.scan_number;
-            let map_was_full = state.add_cursor >= state.dist_cap;
 
             let q: nalgebra::UnitQuaternion<f64> = (*ekf_pose_r).into();
             let mut params = PushConstants {
@@ -1841,7 +1881,9 @@ pub fn add_to_map(
             let table_keys_b = vk_buffer_handle(&state.keys_buf);
             let table_vals_b = vk_buffer_handle(&state.values_buf);
             let dist_keys_b = vk_buffer_handle(&state.dist_keys_buf);
-            let dummy = vk_buffer_handle(&state.dummy_buf);
+            let is_new_b = vk_buffer_handle(&state.scratch.is_new);
+            let new_offset_b = vk_buffer_handle(&state.scratch.new_offset);
+            let block_sums_b = vk_buffer_handle(&state.scratch.block_sums);
 
             let all_buffers = [
                 points_in_b,
@@ -1859,7 +1901,9 @@ pub fn add_to_map(
                 table_keys_b,
                 table_vals_b,
                 dist_keys_b,
-                dummy,
+                is_new_b,
+                new_offset_b,
+                block_sums_b,
             ];
 
             let mut session = ComputeCommandSession::begin(&state.context, &state.compute);
@@ -1904,7 +1948,7 @@ pub fn add_to_map(
             session.barrier();
 
             // 3. GPU Run-Length Encoding
-            // Match CUDA semantics: start each scan with fresh LRU consumption.
+            // Initialize counters: [unique_count=0, add_cursor=current, lru_cursor=0]
             let counters_host = [0u32, state.add_cursor, 0u32];
             state.scratch.counter.upload(stream, &counters_host);
 
@@ -1917,17 +1961,78 @@ pub fn add_to_map(
             );
             session.barrier();
 
-            // 4. Assign Indices
+            // 4. Classify Keys (deterministic: mark each key as new or existing)
+            // Run classify_keys.comp to populate is_new[], target_indices[], update_flags[]
             session.dispatch(
                 &state.compute,
-                state.compute.assign_indices,
+                state.compute.classify_keys,
                 &all_buffers,
                 &params,
                 n_points as u32,
             );
             session.barrier();
 
-            // 5. Reorder Points
+            // 5. Exclusive Prefix Sum on is_new[] -> new_offset[]
+            // Multi-pass Blelloch scan for arbitrary array sizes:
+            //   Pass 1: local scan per workgroup, store block sums
+            //   Pass 2: prefix sum of block sums (single workgroup)
+            // Pass 3: add block prefix to each element
+
+            // Calculate number of workgroups needed (each processes 2 * THREADS_PER_GROUP = 512 elements)
+            let _scan_workgroups = div_ceil_u32(n_points as u32, 2 * THREADS_PER_GROUP);
+
+            // Pass 1: Local exclusive scan
+            session.dispatch(
+                &state.compute,
+                state.compute.exclusive_scan,
+                &all_buffers,
+                &params,
+                n_points as u32,
+            );
+            session.barrier();
+
+            // Pass 2: Prefix sum of block sums (single workgroup, handles up to 1024 blocks)
+            session.dispatch(
+                &state.compute,
+                state.compute.scan_block_sums,
+                &all_buffers,
+                &params,
+                1, // Single workgroup
+            );
+            session.barrier();
+
+            // Pass 3: Add block prefix to each element
+            session.dispatch(
+                &state.compute,
+                state.compute.add_block_prefix,
+                &all_buffers,
+                &params,
+                n_points as u32,
+            );
+            session.barrier();
+
+            // 6. Assign New Targets (deterministic slot assignment)
+            // Uses prev_add_cursor + new_offset[idx] for deterministic slots
+            session.dispatch(
+                &state.compute,
+                state.compute.assign_new_targets,
+                &all_buffers,
+                &params,
+                n_points as u32,
+            );
+            session.barrier();
+
+            // 7. Finalize Cursors (single-thread update)
+            session.dispatch(
+                &state.compute,
+                state.compute.finalize_cursors,
+                &all_buffers,
+                &params,
+                1, // Single thread
+            );
+            session.barrier();
+
+            // 8. Reorder Points
             session.dispatch(
                 &state.compute,
                 state.compute.reorder_points,
@@ -1937,7 +2042,7 @@ pub fn add_to_map(
             );
             session.barrier();
 
-            // 6. Build Voxels
+            // 9. Build Voxels
             session.dispatch(
                 &state.compute,
                 state.compute.build_voxels,
@@ -1947,7 +2052,7 @@ pub fn add_to_map(
             );
             session.barrier();
 
-            // 7. Rebuild Hashmap
+            // 10. Rebuild Hashmap
             params.cap = state.table_cap;
             session.dispatch(
                 &state.compute,
@@ -1968,7 +2073,7 @@ pub fn add_to_map(
             );
             session.barrier();
 
-            if map_was_full {
+            if state.add_cursor >= state.dist_cap {
                 rebuild_gpu_lru_order(
                     &state.compute,
                     &mut state.scratch,

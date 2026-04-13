@@ -43,21 +43,16 @@ void main() {
         target_indices[j] = uint(found_idx);
         update_flags[j] = 1u;
     } else {
-        update_flags[j] = 0u;
-        uint idx;
-        uint old_add = atomicAdd(add_cursor, 1);
-        if (old_add < pc.dist_cap) {
-            idx = old_add;
-        } else {
-            uint lru_idx = atomicAdd(lru_cursor, 1);
-            if (lru_idx < pc.dist_cap) {
-                idx = lru_mapping[lru_idx];
-            } else {
-                target_indices[j] = 0xFFFFFFFFu;
-                return;
-            }
-        }
-        target_indices[j] = idx;
-        dist_keys[idx] = key;
+update_flags[j] = 0u;
+    uint idx;
+    uint old_add = atomicAdd(add_cursor, 1);
+    if (old_add < pc.dist_cap) {
+        idx = old_add;
+    } else {
+        uint lru_idx = atomicAdd(lru_cursor, 1);
+        idx = lru_mapping[lru_idx % pc.dist_cap]; // Match Metal: wrap around
+    }
+    target_indices[j] = idx;
+    dist_keys[idx] = key;
     }
 }

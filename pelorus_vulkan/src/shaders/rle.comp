@@ -16,17 +16,16 @@ void main() {
     uint i = gl_GlobalInvocationID.x;
     if (i >= pc.n) return;
 
-    int key = sorted_keys[i];
+    int key = int(uint(sorted_keys[i]) ^ 0x80000000u); // Convert back from unsigned-order
     if (key == EMPTY_KEY) return;
 
-    bool is_start = (i == 0) || (sorted_keys[i - 1] != key);
+    bool is_start = (i == 0) || (int(uint(sorted_keys[i - 1]) ^ 0x80000000u) != key);
     if (is_start) {
         uint left = i;
         uint right = pc.n;
-        uint ukey = uint(key);
         while (left < right) {
             uint mid = left + (right - left) / 2;
-            if (uint(sorted_keys[mid]) <= ukey) {
+            if (int(uint(sorted_keys[mid]) ^ 0x80000000u) <= key) {
                 left = mid + 1;
             } else {
                 right = mid;

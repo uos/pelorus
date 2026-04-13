@@ -1,0 +1,31 @@
+#version 450
+
+// Add block prefix to each element
+// Third pass: add the exclusive prefix sum of block sums to each element
+
+layout(local_size_x = 256) in;
+
+layout(std430, set = 0, binding = 16) buffer NewOffset { uint new_offset[]; };
+layout(std430, set = 0, binding = 17) readonly buffer BlockSums { uint block_sums[]; };
+layout(std430, set = 0, binding = 10) readonly buffer Counters { uint unique_count; };
+
+void main() {
+    uint lid = gl_LocalInvocationID.x;
+    uint group_size = gl_WorkGroupSize.x;
+    uint group_id = gl_WorkGroupID.x;
+    uint n = unique_count;
+
+    if (n == 0u) return;
+
+    // Each workgroup processes 2 * group_size elements
+    uint base = group_id * 2u * group_size;
+    uint idx1 = base + lid;
+    uint idx2 = base + lid + group_size;
+
+    // Get the prefix for this block (exclusive sum of all previous blocks)
+    uint prefix = block_sums[group_id];
+
+    // Add prefix to each element
+    if (idx1 < n) new_offset[idx1] += prefix;
+    if (idx2 < n) new_offset[idx2] += prefix;
+}
