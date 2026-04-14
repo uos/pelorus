@@ -220,10 +220,10 @@ fn cloud_callback(
                             nalgebra::geometry::Isometry3::identity()
                         } else {
                             let tf = tf_listener.lookup_transform(
-                orig_header.frame_id.clone().as_str(),
-                global_zero_frame.clone().as_str(),
-                in_stamp.clone(),
-            )?;
+                                orig_header.frame_id.clone().as_str(),
+                                global_zero_frame.clone().as_str(),
+                                in_stamp.clone(),
+                            )?;
                             nalgebra::geometry::Isometry3::from_parts(
                                 nalgebra::geometry::Translation3::new(
                                     tf.transform.translation.x as f32,
@@ -252,10 +252,10 @@ fn cloud_callback(
                         }
                         Some(first_imu_tf_frame) => {
                             let tf = tf_listener.lookup_transform(
-                &first_imu_tf_frame,
-                &orig_header.frame_id,
-                in_stamp.clone(),
-            )?;
+                                &first_imu_tf_frame,
+                                &orig_header.frame_id,
+                                in_stamp.clone(),
+                            )?;
                             nalgebra::geometry::Isometry3::from_parts(
                                 nalgebra::geometry::Translation3::new(
                                     tf.transform.translation.x,
@@ -321,11 +321,11 @@ fn cloud_callback(
                 let tf = if global_zero_frame.is_empty() {
                     nalgebra::geometry::Isometry3::identity()
                 } else {
-            let tf = tf_listener.lookup_transform(
-                map_frame.as_str(),
-                global_zero_frame.as_str(),
-                in_stamp,
-            )?;
+                    let tf = tf_listener.lookup_transform(
+                        map_frame.as_str(),
+                        global_zero_frame.as_str(),
+                        in_stamp,
+                    )?;
                     if map_frame.is_empty() {
                         return Err(anyhow!(
                             "global_zero_frame is given but map_frame is not. Can not update polygon."

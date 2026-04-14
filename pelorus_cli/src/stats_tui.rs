@@ -25,6 +25,9 @@ use pelorus_core::LidarVendor;
 
 const MAX_TRAJECTORY_POINTS: usize = 10000;
 const MAX_LOG_ENTRIES: usize = 1000;
+const FOLLOW_VIEW_RANGE_STEP_M: f64 = 5.0;
+const FOLLOW_VIEW_RANGE_MIN_M: f64 = 5.0;
+const FOLLOW_VIEW_RANGE_MAX_M: f64 = 200.0;
 
 /// Log level for TUI display
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -712,13 +715,15 @@ fn get_nvidia_gpu_stats() -> (f64, f64, f64) {
 // ============================================================================
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
-const MERGED_TABS_MIN_WIDTH: u16 = 150;
+const MERGED_TABS_MIN_WIDTH: u16 = 120;
 const MERGED_TABS_MIN_HEIGHT: u16 = 42;
 const HYBRID_MERGED_MIN_HEIGHT: u16 = 30;
 const STATS_FULL_MIN_HEIGHT: u16 = 24;
 const LOGS_MIN_HEIGHT: u16 = 8;
 const DOCKED_HELP_PANEL_MIN_WIDTH: u16 = 38;
 const DOCKED_HELP_PANEL_MAX_WIDTH: u16 = 72;
+const TRAJECTORY_HINT_PANEL_WIDTH: u16 = 34;
+const TRAJECTORY_HINT_MIN_TOTAL_WIDTH: u16 = 90;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Tab {
@@ -746,20 +751,27 @@ pub struct StatsTui {
     shutdown_tx: Option<std::sync::mpsc::Sender<()>>,
     current_tab: Tab,
     view_mode: ViewMode,
+    follow_view_range_m: f64,
     trajectory_pane_mode: TrajectoryPaneMode,
     log_scroll: Option<usize>, // None = auto-follow (show latest), Some(n) = manual scroll position
     log_buffer: Arc<Mutex<LogBuffer>>,
     show_minot_logs: bool,
     show_help_overlay: bool,
+    merged_layout_min_width: u16,
+    hybrid_layout_min_width: u16,
 }
 
 impl StatsTui {
-    fn use_merged_tabs_layout(area: Rect) -> bool {
-        area.width >= MERGED_TABS_MIN_WIDTH && area.height >= MERGED_TABS_MIN_HEIGHT
+    fn status_bar_style() -> Style {
+        Style::default().bg(Color::Rgb(20, 26, 34))
     }
 
-    fn use_hybrid_merged_layout(area: Rect) -> bool {
-        area.width >= MERGED_TABS_MIN_WIDTH
+    fn use_merged_tabs_layout(&self, area: Rect) -> bool {
+        area.width >= self.merged_layout_min_width && area.height >= MERGED_TABS_MIN_HEIGHT
+    }
+
+    fn use_hybrid_merged_layout(&self, area: Rect) -> bool {
+        area.width >= self.hybrid_layout_min_width
             && area.height >= HYBRID_MERGED_MIN_HEIGHT
             && area.height < MERGED_TABS_MIN_HEIGHT
     }
@@ -792,11 +804,12 @@ impl StatsTui {
     }
 
     fn logs_integrated_visible(&self, size: Rect) -> bool {
-        if Self::use_merged_tabs_layout(size) {
+        if self.use_merged_tabs_layout(size) {
             let chunks = Layout::default()
                 .direction(Direction::Vertical)
                 .constraints([
                     Constraint::Length(1), // Header
+                    Constraint::Length(1), // Top spacer
                     Constraint::Min(10),   // Content
                     Constraint::Length(1), // Help bar
                 ])
@@ -804,16 +817,17 @@ impl StatsTui {
             let content_chunks = Layout::default()
                 .direction(Direction::Horizontal)
                 .constraints([Constraint::Percentage(42), Constraint::Percentage(58)])
-                .split(chunks[1]);
+                .split(chunks[2]);
             return Self::stats_shows_logs(content_chunks[0]);
         }
 
-        if Self::use_hybrid_merged_layout(size) {
+        if self.use_hybrid_merged_layout(size) {
             let chunks = Layout::default()
                 .direction(Direction::Vertical)
                 .constraints([
                     Constraint::Length(1), // Header
-                    Constraint::Length(3), // Tabs
+                    Constraint::Length(1), // Top spacer
+                    Constraint::Length(1), // Tabs
                     Constraint::Min(10),   // Content
                     Constraint::Length(1), // Help bar
                 ])
@@ -821,7 +835,7 @@ impl StatsTui {
             let content_chunks = Layout::default()
                 .direction(Direction::Horizontal)
                 .constraints([Constraint::Percentage(60), Constraint::Percentage(40)])
-                .split(chunks[2]);
+                .split(chunks[3]);
             return Self::stats_shows_logs(content_chunks[0]);
         }
 
@@ -830,12 +844,13 @@ impl StatsTui {
             .direction(Direction::Vertical)
             .constraints([
                 Constraint::Length(1), // Header
-                Constraint::Length(3), // Tabs
+                Constraint::Length(1), // Top spacer
+                Constraint::Length(1), // Tabs
                 Constraint::Min(10),   // Content
                 Constraint::Length(1), // Help bar
             ])
             .split(size);
-        let logs_integrated = Self::stats_shows_logs(chunks[2]);
+        let logs_integrated = Self::stats_shows_logs(chunks[3]);
         let show_logs_tab = !logs_integrated;
         let effective_tab = if !show_logs_tab && self.current_tab == Tab::Logs {
             Tab::Stats
@@ -846,45 +861,47 @@ impl StatsTui {
     }
 
     fn show_trajectory_tab_for_size(&self, size: Rect) -> bool {
-        !(Self::use_merged_tabs_layout(size) || Self::use_hybrid_merged_layout(size))
+        !(self.use_merged_tabs_layout(size) || self.use_hybrid_merged_layout(size))
     }
 
     fn show_logs_tab_for_size(&self, size: Rect) -> bool {
-        if Self::use_merged_tabs_layout(size) {
+        if self.use_merged_tabs_layout(size) {
             return false;
         }
 
-        if Self::use_hybrid_merged_layout(size) {
+        if self.use_hybrid_merged_layout(size) {
             let chunks = Layout::default()
                 .direction(Direction::Vertical)
                 .constraints([
                     Constraint::Length(1), // Header
-                    Constraint::Length(3), // Tabs
+                    Constraint::Length(1), // Top spacer
+                    Constraint::Length(1), // Tabs
                     Constraint::Min(10),   // Content
                     Constraint::Length(1), // Help bar
                 ])
                 .split(size);
-            return !Self::stats_shows_logs(chunks[2]);
+            return !Self::stats_shows_logs(chunks[3]);
         }
 
         let chunks = Layout::default()
             .direction(Direction::Vertical)
             .constraints([
                 Constraint::Length(1), // Header
-                Constraint::Length(3), // Tabs
+                Constraint::Length(1), // Top spacer
+                Constraint::Length(1), // Tabs
                 Constraint::Min(10),   // Content
                 Constraint::Length(1), // Help bar
             ])
             .split(size);
-        !Self::stats_shows_logs(chunks[2])
+        !Self::stats_shows_logs(chunks[3])
     }
 
     fn trajectory_visible_for_size(&self, size: Rect) -> bool {
-        if Self::use_merged_tabs_layout(size) {
+        if self.use_merged_tabs_layout(size) {
             return true;
         }
 
-        if Self::use_hybrid_merged_layout(size) {
+        if self.use_hybrid_merged_layout(size) {
             return true;
         }
 
@@ -893,6 +910,118 @@ impl StatsTui {
 
     fn visible_tab_count(show_trajectory_tab: bool, show_logs_tab: bool) -> u8 {
         1 + u8::from(show_trajectory_tab) + u8::from(show_logs_tab)
+    }
+
+    fn should_show_trajectory_unlock_hint(&self, size: Rect, active_tab: Tab) -> bool {
+        if active_tab != Tab::Stats {
+            return false;
+        }
+        if self.use_merged_tabs_layout(size) || self.use_hybrid_merged_layout(size) {
+            return false;
+        }
+        if size.width < TRAJECTORY_HINT_MIN_TOTAL_WIDTH || size.height < 14 {
+            return false;
+        }
+        let target_width = self.trajectory_unlock_target_width(size);
+        let width_short = target_width.saturating_sub(size.width);
+        let height_short = HYBRID_MERGED_MIN_HEIGHT.saturating_sub(size.height);
+        width_short > 0 || height_short > 0
+    }
+
+    fn trajectory_unlock_target_width(&self, size: Rect) -> u16 {
+        if size.height >= MERGED_TABS_MIN_HEIGHT {
+            self.merged_layout_min_width
+        } else {
+            self.hybrid_layout_min_width
+        }
+    }
+
+    fn estimate_stats_min_width(&self, stats: &TuiStats) -> u16 {
+        let vendor = match stats.lidar_vendor {
+            Some(LidarVendor::Ouster) => "Ouster",
+            Some(LidarVendor::Velodyne) => "Velodyne",
+            Some(LidarVendor::Livox) => "Livox",
+            Some(LidarVendor::LivoxMid360) => "Livox Mid-360",
+            Some(LidarVendor::Robosense) => "Robosense",
+            None => "Unknown",
+        };
+        let elapsed = format_duration(stats.elapsed_secs);
+        let sensor_rate_str = if stats.measured_sensor_rate_hz > 0.0 {
+            format!(" @ {:.1} Hz", stats.measured_sensor_rate_hz)
+        } else {
+            String::new()
+        };
+        let header_line_1 = format!("⏱️  {}  │  📡 {}{}", elapsed, vendor, sensor_rate_str);
+        let mut header_line_2 = format!("💻 {}", stats.backend);
+        if let Some(accel) = &stats.accelerator {
+            header_line_2.push_str(" + ");
+            header_line_2.push_str(accel);
+            if let Some(details) = &stats.accelerator_details {
+                header_line_2.push_str(" (");
+                header_line_2.push_str(details);
+                header_line_2.push(')');
+            }
+        }
+
+        let lv = stats.linear_velocity;
+        let av = stats.angular_velocity;
+        let vel_abs_ms = (lv[0].powi(2) + lv[1].powi(2) + lv[2].powi(2)).sqrt();
+        let vel_abs_kmh = vel_abs_ms * 3.6;
+        let state_lines = [
+            format!(
+                "Position    {:>9.3} {:>9.3} {:>9.3} m",
+                stats.position[0], stats.position[1], stats.position[2]
+            ),
+            format!(
+                "Orientation {:>9.4} {:>9.4} {:>9.4} {:>9.4}",
+                stats.orientation[0],
+                stats.orientation[1],
+                stats.orientation[2],
+                stats.orientation[3]
+            ),
+            format!(
+                "Velocity    {:>9.3} {:>9.3} {:>9.3} m/s",
+                lv[0], lv[1], lv[2]
+            ),
+            format!(
+                "Angular Vel {:>9.4} {:>9.4} {:>9.4} rad/s",
+                av[0], av[1], av[2]
+            ),
+            format!(
+                "Speed |v|   {:^12} // {:^12}",
+                format!("{:.2} m/s", vel_abs_ms),
+                format!("{:.1} km/h", vel_abs_kmh)
+            ),
+        ];
+        let nav_lines = [
+            format!("Traveled    {:>9.2} m", stats.distance_traveled),
+            format!("To Origin   {:>9.2} m", stats.distance_to_origin),
+        ];
+        let perf_lines = [
+            format!(
+                "Comp Time   {:>6.1} ms  avg {:.1} / max {:.1}",
+                stats.last_comp_time_ms, stats.avg_comp_time_ms, stats.max_comp_time_ms
+            ),
+            format!(
+                "Proc Rate   {:>6.1} Hz  sensor {:.1} Hz",
+                stats.processing_freq_hz, stats.measured_sensor_rate_hz
+            ),
+            format!(
+                "CPU         {:>6.1} %  avg {:.1} / max {:.1}",
+                stats.cpu_percent, stats.avg_cpu_percent, stats.max_cpu_percent
+            ),
+            format!("RAM         {:>6.0} MB", stats.ram_mb),
+        ];
+
+        let mut max_chars = header_line_1
+            .chars()
+            .count()
+            .max(header_line_2.chars().count());
+        for line in state_lines.into_iter().chain(nav_lines).chain(perf_lines) {
+            max_chars = max_chars.max(line.chars().count());
+        }
+
+        (max_chars as u16).saturating_add(2)
     }
 
     fn render_section_divider(&self, f: &mut ratatui::Frame, area: Rect) {
@@ -906,6 +1035,97 @@ impl StatsTui {
         );
     }
 
+    fn div_ceil_u16(n: u32, d: u32) -> u16 {
+        n.div_ceil(d) as u16
+    }
+
+    fn refresh_dynamic_layout_thresholds(&mut self, stats: &TuiStats) {
+        let left_required = self.estimate_stats_min_width(stats).max(40) as u32;
+        let right_required = 36u32;
+
+        // merged split: 42% left / 58% right
+        let merged_from_left = Self::div_ceil_u16(left_required * 100, 42);
+        let merged_from_right = Self::div_ceil_u16(right_required * 100, 58);
+        self.merged_layout_min_width =
+            MERGED_TABS_MIN_WIDTH.max(merged_from_left.max(merged_from_right));
+
+        // hybrid split: 60% left / 40% right
+        let hybrid_from_left = Self::div_ceil_u16(left_required * 100, 60);
+        let hybrid_from_right = Self::div_ceil_u16(right_required * 100, 40);
+        self.hybrid_layout_min_width =
+            MERGED_TABS_MIN_WIDTH.max(hybrid_from_left.max(hybrid_from_right));
+    }
+
+    fn render_vertical_divider(&self, f: &mut ratatui::Frame, area: Rect) {
+        if area.width == 0 || area.height == 0 {
+            return;
+        }
+        let lines: Vec<Line> = (0..area.height)
+            .map(|_| Line::from(Span::styled("│", Style::default().fg(Color::DarkGray))))
+            .collect();
+        f.render_widget(Paragraph::new(lines).alignment(Alignment::Center), area);
+    }
+
+    fn render_trajectory_unlock_hint(&self, f: &mut ratatui::Frame, area: Rect, size: Rect) {
+        if area.width < 8 || area.height < 4 {
+            return;
+        }
+        let target_width = self.trajectory_unlock_target_width(size);
+        let width_short = target_width.saturating_sub(size.width);
+        let height_short = HYBRID_MERGED_MIN_HEIGHT.saturating_sub(size.height);
+
+        let mut lines = vec![
+            Line::from(Span::styled(
+                "Trajectory Pane",
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD),
+            )),
+            Line::from(Span::styled(
+                "not yet available",
+                Style::default().fg(Color::DarkGray),
+            )),
+            Line::default(),
+        ];
+
+        if width_short > 0 {
+            lines.push(Line::from(vec![
+                Span::styled("+", Style::default().fg(Color::Yellow)),
+                Span::styled(
+                    format!("{width_short} cols"),
+                    Style::default()
+                        .fg(Color::Yellow)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(" needed", Style::default().fg(Color::DarkGray)),
+            ]));
+        }
+        if height_short > 0 {
+            lines.push(Line::from(vec![
+                Span::styled("+", Style::default().fg(Color::Yellow)),
+                Span::styled(
+                    format!("{height_short} rows"),
+                    Style::default()
+                        .fg(Color::Yellow)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(" needed", Style::default().fg(Color::DarkGray)),
+            ]));
+        }
+
+        lines.push(Line::default());
+        lines.push(Line::from(Span::styled(
+            format!("target: {}w × {}h", target_width, HYBRID_MERGED_MIN_HEIGHT),
+            Style::default().fg(Color::DarkGray),
+        )));
+        lines.push(Line::from(Span::styled(
+            "open with Tab or 2",
+            Style::default().fg(Color::Yellow),
+        )));
+
+        f.render_widget(Paragraph::new(lines).alignment(Alignment::Center), area);
+    }
+
     pub fn new(stats: Arc<SharedStats>) -> Self {
         Self {
             stats,
@@ -913,11 +1133,14 @@ impl StatsTui {
             shutdown_tx: None,
             current_tab: Tab::Stats,
             view_mode: ViewMode::FollowCurrent,
+            follow_view_range_m: 20.0,
             trajectory_pane_mode: TrajectoryPaneMode::Split,
             log_scroll: None, // Auto-follow by default
             log_buffer: get_log_buffer(),
             show_minot_logs: true,
             show_help_overlay: false,
+            merged_layout_min_width: MERGED_TABS_MIN_WIDTH,
+            hybrid_layout_min_width: MERGED_TABS_MIN_WIDTH,
         }
     }
 
@@ -977,6 +1200,7 @@ impl StatsTui {
             }
 
             let stats = self.stats.get();
+            self.refresh_dynamic_layout_thresholds(&stats);
 
             terminal.draw(|f| {
                 self.render(f, &stats);
@@ -1059,6 +1283,24 @@ impl StatsTui {
                                 };
                             }
                         }
+                        KeyCode::Char('-') | KeyCode::Char('_') => {
+                            let size = terminal.size()?;
+                            let area = Rect::new(0, 0, size.width, size.height);
+                            if self.trajectory_visible_for_size(area) {
+                                self.follow_view_range_m = (self.follow_view_range_m
+                                    + FOLLOW_VIEW_RANGE_STEP_M)
+                                    .clamp(FOLLOW_VIEW_RANGE_MIN_M, FOLLOW_VIEW_RANGE_MAX_M);
+                            }
+                        }
+                        KeyCode::Char('+') | KeyCode::Char('=') => {
+                            let size = terminal.size()?;
+                            let area = Rect::new(0, 0, size.width, size.height);
+                            if self.trajectory_visible_for_size(area) {
+                                self.follow_view_range_m = (self.follow_view_range_m
+                                    - FOLLOW_VIEW_RANGE_STEP_M)
+                                    .clamp(FOLLOW_VIEW_RANGE_MIN_M, FOLLOW_VIEW_RANGE_MAX_M);
+                            }
+                        }
                         KeyCode::Char('k') | KeyCode::Up => {
                             let size = terminal.size()?;
                             let area = Rect::new(0, 0, size.width, size.height);
@@ -1136,11 +1378,12 @@ impl StatsTui {
     fn render(&self, f: &mut ratatui::Frame, stats: &TuiStats) {
         let size = f.area();
 
-        if Self::use_merged_tabs_layout(size) {
+        if self.use_merged_tabs_layout(size) {
             let chunks = Layout::default()
                 .direction(Direction::Vertical)
                 .constraints([
                     Constraint::Length(1), // Header
+                    Constraint::Length(1), // Top spacer
                     Constraint::Min(10),   // Content
                     Constraint::Length(1), // Help bar
                 ])
@@ -1151,15 +1394,15 @@ impl StatsTui {
             let content_chunks = Layout::default()
                 .direction(Direction::Horizontal)
                 .constraints([Constraint::Percentage(42), Constraint::Percentage(58)])
-                .split(chunks[1]);
+                .split(chunks[2]);
 
             self.render_stats_with_optional_logs(f, content_chunks[0], stats);
 
-            self.render_trajectory_tab(f, content_chunks[1], stats, true);
-            self.render_help_bar_merged(f, chunks[2]);
+            self.render_trajectory_tab(f, content_chunks[1], stats, true, false);
+            self.render_help_bar_merged(f, chunks[3]);
             self.render_help_overlay(
                 f,
-                chunks[1],
+                chunks[2],
                 self.help_overlay_items(
                     Tab::Stats,
                     Self::stats_shows_logs(content_chunks[0]),
@@ -1169,17 +1412,18 @@ impl StatsTui {
                     true,
                 ),
             );
-        } else if Self::use_hybrid_merged_layout(size) {
+        } else if self.use_hybrid_merged_layout(size) {
             let pre_chunks = Layout::default()
                 .direction(Direction::Vertical)
                 .constraints([
                     Constraint::Length(1), // Header
-                    Constraint::Length(3), // Tabs
+                    Constraint::Length(1), // Top spacer
+                    Constraint::Length(1), // Tabs
                     Constraint::Min(10),   // Content
                     Constraint::Length(1), // Help bar
                 ])
                 .split(size);
-            let pre_logs_integrated = Self::stats_shows_logs(pre_chunks[2]);
+            let pre_logs_integrated = Self::stats_shows_logs(pre_chunks[3]);
             let pre_show_logs_tab = !pre_logs_integrated;
             let show_tabs_row = Self::visible_tab_count(false, pre_show_logs_tab) > 1;
 
@@ -1187,14 +1431,23 @@ impl StatsTui {
                 .direction(Direction::Vertical)
                 .constraints([
                     Constraint::Length(1),                                 // Header
-                    Constraint::Length(if show_tabs_row { 3 } else { 0 }), // Tabs
+                    Constraint::Length(1),                                 // Top spacer
+                    Constraint::Length(if show_tabs_row { 1 } else { 0 }), // Tabs
                     Constraint::Min(10),                                   // Content
                     Constraint::Length(1),                                 // Help bar
                 ])
                 .split(size);
+            let content_rows = Layout::default()
+                .direction(Direction::Vertical)
+                .constraints([
+                    Constraint::Length(if show_tabs_row { 1 } else { 0 }), // Gap below tabs
+                    Constraint::Min(10),                                   // Content body
+                ])
+                .split(chunks[3]);
+            let content_area = content_rows[1];
 
             self.render_title_bar(f, chunks[0], stats);
-            let logs_integrated = Self::stats_shows_logs(chunks[2]);
+            let logs_integrated = Self::stats_shows_logs(content_area);
             let show_trajectory_tab = false;
             let show_logs_tab = !logs_integrated;
             let effective_tab = if self.current_tab == Tab::Trajectory {
@@ -1207,7 +1460,7 @@ impl StatsTui {
             if Self::visible_tab_count(show_trajectory_tab, show_logs_tab) > 1 {
                 self.render_tabs(
                     f,
-                    chunks[1],
+                    chunks[2],
                     show_trajectory_tab,
                     show_logs_tab,
                     effective_tab,
@@ -1215,21 +1468,21 @@ impl StatsTui {
             }
 
             if effective_tab == Tab::Logs && show_logs_tab {
-                self.render_logs_tab(f, chunks[2]);
+                self.render_logs_tab(f, content_area);
             } else {
                 // In hybrid mode keep stats(+maybe integrated logs) and trajectory visible together.
                 let content_chunks = Layout::default()
                     .direction(Direction::Horizontal)
                     .constraints([Constraint::Percentage(60), Constraint::Percentage(40)])
-                    .split(chunks[2]);
+                    .split(content_area);
 
                 self.render_stats_with_optional_logs(f, content_chunks[0], stats);
-                self.render_trajectory_tab(f, content_chunks[1], stats, true);
+                self.render_trajectory_tab(f, content_chunks[1], stats, true, false);
             }
 
             self.render_help_bar_context(
                 f,
-                chunks[3],
+                chunks[4],
                 effective_tab,
                 logs_integrated,
                 show_trajectory_tab,
@@ -1238,7 +1491,7 @@ impl StatsTui {
             );
             self.render_help_overlay(
                 f,
-                chunks[2],
+                content_area,
                 self.help_overlay_items(
                     effective_tab,
                     logs_integrated,
@@ -1253,26 +1506,36 @@ impl StatsTui {
                 .direction(Direction::Vertical)
                 .constraints([
                     Constraint::Length(1), // Header
-                    Constraint::Length(3), // Tabs
+                    Constraint::Length(1), // Top spacer
+                    Constraint::Length(1), // Tabs
                     Constraint::Min(10),   // Content
                     Constraint::Length(1), // Help bar
                 ])
                 .split(size);
-            let pre_logs_integrated = Self::stats_shows_logs(pre_chunks[2]);
+            let pre_logs_integrated = Self::stats_shows_logs(pre_chunks[3]);
             let show_tabs_row = Self::visible_tab_count(true, !pre_logs_integrated) > 1;
 
             let chunks = Layout::default()
                 .direction(Direction::Vertical)
                 .constraints([
                     Constraint::Length(1),                                 // Header
-                    Constraint::Length(if show_tabs_row { 3 } else { 0 }), // Tabs
+                    Constraint::Length(1),                                 // Top spacer
+                    Constraint::Length(if show_tabs_row { 1 } else { 0 }), // Tabs
                     Constraint::Min(10),                                   // Content
                     Constraint::Length(1),                                 // Help bar
                 ])
                 .split(size);
+            let content_rows = Layout::default()
+                .direction(Direction::Vertical)
+                .constraints([
+                    Constraint::Length(if show_tabs_row { 1 } else { 0 }), // Gap below tabs
+                    Constraint::Min(10),                                   // Content body
+                ])
+                .split(chunks[3]);
+            let content_area = content_rows[1];
 
             self.render_title_bar(f, chunks[0], stats);
-            let logs_integrated = Self::stats_shows_logs(chunks[2]);
+            let logs_integrated = Self::stats_shows_logs(content_area);
             let show_trajectory_tab = true;
             let show_logs_tab = !logs_integrated;
             let effective_tab = if !show_logs_tab && self.current_tab == Tab::Logs {
@@ -1283,7 +1546,7 @@ impl StatsTui {
             if Self::visible_tab_count(show_trajectory_tab, show_logs_tab) > 1 {
                 self.render_tabs(
                     f,
-                    chunks[1],
+                    chunks[2],
                     show_trajectory_tab,
                     show_logs_tab,
                     effective_tab,
@@ -1291,14 +1554,34 @@ impl StatsTui {
             }
 
             match effective_tab {
-                Tab::Stats => self.render_stats_with_optional_logs(f, chunks[2], stats),
-                Tab::Trajectory => self.render_trajectory_tab(f, chunks[2], stats, false),
-                Tab::Logs => self.render_logs_tab(f, chunks[2]),
+                Tab::Stats => {
+                    let required_stats_width = self.estimate_stats_min_width(stats);
+                    if self.should_show_trajectory_unlock_hint(size, effective_tab)
+                        && content_area.width
+                            > required_stats_width.saturating_add(TRAJECTORY_HINT_PANEL_WIDTH + 1)
+                    {
+                        let split = Layout::default()
+                            .direction(Direction::Horizontal)
+                            .constraints([
+                                Constraint::Min(required_stats_width),
+                                Constraint::Length(1),
+                                Constraint::Length(TRAJECTORY_HINT_PANEL_WIDTH),
+                            ])
+                            .split(content_area);
+                        self.render_stats_with_optional_logs(f, split[0], stats);
+                        self.render_vertical_divider(f, split[1]);
+                        self.render_trajectory_unlock_hint(f, split[2], size);
+                    } else {
+                        self.render_stats_with_optional_logs(f, content_area, stats);
+                    }
+                }
+                Tab::Trajectory => self.render_trajectory_tab(f, content_area, stats, false, true),
+                Tab::Logs => self.render_logs_tab(f, content_area),
             }
 
             self.render_help_bar_context(
                 f,
-                chunks[3],
+                chunks[4],
                 effective_tab,
                 logs_integrated,
                 show_trajectory_tab,
@@ -1307,7 +1590,7 @@ impl StatsTui {
             );
             self.render_help_overlay(
                 f,
-                chunks[2],
+                content_area,
                 self.help_overlay_items(
                     effective_tab,
                     logs_integrated,
@@ -1332,6 +1615,7 @@ impl StatsTui {
         let mut items = vec![];
         if merged {
             items.push("f  Toggle Follow/Fit".to_string());
+            items.push("+/-  Zoom Follow View (5m)".to_string());
             items.push("v  Cycle Trajectory Pane Layout".to_string());
             items.push("j/k, PgUp/PgDn, Home/End  Scroll Logs".to_string());
             items.push("m  Toggle Minot Logs".to_string());
@@ -1352,6 +1636,7 @@ impl StatsTui {
             Tab::Stats => {
                 if trajectory_visible {
                     items.push("f  Toggle Follow/Fit (Trajectory)".to_string());
+                    items.push("+/-  Zoom Follow View (5m)".to_string());
                     items.push("v  Cycle Trajectory Pane Layout".to_string());
                 }
                 if logs_integrated {
@@ -1361,6 +1646,7 @@ impl StatsTui {
             }
             Tab::Trajectory => {
                 items.push("f  Toggle Follow/Fit".to_string());
+                items.push("+/-  Zoom Follow View (5m)".to_string());
                 items.push("v  Cycle Pane Layout".to_string());
             }
             Tab::Logs => {
@@ -1482,11 +1768,7 @@ impl StatsTui {
         };
 
         let tabs = Tabs::new(titles)
-            .block(
-                Block::default()
-                    .borders(Borders::TOP)
-                    .border_style(Style::default().fg(Color::DarkGray)),
-            )
+            .block(Block::default().borders(Borders::NONE))
             .select(selected)
             .style(Style::default().fg(Color::DarkGray))
             .highlight_style(
@@ -1521,6 +1803,7 @@ impl StatsTui {
         area: Rect,
         stats: &TuiStats,
         left_divider: bool,
+        show_rt_stat: bool,
     ) {
         match self.trajectory_pane_mode {
             TrajectoryPaneMode::Split => {
@@ -1539,16 +1822,47 @@ impl StatsTui {
                     1,
                     false,
                     left_divider,
+                    show_rt_stat,
                 );
 
                 // Right: Side view (X-Z) + shared top stats overlay
-                self.render_trajectory_view(f, chunks[1], stats, "Side (X-Z)", 0, 2, true, true);
+                self.render_trajectory_view(
+                    f,
+                    chunks[1],
+                    stats,
+                    "Side (X-Z)",
+                    0,
+                    2,
+                    true,
+                    true,
+                    show_rt_stat,
+                );
             }
             TrajectoryPaneMode::LeftOnly => {
-                self.render_trajectory_view(f, area, stats, "Top (X-Y)", 0, 1, true, left_divider);
+                self.render_trajectory_view(
+                    f,
+                    area,
+                    stats,
+                    "Top (X-Y)",
+                    0,
+                    1,
+                    true,
+                    left_divider,
+                    show_rt_stat,
+                );
             }
             TrajectoryPaneMode::RightOnly => {
-                self.render_trajectory_view(f, area, stats, "Side (X-Z)", 0, 2, true, left_divider);
+                self.render_trajectory_view(
+                    f,
+                    area,
+                    stats,
+                    "Side (X-Z)",
+                    0,
+                    2,
+                    true,
+                    left_divider,
+                    show_rt_stat,
+                );
             }
         }
     }
@@ -1563,6 +1877,7 @@ impl StatsTui {
         axis_v: usize,
         show_top_stats: bool,
         show_left_divider: bool,
+        show_rt_stat: bool,
     ) {
         let panel_borders = if show_left_divider {
             Borders::LEFT
@@ -1614,7 +1929,7 @@ impl StatsTui {
             // Follow current position
             let current_h = stats.position[axis_h];
             let current_v = stats.position[axis_v];
-            let range = 20.0; // View range around current position
+            let range = self.follow_view_range_m; // View range around current position
             (
                 current_h - range,
                 current_h + range,
@@ -1668,6 +1983,11 @@ impl StatsTui {
             ViewMode::FollowCurrent => "Follow",
             ViewMode::FitAll => "Fit All",
         };
+        let mode_label = if self.view_mode == ViewMode::FollowCurrent {
+            format!("{} {:.0}m", mode_str, self.follow_view_range_m)
+        } else {
+            mode_str.to_string()
+        };
 
         let (rt_color, rt_status) = get_realtime_color_and_status(stats.real_time_factor);
         let vel_mag = (stats.linear_velocity[0].powi(2)
@@ -1688,7 +2008,7 @@ impl StatsTui {
                     .borders(panel_borders)
                     .border_style(Style::default().fg(Color::DarkGray))
                     .title(Span::styled(
-                        format!(" {} [{}] ", title, mode_str),
+                        format!(" {} [{}] ", title, mode_label),
                         Style::default()
                             .fg(Color::Blue)
                             .add_modifier(Modifier::BOLD),
@@ -1788,9 +2108,11 @@ impl StatsTui {
                     },
                 );
 
-                // Right: velocity + real-time factor panel
-                let top_right_lines = [
-                    Line::from(vec![
+                // Right: velocity and optionally real-time factor panel.
+                // When stats/info is visible alongside trajectory, omit both here.
+                let mut top_right_lines = Vec::new();
+                if show_rt_stat {
+                    top_right_lines.push(Line::from(vec![
                         Span::styled(
                             "VEL",
                             Style::default()
@@ -1804,8 +2126,10 @@ impl StatsTui {
                                 .fg(Color::Green)
                                 .add_modifier(Modifier::BOLD),
                         ),
-                    ]),
-                    Line::from(vec![
+                    ]));
+                }
+                if show_rt_stat {
+                    top_right_lines.push(Line::from(vec![
                         Span::styled(
                             "RT",
                             Style::default().fg(rt_color).add_modifier(Modifier::BOLD),
@@ -1816,8 +2140,8 @@ impl StatsTui {
                             Style::default().fg(rt_color).add_modifier(Modifier::BOLD),
                         ),
                         Span::styled(format!(" {}", rt_status), Style::default().fg(rt_color)),
-                    ]),
-                ];
+                    ]));
+                }
 
                 for (idx, line) in top_right_lines.into_iter().enumerate() {
                     let y = area.y + 1 + idx as u16;
@@ -1861,7 +2185,7 @@ impl StatsTui {
             let col_width = inner_width.min(24);
             let left_x = area.x + 1;
             let right_x = area.x + 1 + inner_width.saturating_sub(col_width);
-            let legend_y = area.y + area.height.saturating_sub(2);
+            let legend_y = area.y + area.height.saturating_sub(1);
             let delta_y = legend_y.saturating_sub(1);
 
             f.render_widget(
@@ -1971,8 +2295,8 @@ impl StatsTui {
         let q = stats.orientation;
         let lv = stats.linear_velocity;
         let av = stats.angular_velocity;
-        let ab = stats.accel_bias;
-        let gb = stats.gyro_bias;
+        let vel_abs_ms = (lv[0].powi(2) + lv[1].powi(2) + lv[2].powi(2)).sqrt();
+        let vel_abs_kmh = vel_abs_ms * 3.6;
 
         let lines = vec![
             Line::from(vec![
@@ -2007,17 +2331,15 @@ impl StatsTui {
                 Span::styled(" rad/s", Style::default().fg(Color::DarkGray)),
             ]),
             Line::from(vec![
-                Span::styled("Accel Bias  ", Style::default().fg(Color::DarkGray)),
+                Span::styled("Speed |v|   ", Style::default().fg(Color::DarkGray)),
                 Span::styled(
-                    format!("{:>9.6} {:>9.6} {:>9.6}", ab[0], ab[1], ab[2]),
-                    Style::default().fg(Color::Magenta),
+                    format!("{:^12}", format!("{:.2} m/s", vel_abs_ms)),
+                    Style::default().fg(Color::Green),
                 ),
-            ]),
-            Line::from(vec![
-                Span::styled("Gyro Bias   ", Style::default().fg(Color::DarkGray)),
+                Span::styled(" // ", Style::default().fg(Color::DarkGray)),
                 Span::styled(
-                    format!("{:>9.6} {:>9.6} {:>9.6}", gb[0], gb[1], gb[2]),
-                    Style::default().fg(Color::Magenta),
+                    format!("{:^12}", format!("{:.1} km/h", vel_abs_kmh)),
+                    Style::default().fg(Color::Cyan),
                 ),
             ]),
         ];
@@ -2367,6 +2689,8 @@ impl StatsTui {
         show_logs_tab: bool,
         trajectory_visible: bool,
     ) {
+        f.render_widget(Block::default().style(Self::status_bar_style()), area);
+
         let tab_hint = match (show_trajectory_tab, show_logs_tab) {
             (true, true) => "1-3",
             (true, false) => "1-2",
@@ -2402,6 +2726,13 @@ impl StatsTui {
                                 .add_modifier(Modifier::BOLD),
                         ),
                         Span::styled(" Follow/Fit  ", Style::default().fg(Color::DarkGray)),
+                        Span::styled(
+                            "+/-",
+                            Style::default()
+                                .fg(Color::Yellow)
+                                .add_modifier(Modifier::BOLD),
+                        ),
+                        Span::styled(" Zoom  ", Style::default().fg(Color::DarkGray)),
                         Span::styled(
                             "v",
                             Style::default()
@@ -2469,6 +2800,13 @@ impl StatsTui {
                         .add_modifier(Modifier::BOLD),
                 ),
                 Span::styled(" Toggle Follow/Fit  ", Style::default().fg(Color::DarkGray)),
+                Span::styled(
+                    "+/-",
+                    Style::default()
+                        .fg(Color::Yellow)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(" Zoom  ", Style::default().fg(Color::DarkGray)),
                 Span::styled(
                     "v",
                     Style::default()
@@ -2560,11 +2898,23 @@ impl StatsTui {
             ),
             Span::styled(" Quit", Style::default().fg(Color::DarkGray)),
         ]);
-        f.render_widget(Paragraph::new(left).alignment(Alignment::Left), area);
-        f.render_widget(Paragraph::new(right).alignment(Alignment::Right), area);
+        f.render_widget(
+            Paragraph::new(left)
+                .alignment(Alignment::Left)
+                .style(Self::status_bar_style()),
+            area,
+        );
+        f.render_widget(
+            Paragraph::new(right)
+                .alignment(Alignment::Right)
+                .style(Self::status_bar_style()),
+            area,
+        );
     }
 
     fn render_help_bar_merged(&self, f: &mut ratatui::Frame, area: Rect) {
+        f.render_widget(Block::default().style(Self::status_bar_style()), area);
+
         let left = Line::from(vec![
             Span::styled(
                 " f ",
@@ -2573,6 +2923,13 @@ impl StatsTui {
                     .add_modifier(Modifier::BOLD),
             ),
             Span::styled("Follow/Fit  ", Style::default().fg(Color::DarkGray)),
+            Span::styled(
+                " +/- ",
+                Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled("Zoom  ", Style::default().fg(Color::DarkGray)),
             Span::styled(
                 " v ",
                 Style::default()
@@ -2611,8 +2968,18 @@ impl StatsTui {
             ),
             Span::styled("Quit", Style::default().fg(Color::DarkGray)),
         ]);
-        f.render_widget(Paragraph::new(left).alignment(Alignment::Left), area);
-        f.render_widget(Paragraph::new(right).alignment(Alignment::Right), area);
+        f.render_widget(
+            Paragraph::new(left)
+                .alignment(Alignment::Left)
+                .style(Self::status_bar_style()),
+            area,
+        );
+        f.render_widget(
+            Paragraph::new(right)
+                .alignment(Alignment::Right)
+                .style(Self::status_bar_style()),
+            area,
+        );
     }
 }
 
