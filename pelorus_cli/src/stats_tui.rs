@@ -745,6 +745,27 @@ enum TrajectoryPaneMode {
     RightOnly,
 }
 
+#[derive(Clone, Copy)]
+struct TabVisibility {
+    show_trajectory_tab: bool,
+    show_logs_tab: bool,
+    logs_integrated: bool,
+}
+
+#[derive(Clone, Copy)]
+struct TabbedLayout {
+    header: Rect,
+    tabs: Rect,
+    content: Rect,
+    help: Rect,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum KeyAction {
+    Continue,
+    Exit,
+}
+
 pub struct StatsTui {
     stats: Arc<SharedStats>,
     stop_rx: Option<std::sync::mpsc::Receiver<()>>,
@@ -803,97 +824,217 @@ impl StatsTui {
         area.height >= STATS_FULL_MIN_HEIGHT + 1 + LOGS_MIN_HEIGHT
     }
 
-    fn logs_integrated_visible(&self, size: Rect) -> bool {
-        if self.use_merged_tabs_layout(size) {
+    fn tab_visibility_for_area(&self, area: Rect) -> TabVisibility {
+        let logs_integrated = if self.use_merged_tabs_layout(area) {
             let chunks = Layout::default()
                 .direction(Direction::Vertical)
                 .constraints([
-                    Constraint::Length(1), // Header
-                    Constraint::Length(1), // Top spacer
-                    Constraint::Min(10),   // Content
-                    Constraint::Length(1), // Help bar
+                    Constraint::Length(1),
+                    Constraint::Length(1),
+                    Constraint::Min(10),
+                    Constraint::Length(1),
                 ])
-                .split(size);
+                .split(area);
             let content_chunks = Layout::default()
                 .direction(Direction::Horizontal)
                 .constraints([Constraint::Percentage(42), Constraint::Percentage(58)])
                 .split(chunks[2]);
-            return Self::stats_shows_logs(content_chunks[0]);
-        }
-
-        if self.use_hybrid_merged_layout(size) {
-            let chunks = Layout::default()
-                .direction(Direction::Vertical)
-                .constraints([
-                    Constraint::Length(1), // Header
-                    Constraint::Length(1), // Top spacer
-                    Constraint::Length(1), // Tabs
-                    Constraint::Min(10),   // Content
-                    Constraint::Length(1), // Help bar
-                ])
-                .split(size);
+            Self::stats_shows_logs(content_chunks[0])
+        } else if self.use_hybrid_merged_layout(area) {
+            let pre_content = Self::pre_tabbed_content_area(area);
             let content_chunks = Layout::default()
                 .direction(Direction::Horizontal)
                 .constraints([Constraint::Percentage(60), Constraint::Percentage(40)])
-                .split(chunks[3]);
-            return Self::stats_shows_logs(content_chunks[0]);
-        }
+                .split(pre_content);
+            Self::stats_shows_logs(content_chunks[0])
+        } else {
+            let pre_content = Self::pre_tabbed_content_area(area);
+            Self::stats_shows_logs(pre_content)
+        };
 
-        // Standard tabbed layout
+        TabVisibility {
+            show_trajectory_tab: self.show_trajectory_tab_for_size(area),
+            show_logs_tab: !self.use_merged_tabs_layout(area) && !logs_integrated,
+            logs_integrated,
+        }
+    }
+
+    fn effective_tab(&self, visibility: TabVisibility) -> Tab {
+        match self.current_tab {
+            Tab::Trajectory if !visibility.show_trajectory_tab => Tab::Stats,
+            Tab::Logs if !visibility.show_logs_tab => Tab::Stats,
+            tab => tab,
+        }
+    }
+
+    fn cycle_tab(&mut self, visibility: TabVisibility) {
+        self.current_tab = match (
+            visibility.show_trajectory_tab,
+            visibility.show_logs_tab,
+            self.current_tab,
+        ) {
+            (true, true, Tab::Stats) => Tab::Trajectory,
+            (true, true, Tab::Trajectory) => Tab::Logs,
+            (true, true, Tab::Logs) => Tab::Stats,
+            (true, false, Tab::Stats) => Tab::Trajectory,
+            (true, false, Tab::Trajectory) => Tab::Stats,
+            (true, false, Tab::Logs) => Tab::Stats,
+            (false, true, Tab::Stats) => Tab::Logs,
+            (false, true, Tab::Logs) => Tab::Stats,
+            (false, true, Tab::Trajectory) => Tab::Stats,
+            (false, false, _) => Tab::Stats,
+        };
+    }
+
+    fn pre_tabbed_content_area(size: Rect) -> Rect {
+        Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([
+                Constraint::Length(1),
+                Constraint::Length(1),
+                Constraint::Length(1),
+                Constraint::Min(10),
+                Constraint::Length(1),
+            ])
+            .split(size)[3]
+    }
+
+    fn split_tabbed_layout(size: Rect, show_tabs_row: bool) -> TabbedLayout {
         let chunks = Layout::default()
             .direction(Direction::Vertical)
             .constraints([
-                Constraint::Length(1), // Header
-                Constraint::Length(1), // Top spacer
-                Constraint::Length(1), // Tabs
-                Constraint::Min(10),   // Content
-                Constraint::Length(1), // Help bar
+                Constraint::Length(1),
+                Constraint::Length(1),
+                Constraint::Length(if show_tabs_row { 1 } else { 0 }),
+                Constraint::Min(10),
+                Constraint::Length(1),
             ])
             .split(size);
-        let logs_integrated = Self::stats_shows_logs(chunks[3]);
-        let show_logs_tab = !logs_integrated;
-        let effective_tab = if !show_logs_tab && self.current_tab == Tab::Logs {
-            Tab::Stats
-        } else {
-            self.current_tab
-        };
-        effective_tab == Tab::Stats && logs_integrated
+
+        let content_rows = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([
+                Constraint::Length(if show_tabs_row { 1 } else { 0 }),
+                Constraint::Min(10),
+            ])
+            .split(chunks[3]);
+
+        TabbedLayout {
+            header: chunks[0],
+            tabs: chunks[2],
+            content: content_rows[1],
+            help: chunks[4],
+        }
+    }
+
+    fn logs_controls_active(&self, visibility: TabVisibility) -> bool {
+        self.effective_tab(visibility) == Tab::Logs || visibility.logs_integrated
+    }
+
+    fn process_key_event(&mut self, key: event::KeyEvent, area: Rect) -> KeyAction {
+        let visibility = self.tab_visibility_for_area(area);
+
+        if matches!(key.code, KeyCode::Char('q') | KeyCode::Esc)
+            || (matches!(key.code, KeyCode::Char('c'))
+                && key.modifiers.contains(KeyModifiers::CONTROL))
+        {
+            return KeyAction::Exit;
+        }
+
+        match key.code {
+            KeyCode::Char('1') => self.current_tab = Tab::Stats,
+            KeyCode::Char('2') => {
+                if visibility.show_trajectory_tab {
+                    self.current_tab = Tab::Trajectory;
+                } else if visibility.show_logs_tab {
+                    self.current_tab = Tab::Logs;
+                }
+            }
+            KeyCode::Char('3') => {
+                if visibility.show_trajectory_tab && visibility.show_logs_tab {
+                    self.current_tab = Tab::Logs;
+                }
+            }
+            KeyCode::Tab => self.cycle_tab(visibility),
+            KeyCode::Char('?') => self.show_help_overlay = !self.show_help_overlay,
+            KeyCode::Char('f') => {
+                if self.trajectory_visible_for_size(area) {
+                    self.view_mode = match self.view_mode {
+                        ViewMode::FollowCurrent => ViewMode::FitAll,
+                        ViewMode::FitAll => ViewMode::FollowCurrent,
+                    };
+                }
+            }
+            KeyCode::Char('v') => {
+                if self.trajectory_visible_for_size(area) {
+                    self.trajectory_pane_mode = match self.trajectory_pane_mode {
+                        TrajectoryPaneMode::Split => TrajectoryPaneMode::LeftOnly,
+                        TrajectoryPaneMode::LeftOnly => TrajectoryPaneMode::RightOnly,
+                        TrajectoryPaneMode::RightOnly => TrajectoryPaneMode::Split,
+                    };
+                }
+            }
+            KeyCode::Char('-') | KeyCode::Char('_') => {
+                if self.trajectory_visible_for_size(area) {
+                    self.follow_view_range_m = (self.follow_view_range_m
+                        + FOLLOW_VIEW_RANGE_STEP_M)
+                        .clamp(FOLLOW_VIEW_RANGE_MIN_M, FOLLOW_VIEW_RANGE_MAX_M);
+                }
+            }
+            KeyCode::Char('+') | KeyCode::Char('=') => {
+                if self.trajectory_visible_for_size(area) {
+                    self.follow_view_range_m = (self.follow_view_range_m
+                        - FOLLOW_VIEW_RANGE_STEP_M)
+                        .clamp(FOLLOW_VIEW_RANGE_MIN_M, FOLLOW_VIEW_RANGE_MAX_M);
+                }
+            }
+            KeyCode::Char('k') | KeyCode::Up => {
+                if self.logs_controls_active(visibility) {
+                    self.scroll_logs_up();
+                }
+            }
+            KeyCode::Char('j') | KeyCode::Down => {
+                if self.logs_controls_active(visibility) {
+                    self.scroll_logs_down();
+                }
+            }
+            KeyCode::PageUp => {
+                if self.logs_controls_active(visibility) {
+                    for _ in 0..20 {
+                        self.scroll_logs_up();
+                    }
+                }
+            }
+            KeyCode::PageDown => {
+                if self.logs_controls_active(visibility) {
+                    for _ in 0..20 {
+                        self.scroll_logs_down();
+                    }
+                }
+            }
+            KeyCode::Home => {
+                if self.logs_controls_active(visibility) {
+                    self.log_scroll = Some(0);
+                }
+            }
+            KeyCode::End => {
+                if self.logs_controls_active(visibility) {
+                    self.log_scroll = None;
+                }
+            }
+            KeyCode::Char('m') => {
+                if self.logs_controls_active(visibility) {
+                    self.show_minot_logs = !self.show_minot_logs;
+                }
+            }
+            _ => {}
+        }
+
+        KeyAction::Continue
     }
 
     fn show_trajectory_tab_for_size(&self, size: Rect) -> bool {
         !(self.use_merged_tabs_layout(size) || self.use_hybrid_merged_layout(size))
-    }
-
-    fn show_logs_tab_for_size(&self, size: Rect) -> bool {
-        if self.use_merged_tabs_layout(size) {
-            return false;
-        }
-
-        if self.use_hybrid_merged_layout(size) {
-            let chunks = Layout::default()
-                .direction(Direction::Vertical)
-                .constraints([
-                    Constraint::Length(1), // Header
-                    Constraint::Length(1), // Top spacer
-                    Constraint::Length(1), // Tabs
-                    Constraint::Min(10),   // Content
-                    Constraint::Length(1), // Help bar
-                ])
-                .split(size);
-            return !Self::stats_shows_logs(chunks[3]);
-        }
-
-        let chunks = Layout::default()
-            .direction(Direction::Vertical)
-            .constraints([
-                Constraint::Length(1), // Header
-                Constraint::Length(1), // Top spacer
-                Constraint::Length(1), // Tabs
-                Constraint::Min(10),   // Content
-                Constraint::Length(1), // Help bar
-            ])
-            .split(size);
-        !Self::stats_shows_logs(chunks[3])
     }
 
     fn trajectory_visible_for_size(&self, size: Rect) -> bool {
@@ -1208,153 +1349,13 @@ impl StatsTui {
 
             if event::poll(std::time::Duration::from_millis(50))? {
                 if let Event::Key(key) = event::read()? {
-                    match key.code {
-                        KeyCode::Char('q') | KeyCode::Esc => {
-                            disable_raw_mode()?;
-                            execute!(terminal.backend_mut(), LeaveAlternateScreen, cursor::Show)?;
-                            self.shutdown_tx.as_ref().map(|sender| sender.send(()));
-                            return Ok(());
-                        }
-                        KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                            self.shutdown_tx.as_ref().map(|sender| sender.send(()));
-                            disable_raw_mode()?;
-                            execute!(terminal.backend_mut(), LeaveAlternateScreen, cursor::Show)?;
-                            return Ok(());
-                        }
-                        KeyCode::Char('1') => self.current_tab = Tab::Stats,
-                        KeyCode::Char('2') => {
-                            let size = terminal.size()?;
-                            let area = Rect::new(0, 0, size.width, size.height);
-                            if self.show_trajectory_tab_for_size(area) {
-                                self.current_tab = Tab::Trajectory;
-                            } else if self.show_logs_tab_for_size(area) {
-                                self.current_tab = Tab::Logs;
-                            }
-                        }
-                        KeyCode::Char('3') => {
-                            let size = terminal.size()?;
-                            let area = Rect::new(0, 0, size.width, size.height);
-                            if self.show_trajectory_tab_for_size(area)
-                                && self.show_logs_tab_for_size(area)
-                            {
-                                self.current_tab = Tab::Logs;
-                            }
-                        }
-                        KeyCode::Tab => {
-                            let size = terminal.size()?;
-                            let area = Rect::new(0, 0, size.width, size.height);
-                            let show_trajectory_tab = self.show_trajectory_tab_for_size(area);
-                            let show_logs_tab = self.show_logs_tab_for_size(area);
-                            self.current_tab =
-                                match (show_trajectory_tab, show_logs_tab, self.current_tab) {
-                                    (true, true, Tab::Stats) => Tab::Trajectory,
-                                    (true, true, Tab::Trajectory) => Tab::Logs,
-                                    (true, true, Tab::Logs) => Tab::Stats,
-                                    (true, false, Tab::Stats) => Tab::Trajectory,
-                                    (true, false, Tab::Trajectory) => Tab::Stats,
-                                    (true, false, Tab::Logs) => Tab::Stats,
-                                    (false, true, Tab::Stats) => Tab::Logs,
-                                    (false, true, Tab::Logs) => Tab::Stats,
-                                    (false, true, Tab::Trajectory) => Tab::Stats,
-                                    (false, false, _) => Tab::Stats,
-                                };
-                        }
-                        KeyCode::Char('?') => {
-                            self.show_help_overlay = !self.show_help_overlay;
-                        }
-                        KeyCode::Char('f') => {
-                            let size = terminal.size()?;
-                            let area = Rect::new(0, 0, size.width, size.height);
-                            if self.trajectory_visible_for_size(area) {
-                                self.view_mode = match self.view_mode {
-                                    ViewMode::FollowCurrent => ViewMode::FitAll,
-                                    ViewMode::FitAll => ViewMode::FollowCurrent,
-                                };
-                            }
-                        }
-                        KeyCode::Char('v') => {
-                            let size = terminal.size()?;
-                            let area = Rect::new(0, 0, size.width, size.height);
-                            if self.trajectory_visible_for_size(area) {
-                                self.trajectory_pane_mode = match self.trajectory_pane_mode {
-                                    TrajectoryPaneMode::Split => TrajectoryPaneMode::LeftOnly,
-                                    TrajectoryPaneMode::LeftOnly => TrajectoryPaneMode::RightOnly,
-                                    TrajectoryPaneMode::RightOnly => TrajectoryPaneMode::Split,
-                                };
-                            }
-                        }
-                        KeyCode::Char('-') | KeyCode::Char('_') => {
-                            let size = terminal.size()?;
-                            let area = Rect::new(0, 0, size.width, size.height);
-                            if self.trajectory_visible_for_size(area) {
-                                self.follow_view_range_m = (self.follow_view_range_m
-                                    + FOLLOW_VIEW_RANGE_STEP_M)
-                                    .clamp(FOLLOW_VIEW_RANGE_MIN_M, FOLLOW_VIEW_RANGE_MAX_M);
-                            }
-                        }
-                        KeyCode::Char('+') | KeyCode::Char('=') => {
-                            let size = terminal.size()?;
-                            let area = Rect::new(0, 0, size.width, size.height);
-                            if self.trajectory_visible_for_size(area) {
-                                self.follow_view_range_m = (self.follow_view_range_m
-                                    - FOLLOW_VIEW_RANGE_STEP_M)
-                                    .clamp(FOLLOW_VIEW_RANGE_MIN_M, FOLLOW_VIEW_RANGE_MAX_M);
-                            }
-                        }
-                        KeyCode::Char('k') | KeyCode::Up => {
-                            let size = terminal.size()?;
-                            let area = Rect::new(0, 0, size.width, size.height);
-                            if self.current_tab == Tab::Logs || self.logs_integrated_visible(area) {
-                                self.scroll_logs_up();
-                            }
-                        }
-                        KeyCode::Char('j') | KeyCode::Down => {
-                            let size = terminal.size()?;
-                            let area = Rect::new(0, 0, size.width, size.height);
-                            if self.current_tab == Tab::Logs || self.logs_integrated_visible(area) {
-                                self.scroll_logs_down();
-                            }
-                        }
-                        KeyCode::PageUp => {
-                            let size = terminal.size()?;
-                            let area = Rect::new(0, 0, size.width, size.height);
-                            if self.current_tab == Tab::Logs || self.logs_integrated_visible(area) {
-                                for _ in 0..20 {
-                                    self.scroll_logs_up();
-                                }
-                            }
-                        }
-                        KeyCode::PageDown => {
-                            let size = terminal.size()?;
-                            let area = Rect::new(0, 0, size.width, size.height);
-                            if self.current_tab == Tab::Logs || self.logs_integrated_visible(area) {
-                                for _ in 0..20 {
-                                    self.scroll_logs_down();
-                                }
-                            }
-                        }
-                        KeyCode::Home => {
-                            let size = terminal.size()?;
-                            let area = Rect::new(0, 0, size.width, size.height);
-                            if self.current_tab == Tab::Logs || self.logs_integrated_visible(area) {
-                                self.log_scroll = Some(0);
-                            }
-                        }
-                        KeyCode::End => {
-                            let size = terminal.size()?;
-                            let area = Rect::new(0, 0, size.width, size.height);
-                            if self.current_tab == Tab::Logs || self.logs_integrated_visible(area) {
-                                self.log_scroll = None; // Auto-follow = show latest
-                            }
-                        }
-                        KeyCode::Char('m') => {
-                            let size = terminal.size()?;
-                            let area = Rect::new(0, 0, size.width, size.height);
-                            if self.current_tab == Tab::Logs || self.logs_integrated_visible(area) {
-                                self.show_minot_logs = !self.show_minot_logs;
-                            }
-                        }
-                        _ => {}
+                    let size = terminal.size()?;
+                    let area = Rect::new(0, 0, size.width, size.height);
+                    if self.process_key_event(key, area) == KeyAction::Exit {
+                        disable_raw_mode()?;
+                        execute!(terminal.backend_mut(), LeaveAlternateScreen, cursor::Show)?;
+                        self.shutdown_tx.as_ref().map(|sender| sender.send(()));
+                        return Ok(());
                     }
                 }
             }
@@ -1413,68 +1414,36 @@ impl StatsTui {
                 ),
             );
         } else if self.use_hybrid_merged_layout(size) {
-            let pre_chunks = Layout::default()
-                .direction(Direction::Vertical)
-                .constraints([
-                    Constraint::Length(1), // Header
-                    Constraint::Length(1), // Top spacer
-                    Constraint::Length(1), // Tabs
-                    Constraint::Min(10),   // Content
-                    Constraint::Length(1), // Help bar
-                ])
-                .split(size);
-            let pre_logs_integrated = Self::stats_shows_logs(pre_chunks[3]);
-            let pre_show_logs_tab = !pre_logs_integrated;
-            let show_tabs_row = Self::visible_tab_count(false, pre_show_logs_tab) > 1;
+            let pre_logs_integrated = Self::stats_shows_logs(Self::pre_tabbed_content_area(size));
+            let show_tabs_row = Self::visible_tab_count(false, !pre_logs_integrated) > 1;
+            let layout = Self::split_tabbed_layout(size, show_tabs_row);
 
-            let chunks = Layout::default()
-                .direction(Direction::Vertical)
-                .constraints([
-                    Constraint::Length(1),                                 // Header
-                    Constraint::Length(1),                                 // Top spacer
-                    Constraint::Length(if show_tabs_row { 1 } else { 0 }), // Tabs
-                    Constraint::Min(10),                                   // Content
-                    Constraint::Length(1),                                 // Help bar
-                ])
-                .split(size);
-            let content_rows = Layout::default()
-                .direction(Direction::Vertical)
-                .constraints([
-                    Constraint::Length(if show_tabs_row { 1 } else { 0 }), // Gap below tabs
-                    Constraint::Min(10),                                   // Content body
-                ])
-                .split(chunks[3]);
-            let content_area = content_rows[1];
-
-            self.render_title_bar(f, chunks[0], stats);
-            let logs_integrated = Self::stats_shows_logs(content_area);
-            let show_trajectory_tab = false;
-            let show_logs_tab = !logs_integrated;
-            let effective_tab = if self.current_tab == Tab::Trajectory {
-                Tab::Stats
-            } else if !show_logs_tab && self.current_tab == Tab::Logs {
-                Tab::Stats
-            } else {
-                self.current_tab
+            self.render_title_bar(f, layout.header, stats);
+            let logs_integrated = Self::stats_shows_logs(layout.content);
+            let visibility = TabVisibility {
+                show_trajectory_tab: false,
+                show_logs_tab: !logs_integrated,
+                logs_integrated,
             };
-            if Self::visible_tab_count(show_trajectory_tab, show_logs_tab) > 1 {
+            let effective_tab = self.effective_tab(visibility);
+            if Self::visible_tab_count(visibility.show_trajectory_tab, visibility.show_logs_tab) > 1
+            {
                 self.render_tabs(
                     f,
-                    chunks[2],
-                    show_trajectory_tab,
-                    show_logs_tab,
+                    layout.tabs,
+                    visibility.show_trajectory_tab,
+                    visibility.show_logs_tab,
                     effective_tab,
                 );
             }
 
-            if effective_tab == Tab::Logs && show_logs_tab {
-                self.render_logs_tab(f, content_area);
+            if effective_tab == Tab::Logs && visibility.show_logs_tab {
+                self.render_logs_tab(f, layout.content);
             } else {
-                // In hybrid mode keep stats(+maybe integrated logs) and trajectory visible together.
                 let content_chunks = Layout::default()
                     .direction(Direction::Horizontal)
                     .constraints([Constraint::Percentage(60), Constraint::Percentage(40)])
-                    .split(content_area);
+                    .split(layout.content);
 
                 self.render_stats_with_optional_logs(f, content_chunks[0], stats);
                 self.render_trajectory_tab(f, content_chunks[1], stats, true, false);
@@ -1482,73 +1451,46 @@ impl StatsTui {
 
             self.render_help_bar_context(
                 f,
-                chunks[4],
+                layout.help,
                 effective_tab,
                 logs_integrated,
-                show_trajectory_tab,
-                show_logs_tab,
+                visibility.show_trajectory_tab,
+                visibility.show_logs_tab,
                 true,
             );
             self.render_help_overlay(
                 f,
-                content_area,
+                layout.content,
                 self.help_overlay_items(
                     effective_tab,
                     logs_integrated,
-                    show_trajectory_tab,
-                    show_logs_tab,
+                    visibility.show_trajectory_tab,
+                    visibility.show_logs_tab,
                     effective_tab != Tab::Logs,
                     false,
                 ),
             );
         } else {
-            let pre_chunks = Layout::default()
-                .direction(Direction::Vertical)
-                .constraints([
-                    Constraint::Length(1), // Header
-                    Constraint::Length(1), // Top spacer
-                    Constraint::Length(1), // Tabs
-                    Constraint::Min(10),   // Content
-                    Constraint::Length(1), // Help bar
-                ])
-                .split(size);
-            let pre_logs_integrated = Self::stats_shows_logs(pre_chunks[3]);
+            let pre_logs_integrated = Self::stats_shows_logs(Self::pre_tabbed_content_area(size));
             let show_tabs_row = Self::visible_tab_count(true, !pre_logs_integrated) > 1;
 
-            let chunks = Layout::default()
-                .direction(Direction::Vertical)
-                .constraints([
-                    Constraint::Length(1),                                 // Header
-                    Constraint::Length(1),                                 // Top spacer
-                    Constraint::Length(if show_tabs_row { 1 } else { 0 }), // Tabs
-                    Constraint::Min(10),                                   // Content
-                    Constraint::Length(1),                                 // Help bar
-                ])
-                .split(size);
-            let content_rows = Layout::default()
-                .direction(Direction::Vertical)
-                .constraints([
-                    Constraint::Length(if show_tabs_row { 1 } else { 0 }), // Gap below tabs
-                    Constraint::Min(10),                                   // Content body
-                ])
-                .split(chunks[3]);
-            let content_area = content_rows[1];
+            let layout = Self::split_tabbed_layout(size, show_tabs_row);
 
-            self.render_title_bar(f, chunks[0], stats);
-            let logs_integrated = Self::stats_shows_logs(content_area);
-            let show_trajectory_tab = true;
-            let show_logs_tab = !logs_integrated;
-            let effective_tab = if !show_logs_tab && self.current_tab == Tab::Logs {
-                Tab::Stats
-            } else {
-                self.current_tab
+            self.render_title_bar(f, layout.header, stats);
+            let logs_integrated = Self::stats_shows_logs(layout.content);
+            let visibility = TabVisibility {
+                show_trajectory_tab: true,
+                show_logs_tab: !logs_integrated,
+                logs_integrated,
             };
-            if Self::visible_tab_count(show_trajectory_tab, show_logs_tab) > 1 {
+            let effective_tab = self.effective_tab(visibility);
+            if Self::visible_tab_count(visibility.show_trajectory_tab, visibility.show_logs_tab) > 1
+            {
                 self.render_tabs(
                     f,
-                    chunks[2],
-                    show_trajectory_tab,
-                    show_logs_tab,
+                    layout.tabs,
+                    visibility.show_trajectory_tab,
+                    visibility.show_logs_tab,
                     effective_tab,
                 );
             }
@@ -1557,7 +1499,7 @@ impl StatsTui {
                 Tab::Stats => {
                     let required_stats_width = self.estimate_stats_min_width(stats);
                     if self.should_show_trajectory_unlock_hint(size, effective_tab)
-                        && content_area.width
+                        && layout.content.width
                             > required_stats_width.saturating_add(TRAJECTORY_HINT_PANEL_WIDTH + 1)
                     {
                         let split = Layout::default()
@@ -1567,35 +1509,37 @@ impl StatsTui {
                                 Constraint::Length(1),
                                 Constraint::Length(TRAJECTORY_HINT_PANEL_WIDTH),
                             ])
-                            .split(content_area);
+                            .split(layout.content);
                         self.render_stats_with_optional_logs(f, split[0], stats);
                         self.render_vertical_divider(f, split[1]);
                         self.render_trajectory_unlock_hint(f, split[2], size);
                     } else {
-                        self.render_stats_with_optional_logs(f, content_area, stats);
+                        self.render_stats_with_optional_logs(f, layout.content, stats);
                     }
                 }
-                Tab::Trajectory => self.render_trajectory_tab(f, content_area, stats, false, true),
-                Tab::Logs => self.render_logs_tab(f, content_area),
+                Tab::Trajectory => {
+                    self.render_trajectory_tab(f, layout.content, stats, false, true)
+                }
+                Tab::Logs => self.render_logs_tab(f, layout.content),
             }
 
             self.render_help_bar_context(
                 f,
-                chunks[4],
+                layout.help,
                 effective_tab,
                 logs_integrated,
-                show_trajectory_tab,
-                show_logs_tab,
+                visibility.show_trajectory_tab,
+                visibility.show_logs_tab,
                 effective_tab == Tab::Trajectory,
             );
             self.render_help_overlay(
                 f,
-                content_area,
+                layout.content,
                 self.help_overlay_items(
                     effective_tab,
                     logs_integrated,
-                    show_trajectory_tab,
-                    show_logs_tab,
+                    visibility.show_trajectory_tab,
+                    visibility.show_logs_tab,
                     effective_tab == Tab::Trajectory,
                     false,
                 ),
