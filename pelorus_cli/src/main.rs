@@ -3,6 +3,8 @@ use anyhow::Error;
 use anyhow::anyhow;
 use clap::{CommandFactory, ValueEnum};
 use clap_complete::{Shell, generate};
+#[cfg(feature = "rat")]
+use marina::{Marina, ProgressReporter, ResolveResult, WriterProgress};
 #[cfg(feature = "mimalloc")]
 use mimalloc::MiMalloc;
 use pelorus_core::config::{ast_to_config, ast_to_config_with_user_usage};
@@ -68,6 +70,8 @@ use ros2_interfaces_jazzy_rkyv::{
 };
 use std::collections::VecDeque;
 use std::io::IsTerminal;
+#[cfg(feature = "rat")]
+use std::io::Write;
 
 use prelio_io::prelio::LocatedBufferView;
 #[cfg(feature = "ros2-client")]
@@ -134,7 +138,7 @@ pub struct OfflineArgs {
     #[arg(short, long)]
     pub config_path: Option<PathBuf>,
 
-    /// Path to the Bagfile (directory) as input. The Bagfile must be use the MCAP storage backend
+    /// Local bagfile path (file or directory), or a marina tag to resolve and optionally pull.
     pub bagfile_path: PathBuf,
 
     /// Path to the Minot binary
@@ -2025,6 +2029,127 @@ fn set_backend_from_runtime(
     shared_stats.set_backend_info(backend, accelerator, details);
 }
 
+#[cfg(feature = "rat")]
+fn canonicalize_bagfile_path(path: &std::path::Path) -> anyhow::Result<PathBuf> {
+    path.canonicalize().map_err(|e| {
+        anyhow!(
+            "Failed to canonicalize bagfile path '{}': {}",
+            path.display(),
+            e
+        )
+    })
+}
+
+#[cfg(feature = "rat")]
+fn confirm_marina_pull(input: &str, bag: &str, registry: &str) -> anyhow::Result<bool> {
+    if !std::io::stdin().is_terminal() || !std::io::stdout().is_terminal() {
+        return Err(anyhow!(
+            "Bagfile input '{}' is only available remotely as '{}' in registry '{}'. \
+This command is non-interactive, so pull it first with `marina pull {}` and retry.",
+            input,
+            bag,
+            registry,
+            bag
+        ));
+    }
+
+    print!(
+        "Bagfile input '{}' is not local. Pull '{}' from registry '{}' now? [y/N]: ",
+        input, bag, registry
+    );
+    std::io::stdout()
+        .flush()
+        .map_err(|e| anyhow!("Failed to flush prompt output: {}", e))?;
+
+    let mut answer = String::new();
+    std::io::stdin()
+        .read_line(&mut answer)
+        .map_err(|e| anyhow!("Failed to read pull confirmation: {}", e))?;
+
+    match answer.trim().to_ascii_lowercase().as_str() {
+        "y" | "yes" => Ok(true),
+        "" | "n" | "no" => Ok(false),
+        _ => Err(anyhow!(
+            "Invalid response '{}'. Please answer with 'y' or 'n'.",
+            answer.trim()
+        )),
+    }
+}
+
+#[cfg(feature = "rat")]
+fn resolve_offline_bagfile_path(input: &std::path::Path) -> anyhow::Result<PathBuf> {
+    if input.exists() {
+        if input.is_dir() || input.is_file() {
+            return canonicalize_bagfile_path(input);
+        }
+        return Err(anyhow!(
+            "Bagfile path '{}' exists but is neither a regular file nor a directory.",
+            input.display()
+        ));
+    }
+
+    let input_ref = input.to_string_lossy().to_string();
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|e| anyhow!("Failed to initialize async runtime for marina: {}", e))?;
+
+    let resolved_path = rt.block_on(async {
+        let mut marina =
+            Marina::load().map_err(|e| anyhow!("Failed to initialize marina: {}", e))?;
+        let resolved = marina.resolve_target(&input_ref, None).await.map_err(|e| {
+            anyhow!(
+                "Requested path or marina tag '{}' does not exist locally and could not be resolved \
+with the current marina registries: {}",
+                input_ref,
+                e
+            )
+        })?;
+
+        match resolved {
+            ResolveResult::LocalPath(path) | ResolveResult::Cached(path) => Ok(path),
+            ResolveResult::RemoteAvailable { bag, registry, .. } => {
+                let bag_display = bag.to_string();
+                let registry_name = registry.to_string();
+
+                if !confirm_marina_pull(&input_ref, &bag_display, &registry_name)? {
+                    return Err(anyhow!(
+                        "Bagfile input '{}' is remote-only ('{}' in '{}'). Pull it first with \
+`marina pull {}` and retry.",
+                        input_ref,
+                        bag_display,
+                        registry_name,
+                        bag_display
+                    ));
+                }
+
+                let mut stdout = std::io::stdout();
+                let mut sink = WriterProgress::new(&mut stdout);
+                let mut reporter = ProgressReporter::new(&mut sink);
+                marina
+                    .pull_exact_with_progress(&bag, Some(registry_name.as_str()), &mut reporter)
+                    .await
+                    .map_err(|e| {
+                        anyhow!(
+                            "Failed to pull marina tag '{}' from registry '{}': {}",
+                            bag_display,
+                            registry_name,
+                            e
+                        )
+                    })
+            }
+            ResolveResult::Ambiguous { candidates } => Err(anyhow!(
+                "Requested path or marina tag '{}' is ambiguous across {} registries. \
+Please specify a local path or resolve/pull with an explicit registry.",
+                input_ref,
+                candidates.len()
+            )),
+        }
+    })?;
+
+    canonicalize_bagfile_path(resolved_path.as_path())
+}
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Initialize our custom logger that works with both TUI and console
     init_logger();
@@ -2242,7 +2367,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
             let lidar_topic = &config.prelio_node_params.cloud_src_topic;
             let imu_topic = &config.prelio_node_params.imu_src_topic;
-            let bagfile_path_canon = offline_args.bagfile_path.canonicalize().unwrap();
+            let bagfile_path_canon = resolve_offline_bagfile_path(&offline_args.bagfile_path)?;
             let bagfile_path = bagfile_path_canon.clone().to_string_lossy().to_string();
             shared_stats.set_bagfile(
                 bagfile_path_canon

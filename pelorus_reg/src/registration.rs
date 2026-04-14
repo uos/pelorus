@@ -39,6 +39,66 @@ pub struct RegistrationState {
 }
 
 impl RegistrationState {
+    fn ensure_cloud_matches_backend(
+        backend: &ActiveBackend,
+        cloud: &LocatedBufferView<PointXYZIT>,
+    ) -> anyhow::Result<()> {
+        match backend {
+            ActiveBackend::Cpu => {
+                if !matches!(cloud, LocatedBufferView::Ram(_)) {
+                    anyhow::bail!("CPU backend requires RAM buffer");
+                }
+            }
+            #[cfg(feature = "cuda")]
+            ActiveBackend::Cuda(_) => {
+                if !matches!(cloud, LocatedBufferView::Cuda { .. }) {
+                    anyhow::bail!("CUDA backend requires CUDA buffer");
+                }
+            }
+            #[cfg(feature = "metal")]
+            ActiveBackend::Metal(_) => {
+                if !matches!(cloud, LocatedBufferView::Metal { .. }) {
+                    anyhow::bail!("Metal backend requires Metal buffer");
+                }
+            }
+            #[cfg(feature = "vulkan")]
+            ActiveBackend::Vulkan(_) => {
+                if !matches!(cloud, LocatedBufferView::Vulkan { .. }) {
+                    anyhow::bail!("Vulkan backend requires Vulkan buffer");
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn ensure_gpu_planes_buffer_matches_backend(
+        backend: &ActiveBackend,
+        #[allow(unused)] planes_gpu_buffer: &Option<GpuPlanesBuffer>,
+    ) -> anyhow::Result<()> {
+        match backend {
+            ActiveBackend::Cpu => {}
+            #[cfg(feature = "cuda")]
+            ActiveBackend::Cuda(_) => {
+                if !matches!(planes_gpu_buffer, Some(GpuPlanesBuffer::Cuda(_))) {
+                    anyhow::bail!("CUDA backend: GPU planes buffer not allocated");
+                }
+            }
+            #[cfg(feature = "metal")]
+            ActiveBackend::Metal(_) => {
+                if !matches!(planes_gpu_buffer, Some(GpuPlanesBuffer::Metal(_))) {
+                    anyhow::bail!("Metal backend: GPU planes buffer not allocated");
+                }
+            }
+            #[cfg(feature = "vulkan")]
+            ActiveBackend::Vulkan(_) => {
+                if !matches!(planes_gpu_buffer, Some(GpuPlanesBuffer::Vulkan(_))) {
+                    anyhow::bail!("Vulkan backend: GPU planes buffer not allocated");
+                }
+            }
+        }
+        Ok(())
+    }
+
     pub fn new(
         map: IVoxHashMap,
         imu_params: &ImuParameters,
@@ -85,13 +145,14 @@ impl RegistrationState {
         cloud: &LocatedBufferView<PointXYZIT>,
         pose: Isometry3<f64>,
         scan_id: usize,
-    ) {
+    ) -> anyhow::Result<()> {
         #[allow(irrefutable_let_patterns)]
         let LocatedBufferView::Ram(cloud) = cloud else {
-            panic!("CPU add_to_map called with non-RAM buffer");
+            anyhow::bail!("CPU add_to_map called with non-RAM buffer");
         };
 
         self.map.add(cloud, &pose, scan_id);
+        Ok(())
     }
 
     pub fn get_entire_map(&self) -> Vec<nalgebra::Point3<f32>> {
@@ -165,12 +226,13 @@ impl crate::Registration for RegistrationState {
         };
 
         if map_only {
+            Self::ensure_cloud_matches_backend(backend, cloud)?;
             match backend {
-                ActiveBackend::Cpu => self.add_to_map(cloud, imu_transform, scan_id),
+                ActiveBackend::Cpu => self.add_to_map(cloud, imu_transform, scan_id)?,
                 #[cfg(feature = "cuda")]
                 ActiveBackend::Cuda(stream) => {
                     let LocatedBufferView::Cuda { buffer } = cloud else {
-                        panic!("CUDA backend requires CUDA buffer");
+                        anyhow::bail!("CUDA backend requires CUDA buffer");
                     };
                     let transl = &imu_transform.translation.vector.into();
                     let rot_quat: pelorus_cuda::Quaternion = imu_transform.rotation.into();
@@ -179,7 +241,7 @@ impl crate::Registration for RegistrationState {
                 #[cfg(feature = "metal")]
                 ActiveBackend::Metal(stream) => {
                     let LocatedBufferView::Metal { buffer } = cloud else {
-                        panic!("Metal backend requires Metal buffer");
+                        anyhow::bail!("Metal backend requires Metal buffer");
                     };
                     let transl = &imu_transform.translation.vector.into();
                     let rot_quat: pelorus_metal::Quaternion = imu_transform.rotation.into();
@@ -188,7 +250,7 @@ impl crate::Registration for RegistrationState {
                 #[cfg(feature = "vulkan")]
                 ActiveBackend::Vulkan(stream) => {
                     let LocatedBufferView::Vulkan { buffer } = cloud else {
-                        panic!("Vulkan backend requires Vulkan buffer");
+                        anyhow::bail!("Vulkan backend requires Vulkan buffer");
                     };
                     let transl = &imu_transform.translation.vector.into();
                     let rot_quat: pelorus_vulkan::Quaternion = imu_transform.rotation.into();
@@ -273,6 +335,8 @@ impl crate::Registration for RegistrationState {
                     }
                 }
             }
+            Self::ensure_cloud_matches_backend(backend, cloud)?;
+            Self::ensure_gpu_planes_buffer_matches_backend(backend, &self.planes_gpu_buffer)?;
 
             let planes_cpu_buffer_ptr = std::ptr::addr_of_mut!(self.planes_cpu_buffer);
             let planes_gpu_buffer_ptr = std::ptr::addr_of_mut!(self.planes_gpu_buffer);
@@ -326,7 +390,9 @@ impl crate::Registration for RegistrationState {
                         ActiveBackend::Cpu => {
                             #[allow(irrefutable_let_patterns)]
                             let LocatedBufferView::Ram(cloud_pts) = cloud else {
-                                panic!("CPU backend requires RAM buffer");
+                                *valid = false;
+                                *num_measurements = 0;
+                                return;
                             };
                             let planes_buf = unsafe { &mut *planes_cpu_buffer_ptr };
                             planes_buf.clear();
@@ -400,10 +466,16 @@ impl crate::Registration for RegistrationState {
                             unsafe { planes_buf.set_len(cloud.len()) };
                             let planes_gpu = match unsafe { &mut *planes_gpu_buffer_ptr } {
                                 Some(GpuPlanesBuffer::Cuda(buf)) => buf,
-                                _ => panic!("CUDA backend: GPU planes buffer not allocated"),
+                                _ => {
+                                    *valid = false;
+                                    *num_measurements = 0;
+                                    return;
+                                }
                             };
                             let LocatedBufferView::Cuda { buffer } = cloud else {
-                                panic!("CUDA backend requires CUDA buffer");
+                                *valid = false;
+                                *num_measurements = 0;
+                                return;
                             };
                             let pose_q: pelorus_cuda::Quaternion = UnitQuaternion::from_matrix(
                                 &ekf_state.pose().rotation().matrix().clone(),
@@ -442,10 +514,16 @@ impl crate::Registration for RegistrationState {
                             unsafe { planes_buf.set_len(cloud.len()) };
                             let planes_gpu = match unsafe { &mut *planes_gpu_buffer_ptr } {
                                 Some(GpuPlanesBuffer::Metal(buf)) => buf,
-                                _ => panic!("Metal backend: GPU planes buffer not allocated"),
+                                _ => {
+                                    *valid = false;
+                                    *num_measurements = 0;
+                                    return;
+                                }
                             };
                             let LocatedBufferView::Metal { buffer } = cloud else {
-                                panic!("Metal backend requires Metal buffer");
+                                *valid = false;
+                                *num_measurements = 0;
+                                return;
                             };
                             let pose_q: pelorus_metal::Quaternion = {
                                 let mat: Matrix3<f64> =
@@ -485,10 +563,16 @@ impl crate::Registration for RegistrationState {
                             unsafe { planes_buf.set_len(cloud.len()) };
                             let planes_gpu = match unsafe { &mut *planes_gpu_buffer_ptr } {
                                 Some(GpuPlanesBuffer::Vulkan(buf)) => buf,
-                                _ => panic!("Vulkan backend: GPU planes buffer not allocated"),
+                                _ => {
+                                    *valid = false;
+                                    *num_measurements = 0;
+                                    return;
+                                }
                             };
                             let LocatedBufferView::Vulkan { buffer } = cloud else {
-                                panic!("Vulkan backend requires Vulkan buffer");
+                                *valid = false;
+                                *num_measurements = 0;
+                                return;
                             };
                             let pose_q: pelorus_vulkan::Quaternion = UnitQuaternion::from_matrix(
                                 &ekf_state.pose().rotation().matrix().clone(),
@@ -608,11 +692,11 @@ impl crate::Registration for RegistrationState {
         }
 
         match backend {
-            ActiveBackend::Cpu => self.add_to_map(cloud, t_w_l, scan_id),
+            ActiveBackend::Cpu => self.add_to_map(cloud, t_w_l, scan_id)?,
             #[cfg(feature = "cuda")]
             ActiveBackend::Cuda(stream) => {
                 let LocatedBufferView::Cuda { buffer } = cloud else {
-                    panic!("CUDA backend requires CUDA buffer");
+                    anyhow::bail!("CUDA backend requires CUDA buffer");
                 };
                 let rot_quat: pelorus_cuda::Quaternion = t_w_l.rotation.into();
                 pelorus_cuda::add_to_map(
@@ -627,7 +711,7 @@ impl crate::Registration for RegistrationState {
             #[cfg(feature = "metal")]
             ActiveBackend::Metal(stream) => {
                 let LocatedBufferView::Metal { buffer } = cloud else {
-                    panic!("Metal backend requires Metal buffer");
+                    anyhow::bail!("Metal backend requires Metal buffer");
                 };
                 let transl = &t_w_l.translation.vector.into();
                 let rot_quat: pelorus_metal::Quaternion = {
@@ -640,7 +724,7 @@ impl crate::Registration for RegistrationState {
             #[cfg(feature = "vulkan")]
             ActiveBackend::Vulkan(stream) => {
                 let LocatedBufferView::Vulkan { buffer } = cloud else {
-                    panic!("Vulkan backend requires Vulkan buffer");
+                    anyhow::bail!("Vulkan backend requires Vulkan buffer");
                 };
                 let transl = &t_w_l.translation.vector.into();
                 let rot_quat: pelorus_vulkan::Quaternion = {

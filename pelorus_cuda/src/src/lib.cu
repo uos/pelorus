@@ -213,13 +213,52 @@ void init_map(void *stream, u_int32_t map_capacity, float sensitivity,
 }
 
 void get_map(Point *points, uint32_t *points_size) {
-  get_map_impl(points, points_size);
+  try {
+    get_map_impl(points, points_size);
+  } catch (const std::exception &e) {
+    std::cerr << "Caught exception: " << e.what() << std::endl;
+    std::exit(1);
+  } catch (...) {
+    std::cerr << "Caught unknown exception." << std::endl;
+    std::exit(1);
+  }
 }
 
-uint32_t get_map_capacity() { return get_map_capacity_impl(); }
-uint32_t get_map_size()     { return get_map_size_impl(); }
+uint32_t get_map_capacity() {
+  try {
+    return get_map_capacity_impl();
+  } catch (const std::exception &e) {
+    std::cerr << "Caught exception: " << e.what() << std::endl;
+    std::exit(1);
+  } catch (...) {
+    std::cerr << "Caught unknown exception." << std::endl;
+    std::exit(1);
+  }
+}
 
-void cleanup_map() { cleanup_map_impl(); }
+uint32_t get_map_size() {
+  try {
+    return get_map_size_impl();
+  } catch (const std::exception &e) {
+    std::cerr << "Caught exception: " << e.what() << std::endl;
+    std::exit(1);
+  } catch (...) {
+    std::cerr << "Caught unknown exception." << std::endl;
+    std::exit(1);
+  }
+}
+
+void cleanup_map() {
+  try {
+    cleanup_map_impl();
+  } catch (const std::exception &e) {
+    std::cerr << "Caught exception: " << e.what() << std::endl;
+    std::exit(1);
+  } catch (...) {
+    std::cerr << "Caught unknown exception." << std::endl;
+    std::exit(1);
+  }
+}
 
 u_int32_t planes(void *stream, Point *cloud, uint32_t cloud_size,
                  Pose ekf_lidar_to_imu, Pose ekf_pose, PointNormal *out_buff) {
@@ -238,37 +277,77 @@ u_int32_t planes(void *stream, Point *cloud, uint32_t cloud_size,
 
 // CUDA Event timing functions
 void *cupcl_event_create() {
-  cudaEvent_t *event = new cudaEvent_t;
-  RM_CUDA_CHECK(cudaEventCreate(event));
-  return (void *)event;
+  try {
+    cudaEvent_t *event = new cudaEvent_t;
+    RM_CUDA_CHECK(cudaEventCreate(event));
+    return (void *)event;
+  } catch (const std::exception &e) {
+    std::cerr << "Caught exception: " << e.what() << std::endl;
+    std::exit(1);
+  } catch (...) {
+    std::cerr << "Caught unknown exception." << std::endl;
+    std::exit(1);
+  }
 }
 
 void cupcl_event_destroy(void *event) {
-  if (event != NULL) {
-    cudaEvent_t *evt = (cudaEvent_t *)event;
-    cudaEventDestroy(*evt);
-    delete evt;
+  try {
+    if (event != NULL) {
+      cudaEvent_t *evt = (cudaEvent_t *)event;
+      cudaEventDestroy(*evt);
+      delete evt;
+    }
+  } catch (const std::exception &e) {
+    std::cerr << "Caught exception: " << e.what() << std::endl;
+    std::exit(1);
+  } catch (...) {
+    std::cerr << "Caught unknown exception." << std::endl;
+    std::exit(1);
   }
 }
 
 void cupcl_event_record(void *event, void *stream) {
-  rm::CudaStream *stream_ = (rm::CudaStream *)stream;
-  cudaEvent_t *evt = (cudaEvent_t *)event;
-  RM_CUDA_CHECK(cudaEventRecord(*evt, stream_->handle()));
+  try {
+    rm::CudaStream *stream_ = (rm::CudaStream *)stream;
+    cudaEvent_t *evt = (cudaEvent_t *)event;
+    RM_CUDA_CHECK(cudaEventRecord(*evt, stream_->handle()));
+  } catch (const std::exception &e) {
+    std::cerr << "Caught exception: " << e.what() << std::endl;
+    std::exit(1);
+  } catch (...) {
+    std::cerr << "Caught unknown exception." << std::endl;
+    std::exit(1);
+  }
 }
 
 float cupcl_event_elapsed(void *start, void *stop) {
-  cudaEvent_t *start_evt = (cudaEvent_t *)start;
-  cudaEvent_t *stop_evt = (cudaEvent_t *)stop;
-  float ms = 0.0f;
-  RM_CUDA_CHECK(cudaEventElapsedTime(&ms, *start_evt, *stop_evt));
-  return ms;
+  try {
+    cudaEvent_t *start_evt = (cudaEvent_t *)start;
+    cudaEvent_t *stop_evt = (cudaEvent_t *)stop;
+    float ms = 0.0f;
+    RM_CUDA_CHECK(cudaEventElapsedTime(&ms, *start_evt, *stop_evt));
+    return ms;
+  } catch (const std::exception &e) {
+    std::cerr << "Caught exception: " << e.what() << std::endl;
+    std::exit(1);
+  } catch (...) {
+    std::cerr << "Caught unknown exception." << std::endl;
+    std::exit(1);
+  }
 }
 
 int cupcl_event_query(void *event) {
-  cudaEvent_t *evt = (cudaEvent_t *)event;
-  cudaError_t err = cudaEventQuery(*evt);
-  return (err == cudaSuccess) ? 1 : 0;
+  try {
+    cudaEvent_t *evt = (cudaEvent_t *)event;
+    cudaError_t err = cudaEventQuery(*evt);
+    return (err == cudaSuccess) ? 1 : 0;
+  } catch (const std::exception &e) {
+    std::cerr << "Caught exception: " << e.what() << std::endl;
+    std::exit(1);
+  } catch (...) {
+    std::cerr << "Caught unknown exception." << std::endl;
+    std::exit(1);
+  }
 }
 
 } // extern "C"

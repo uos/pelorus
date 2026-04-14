@@ -120,8 +120,6 @@ struct CudaTimingState {
     planes_stop: *mut std::os::raw::c_void,
     add_to_map_start: *mut std::os::raw::c_void,
     add_to_map_stop: *mut std::os::raw::c_void,
-    pending_planes: std::sync::atomic::AtomicBool,
-    pending_add_to_map: std::sync::atomic::AtomicBool,
 }
 
 unsafe impl Send for CudaTimingState {}
@@ -146,65 +144,14 @@ impl Drop for CudaTimingState {
     }
 }
 
-fn get_timing_state() -> &'static std::sync::Mutex<CudaTimingState> {
-    TIMING_STATE.get_or_init(|| {
-        std::sync::Mutex::new(CudaTimingState {
-            planes_start: unsafe { ffi::cupcl_event_create() },
-            planes_stop: unsafe { ffi::cupcl_event_create() },
-            add_to_map_start: unsafe { ffi::cupcl_event_create() },
-            add_to_map_stop: unsafe { ffi::cupcl_event_create() },
-            pending_planes: std::sync::atomic::AtomicBool::new(false),
-            pending_add_to_map: std::sync::atomic::AtomicBool::new(false),
-        })
-    })
-}
-
 /// Try to retrieve GPU timing measurements from previous operations.
 /// Returns (planes_ms, add_to_map_ms) if timing results are available.
 /// This is non-blocking - returns None if events are not ready.
 pub fn try_get_gpu_timings() -> Option<(f64, f64)> {
-    let state = get_timing_state().lock().unwrap();
-
-    let mut planes_ms = None;
-    let mut add_to_map_ms = None;
-
-    // Check planes timing
-    if state
-        .pending_planes
-        .load(std::sync::atomic::Ordering::Acquire)
-    {
-        let ready = unsafe { ffi::cupcl_event_query(state.planes_stop) };
-        if ready != 0 {
-            let ms = unsafe { ffi::cupcl_event_elapsed(state.planes_start, state.planes_stop) };
-            planes_ms = Some(ms as f64);
-            state
-                .pending_planes
-                .store(false, std::sync::atomic::Ordering::Release);
-        }
-    }
-
-    // Check add_to_map timing
-    if state
-        .pending_add_to_map
-        .load(std::sync::atomic::Ordering::Acquire)
-    {
-        let ready = unsafe { ffi::cupcl_event_query(state.add_to_map_stop) };
-        if ready != 0 {
-            let ms =
-                unsafe { ffi::cupcl_event_elapsed(state.add_to_map_start, state.add_to_map_stop) };
-            add_to_map_ms = Some(ms as f64);
-            state
-                .pending_add_to_map
-                .store(false, std::sync::atomic::Ordering::Release);
-        }
-    }
-
-    match (planes_ms, add_to_map_ms) {
-        (Some(p), Some(a)) => Some((p, a)),
-        (Some(p), None) => Some((p, 0.0)),
-        (None, Some(a)) => Some((0.0, a)),
-        (None, None) => None,
-    }
+    // Disabled: CUDA event timing can hit invalid-resource-handle errors
+    // under some runtime/context combinations. Keep algorithm behavior
+    // unchanged by reporting no external timing data.
+    None
 }
 
 #[derive(Debug, Clone)]
@@ -404,9 +351,7 @@ pub fn add_to_map(
         orientation: *ekf_pose_r,
     };
     let my_stream = stream.stream.raw;
-    let timing_state = get_timing_state().lock().unwrap();
     unsafe {
-        ffi::cupcl_event_record(timing_state.add_to_map_start, my_stream);
         ffi::add_to_map(
             my_stream,
             cloud.gpu_ptr as *mut ffi::Point,
@@ -414,11 +359,7 @@ pub fn add_to_map(
             pose,
             scan_id as u32,
         );
-        ffi::cupcl_event_record(timing_state.add_to_map_stop, my_stream);
     }
-    timing_state
-        .pending_add_to_map
-        .store(true, std::sync::atomic::Ordering::Release);
 }
 pub fn get_map_size() -> u32 {
     unsafe { ffi::get_map_size() }
@@ -493,22 +434,15 @@ pub fn planes_cuda(
 
     let size = {
         let my_stream = stream.stream.raw;
-        let timing_state = get_timing_state().lock().unwrap();
         unsafe {
-            ffi::cupcl_event_record(timing_state.planes_start, my_stream);
-            let size = ffi::planes(
+            ffi::planes(
                 my_stream,
                 cloud.gpu_ptr as *mut ffi::Point,
                 cloud.n as u32,
                 lidar_to_imu,
                 pose,
                 out_buff_gpu.gpu_ptr as *mut ffi::PointNormal,
-            );
-            ffi::cupcl_event_record(timing_state.planes_stop, my_stream);
-            timing_state
-                .pending_planes
-                .store(true, std::sync::atomic::Ordering::Release);
-            size
+            )
         }
     };
     let downloaded = (size as usize).min(out_buff.len()).min(out_buff_gpu.n);

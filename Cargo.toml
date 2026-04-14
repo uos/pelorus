@@ -104,6 +104,7 @@ morton-encoding = "2.0.1"
 rustc-hash = "2.1.1"
 plotters = "0.3"
 petname = "2.0"
+marina = "0.2.2"
 clap_complete = "4.5.65"
 objc2 = "0.6"
 objc2-metal = { version = "0.3", features = [

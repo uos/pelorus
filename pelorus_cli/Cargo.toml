@@ -45,6 +45,7 @@ crossterm = "0.28"
 num_cpus = "1.16"
 libc = "0.2"
 rayon.workspace = true
+marina = { workspace = true, optional = true }
 clap_complete.workspace = true
 
 [[bin]]
@@ -52,7 +53,9 @@ name = "pelorus"
 path = "src/main.rs"
 
 [features]
-default = ["offline"] # rerun needs newer rustc versions, so only enable it manually
+default = [
+  "offline",
+] # rerun needs newer rustc versions, so only enable it manually
 
 # -#-#-#-#-#- Sensor Communication -#-#-#-#-#-
 
@@ -67,10 +70,10 @@ ros2-rust = ["ros2-client"]
 
 # Custom Rust-only pub/sub implementation used in my offline-mapping, development and debugging workflow (see https://uos.github.io/minot/#native-publishsubscribe).
 mt_pubsub = [
-    "dep:mt_pubsub",
-    "dep:tokio",
-    "dep:ros2-interfaces-jazzy-rkyv",
-    "prelio_io/mt_pubsub",
+  "dep:mt_pubsub",
+  "dep:tokio",
+  "dep:ros2-interfaces-jazzy-rkyv",
+  "prelio_io/mt_pubsub",
 ]
 
 # -#-#-#-#-#- Performance and Methods -#-#-#-#-#-
@@ -79,10 +82,29 @@ mt_pubsub = [
 downsample = ["prelio_io/downsample"]
 
 # Build and use CUDA accelerations
-cuda = ["prelio_io/cuda", "dep:pelorus_cuda", "pelorus_reg/cuda", "pelorus_cuda/cuda_enable"]
+cuda = [
+  "prelio_io/cuda",
+  "dep:pelorus_cuda",
+  "pelorus_reg/cuda",
+  "pelorus_cuda/cuda_enable",
+]
 cuda-sort-thrust = ["cuda", "pelorus_cuda/cuda_sort_thrust"]
-metal = ["prelio_io/metal", "prelio/metal", "dep:pelorus_metal", "pelorus_reg/metal", "pelorus_metal/metal_available", "pelorus_metal/metal_enable"]
-vulkan = ["prelio_io/vulkan", "prelio/vulkan", "dep:pelorus_vulkan", "pelorus_reg/vulkan", "pelorus_vulkan/vulkan_available", "pelorus_vulkan/vulkan_enable"]
+metal = [
+  "prelio_io/metal",
+  "prelio/metal",
+  "dep:pelorus_metal",
+  "pelorus_reg/metal",
+  "pelorus_metal/metal_available",
+  "pelorus_metal/metal_enable",
+]
+vulkan = [
+  "prelio_io/vulkan",
+  "prelio/vulkan",
+  "dep:pelorus_vulkan",
+  "pelorus_reg/vulkan",
+  "pelorus_vulkan/vulkan_available",
+  "pelorus_vulkan/vulkan_enable",
+]
 
 # Lidar + IMU with naiive kdtree for neighborsearch. Currently slow and unstable. Use only with good reason.
 kdtree = ["pelorus_reg/nn_kdt"]
@@ -115,13 +137,13 @@ no-viz = []
 dev = ["offline", "rerun", "map"]
 
 # Use variable syncing for triggers
-rat = ["dep:mt_rat", "dep:tokio", "prelio_io/rat"]
+rat = ["dep:marina", "dep:mt_rat", "dep:tokio", "prelio_io/rat"]
 
 # Use native ROS2 as pub/sub system
 ros2-client = [
-    "dep:ros2-client",
-    "dep:ros2-interfaces-jazzy-serde",
-    "prelio_io/ros2-client",
+  "dep:ros2-client",
+  "dep:ros2-interfaces-jazzy-serde",
+  "prelio_io/ros2-client",
 ]
 
 # Use rclc bindings as pub/sub system
@@ -135,7 +157,7 @@ ratslang.workspace = true
 
 [package.metadata.deb]
 name = "pelorus"
-depends = "minot (>= 0.5.0-1), minot (<< 0.6.0~)"
+depends = "minot (>= 0.7.0), minot (<< 0.8.0~)"
 section = "science"
 priority = "optional"
 assets = [["target/release/pelorus", "usr/bin/pelorus", "755"]]

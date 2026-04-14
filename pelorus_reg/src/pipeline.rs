@@ -9,7 +9,7 @@ use pelorus_core::{
     LioConfig, LivoxMid360Point, LivoxPoint, OdomMsg, OusterPoint, PointXYZIT,
     PrelioProcessedCloud, RobosensePoint, VelodynePoint,
 };
-use prelio::Prelio;
+use prelio::{LocatedBufferView, Prelio};
 use spole::{IVoxHashMap, IVoxNearbyType};
 
 pub struct Pipeline {
@@ -40,6 +40,51 @@ pub struct PelorusOutput {
 }
 
 impl Pipeline {
+    fn ensure_backend_map_initialized(&self) {
+        match &self.active_backend {
+            ActiveBackend::Cpu => {}
+            #[cfg(feature = "cuda")]
+            ActiveBackend::Cuda(stream) => {
+                if pelorus_cuda::get_map_size() == 0 {
+                    pelorus_cuda::init_map(
+                        stream,
+                        self.config.map_capacity,
+                        self.config.map_resolution as f32,
+                        self.config.dist_update_sensitivity,
+                        (self.config.map_resolution as f32) / 4.0,
+                        pelorus_cuda::NeighborType::Neighbor26,
+                    );
+                }
+            }
+            #[cfg(feature = "metal")]
+            ActiveBackend::Metal(stream) => {
+                if pelorus_metal::get_map_size() == 0 {
+                    pelorus_metal::init_map(
+                        stream,
+                        self.config.map_capacity,
+                        self.config.map_resolution as f32,
+                        self.config.dist_update_sensitivity,
+                        (self.config.map_resolution as f32) / 4.0,
+                        pelorus_metal::NeighborType::Neighbor26,
+                    );
+                }
+            }
+            #[cfg(feature = "vulkan")]
+            ActiveBackend::Vulkan(stream) => {
+                if pelorus_vulkan::get_map_size() == 0 {
+                    pelorus_vulkan::init_map(
+                        stream,
+                        self.config.map_capacity,
+                        self.config.map_resolution as f32,
+                        self.config.dist_update_sensitivity,
+                        (self.config.map_resolution as f32) / 4.0,
+                        pelorus_vulkan::NeighborType::Neighbor26,
+                    );
+                }
+            }
+        }
+    }
+
     pub fn new(config: &LioConfig) -> Self {
         let ext_lidar_to_imu = Isometry3::from_parts(
             Translation3::new(
@@ -156,10 +201,26 @@ impl Pipeline {
         &self,
         processed: PrelioProcessedCloud,
         ready_for_next: Option<&std::sync::mpsc::Sender<()>>,
-    ) -> Option<PelorusOutput> {
+    ) -> anyhow::Result<Option<PelorusOutput>> {
+        self.ensure_backend_map_initialized();
+
         let mut eval = processed.runtime_eval;
         let lidar_timestamp = prelio::timestamp_to_secs(&processed.end_of_frame_time);
-        let cloud_view = prelio::LocatedBufferView::Ram(processed.cloud.clone()); // TODO this must somehow work without this clone
+        let cloud_view = match &self.active_backend {
+            ActiveBackend::Cpu => LocatedBufferView::Ram(processed.cloud.clone()), // TODO this must somehow work without this clone
+            #[cfg(feature = "cuda")]
+            ActiveBackend::Cuda(stream) => {
+                LocatedBufferView::copy_from_slice_cuda(stream, &processed.cloud)
+            }
+            #[cfg(feature = "metal")]
+            ActiveBackend::Metal(stream) => {
+                LocatedBufferView::copy_from_slice_metal(stream, &processed.cloud)
+            }
+            #[cfg(feature = "vulkan")]
+            ActiveBackend::Vulkan(stream) => {
+                LocatedBufferView::copy_from_slice_vulkan(stream, &processed.cloud)
+            }
+        };
 
         let register_result = {
             let mut map = self.map.lock().unwrap();
@@ -179,13 +240,16 @@ impl Pipeline {
                     let twist_cov_map = map.get_twist_covariance_6x6();
                     Some((res, state, pose_cov_map, twist_cov_map))
                 }
-                _ => None,
+                Ok(None) => None,
+                Err(e) => return Err(e),
             }
-        }?;
+        };
 
-        let (registration, state, pose_cov_map, twist_cov_map) = register_result;
+        let Some((registration, state, pose_cov_map, twist_cov_map)) = register_result else {
+            return Ok(None);
+        };
 
-        Some(PelorusOutput {
+        Ok(Some(PelorusOutput {
             scan_id: processed.scan_id,
             timestamp: processed.end_of_frame_time,
             pose: registration.pose,
@@ -195,7 +259,7 @@ impl Pipeline {
             twist_covariance: twist_cov_map,
             cloud: processed.passthrough.unwrap_or(processed.cloud),
             frame_id: processed.header.frame_id,
-        })
+        }))
     }
 
     pub fn create_prelio(

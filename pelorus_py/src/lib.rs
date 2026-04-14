@@ -147,7 +147,7 @@ fn processing_thread_main(thread: ProcessingThread) {
             .pipeline
             .register_processed_cloud(processed, Some(&thread.ready_for_next))
         {
-            Some(output) => {
+            Ok(Some(output)) => {
                 dispatch_output(
                     output,
                     &thread.odom_callback,
@@ -158,7 +158,7 @@ fn processing_thread_main(thread: ProcessingThread) {
                     &thread.pipeline.config,
                 );
             }
-            None => {
+            Ok(None) => {
                 // Build fallback from current map state (no registered cloud available)
                 if let Ok(map_guard) = thread.pipeline.map().lock() {
                     let state = map_guard.get_state();
@@ -187,6 +187,10 @@ fn processing_thread_main(thread: ProcessingThread) {
                         &thread.pipeline.config,
                     );
                 }
+            }
+            Err(e) => {
+                error!("fatal registration error; stopping processing thread: {e:#}");
+                break;
             }
         }
     }

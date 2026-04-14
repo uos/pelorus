@@ -249,28 +249,35 @@ fn processing_thread_main(thread: ProcessingThread) {
             continue;
         }
 
-        if let Some(output) = thread
+        match thread
             .pipeline
             .register_processed_cloud(processed, Some(&thread.ready_for_next))
         {
-            // Clone the Arc while holding the lock, then call outside it to avoid deadlocks.
-            let cb_opt = thread
-                .callback
-                .lock()
-                .ok()
-                .and_then(|g| g.as_ref().map(Arc::clone));
+            Ok(Some(output)) => {
+                // Clone the Arc while holding the lock, then call outside it to avoid deadlocks.
+                let cb_opt = thread
+                    .callback
+                    .lock()
+                    .ok()
+                    .and_then(|g| g.as_ref().map(Arc::clone));
 
-            if let Some(cb) = cb_opt {
-                cb(to_odometry(
-                    &output,
-                    &thread.config,
-                    &thread.ext_lidar_to_imu,
-                ));
-            } else {
-                sent_count += 1;
-                if let Err(e) = thread.result_sender.send(output) {
-                    error!("failed to send odometry #{sent_count}: {e}");
+                if let Some(cb) = cb_opt {
+                    cb(to_odometry(
+                        &output,
+                        &thread.config,
+                        &thread.ext_lidar_to_imu,
+                    ));
+                } else {
+                    sent_count += 1;
+                    if let Err(e) = thread.result_sender.send(output) {
+                        error!("failed to send odometry #{sent_count}: {e}");
+                    }
                 }
+            }
+            Ok(None) => {}
+            Err(e) => {
+                error!("fatal registration error; stopping processing thread: {e:#}");
+                break;
             }
         }
     }
