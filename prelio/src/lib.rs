@@ -26,6 +26,12 @@ use anyhow::Result;
 use ros_pointcloud2::prelude::*;
 pub use ros_pointcloud2::ros::TimeMsg;
 
+const PREPROC_QUEUE_CAP: usize = 8;
+const IMU_QUEUE_CAP: usize = 16_384;
+const ODOM_QUEUE_CAP: usize = 8_192;
+const FILTERED_CLOUD_QUEUE_CAP: usize = 8;
+const SYNCED_CLOUD_QUEUE_CAP: usize = 8;
+
 #[derive(Clone)]
 pub struct LabeledPointCloud2Msg {
     pub scan_id: u64,
@@ -605,9 +611,9 @@ fn filter_downsample<const N: usize, P: PointXYZITimestamp<N>>(
 }
 
 pub struct Prelio {
-    preproc_sender: Option<std::sync::mpsc::Sender<LabeledPointCloud2Msg>>,
-    imu_sender: Option<std::sync::mpsc::Sender<ImuMsg>>,
-    odom_sender: Option<std::sync::mpsc::Sender<OdomMsg>>,
+    preproc_sender: Option<std::sync::mpsc::SyncSender<LabeledPointCloud2Msg>>,
+    imu_sender: Option<std::sync::mpsc::SyncSender<ImuMsg>>,
+    odom_sender: Option<std::sync::mpsc::SyncSender<OdomMsg>>,
     synced_receiver: Option<std::sync::mpsc::Receiver<PrelioProcessedCloud>>,
     last_cloud_time: f64,
     imu_filter_fusion: ImuMadgwick,
@@ -800,14 +806,15 @@ impl Prelio {
             None => None,
         };
 
-        let (preproc_tx, preproc_rx) = std::sync::mpsc::channel::<LabeledPointCloud2Msg>();
-        let (imu_tx, imu_rx) = std::sync::mpsc::channel();
+        let (preproc_tx, preproc_rx) =
+            std::sync::mpsc::sync_channel::<LabeledPointCloud2Msg>(PREPROC_QUEUE_CAP);
+        let (imu_tx, imu_rx) = std::sync::mpsc::sync_channel(IMU_QUEUE_CAP);
         let (odom_tx, odom_rx): (
-            std::sync::mpsc::Sender<OdomMsg>,
+            std::sync::mpsc::SyncSender<OdomMsg>,
             std::sync::mpsc::Receiver<OdomMsg>,
-        ) = std::sync::mpsc::channel();
+        ) = std::sync::mpsc::sync_channel(ODOM_QUEUE_CAP);
         // filtered_cloud carries: (cloud_meta (downsampled, output, first_ts, last_ts, header), scan_id, runtime_eval)
-        let (filtered_cloud_tx, filtered_cloud_rx) = std::sync::mpsc::channel::<(
+        let (filtered_cloud_tx, filtered_cloud_rx) = std::sync::mpsc::sync_channel::<(
             (
                 Vec<PointXYZIT>,
                 Option<Vec<PointXYZIT>>,
@@ -817,8 +824,9 @@ impl Prelio {
             ),
             u64,
             RuntimeEvaluator,
-        )>();
-        let (synced_cloud_imu_tx, synced_cloud_imu_rx) = std::sync::mpsc::channel();
+        )>(FILTERED_CLOUD_QUEUE_CAP);
+        let (synced_cloud_imu_tx, synced_cloud_imu_rx) =
+            std::sync::mpsc::sync_channel(SYNCED_CLOUD_QUEUE_CAP);
 
         // test parallel boundaries
         // #[cfg(feature = "parallel")]
@@ -1018,10 +1026,15 @@ impl Prelio {
         let scan_id = SCAN_ID_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let labeled = LabeledPointCloud2Msg { scan_id, cloud };
         match self.preproc_sender.as_ref() {
-            Some(sender) => match sender.send(labeled) {
+            Some(sender) => match sender.try_send(labeled) {
                 Ok(_) => {}
-                Err(e) => {
-                    error!("Error sending pointcloud: {}", e);
+                Err(std::sync::mpsc::TrySendError::Full(_)) => {
+                    if should_log_once_default("drop_pointcloud_preproc_queue_full") {
+                        warn!("Dropping pointcloud: preprocessing queue is full");
+                    }
+                }
+                Err(std::sync::mpsc::TrySendError::Disconnected(_)) => {
+                    error!("Error sending pointcloud: preprocessing pipeline is disconnected");
                 }
             },
             None => {
@@ -1092,12 +1105,20 @@ impl Prelio {
         // Add to buffer
         let imu_data = imu.clone();
         match self.imu_sender.as_ref() {
-            Some(sender) => {
-                if sender.send(imu_data).is_err() {
+            Some(sender) => match sender.try_send(imu_data) {
+                Ok(_) => {}
+                Err(std::sync::mpsc::TrySendError::Full(_)) => {
+                    if should_log_once_default("drop_imu_queue_full") {
+                        warn!("Dropping IMU message: IMU queue is full");
+                    }
                     self.runtime_eval.stop("imu_pre").unwrap();
                     return None;
                 }
-            }
+                Err(std::sync::mpsc::TrySendError::Disconnected(_)) => {
+                    self.runtime_eval.stop("imu_pre").unwrap();
+                    return None;
+                }
+            },
             None => {
                 self.runtime_eval.stop("imu_pre").unwrap();
                 return None;
@@ -1111,11 +1132,17 @@ impl Prelio {
     /// Add an odometry message to the buffer for synchronization with lidar.
     pub fn add_odom(&mut self, odom: OdomMsg) {
         match self.odom_sender.as_ref() {
-            Some(sender) => {
-                if let Err(e) = sender.send(odom) {
-                    log::error!("Error while sending odom message to sync worker: {e}");
+            Some(sender) => match sender.try_send(odom) {
+                Ok(_) => {}
+                Err(std::sync::mpsc::TrySendError::Full(_)) => {
+                    if should_log_once_default("drop_odom_queue_full") {
+                        warn!("Dropping odometry message: odometry queue is full");
+                    }
                 }
-            }
+                Err(std::sync::mpsc::TrySendError::Disconnected(_)) => {
+                    log::error!("Error while sending odom message to sync worker: disconnected");
+                }
+            },
             None => {
                 debug!("Odom ignored: sync worker is shutting down");
             }
@@ -1141,7 +1168,7 @@ impl Prelio {
         )>,
         imu_receiver: Option<std::sync::mpsc::Receiver<ImuMsg>>,
         odom_receiver: std::sync::mpsc::Receiver<OdomMsg>,
-        synced_sender: &std::sync::mpsc::Sender<PrelioProcessedCloud>,
+        synced_sender: &std::sync::mpsc::SyncSender<PrelioProcessedCloud>,
         imu_intrinsic_calibration_given: bool,
         mut imu_process: ImuProcess,
         imu_pose_prediction_undistort: Option<Box<ImuPredictorUndistort>>,

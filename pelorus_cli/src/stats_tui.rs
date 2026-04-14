@@ -24,7 +24,7 @@ use std::time::Instant;
 use pelorus_core::LidarVendor;
 
 const MAX_TRAJECTORY_POINTS: usize = 10000;
-const MAX_LOG_ENTRIES: usize = 1000;
+const MAX_LOG_ENTRIES: usize = 10000;
 const FOLLOW_VIEW_RANGE_STEP_M: f64 = 5.0;
 const FOLLOW_VIEW_RANGE_MIN_M: f64 = 5.0;
 const FOLLOW_VIEW_RANGE_MAX_M: f64 = 200.0;
@@ -1729,7 +1729,7 @@ impl StatsTui {
             .direction(Direction::Vertical)
             .constraints([
                 Constraint::Length(4), // Header info
-                Constraint::Length(9), // State
+                Constraint::Length(7), // State
                 Constraint::Length(4), // Navigation
                 Constraint::Min(6),    // Performance
             ])
