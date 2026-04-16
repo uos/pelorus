@@ -30,7 +30,7 @@ use anyhow::Result;
 use ros_pointcloud2::prelude::*;
 pub use ros_pointcloud2::ros::TimeMsg;
 
-const PREPROC_QUEUE_CAP: usize = 16;
+const PREPROC_QUEUE_CAP: usize = 4;
 const IMU_QUEUE_CAP: usize = 16_384;
 const ODOM_QUEUE_CAP: usize = 8_192;
 const FILTERED_CLOUD_QUEUE_CAP: usize = 8;
@@ -617,6 +617,7 @@ fn filter_downsample<const N: usize, P: PointXYZITimestamp<N>>(
 pub struct Prelio {
     preproc_sender: Option<std::sync::mpsc::SyncSender<LabeledPointCloud2Msg>>,
     preproc_queue_depth: Arc<AtomicUsize>,
+    last_preproc_warning_message: Option<String>,
     imu_sender: Option<std::sync::mpsc::SyncSender<ImuMsg>>,
     odom_sender: Option<std::sync::mpsc::SyncSender<OdomMsg>>,
     synced_receiver: Option<std::sync::mpsc::Receiver<PrelioProcessedCloud>>,
@@ -992,6 +993,7 @@ impl Prelio {
             synced_receiver: Some(synced_cloud_imu_rx),
             preproc_sender: Some(preproc_tx),
             preproc_queue_depth,
+            last_preproc_warning_message: None,
             last_cloud_time: 0.0,
             imu_filter_fusion: ImuMadgwick::new(gravity),
             last_imu_time: 0.0,
@@ -1042,18 +1044,33 @@ impl Prelio {
             Some(sender) => match sender.try_send(labeled) {
                 Ok(_) => {
                     let queue_depth = self.preproc_queue_depth.fetch_add(1, Ordering::Relaxed) + 1;
-                    if queue_depth * 4 > PREPROC_QUEUE_CAP * 3
-                        && should_log_once_default("pointcloud_preproc_queue_above_75_pct")
-                    {
-                        warn!(
+                    if queue_depth * 4 > PREPROC_QUEUE_CAP * 3 {
+                        let warning_message = format!(
                             "Pointcloud preprocessing queue is more than 75% full ({}/{})",
                             queue_depth, PREPROC_QUEUE_CAP
                         );
+                        if self.last_preproc_warning_message.as_deref()
+                            != Some(warning_message.as_str())
+                            && should_log_once_default("pointcloud_preproc_queue_state_change")
+                        {
+                            warn!("{warning_message}");
+                            self.last_preproc_warning_message = Some(warning_message);
+                        }
+                    } else {
+                        self.last_preproc_warning_message = None;
                     }
                 }
                 Err(std::sync::mpsc::TrySendError::Full(_)) => {
-                    if should_log_once_default("drop_pointcloud_preproc_queue_full") {
-                        warn!("Dropping pointcloud: preprocessing queue is full");
+                    let warning_message = format!(
+                        "Dropping pointcloud: preprocessing queue is full ({}/{})",
+                        PREPROC_QUEUE_CAP, PREPROC_QUEUE_CAP
+                    );
+                    if self.last_preproc_warning_message.as_deref()
+                        != Some(warning_message.as_str())
+                        && should_log_once_default("pointcloud_preproc_queue_state_change")
+                    {
+                        warn!("{warning_message}");
+                        self.last_preproc_warning_message = Some(warning_message);
                     }
                 }
                 Err(std::sync::mpsc::TrySendError::Disconnected(_)) => {

@@ -149,7 +149,13 @@ pub struct OfflineArgs {
     /// If not provided, trajectory is not exported.
     /// If provided without value, automatically generates a filename.
     /// If provided with a path, exports to that exact location.
-    #[arg(short, long, value_name = "PATH", num_args = 0..=1)]
+    #[arg(
+        short,
+        long,
+        value_name = "PATH",
+        num_args = 0..=1,
+        default_missing_value = ""
+    )]
     pub export_trajectory: Option<String>,
 
     /// Force CPU-only processing regardless of available GPU backends.
@@ -168,7 +174,13 @@ pub struct ConfigArgs {
     /// If not provided, trajectory is not exported.
     /// If provided without value, automatically generates a filename.
     /// If provided with a path, exports to that exact location.
-    #[arg(short, long, value_name = "PATH", num_args = 0..=1)]
+    #[arg(
+        short,
+        long,
+        value_name = "PATH",
+        num_args = 0..=1,
+        default_missing_value = ""
+    )]
     pub export_trajectory: Option<String>,
 
     /// Publish tick_end checkpoint using ratlib from Minot.
@@ -251,6 +263,23 @@ fn lio(
     )
 }
 
+fn resolve_export_trajectory_path(export_trajectory: Option<String>) -> Option<String> {
+    match export_trajectory {
+        Some(path) if path.is_empty() => {
+            let name = petname::petname(2, "_").unwrap_or_else(|| "unnamed".to_string());
+            Some(format!(
+                "pelorus_trajectory_{}_{}.tum",
+                std::time::SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .expect("time goes forward")
+                    .as_secs(),
+                name
+            ))
+        }
+        other => other,
+    }
+}
+
 fn lio_with_ready_signal(
     config: LioConfig,
     ready_signal: Option<std::sync::mpsc::Sender<()>>,
@@ -262,6 +291,10 @@ fn lio_with_ready_signal(
     // Optional blocking shutdown signal for immediate pipeline teardown.
     shutdown_request_rx: Option<std::sync::mpsc::Receiver<()>>,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    let export_trajectory = resolve_export_trajectory_path(export_trajectory);
+    if let Some(path) = export_trajectory.as_ref() {
+        warn!("Trajectory export target: {}", path);
+    }
     #[cfg(any(feature = "mt_pubsub", feature = "rat"))]
     let rt = if cfg!(feature = "mt_pubsub") || (synchronous_mode && cfg!(feature = "rat")) {
         Some(std::sync::Arc::new(
@@ -697,6 +730,7 @@ fn lio_with_ready_signal(
     // Clone shutdown_flag for the processing thread; original is used for the spinner
     let processing_shutdown_flag = shutdown_flag.clone();
 
+    let export_trajectory_for_worker = export_trajectory.clone();
     let processing_handle = std::thread::spawn(move || {
         // Initialize Prelio prediction
         ready_for_next_tx.send(()).unwrap();
@@ -740,30 +774,9 @@ fn lio_with_ready_signal(
             ),
         }
 
-        let mut trajectory_file = match export_trajectory {
-            Some(path_str) if path_str.is_empty() => {
-                // Auto-generate filename
-                let name = petname::petname(2, "_").unwrap();
-                let filename = format!(
-                    "pelorus_trajectory_{}_{}.tum",
-                    std::time::SystemTime::now()
-                        .duration_since(UNIX_EPOCH)
-                        .expect("time goes forward")
-                        .as_secs(),
-                    name
-                );
-                log::info!("Saving trajectory to {} (auto-generated)", &filename);
-                match std::fs::File::create(&filename) {
-                    Ok(f) => Some(f),
-                    Err(e) => {
-                        log::error!("Failed to create trajectory file {}: {}", &filename, e);
-                        None
-                    }
-                }
-            }
+        let mut trajectory_file = match export_trajectory_for_worker {
             Some(path_str) => {
-                // Use explicit path
-                log::info!("Saving trajectory to {} (explicit path)", &path_str);
+                log::info!("Saving trajectory to {}", &path_str);
                 match std::fs::File::create(&path_str) {
                     Ok(f) => Some(f),
                     Err(e) => {
@@ -2367,14 +2380,20 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
             let lidar_topic = &config.prelio_node_params.cloud_src_topic;
             let imu_topic = &config.prelio_node_params.imu_src_topic;
+            let bagfile_input = offline_args.bagfile_path.to_string_lossy().to_string();
+            let input_looks_like_tag = bagfile_input.contains(':');
             let bagfile_path_canon = resolve_offline_bagfile_path(&offline_args.bagfile_path)?;
             let bagfile_path = bagfile_path_canon.clone().to_string_lossy().to_string();
-            shared_stats.set_bagfile(
+            let bagfile_label = if !offline_args.bagfile_path.exists() && input_looks_like_tag {
+                bagfile_input
+            } else {
                 bagfile_path_canon
                     .file_name()
                     .unwrap_or_default()
-                    .to_string_lossy(),
-            );
+                    .to_string_lossy()
+                    .into_owned()
+            };
+            shared_stats.set_bagfile(bagfile_label);
 
             let mt_content = format!(
                 r#"
@@ -2421,6 +2440,9 @@ pf! i 1
             };
 
             // Define the main logic as a closure/block to easily handle errors and cleanup
+            let export_trajectory_path =
+                resolve_export_trajectory_path(offline_args.export_trajectory.clone());
+            let export_trajectory_path_for_run = export_trajectory_path.clone();
             let run_offline_logic = || -> anyhow::Result<()> {
                 let mt_file_path = std::env::temp_dir().join("pelorus_offline.mt");
                 fs::write(&mt_file_path, mt_content)
@@ -2596,7 +2618,7 @@ pf! i 1
                         lio_with_ready_signal(
                             config,
                             Some(pelorus_ready_tx),
-                            offline_args.export_trajectory.clone(),
+                            export_trajectory_path_for_run.clone(),
                             synchronous_mode,
                             Some(shared_stats_for_lio),
                             Some(lio_shutdown_flag_for_thread),
