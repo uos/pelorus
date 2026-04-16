@@ -19,7 +19,7 @@ pelorus_core.workspace = true
 spole.workspace = true
 log.workspace = true
 libc.workspace = true
-shaderc = "0.8"
+shaderc = { version = "0.8", optional = true }
 
 [build-dependencies]
 pkg-config = "0.3"
@@ -27,4 +27,4 @@ cc = "1.0"
 
 [features]
 vulkan_available = []
-vulkan_enable = []
+vulkan_enable = ["dep:shaderc"]

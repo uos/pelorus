@@ -319,6 +319,12 @@ pub struct VulkanMetadata {
 }
 
 pub fn is_available() -> bool {
+    #[cfg(not(feature = "vulkan_enable"))]
+    {
+        return false;
+    }
+
+    #[cfg(feature = "vulkan_enable")]
     GLOBAL_VULKAN_CONTEXT
         .get_or_init(|| VulkanContext::try_new().map(Arc::new))
         .is_ok()
@@ -348,6 +354,7 @@ pub fn get_vulkan_metadata() -> Option<VulkanMetadata> {
 }
 
 impl Stream {
+    #[cfg(feature = "vulkan_enable")]
     pub fn new() -> Self {
         let vulkan_res =
             GLOBAL_VULKAN_CONTEXT.get_or_init(|| VulkanContext::try_new().map(Arc::new));
@@ -366,6 +373,14 @@ impl Stream {
                     backend: StreamBackend::Host(Arc::clone(host_ctx)),
                 }
             }
+        }
+    }
+
+    #[cfg(not(feature = "vulkan_enable"))]
+    pub fn new() -> Self {
+        let host_ctx = GLOBAL_HOST_CONTEXT.get_or_init(|| Arc::new(HostContext));
+        Self {
+            backend: StreamBackend::Host(Arc::clone(host_ctx)),
         }
     }
 
@@ -1162,6 +1177,7 @@ fn with_state<R>(f: impl FnOnce(&mut VulkanMapState) -> R) -> R {
     f(state)
 }
 
+#[cfg(feature = "vulkan_enable")]
 fn compile_shader(
     compiler: &mut shaderc::Compiler,
     source: &str,
@@ -1217,6 +1233,7 @@ fn create_compute_pipeline(
     }
 }
 
+#[cfg(feature = "vulkan_enable")]
 fn build_pipelines(context: Arc<VulkanContext>) -> Arc<VulkanComputePipelines> {
     let bindings: Vec<_> = (0..18)
         .map(|i| {
@@ -1322,6 +1339,11 @@ fn build_pipelines(context: Arc<VulkanContext>) -> Arc<VulkanComputePipelines> {
         add_block_prefix: pipelines[14],
         shader_modules: modules,
     })
+}
+
+#[cfg(not(feature = "vulkan_enable"))]
+fn build_pipelines(_context: Arc<VulkanContext>) -> Arc<VulkanComputePipelines> {
+    panic!("vulkan pipeline initialization requires feature `vulkan_enable`")
 }
 
 fn div_ceil_u32(v: u32, d: u32) -> u32 {
@@ -1695,6 +1717,9 @@ pub fn init_map(
             })
         }
         StreamBackend::Host(_) => {
+            log::warn!(
+                "Vulkan map initialized in host fallback mode; backend equivalence with CUDA is not guaranteed"
+            );
             let map = IVoxHashMap::new(
                 voxel_size,
                 capacity.next_power_of_two(),
@@ -2179,7 +2204,7 @@ pub fn planes_vulkan(
                             point_local.x,
                             point_local.y,
                             point_local.z,
-                            pd2,
+                            plane[3],
                             plane[0],
                             plane[1],
                             plane[2],
