@@ -2394,8 +2394,8 @@ _start_locked = false
 
 # Setting triggers for topics.
 # Advance one message for each topic on tick_end.
+pf! i, l 1 tick_end
 pf! l 1 tick_end
-pf! i 1 tick_end
 
 reset! {bagfile_path}
 

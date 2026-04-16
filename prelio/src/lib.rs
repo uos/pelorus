@@ -20,13 +20,17 @@ use pelorus_core::{
 use pelorus_cuda::CudaBuffer;
 #[cfg(feature = "vulkan")]
 use pelorus_vulkan::VulkanBuffer;
+use std::sync::{
+    Arc,
+    atomic::{AtomicUsize, Ordering},
+};
 use std::thread;
 
 use anyhow::Result;
 use ros_pointcloud2::prelude::*;
 pub use ros_pointcloud2::ros::TimeMsg;
 
-const PREPROC_QUEUE_CAP: usize = 8;
+const PREPROC_QUEUE_CAP: usize = 16;
 const IMU_QUEUE_CAP: usize = 16_384;
 const ODOM_QUEUE_CAP: usize = 8_192;
 const FILTERED_CLOUD_QUEUE_CAP: usize = 8;
@@ -612,6 +616,7 @@ fn filter_downsample<const N: usize, P: PointXYZITimestamp<N>>(
 
 pub struct Prelio {
     preproc_sender: Option<std::sync::mpsc::SyncSender<LabeledPointCloud2Msg>>,
+    preproc_queue_depth: Arc<AtomicUsize>,
     imu_sender: Option<std::sync::mpsc::SyncSender<ImuMsg>>,
     odom_sender: Option<std::sync::mpsc::SyncSender<OdomMsg>>,
     synced_receiver: Option<std::sync::mpsc::Receiver<PrelioProcessedCloud>>,
@@ -808,6 +813,8 @@ impl Prelio {
 
         let (preproc_tx, preproc_rx) =
             std::sync::mpsc::sync_channel::<LabeledPointCloud2Msg>(PREPROC_QUEUE_CAP);
+        let preproc_queue_depth = Arc::new(AtomicUsize::new(0));
+        let preproc_queue_depth_worker = Arc::clone(&preproc_queue_depth);
         let (imu_tx, imu_rx) = std::sync::mpsc::sync_channel(IMU_QUEUE_CAP);
         let (odom_tx, odom_rx): (
             std::sync::mpsc::SyncSender<OdomMsg>,
@@ -878,6 +885,11 @@ impl Prelio {
         thread::spawn(move || {
             let mut eval = RuntimeEvaluator::new();
             while let Ok(labeled) = preproc_rx.recv() {
+                preproc_queue_depth_worker
+                    .fetch_update(Ordering::AcqRel, Ordering::Acquire, |depth| {
+                        Some(depth.saturating_sub(1))
+                    })
+                    .ok();
                 eval.start("filter_downsample").unwrap();
 
                 let result = match vendor {
@@ -979,6 +991,7 @@ impl Prelio {
             odom_sender: Some(odom_tx),
             synced_receiver: Some(synced_cloud_imu_rx),
             preproc_sender: Some(preproc_tx),
+            preproc_queue_depth,
             last_cloud_time: 0.0,
             imu_filter_fusion: ImuMadgwick::new(gravity),
             last_imu_time: 0.0,
@@ -1027,7 +1040,17 @@ impl Prelio {
         let labeled = LabeledPointCloud2Msg { scan_id, cloud };
         match self.preproc_sender.as_ref() {
             Some(sender) => match sender.try_send(labeled) {
-                Ok(_) => {}
+                Ok(_) => {
+                    let queue_depth = self.preproc_queue_depth.fetch_add(1, Ordering::Relaxed) + 1;
+                    if queue_depth * 4 > PREPROC_QUEUE_CAP * 3
+                        && should_log_once_default("pointcloud_preproc_queue_above_75_pct")
+                    {
+                        warn!(
+                            "Pointcloud preprocessing queue is more than 75% full ({}/{})",
+                            queue_depth, PREPROC_QUEUE_CAP
+                        );
+                    }
+                }
                 Err(std::sync::mpsc::TrySendError::Full(_)) => {
                     if should_log_once_default("drop_pointcloud_preproc_queue_full") {
                         warn!("Dropping pointcloud: preprocessing queue is full");
