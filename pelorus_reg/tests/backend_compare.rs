@@ -1,10 +1,10 @@
 use nalgebra::Isometry3;
 use pelorus_core::timing::RuntimeEvaluator;
 use pelorus_core::{ImuParameters, PointXYZIT};
-use pelorus_reg::{Registration, registration::RegistrationState};
+use pelorus_reg::{ActiveBackend, Registration, registration::RegistrationState};
 use prelio::LocatedBufferView;
 use serde::{Deserialize, Serialize};
-use spole::IVoxNearbyType;
+use spole::{IVoxHashMap, IVoxNearbyType};
 use std::fs;
 use std::path::PathBuf;
 #[cfg(any(feature = "metal", feature = "cuda", feature = "vulkan"))]
@@ -104,18 +104,18 @@ fn test_backends() {
 
     let params = ImuParameters::default();
     let map_resolution = 0.5;
+    let map = IVoxHashMap::new(map_resolution as f32, 10000, IVoxNearbyType::Nearby26, 0.1);
+    let lidar_to_imu = Isometry3::identity();
+    let base_to_lidar = Isometry3::identity();
     let mut state = RegistrationState::new(
-        map_resolution,
-        10000,
-        9.81,
+        map,
         &params,
+        &lidar_to_imu,
+        &base_to_lidar,
+        9.81,
         0.001,
-        1.0,
-        Isometry3::identity(),
-        Isometry3::identity(),
-        IVoxNearbyType::Nearby26,
-        0.1,
         5,
+        None,
     );
 
     let simple_cloud = create_simple_cloud();
@@ -160,33 +160,37 @@ fn test_backends() {
     );
 
     #[cfg(not(any(feature = "metal", feature = "cuda", feature = "vulkan")))]
-    let (simple_view, complex_view) = {
+    let (simple_view, complex_view, active_backend) = {
         (
             LocatedBufferView::from_vec_cpu(simple_cloud.clone()),
             LocatedBufferView::from_vec_cpu(complex_cloud.clone()),
+            ActiveBackend::Cpu,
         )
     };
 
     #[cfg(feature = "metal")]
-    let (simple_view, complex_view) = {
+    let (simple_view, complex_view, active_backend) = {
         (
             LocatedBufferView::copy_from_slice_metal(&stream, &simple_cloud),
             LocatedBufferView::copy_from_slice_metal(&stream, &complex_cloud),
+            ActiveBackend::Metal(stream),
         )
     };
 
     #[cfg(feature = "cuda")]
-    let (simple_view, complex_view) = {
+    let (simple_view, complex_view, active_backend) = {
         (
             LocatedBufferView::copy_from_slice_cuda(&stream, &simple_cloud),
             LocatedBufferView::copy_from_slice_cuda(&stream, &complex_cloud),
+            ActiveBackend::Cuda(stream),
         )
     };
     #[cfg(feature = "vulkan")]
-    let (simple_view, complex_view) = {
+    let (simple_view, complex_view, active_backend) = {
         (
             LocatedBufferView::copy_from_slice_vulkan(&stream, &simple_cloud),
             LocatedBufferView::copy_from_slice_vulkan(&stream, &complex_cloud),
+            ActiveBackend::Vulkan(stream),
         )
     };
 
@@ -201,7 +205,7 @@ fn test_backends() {
             1,
             Some(&sender),
             &mut eval,
-            &stream,
+            &active_backend,
         )
         .unwrap();
 
@@ -214,7 +218,7 @@ fn test_backends() {
             2,
             Some(&sender),
             &mut eval,
-            &stream,
+            &active_backend,
         )
         .unwrap();
 
