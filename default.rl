@@ -31,7 +31,7 @@ preprocessing {
     point_skip = 3
 
     # Estimated sizes of features in the incoming scan, expressed as a factor of registration.map.resolution. Expected values are between 0.0 and 1.0.
-    query_resolution_factor = 1.0
+    query_resolution_factor = 0.5
   }
 
   # Assume the first n scans are recorded while standing still. This fixes non-repetitive patterns because the method heavily depends on spatial resolution.
