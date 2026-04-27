@@ -4,6 +4,7 @@ members = [
   "pelorus_cuda",
   "pelorus_metal",
   "pelorus_vulkan",
+  "pelorus_pico",
   "pelorus_cli",
   "pelorus_c",
   "pelorus_c/deb-dev",

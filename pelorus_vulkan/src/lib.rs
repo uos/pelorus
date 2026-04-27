@@ -408,6 +408,64 @@ struct BufferAllocation {
     allocation_size: vk::DeviceSize,
 }
 
+fn allocate_buffer_required(
+    context: &Arc<VulkanContext>,
+    size: vk::DeviceSize,
+    usage: vk::BufferUsageFlags,
+    required: vk::MemoryPropertyFlags,
+    debug_label: &str,
+) -> BufferAllocation {
+    let info = vk::BufferCreateInfo::default()
+        .size(size)
+        .usage(usage)
+        .sharing_mode(vk::SharingMode::EXCLUSIVE);
+
+    let buffer = unsafe {
+        context
+            .device
+            .create_buffer(&info, None)
+            .expect("failed to create Vulkan buffer")
+    };
+
+    let req = unsafe { context.device.get_buffer_memory_requirements(buffer) };
+    let Some(memory_type_index) =
+        find_memory_type(&context.memory_properties, req.memory_type_bits, required)
+    else {
+        unsafe {
+            context.device.destroy_buffer(buffer, None);
+        }
+        panic!(
+            "strict Vulkan allocation failed for {debug_label}: no compatible memory type with required flags {:?} (requested {} bytes, driver-required {} bytes). This run requires VRAM-first DEVICE_LOCAL buffers.",
+            required, size, req.size
+        );
+    };
+
+    let alloc_info = vk::MemoryAllocateInfo::default()
+        .allocation_size(req.size)
+        .memory_type_index(memory_type_index);
+
+    let memory = unsafe {
+        context
+            .device
+            .allocate_memory(&alloc_info, None)
+            .expect("failed to allocate Vulkan memory")
+    };
+
+    unsafe {
+        context
+            .device
+            .bind_buffer_memory(buffer, memory, 0)
+            .expect("failed to bind Vulkan buffer memory");
+    }
+
+    BufferAllocation {
+        buffer,
+        memory,
+        memory_flags: required,
+        allocation_size: req.size,
+    }
+}
+
 fn find_memory_type(
     memory_properties: &vk::PhysicalDeviceMemoryProperties,
     type_filter: u32,
@@ -489,6 +547,36 @@ fn destroy_buffer(context: &Arc<VulkanContext>, alloc: BufferAllocation) {
         context.device.destroy_buffer(alloc.buffer, None);
         context.device.free_memory(alloc.memory, None);
     }
+}
+
+fn allocate_upload_staging_buffer(
+    context: &Arc<VulkanContext>,
+    size: vk::DeviceSize,
+) -> BufferAllocation {
+    allocate_buffer(
+        context,
+        size.max(1),
+        vk::BufferUsageFlags::TRANSFER_SRC,
+        &[
+            vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT,
+            vk::MemoryPropertyFlags::HOST_VISIBLE,
+        ],
+    )
+}
+
+fn allocate_download_staging_buffer(
+    context: &Arc<VulkanContext>,
+    size: vk::DeviceSize,
+) -> BufferAllocation {
+    allocate_buffer(
+        context,
+        size.max(1),
+        vk::BufferUsageFlags::TRANSFER_DST,
+        &[
+            vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT,
+            vk::MemoryPropertyFlags::HOST_VISIBLE,
+        ],
+    )
 }
 
 fn submit_copy(
@@ -685,18 +773,14 @@ impl Clone for VulkanBuffer {
                 context, buffer, ..
             } => {
                 let requested = self.byte_capacity as vk::DeviceSize;
-                let alloc = allocate_buffer(
+                let alloc = allocate_buffer_required(
                     context,
                     requested.max(1),
                     vk::BufferUsageFlags::TRANSFER_SRC
                         | vk::BufferUsageFlags::TRANSFER_DST
                         | vk::BufferUsageFlags::STORAGE_BUFFER,
-                    &[
-                        vk::MemoryPropertyFlags::DEVICE_LOCAL,
-                        vk::MemoryPropertyFlags::HOST_VISIBLE
-                            | vk::MemoryPropertyFlags::HOST_COHERENT,
-                        vk::MemoryPropertyFlags::HOST_VISIBLE,
-                    ],
+                    vk::MemoryPropertyFlags::DEVICE_LOCAL,
+                    "vulkan buffer clone",
                 );
                 if requested > 0 {
                     submit_copy(context, *buffer, alloc.buffer, requested);
@@ -736,36 +820,32 @@ impl Clone for VulkanBuffer {
 
 impl VulkanBuffer {
     pub fn new(stream: &Stream, element_size: usize, n: usize) -> Self {
-        Self::new_with_preferences(
+        Self::new_device_local_required(stream, element_size, n)
+    }
+
+    pub fn new_device_local_required(stream: &Stream, element_size: usize, n: usize) -> Self {
+        Self::new_with_policy(
             stream,
             element_size,
             n,
-            &[
-                vk::MemoryPropertyFlags::DEVICE_LOCAL,
-                vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT,
-                vk::MemoryPropertyFlags::HOST_VISIBLE,
-            ],
+            BufferMemoryPolicy::DeviceLocalRequired,
         )
     }
 
     pub fn new_host_visible(stream: &Stream, element_size: usize, n: usize) -> Self {
-        Self::new_with_preferences(
+        Self::new_with_policy(
             stream,
             element_size,
             n,
-            &[
-                vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT,
-                vk::MemoryPropertyFlags::HOST_VISIBLE,
-                vk::MemoryPropertyFlags::DEVICE_LOCAL,
-            ],
+            BufferMemoryPolicy::HostVisiblePreferred,
         )
     }
 
-    fn new_with_preferences(
+    fn new_with_policy(
         stream: &Stream,
         element_size: usize,
         n: usize,
-        memory_preferences: &[vk::MemoryPropertyFlags],
+        policy: BufferMemoryPolicy,
     ) -> Self {
         assert!(element_size > 0, "element size must be > 0");
         let requested = element_size
@@ -774,14 +854,29 @@ impl VulkanBuffer {
 
         match &stream.backend {
             StreamBackend::Vulkan(context) => {
-                let alloc = allocate_buffer(
-                    context,
-                    (requested as vk::DeviceSize).max(1),
-                    vk::BufferUsageFlags::TRANSFER_SRC
-                        | vk::BufferUsageFlags::TRANSFER_DST
-                        | vk::BufferUsageFlags::STORAGE_BUFFER,
-                    memory_preferences,
-                );
+                let usage = vk::BufferUsageFlags::TRANSFER_SRC
+                    | vk::BufferUsageFlags::TRANSFER_DST
+                    | vk::BufferUsageFlags::STORAGE_BUFFER;
+                let alloc = match policy {
+                    BufferMemoryPolicy::DeviceLocalRequired => allocate_buffer_required(
+                        context,
+                        (requested as vk::DeviceSize).max(1),
+                        usage,
+                        vk::MemoryPropertyFlags::DEVICE_LOCAL,
+                        "vulkan compute buffer",
+                    ),
+                    BufferMemoryPolicy::HostVisiblePreferred => allocate_buffer(
+                        context,
+                        (requested as vk::DeviceSize).max(1),
+                        usage,
+                        &[
+                            vk::MemoryPropertyFlags::HOST_VISIBLE
+                                | vk::MemoryPropertyFlags::HOST_COHERENT,
+                            vk::MemoryPropertyFlags::HOST_VISIBLE,
+                            vk::MemoryPropertyFlags::DEVICE_LOCAL,
+                        ],
+                    ),
+                };
                 increment_allocation(alloc.allocation_size as u64);
                 Self {
                     storage: BufferStorage::Vulkan {
@@ -867,16 +962,8 @@ impl VulkanBuffer {
                         map_write_bytes(&context.device, *memory, *memory_flags, src_bytes);
                     }
                 } else {
-                    let staging = allocate_buffer(
-                        context,
-                        (byte_len as vk::DeviceSize).max(1),
-                        vk::BufferUsageFlags::TRANSFER_SRC,
-                        &[
-                            vk::MemoryPropertyFlags::HOST_VISIBLE
-                                | vk::MemoryPropertyFlags::HOST_COHERENT,
-                            vk::MemoryPropertyFlags::HOST_VISIBLE,
-                        ],
-                    );
+                    let staging =
+                        allocate_upload_staging_buffer(context, byte_len as vk::DeviceSize);
 
                     unsafe {
                         map_write_bytes(
@@ -931,16 +1018,8 @@ impl VulkanBuffer {
                         map_read_bytes(&context.device, *memory, *memory_flags, dst_bytes);
                     }
                 } else {
-                    let staging = allocate_buffer(
-                        context,
-                        (byte_len as vk::DeviceSize).max(1),
-                        vk::BufferUsageFlags::TRANSFER_DST,
-                        &[
-                            vk::MemoryPropertyFlags::HOST_VISIBLE
-                                | vk::MemoryPropertyFlags::HOST_COHERENT,
-                            vk::MemoryPropertyFlags::HOST_VISIBLE,
-                        ],
-                    );
+                    let staging =
+                        allocate_download_staging_buffer(context, byte_len as vk::DeviceSize);
 
                     submit_copy(context, *buffer, staging.buffer, byte_len as vk::DeviceSize);
                     unsafe {
@@ -975,6 +1054,12 @@ impl VulkanBuffer {
             BufferStorage::Host { .. } => None,
         }
     }
+}
+
+#[derive(Clone, Copy)]
+enum BufferMemoryPolicy {
+    DeviceLocalRequired,
+    HostVisiblePreferred,
 }
 
 const EMPTY_KEY: i32 = i32::MIN;
@@ -1583,8 +1668,14 @@ pub fn init_map(
 
     let backend = match &stream.backend {
         StreamBackend::Vulkan(context) => {
-            let dist_cap = capacity.next_power_of_two() as u32;
-            let table_cap = dist_cap * 2;
+            log::info!(
+                "Vulkan strict memory mode enabled: heavy map/scratch buffers require DEVICE_LOCAL memory; host-visible fallback is disabled for these buffers"
+            );
+            let dist_cap = capacity as u32;
+            let table_cap = dist_cap
+                .checked_mul(2)
+                .expect("Vulkan map capacity is too large")
+                .next_power_of_two();
             let compute = build_pipelines(Arc::clone(context));
 
             let mut keys_buf = VulkanBuffer::new(stream, size_of::<i32>(), table_cap as usize);
@@ -1611,7 +1702,9 @@ pub fn init_map(
                 size: 0,
                 usage: vk::BufferUsageFlags::empty(),
             };
-            unsafe { vrdxGetSorterKeyValueStorageRequirements(sorter, 1, &mut requirements) };
+            unsafe {
+                vrdxGetSorterKeyValueStorageRequirements(sorter, dist_cap, &mut requirements)
+            };
             assert!(
                 requirements.size > 0
                     && requirements
@@ -1631,6 +1724,7 @@ pub fn init_map(
                 target_indices: VulkanBuffer::new(stream, size_of::<u32>(), 1),
                 update_flags: VulkanBuffer::new(stream, size_of::<u32>(), 1),
                 sorted_points: VulkanBuffer::new(stream, size_of::<crate::types::Point>(), 1),
+                // Keep tiny counters host-visible for frequent scalar readback/writes.
                 counter: VulkanBuffer::new_host_visible(stream, size_of::<u32>(), 3),
                 sorter_scratch: VulkanBuffer::new(stream, 1, requirements.size as usize),
                 // This buffer is hot in map-full replacement and LRU sort; keep it device-local.
@@ -1766,10 +1860,11 @@ fn ensure_scratch_capacity(state: &mut VulkanGpuMapState, stream: &Stream, n_poi
         size: 0,
         usage: vk::BufferUsageFlags::empty(),
     };
+    let sort_capacity = new_cap.max(state.dist_cap as usize);
     unsafe {
         vrdxGetSorterKeyValueStorageRequirements(
             state.scratch.sorter,
-            new_cap as u32,
+            sort_capacity as u32,
             &mut requirements,
         )
     };
@@ -1870,6 +1965,7 @@ pub fn add_to_map(
             ensure_scratch_capacity(state, stream, n_points);
             state.scan_number = scan_id as u32;
             let scan_number = state.scan_number;
+            let add_cursor_before = state.add_cursor;
 
             let q: nalgebra::UnitQuaternion<f64> = (*ekf_pose_r).into();
             let mut params = PushConstants {
@@ -1973,10 +2069,50 @@ pub fn add_to_map(
             session.barrier();
 
             // 3. GPU Run-Length Encoding
-            // Initialize counters: [unique_count=0, add_cursor=current, lru_cursor=0]
-            let counters_host = [0u32, state.add_cursor, 0u32];
+            // RLE is split into deterministic mark/scan/emit passes. The old
+            // atomic append made unique-key order depend on shader scheduling,
+            // which changes later LRU victim assignment.
+            let counters_host = [n_points as u32, state.add_cursor, 0u32];
             state.scratch.counter.upload(stream, &counters_host);
 
+            params.j = 0;
+            session.dispatch(
+                &state.compute,
+                state.compute.rle,
+                &all_buffers,
+                &params,
+                n_points as u32,
+            );
+            session.barrier();
+
+            session.dispatch(
+                &state.compute,
+                state.compute.exclusive_scan,
+                &all_buffers,
+                &params,
+                n_points as u32,
+            );
+            session.barrier();
+
+            session.dispatch(
+                &state.compute,
+                state.compute.scan_block_sums,
+                &all_buffers,
+                &params,
+                1,
+            );
+            session.barrier();
+
+            session.dispatch(
+                &state.compute,
+                state.compute.add_block_prefix,
+                &all_buffers,
+                &params,
+                n_points as u32,
+            );
+            session.barrier();
+
+            params.j = 1;
             session.dispatch(
                 &state.compute,
                 state.compute.rle,
@@ -2098,7 +2234,7 @@ pub fn add_to_map(
             );
             session.barrier();
 
-            if state.add_cursor >= state.dist_cap {
+            if add_cursor_before >= state.dist_cap {
                 rebuild_gpu_lru_order(
                     &state.compute,
                     &mut state.scratch,
@@ -2119,6 +2255,19 @@ pub fn add_to_map(
             let counters_result: Vec<u32> = state.scratch.counter.download(stream);
             state.add_cursor = counters_result[1].min(state.dist_cap);
             state.lru_cursor = counters_result[2].min(state.dist_cap);
+
+            if add_cursor_before < state.dist_cap && state.add_cursor >= state.dist_cap {
+                let mut session = ComputeCommandSession::begin(&state.context, &state.compute);
+                rebuild_gpu_lru_order(
+                    &state.compute,
+                    &mut state.scratch,
+                    &state.dist_buf,
+                    state.scan_number,
+                    state.dist_cap,
+                    &mut session,
+                );
+                session.submit();
+            }
         }
     });
 }

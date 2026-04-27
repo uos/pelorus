@@ -6,6 +6,8 @@ layout(std430, set = 0, binding = 2) readonly buffer SortedKeys { int sorted_key
 layout(std430, set = 0, binding = 4) writeonly buffer UniqueKeys { int unique_keys[]; };
 layout(std430, set = 0, binding = 6) writeonly buffer RunStarts { uint run_starts[]; };
 layout(std430, set = 0, binding = 7) writeonly buffer RunEnds { uint run_ends[]; };
+layout(std430, set = 0, binding = 15) buffer StartFlags { uint start_flags[]; };
+layout(std430, set = 0, binding = 16) readonly buffer StartOffsets { uint start_offsets[]; };
 layout(std430, set = 0, binding = 10) buffer Counters {
     uint unique_count;
     uint add_cursor;
@@ -17,10 +19,22 @@ void main() {
     if (i >= pc.n) return;
 
     int key = int(uint(sorted_keys[i]) ^ 0x80000000u); // Convert back from unsigned-order
-    if (key == EMPTY_KEY) return;
 
     bool is_start = (i == 0) || (int(uint(sorted_keys[i - 1]) ^ 0x80000000u) != key);
-    if (is_start) {
+
+    if (pc.j == 0u) {
+        start_flags[i] = (is_start && key != EMPTY_KEY) ? 1u : 0u;
+        return;
+    }
+
+    if (pc.j == 1u) {
+        if (i == pc.n - 1u) {
+            unique_count = start_offsets[i] + start_flags[i];
+        }
+        if (!is_start || key == EMPTY_KEY) {
+            return;
+        }
+
         uint left = i;
         uint right = pc.n;
         while (left < right) {
@@ -33,7 +47,7 @@ void main() {
         }
         uint end = left;
 
-        uint idx = atomicAdd(unique_count, 1);
+        uint idx = start_offsets[i];
         run_starts[idx] = i;
         run_ends[idx] = end;
         unique_keys[idx] = key;

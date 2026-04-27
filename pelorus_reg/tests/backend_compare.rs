@@ -1,4 +1,4 @@
-use nalgebra::Isometry3;
+use nalgebra::{Isometry3, Translation3, UnitQuaternion, Vector3};
 use pelorus_core::timing::RuntimeEvaluator;
 use pelorus_core::{ImuParameters, PointXYZIT};
 use pelorus_reg::{ActiveBackend, Registration, registration::RegistrationState};
@@ -307,7 +307,7 @@ fn test_planes_direct_equivalency_cuda() {
     let query_cloud = create_complex_cloud();
 
     let mut cpu_map = spole::IVoxHashMap::new(resolution, 10000, IVoxNearbyType::Nearby26, 0.1);
-    cpu_map.add(&map_cloud, &Isometry3::identity());
+    cpu_map.add(&map_cloud, &Isometry3::identity(), 1);
 
     let mut cpu_planes: Vec<PointXYZINormal> = Vec::new();
     for pt in &query_cloud {
@@ -318,7 +318,7 @@ fn test_planes_direct_equivalency_cuda() {
             let s = 1.0_f32 - 0.9 * pd2.abs() / l2_sq.max(1e-9_f32).sqrt().sqrt();
             if s > 0.9 {
                 cpu_planes.push(PointXYZINormal::new(
-                    pt.x, pt.y, pt.z, pd2, plane[0], plane[1], plane[2],
+                    pt.x, pt.y, pt.z, plane[3], plane[0], plane[1], plane[2],
                 ));
             }
         }
@@ -347,6 +347,7 @@ fn test_planes_direct_equivalency_cuda() {
         map_buf,
         &pelorus_cuda::Vector3::new(0.0, 0.0, 0.0),
         &pelorus_cuda::Quaternion::default(),
+        1,
     );
 
     let gpu_query_cloud: LocatedBufferView<PointXYZIT> =
@@ -432,8 +433,8 @@ fn test_planes_after_voxel_update_cuda() {
     let map_cloud = create_simple_cloud();
 
     let mut cpu_map = spole::IVoxHashMap::new(resolution, 10000, IVoxNearbyType::Nearby26, 0.1);
-    cpu_map.add(&map_cloud, &Isometry3::identity());
-    cpu_map.add(&map_cloud, &Isometry3::identity());
+    cpu_map.add(&map_cloud, &Isometry3::identity(), 1);
+    cpu_map.add(&map_cloud, &Isometry3::identity(), 2);
 
     let mut cpu_planes: Vec<PointXYZINormal> = Vec::new();
     for pt in &map_cloud {
@@ -444,7 +445,7 @@ fn test_planes_after_voxel_update_cuda() {
             let s = 1.0_f32 - 0.9 * pd2.abs() / l2_sq.max(1e-9_f32).sqrt().sqrt();
             if s > 0.9 {
                 cpu_planes.push(PointXYZINormal::new(
-                    pt.x, pt.y, pt.z, pd2, plane[0], plane[1], plane[2],
+                    pt.x, pt.y, pt.z, plane[3], plane[0], plane[1], plane[2],
                 ));
             }
         }
@@ -471,8 +472,8 @@ fn test_planes_after_voxel_update_cuda() {
 
     let zero_t = pelorus_cuda::Vector3::new(0.0, 0.0, 0.0);
     let identity_q = pelorus_cuda::Quaternion::default();
-    pelorus_cuda::add_to_map(&stream, cloud_buf, &zero_t, &identity_q);
-    pelorus_cuda::add_to_map(&stream, cloud_buf, &zero_t, &identity_q);
+    pelorus_cuda::add_to_map(&stream, cloud_buf, &zero_t, &identity_q, 1);
+    pelorus_cuda::add_to_map(&stream, cloud_buf, &zero_t, &identity_q, 2);
 
     let mut cuda_out: Vec<PointXYZINormal> = vec![PointXYZINormal::default(); map_cloud.len()];
     let mut cuda_gpu_out = pelorus_cuda::CudaBuffer::new(
@@ -548,7 +549,7 @@ fn test_planes_direct_equivalency_vulkan() {
     let query_cloud = create_complex_cloud();
 
     let mut cpu_map = spole::IVoxHashMap::new(resolution, 10000, IVoxNearbyType::Nearby26, 0.1);
-    cpu_map.add(&map_cloud, &Isometry3::identity());
+    cpu_map.add(&map_cloud, &Isometry3::identity(), 1);
 
     let mut cpu_planes: Vec<PointXYZINormal> = Vec::new();
     for pt in &query_cloud {
@@ -559,7 +560,7 @@ fn test_planes_direct_equivalency_vulkan() {
             let s = 1.0_f32 - 0.9 * pd2.abs() / l2_sq.max(1e-9_f32).sqrt().sqrt();
             if s > 0.9 {
                 cpu_planes.push(PointXYZINormal::new(
-                    pt.x, pt.y, pt.z, pd2, plane[0], plane[1], plane[2],
+                    pt.x, pt.y, pt.z, plane[3], plane[0], plane[1], plane[2],
                 ));
             }
         }
@@ -588,6 +589,7 @@ fn test_planes_direct_equivalency_vulkan() {
         map_buf,
         &pelorus_vulkan::Vector3::new(0.0, 0.0, 0.0),
         &pelorus_vulkan::Quaternion::default(),
+        1,
     );
 
     let gpu_query_cloud: LocatedBufferView<PointXYZIT> =
@@ -673,8 +675,8 @@ fn test_planes_after_voxel_update_vulkan() {
     let map_cloud = create_simple_cloud();
 
     let mut cpu_map = spole::IVoxHashMap::new(resolution, 10000, IVoxNearbyType::Nearby26, 0.1);
-    cpu_map.add(&map_cloud, &Isometry3::identity());
-    cpu_map.add(&map_cloud, &Isometry3::identity());
+    cpu_map.add(&map_cloud, &Isometry3::identity(), 1);
+    cpu_map.add(&map_cloud, &Isometry3::identity(), 2);
 
     let mut cpu_planes: Vec<PointXYZINormal> = Vec::new();
     for pt in &map_cloud {
@@ -685,7 +687,7 @@ fn test_planes_after_voxel_update_vulkan() {
             let s = 1.0_f32 - 0.9 * pd2.abs() / l2_sq.max(1e-9_f32).sqrt().sqrt();
             if s > 0.9 {
                 cpu_planes.push(PointXYZINormal::new(
-                    pt.x, pt.y, pt.z, pd2, plane[0], plane[1], plane[2],
+                    pt.x, pt.y, pt.z, plane[3], plane[0], plane[1], plane[2],
                 ));
             }
         }
@@ -712,8 +714,8 @@ fn test_planes_after_voxel_update_vulkan() {
 
     let zero_t = pelorus_vulkan::Vector3::new(0.0, 0.0, 0.0);
     let identity_q = pelorus_vulkan::Quaternion::default();
-    pelorus_vulkan::add_to_map(&stream, cloud_buf, &zero_t, &identity_q);
-    pelorus_vulkan::add_to_map(&stream, cloud_buf, &zero_t, &identity_q);
+    pelorus_vulkan::add_to_map(&stream, cloud_buf, &zero_t, &identity_q, 1);
+    pelorus_vulkan::add_to_map(&stream, cloud_buf, &zero_t, &identity_q, 2);
 
     let mut vulkan_out: Vec<PointXYZINormal> = vec![PointXYZINormal::default(); map_cloud.len()];
     let mut vulkan_gpu_out = pelorus_vulkan::VulkanBuffer::new(
@@ -779,6 +781,282 @@ fn test_planes_after_voxel_update_vulkan() {
     }
 }
 
+#[cfg(feature = "vulkan")]
+#[test]
+fn test_planes_transformed_extrinsic_equivalency_vulkan() {
+    use ros_pointcloud2::points::{PointXYZ, PointXYZINormal};
+    let _lock = VULKAN_MAP_MUTEX.lock().unwrap();
+    let resolution = 0.5_f32;
+    let map_cloud = create_simple_cloud();
+    let query_cloud = create_complex_cloud();
+
+    let map_pose = Isometry3::from_parts(
+        Translation3::new(1.25, -0.75, 0.5),
+        UnitQuaternion::from_euler_angles(0.1, -0.2, 0.3),
+    );
+    let query_pose = Isometry3::from_parts(
+        Translation3::new(1.4, -0.6, 0.7),
+        UnitQuaternion::from_euler_angles(0.08, -0.18, 0.32),
+    );
+    let lidar_to_imu_q = UnitQuaternion::from_euler_angles(std::f64::consts::PI, 0.0, 0.0);
+    let lidar_to_imu_t = Vector3::new(0.1, -0.05, 0.02);
+
+    let mut cpu_map = spole::IVoxHashMap::new(resolution, 10000, IVoxNearbyType::Nearby26, 0.1);
+    cpu_map.add(&map_cloud, &map_pose, 1);
+
+    let offset_q_f32 = lidar_to_imu_q.cast::<f32>();
+    let offset_t_f32 = lidar_to_imu_t.cast::<f32>();
+    let pose_q_f32 = query_pose.rotation.cast::<f32>();
+    let pose_t_f32 = query_pose.translation.vector.cast::<f32>();
+
+    let mut cpu_planes: Vec<PointXYZINormal> = Vec::new();
+    for pt in &query_cloud {
+        let p_l = nalgebra::Point3::new(pt.x, pt.y, pt.z);
+        let p_imu = offset_q_f32 * p_l + offset_t_f32;
+        let p_world = pose_q_f32 * p_imu + pose_t_f32;
+        let q = PointXYZ::new(p_world.x, p_world.y, p_world.z);
+        if let Some(plane) = cpu_map.plane_fit_from_distributions(&q) {
+            let pd2 = plane[0] * p_world.x + plane[1] * p_world.y + plane[2] * p_world.z + plane[3];
+            let l2_sq = pt.x * pt.x + pt.y * pt.y + pt.z * pt.z;
+            let s = 1.0_f32 - 0.9 * pd2.abs() / l2_sq.max(1e-9_f32).sqrt().sqrt();
+            if s > 0.9 {
+                cpu_planes.push(PointXYZINormal::new(
+                    pt.x, pt.y, pt.z, plane[3], plane[0], plane[1], plane[2],
+                ));
+            }
+        }
+    }
+
+    let stream = pelorus_vulkan::Stream::new();
+    pelorus_vulkan::init_map(
+        &stream,
+        10000,
+        resolution,
+        0.1,
+        resolution / 4.0,
+        pelorus_vulkan::NeighborType::Neighbor26,
+    );
+
+    let gpu_map_cloud: LocatedBufferView<PointXYZIT> =
+        LocatedBufferView::copy_from_slice_vulkan(&stream, &map_cloud);
+    let LocatedBufferView::Vulkan {
+        buffer: ref map_buf,
+    } = gpu_map_cloud
+    else {
+        unreachable!()
+    };
+    let map_pose_t = pelorus_vulkan::Vector3::from(map_pose.translation.vector);
+    let map_pose_q = pelorus_vulkan::Quaternion::from(map_pose.rotation);
+    pelorus_vulkan::add_to_map(&stream, map_buf, &map_pose_t, &map_pose_q, 1);
+
+    let gpu_query_cloud: LocatedBufferView<PointXYZIT> =
+        LocatedBufferView::copy_from_slice_vulkan(&stream, &query_cloud);
+    let LocatedBufferView::Vulkan {
+        buffer: ref query_buf,
+    } = gpu_query_cloud
+    else {
+        unreachable!()
+    };
+
+    let query_pose_t = pelorus_vulkan::Vector3::from(query_pose.translation.vector);
+    let query_pose_q = pelorus_vulkan::Quaternion::from(query_pose.rotation);
+    let offset_t = pelorus_vulkan::Vector3::from(lidar_to_imu_t);
+    let offset_q = pelorus_vulkan::Quaternion::from(lidar_to_imu_q);
+    let mut vulkan_out: Vec<PointXYZINormal> = vec![PointXYZINormal::default(); query_cloud.len()];
+    let mut vulkan_gpu_out = pelorus_vulkan::VulkanBuffer::new(
+        &stream,
+        std::mem::size_of::<pelorus_vulkan::PointNormal>(),
+        query_cloud.len(),
+    );
+    pelorus_vulkan::planes_vulkan(
+        &stream,
+        query_buf,
+        &query_pose_t,
+        &query_pose_q,
+        &offset_t,
+        &offset_q,
+        &mut vulkan_out,
+        &mut vulkan_gpu_out,
+    );
+    pelorus_vulkan::cleanup_map();
+
+    assert_eq!(
+        cpu_planes.len(),
+        vulkan_out.len(),
+        "Transformed extrinsic: different plane count CPU={} Vulkan={}",
+        cpu_planes.len(),
+        vulkan_out.len()
+    );
+
+    let sort_key = |p: &PointXYZINormal| {
+        (
+            (p.x * 1000.0) as i32,
+            (p.y * 1000.0) as i32,
+            (p.z * 1000.0) as i32,
+        )
+    };
+    let mut cpu_sorted = cpu_planes.clone();
+    let mut vulkan_sorted = vulkan_out.clone();
+    cpu_sorted.sort_by_key(&sort_key);
+    vulkan_sorted.sort_by_key(&sort_key);
+
+    let tol = 1e-5_f32;
+    for (c, g) in cpu_sorted.iter().zip(vulkan_sorted.iter()) {
+        let d = (c.normal_x - g.normal_x)
+            .abs()
+            .max((c.normal_y - g.normal_y).abs())
+            .max((c.normal_z - g.normal_z).abs())
+            .max((c.intensity - g.intensity).abs());
+        assert!(
+            d < tol,
+            "Transformed extrinsic mismatch at ({:.2},{:.2},{:.2}): CPU=({:.4},{:.4},{:.4},{:.4}) Vulkan=({:.4},{:.4},{:.4},{:.4}) diff={:.2e}",
+            c.x,
+            c.y,
+            c.z,
+            c.normal_x,
+            c.normal_y,
+            c.normal_z,
+            c.intensity,
+            g.normal_x,
+            g.normal_y,
+            g.normal_z,
+            g.intensity,
+            d
+        );
+    }
+}
+
+#[cfg(feature = "vulkan")]
+#[test]
+fn test_planes_after_moved_voxel_update_vulkan() {
+    use ros_pointcloud2::points::{PointXYZ, PointXYZINormal};
+    let _lock = VULKAN_MAP_MUTEX.lock().unwrap();
+    let resolution = 0.5_f32;
+    let map_cloud = create_simple_cloud();
+
+    let first_pose = Isometry3::from_parts(
+        Translation3::new(1.25, -0.75, 0.5),
+        UnitQuaternion::from_euler_angles(0.1, -0.2, 0.3),
+    );
+    let second_pose = Isometry3::from_parts(
+        Translation3::new(1.28, -0.72, 0.53),
+        UnitQuaternion::from_euler_angles(0.11, -0.19, 0.31),
+    );
+
+    let mut cpu_map = spole::IVoxHashMap::new(resolution, 10000, IVoxNearbyType::Nearby26, 0.1);
+    cpu_map.add(&map_cloud, &first_pose, 1);
+    cpu_map.add(&map_cloud, &second_pose, 2);
+
+    let mut cpu_planes: Vec<PointXYZINormal> = Vec::new();
+    let second_pose_f32 = second_pose.cast::<f32>();
+    for pt in &map_cloud {
+        let p_l = nalgebra::Point3::new(pt.x, pt.y, pt.z);
+        let p_world = second_pose_f32.transform_point(&p_l);
+        let q = PointXYZ::new(p_world.x, p_world.y, p_world.z);
+        if let Some(plane) = cpu_map.plane_fit_from_distributions(&q) {
+            let pd2 = plane[0] * p_world.x + plane[1] * p_world.y + plane[2] * p_world.z + plane[3];
+            let l2_sq = pt.x * pt.x + pt.y * pt.y + pt.z * pt.z;
+            let s = 1.0_f32 - 0.9 * pd2.abs() / l2_sq.max(1e-9_f32).sqrt().sqrt();
+            if s > 0.9 {
+                cpu_planes.push(PointXYZINormal::new(
+                    pt.x, pt.y, pt.z, plane[3], plane[0], plane[1], plane[2],
+                ));
+            }
+        }
+    }
+
+    let stream = pelorus_vulkan::Stream::new();
+    pelorus_vulkan::init_map(
+        &stream,
+        10000,
+        resolution,
+        0.1,
+        resolution / 4.0,
+        pelorus_vulkan::NeighborType::Neighbor26,
+    );
+
+    let gpu_cloud: LocatedBufferView<PointXYZIT> =
+        LocatedBufferView::copy_from_slice_vulkan(&stream, &map_cloud);
+    let LocatedBufferView::Vulkan {
+        buffer: ref cloud_buf,
+    } = gpu_cloud
+    else {
+        unreachable!()
+    };
+
+    let first_t = pelorus_vulkan::Vector3::from(first_pose.translation.vector);
+    let first_q = pelorus_vulkan::Quaternion::from(first_pose.rotation);
+    let second_t = pelorus_vulkan::Vector3::from(second_pose.translation.vector);
+    let second_q = pelorus_vulkan::Quaternion::from(second_pose.rotation);
+    pelorus_vulkan::add_to_map(&stream, cloud_buf, &first_t, &first_q, 1);
+    pelorus_vulkan::add_to_map(&stream, cloud_buf, &second_t, &second_q, 2);
+
+    let zero_t = pelorus_vulkan::Vector3::new(0.0, 0.0, 0.0);
+    let identity_q = pelorus_vulkan::Quaternion::default();
+    let mut vulkan_out: Vec<PointXYZINormal> = vec![PointXYZINormal::default(); map_cloud.len()];
+    let mut vulkan_gpu_out = pelorus_vulkan::VulkanBuffer::new(
+        &stream,
+        std::mem::size_of::<pelorus_vulkan::PointNormal>(),
+        map_cloud.len(),
+    );
+    pelorus_vulkan::planes_vulkan(
+        &stream,
+        cloud_buf,
+        &second_t,
+        &second_q,
+        &zero_t,
+        &identity_q,
+        &mut vulkan_out,
+        &mut vulkan_gpu_out,
+    );
+    pelorus_vulkan::cleanup_map();
+
+    assert_eq!(
+        cpu_planes.len(),
+        vulkan_out.len(),
+        "Moved update: different plane count CPU={} Vulkan={}",
+        cpu_planes.len(),
+        vulkan_out.len()
+    );
+
+    let sort_key = |p: &PointXYZINormal| {
+        (
+            (p.x * 1000.0) as i32,
+            (p.y * 1000.0) as i32,
+            (p.z * 1000.0) as i32,
+        )
+    };
+    let mut cpu_sorted = cpu_planes.clone();
+    let mut vulkan_sorted = vulkan_out.clone();
+    cpu_sorted.sort_by_key(&sort_key);
+    vulkan_sorted.sort_by_key(&sort_key);
+
+    let tol = 1e-5_f32;
+    for (c, g) in cpu_sorted.iter().zip(vulkan_sorted.iter()) {
+        let d = (c.normal_x - g.normal_x)
+            .abs()
+            .max((c.normal_y - g.normal_y).abs())
+            .max((c.normal_z - g.normal_z).abs())
+            .max((c.intensity - g.intensity).abs());
+        assert!(
+            d < tol,
+            "Moved update mismatch at ({:.2},{:.2},{:.2}): CPU=({:.4},{:.4},{:.4},{:.4}) Vulkan=({:.4},{:.4},{:.4},{:.4}) diff={:.2e}",
+            c.x,
+            c.y,
+            c.z,
+            c.normal_x,
+            c.normal_y,
+            c.normal_z,
+            c.intensity,
+            g.normal_x,
+            g.normal_y,
+            g.normal_z,
+            g.intensity,
+            d
+        );
+    }
+}
+
 #[cfg(feature = "metal")]
 #[test]
 fn test_planes_direct_equivalency() {
@@ -790,7 +1068,7 @@ fn test_planes_direct_equivalency() {
 
     // ── CPU path ────────────────────────────────────────────────────────────────
     let mut cpu_map = spole::IVoxHashMap::new(resolution, 10000, IVoxNearbyType::Nearby26, 0.1);
-    cpu_map.add(&map_cloud, &Isometry3::identity());
+    cpu_map.add(&map_cloud, &Isometry3::identity(), 1);
 
     let mut cpu_planes: Vec<PointXYZINormal> = Vec::new();
     for pt in &query_cloud {
@@ -801,7 +1079,7 @@ fn test_planes_direct_equivalency() {
             let s = 1.0_f32 - 0.9 * pd2.abs() / l2_sq.max(1e-9_f32).sqrt().sqrt();
             if s > 0.9 {
                 cpu_planes.push(PointXYZINormal::new(
-                    pt.x, pt.y, pt.z, pd2, plane[0], plane[1], plane[2],
+                    pt.x, pt.y, pt.z, plane[3], plane[0], plane[1], plane[2],
                 ));
             }
         }
@@ -831,6 +1109,7 @@ fn test_planes_direct_equivalency() {
         map_buf,
         &pelorus_metal::Vector3::new(0.0, 0.0, 0.0),
         &pelorus_metal::Quaternion::default(),
+        1,
     );
 
     let gpu_query_cloud: LocatedBufferView<PointXYZIT> =
@@ -935,8 +1214,8 @@ fn test_planes_after_voxel_update() {
 
     // ── CPU path: add cloud twice ────────────────────────────────────────────────
     let mut cpu_map = spole::IVoxHashMap::new(resolution, 10000, IVoxNearbyType::Nearby26, 0.1);
-    cpu_map.add(&map_cloud, &Isometry3::identity());
-    cpu_map.add(&map_cloud, &Isometry3::identity()); // second add → voxel UPDATE
+    cpu_map.add(&map_cloud, &Isometry3::identity(), 1);
+    cpu_map.add(&map_cloud, &Isometry3::identity(), 2); // second add triggers voxel UPDATE
 
     let mut cpu_planes: Vec<PointXYZINormal> = Vec::new();
     for pt in &map_cloud {
@@ -947,7 +1226,7 @@ fn test_planes_after_voxel_update() {
             let s = 1.0_f32 - 0.9 * pd2.abs() / l2_sq.max(1e-9_f32).sqrt().sqrt();
             if s > 0.9 {
                 cpu_planes.push(PointXYZINormal::new(
-                    pt.x, pt.y, pt.z, pd2, plane[0], plane[1], plane[2],
+                    pt.x, pt.y, pt.z, plane[3], plane[0], plane[1], plane[2],
                 ));
             }
         }
@@ -975,8 +1254,8 @@ fn test_planes_after_voxel_update() {
 
     let zero_t = pelorus_metal::Vector3::new(0.0, 0.0, 0.0);
     let identity_q = pelorus_metal::Quaternion::default();
-    pelorus_metal::add_to_map(&stream, cloud_buf, &zero_t, &identity_q);
-    pelorus_metal::add_to_map(&stream, cloud_buf, &zero_t, &identity_q); // second → UPDATE
+    pelorus_metal::add_to_map(&stream, cloud_buf, &zero_t, &identity_q, 1);
+    pelorus_metal::add_to_map(&stream, cloud_buf, &zero_t, &identity_q, 2); // second triggers UPDATE
 
     let mut metal_out: Vec<PointXYZINormal> = vec![PointXYZINormal::default(); map_cloud.len()];
     let mut metal_gpu_out = pelorus_metal::MetalBuffer::new(

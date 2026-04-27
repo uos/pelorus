@@ -18,7 +18,7 @@ env:
 
 jobs:
   sanity:
-    runs-on: ubuntu-dev-noble-arm
+    runs-on: ubuntu-dev-resolute-arm
     steps:
       - uses: actions/checkout@v4
       - name: Check
@@ -70,13 +70,13 @@ jobs:
     strategy:
       matrix:
         include:
-          - image: docker.io/stelzo/ubuntu-dev:noble
+          - image: docker.io/stelzo/ubuntu-dev:resolute
             arch: amd64
-            repo: noble
+            repo: resolute
             runner: ubuntu-latest
-          - image: docker.io/stelzo/ubuntu-dev:noble
+          - image: docker.io/stelzo/ubuntu-dev:resolute
             arch: arm64
-            repo: noble
+            repo: resolute
             runner: ubuntu-latest-arm
           - image: docker.io/stelzo/ubuntu-dev:jammy
             arch: amd64
@@ -186,7 +186,6 @@ jobs:
             arch: arm64
           - target: x86_64-apple-darwin
             arch: amd64
-    # runs-on: ubuntu-dev-noble-arm
     runs-on: macos-latest
     env:
       TARGET: ${{ matrix.target }}
@@ -648,10 +647,10 @@ jobs:
       matrix:
         include:
           - target: x86_64-unknown-linux-musl
-            runner: ubuntu-dev-noble-arm
+            runner: ubuntu-dev-resolute
             arch: amd64
           - target: aarch64-unknown-linux-musl
-            runner: ubuntu-dev-noble-arm
+            runner: ubuntu-dev-resolute
             arch: arm64
     runs-on: ${{ matrix.runner }}
     steps:
@@ -1061,15 +1060,15 @@ jobs:
           - target: aarch64-apple-darwin # MacOS Apple Silicon
             runner: macos-latest
           - target: aarch64-unknown-linux-gnu # armv8 gnu (Jetson etc)
-            runner: ubuntu-dev-noble-arm
+            runner: ubuntu-dev-resolute
           - target: x86_64-unknown-linux-gnu # x64 gnu
-            runner: ubuntu-dev-noble-arm
+            runner: ubuntu-dev-resolute
           - target: x86_64-unknown-linux-musl # musl manylinux x64
-            runner: ubuntu-dev-noble-arm
+            runner: ubuntu-dev-resolute
           - target: aarch64-unknown-linux-musl # musl manylinux armv8
-            runner: ubuntu-dev-noble-arm
+            runner: ubuntu-dev-resolute
           - target: armv7-unknown-linux-musleabihf # musl manylinux armv7
-            runner: ubuntu-dev-noble-arm
+            runner: ubuntu-dev-resolute
     runs-on: ${{ matrix.runner }}
     env:
       TARGET: ${{ matrix.target }}
@@ -1258,7 +1257,7 @@ jobs:
   tarball:
     needs:
       - clean-7
-    runs-on: ubuntu-dev-noble-arm
+    runs-on: ubuntu-dev-resolute
     steps:
       - uses: actions/checkout@v4
 
@@ -1293,7 +1292,7 @@ jobs:
           }
 
           echo "=== Linux glibc ==="
-          for repo in noble jammy; do
+          for repo in resolute noble jammy; do
             for arch in amd64 arm64; do
               make_tarball "pelorus-${VERSION}-linux-${repo}-${arch}" \
                 "dl/artifacts-rawlibs-${repo}/${arch}/pelorus" \
@@ -1353,7 +1352,7 @@ jobs:
   release:
     needs:
       - tarball
-    runs-on: ubuntu-dev-noble-arm
+    runs-on: ubuntu-dev-resolute
     if: startsWith(github.ref, 'refs/tags/')
     steps:
       - uses: actions/checkout@v4
@@ -1398,7 +1397,7 @@ jobs:
           See the documentation for installation instructions.
 
           ### Artifacts
-          - **tar.gz** archives for Linux (noble, jammy, musl) and macOS (amd64, arm64)
+          - **tar.gz** archives for Linux (resolute, noble, jammy, musl) and macOS (amd64, arm64)
           - **CUDA** variants
           - **.deb** packages published to [PPA](https://codeberg.org/uos-robotics/ppa)
           - **Python wheels** on PyPI and custom index for CUDA variants" \
@@ -1422,7 +1421,7 @@ jobs:
   publish-ppa:
     needs:
       - release
-    runs-on: ubuntu-dev-noble-arm
+    runs-on: ubuntu-dev-resolute
     steps:
       - uses: actions/checkout@v4
 
@@ -1439,10 +1438,10 @@ jobs:
           apt-get update -y && apt-get install -y ssh
 
           # ── Collect .deb files by series ──────────────────────
-          mkdir -p staging/noble staging/jammy
+          mkdir -p staging/resolute staging/noble staging/jammy
 
           # rawlibs
-          for repo in noble jammy; do
+          for repo in resolute noble jammy; do
             find "dl/artifacts-rawlibs-${repo}" -name '*.deb' -exec cp {} "staging/${repo}/" \; 2>/dev/null || true
           done
 
@@ -1472,6 +1471,7 @@ jobs:
 
           echo "=== Collected .deb files ==="
           echo "noble: $(ls staging/noble/*.deb 2>/dev/null | wc -l) packages"
+          echo "resolute: $(ls staging/resolute/*.deb 2>/dev/null | wc -l) packages"
           echo "jammy:  $(ls staging/jammy/*.deb 2>/dev/null | wc -l) packages"
 
           # ── Collect wheels by variant ─────────────────────────
@@ -1546,6 +1546,7 @@ jobs:
           git sparse-checkout init --cone
           git sparse-checkout set \
             ubuntu/pool/main/noble \
+            ubuntu/pool/main/resolute \
             ubuntu/pool/main/jammy \
             whl/cpu \
             whl/cu126 \
@@ -1554,7 +1555,7 @@ jobs:
             bin
 
           # Copy debs
-          for series in noble jammy; do
+          for series in resolute noble jammy; do
             mkdir -p "ubuntu/pool/main/${series}"
             cp ../staging/${series}/*.deb "ubuntu/pool/main/${series}/" 2>/dev/null || true
           done
@@ -1589,7 +1590,7 @@ jobs:
           echo "CUDA:   pip install pelorus --extra-index-url https://codeberg.org/uos-robotics/ppa/raw/branch/main/whl/cu126/"
 
   aur:
-    runs-on: ubuntu-dev-noble
+    runs-on: ubuntu-dev-resolute
     needs:
       - release
       - publish-ppa
@@ -1639,7 +1640,7 @@ jobs:
           shred -u /home/build/.ssh/aur_key
 
   homebrew:
-    runs-on: ubuntu-dev-noble-arm
+    runs-on: ubuntu-dev-resolute
     needs:
       - publish-ppa
     if: startsWith(github.ref, 'refs/tags/')
@@ -1690,7 +1691,7 @@ jobs:
   publish-pypi:
     needs:
       - release
-    runs-on: ubuntu-dev-noble-arm
+    runs-on: ubuntu-dev-resolute
     steps:
       - name: Download CPU wheels
         uses: actions/download-artifact@v3

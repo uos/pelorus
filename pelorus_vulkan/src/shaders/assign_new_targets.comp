@@ -30,10 +30,14 @@ void main() {
         dist_keys[slot] = key;
         target_indices[idx] = slot;
     } else {
-        // Overflow: use LRU eviction
+        // Overflow: use each LRU victim at most once for this scan.
         uint lru_pos = abs_pos - pc.dist_cap;
-        uint victim = lru_mapping[lru_pos % pc.dist_cap]; // Match Metal: wrap around
-        dist_keys[victim] = key;
-        target_indices[idx] = victim;
+        if (lru_pos < pc.dist_cap) {
+            uint victim = lru_mapping[lru_pos];
+            dist_keys[victim] = key;
+            target_indices[idx] = victim;
+        } else {
+            target_indices[idx] = 0xFFFFFFFFu;
+        }
     }
 }
