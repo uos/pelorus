@@ -1140,6 +1140,8 @@ struct VulkanComputePipelines {
     reorder_points: vk::Pipeline,
     build_voxels: vk::Pipeline,
     plane_krnl: vk::Pipeline,
+    compact_planes: vk::Pipeline,
+    plane_count: vk::Pipeline,
     rle: vk::Pipeline,
     assign_indices: vk::Pipeline,
     lru_score: vk::Pipeline,
@@ -1162,6 +1164,8 @@ impl Drop for VulkanComputePipelines {
             device.destroy_pipeline(self.reorder_points, None);
             device.destroy_pipeline(self.build_voxels, None);
             device.destroy_pipeline(self.plane_krnl, None);
+            device.destroy_pipeline(self.compact_planes, None);
+            device.destroy_pipeline(self.plane_count, None);
             device.destroy_pipeline(self.rle, None);
             device.destroy_pipeline(self.assign_indices, None);
             device.destroy_pipeline(self.lru_score, None);
@@ -1197,6 +1201,7 @@ struct ScratchBuffers {
     is_new: VulkanBuffer,
     new_offset: VulkanBuffer,
     block_sums: VulkanBuffer,
+    plane_compact: VulkanBuffer,
     sorter: VrdxSorter,
     capacity: usize,
 }
@@ -1357,6 +1362,8 @@ fn build_pipelines(context: Arc<VulkanContext>) -> Arc<VulkanComputePipelines> {
     let localmap_src = shaders::source_with_common(shaders::LOCALMAP);
     let reorder_src = shaders::source_with_common(shaders::REORDER);
     let planes_src = shaders::source_with_common(shaders::PLANES);
+    let compact_planes_src = shaders::source_with_common(shaders::COMPACT_PLANES);
+    let plane_count_src = shaders::source_with_common(shaders::PLANE_COUNT);
     let rle_src = shaders::source_with_common(shaders::RLE);
     let assign_indices_src = shaders::source_with_common(shaders::ASSIGN_INDICES);
     let lru_score_src = shaders::source_with_common(shaders::LRU_SCORE);
@@ -1382,6 +1389,8 @@ fn build_pipelines(context: Arc<VulkanContext>) -> Arc<VulkanComputePipelines> {
         ("reorder_points", &reorder_src, vec![]),
         ("build_voxels", &localmap_src, vec![("BUILD_VOXELS", None)]),
         ("plane_krnl", &planes_src, vec![]),
+        ("compact_planes", &compact_planes_src, vec![]),
+        ("plane_count", &plane_count_src, vec![]),
         ("rle", &rle_src, vec![]),
         ("assign_indices", &assign_indices_src, vec![]),
         ("lru_score", &lru_score_src, vec![]),
@@ -1413,15 +1422,17 @@ fn build_pipelines(context: Arc<VulkanContext>) -> Arc<VulkanComputePipelines> {
         reorder_points: pipelines[3],
         build_voxels: pipelines[4],
         plane_krnl: pipelines[5],
-        rle: pipelines[6],
-        assign_indices: pipelines[7],
-        lru_score: pipelines[8],
-        classify_keys: pipelines[9],
-        exclusive_scan: pipelines[10],
-        assign_new_targets: pipelines[11],
-        finalize_cursors: pipelines[12],
-        scan_block_sums: pipelines[13],
-        add_block_prefix: pipelines[14],
+        compact_planes: pipelines[6],
+        plane_count: pipelines[7],
+        rle: pipelines[8],
+        assign_indices: pipelines[9],
+        lru_score: pipelines[10],
+        classify_keys: pipelines[11],
+        exclusive_scan: pipelines[12],
+        assign_new_targets: pipelines[13],
+        finalize_cursors: pipelines[14],
+        scan_block_sums: pipelines[15],
+        add_block_prefix: pipelines[16],
         shader_modules: modules,
     })
 }
@@ -1599,6 +1610,23 @@ impl<'a> ComputeCommandSession<'a> {
         }
     }
 
+    fn shader_to_host_barrier(&self) {
+        let barrier = vk::MemoryBarrier::default()
+            .src_access_mask(vk::AccessFlags::SHADER_WRITE)
+            .dst_access_mask(vk::AccessFlags::HOST_READ);
+        unsafe {
+            self.context.device.cmd_pipeline_barrier(
+                self.command_buffer,
+                vk::PipelineStageFlags::COMPUTE_SHADER,
+                vk::PipelineStageFlags::HOST,
+                vk::DependencyFlags::empty(),
+                std::slice::from_ref(&barrier),
+                &[],
+                &[],
+            );
+        }
+    }
+
     fn write_timestamp(&self, timestamp_pool: vk::QueryPool, query_index: u32) {
         unsafe {
             self.context.device.cmd_write_timestamp(
@@ -1733,6 +1761,11 @@ pub fn init_map(
                 is_new: VulkanBuffer::new(stream, size_of::<u32>(), 1),
                 new_offset: VulkanBuffer::new(stream, size_of::<u32>(), 1),
                 block_sums: VulkanBuffer::new(stream, size_of::<u32>(), 1),
+                plane_compact: VulkanBuffer::new_host_visible(
+                    stream,
+                    size_of::<crate::types::PointNormal>(),
+                    1,
+                ),
                 sorter,
                 capacity: 0,
             };
@@ -1852,6 +1885,8 @@ fn ensure_scratch_capacity(state: &mut VulkanGpuMapState, stream: &Stream, n_poi
         VulkanBuffer::new(stream, size_of::<crate::types::Point>(), new_cap);
     state.scratch.is_new = VulkanBuffer::new(stream, size_of::<u32>(), new_cap);
     state.scratch.new_offset = VulkanBuffer::new(stream, size_of::<u32>(), new_cap);
+    state.scratch.plane_compact =
+        VulkanBuffer::new_host_visible(stream, size_of::<crate::types::PointNormal>(), new_cap);
     // block_sums needs ceil(new_cap / 512) elements, round up to next power of 2 for safety
     let block_sums_cap = (new_cap / 512 + 1).next_power_of_two().max(1024);
     state.scratch.block_sums = VulkanBuffer::new(stream, size_of::<u32>(), block_sums_cap);
@@ -2381,11 +2416,17 @@ pub fn planes_vulkan(
                 "GPU output buffer must fit cloud size"
             );
 
-            // Capacity-based reuse keeps allocations down, but `download_into` is
-            // bounded by the buffer's logical length. Reset it for the current cloud.
-            out_buff_gpu.n = cloud.n;
+            ensure_scratch_capacity(state, stream, cloud.n);
 
-            state.scratch.counter.upload(stream, &[0u32]);
+            // Capacity-based reuse keeps allocations down, but downloads are
+            // bounded by logical length. Reset plane buffers for the current cloud.
+            out_buff_gpu.n = cloud.n;
+            state.scratch.plane_compact.n = cloud.n;
+
+            state
+                .scratch
+                .counter
+                .upload(stream, &[cloud.n as u32, 0u32, 0u32]);
             let ext_q: nalgebra::UnitQuaternion<f64> = (*ekf_imu_offset_r).into();
             let pose_q: nalgebra::UnitQuaternion<f64> = (*ekf_pose_r).into();
             let params = PushConstants {
@@ -2414,6 +2455,7 @@ pub fn planes_vulkan(
                 resolution: state.resolution,
                 table_cap: state.table_cap,
                 unique_key_count: cloud.n as u32,
+                n: cloud.n as u32,
                 nbtype: state.nbtype,
                 sphericity_threshold: 0.5,
                 ..PushConstants::default()
@@ -2425,9 +2467,13 @@ pub fn planes_vulkan(
             let dists_b = vk_buffer_handle(&state.dist_buf);
             let counter_b = vk_buffer_handle(&state.scratch.counter);
             let out_gpu_b = vk_buffer_handle(out_buff_gpu);
+            let valid_flags_b = vk_buffer_handle(&state.scratch.is_new);
+            let offsets_b = vk_buffer_handle(&state.scratch.new_offset);
+            let block_sums_b = vk_buffer_handle(&state.scratch.block_sums);
+            let compact_out_b = vk_buffer_handle(&state.scratch.plane_compact);
             let dummy = vk_buffer_handle(&state.dummy_buf);
 
-            let all_buffers = [
+            let plane_buffers = [
                 points_in_b,
                 dummy,
                 dummy,
@@ -2444,6 +2490,48 @@ pub fn planes_vulkan(
                 table_vals_b,
                 dummy,
                 out_gpu_b,
+                valid_flags_b,
+                dummy,
+            ];
+            let scan_buffers = [
+                dummy,
+                dummy,
+                dummy,
+                dummy,
+                dummy,
+                dummy,
+                dummy,
+                dummy,
+                dummy,
+                dummy,
+                counter_b,
+                dummy,
+                dummy,
+                dummy,
+                dummy,
+                valid_flags_b,
+                offsets_b,
+                block_sums_b,
+            ];
+            let compact_buffers = [
+                dummy,
+                dummy,
+                dummy,
+                dummy,
+                dummy,
+                dummy,
+                dummy,
+                dummy,
+                dummy,
+                dummy,
+                counter_b,
+                dummy,
+                dummy,
+                dummy,
+                dummy,
+                out_gpu_b,
+                offsets_b,
+                compact_out_b,
             ];
 
             let session = ComputeCommandSession::begin(&state.context, &state.compute);
@@ -2460,29 +2548,72 @@ pub fn planes_vulkan(
             session.dispatch(
                 &state.compute,
                 state.compute.plane_krnl,
-                &all_buffers,
+                &plane_buffers,
                 &params,
                 cloud.n as u32,
             );
+            session.barrier();
+            session.dispatch(
+                &state.compute,
+                state.compute.exclusive_scan,
+                &scan_buffers,
+                &params,
+                cloud.n as u32,
+            );
+            session.barrier();
+            session.dispatch(
+                &state.compute,
+                state.compute.scan_block_sums,
+                &scan_buffers,
+                &params,
+                1,
+            );
+            session.barrier();
+            session.dispatch(
+                &state.compute,
+                state.compute.add_block_prefix,
+                &scan_buffers,
+                &params,
+                cloud.n as u32,
+            );
+            session.barrier();
+            session.dispatch(
+                &state.compute,
+                state.compute.compact_planes,
+                &compact_buffers,
+                &params,
+                cloud.n as u32,
+            );
+            session.dispatch(
+                &state.compute,
+                state.compute.plane_count,
+                &scan_buffers,
+                &params,
+                1,
+            );
             session.write_timestamp(state.timestamp_pool, 1);
+            session.shader_to_host_barrier();
             session.submit();
             state
                 .pending_planes_timing
                 .store(true, std::sync::atomic::Ordering::Release);
             log::debug!("vulkan planes: kernel complete");
 
-            let downloaded = cloud.n.min(out_buff.len()).min(out_buff_gpu.n);
-            out_buff_gpu.n = downloaded;
+            let counters_result: Vec<u32> = state.scratch.counter.download(stream);
+            let downloaded = (counters_result.first().copied().unwrap_or(0) as usize)
+                .min(out_buff.len())
+                .min(cloud.n);
 
-            // Download all `cloud.n` slots; the kernel writes a per-thread sentinel
-            // (zero normal) for invalid points and the actual plane for valid ones.
             download_buff.resize(downloaded, crate::types::PointNormal::default());
-            out_buff_gpu.download_into(stream, download_buff);
+            state.scratch.plane_compact.n = downloaded;
+            state
+                .scratch
+                .plane_compact
+                .download_into(stream, download_buff);
             out_buff.clear();
 
-            // Compact while converting, preserving cloud-input order. This keeps the
-            // residual ordering deterministic without allocating a fresh native buffer
-            // and then doing a second full pass over converted sentinel rows.
+            // The GPU scan/scatter preserves cloud-input order. Keep the sentinel
+            // check as a cheap guard against malformed shader output.
             for p in download_buff.iter().take(downloaded) {
                 if p.nx != 0.0 || p.ny != 0.0 || p.nz != 0.0 {
                     out_buff.push((*p).into());

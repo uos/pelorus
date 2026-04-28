@@ -8,6 +8,7 @@ layout(std430, set = 0, binding = 13) readonly buffer TableVals { uint table_val
 layout(std430, set = 0, binding = 9) readonly buffer Dists { VoxelDistribution dists[]; };
 layout(std430, set = 0, binding = 10) buffer OutSize { uint out_size; };
 layout(std430, set = 0, binding = 15) buffer OutPoints { PointNormal out_buff[]; };
+layout(std430, set = 0, binding = 16) buffer ValidFlags { uint valid_flags[]; };
 
 float plane_point_dist(vec4 plane, vec3 p) {
     return plane.x * p.x + plane.y * p.y + plane.z * p.z + plane.w;
@@ -100,6 +101,7 @@ void main() {
     inv.nx = 0.0; inv.ny = 0.0; inv.nz = 0.0;
     inv._pad = 0.0;
     out_buff[idx] = inv;
+    valid_flags[idx] = 0u;
 
     vec4 ext_q = pc.lidar_to_imu_quat;
     vec3 ext_t = pc.lidar_to_imu_pos;
@@ -154,4 +156,5 @@ void main() {
     pn.nz = plane.z;
     pn._pad = 0.0;
     out_buff[idx] = pn;
+    valid_flags[idx] = 1u;
 }

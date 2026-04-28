@@ -1,0 +1,17 @@
+#version 450
+
+layout(local_size_x = 1, local_size_y = 1, local_size_z = 1) in;
+
+layout(std430, set = 0, binding = 10) buffer Counters { uint count; };
+layout(std430, set = 0, binding = 15) readonly buffer ValidFlags { uint valid_flags[]; };
+layout(std430, set = 0, binding = 16) readonly buffer PlaneOffsets { uint offsets[]; };
+
+void main() {
+    if (pc.n == 0u) {
+        count = 0u;
+        return;
+    }
+
+    uint last = pc.n - 1u;
+    count = valid_flags[last] + offsets[last];
+}
