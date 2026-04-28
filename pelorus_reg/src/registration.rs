@@ -36,6 +36,8 @@ pub struct RegistrationState {
     pub base_to_lidar: Isometry3<f64>,
     pub planes_cpu_buffer: Vec<PointXYZINormal>,
     pub planes_gpu_buffer: Option<GpuPlanesBuffer>,
+    #[cfg(feature = "vulkan")]
+    pub planes_vulkan_download_buffer: Vec<pelorus_vulkan::PointNormal>,
 }
 
 impl RegistrationState {
@@ -137,6 +139,8 @@ impl RegistrationState {
             base_to_lidar: base_to_lidar.clone(),
             planes_cpu_buffer: Vec::new(),
             planes_gpu_buffer: None,
+            #[cfg(feature = "vulkan")]
+            planes_vulkan_download_buffer: Vec::new(),
         }
     }
 
@@ -321,8 +325,13 @@ impl crate::Registration for RegistrationState {
                         self.planes_cpu_buffer
                             .reserve(cloud_len_alloc - self.planes_cpu_buffer.capacity());
                     }
+                    if self.planes_vulkan_download_buffer.capacity() < cloud.len() {
+                        self.planes_vulkan_download_buffer.reserve(
+                            cloud_len_alloc - self.planes_vulkan_download_buffer.capacity(),
+                        );
+                    }
                     let needs_alloc = match &self.planes_gpu_buffer {
-                        Some(GpuPlanesBuffer::Vulkan(buf)) => buf.n < cloud.len(),
+                        Some(GpuPlanesBuffer::Vulkan(buf)) => buf.capacity() < cloud.len(),
                         _ => true,
                     };
                     if needs_alloc {
@@ -340,6 +349,9 @@ impl crate::Registration for RegistrationState {
 
             let planes_cpu_buffer_ptr = std::ptr::addr_of_mut!(self.planes_cpu_buffer);
             let planes_gpu_buffer_ptr = std::ptr::addr_of_mut!(self.planes_gpu_buffer);
+            #[cfg(feature = "vulkan")]
+            let planes_vulkan_download_buffer_ptr =
+                std::ptr::addr_of_mut!(self.planes_vulkan_download_buffer);
             let map_ptr = std::ptr::addr_of!(self.map);
 
             #[cfg(not(any(feature = "cuda", feature = "metal", feature = "vulkan")))]
@@ -601,6 +613,7 @@ impl crate::Registration for RegistrationState {
                                 &offset_q,
                                 planes_buf,
                                 planes_gpu,
+                                unsafe { &mut *planes_vulkan_download_buffer_ptr },
                             );
                             planes_buf
                         }

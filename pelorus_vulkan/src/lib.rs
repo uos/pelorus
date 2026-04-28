@@ -2310,6 +2310,7 @@ pub fn planes_vulkan(
     ekf_imu_offset_r: &Quaternion,
     out_buff: &mut Vec<PointXYZINormal>,
     out_buff_gpu: &mut VulkanBuffer,
+    download_buff: &mut Vec<PointNormal>,
 ) {
     assert!(
         out_buff.len() >= cloud.n,
@@ -2379,6 +2380,10 @@ pub fn planes_vulkan(
                 out_buff_gpu.capacity() >= cloud.n,
                 "GPU output buffer must fit cloud size"
             );
+
+            // Capacity-based reuse keeps allocations down, but `download_into` is
+            // bounded by the buffer's logical length. Reset it for the current cloud.
+            out_buff_gpu.n = cloud.n;
 
             state.scratch.counter.upload(stream, &[0u32]);
             let ext_q: nalgebra::UnitQuaternion<f64> = (*ekf_imu_offset_r).into();
@@ -2471,25 +2476,18 @@ pub fn planes_vulkan(
 
             // Download all `cloud.n` slots; the kernel writes a per-thread sentinel
             // (zero normal) for invalid points and the actual plane for valid ones.
-            let mut gpu_normals = vec![crate::types::PointNormal::default(); downloaded];
-            out_buff_gpu.download_into(stream, &mut gpu_normals);
-
+            download_buff.resize(downloaded, crate::types::PointNormal::default());
+            out_buff_gpu.download_into(stream, download_buff);
             out_buff.clear();
-            out_buff.extend(gpu_normals.into_iter().map(PointXYZINormal::from));
 
-            // Compact in-place, preserving cloud-input order. This makes the residual
-            // ordering deterministic across runs and matches the CPU/CUDA backend, which is
-            // required for backend equivalence (the IEKF normal-equation solve is
-            // floating-point sensitive to row order).
-            let mut write_pos = 0usize;
-            for read_pos in 0..downloaded {
-                let p = out_buff[read_pos];
-                if p.normal_x != 0.0 || p.normal_y != 0.0 || p.normal_z != 0.0 {
-                    out_buff[write_pos] = p;
-                    write_pos += 1;
+            // Compact while converting, preserving cloud-input order. This keeps the
+            // residual ordering deterministic without allocating a fresh native buffer
+            // and then doing a second full pass over converted sentinel rows.
+            for p in download_buff.iter().take(downloaded) {
+                if p.nx != 0.0 || p.ny != 0.0 || p.nz != 0.0 {
+                    out_buff.push((*p).into());
                 }
             }
-            out_buff.truncate(write_pos);
         }
     });
 }

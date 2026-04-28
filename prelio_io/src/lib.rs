@@ -68,6 +68,18 @@ impl_pointcloud2_for_ros2_interfaces_jazzy_rkyv!();
 impl_pointcloud2_for_r2r!();
 
 const N_NTH_SCAN: usize = 1; // TODO to config
+#[cfg(feature = "rat")]
+const MINOT_IMU_INIT_TICK: &str = "imu_init_tick";
+#[cfg(feature = "rat")]
+const MINOT_LIO_START_TICK: &str = "lio_start_tick";
+
+#[cfg(feature = "rat")]
+fn publish_minot_trigger(synchronous_mode: bool, trigger: &str) {
+    if synchronous_mode {
+        let mut payload = String::new();
+        rat::bacon(trigger, &mut payload, rat::VariableType::StaticOnly).unwrap();
+    }
+}
 
 pub struct State {
     pub global_polygon: Option<Vec<nalgebra::Point2<f32>>>,
@@ -614,6 +626,7 @@ impl PrelioNode {
                 match cloud_subscriber.take() {
                     Err(e) => {
                         error!("Could not read cloud: {e}");
+                        std::thread::sleep(std::time::Duration::from_millis(1));
                     }
                     Ok(Some((msg, _msg_info))) => {
                         // error!("received cloud message");
@@ -636,7 +649,9 @@ impl PrelioNode {
                             }
                         }
                     }
-                    Ok(None) => {}
+                    Ok(None) => {
+                        std::thread::sleep(std::time::Duration::from_millis(1));
+                    }
                 }
             }
         });
@@ -830,6 +845,7 @@ impl PrelioNode {
                 match imu_subscription.take() {
                     Err(e) => {
                         error!("Could not read imu: {e}");
+                        std::thread::sleep(std::time::Duration::from_millis(1));
                     }
                     Ok(Some((msg, _msg_info))) => {
                         // debug!("received imu message");
@@ -842,6 +858,10 @@ impl PrelioNode {
 
                         let imu_lifis = imu_to_lifis(msg.clone());
                         let curr_stamp = timestamp_to_secs(&imu_lifis.stamp);
+                        #[cfg(feature = "rat")]
+                        let mut minot_bootstrap_trigger: Option<
+                            &'static str,
+                        > = None;
 
                         if let Some(imu_pose_predictor_init) = imu_pose_predictor_init.as_ref() {
                             let mut imu_pose_predictor_init =
@@ -861,13 +881,8 @@ impl PrelioNode {
                                         buffer.push(imu_lifis.clone());
 
                                         #[cfg(feature = "rat")]
-                                        if synchronous_mode {
-                                            rat::bacon(
-                                                "tick_end",
-                                                &mut "".to_string(),
-                                                rat::VariableType::StaticOnly,
-                                            )
-                                            .unwrap();
+                                        {
+                                            minot_bootstrap_trigger = Some(MINOT_IMU_INIT_TICK);
                                         }
                                     }
                                 } else {
@@ -875,6 +890,10 @@ impl PrelioNode {
                                     if let Some(buffer) = init_state.buffer.take() {
                                         imu_pose_predictor_init(&buffer);
                                         info!("EKF: Imu initialized");
+                                        #[cfg(feature = "rat")]
+                                        {
+                                            minot_bootstrap_trigger = Some(MINOT_LIO_START_TICK);
+                                        }
                                     }
                                 }
                             }
@@ -882,6 +901,11 @@ impl PrelioNode {
 
                         let state = state_clone.lock().unwrap();
                         let filtered = state.lifis.lock().unwrap().add_imu(imu_lifis);
+                        drop(state);
+                        #[cfg(feature = "rat")]
+                        if let Some(trigger) = minot_bootstrap_trigger {
+                            publish_minot_trigger(synchronous_mode, trigger);
+                        }
                         match (filtered, imu_filtered_publisher.as_ref()) {
                             (Some(filtered), Some(imu_filtered_publisher)) => {
                                 imu_filtered_publisher
@@ -894,7 +918,9 @@ impl PrelioNode {
                             _ => {}
                         }
                     }
-                    Ok(None) => {}
+                    Ok(None) => {
+                        std::thread::sleep(std::time::Duration::from_millis(1));
+                    }
                 }
             }
         });
@@ -929,6 +955,8 @@ impl PrelioNode {
 
                     let imu_lifis = imu_to_lifis(msg.clone());
                     let curr_stamp = timestamp_to_secs(&imu_lifis.stamp);
+                    #[cfg(feature = "rat")]
+                    let mut minot_bootstrap_trigger: Option<&'static str> = None;
 
                     if let Some(imu_pose_predictor_init) = imu_pose_predictor_init.as_ref() {
                         let mut imu_pose_predictor_init = imu_pose_predictor_init.lock().unwrap();
@@ -947,13 +975,8 @@ impl PrelioNode {
                                     buffer.push(imu_lifis.clone());
 
                                     #[cfg(feature = "rat")]
-                                    if synchronous_mode {
-                                        rat::bacon(
-                                            "tick_end",
-                                            &mut "".to_string(),
-                                            rat::VariableType::StaticOnly,
-                                        )
-                                        .unwrap();
+                                    {
+                                        minot_bootstrap_trigger = Some(MINOT_IMU_INIT_TICK);
                                     }
                                 }
                             } else {
@@ -961,6 +984,10 @@ impl PrelioNode {
                                 if let Some(buffer) = init_state.buffer.take() {
                                     imu_pose_predictor_init(&buffer);
                                     info!("EKF: Imu initialized");
+                                    #[cfg(feature = "rat")]
+                                    {
+                                        minot_bootstrap_trigger = Some(MINOT_LIO_START_TICK);
+                                    }
                                 }
                             }
                         }
@@ -968,6 +995,11 @@ impl PrelioNode {
 
                     // outputs filtered imu msg to pub again but we can not right now
                     let _ = state.lifis.lock().unwrap().add_imu(imu_lifis);
+                    drop(state);
+                    #[cfg(feature = "rat")]
+                    if let Some(trigger) = minot_bootstrap_trigger {
+                        publish_minot_trigger(synchronous_mode, trigger);
+                    }
 
                     // let filtered = {
                     //     let state = state_clone.lock().unwrap();
@@ -1003,6 +1035,8 @@ impl PrelioNode {
 
                 let imu_lifis = imu_to_lifis(msg.clone());
                 let curr_stamp = timestamp_to_secs(&imu_lifis.stamp);
+                #[cfg(feature = "rat")]
+                let mut minot_bootstrap_trigger: Option<&'static str> = None;
 
                 if let Some(imu_pose_predictor_init) = imu_pose_predictor_init.as_ref() {
                     let mut imu_pose_predictor_init = imu_pose_predictor_init.lock().unwrap();
@@ -1021,13 +1055,8 @@ impl PrelioNode {
                                 buffer.push(imu_lifis.clone());
 
                                 #[cfg(feature = "rat")]
-                                if synchronous_mode {
-                                    rat::bacon(
-                                        "tick_end",
-                                        &mut "".to_string(),
-                                        rat::VariableType::StaticOnly,
-                                    )
-                                    .unwrap();
+                                {
+                                    minot_bootstrap_trigger = Some(MINOT_IMU_INIT_TICK);
                                 }
                             }
                         } else {
@@ -1035,12 +1064,21 @@ impl PrelioNode {
                             if let Some(buffer) = init_state.buffer.take() {
                                 imu_pose_predictor_init(&buffer);
                                 info!("EKF: Imu initialized");
+                                #[cfg(feature = "rat")]
+                                {
+                                    minot_bootstrap_trigger = Some(MINOT_LIO_START_TICK);
+                                }
                             }
                         }
                     }
                 }
 
                 let filtered = state.lifis.lock().unwrap().add_imu(imu_lifis);
+                drop(state);
+                #[cfg(feature = "rat")]
+                if let Some(trigger) = minot_bootstrap_trigger {
+                    publish_minot_trigger(synchronous_mode, trigger);
+                }
                 match (filtered, imu_filtered_publisher.as_ref()) {
                     (Some(filtered), Some(imu_filtered_publisher)) => {
                         imu_filtered_publisher

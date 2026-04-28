@@ -249,10 +249,11 @@ fn processing_thread_main(thread: ProcessingThread) {
             continue;
         }
 
-        match thread
+        let registration = thread
             .pipeline
-            .register_processed_cloud(processed, Some(&thread.ready_for_next))
-        {
+            .register_processed_cloud(processed, Some(&thread.ready_for_next));
+
+        match registration {
             Ok(Some(output)) => {
                 // Clone the Arc while holding the lock, then call outside it to avoid deadlocks.
                 let cb_opt = thread

@@ -199,7 +199,7 @@ impl Pipeline {
 
     pub fn register_processed_cloud(
         &self,
-        processed: PrelioProcessedCloud,
+        mut processed: PrelioProcessedCloud,
         ready_for_next: Option<&std::sync::mpsc::Sender<()>>,
     ) -> anyhow::Result<Option<PelorusOutput>> {
         self.ensure_backend_map_initialized();
@@ -207,7 +207,7 @@ impl Pipeline {
         let mut eval = processed.runtime_eval;
         let lidar_timestamp = prelio::timestamp_to_secs(&processed.end_of_frame_time);
         let cloud_view = match &self.active_backend {
-            ActiveBackend::Cpu => LocatedBufferView::Ram(processed.cloud.clone()), // TODO this must somehow work without this clone
+            ActiveBackend::Cpu => LocatedBufferView::Ram(std::mem::take(&mut processed.cloud)),
             #[cfg(feature = "cuda")]
             ActiveBackend::Cuda(stream) => {
                 LocatedBufferView::copy_from_slice_cuda(stream, &processed.cloud)
@@ -249,6 +249,15 @@ impl Pipeline {
             return Ok(None);
         };
 
+        let cloud = match processed.passthrough {
+            Some(cloud) => cloud,
+            None => match cloud_view {
+                LocatedBufferView::Ram(cloud) => cloud,
+                #[allow(unreachable_patterns)]
+                _ => processed.cloud,
+            },
+        };
+
         Ok(Some(PelorusOutput {
             scan_id: processed.scan_id,
             timestamp: processed.end_of_frame_time,
@@ -257,7 +266,7 @@ impl Pipeline {
             linear_velocity: state.linear_velocity,
             angular_velocity: processed.end_of_frame_twist.angular,
             twist_covariance: twist_cov_map,
-            cloud: processed.passthrough.unwrap_or(processed.cloud),
+            cloud,
             frame_id: processed.header.frame_id,
         }))
     }

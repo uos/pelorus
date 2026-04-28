@@ -117,8 +117,7 @@ fn processing_thread_main(thread: ProcessingThread) {
 
     while let Ok(processed) = thread.prelio_receiver.recv() {
         // Shutdown mode: keep draining the prelio output channel so Prelio's producer thread
-        // doesn't panic on send, but DO NOT call into pelorus_reg (which would try to
-        // `ready_for_next.send(())` after Prelio drops its receiver).
+        // doesn't panic on send after Prelio drops its receiver.
         if thread.shutdown.load(Ordering::Relaxed) {
             continue;
         }
@@ -143,10 +142,11 @@ fn processing_thread_main(thread: ProcessingThread) {
             ),
         );
 
-        match thread
+        let registration = thread
             .pipeline
-            .register_processed_cloud(processed, Some(&thread.ready_for_next))
-        {
+            .register_processed_cloud(processed, Some(&thread.ready_for_next));
+
+        match registration {
             Ok(Some(output)) => {
                 dispatch_output(
                     output,
@@ -668,8 +668,7 @@ impl PelorusHandle {
 impl Drop for PelorusHandle {
     fn drop(&mut self) {
         // Two-phase shutdown:
-        // 1) Tell the processing thread to stop calling into pelorus_reg (prevents
-        //    `ready_for_next.send(()).unwrap()` panics once Prelio is dropped).
+        // 1) Tell the processing thread to stop releasing Prelio ticks once Prelio is dropped.
         // 2) Drop Prelio to stop its producer thread.
         // 3) Join the processing thread (it will drain until prelio_receiver disconnects).
         self.shutdown.store(true, Ordering::Relaxed);

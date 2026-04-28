@@ -280,6 +280,34 @@ fn resolve_export_trajectory_path(export_trajectory: Option<String>) -> Option<S
     }
 }
 
+fn release_minot_tick(
+    shutdown_flag: Option<&std::sync::Arc<std::sync::atomic::AtomicBool>>,
+    #[allow(unused_variables)] synchronous_mode: bool,
+) {
+    if shutdown_flag
+        .map(|flag| flag.load(std::sync::atomic::Ordering::Relaxed))
+        .unwrap_or(false)
+    {
+        return;
+    }
+
+    #[cfg(feature = "rat")]
+    if synchronous_mode {
+        let now_ns = {
+            let mut ts = libc::timespec {
+                tv_sec: 0,
+                tv_nsec: 0,
+            };
+            unsafe { libc::clock_gettime(libc::CLOCK_MONOTONIC, &mut ts) };
+            ts.tv_sec as f64 * 1e9 + ts.tv_nsec as f64
+        };
+        let mut ts = rat::NetArray::from(nalgebra::DMatrix::<f64>::from_element(1, 1, now_ns));
+        rat::bacon("pelorus:sd_end", &mut ts, rat::VariableType::F64).unwrap();
+        let mut tick = String::new();
+        rat::bacon("tick_end", &mut tick, rat::VariableType::StaticOnly).unwrap();
+    }
+}
+
 fn lio_with_ready_signal(
     config: LioConfig,
     ready_signal: Option<std::sync::mpsc::Sender<()>>,
@@ -420,6 +448,7 @@ fn lio_with_ready_signal(
     let _rerun_not_enabled = ();
 
     let (ready_for_next_tx, ready_for_next_rx) = std::sync::mpsc::channel();
+    let minot_replay_mode = synchronous_mode && shutdown_request_rx.is_some();
     let (lifis_node, synced_rx) = PrelioNode::new(
         #[cfg(not(feature = "mt_pubsub"))]
         &mut node,
@@ -702,27 +731,6 @@ fn lio_with_ready_signal(
                 ) {
                     error!("Error sending to rerun {err}");
                 }
-
-                #[cfg(feature = "rat")]
-                if synchronous_mode {
-                    let now_ns = {
-                        let mut ts = libc::timespec {
-                            tv_sec: 0,
-                            tv_nsec: 0,
-                        };
-                        unsafe { libc::clock_gettime(libc::CLOCK_MONOTONIC, &mut ts) };
-                        ts.tv_sec as f64 * 1e9 + ts.tv_nsec as f64
-                    };
-                    let mut ts =
-                        rat::NetArray::from(nalgebra::DMatrix::<f64>::from_element(1, 1, now_ns));
-                    rat::bacon("pelorus:sd_end", &mut ts, rat::VariableType::F64).unwrap();
-                    rat::bacon(
-                        "tick_end",
-                        &mut "".to_string(),
-                        rat::VariableType::StaticOnly,
-                    )
-                    .unwrap();
-                }
             }
         });
     }
@@ -733,8 +741,38 @@ fn lio_with_ready_signal(
     let export_trajectory_for_worker = export_trajectory.clone();
     let processing_handle = std::thread::spawn(move || {
         // Initialize Prelio prediction
-        ready_for_next_tx.send(()).unwrap();
         let mut ready_for_next_tx = Some(ready_for_next_tx);
+        let mut registration_ready_tx = None;
+        let mut ready_relay_handle = None;
+        if minot_replay_mode {
+            let (relay_tx, relay_rx) = std::sync::mpsc::channel();
+            registration_ready_tx = Some(relay_tx);
+            let prelio_ready_tx = ready_for_next_tx
+                .as_ref()
+                .expect("prelio ready sender must exist")
+                .clone();
+            let relay_shutdown_flag = processing_shutdown_flag.clone();
+            ready_relay_handle = Some(std::thread::spawn(move || {
+                while relay_rx.recv().is_ok() {
+                    if relay_shutdown_flag
+                        .as_ref()
+                        .map(|flag| flag.load(std::sync::atomic::Ordering::Relaxed))
+                        .unwrap_or(false)
+                    {
+                        break;
+                    }
+                    if prelio_ready_tx.send(()).is_err() {
+                        break;
+                    }
+                    release_minot_tick(relay_shutdown_flag.as_ref(), synchronous_mode);
+                }
+            }));
+        }
+        if let Some(ready) = ready_for_next_tx.as_ref() {
+            if let Err(e) = ready.send(()) {
+                error!("failed to send initial prelio ready signal: {e}");
+            }
+        }
         let mut lifis_node = Some(lifis_node);
 
         let active_backend = ActiveBackend::detect(&config);
@@ -838,6 +876,7 @@ fn lio_with_ready_signal(
                             lifis_node.request_shutdown();
                         }
                         // Drop sync gate and node ownership so all producer chains can close.
+                        drop(registration_ready_tx.take());
                         drop(ready_for_next_tx.take());
                         drop(lifis_node.take());
                         info!("Shutdown requested, exiting processing loop");
@@ -1002,80 +1041,39 @@ fn lio_with_ready_signal(
                     * ext
             };
 
-            let (register_pose, ekf_state) = {
+            let registration_result = {
                 let mut map = map.lock().unwrap();
+                let ready_for_registration = if minot_replay_mode {
+                    registration_ready_tx.as_ref()
+                } else {
+                    ready_for_next_tx.as_ref()
+                };
                 match map.register_and_map(
                     lifis_tick.map_only,
                     init_guess_lidar,
                     cloud_for_reg,
                     current_cloud_time,
                     lifis_tick.scan_id as usize,
-                    ready_for_next_tx.as_ref(),
+                    ready_for_registration,
                     &mut eval,
                     &active_backend,
                 ) {
-                    Ok(Some(pose)) => (pose, map.get_state()),
-                    Ok(None) => {
-                        // mark to send new data even on init
-                        #[cfg(feature = "rat")]
-                        if synchronous_mode
-                            && processing_shutdown_flag
-                                .as_ref()
-                                .map(|flag| !flag.load(std::sync::atomic::Ordering::Relaxed))
-                                .unwrap_or(true)
-                        {
-                            let now_ns = {
-                                let mut ts = libc::timespec {
-                                    tv_sec: 0,
-                                    tv_nsec: 0,
-                                };
-                                unsafe { libc::clock_gettime(libc::CLOCK_MONOTONIC, &mut ts) };
-                                ts.tv_sec as f64 * 1e9 + ts.tv_nsec as f64
-                            };
-                            let mut ts = rat::NetArray::from(
-                                nalgebra::DMatrix::<f64>::from_element(1, 1, now_ns),
-                            );
-                            rat::bacon("pelorus:sd_end", &mut ts, rat::VariableType::F64).unwrap();
-                            rat::bacon(
-                                "tick_end",
-                                &mut "".to_string(),
-                                rat::VariableType::StaticOnly,
-                            )
-                            .unwrap();
-                        }
-                        continue;
-                    } // skip outputting trivial solutions on initialization
-                    Err(err) => {
-                        error!("{err}");
-                        // mark to send new data even on error
-                        #[cfg(feature = "rat")]
-                        if synchronous_mode
-                            && processing_shutdown_flag
-                                .as_ref()
-                                .map(|flag| !flag.load(std::sync::atomic::Ordering::Relaxed))
-                                .unwrap_or(true)
-                        {
-                            let now_ns = {
-                                let mut ts = libc::timespec {
-                                    tv_sec: 0,
-                                    tv_nsec: 0,
-                                };
-                                unsafe { libc::clock_gettime(libc::CLOCK_MONOTONIC, &mut ts) };
-                                ts.tv_sec as f64 * 1e9 + ts.tv_nsec as f64
-                            };
-                            let mut ts = rat::NetArray::from(
-                                nalgebra::DMatrix::<f64>::from_element(1, 1, now_ns),
-                            );
-                            rat::bacon("pelorus:sd_end", &mut ts, rat::VariableType::F64).unwrap();
-                            rat::bacon(
-                                "tick_end",
-                                &mut "".to_string(),
-                                rat::VariableType::StaticOnly,
-                            )
-                            .unwrap();
-                        }
-                        continue;
-                    }
+                    Ok(Some(pose)) => Ok(Some((pose, map.get_state()))),
+                    Ok(None) => Ok(None),
+                    Err(err) => Err(err),
+                }
+            };
+
+            let (register_pose, ekf_state) = match registration_result {
+                Ok(Some(result)) => result,
+                Ok(None) => {
+                    release_minot_tick(processing_shutdown_flag.as_ref(), synchronous_mode);
+                    continue;
+                } // skip outputting trivial solutions on initialization
+                Err(err) => {
+                    error!("{err}");
+                    release_minot_tick(processing_shutdown_flag.as_ref(), synchronous_mode);
+                    continue;
                 }
             };
 
@@ -1722,32 +1720,15 @@ fn lio_with_ready_signal(
                 }
             }
 
-            // mark to send new data
-            #[cfg(all(feature = "rat", not(feature = "mapping")))]
-            if synchronous_mode
-                && processing_shutdown_flag
-                    .as_ref()
-                    .map(|flag| !flag.load(std::sync::atomic::Ordering::Relaxed))
-                    .unwrap_or(true)
-            {
-                let now_ns = {
-                    let mut ts = libc::timespec {
-                        tv_sec: 0,
-                        tv_nsec: 0,
-                    };
-                    unsafe { libc::clock_gettime(libc::CLOCK_MONOTONIC, &mut ts) };
-                    ts.tv_sec as f64 * 1e9 + ts.tv_nsec as f64
-                };
-                let mut ts =
-                    rat::NetArray::from(nalgebra::DMatrix::<f64>::from_element(1, 1, now_ns));
-                rat::bacon("pelorus:sd_end", &mut ts, rat::VariableType::F64).unwrap();
-                rat::bacon(
-                    "tick_end",
-                    &mut "".to_string(),
-                    rat::VariableType::StaticOnly,
-                )
-                .unwrap();
+            if !minot_replay_mode {
+                release_minot_tick(processing_shutdown_flag.as_ref(), synchronous_mode);
             }
+        }
+
+        drop(registration_ready_tx.take());
+        drop(ready_for_next_tx.take());
+        if let Some(handle) = ready_relay_handle.take() {
+            let _ = handle.join();
         }
 
         // Ensure backend work is quiesced and map state is released before GPU
@@ -2412,9 +2393,16 @@ _bag.{{
 _start_locked = false
 
 # Setting triggers for topics.
-# Advance one message for each topic on tick_end.
-pf! i, l 1 tick_end
+# During IMU bootstrap, advance IMU only. The first active LIO tick
+# advances to one cloud with its surrounding IMUs. After that, each
+# tick_end publishes one cloud and then advances IMUs up to the next
+# cloud without consuming that next cloud.
+pf! i 1 imu_init_tick
+pf! i, l 1 lio_start_tick
+pf! l 1 lio_start_tick
+pf! i, l 1 lio_start_tick
 pf! l 1 tick_end
+pf! i, l 1 tick_end
 
 reset! {bagfile_path}
 
@@ -2675,7 +2663,6 @@ pf! i 1
                         OfflineRuntimeEvent::MinotEndOfBag => {
                             info!("Minot reached end of bagfile");
                             if !lio_shutdown_requested {
-                                lio_shutdown_flag.store(true, std::sync::atomic::Ordering::SeqCst);
                                 let _ = lio_stop_tx.send(());
                                 lio_shutdown_requested = true;
                             }
@@ -2683,7 +2670,6 @@ pf! i 1
                         OfflineRuntimeEvent::MinotExited(status) => {
                             minot_exit_result = Some(status);
                             if !lio_shutdown_requested {
-                                lio_shutdown_flag.store(true, std::sync::atomic::Ordering::SeqCst);
                                 let _ = lio_stop_tx.send(());
                                 lio_shutdown_requested = true;
                             }
