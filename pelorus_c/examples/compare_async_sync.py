@@ -25,7 +25,14 @@ def run_cmd_allow_fail(cmd, env=None):
 def run_and_collect_until(cmd, env=None, sentinels=None):
     """Run command and stream stdout until one of the sentinel regexes appears.
     Returns (stdout, stderr, returncode). Does not use timeouts; determinism relies on the example to emit sentinel and exit."""
-    p = subprocess.Popen(cmd, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env, text=True)
+    p = subprocess.Popen(
+        cmd,
+        shell=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        env=env,
+        text=True,
+    )
     out_lines = []
     # Read stdout line-by-line until sentinel is matched
     matched = False
