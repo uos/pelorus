@@ -1064,6 +1064,8 @@ enum BufferMemoryPolicy {
 
 const EMPTY_KEY: i32 = i32::MIN;
 const THREADS_PER_GROUP: u32 = 256;
+const DESCRIPTOR_BINDING_COUNT: u32 = 18;
+const MAX_DISPATCHES_PER_SESSION: u32 = 20;
 
 #[repr(C)]
 #[derive(Clone, Copy, Default, Pod, Zeroable)]
@@ -1209,6 +1211,7 @@ struct ScratchBuffers {
 struct VulkanGpuMapState {
     context: Arc<VulkanContext>,
     compute: Arc<VulkanComputePipelines>,
+    command_resources: Mutex<ComputeCommandResources>,
     keys_buf: VulkanBuffer,
     values_buf: VulkanBuffer,
     dist_buf: VulkanBuffer,
@@ -1325,7 +1328,7 @@ fn create_compute_pipeline(
 
 #[cfg(feature = "vulkan_enable")]
 fn build_pipelines(context: Arc<VulkanContext>) -> Arc<VulkanComputePipelines> {
-    let bindings: Vec<_> = (0..18)
+    let bindings: Vec<_> = (0..DESCRIPTOR_BINDING_COUNT)
         .map(|i| {
             vk::DescriptorSetLayoutBinding::default()
                 .binding(i)
@@ -1446,25 +1449,15 @@ fn div_ceil_u32(v: u32, d: u32) -> u32 {
     if v == 0 { 0 } else { 1 + (v - 1) / d }
 }
 
-struct ComputeCommandSession<'a> {
-    context: &'a Arc<VulkanContext>,
+struct ComputeCommandResources {
+    context: Arc<VulkanContext>,
     command_buffer: vk::CommandBuffer,
     descriptor_pool: vk::DescriptorPool,
     descriptor_sets: Vec<vk::DescriptorSet>,
-    next_set_idx: std::sync::atomic::AtomicUsize,
-    _submit_lock: std::sync::MutexGuard<'a, ()>,
 }
 
-impl<'a> ComputeCommandSession<'a> {
-    fn begin(
-        context: &'a Arc<VulkanContext>,
-        pipelines: &VulkanComputePipelines,
-    ) -> ComputeCommandSession<'a> {
-        let submit_lock = context
-            .submit_lock
-            .lock()
-            .expect("vulkan submit mutex poisoned");
-
+impl ComputeCommandResources {
+    fn new(context: &Arc<VulkanContext>, pipelines: &VulkanComputePipelines) -> Self {
         let alloc = vk::CommandBufferAllocateInfo::default()
             .command_pool(context.command_pool)
             .level(vk::CommandBufferLevel::PRIMARY)
@@ -1476,23 +1469,12 @@ impl<'a> ComputeCommandSession<'a> {
                 .expect("failed to allocate command buffer")[0]
         };
 
-        let begin = vk::CommandBufferBeginInfo::default()
-            .flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT);
-        unsafe {
-            context
-                .device
-                .begin_command_buffer(command_buffer, &begin)
-                .expect("failed to begin command buffer");
-        }
-
-        // We allow up to 20 dispatches per session to avoid descriptor set overwrite bugs
-        let max_dispatches = 20;
         let pool_sizes = [vk::DescriptorPoolSize {
             ty: vk::DescriptorType::STORAGE_BUFFER,
-            descriptor_count: 18 * max_dispatches,
+            descriptor_count: DESCRIPTOR_BINDING_COUNT * MAX_DISPATCHES_PER_SESSION,
         }];
         let pool_ci = vk::DescriptorPoolCreateInfo::default()
-            .max_sets(max_dispatches)
+            .max_sets(MAX_DISPATCHES_PER_SESSION)
             .pool_sizes(&pool_sizes);
         let descriptor_pool = unsafe {
             context
@@ -1500,7 +1482,8 @@ impl<'a> ComputeCommandSession<'a> {
                 .create_descriptor_pool(&pool_ci, None)
                 .expect("failed creating descriptor pool")
         };
-        let set_layouts = vec![pipelines.descriptor_set_layout; max_dispatches as usize];
+        let set_layouts =
+            vec![pipelines.descriptor_set_layout; MAX_DISPATCHES_PER_SESSION as usize];
         let dset_alloc = vk::DescriptorSetAllocateInfo::default()
             .descriptor_pool(descriptor_pool)
             .set_layouts(&set_layouts);
@@ -1511,18 +1494,82 @@ impl<'a> ComputeCommandSession<'a> {
                 .expect("failed allocating descriptor sets")
         };
 
-        ComputeCommandSession {
-            context,
+        Self {
+            context: Arc::clone(context),
             command_buffer,
             descriptor_pool,
             descriptor_sets,
-            next_set_idx: std::sync::atomic::AtomicUsize::new(0),
+        }
+    }
+}
+
+impl Drop for ComputeCommandResources {
+    fn drop(&mut self) {
+        unsafe {
+            self.context.device.free_command_buffers(
+                self.context.command_pool,
+                std::slice::from_ref(&self.command_buffer),
+            );
+            self.context
+                .device
+                .destroy_descriptor_pool(self.descriptor_pool, None);
+        }
+    }
+}
+
+struct ComputeCommandSession<'a> {
+    context: &'a Arc<VulkanContext>,
+    resources: std::sync::MutexGuard<'a, ComputeCommandResources>,
+    next_set_idx: usize,
+    dummy_buffer: vk::Buffer,
+    _submit_lock: std::sync::MutexGuard<'a, ()>,
+}
+
+impl<'a> ComputeCommandSession<'a> {
+    fn begin(
+        context: &'a Arc<VulkanContext>,
+        resources: &'a Mutex<ComputeCommandResources>,
+        dummy_buffer: vk::Buffer,
+    ) -> ComputeCommandSession<'a> {
+        let submit_lock = context
+            .submit_lock
+            .lock()
+            .expect("vulkan submit mutex poisoned");
+        let resources = resources
+            .lock()
+            .expect("vulkan compute resources mutex poisoned");
+        assert!(
+            Arc::ptr_eq(context, &resources.context),
+            "compute resources and Vulkan context mismatch"
+        );
+
+        let begin = vk::CommandBufferBeginInfo::default()
+            .flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT);
+        unsafe {
+            context
+                .device
+                .reset_command_buffer(
+                    resources.command_buffer,
+                    vk::CommandBufferResetFlags::empty(),
+                )
+                .expect("failed to reset command buffer");
+            context
+                .device
+                .begin_command_buffer(resources.command_buffer, &begin)
+                .expect("failed to begin command buffer");
+        }
+
+        ComputeCommandSession {
+            context,
+            resources,
+            next_set_idx: 0,
+            dummy_buffer,
             _submit_lock: submit_lock,
         }
     }
 
     fn dispatch(
-        &self,
+        &mut self,
         pipelines: &VulkanComputePipelines,
         pipeline: vk::Pipeline,
         buffers: &[vk::Buffer],
@@ -1532,20 +1579,26 @@ impl<'a> ComputeCommandSession<'a> {
         if work_items == 0 {
             return;
         }
+        assert!(
+            buffers.len() <= DESCRIPTOR_BINDING_COUNT as usize,
+            "too many buffers for Vulkan descriptor layout"
+        );
 
-        let set_idx = self
-            .next_set_idx
-            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        if set_idx >= self.descriptor_sets.len() {
-            panic!("exceeded maximum dispatches (16) in a single ComputeCommandSession");
+        let set_idx = self.next_set_idx;
+        self.next_set_idx += 1;
+        if set_idx >= self.resources.descriptor_sets.len() {
+            panic!(
+                "exceeded maximum dispatches ({}) in a single ComputeCommandSession",
+                self.resources.descriptor_sets.len()
+            );
         }
-        let descriptor_set = self.descriptor_sets[set_idx];
+        let descriptor_set = self.resources.descriptor_sets[set_idx];
 
-        let infos: Vec<_> = buffers
-            .iter()
-            .map(|buffer| {
+        let infos: Vec<_> = (0..DESCRIPTOR_BINDING_COUNT as usize)
+            .map(|idx| {
+                let buffer = buffers.get(idx).copied().unwrap_or(self.dummy_buffer);
                 vk::DescriptorBufferInfo::default()
-                    .buffer(*buffer)
+                    .buffer(buffer)
                     .offset(0)
                     .range(vk::WHOLE_SIZE)
             })
@@ -1565,12 +1618,12 @@ impl<'a> ComputeCommandSession<'a> {
             self.context.device.update_descriptor_sets(&writes, &[]);
 
             self.context.device.cmd_bind_pipeline(
-                self.command_buffer,
+                self.resources.command_buffer,
                 vk::PipelineBindPoint::COMPUTE,
                 pipeline,
             );
             self.context.device.cmd_bind_descriptor_sets(
-                self.command_buffer,
+                self.resources.command_buffer,
                 vk::PipelineBindPoint::COMPUTE,
                 pipelines.pipeline_layout,
                 0,
@@ -1578,14 +1631,14 @@ impl<'a> ComputeCommandSession<'a> {
                 &[],
             );
             self.context.device.cmd_push_constants(
-                self.command_buffer,
+                self.resources.command_buffer,
                 pipelines.pipeline_layout,
                 vk::ShaderStageFlags::COMPUTE,
                 0,
                 bytemuck::bytes_of(params),
             );
             self.context.device.cmd_dispatch(
-                self.command_buffer,
+                self.resources.command_buffer,
                 div_ceil_u32(work_items, THREADS_PER_GROUP),
                 1,
                 1,
@@ -1599,7 +1652,7 @@ impl<'a> ComputeCommandSession<'a> {
             .dst_access_mask(vk::AccessFlags::SHADER_WRITE | vk::AccessFlags::SHADER_READ);
         unsafe {
             self.context.device.cmd_pipeline_barrier(
-                self.command_buffer,
+                self.resources.command_buffer,
                 vk::PipelineStageFlags::COMPUTE_SHADER,
                 vk::PipelineStageFlags::COMPUTE_SHADER,
                 vk::DependencyFlags::empty(),
@@ -1616,7 +1669,7 @@ impl<'a> ComputeCommandSession<'a> {
             .dst_access_mask(vk::AccessFlags::HOST_READ);
         unsafe {
             self.context.device.cmd_pipeline_barrier(
-                self.command_buffer,
+                self.resources.command_buffer,
                 vk::PipelineStageFlags::COMPUTE_SHADER,
                 vk::PipelineStageFlags::HOST,
                 vk::DependencyFlags::empty(),
@@ -1630,7 +1683,7 @@ impl<'a> ComputeCommandSession<'a> {
     fn write_timestamp(&self, timestamp_pool: vk::QueryPool, query_index: u32) {
         unsafe {
             self.context.device.cmd_write_timestamp(
-                self.command_buffer,
+                self.resources.command_buffer,
                 vk::PipelineStageFlags::COMPUTE_SHADER,
                 timestamp_pool,
                 query_index,
@@ -1638,14 +1691,18 @@ impl<'a> ComputeCommandSession<'a> {
         }
     }
 
+    fn command_buffer(&self) -> vk::CommandBuffer {
+        self.resources.command_buffer
+    }
+
     fn submit(self) {
         unsafe {
             self.context
                 .device
-                .end_command_buffer(self.command_buffer)
+                .end_command_buffer(self.resources.command_buffer)
                 .expect("failed to end command buffer");
             let submit = vk::SubmitInfo::default()
-                .command_buffers(std::slice::from_ref(&self.command_buffer));
+                .command_buffers(std::slice::from_ref(&self.resources.command_buffer));
             self.context
                 .device
                 .queue_submit(
@@ -1658,13 +1715,6 @@ impl<'a> ComputeCommandSession<'a> {
                 .device
                 .queue_wait_idle(self.context.queue)
                 .expect("failed waiting for compute queue");
-            self.context.device.free_command_buffers(
-                self.context.command_pool,
-                std::slice::from_ref(&self.command_buffer),
-            );
-            self.context
-                .device
-                .destroy_descriptor_pool(self.descriptor_pool, None);
         }
     }
 }
@@ -1712,6 +1762,7 @@ pub fn init_map(
                 VulkanBuffer::new(stream, size_of::<GpuVoxelDist>(), dist_cap as usize);
             let mut dist_keys_buf = VulkanBuffer::new(stream, size_of::<i32>(), dist_cap as usize);
             let dummy_buf = VulkanBuffer::new(stream, size_of::<u32>(), 1);
+            let command_resources = Mutex::new(ComputeCommandResources::new(context, &compute));
 
             let sorter_ci = VrdxSorterCreateInfo {
                 physical_device: context.physical_device,
@@ -1789,7 +1840,7 @@ pub fn init_map(
             let all_init_buffers = [
                 dmy, dmy, dmy, dmy, dmy, dmy, dmy, dmy, dmy, dmy, dmy, dmy, k0, dmy, dmy, dmy,
             ];
-            let session = ComputeCommandSession::begin(context, &compute);
+            let mut session = ComputeCommandSession::begin(context, &command_resources, dmy);
             session.dispatch(
                 &compute,
                 compute.hashmap_init,
@@ -1822,6 +1873,7 @@ pub fn init_map(
             MapBackendState::Vulkan(VulkanGpuMapState {
                 context: Arc::clone(context),
                 compute,
+                command_resources,
                 keys_buf,
                 values_buf,
                 dist_buf,
@@ -1912,6 +1964,7 @@ fn rebuild_gpu_lru_order(
     compute: &VulkanComputePipelines,
     scratch: &mut ScratchBuffers,
     dist_buf: &VulkanBuffer,
+    dummy_buf: &VulkanBuffer,
     scan_number: u32,
     dist_cap: u32,
     session: &mut ComputeCommandSession,
@@ -1921,7 +1974,7 @@ fn rebuild_gpu_lru_order(
     let lru_mapping = vk_buffer_handle(&scratch.lru_mapping);
     let sorter_scratch = vk_buffer_handle(&scratch.sorter_scratch);
     let counter_b = vk_buffer_handle(&scratch.counter);
-    let dummy = vk::Buffer::null();
+    let dummy = vk_buffer_handle(dummy_buf);
 
     let all_buffers = [
         dummy,
@@ -1951,7 +2004,7 @@ fn rebuild_gpu_lru_order(
 
     unsafe {
         vrdxCmdSortKeyValue(
-            session.command_buffer,
+            session.command_buffer(),
             scratch.sorter,
             dist_cap,
             lru_keys,
@@ -2062,11 +2115,13 @@ pub fn add_to_map(
                 block_sums_b,
             ];
 
-            let mut session = ComputeCommandSession::begin(&state.context, &state.compute);
+            let dummy = vk_buffer_handle(&state.dummy_buf);
+            let mut session =
+                ComputeCommandSession::begin(&state.context, &state.command_resources, dummy);
             // Reset timestamp queries for add_to_map (queries 2-3)
             unsafe {
                 state.context.device.cmd_reset_query_pool(
-                    session.command_buffer,
+                    session.command_buffer(),
                     state.timestamp_pool,
                     2,
                     2,
@@ -2088,7 +2143,7 @@ pub fn add_to_map(
             let sorter_scratch = vk_buffer_handle(&state.scratch.sorter_scratch);
             unsafe {
                 vrdxCmdSortKeyValue(
-                    session.command_buffer,
+                    session.command_buffer(),
                     state.scratch.sorter,
                     n_points as u32,
                     keys_b,
@@ -2274,6 +2329,7 @@ pub fn add_to_map(
                     &state.compute,
                     &mut state.scratch,
                     &state.dist_buf,
+                    &state.dummy_buf,
                     state.scan_number,
                     state.dist_cap,
                     &mut session,
@@ -2292,11 +2348,14 @@ pub fn add_to_map(
             state.lru_cursor = counters_result[2].min(state.dist_cap);
 
             if add_cursor_before < state.dist_cap && state.add_cursor >= state.dist_cap {
-                let mut session = ComputeCommandSession::begin(&state.context, &state.compute);
+                let dummy = vk_buffer_handle(&state.dummy_buf);
+                let mut session =
+                    ComputeCommandSession::begin(&state.context, &state.command_resources, dummy);
                 rebuild_gpu_lru_order(
                     &state.compute,
                     &mut state.scratch,
                     &state.dist_buf,
+                    &state.dummy_buf,
                     state.scan_number,
                     state.dist_cap,
                     &mut session,
@@ -2534,11 +2593,12 @@ pub fn planes_vulkan(
                 compact_out_b,
             ];
 
-            let session = ComputeCommandSession::begin(&state.context, &state.compute);
+            let mut session =
+                ComputeCommandSession::begin(&state.context, &state.command_resources, dummy);
             // Reset timestamp queries for this operation
             unsafe {
                 state.context.device.cmd_reset_query_pool(
-                    session.command_buffer,
+                    session.command_buffer(),
                     state.timestamp_pool,
                     0,
                     4,

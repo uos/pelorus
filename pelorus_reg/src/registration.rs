@@ -745,7 +745,6 @@ impl crate::Registration for RegistrationState {
                     UnitQuaternion::from_matrix(&mat).into()
                 };
                 pelorus_vulkan::add_to_map(stream, buffer, transl, &rot_quat, scan_id);
-                stream.sync();
             }
         }
         {

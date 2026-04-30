@@ -1,0 +1,22 @@
+[package]
+name = "pelorus_pico"
+description = "Rust pico C-ABI for minimal Pelorus integration."
+edition.workspace = true
+include.workspace = true
+keywords.workspace = true
+license.workspace = true
+repository.workspace = true
+version.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+
+[lib]
+name = "pelorus_pico"
+crate-type = ["staticlib", "rlib"]
+
+[features]
+default = ["alloc"]
+alloc = []
+
+[build-dependencies]
+cc = "1"
