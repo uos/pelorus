@@ -26,6 +26,7 @@ jobs:
           rustup toolchain uninstall stable
           rustup toolchain install stable
           cargo check
+          RUSTFLAGS="-C panic=abort" cargo build -p pelorus_pico --release
       - name: Validate packaging files versions
         run: |
           set -euo pipefail

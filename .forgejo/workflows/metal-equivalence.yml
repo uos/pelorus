@@ -28,6 +28,9 @@ jobs:
         run: |
           rustup toolchain uninstall stable
           rustup toolchain install stable
+      - name: Build pelorus_pico
+        run: |
+          RUSTFLAGS="-C panic=abort" cargo build --release --package pelorus_pico
       # - name: Install marina
       #   run: |
       #     brew tap uos/marina

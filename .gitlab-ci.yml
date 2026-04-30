@@ -16,6 +16,7 @@ rust-stable:
   script:
     - rustup default stable
     - cargo build
+    - RUSTFLAGS="-C panic=abort" cargo build -p pelorus_pico --release
     - cargo test
   rules:
     - if: '$CI_PIPELINE_SOURCE == "schedule"'
@@ -92,4 +93,3 @@ examples-regression:
     - if: '$CI_PIPELINE_SOURCE == "schedule"'
       when: never
     - when: on_success
-

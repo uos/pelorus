@@ -16,6 +16,24 @@ members = [
   "spole",
   "glim_integration/pelorus_glim_odometry",
 ]
+# Keep pelorus_pico out of bare workspace builds: it is no_std and must be built
+# with `-C panic=abort` when requested explicitly.
+default-members = [
+  "pelorus_core",
+  "pelorus_cuda",
+  "pelorus_metal",
+  "pelorus_vulkan",
+  "pelorus_cli",
+  "pelorus_c",
+  "pelorus_c/deb-dev",
+  "pelorus_py",
+  "pelorus",
+  "pelorus_reg",
+  "prelio",
+  "prelio_io",
+  "spole",
+  "glim_integration/pelorus_glim_odometry",
+]
 resolver = "3"
 
 [workspace.package]
