@@ -23,7 +23,7 @@ set_target_properties(sync_blocking PROPERTIES
 )
 
 # C++ example (requires C++11 or later)
-find_package(PCL)
+find_package(PCL COMPONENTS common)
 if(PCL_FOUND)
     message(STATUS "PCL found - building C++ API example")
     add_executable(cpp_wrapper sync_blocking_pcl_eigen.cpp)

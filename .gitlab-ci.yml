@@ -80,15 +80,7 @@ glim-odom:
 examples-regression:
   stage: test
   script:
-    - apt-get update
-    - apt-get install -y build-essential cmake libpcl-dev libeigen3-dev pkg-config
-    - rustup default stable
-    - cd pelorus_c && mkdir build && cd build && cmake ..
-    - make install
-    - cd ../../pelorus_py
-    - maturin develop
-    - cd ../pelorus_c/examples
-    - make regression
+    - ./scripts/api-regression-tests.bash
   rules:
     - if: '$CI_PIPELINE_SOURCE == "schedule"'
       when: never

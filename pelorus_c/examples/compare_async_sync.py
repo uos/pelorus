@@ -198,7 +198,10 @@ def main():
             print("Running cpp_wrapper (build/cpp_wrapper)...")
             out_cpp, err_cpp, rc_cpp = run_and_collect_until(
                 "./build/cpp_wrapper", env=env,
-                sentinels=[r"Point cloud: \\d+ points", r"Callback invoked! Odometry #\d+ received "])
+                sentinels=[r"Point cloud: \d+ points", r"Callback invoked! Odometry #\d+ received "])
+            if rc_cpp != 0:
+                print(f"Error: cpp_wrapper exited with code {rc_cpp}. stdout/stderr follow:\n{out_cpp}\n{err_cpp}")
+                sys.exit(1)
         else:
             print("Error: cpp_wrapper binary missing after build")
             sys.exit(2)

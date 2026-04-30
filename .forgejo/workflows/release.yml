@@ -52,9 +52,19 @@ jobs:
 
           echo "Packaging files contain correct version: $VERSION"
 
-  clean-1:
+  examples-regression:
     needs:
       - sanity
+    runs-on: ubuntu-dev-resolute-arm
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run C API examples regression
+        run: |
+          ./scripts/api-regression-tests.bash
+
+  clean-1:
+    needs:
+      - examples-regression
     strategy:
       matrix:
         include:
