@@ -81,12 +81,6 @@ jobs:
           make
 
   examples-regression:
-    needs:
-      - rust-build-test
-      - cuda-build
-      - vulkan-build
-      - lyrical-build
-      - glim-build
     runs-on: ubuntu-dev-resolute
     container:
       image: docker.io/stelzo/ubuntu-dev:resolute
