@@ -144,10 +144,25 @@ pub fn downsample_points_metal_impl(
         enc.dispatchThreads_threadsPerThreadgroup(grid1d(selected_count), group1d());
     }
     enc.memoryBarrierWithScope(MTLBarrierScope::Buffers);
+    enc.setComputePipelineState(&pipes.downsample_medoids);
+    unsafe {
+        enc.setBuffer_offset_atIndex(Some(scratch.selected.metal_buffer()), 0, 0);
+        enc.setBuffer_offset_atIndex(Some(scratch.indices.metal_buffer()), 0, 1);
+        enc.setBuffer_offset_atIndex(Some(scratch.run_starts.metal_buffer()), 0, 2);
+        enc.setBuffer_offset_atIndex(Some(scratch.run_ends.metal_buffer()), 0, 3);
+        enc.setBuffer_offset_atIndex(Some(scratch.medoids.metal_buffer()), 0, 4);
+        enc.setBuffer_offset_atIndex(Some(scratch.counter.metal_buffer()), 0, 5);
+        enc.setBytes_length_atIndex(
+            std::ptr::NonNull::new(&params as *const _ as *mut _).unwrap(),
+            size_of::<DownsampleParams>(),
+            6,
+        );
+        enc.dispatchThreads_threadsPerThreadgroup(grid1d(selected_count), group1d());
+    }
     enc.endEncoding();
     cb.commit();
     cb.waitUntilCompleted();
-    let build_sort_rle_ms = (cb.GPUEndTime() - cb.GPUStartTime()) * 1000.0;
+    let gpu_ms = (cb.GPUEndTime() - cb.GPUStartTime()) * 1000.0;
 
     let unique_start = std::time::Instant::now();
     let unique_count = scratch.counter.as_slice::<u32>()[0] as usize;
@@ -159,37 +174,12 @@ pub fn downsample_points_metal_impl(
             MetalDownsampleTimings {
                 total_ms: start_total.elapsed().as_secs_f64() * 1000.0,
                 upload_ms,
-                key_build_ms: build_sort_rle_ms,
+                key_build_ms: gpu_ms,
                 unique_count_sync_ms,
                 ..Default::default()
             },
         );
     }
-
-    let medoid_params = DownsampleParams {
-        unique_count: unique_count as u32,
-        ..params
-    };
-    let cb = stream.queue.commandBuffer().expect("cb");
-    let enc = cb.computeCommandEncoder().expect("enc");
-    enc.setComputePipelineState(&pipes.downsample_medoids);
-    unsafe {
-        enc.setBuffer_offset_atIndex(Some(scratch.selected.metal_buffer()), 0, 0);
-        enc.setBuffer_offset_atIndex(Some(scratch.indices.metal_buffer()), 0, 1);
-        enc.setBuffer_offset_atIndex(Some(scratch.run_starts.metal_buffer()), 0, 2);
-        enc.setBuffer_offset_atIndex(Some(scratch.run_ends.metal_buffer()), 0, 3);
-        enc.setBuffer_offset_atIndex(Some(scratch.medoids.metal_buffer()), 0, 4);
-        enc.setBytes_length_atIndex(
-            std::ptr::NonNull::new(&medoid_params as *const _ as *mut _).unwrap(),
-            size_of::<DownsampleParams>(),
-            5,
-        );
-        enc.dispatchThreads_threadsPerThreadgroup(grid1d(unique_count), group1d());
-    }
-    enc.endEncoding();
-    cb.commit();
-    cb.waitUntilCompleted();
-    let medoid_reduce_ms = (cb.GPUEndTime() - cb.GPUStartTime()) * 1000.0;
 
     scratch.medoids.n = unique_count;
     let download_start = std::time::Instant::now();
@@ -205,10 +195,9 @@ pub fn downsample_points_metal_impl(
         MetalDownsampleTimings {
             total_ms: start_total.elapsed().as_secs_f64() * 1000.0,
             upload_ms,
-            key_build_ms: build_sort_rle_ms,
+            key_build_ms: gpu_ms,
             run_length_encode_ms: 0.0,
             unique_count_sync_ms,
-            medoid_reduce_ms,
             timestamp_sort_ms,
             download_ms,
             ..Default::default()

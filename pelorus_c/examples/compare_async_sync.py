@@ -8,6 +8,10 @@ from math import isclose
 POINT_RE = re.compile(r"^\s*Point\s+(\d+):\s*\[([^]]+)\]\s*I=([0-9eE+\-\.]+)")
 
 
+def log(msg):
+    print(msg, flush=True)
+
+
 def run_cmd(cmd, env=None):
     p = subprocess.run(cmd, shell=True, capture_output=True, env=env)
     if p.returncode != 0:
@@ -36,6 +40,7 @@ def run_and_collect_until(cmd, env=None, sentinels=None):
     out_lines = []
     # Read stdout line-by-line until sentinel is matched
     matched = False
+    should_stop_process = False
     try:
         point_count = None
         point_lines = 0
@@ -60,18 +65,29 @@ def run_and_collect_until(cmd, env=None, sentinels=None):
                     point_lines += 1
                     if point_count is not None and point_lines >= point_count:
                         # collected all points for the registered odom; we're done
+                        should_stop_process = True
                         break
-        # capture any remaining output after process exits
-        try:
-            rest_out, rest_err = p.communicate()
-        except Exception:
-            rest_out, rest_err = ("", "")
+        if should_stop_process and p.poll() is None:
+            p.terminate()
+            try:
+                rest_out, rest_err = p.communicate(timeout=5)
+            except subprocess.TimeoutExpired:
+                p.kill()
+                rest_out, rest_err = p.communicate()
+        else:
+            # capture any remaining output after process exits
+            try:
+                rest_out, rest_err = p.communicate(timeout=600)
+            except subprocess.TimeoutExpired:
+                p.kill()
+                rest_out, rest_err = p.communicate()
         if rest_out:
             out_lines.append(rest_out)
         stderr = rest_err if rest_err else ""
     finally:
-        # Wait for process to exit if it hasn't; we avoid timeouts to keep deterministic behavior
+        # Ensure process always exits
         if p.poll() is None:
+            p.kill()
             p.wait()
     return ("".join(out_lines), stderr, p.returncode)
 
@@ -192,17 +208,22 @@ def main():
     env = dict(**subprocess.os.environ)
     env['PELORUS_DUMP_ALL_POINTS'] = '1'
 
-    print("Running async_callback...")
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(line_buffering=True)
+    if hasattr(sys.stderr, "reconfigure"):
+        sys.stderr.reconfigure(line_buffering=True)
+
+    log("Running async_callback...")
     out_async, err_async, rc_async = run_and_collect_until("./async_callback", env=env, sentinels=[r"Callback invoked! Odometry #\d+ received \(scan_id=\d+\)"])
 
-    print("Running sync_blocking...")
+    log("Running sync_blocking...")
     out_sync, err_sync, rc_sync = run_and_collect_until("./sync_blocking", env=env, sentinels=[r"Point cloud: \d+ points"]) 
 
     out_cpp = None
     try:
         subprocess.run("make cpp_wrapper", shell=True, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         if subprocess.os.path.exists("build/cpp_wrapper"):
-            print("Running cpp_wrapper (build/cpp_wrapper)...")
+            log("Running cpp_wrapper (build/cpp_wrapper)...")
             out_cpp, err_cpp, rc_cpp = run_and_collect_until(
                 "./build/cpp_wrapper", env=env,
                 sentinels=[r"Point cloud: \d+ points", r"Callback invoked! Odometry #\d+ received "])

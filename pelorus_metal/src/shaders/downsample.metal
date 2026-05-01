@@ -38,6 +38,7 @@ kernel void downsample_rle(
     if (idx >= params.selected_count) return;
 
     uint key = sorted_keys[idx];
+    uint sort_key = key ^ 0x80000000u;
     bool is_start = (idx == 0u) || (sorted_keys[idx - 1u] != key);
     if (!is_start) return;
 
@@ -45,7 +46,7 @@ kernel void downsample_rle(
     uint right = params.selected_count;
     while (left < right) {
         uint mid = left + (right - left) / 2u;
-        if (sorted_keys[mid] <= key) {
+        if ((sorted_keys[mid] ^ 0x80000000u) <= sort_key) {
             left = mid + 1u;
         } else {
             right = mid;
@@ -63,10 +64,12 @@ kernel void downsample_medoids(
     device const uint* run_starts [[buffer(2)]],
     device const uint* run_ends [[buffer(3)]],
     device Point* medoids [[buffer(4)]],
-    constant DownsampleParams& params [[buffer(5)]],
+    device const atomic_uint* counter [[buffer(5)]],
+    constant DownsampleParams& params [[buffer(6)]],
     uint idx [[thread_position_in_grid]])
 {
-    if (idx >= params.unique_count) return;
+    uint unique_count = atomic_load_explicit(&counter[0], memory_order_relaxed);
+    if (idx >= unique_count) return;
 
     uint start = run_starts[idx];
     uint end = run_ends[idx];

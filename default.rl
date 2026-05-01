@@ -31,7 +31,7 @@ preprocessing {
     point_skip = 1
 
     # Where to run preprocessing downsampling. Backend uses the active acceleration backend when available; Cpu always uses the CPU path.
-    backend = Backend
+    backend = CPU
 
     # Estimated sizes of features in the incoming scan, expressed as a factor of registration.map.resolution. Expected values are between 0.0 and 1.0.
     query_resolution_factor = 0.5

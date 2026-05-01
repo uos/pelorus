@@ -300,6 +300,52 @@ mod tests {
     }
 
     #[test]
+    fn downsample_handles_signed_hash_ordering() {
+        let _lock = crate::map::acquire_test_lock();
+        let stream = Stream::new();
+        let cloud = vec![
+            PointXYZIT {
+                x: 0.0,
+                y: 0.0,
+                z: 0.0,
+                intensity: 1.0,
+                timestamp: 4.0,
+            },
+            PointXYZIT {
+                x: -1.0,
+                y: 0.0,
+                z: 0.0,
+                intensity: 2.0,
+                timestamp: 1.0,
+            },
+            PointXYZIT {
+                x: -0.7,
+                y: 0.0,
+                z: 0.0,
+                intensity: 3.0,
+                timestamp: 2.0,
+            },
+            PointXYZIT {
+                x: 1.0,
+                y: 0.0,
+                z: 0.0,
+                intensity: 4.0,
+                timestamp: 3.0,
+            },
+        ];
+
+        let (out, _) = downsample_points_metal(&stream, &cloud, 1, 1.0);
+
+        assert_eq!(out.len(), 3);
+        assert_eq!(out[0].timestamp, 1.0);
+        assert_eq!(out[1].timestamp, 3.0);
+        assert_eq!(out[2].timestamp, 4.0);
+        assert_eq!(out[0].x, -1.0);
+        assert_eq!(out[1].x, 1.0);
+        assert_eq!(out[2].x, 0.0);
+    }
+
+    #[test]
     fn map_init_and_add() {
         let _lock = crate::map::acquire_test_lock();
         let stream = Stream::new();
