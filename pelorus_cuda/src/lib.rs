@@ -407,6 +407,137 @@ fn ensure_cleanup_registered() {
 }
 
 #[derive(Debug, Clone, Copy, Default)]
+pub struct CudaDownsampleTimings {
+    pub total_ms: f64,
+    pub upload_ms: f64,
+    pub key_build_ms: f64,
+    pub keyed_sort_ms: f64,
+    pub run_length_encode_ms: f64,
+    pub run_starts_scan_ms: f64,
+    pub unique_count_sync_ms: f64,
+    pub medoid_reduce_ms: f64,
+    pub timestamp_key_build_ms: f64,
+    pub timestamp_sort_ms: f64,
+    pub download_ms: f64,
+}
+
+fn downsample_timings_from_ffi(
+    ffi_timings: ffi::CudaDownsampleTimings,
+    total_ms: f64,
+) -> CudaDownsampleTimings {
+    CudaDownsampleTimings {
+        total_ms,
+        upload_ms: ffi_timings.upload_ms,
+        key_build_ms: ffi_timings.key_build_ms,
+        keyed_sort_ms: ffi_timings.keyed_sort_ms,
+        run_length_encode_ms: ffi_timings.run_length_encode_ms,
+        run_starts_scan_ms: ffi_timings.run_starts_scan_ms,
+        unique_count_sync_ms: ffi_timings.unique_count_sync_ms,
+        medoid_reduce_ms: ffi_timings.medoid_reduce_ms,
+        timestamp_key_build_ms: ffi_timings.timestamp_key_build_ms,
+        timestamp_sort_ms: ffi_timings.timestamp_sort_ms,
+        download_ms: ffi_timings.download_ms,
+    }
+}
+
+pub fn downsample_points_cuda(
+    stream: &Stream,
+    filtered_cloud: &[PointXYZIT],
+    point_skip: usize,
+    voxel_size: f32,
+) -> (Vec<PointXYZIT>, CudaDownsampleTimings) {
+    let _ = const {
+        assert!(size_of::<ffi::Point>() == size_of::<PointXYZIT>());
+    };
+
+    if filtered_cloud.is_empty() {
+        return (Vec::new(), CudaDownsampleTimings::default());
+    }
+
+    let point_skip = point_skip.max(1);
+    let out_capacity = filtered_cloud.len().div_ceil(point_skip);
+    let mut out = vec![PointXYZIT::default(); out_capacity];
+    let mut ffi_timings = std::mem::MaybeUninit::<ffi::CudaDownsampleTimings>::zeroed();
+
+    let start = std::time::Instant::now();
+    let size = unsafe {
+        ffi::downsample_points(
+            stream.stream.raw,
+            filtered_cloud.as_ptr() as *const ffi::Point,
+            filtered_cloud.len() as u32,
+            point_skip as u32,
+            voxel_size,
+            out.as_mut_ptr() as *mut ffi::Point,
+            out.len() as u32,
+            ffi_timings.as_mut_ptr(),
+        )
+    } as usize;
+    let ffi_timings = unsafe { ffi_timings.assume_init() };
+    let total_ms = start.elapsed().as_secs_f64() * 1000.0;
+    out.truncate(size.min(out_capacity));
+
+    (out, downsample_timings_from_ffi(ffi_timings, total_ms))
+}
+
+pub fn downsample_points_cuda_device(
+    stream: &Stream,
+    filtered_cloud: &[PointXYZIT],
+    point_skip: usize,
+    voxel_size: f32,
+    out_gpu: &mut CudaBuffer,
+) -> (usize, CudaDownsampleTimings) {
+    let _ = const {
+        assert!(size_of::<ffi::Point>() == size_of::<PointXYZIT>());
+    };
+
+    assert!(
+        out_gpu.element_size == size_of::<PointXYZIT>(),
+        "Output GPU buffer element size mismatch"
+    );
+    assert!(
+        !out_gpu.gpu_ptr.is_null(),
+        "Output GPU buffer pointer is null"
+    );
+
+    if filtered_cloud.is_empty() {
+        out_gpu.n = 0;
+        return (0, CudaDownsampleTimings::default());
+    }
+
+    let point_skip = point_skip.max(1);
+    let required_capacity = filtered_cloud.len().div_ceil(point_skip);
+    let out_capacity = out_gpu.n;
+    assert!(
+        out_capacity >= required_capacity,
+        "Output GPU buffer capacity is too small: have {}, need at least {}",
+        out_capacity,
+        required_capacity
+    );
+
+    let mut ffi_timings = std::mem::MaybeUninit::<ffi::CudaDownsampleTimings>::zeroed();
+    let start = std::time::Instant::now();
+    let produced = unsafe {
+        ffi::downsample_points_device(
+            stream.stream.raw,
+            filtered_cloud.as_ptr() as *const ffi::Point,
+            filtered_cloud.len() as u32,
+            point_skip as u32,
+            voxel_size,
+            out_gpu.gpu_ptr as *mut ffi::Point,
+            out_capacity as u32,
+            ffi_timings.as_mut_ptr(),
+        )
+    } as usize;
+
+    let ffi_timings = unsafe { ffi_timings.assume_init() };
+    let total_ms = start.elapsed().as_secs_f64() * 1000.0;
+    let produced = produced.min(out_capacity);
+    out_gpu.n = produced;
+
+    (produced, downsample_timings_from_ffi(ffi_timings, total_ms))
+}
+
+#[derive(Debug, Clone, Copy, Default)]
 pub struct CudaPlaneTimings {
     pub kernel_compact_ms: f64,
     pub download_ms: f64,

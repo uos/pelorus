@@ -867,18 +867,26 @@ fn lio_with_ready_signal(
 
         let mut static_tf_published = false;
 
+        #[cfg(feature = "cuda")]
+        let mut persistent_cuda_cloud_bufs: Option<
+            [LocatedBufferView<pelorus_core::PointXYZIT>; 2],
+        > = if let ActiveBackend::Cuda(stream) = &active_backend {
+            Some([
+                LocatedBufferView::alloc_points_cuda(stream, 100_000),
+                LocatedBufferView::alloc_points_cuda(stream, 100_000),
+            ])
+        } else {
+            None
+        };
+        #[cfg(feature = "cuda")]
+        let mut persistent_cuda_cloud_buf_idx = 0usize;
+
         // Reusable buffer for the point cloud on GPU
         #[allow(unused_mut)]
         let mut persistent_cloud_buf = match &active_backend {
             ActiveBackend::Cpu => LocatedBufferView::Ram(Vec::new()),
             #[cfg(feature = "cuda")]
-            ActiveBackend::Cuda(stream) => LocatedBufferView::Cuda {
-                buffer: pelorus_cuda::CudaBuffer::new(
-                    stream,
-                    size_of::<pelorus_core::PointXYZIT>(),
-                    100_000,
-                ),
-            },
+            ActiveBackend::Cuda(_) => LocatedBufferView::Ram(Vec::new()),
             #[cfg(feature = "metal")]
             ActiveBackend::Metal(stream) => LocatedBufferView::Metal {
                 buffer: pelorus_metal::MetalBuffer::new(
@@ -941,12 +949,18 @@ fn lio_with_ready_signal(
                 ActiveBackend::Cpu => {}
                 #[cfg(feature = "cuda")]
                 ActiveBackend::Cuda(stream) => {
-                    // Avoid overwriting while previous frame CUDA kernels may still be reading.
-                    stream.sync();
-                    persistent_cloud_buf
-                        .realloc_if_needed_cuda(stream, lifis_tick.deskewed_cloud.len());
-                    persistent_cloud_buf
-                        .upload_from_slice_cuda(stream, lifis_tick.deskewed_cloud.as_slice());
+                    let cuda_cloud_bufs = persistent_cuda_cloud_bufs
+                        .as_mut()
+                        .expect("missing persistent CUDA cloud buffers");
+                    let current_slot = persistent_cuda_cloud_buf_idx;
+                    persistent_cuda_cloud_buf_idx =
+                        (persistent_cuda_cloud_buf_idx + 1) % cuda_cloud_bufs.len();
+
+                    // Uploads and kernels are enqueued on the same stream, so ping-pong slots
+                    // can be reused without forcing a host sync here.
+                    let cuda_cloud = &mut cuda_cloud_bufs[current_slot];
+                    cuda_cloud.realloc_if_needed_cuda(stream, lifis_tick.deskewed_cloud.len());
+                    cuda_cloud.upload_from_slice_cuda(stream, lifis_tick.deskewed_cloud.as_slice());
                 }
                 #[cfg(feature = "metal")]
                 ActiveBackend::Metal(stream) => {
@@ -974,6 +988,15 @@ fn lio_with_ready_signal(
                 ActiveBackend::Cpu => {
                     ram_cloud = LocatedBufferView::Ram(lifis_tick.deskewed_cloud);
                     &ram_cloud
+                }
+                #[cfg(feature = "cuda")]
+                ActiveBackend::Cuda(_) => {
+                    let cuda_cloud_bufs = persistent_cuda_cloud_bufs
+                        .as_ref()
+                        .expect("missing persistent CUDA cloud buffers");
+                    let last_slot = (persistent_cuda_cloud_buf_idx + cuda_cloud_bufs.len() - 1)
+                        % cuda_cloud_bufs.len();
+                    &cuda_cloud_bufs[last_slot]
                 }
                 _ => &persistent_cloud_buf,
             };

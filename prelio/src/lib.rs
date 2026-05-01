@@ -360,6 +360,17 @@ struct DownsamplePhaseTimings {
     keyed_sort_us: u64,
     medoid_reduce_us: u64,
     timestamp_sort_us: u64,
+    gpu_downsample_us: u64,
+    gpu_upload_us: u64,
+    gpu_key_build_us: u64,
+    gpu_keyed_sort_us: u64,
+    gpu_run_length_encode_us: u64,
+    gpu_run_starts_scan_us: u64,
+    gpu_unique_count_sync_us: u64,
+    gpu_medoid_reduce_us: u64,
+    gpu_timestamp_key_build_us: u64,
+    gpu_timestamp_sort_us: u64,
+    gpu_download_us: u64,
     bypass_filter_map_us: u64,
     bypass_sort_us: u64,
 }
@@ -367,6 +378,69 @@ struct DownsamplePhaseTimings {
 #[inline]
 fn elapsed_us(start: std::time::Instant) -> u64 {
     start.elapsed().as_micros() as u64
+}
+
+#[cfg(feature = "cuda")]
+thread_local! {
+    static CUDA_DOWNSAMPLE_STREAM: pelorus_cuda::Stream = pelorus_cuda::Stream::new();
+}
+
+#[cfg(feature = "cuda")]
+fn cuda_downsample_enabled() -> bool {
+    static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ENABLED.get_or_init(|| {
+        matches!(
+            std::env::var("PELORUS_CUDA_DOWNSAMPLE").as_deref(),
+            Ok("1") | Ok("true") | Ok("TRUE") | Ok("yes") | Ok("YES") | Ok("on") | Ok("ON")
+        )
+    })
+}
+
+#[cfg(feature = "cuda")]
+#[inline]
+fn ms_to_us(ms: f64) -> u64 {
+    (ms * 1000.0) as u64
+}
+
+#[cfg(feature = "cuda")]
+fn try_cuda_downsample_from_filtered(
+    filtered_cloud: &[PointXYZIT],
+    point_skip: usize,
+    voxel_size: f32,
+) -> Option<(Vec<PointXYZIT>, DownsamplePhaseTimings)> {
+    static AVAILABLE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    if !cuda_downsample_enabled() || !*AVAILABLE.get_or_init(pelorus_cuda::is_available) {
+        return None;
+    }
+
+    Some(CUDA_DOWNSAMPLE_STREAM.with(|stream| {
+        let (downsampled, timings) =
+            pelorus_cuda::downsample_points_cuda(stream, filtered_cloud, point_skip, voxel_size);
+        let timings = DownsamplePhaseTimings {
+            gpu_downsample_us: ms_to_us(timings.total_ms),
+            gpu_upload_us: ms_to_us(timings.upload_ms),
+            gpu_key_build_us: ms_to_us(timings.key_build_ms),
+            gpu_keyed_sort_us: ms_to_us(timings.keyed_sort_ms),
+            gpu_run_length_encode_us: ms_to_us(timings.run_length_encode_ms),
+            gpu_run_starts_scan_us: ms_to_us(timings.run_starts_scan_ms),
+            gpu_unique_count_sync_us: ms_to_us(timings.unique_count_sync_ms),
+            gpu_medoid_reduce_us: ms_to_us(timings.medoid_reduce_ms),
+            gpu_timestamp_key_build_us: ms_to_us(timings.timestamp_key_build_ms),
+            gpu_timestamp_sort_us: ms_to_us(timings.timestamp_sort_ms),
+            gpu_download_us: ms_to_us(timings.download_ms),
+            ..Default::default()
+        };
+        (downsampled, timings)
+    }))
+}
+
+#[cfg(feature = "vulkan")]
+fn try_vulkan_downsample_from_filtered(
+    _filtered_cloud: &[PointXYZIT],
+    _point_skip: usize,
+    _voxel_size: f32,
+) -> Option<(Vec<PointXYZIT>, DownsamplePhaseTimings)> {
+    None
 }
 
 fn filter_downsample_with_fallback<
@@ -547,39 +621,66 @@ fn filter_downsample<const N: usize, P: PointXYZITimestamp<N>>(
         phase_timings.bypass_filter_map_us = elapsed_us(start);
 
         // 2. Stage 2: Hash and Medoid Reduction
-        let start = std::time::Instant::now();
-        if point_skip == 1 {
-            keyed_points.par_extend(
-                filtered_cloud
-                    .par_iter()
-                    .filter_map(map_down_ref_from_bypass),
-            );
+        #[cfg(feature = "cuda")]
+        let gpu_downsample =
+            try_cuda_downsample_from_filtered(&filtered_cloud, point_skip, voxel_size);
+
+        #[cfg(not(feature = "cuda"))]
+        let gpu_downsample: Option<(Vec<PointXYZIT>, DownsamplePhaseTimings)> = None;
+
+        #[cfg(feature = "vulkan")]
+        let gpu_downsample = gpu_downsample.or_else(|| {
+            try_vulkan_downsample_from_filtered(&filtered_cloud, point_skip, voxel_size)
+        });
+
+        if let Some((gpu_downsampled, gpu_timings)) = gpu_downsample {
+            downsampled = gpu_downsampled;
+            phase_timings.gpu_downsample_us = gpu_timings.gpu_downsample_us;
+            phase_timings.gpu_upload_us = gpu_timings.gpu_upload_us;
+            phase_timings.gpu_key_build_us = gpu_timings.gpu_key_build_us;
+            phase_timings.gpu_keyed_sort_us = gpu_timings.gpu_keyed_sort_us;
+            phase_timings.gpu_run_length_encode_us = gpu_timings.gpu_run_length_encode_us;
+            phase_timings.gpu_run_starts_scan_us = gpu_timings.gpu_run_starts_scan_us;
+            phase_timings.gpu_unique_count_sync_us = gpu_timings.gpu_unique_count_sync_us;
+            phase_timings.gpu_medoid_reduce_us = gpu_timings.gpu_medoid_reduce_us;
+            phase_timings.gpu_timestamp_key_build_us = gpu_timings.gpu_timestamp_key_build_us;
+            phase_timings.gpu_timestamp_sort_us = gpu_timings.gpu_timestamp_sort_us;
+            phase_timings.gpu_download_us = gpu_timings.gpu_download_us;
         } else {
-            keyed_points.par_extend(
-                filtered_cloud
-                    .par_iter()
-                    .enumerate()
-                    .filter_map(|(idx, p)| (idx % point_skip == 0).then(|| (idx, p)))
-                    .filter_map(|(_, p)| map_down_ref_from_bypass(p)),
+            let start = std::time::Instant::now();
+            if point_skip == 1 {
+                keyed_points.par_extend(
+                    filtered_cloud
+                        .par_iter()
+                        .filter_map(map_down_ref_from_bypass),
+                );
+            } else {
+                keyed_points.par_extend(
+                    filtered_cloud
+                        .par_iter()
+                        .enumerate()
+                        .filter_map(|(idx, p)| (idx % point_skip == 0).then_some(p))
+                        .filter_map(map_down_ref_from_bypass),
+                );
+            }
+            phase_timings.filter_map_down_us = elapsed_us(start);
+
+            let start = std::time::Instant::now();
+            keyed_points.par_sort_unstable_by_key(|(key, _)| *key);
+            phase_timings.keyed_sort_us = elapsed_us(start);
+
+            let start = std::time::Instant::now();
+            downsampled.extend(
+                keyed_points
+                    .chunk_by(|a, b| a.0 == b.0)
+                    .map(find_medoid_in_slice),
             );
+            phase_timings.medoid_reduce_us = elapsed_us(start);
+
+            let start = std::time::Instant::now();
+            downsampled.par_sort_unstable_by(cmp);
+            phase_timings.timestamp_sort_us = elapsed_us(start);
         }
-        phase_timings.filter_map_down_us = elapsed_us(start);
-
-        let start = std::time::Instant::now();
-        keyed_points.par_sort_unstable_by_key(|(key, _)| *key);
-        phase_timings.keyed_sort_us = elapsed_us(start);
-
-        let start = std::time::Instant::now();
-        downsampled.extend(
-            keyed_points
-                .chunk_by(|a, b| a.0 == b.0)
-                .map(find_medoid_in_slice),
-        );
-        phase_timings.medoid_reduce_us = elapsed_us(start);
-
-        let start = std::time::Instant::now();
-        downsampled.par_sort_unstable_by(cmp);
-        phase_timings.timestamp_sort_us = elapsed_us(start);
 
         // 3. Handle Bypass Output
         if bypass_output_downsample {
@@ -954,6 +1055,52 @@ impl Prelio {
                             "filter_downsample/timestamp_sort",
                             phase_timings.timestamp_sort_us as f64 / 1000.0,
                         );
+                        if phase_timings.gpu_downsample_us > 0 {
+                            eval.add_external_measurement(
+                                "filter_downsample/gpu_downsample",
+                                phase_timings.gpu_downsample_us as f64 / 1000.0,
+                            );
+                            eval.add_external_measurement(
+                                "filter_downsample/gpu_upload",
+                                phase_timings.gpu_upload_us as f64 / 1000.0,
+                            );
+                            eval.add_external_measurement(
+                                "filter_downsample/gpu_key_build",
+                                phase_timings.gpu_key_build_us as f64 / 1000.0,
+                            );
+                            eval.add_external_measurement(
+                                "filter_downsample/gpu_keyed_sort",
+                                phase_timings.gpu_keyed_sort_us as f64 / 1000.0,
+                            );
+                            eval.add_external_measurement(
+                                "filter_downsample/gpu_run_length_encode",
+                                phase_timings.gpu_run_length_encode_us as f64 / 1000.0,
+                            );
+                            eval.add_external_measurement(
+                                "filter_downsample/gpu_run_starts_scan",
+                                phase_timings.gpu_run_starts_scan_us as f64 / 1000.0,
+                            );
+                            eval.add_external_measurement(
+                                "filter_downsample/gpu_unique_count_sync",
+                                phase_timings.gpu_unique_count_sync_us as f64 / 1000.0,
+                            );
+                            eval.add_external_measurement(
+                                "filter_downsample/gpu_medoid_reduce",
+                                phase_timings.gpu_medoid_reduce_us as f64 / 1000.0,
+                            );
+                            eval.add_external_measurement(
+                                "filter_downsample/gpu_timestamp_key_build",
+                                phase_timings.gpu_timestamp_key_build_us as f64 / 1000.0,
+                            );
+                            eval.add_external_measurement(
+                                "filter_downsample/gpu_timestamp_sort",
+                                phase_timings.gpu_timestamp_sort_us as f64 / 1000.0,
+                            );
+                            eval.add_external_measurement(
+                                "filter_downsample/gpu_download",
+                                phase_timings.gpu_download_us as f64 / 1000.0,
+                            );
+                        }
                         if phase_timings.bypass_filter_map_us > 0 {
                             eval.add_external_measurement(
                                 "filter_downsample/bypass_filter_map",

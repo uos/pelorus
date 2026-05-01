@@ -31,6 +31,20 @@ typedef struct MY_ALIGN(4) {
   float t;
 } Point;
 
+typedef struct {
+  double total_ms;
+  double upload_ms;
+  double key_build_ms;
+  double keyed_sort_ms;
+  double run_length_encode_ms;
+  double run_starts_scan_ms;
+  double unique_count_sync_ms;
+  double medoid_reduce_ms;
+  double timestamp_key_build_ms;
+  double timestamp_sort_ms;
+  double download_ms;
+} CudaDownsampleTimings;
+
 typedef struct MY_ALIGN(16) {
   float x;
   float y;
@@ -84,6 +98,17 @@ void cupcl_copy_buffer(void *stream, void *src, void *target,
 
 u_int32_t planes(void *stream, Point *cloud, uint32_t cloud_size,
                  Pose ekf_lidar_to_imu, Pose ekf_pose, PointNormal *out_buff);
+
+uint32_t downsample_points(void *stream, const Point *points_cpu,
+                           uint32_t cloud_size, uint32_t point_skip,
+                           float voxel_size, Point *out_cpu,
+                           uint32_t out_capacity,
+                           CudaDownsampleTimings *timings_out);
+uint32_t downsample_points_device(void *stream, const Point *points_cpu,
+                                  uint32_t cloud_size, uint32_t point_skip,
+                                  float voxel_size, Point *out_gpu,
+                                  uint32_t out_capacity,
+                                  CudaDownsampleTimings *timings_out);
 
 void add_to_map(void *stream, Point *points, u_int32_t size,
                 Pose registered_pose, uint32_t scan_id);

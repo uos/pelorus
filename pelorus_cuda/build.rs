@@ -22,6 +22,7 @@ fn main() {
                 "src/src/cuda_stream.cu",
                 "src/src/hashmap.cu",
                 "src/src/localmap.cu",
+                "src/src/downsample.cu",
             ];
             let use_thrust_sort = env::var("CARGO_FEATURE_CUDA_SORT_THRUST").is_ok();
             let include_paths = vec!["src/include"];
