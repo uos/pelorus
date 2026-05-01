@@ -1,6 +1,8 @@
 #include <iostream>
 #include <iomanip>
 #include <cmath>
+#include <utility>
+#include <vector>
 
 #include "../pelorus.hpp"
 
@@ -32,12 +34,12 @@ int main()
             imu.frame_id = "";
 
             imu.orientation[0] = 1.0; // w
-            imu.angular_velocity[0] = 0.001 * (i % 3 - 1);
-            imu.angular_velocity[1] = 0.001 * ((i + 1) % 3 - 1);
-            imu.angular_velocity[2] = 0.002 * ((i + 2) % 3 - 1);
-            imu.linear_acceleration[0] = 0.01 * (i % 5 - 2);
-            imu.linear_acceleration[1] = 0.01 * ((i + 1) % 5 - 2);
-            imu.linear_acceleration[2] = 9.81 + 0.01 * ((i + 2) % 5 - 2);
+            imu.angular_velocity[0] = 0.004 + 0.001 * (i % 3 - 1);
+            imu.angular_velocity[1] = -0.002 + 0.001 * ((i + 1) % 3 - 1);
+            imu.angular_velocity[2] = 0.010 + 0.002 * ((i + 2) % 3 - 1);
+            imu.linear_acceleration[0] = 0.03 + 0.01 * (i % 5 - 2);
+            imu.linear_acceleration[1] = -0.015 + 0.01 * ((i + 1) % 5 - 2);
+            imu.linear_acceleration[2] = 9.81 + 0.02 + 0.01 * ((i + 2) % 5 - 2);
 
             fill_identity_cov(imu.orientation_covariance, 0.01);
             fill_identity_cov(imu.angular_velocity_covariance, 0.001);
@@ -47,6 +49,22 @@ int main()
         }
 
         constexpr int NUM_POINTS = 512;
+        const auto add_cloud = [&](const ::pcl::PointCloud<pelorus::pcl::PointXYZIT>::Ptr &cloud,
+                                   int32_t ts_sec,
+                                   uint32_t ts_nsec) -> uint64_t
+        {
+            std::vector<float> points;
+            points.reserve(cloud->size() * 5);
+            for (const auto &pt : cloud->points)
+            {
+                points.push_back(pt.x);
+                points.push_back(pt.y);
+                points.push_back(pt.z);
+                points.push_back(pt.intensity);
+                points.push_back(static_cast<float>(pt.t));
+            }
+            return pelorus.add_points_xyzit(points.data(), cloud->size(), ts_sec, ts_nsec);
+        };
 
         // Scan 1
         auto scan1 = ::pcl::PointCloud<pelorus::pcl::PointXYZIT>::Ptr(
@@ -83,7 +101,8 @@ int main()
             p.intensity = 0.0f;
             p.t = static_cast<uint32_t>(((float)i / NUM_POINTS) * 100000000.0f);
         }
-        pelorus::pcl::add_pointcloud(pelorus, scan1, base_sec, 600000000);
+        const uint64_t scan1_id = add_cloud(scan1, base_sec, 600000000);
+        std::cout << "Added scan id=" << scan1_id << "\n";
 
         // Some more IMU
         for (int i = 200; i < 300; i++)
@@ -94,12 +113,12 @@ int main()
             imu.frame_id = "";
 
             imu.orientation[0] = 1.0;
-            imu.angular_velocity[0] = 0.001 * (i % 3 - 1);
-            imu.angular_velocity[1] = 0.001 * ((i + 1) % 3 - 1);
-            imu.angular_velocity[2] = 0.002 * ((i + 2) % 3 - 1);
-            imu.linear_acceleration[0] = 0.01 * (i % 5 - 2);
-            imu.linear_acceleration[1] = 0.01 * ((i + 1) % 5 - 2);
-            imu.linear_acceleration[2] = 9.81 + 0.01 * ((i + 2) % 5 - 2);
+            imu.angular_velocity[0] = 0.004 + 0.001 * (i % 3 - 1);
+            imu.angular_velocity[1] = -0.002 + 0.001 * ((i + 1) % 3 - 1);
+            imu.angular_velocity[2] = 0.010 + 0.002 * ((i + 2) % 3 - 1);
+            imu.linear_acceleration[0] = 0.03 + 0.01 * (i % 5 - 2);
+            imu.linear_acceleration[1] = -0.015 + 0.01 * ((i + 1) % 5 - 2);
+            imu.linear_acceleration[2] = 9.81 + 0.02 + 0.01 * ((i + 2) % 5 - 2);
 
             fill_identity_cov(imu.orientation_covariance, 0.01);
             fill_identity_cov(imu.angular_velocity_covariance, 0.001);
@@ -145,16 +164,25 @@ int main()
             p.intensity = 0.0f;
             p.t = static_cast<uint32_t>(((float)i / NUM_POINTS) * 100000000.0f);
         }
-        pelorus::pcl::add_pointcloud(pelorus, scan2, base_sec + 1, 200000000);
+        const uint64_t scan2_id = add_cloud(scan2, base_sec + 1, 200000000);
+        std::cout << "Added scan id=" << scan2_id << "\n";
 
-        std::cout << "Waiting for odometry (blocking)...\n\n";
-        auto recv_res = pelorus.recv();
-        if (recv_res.status != pelorus::Pelorus::STATUS_OK)
+        std::cout << "Waiting for odometry for scan id " << scan2_id << " (blocking)...\n\n";
+        pelorus::Odometry odom;
+        while (true)
         {
-            std::cerr << "Error receiving odometry, status: " << recv_res.status << "\n";
-            return 1;
+            auto recv_res = pelorus.recv();
+            if (recv_res.status != pelorus::Pelorus::STATUS_OK)
+            {
+                std::cerr << "Error receiving odometry, status: " << recv_res.status << "\n";
+                return 1;
+            }
+            if (recv_res.odom.scan_id() == scan2_id)
+            {
+                odom = std::move(recv_res.odom);
+                break;
+            }
         }
-        const auto &odom = recv_res.odom;
 
         // Match async_callback output style
         std::cout << std::fixed;

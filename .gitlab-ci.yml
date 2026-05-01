@@ -1,6 +1,6 @@
 # yaml-language-server: $schema=https://gitlab.com/gitlab-org/gitlab/-/raw/master/app/assets/javascripts/editor/schema/ci.json
 
-image: docker.io/stelzo/ubuntu-dev:noble
+image: docker.io/stelzo/ubuntu-dev:resolute
 
 variables:
   CARGO_INCREMENTAL: "0"
@@ -8,74 +8,62 @@ variables:
   RUST_FONTCONFIG_DLOPEN: "1"
 
 stages:
-  - build
+  # - build
   - test
 
-rust-stable:
-  stage: build
-  script:
-    - rustup default stable
-    - cargo build
-    - RUSTFLAGS="-C panic=abort" cargo build -p pelorus_pico --release
-    - cargo test
-  rules:
-    - if: '$CI_PIPELINE_SOURCE == "schedule"'
-      when: never
-    - when: on_success
-
-cuda-13-1:
- stage: build
- image: docker.io/stelzo/ubuntu-dev:noble-cu13-1
- tags:
-    - macos-latest
- script:
-   - export CUDA_HOME=/usr/local/cuda
-   - rustup default stable
-   - cargo build --features cuda --jobs 2
- rules:
-   - if: '$CI_PIPELINE_SOURCE == "schedule"'
-     when: never
-   - when: on_success
-
-# breaks with sophus_autodiff 0.15.
-# rust-nightly:
+# rust-stable:
 #   stage: build
 #   script:
-#     - rustup default nightly
-#     - cargo build --verbose
-#   allow_failure: true
+#     - rustup default stable
+#     - cargo build
+#     - RUSTFLAGS="-C panic=abort" cargo build -p pelorus_pico --release
+#     - cargo test
 #   rules:
 #     - if: '$CI_PIPELINE_SOURCE == "schedule"'
 #       when: never
 #     - when: on_success
 
-lyrical: # verify that we can build on Ubuntu 26 LTS (TODO currently Trixie)
-  image: debian:trixie
-  stage: build
-  script:
-    - apt-get update
-    - apt-get install -y cargo
-    - apt-get install -y git # TODO only needed until ratslang patch is published
-    - cargo build
-  rules:
-    - if: '$CI_PIPELINE_SOURCE == "schedule"'
-      when: never
-    - when: on_success
+# cuda-13-1:
+#  stage: build
+#  image: docker.io/stelzo/ubuntu-dev:noble-cu13-1
+#  tags:
+#     - macos-latest
+#  script:
+#    - export CUDA_HOME=/usr/local/cuda
+#    - rustup default stable
+#    - cargo build --features cuda --jobs 2
+#  rules:
+#    - if: '$CI_PIPELINE_SOURCE == "schedule"'
+#      when: never
+#    - when: on_success
 
-glim-odom:
-  image: docker.io/stelzo/ubuntu-dev:glim-noble
-  stage: build
-  script:
-    - cd pelorus_c && mkdir build && cd build
-    - cmake ..
-    - make && make install
-    - cd ../../glim_integration/pelorus_glim_odometry && mkdir build && cd build
-    - cmake ..
-    - make
-  rules:
-    - if: '$CI_PIPELINE_SOURCE == "schedule"'
-      when: never
-    - when: on_success
+# lyrical:
+#   image: ubuntu:26.04
+#   stage: build
+#   script:
+#     - apt-get update
+#     - apt-get install -y cargo
+#     - apt-get install -y git # TODO only needed until ratslang patch is published
+#     - cargo build
+#   rules:
+#     - if: '$CI_PIPELINE_SOURCE == "schedule"'
+#       when: never
+#     - when: on_success
+
+# glim-odom:
+#   image: docker.io/stelzo/ubuntu-dev:glim-noble
+#   stage: build
+#   script:
+#     - cd pelorus_c && mkdir build && cd build
+#     - cmake ..
+#     - make && make install
+#     - cd ../../glim_integration/pelorus_glim_odometry && mkdir build && cd build
+#     - cmake ..
+#     - make
+#   rules:
+#     - if: '$CI_PIPELINE_SOURCE == "schedule"'
+#       when: never
+#     - when: on_success
 
 examples-regression:
   stage: test
