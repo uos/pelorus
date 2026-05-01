@@ -12,7 +12,7 @@ use ratatui::{
     symbols::Marker,
     text::{Line, Span},
     widgets::{
-        Block, Borders, Clear, List, ListItem, Paragraph, Tabs,
+        Block, Borders, Clear, List, ListItem, Padding, Paragraph, Tabs,
         canvas::{Canvas, Line as CanvasLine, Points},
     },
 };
@@ -28,6 +28,7 @@ const MAX_LOG_ENTRIES: usize = 10000;
 const FOLLOW_VIEW_RANGE_STEP_M: f64 = 5.0;
 const FOLLOW_VIEW_RANGE_MIN_M: f64 = 5.0;
 const FOLLOW_VIEW_RANGE_MAX_M: f64 = 200.0;
+const STATS_LEFT_PADDING: u16 = 2;
 
 /// Log level for TUI display
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -2224,6 +2225,7 @@ impl StatsTui {
         let block = Block::default()
             .borders(Borders::NONE)
             .border_style(Style::default().fg(Color::DarkGray))
+            .padding(Padding::left(STATS_LEFT_PADDING))
             .title(Span::styled(
                 " Info ",
                 Style::default()
@@ -2291,6 +2293,7 @@ impl StatsTui {
         let block = Block::default()
             .borders(Borders::NONE)
             .border_style(Style::default().fg(Color::DarkGray))
+            .padding(Padding::left(STATS_LEFT_PADDING))
             .title(Span::styled(
                 " State ",
                 Style::default()
@@ -2324,6 +2327,7 @@ impl StatsTui {
         let block = Block::default()
             .borders(Borders::NONE)
             .border_style(Style::default().fg(Color::DarkGray))
+            .padding(Padding::left(STATS_LEFT_PADDING))
             .title(Span::styled(
                 " Navigation ",
                 Style::default()
@@ -2419,6 +2423,7 @@ impl StatsTui {
         let block = Block::default()
             .borders(Borders::NONE)
             .border_style(Style::default().fg(Color::DarkGray))
+            .padding(Padding::left(STATS_LEFT_PADDING))
             .title(Span::styled(
                 " Performance ",
                 Style::default()
@@ -2447,16 +2452,26 @@ impl StatsTui {
         let content_width = area.width as usize; // no left/right separators
         let total_entries = filtered_entries.len();
 
-        // Prefix length: "   45.47s WARN  " = 16 chars
-        let prefix_len = 16;
-        let continuation_indent = "                  "; // 18 spaces for continuation lines
-        let msg_width = content_width.saturating_sub(prefix_len);
+        let time_width = filtered_entries
+            .iter()
+            .map(|(_, e)| format!("{:.2}s", e.timestamp).len())
+            .max()
+            .unwrap_or(8)
+            .max(8);
+        let left_gutter_width = STATS_LEFT_PADDING.saturating_sub(1) as usize;
+        let left_gutter = " ".repeat(left_gutter_width);
+        let level_width = 5; // "TRACE"/"DEBUG"/"INFO "/"WARN "/"ERROR"
+        let prefix_len = time_width + 1 + level_width + 1; // "<time> <level> "
+        let selector_width = 1; // " " or "▶" marker rendered in ListItem mapping
+        let msg_width = content_width.saturating_sub(selector_width + left_gutter_width + prefix_len);
+        let continuation_indent = " ".repeat(prefix_len);
 
         // Build wrapped lines with entry indices
         let mut wrapped_lines: Vec<(usize, Line)> = Vec::new();
 
         for (entry_idx, entry) in filtered_entries.iter() {
-            let time_str = format!("{:>8.2}s", entry.timestamp);
+            let raw_time_str = format!("{:.2}s", entry.timestamp);
+            let time_str = format!("{raw_time_str:>time_width$}");
             let msg = &entry.message;
             let msg_color = if entry.level == LogLevel::Error || entry.level == LogLevel::Warn {
                 entry.level.color()
@@ -2469,6 +2484,7 @@ impl StatsTui {
                 wrapped_lines.push((
                     *entry_idx,
                     Line::from(vec![
+                        Span::raw(left_gutter.clone()),
                         Span::styled(time_str, Style::default().fg(Color::DarkGray)),
                         Span::raw(" "),
                         Span::styled(
@@ -2499,6 +2515,7 @@ impl StatsTui {
                         wrapped_lines.push((
                             *entry_idx,
                             Line::from(vec![
+                                Span::raw(left_gutter.clone()),
                                 Span::styled(
                                     time_str.clone(),
                                     Style::default().fg(Color::DarkGray),
@@ -2519,8 +2536,9 @@ impl StatsTui {
                         wrapped_lines.push((
                             *entry_idx,
                             Line::from(vec![
+                                Span::raw(left_gutter.clone()),
                                 Span::styled(
-                                    continuation_indent,
+                                    continuation_indent.as_str(),
                                     Style::default().fg(Color::DarkGray),
                                 ),
                                 Span::styled("↳ ", Style::default().fg(Color::DarkGray)),
