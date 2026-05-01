@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 import os
 import re
+import select
+import shutil
 import subprocess
 import sys
 from math import isclose
@@ -26,9 +28,17 @@ def run_cmd_allow_fail(cmd, env=None):
     return (p.stdout.decode(), p.stderr.decode(), p.returncode)
 
 
+def maybe_line_buffered_cmd(cmd):
+    """On Linux CI, force line-buffered child output if stdbuf is available."""
+    if os.name == "posix" and shutil.which("stdbuf"):
+        return f"stdbuf -oL -eL {cmd}"
+    return cmd
+
+
 def run_and_collect_until(cmd, env=None, sentinels=None):
     """Run command and stream stdout until one of the sentinel regexes appears.
     Returns (stdout, stderr, returncode). Does not use timeouts; determinism relies on the example to emit sentinel and exit."""
+    cmd = maybe_line_buffered_cmd(cmd)
     p = subprocess.Popen(
         cmd,
         shell=True,
@@ -38,36 +48,62 @@ def run_and_collect_until(cmd, env=None, sentinels=None):
         text=True,
     )
     out_lines = []
-    # Read stdout line-by-line until sentinel is matched
     matched = False
     should_stop_process = False
     terminated_by_us = False
+
+    point_count = None
+    point_lines = 0
+
+    def handle_line(ln):
+        nonlocal matched, should_stop_process, point_count, point_lines
+        out_lines.append(ln)
+        if sentinels and not matched:
+            for s in sentinels:
+                if re.search(s, ln):
+                    matched = True
+                    break
+        if matched:
+            m_pc = re.search(r"Point cloud: (\d+) points", ln)
+            if m_pc:
+                try:
+                    point_count = int(m_pc.group(1))
+                except Exception:
+                    point_count = None
+            m_point = POINT_RE.match(ln)
+            if m_point:
+                point_lines += 1
+                if point_count is not None and point_lines >= point_count:
+                    should_stop_process = True
+
     try:
-        point_count = None
-        point_lines = 0
-        for ln in p.stdout:
-            out_lines.append(ln)
-            if sentinels and not matched:
-                for s in sentinels:
-                    if re.search(s, ln):
-                        matched = True
-                        break
-            if matched:
-                # look for point-cloud header to determine expected number of points
-                m_pc = re.search(r"Point cloud: (\d+) points", ln)
-                if m_pc:
-                    try:
-                        point_count = int(m_pc.group(1))
-                    except Exception:
-                        point_count = None
-                # count point lines
-                m_point = POINT_RE.match(ln)
-                if m_point:
-                    point_lines += 1
-                    if point_count is not None and point_lines >= point_count:
-                        # collected all points for the registered odom; we're done
-                        should_stop_process = True
-                        break
+        buf = ""
+        while True:
+            if p.stdout is None:
+                break
+
+            rlist, _, _ = select.select([p.stdout], [], [], 0.2)
+            if not rlist:
+                if p.poll() is not None:
+                    break
+                continue
+
+            chunk = os.read(p.stdout.fileno(), 4096)
+            if not chunk:
+                break
+
+            buf += chunk.decode(errors="replace")
+            while "\n" in buf:
+                ln, buf = buf.split("\n", 1)
+                handle_line(ln + "\n")
+                if should_stop_process:
+                    break
+            if should_stop_process:
+                break
+
+        if buf:
+            handle_line(buf)
+
         if should_stop_process and p.poll() is None:
             terminated_by_us = True
             p.terminate()
@@ -222,10 +258,18 @@ def main():
         sys.stderr.reconfigure(line_buffering=True)
 
     log("Running async_callback...")
-    out_async, err_async, rc_async = run_and_collect_until("./async_callback", env=env, sentinels=[r"Callback invoked! Odometry #\d+ received \(scan_id=\d+\)"])
+    out_async, err_async, rc_async = run_and_collect_until(
+        "./async_callback",
+        env=env,
+        sentinels=[r"Callback invoked! Odometry #\d+ received \(scan_id=\d+\)"],
+    )
 
     log("Running sync_blocking...")
-    out_sync, err_sync, rc_sync = run_and_collect_until("./sync_blocking", env=env, sentinels=[r"Point cloud: \d+ points"]) 
+    out_sync, err_sync, rc_sync = run_and_collect_until(
+        "./sync_blocking",
+        env=env,
+        sentinels=[r"Point cloud: \d+ points"],
+    )
 
     out_cpp = None
     try:
@@ -262,7 +306,11 @@ def main():
     py_stderr = None
     if can_run_py:
         try:
-            py_stdout, py_stderr, py_returncode = run_and_collect_until(f"{python_exe} ../../pelorus_py/examples/async_callback.py", env=env, sentinels=[r"Matched odom:", r"Callback invoked! Odometry #\d+ received \(scan_id=\d+\)"])
+            py_stdout, py_stderr, py_returncode = run_and_collect_until(
+                f"{python_exe} ../../pelorus_py/examples/async_callback.py",
+                env=env,
+                sentinels=[r"Matched odom:", r"Callback invoked! Odometry #\d+ received \(scan_id=\d+\)"],
+            )
             if py_stdout is None:
                 pts_py = None
             else:
