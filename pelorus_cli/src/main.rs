@@ -29,6 +29,7 @@ use std::fs;
 #[cfg(feature = "rat")]
 use std::process::{Command as ProcessCommand, Stdio};
 const PATH_LIMIT: usize = 10_000;
+const DEFAULT_OFFLINE_PREFETCH_SCANS: usize = 4;
 
 use ros_pointcloud2::prelude::*;
 
@@ -161,6 +162,13 @@ pub struct OfflineArgs {
     /// Force CPU-only processing regardless of available GPU backends.
     #[arg(long, default_value_t = false)]
     pub cpu_only: bool,
+
+    /// Number of offline scans to request ahead from Minot.
+    ///
+    /// Registration and publishing remain gated one scan at a time; this only
+    /// keeps the preprocessing side fed while the current scan is registering.
+    #[arg(long, default_value_t = DEFAULT_OFFLINE_PREFETCH_SCANS)]
+    pub prefetch_scans: usize,
 }
 
 #[derive(Debug, Clone, Parser)]
@@ -260,6 +268,7 @@ fn lio(
         None,
         None,
         None,
+        1,
     )
 }
 
@@ -284,6 +293,14 @@ fn release_minot_tick(
     shutdown_flag: Option<&std::sync::Arc<std::sync::atomic::AtomicBool>>,
     #[allow(unused_variables)] synchronous_mode: bool,
 ) {
+    release_minot_ticks(shutdown_flag, synchronous_mode, 1);
+}
+
+fn release_minot_ticks(
+    shutdown_flag: Option<&std::sync::Arc<std::sync::atomic::AtomicBool>>,
+    #[allow(unused_variables)] synchronous_mode: bool,
+    #[allow(unused_variables)] count: usize,
+) {
     if shutdown_flag
         .map(|flag| flag.load(std::sync::atomic::Ordering::Relaxed))
         .unwrap_or(false)
@@ -293,18 +310,20 @@ fn release_minot_tick(
 
     #[cfg(feature = "rat")]
     if synchronous_mode {
-        let now_ns = {
-            let mut ts = libc::timespec {
-                tv_sec: 0,
-                tv_nsec: 0,
+        for _ in 0..count {
+            let now_ns = {
+                let mut ts = libc::timespec {
+                    tv_sec: 0,
+                    tv_nsec: 0,
+                };
+                unsafe { libc::clock_gettime(libc::CLOCK_MONOTONIC, &mut ts) };
+                ts.tv_sec as f64 * 1e9 + ts.tv_nsec as f64
             };
-            unsafe { libc::clock_gettime(libc::CLOCK_MONOTONIC, &mut ts) };
-            ts.tv_sec as f64 * 1e9 + ts.tv_nsec as f64
-        };
-        let mut ts = rat::NetArray::from(nalgebra::DMatrix::<f64>::from_element(1, 1, now_ns));
-        rat::bacon("pelorus:sd_end", &mut ts, rat::VariableType::F64).unwrap();
-        let mut tick = String::new();
-        rat::bacon("tick_end", &mut tick, rat::VariableType::StaticOnly).unwrap();
+            let mut ts = rat::NetArray::from(nalgebra::DMatrix::<f64>::from_element(1, 1, now_ns));
+            rat::bacon("pelorus:sd_end", &mut ts, rat::VariableType::F64).unwrap();
+            let mut tick = String::new();
+            rat::bacon("tick_end", &mut tick, rat::VariableType::StaticOnly).unwrap();
+        }
     }
 }
 
@@ -318,6 +337,7 @@ fn lio_with_ready_signal(
     shutdown_flag: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
     // Optional blocking shutdown signal for immediate pipeline teardown.
     shutdown_request_rx: Option<std::sync::mpsc::Receiver<()>>,
+    offline_prefetch_scans: usize,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let export_trajectory = resolve_export_trajectory_path(export_trajectory);
     if let Some(path) = export_trajectory.as_ref() {
@@ -752,7 +772,9 @@ fn lio_with_ready_signal(
                 .expect("prelio ready sender must exist")
                 .clone();
             let relay_shutdown_flag = processing_shutdown_flag.clone();
+            let prefetch_scans = offline_prefetch_scans.max(1);
             ready_relay_handle = Some(std::thread::spawn(move || {
+                let mut requested_prefill = false;
                 while relay_rx.recv().is_ok() {
                     if relay_shutdown_flag
                         .as_ref()
@@ -764,7 +786,17 @@ fn lio_with_ready_signal(
                     if prelio_ready_tx.send(()).is_err() {
                         break;
                     }
-                    release_minot_tick(relay_shutdown_flag.as_ref(), synchronous_mode);
+                    let request_count = if requested_prefill {
+                        1
+                    } else {
+                        requested_prefill = true;
+                        prefetch_scans
+                    };
+                    release_minot_ticks(
+                        relay_shutdown_flag.as_ref(),
+                        synchronous_mode,
+                        request_count,
+                    );
                 }
             }));
         }
@@ -2254,6 +2286,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         lio_stats,
                         Some(lio_shutdown_flag_for_thread),
                         None,
+                        1,
                     )
                     .map_err(|e| e.to_string())
                 });
@@ -2599,6 +2632,7 @@ pf! i 1
                 let (lio_stop_tx, lio_stop_rx) = std::sync::mpsc::channel::<()>();
                 let shared_stats_for_lio = shared_stats.clone();
                 let runtime_tx_lio = runtime_tx.clone();
+                let offline_prefetch_scans = offline_args.prefetch_scans;
 
                 let lio_handle = std::thread::spawn(move || {
                     let synchronous_mode = config.prelio_node_params.synchronous_mode;
@@ -2611,6 +2645,7 @@ pf! i 1
                             Some(shared_stats_for_lio),
                             Some(lio_shutdown_flag_for_thread),
                             Some(lio_stop_rx),
+                            offline_prefetch_scans,
                         )
                     }))
                     .map_err(|_| "LIO thread panicked".to_string())
