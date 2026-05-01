@@ -623,7 +623,7 @@ __global__ void plane_kernel(const Point*        cloud,
                              const int*          table_keys,
                              const uint32_t*     table_vals,
                              const GpuVoxelDist* dists,
-                             uint32_t*           out_size,
+                             uint8_t*            valid_flags,
                              PointNormal*        out_buff,
                              PlanesParams        params) {
     uint32_t idx = blockIdx.x * blockDim.x + threadIdx.x;
@@ -638,6 +638,7 @@ __global__ void plane_kernel(const Point*        cloud,
         inv.intensity = 0.0f;
         inv.normal_x = 0.0f; inv.normal_y = 0.0f; inv.normal_z = 0.0f;
         out_buff[idx] = inv;
+        valid_flags[idx] = 0;
     }
 
     float4 ext_q = make_float4(params.lidar_to_imu_quat[0], params.lidar_to_imu_quat[1],
@@ -735,6 +736,7 @@ __global__ void plane_kernel(const Point*        cloud,
     pn.normal_y  = normal.y;
     pn.normal_z  = normal.z;
     out_buff[idx] = pn;
+    valid_flags[idx] = 1;
 }
 
 // ── CPU state ─────────────────────────────────────────────────────────────────
@@ -765,6 +767,9 @@ struct CudaMapState {
     uint32_t* scratch_is_new;
     uint32_t* scratch_new_offset;
     Point*    scratch_sorted_points;
+    uint8_t*  scratch_plane_flags;
+    PointNormal* scratch_compacted_planes;
+    uint32_t* d_selected_planes;
 
     // LRU on GPU (device memory)
     uint32_t* d_lru_mapping;
@@ -798,6 +803,8 @@ struct CudaMapState {
           scratch_unique_keys(nullptr), scratch_target_indices(nullptr),
           scratch_update_flags(nullptr), scratch_is_new(nullptr),
           scratch_new_offset(nullptr), scratch_sorted_points(nullptr),
+          scratch_plane_flags(nullptr), scratch_compacted_planes(nullptr),
+          d_selected_planes(nullptr),
           d_lru_mapping(nullptr), d_lru_mapping_alt(nullptr),
           d_lru_scores(nullptr), d_lru_scores_alt(nullptr),
           d_cub_temp_storage(nullptr), cub_temp_storage_bytes(0),
@@ -826,6 +833,9 @@ struct CudaMapState {
         if (scratch_is_new)         cudaFree(scratch_is_new);
         if (scratch_new_offset)     cudaFree(scratch_new_offset);
         if (scratch_sorted_points)  cudaFree(scratch_sorted_points);
+        if (scratch_plane_flags)    cudaFree(scratch_plane_flags);
+        if (scratch_compacted_planes) cudaFree(scratch_compacted_planes);
+        if (d_selected_planes)      cudaFree(d_selected_planes);
         if (d_lru_mapping)          cudaFree(d_lru_mapping);
         if (d_lru_mapping_alt)      cudaFree(d_lru_mapping_alt);
         if (d_lru_scores)           cudaFree(d_lru_scores);
@@ -853,6 +863,8 @@ static void alloc_scratch(CudaMapState* s, size_t new_cap) {
     if (s->scratch_is_new)         CUDA_CHECK(cudaFree(s->scratch_is_new));
     if (s->scratch_new_offset)     CUDA_CHECK(cudaFree(s->scratch_new_offset));
     if (s->scratch_sorted_points)  CUDA_CHECK(cudaFree(s->scratch_sorted_points));
+    if (s->scratch_plane_flags)    CUDA_CHECK(cudaFree(s->scratch_plane_flags));
+    if (s->scratch_compacted_planes) CUDA_CHECK(cudaFree(s->scratch_compacted_planes));
 
     CUDA_CHECK(cudaMalloc(&s->scratch_keys,           new_cap * sizeof(int)));
     CUDA_CHECK(cudaMalloc(&s->scratch_keys_alt,       new_cap * sizeof(int)));
@@ -866,8 +878,18 @@ static void alloc_scratch(CudaMapState* s, size_t new_cap) {
     CUDA_CHECK(cudaMalloc(&s->scratch_is_new,         new_cap * sizeof(uint32_t)));
     CUDA_CHECK(cudaMalloc(&s->scratch_new_offset,     new_cap * sizeof(uint32_t)));
     CUDA_CHECK(cudaMalloc(&s->scratch_sorted_points,  new_cap * sizeof(Point)));
+    CUDA_CHECK(cudaMalloc(&s->scratch_plane_flags,    new_cap * sizeof(uint8_t)));
+    CUDA_CHECK(cudaMalloc(&s->scratch_compacted_planes, new_cap * sizeof(PointNormal)));
 
     s->scratch_cap = new_cap;
+}
+
+static void ensure_cub_temp_storage(CudaMapState* s, size_t required_bytes) {
+    if (s->cub_temp_storage_bytes < required_bytes) {
+        if (s->d_cub_temp_storage) CUDA_CHECK(cudaFree(s->d_cub_temp_storage));
+        CUDA_CHECK(cudaMalloc(&s->d_cub_temp_storage, required_bytes));
+        s->cub_temp_storage_bytes = required_bytes;
+    }
 }
 
 // ── Public impl functions (declared in localmap.cuh) ─────────────────────────
@@ -893,6 +915,7 @@ void init_map_impl(cudaStream_t stream, uint32_t capacity, float voxel_size,
     CUDA_CHECK(cudaMallocManaged(&s->d_add_cursor, sizeof(uint32_t)));
     CUDA_CHECK(cudaMallocManaged(&s->d_lru_cursor, sizeof(uint32_t)));
     CUDA_CHECK(cudaMallocManaged(&s->d_num_unique, sizeof(uint32_t)));
+    CUDA_CHECK(cudaMallocManaged(&s->d_selected_planes, sizeof(uint32_t)));
 
     // LRU buffers
     CUDA_CHECK(cudaMalloc(&s->d_lru_mapping,     dist_cap * sizeof(uint32_t)));
@@ -914,6 +937,7 @@ void init_map_impl(cudaStream_t stream, uint32_t capacity, float voxel_size,
     *s->d_add_cursor = 0;
     *s->d_lru_cursor = 0;
     *s->d_num_unique = 0;
+    *s->d_selected_planes = 0;
 
     // Scratch buffers (minimum size; will grow on first add_to_map_impl)
     alloc_scratch(s, 1);
@@ -968,11 +992,7 @@ void add_to_map_impl(cudaStream_t stream, Point* points, uint32_t n_points, Pose
     size_t lru_bytes = temp_storage_bytes;
 
     size_t max_cub_bytes = std::max({sort_bytes, encode_bytes, scan_bytes, lru_bytes});
-    if (s->cub_temp_storage_bytes < max_cub_bytes) {
-        if (s->d_cub_temp_storage) CUDA_CHECK(cudaFree(s->d_cub_temp_storage));
-        CUDA_CHECK(cudaMalloc(&s->d_cub_temp_storage, max_cub_bytes));
-        s->cub_temp_storage_bytes = max_cub_bytes;
-    }
+    ensure_cub_temp_storage(s, max_cub_bytes);
 
     BuildVoxelsParams params;
     params.pose_quat[0]  = (float)pose.orientation.x;
@@ -1067,8 +1087,11 @@ uint32_t planes_impl(cudaStream_t stream, Point* cloud, uint32_t cloud_size,
     CudaMapState* s = g_state;
     assert(s != nullptr);
 
-    // Ensure previous add_to_map GPU work (hashmap rebuild) is visible
-    CUDA_CHECK(cudaStreamSynchronize(stream));
+    if (cloud_size == 0) return 0;
+
+    if (s->scratch_cap < (size_t)cloud_size) {
+        alloc_scratch(s, cloud_size + cloud_size / 2);
+    }
 
     PlanesParams params;
     params.lidar_to_imu_quat[0] = (float)lidar_to_imu.orientation.x;
@@ -1095,13 +1118,29 @@ uint32_t planes_impl(cudaStream_t stream, Point* cloud, uint32_t cloud_size,
 
     plane_kernel<<<grid_dim(cloud_size), 256, 0, stream>>>(
         cloud, s->table_keys, s->table_vals, s->dist_buf,
-        s->counter, out_buff, params);
+        s->scratch_plane_flags, out_buff, params);
+
+    size_t temp_storage_bytes = 0;
+    cub::DeviceSelect::Flagged(nullptr, temp_storage_bytes,
+        out_buff, s->scratch_plane_flags, s->scratch_compacted_planes,
+        s->d_selected_planes, cloud_size, stream);
+    ensure_cub_temp_storage(s, temp_storage_bytes);
+
+    cub::DeviceSelect::Flagged(s->d_cub_temp_storage, temp_storage_bytes,
+        out_buff, s->scratch_plane_flags, s->scratch_compacted_planes,
+        s->d_selected_planes, cloud_size, stream);
 
     CUDA_CHECK(cudaStreamSynchronize(stream));
 
-    // Each cloud slot now holds either a valid plane or a sentinel (zero
-    // normal). Caller compacts in cloud-input order.
-    return cloud_size;
+    uint32_t selected = *s->d_selected_planes;
+    if (selected > 0) {
+        CUDA_CHECK(cudaMemcpyAsync(out_buff, s->scratch_compacted_planes,
+                                   selected * sizeof(PointNormal),
+                                   cudaMemcpyDeviceToDevice, stream));
+        CUDA_CHECK(cudaStreamSynchronize(stream));
+    }
+
+    return selected;
 }
 
 void get_map_impl(Point* points, uint32_t* size) {

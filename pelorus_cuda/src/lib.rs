@@ -406,6 +406,12 @@ fn ensure_cleanup_registered() {
     });
 }
 
+#[derive(Debug, Clone, Copy, Default)]
+pub struct CudaPlaneTimings {
+    pub kernel_compact_ms: f64,
+    pub download_ms: f64,
+}
+
 pub fn planes_cuda(
     stream: &Stream,
     cloud: &CudaBuffer,
@@ -415,7 +421,7 @@ pub fn planes_cuda(
     ekf_imu_offset_r: &Quaternion,
     out_buff: &mut Vec<PointXYZINormal>,
     out_buff_gpu: &mut CudaBuffer,
-) {
+) -> CudaPlaneTimings {
     assert!(out_buff.len() >= cloud.n);
 
     let lidar_to_imu = Pose {
@@ -432,6 +438,7 @@ pub fn planes_cuda(
         assert!(size_of::<ffi::PointNormal>() == size_of::<PointXYZINormal>());
     };
 
+    let kernel_compact_start = std::time::Instant::now();
     let size = {
         let my_stream = stream.stream.raw;
         unsafe {
@@ -445,26 +452,21 @@ pub fn planes_cuda(
             )
         }
     };
+    let kernel_compact_ms = kernel_compact_start.elapsed().as_secs_f64() * 1000.0;
     let downloaded = (size as usize).min(out_buff.len()).min(out_buff_gpu.n);
 
-    // Download all `cloud.n` slots; the kernel writes a per-thread sentinel
-    // (zero normal) for invalid points and the actual plane for valid ones.
-    out_buff_gpu.download_into(stream, out_buff);
+    // CUDA compacts valid planes on-device in cloud-input order, so only the
+    // compacted prefix has to cross back to the CPU for Jacobian assembly.
+    let download_start = std::time::Instant::now();
+    out_buff_gpu.download_into(stream, &mut out_buff[..downloaded]);
+    stream.sync();
+    let download_ms = download_start.elapsed().as_secs_f64() * 1000.0;
     unsafe { out_buff.set_len(downloaded) };
 
-    // Compact in-place, preserving cloud-input order. This makes the residual
-    // ordering deterministic across runs and matches the CPU backend, which is
-    // required for backend equivalence (the IEKF normal-equation solve is
-    // floating-point sensitive to row order).
-    let mut write_pos = 0usize;
-    for read_pos in 0..downloaded {
-        let p = out_buff[read_pos];
-        if p.normal_x != 0.0 || p.normal_y != 0.0 || p.normal_z != 0.0 {
-            out_buff[write_pos] = p;
-            write_pos += 1;
-        }
+    CudaPlaneTimings {
+        kernel_compact_ms,
+        download_ms,
     }
-    unsafe { out_buff.set_len(write_pos) };
 }
 
 #[cfg(test)]

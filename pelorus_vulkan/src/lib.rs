@@ -727,12 +727,93 @@ unsafe fn map_read_bytes(
     }
 }
 
+unsafe fn persistent_map_ptr(
+    device: &Device,
+    memory: vk::DeviceMemory,
+    memory_flags: vk::MemoryPropertyFlags,
+    allocation_size: vk::DeviceSize,
+) -> Option<*mut u8> {
+    if !memory_flags.contains(vk::MemoryPropertyFlags::HOST_VISIBLE) {
+        return None;
+    }
+
+    let ptr = unsafe {
+        device
+            .map_memory(
+                memory,
+                0,
+                allocation_size.max(1),
+                vk::MemoryMapFlags::empty(),
+            )
+            .expect("failed to persistently map Vulkan memory")
+    } as *mut u8;
+
+    Some(ptr)
+}
+
+unsafe fn persistent_write_bytes(
+    device: &Device,
+    memory: vk::DeviceMemory,
+    memory_flags: vk::MemoryPropertyFlags,
+    mapped_ptr: *mut u8,
+    src: &[u8],
+) {
+    if src.is_empty() {
+        return;
+    }
+
+    unsafe {
+        std::ptr::copy_nonoverlapping(src.as_ptr(), mapped_ptr, src.len());
+    }
+
+    if !memory_flags.contains(vk::MemoryPropertyFlags::HOST_COHERENT) {
+        let range = vk::MappedMemoryRange::default()
+            .memory(memory)
+            .offset(0)
+            .size(vk::WHOLE_SIZE);
+        unsafe {
+            device
+                .flush_mapped_memory_ranges(std::slice::from_ref(&range))
+                .expect("failed to flush Vulkan mapped memory");
+        }
+    }
+}
+
+unsafe fn persistent_read_bytes(
+    device: &Device,
+    memory: vk::DeviceMemory,
+    memory_flags: vk::MemoryPropertyFlags,
+    mapped_ptr: *const u8,
+    dst: &mut [u8],
+) {
+    if dst.is_empty() {
+        return;
+    }
+
+    if !memory_flags.contains(vk::MemoryPropertyFlags::HOST_COHERENT) {
+        let range = vk::MappedMemoryRange::default()
+            .memory(memory)
+            .offset(0)
+            .size(vk::WHOLE_SIZE);
+        unsafe {
+            device
+                .invalidate_mapped_memory_ranges(std::slice::from_ref(&range))
+                .expect("failed to invalidate Vulkan mapped memory");
+        }
+    }
+
+    unsafe {
+        std::ptr::copy_nonoverlapping(mapped_ptr, dst.as_mut_ptr(), dst.len());
+    }
+}
+
 enum BufferStorage {
     Vulkan {
         context: Arc<VulkanContext>,
         buffer: vk::Buffer,
         memory: vk::DeviceMemory,
         memory_flags: vk::MemoryPropertyFlags,
+        mapped_ptr: Option<*mut u8>,
         allocation_size: u64,
     },
     Host {
@@ -792,6 +873,7 @@ impl Clone for VulkanBuffer {
                         buffer: alloc.buffer,
                         memory: alloc.memory,
                         memory_flags: alloc.memory_flags,
+                        mapped_ptr: None,
                         allocation_size: alloc.allocation_size as u64,
                     },
                     element_size: self.element_size,
@@ -877,6 +959,14 @@ impl VulkanBuffer {
                         ],
                     ),
                 };
+                let mapped_ptr = unsafe {
+                    persistent_map_ptr(
+                        &context.device,
+                        alloc.memory,
+                        alloc.memory_flags,
+                        alloc.allocation_size,
+                    )
+                };
                 increment_allocation(alloc.allocation_size as u64);
                 Self {
                     storage: BufferStorage::Vulkan {
@@ -884,6 +974,7 @@ impl VulkanBuffer {
                         buffer: alloc.buffer,
                         memory: alloc.memory,
                         memory_flags: alloc.memory_flags,
+                        mapped_ptr,
                         allocation_size: alloc.allocation_size as u64,
                     },
                     element_size,
@@ -955,11 +1046,23 @@ impl VulkanBuffer {
                 buffer,
                 memory,
                 memory_flags,
+                mapped_ptr,
                 ..
             } => {
                 if memory_flags.contains(vk::MemoryPropertyFlags::HOST_VISIBLE) {
                     unsafe {
-                        map_write_bytes(&context.device, *memory, *memory_flags, src_bytes);
+                        match mapped_ptr {
+                            Some(ptr) => persistent_write_bytes(
+                                &context.device,
+                                *memory,
+                                *memory_flags,
+                                *ptr,
+                                src_bytes,
+                            ),
+                            None => {
+                                map_write_bytes(&context.device, *memory, *memory_flags, src_bytes)
+                            }
+                        }
                     }
                 } else {
                     let staging =
@@ -1011,11 +1114,23 @@ impl VulkanBuffer {
                 buffer,
                 memory,
                 memory_flags,
+                mapped_ptr,
                 ..
             } => {
                 if memory_flags.contains(vk::MemoryPropertyFlags::HOST_VISIBLE) {
                     unsafe {
-                        map_read_bytes(&context.device, *memory, *memory_flags, dst_bytes);
+                        match mapped_ptr {
+                            Some(ptr) => persistent_read_bytes(
+                                &context.device,
+                                *memory,
+                                *memory_flags,
+                                *ptr,
+                                dst_bytes,
+                            ),
+                            None => {
+                                map_read_bytes(&context.device, *memory, *memory_flags, dst_bytes)
+                            }
+                        }
                     }
                 } else {
                     let staging =
@@ -1204,6 +1319,7 @@ struct ScratchBuffers {
     new_offset: VulkanBuffer,
     block_sums: VulkanBuffer,
     plane_compact: VulkanBuffer,
+    plane_readback: VulkanBuffer,
     sorter: VrdxSorter,
     capacity: usize,
 }
@@ -1663,19 +1779,51 @@ impl<'a> ComputeCommandSession<'a> {
         }
     }
 
-    fn shader_to_host_barrier(&self) {
+    fn shader_to_transfer_barrier(&self) {
         let barrier = vk::MemoryBarrier::default()
             .src_access_mask(vk::AccessFlags::SHADER_WRITE)
-            .dst_access_mask(vk::AccessFlags::HOST_READ);
+            .dst_access_mask(vk::AccessFlags::TRANSFER_READ);
         unsafe {
             self.context.device.cmd_pipeline_barrier(
                 self.resources.command_buffer,
                 vk::PipelineStageFlags::COMPUTE_SHADER,
+                vk::PipelineStageFlags::TRANSFER,
+                vk::DependencyFlags::empty(),
+                std::slice::from_ref(&barrier),
+                &[],
+                &[],
+            );
+        }
+    }
+
+    fn transfer_to_host_barrier(&self) {
+        let barrier = vk::MemoryBarrier::default()
+            .src_access_mask(vk::AccessFlags::TRANSFER_WRITE)
+            .dst_access_mask(vk::AccessFlags::HOST_READ);
+        unsafe {
+            self.context.device.cmd_pipeline_barrier(
+                self.resources.command_buffer,
+                vk::PipelineStageFlags::TRANSFER,
                 vk::PipelineStageFlags::HOST,
                 vk::DependencyFlags::empty(),
                 std::slice::from_ref(&barrier),
                 &[],
                 &[],
+            );
+        }
+    }
+
+    fn copy_buffer(&self, src: vk::Buffer, dst: vk::Buffer, size: vk::DeviceSize) {
+        if size == 0 {
+            return;
+        }
+        let copy_region = vk::BufferCopy::default().size(size);
+        unsafe {
+            self.context.device.cmd_copy_buffer(
+                self.resources.command_buffer,
+                src,
+                dst,
+                std::slice::from_ref(&copy_region),
             );
         }
     }
@@ -1812,7 +1960,8 @@ pub fn init_map(
                 is_new: VulkanBuffer::new(stream, size_of::<u32>(), 1),
                 new_offset: VulkanBuffer::new(stream, size_of::<u32>(), 1),
                 block_sums: VulkanBuffer::new(stream, size_of::<u32>(), 1),
-                plane_compact: VulkanBuffer::new_host_visible(
+                plane_compact: VulkanBuffer::new(stream, size_of::<crate::types::PointNormal>(), 1),
+                plane_readback: VulkanBuffer::new_host_visible(
                     stream,
                     size_of::<crate::types::PointNormal>(),
                     1,
@@ -1938,6 +2087,8 @@ fn ensure_scratch_capacity(state: &mut VulkanGpuMapState, stream: &Stream, n_poi
     state.scratch.is_new = VulkanBuffer::new(stream, size_of::<u32>(), new_cap);
     state.scratch.new_offset = VulkanBuffer::new(stream, size_of::<u32>(), new_cap);
     state.scratch.plane_compact =
+        VulkanBuffer::new(stream, size_of::<crate::types::PointNormal>(), new_cap);
+    state.scratch.plane_readback =
         VulkanBuffer::new_host_visible(stream, size_of::<crate::types::PointNormal>(), new_cap);
     // block_sums needs ceil(new_cap / 512) elements, round up to next power of 2 for safety
     let block_sums_cap = (new_cap / 512 + 1).next_power_of_two().max(1024);
@@ -2395,6 +2546,12 @@ pub fn cleanup_map() {
     *global_state().lock().expect("vulkan map mutex poisoned") = None;
 }
 
+#[derive(Debug, Clone, Copy, Default)]
+pub struct VulkanPlaneTimings {
+    pub kernel_compact_ms: f64,
+    pub download_ms: f64,
+}
+
 pub fn planes_vulkan(
     stream: &Stream,
     cloud: &VulkanBuffer,
@@ -2405,13 +2562,15 @@ pub fn planes_vulkan(
     out_buff: &mut Vec<PointXYZINormal>,
     out_buff_gpu: &mut VulkanBuffer,
     download_buff: &mut Vec<PointNormal>,
-) {
+    counter_buff: &mut [u32; 3],
+) -> VulkanPlaneTimings {
     assert!(
         out_buff.len() >= cloud.n,
         "output buffer must fit cloud size"
     );
     with_state(|state| match &mut state.backend {
         MapBackendState::Host(host) => {
+            let start = std::time::Instant::now();
             let cloud_cpu: Vec<PointXYZIT> = cloud.download(stream);
             let pose = nalgebra::Isometry3::from_parts(
                 nalgebra::Translation3::new(ekf_pose_t.x, ekf_pose_t.y, ekf_pose_t.z),
@@ -2460,6 +2619,10 @@ pub fn planes_vulkan(
             out_buff.clear();
             out_buff.extend_from_slice(&planes[..capped]);
             out_buff_gpu.upload(stream, &planes[..capped]);
+            VulkanPlaneTimings {
+                kernel_compact_ms: start.elapsed().as_secs_f64() * 1000.0,
+                download_ms: 0.0,
+            }
         }
         MapBackendState::Vulkan(state) => {
             let (cloud_ctx, cloud_buf) = cloud
@@ -2481,6 +2644,7 @@ pub fn planes_vulkan(
             // bounded by logical length. Reset plane buffers for the current cloud.
             out_buff_gpu.n = cloud.n;
             state.scratch.plane_compact.n = cloud.n;
+            state.scratch.plane_readback.n = cloud.n;
 
             state
                 .scratch
@@ -2593,6 +2757,7 @@ pub fn planes_vulkan(
                 compact_out_b,
             ];
 
+            let kernel_compact_start = std::time::Instant::now();
             let mut session =
                 ComputeCommandSession::begin(&state.context, &state.command_resources, dummy);
             // Reset timestamp queries for this operation
@@ -2652,35 +2817,47 @@ pub fn planes_vulkan(
                 1,
             );
             session.write_timestamp(state.timestamp_pool, 1);
-            session.shader_to_host_barrier();
+            session.shader_to_transfer_barrier();
+            let plane_readback_b = vk_buffer_handle(&state.scratch.plane_readback);
+            let plane_copy_bytes =
+                (cloud.n * size_of::<crate::types::PointNormal>()) as vk::DeviceSize;
+            session.copy_buffer(compact_out_b, plane_readback_b, plane_copy_bytes);
+            session.transfer_to_host_barrier();
             session.submit();
+            let kernel_compact_ms = kernel_compact_start.elapsed().as_secs_f64() * 1000.0;
             state
                 .pending_planes_timing
                 .store(true, std::sync::atomic::Ordering::Release);
             log::debug!("vulkan planes: kernel complete");
 
-            let counters_result: Vec<u32> = state.scratch.counter.download(stream);
-            let downloaded = (counters_result.first().copied().unwrap_or(0) as usize)
-                .min(out_buff.len())
-                .min(cloud.n);
+            let download_start = std::time::Instant::now();
+            state.scratch.counter.download_into(stream, counter_buff);
+            let downloaded = (counter_buff[0] as usize).min(out_buff.len()).min(cloud.n);
 
-            download_buff.resize(downloaded, crate::types::PointNormal::default());
-            state.scratch.plane_compact.n = downloaded;
+            assert!(
+                download_buff.len() >= downloaded,
+                "persistent Vulkan plane download buffer must fit compacted output"
+            );
+            state.scratch.plane_readback.n = downloaded;
             state
                 .scratch
-                .plane_compact
-                .download_into(stream, download_buff);
+                .plane_readback
+                .download_into(stream, &mut download_buff[..downloaded]);
             out_buff.clear();
+            out_buff.extend(
+                download_buff
+                    .iter()
+                    .take(downloaded)
+                    .map(|p| PointXYZINormal::from(*p)),
+            );
+            let download_ms = download_start.elapsed().as_secs_f64() * 1000.0;
 
-            // The GPU scan/scatter preserves cloud-input order. Keep the sentinel
-            // check as a cheap guard against malformed shader output.
-            for p in download_buff.iter().take(downloaded) {
-                if p.nx != 0.0 || p.ny != 0.0 || p.nz != 0.0 {
-                    out_buff.push((*p).into());
-                }
+            VulkanPlaneTimings {
+                kernel_compact_ms,
+                download_ms,
             }
         }
-    });
+    })
 }
 
 fn ensure_cleanup_registered() {
@@ -2790,10 +2967,14 @@ impl Drop for VulkanBuffer {
                 context,
                 buffer,
                 memory,
+                mapped_ptr,
                 allocation_size,
                 ..
             } => {
                 unsafe {
+                    if mapped_ptr.is_some() {
+                        context.device.unmap_memory(*memory);
+                    }
                     context.device.destroy_buffer(*buffer, None);
                     context.device.free_memory(*memory, None);
                 }

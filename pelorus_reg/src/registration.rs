@@ -38,6 +38,8 @@ pub struct RegistrationState {
     pub planes_gpu_buffer: Option<GpuPlanesBuffer>,
     #[cfg(feature = "vulkan")]
     pub planes_vulkan_download_buffer: Vec<pelorus_vulkan::PointNormal>,
+    #[cfg(feature = "vulkan")]
+    pub planes_vulkan_counter_buffer: [u32; 3],
 }
 
 impl RegistrationState {
@@ -141,6 +143,8 @@ impl RegistrationState {
             planes_gpu_buffer: None,
             #[cfg(feature = "vulkan")]
             planes_vulkan_download_buffer: Vec::new(),
+            #[cfg(feature = "vulkan")]
+            planes_vulkan_counter_buffer: [0; 3],
         }
     }
 
@@ -330,6 +334,10 @@ impl crate::Registration for RegistrationState {
                             cloud_len_alloc - self.planes_vulkan_download_buffer.capacity(),
                         );
                     }
+                    if self.planes_vulkan_download_buffer.len() < cloud.len() {
+                        self.planes_vulkan_download_buffer
+                            .resize(cloud_len_alloc, pelorus_vulkan::PointNormal::default());
+                    }
                     let needs_alloc = match &self.planes_gpu_buffer {
                         Some(GpuPlanesBuffer::Vulkan(buf)) => buf.capacity() < cloud.len(),
                         _ => true,
@@ -352,6 +360,9 @@ impl crate::Registration for RegistrationState {
             #[cfg(feature = "vulkan")]
             let planes_vulkan_download_buffer_ptr =
                 std::ptr::addr_of_mut!(self.planes_vulkan_download_buffer);
+            #[cfg(feature = "vulkan")]
+            let planes_vulkan_counter_buffer_ptr =
+                std::ptr::addr_of_mut!(self.planes_vulkan_counter_buffer);
             let map_ptr = std::ptr::addr_of!(self.map);
 
             #[cfg(not(any(feature = "cuda", feature = "metal", feature = "vulkan")))]
@@ -503,7 +514,7 @@ impl crate::Registration for RegistrationState {
                                 .column(3)
                                 .fixed_rows::<3>(0)
                                 .into_owned();
-                            pelorus_cuda::planes_cuda(
+                            let timings = pelorus_cuda::planes_cuda(
                                 stream,
                                 buffer,
                                 &pelorus_cuda::Vector3::new(pose_t.x, pose_t.y, pose_t.z),
@@ -516,6 +527,14 @@ impl crate::Registration for RegistrationState {
                                 &offset_q,
                                 planes_buf,
                                 planes_gpu,
+                            );
+                            eval_actual.add_external_measurement(
+                                "ekf_correct/model/planes/kernel_compact",
+                                timings.kernel_compact_ms,
+                            );
+                            eval_actual.add_external_measurement(
+                                "ekf_correct/model/planes/download",
+                                timings.download_ms,
                             );
                             planes_buf
                         }
@@ -600,7 +619,7 @@ impl crate::Registration for RegistrationState {
                                 .column(3)
                                 .fixed_rows::<3>(0)
                                 .into_owned();
-                            pelorus_vulkan::planes_vulkan(
+                            let timings = pelorus_vulkan::planes_vulkan(
                                 stream,
                                 buffer,
                                 &pelorus_vulkan::Vector3::new(pose_t.x, pose_t.y, pose_t.z),
@@ -614,6 +633,15 @@ impl crate::Registration for RegistrationState {
                                 planes_buf,
                                 planes_gpu,
                                 unsafe { &mut *planes_vulkan_download_buffer_ptr },
+                                unsafe { &mut *planes_vulkan_counter_buffer_ptr },
+                            );
+                            eval_actual.add_external_measurement(
+                                "ekf_correct/model/planes/kernel_compact",
+                                timings.kernel_compact_ms,
+                            );
+                            eval_actual.add_external_measurement(
+                                "ekf_correct/model/planes/download",
+                                timings.download_ms,
                             );
                             planes_buf
                         }

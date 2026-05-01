@@ -606,7 +606,8 @@ fn test_planes_direct_equivalency_vulkan() {
         std::mem::size_of::<pelorus_vulkan::PointNormal>(),
         query_cloud.len(),
     );
-    let mut vulkan_download = Vec::new();
+    let mut vulkan_download = vec![pelorus_vulkan::PointNormal::default(); query_cloud.len()];
+    let mut vulkan_counter = [0u32; 3];
     pelorus_vulkan::planes_vulkan(
         &stream,
         query_buf,
@@ -617,6 +618,7 @@ fn test_planes_direct_equivalency_vulkan() {
         &mut vulkan_planes_out,
         &mut vulkan_planes_gpu,
         &mut vulkan_download,
+        &mut vulkan_counter,
     );
     pelorus_vulkan::cleanup_map();
 
@@ -723,7 +725,8 @@ fn test_planes_after_voxel_update_vulkan() {
         std::mem::size_of::<pelorus_vulkan::PointNormal>(),
         map_cloud.len(),
     );
-    let mut vulkan_download = Vec::new();
+    let mut vulkan_download = vec![pelorus_vulkan::PointNormal::default(); map_cloud.len()];
+    let mut vulkan_counter = [0u32; 3];
     pelorus_vulkan::planes_vulkan(
         &stream,
         cloud_buf,
@@ -734,6 +737,7 @@ fn test_planes_after_voxel_update_vulkan() {
         &mut vulkan_out,
         &mut vulkan_gpu_out,
         &mut vulkan_download,
+        &mut vulkan_counter,
     );
     pelorus_vulkan::cleanup_map();
 
@@ -870,7 +874,8 @@ fn test_planes_transformed_extrinsic_equivalency_vulkan() {
         std::mem::size_of::<pelorus_vulkan::PointNormal>(),
         query_cloud.len(),
     );
-    let mut vulkan_download = Vec::new();
+    let mut vulkan_download = vec![pelorus_vulkan::PointNormal::default(); query_cloud.len()];
+    let mut vulkan_counter = [0u32; 3];
     pelorus_vulkan::planes_vulkan(
         &stream,
         query_buf,
@@ -881,6 +886,7 @@ fn test_planes_transformed_extrinsic_equivalency_vulkan() {
         &mut vulkan_out,
         &mut vulkan_gpu_out,
         &mut vulkan_download,
+        &mut vulkan_counter,
     );
     pelorus_vulkan::cleanup_map();
 
@@ -1003,7 +1009,8 @@ fn test_planes_after_moved_voxel_update_vulkan() {
         std::mem::size_of::<pelorus_vulkan::PointNormal>(),
         map_cloud.len(),
     );
-    let mut vulkan_download = Vec::new();
+    let mut vulkan_download = vec![pelorus_vulkan::PointNormal::default(); map_cloud.len()];
+    let mut vulkan_counter = [0u32; 3];
     pelorus_vulkan::planes_vulkan(
         &stream,
         cloud_buf,
@@ -1014,6 +1021,7 @@ fn test_planes_after_moved_voxel_update_vulkan() {
         &mut vulkan_out,
         &mut vulkan_gpu_out,
         &mut vulkan_download,
+        &mut vulkan_counter,
     );
     pelorus_vulkan::cleanup_map();
 
