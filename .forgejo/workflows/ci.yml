@@ -1,0 +1,97 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/SchemaStore/schemastore/refs/heads/master/src/schemas/json/github-workflow.json
+
+name: ci
+
+on:
+  push:
+
+env:
+  RUST_BACKTRACE: "full"
+  RUST_FONTCONFIG_DLOPEN: "1"
+
+jobs:
+  rust-build-test:
+    runs-on: ubuntu-dev-resolute
+    container:
+      image: docker.io/stelzo/ubuntu-dev:resolute
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build and test workspace
+        run: |
+          rustup default stable
+          cargo check
+          cargo build
+          RUSTFLAGS="-C panic=abort" cargo build -p pelorus_pico --release
+          cargo test
+
+  cuda-build:
+    runs-on: ubuntu-dev-resolute
+    container:
+      image: docker.io/stelzo/ubuntu-dev:noble-cu13-1
+    env:
+      CUDA_HOME: /usr/local/cuda
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build CUDA target
+        run: |
+          rustup default stable
+          cargo build --features cuda
+
+  # vulkan-build:
+  #   runs-on: ubuntu-dev-resolute
+  #   container:
+  #     image: docker.io/stelzo/ubuntu-dev:resolute
+  #   steps:
+  #     - uses: actions/checkout@v4
+  #     - name: Build Vulkan target
+  #       run: |
+  #         rustup default stable
+  #         cargo build --features vulkan --jobs 2
+
+  lyrical-build:
+    runs-on: ubuntu-dev-resolute
+    container:
+      image: ubuntu:26.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build lyrical target
+        run: |
+          apt-get update
+          apt-get install -y cargo git
+          cargo build
+
+  glim-build:
+    runs-on: ubuntu-dev-resolute
+    container:
+      image: docker.io/stelzo/ubuntu-dev:glim-noble
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build glim integration
+        run: |
+          cd pelorus_c
+          mkdir -p build
+          cd build
+          cmake ..
+          make
+          make install
+          cd ../../glim_integration/pelorus_glim_odometry
+          mkdir -p build
+          cd build
+          cmake ..
+          make
+
+  examples-regression:
+    needs:
+      - rust-build-test
+      - cuda-build
+      - vulkan-build
+      - lyrical-build
+      - glim-build
+    runs-on: ubuntu-dev-resolute
+    container:
+      image: docker.io/stelzo/ubuntu-dev:resolute
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run API regression tests
+        run: |
+          ./scripts/api-regression-tests.bash
