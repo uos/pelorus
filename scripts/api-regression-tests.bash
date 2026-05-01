@@ -65,7 +65,7 @@ install_apt_deps() {
     fi
 
     "${sudo_cmd[@]}" apt-get update
-    "${sudo_cmd[@]}" apt-get install -y \
+    "${sudo_cmd[@]}" apt-get install --no-install-recommends -y \
         build-essential \
         cmake \
         libpcl-dev \
