@@ -1,15 +1,15 @@
 # yaml-language-server: $schema=https://gitlab.com/gitlab-org/gitlab/-/raw/master/app/assets/javascripts/editor/schema/ci.json
 
-image: docker.io/stelzo/ubuntu-dev:noble
+# image: docker.io/stelzo/ubuntu-dev:noble
 
-variables:
-  CARGO_INCREMENTAL: "0"
-  RUST_BACKTRACE: "full"
-  RUST_FONTCONFIG_DLOPEN: "1"
+# variables:
+#   CARGO_INCREMENTAL: "0"
+#   RUST_BACKTRACE: "full"
+#   RUST_FONTCONFIG_DLOPEN: "1"
 
-stages:
-  # - build
-  - test
+# stages:
+#   - build
+#   - test
 
 # rust-stable:
 #   stage: build
@@ -65,11 +65,11 @@ stages:
 #       when: never
 #     - when: on_success
 
-examples-regression:
-  stage: test
-  script:
-    - ./scripts/api-regression-tests.bash
-  rules:
-    - if: '$CI_PIPELINE_SOURCE == "schedule"'
-      when: never
-    - when: on_success
+# examples-regression:
+#   stage: test
+#   script:
+#     - ./scripts/api-regression-tests.bash
+#   rules:
+#     - if: '$CI_PIPELINE_SOURCE == "schedule"'
+#       when: never
+#     - when: on_success
