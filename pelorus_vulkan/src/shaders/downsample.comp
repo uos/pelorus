@@ -1,0 +1,84 @@
+#version 450
+
+layout(local_size_x = 256) in;
+
+layout(std430, set = 0, binding = 0) readonly buffer InputPoints { Point input_points[]; };
+layout(std430, set = 0, binding = 1) buffer SelectedPoints { Point selected_points[]; };
+layout(std430, set = 0, binding = 2) buffer Keys { int keys[]; };
+layout(std430, set = 0, binding = 3) buffer Indices { uint indices[]; };
+layout(std430, set = 0, binding = 4) readonly buffer UniqueKeys { int unique_keys[]; };
+layout(std430, set = 0, binding = 6) readonly buffer RunStarts { uint run_starts[]; };
+layout(std430, set = 0, binding = 7) readonly buffer RunEnds { uint run_ends[]; };
+layout(std430, set = 0, binding = 10) readonly buffer Counters {
+    uint unique_count;
+    uint add_cursor;
+    uint lru_cursor;
+};
+layout(std430, set = 0, binding = 15) buffer Medoids { Point medoids[]; };
+
+void main() {
+    uint idx = gl_GlobalInvocationID.x;
+
+#ifdef BUILD_KEYS
+    if (idx >= pc.n) {
+        return;
+    }
+
+    uint src_idx = idx * max(pc.cap, 1u);
+    Point p = input_points[src_idx];
+    selected_points[idx] = p;
+
+    ivec3 grid = grid_pos(pc.resolution, vec3(p.x, p.y, p.z));
+    keys[idx] = hash_grid(grid) ^ 0x80000000;
+    indices[idx] = idx;
+#endif
+
+#ifdef MEDOIDS
+    if (idx >= unique_count) {
+        Point invalid;
+        invalid.x = 0.0;
+        invalid.y = 0.0;
+        invalid.z = 0.0;
+        invalid.i = 0.0;
+        invalid.t = uintBitsToFloat(0x7F800000u);
+        medoids[idx] = invalid;
+        return;
+    }
+
+    uint start = run_starts[idx];
+    uint end = run_ends[idx];
+    if (end <= start) {
+        return;
+    }
+
+    vec3 sum = vec3(0.0);
+    for (uint i = start; i < end; i++) {
+        Point p = selected_points[indices[i]];
+        sum += vec3(p.x, p.y, p.z);
+    }
+
+    vec3 center = sum / float(end - start);
+    Point best = selected_points[indices[start]];
+    float best_dist = dot(vec3(best.x, best.y, best.z) - center, vec3(best.x, best.y, best.z) - center);
+    for (uint i = start + 1u; i < end; i++) {
+        Point p = selected_points[indices[i]];
+        vec3 delta = vec3(p.x, p.y, p.z) - center;
+        float dist = dot(delta, delta);
+        if (dist < best_dist) {
+            best_dist = dist;
+            best = p;
+        }
+    }
+
+    medoids[idx] = best;
+#endif
+
+#ifdef TIMESTAMP_KEYS
+    if (idx >= pc.n) {
+        return;
+    }
+
+    keys[idx] = int(floatBitsToUint(medoids[idx].t));
+    indices[idx] = idx;
+#endif
+}

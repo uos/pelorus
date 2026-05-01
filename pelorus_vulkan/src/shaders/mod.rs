@@ -14,6 +14,8 @@ pub const ASSIGN_NEW_TARGETS: &str = include_str!("assign_new_targets.comp");
 pub const FINALIZE_CURSORS: &str = include_str!("finalize_cursors.comp");
 pub const SCAN_BLOCK_SUMS: &str = include_str!("scan_block_sums.comp");
 pub const ADD_BLOCK_PREFIX: &str = include_str!("add_block_prefix.comp");
+pub const DOWNSAMPLE: &str = include_str!("downsample.comp");
+pub const DOWNSAMPLE_REORDER: &str = include_str!("downsample_reorder.comp");
 
 pub fn source_with_common(body: &str) -> String {
     let body_without_version = body

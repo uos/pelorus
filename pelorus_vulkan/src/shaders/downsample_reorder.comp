@@ -1,0 +1,20 @@
+#version 450
+
+layout(local_size_x = 256) in;
+
+layout(std430, set = 0, binding = 0) readonly buffer SrcPoints { Point src[]; };
+layout(std430, set = 0, binding = 1) buffer DstPoints { Point dst[]; };
+layout(std430, set = 0, binding = 3) readonly buffer SortedIndices { uint sorted_indices[]; };
+
+void main() {
+    uint idx = gl_GlobalInvocationID.x;
+    if (idx >= pc.n) {
+        return;
+    }
+
+    uint src_idx = sorted_indices[idx];
+    if (src_idx >= pc.n) {
+        return;
+    }
+    dst[idx] = src[src_idx];
+}

@@ -329,6 +329,14 @@ pub struct DownsampleParameters {
     pub voxel_size: f32,
     pub bypass_output_downsample: bool,
     pub point_skip: usize,
+    pub backend: PreprocessingBackend,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Copy, Serialize, Deserialize, Default)]
+pub enum PreprocessingBackend {
+    Cpu,
+    #[default]
+    Backend,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
