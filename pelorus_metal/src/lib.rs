@@ -6,6 +6,7 @@
 #![cfg(metal_available)]
 
 mod buffer;
+mod downsample;
 mod map;
 mod pipeline;
 mod radix_sort;
@@ -166,6 +167,34 @@ pub fn planes_metal(
     record_planes_gpu_time(gpu_time_ms);
 }
 
+#[derive(Debug, Clone, Copy, Default)]
+pub struct MetalDownsampleTimings {
+    pub total_ms: f64,
+    pub upload_ms: f64,
+    pub key_build_ms: f64,
+    pub keyed_sort_ms: f64,
+    pub run_length_encode_ms: f64,
+    pub run_starts_scan_ms: f64,
+    pub unique_count_sync_ms: f64,
+    pub medoid_reduce_ms: f64,
+    pub timestamp_key_build_ms: f64,
+    pub timestamp_sort_ms: f64,
+    pub download_ms: f64,
+}
+
+pub fn is_available() -> bool {
+    objc2_metal::MTLCreateSystemDefaultDevice().is_some()
+}
+
+pub fn downsample_points_metal(
+    stream: &Stream,
+    filtered_cloud: &[PointXYZIT],
+    point_skip: usize,
+    voxel_size: f32,
+) -> (Vec<PointXYZIT>, MetalDownsampleTimings) {
+    downsample::downsample_points_metal_impl(stream, filtered_cloud, point_skip, voxel_size)
+}
+
 // ── Cleanup registration ──────────────────────────────────────────────────────
 
 static CLEANUP_GUARD: std::sync::Once = std::sync::Once::new();
@@ -233,6 +262,44 @@ mod tests {
     }
 
     #[test]
+    fn downsample_basic_medoids() {
+        let _lock = crate::map::acquire_test_lock();
+        let stream = Stream::new();
+        let cloud = vec![
+            PointXYZIT {
+                x: 0.0,
+                y: 0.0,
+                z: 0.0,
+                intensity: 1.0,
+                timestamp: 3.0,
+            },
+            PointXYZIT {
+                x: 0.2,
+                y: 0.0,
+                z: 0.0,
+                intensity: 2.0,
+                timestamp: 1.0,
+            },
+            PointXYZIT {
+                x: 2.0,
+                y: 0.0,
+                z: 0.0,
+                intensity: 3.0,
+                timestamp: 2.0,
+            },
+        ];
+
+        let (out, timings) = downsample_points_metal(&stream, &cloud, 1, 1.0);
+
+        assert_eq!(out.len(), 2);
+        assert!(timings.total_ms > 0.0);
+        assert_eq!(out[0].timestamp, 2.0);
+        assert_eq!(out[1].timestamp, 3.0);
+        assert_eq!(out[0].x, 2.0);
+        assert_eq!(out[1].x, 0.0);
+    }
+
+    #[test]
     fn map_init_and_add() {
         let _lock = crate::map::acquire_test_lock();
         let stream = Stream::new();
@@ -259,7 +326,7 @@ mod tests {
         let t = Vector3::new(0.0, 0.0, 0.0);
         let quat = Quaternion::default(); // identity rotation
 
-        add_to_map(&stream, &gpu_cloud, &t, &quat);
+        add_to_map(&stream, &gpu_cloud, &t, &quat, 1);
         stream.sync();
 
         let size = get_map_size();

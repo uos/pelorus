@@ -37,6 +37,9 @@ pub struct Pipelines {
     pub radix_prefix_blocks: Retained<ProtocolObject<dyn MTLComputePipelineState>>,
     pub radix_bucket_offsets: Retained<ProtocolObject<dyn MTLComputePipelineState>>,
     pub radix_scatter_pairs: Retained<ProtocolObject<dyn MTLComputePipelineState>>,
+    pub downsample_build_keys: Retained<ProtocolObject<dyn MTLComputePipelineState>>,
+    pub downsample_rle: Retained<ProtocolObject<dyn MTLComputePipelineState>>,
+    pub downsample_medoids: Retained<ProtocolObject<dyn MTLComputePipelineState>>,
 }
 
 unsafe impl Send for Pipelines {}
@@ -92,6 +95,9 @@ impl Pipelines {
             radix_prefix_blocks: make("radix_prefix_blocks"),
             radix_bucket_offsets: make("radix_bucket_offsets"),
             radix_scatter_pairs: make("radix_scatter_pairs"),
+            downsample_build_keys: make("downsample_build_keys"),
+            downsample_rle: make("downsample_rle"),
+            downsample_medoids: make("downsample_medoids"),
         }
     }
 }

@@ -16,7 +16,7 @@ use pelorus_core::{
     timing::RuntimeEvaluator,
 };
 
-#[cfg(any(feature = "cuda", feature = "vulkan"))]
+#[cfg(any(feature = "cuda", feature = "metal", feature = "vulkan"))]
 use pelorus_core::PreprocessingBackend;
 #[cfg(feature = "cuda")]
 use pelorus_cuda::CudaBuffer;
@@ -387,7 +387,7 @@ thread_local! {
     static CUDA_DOWNSAMPLE_STREAM: pelorus_cuda::Stream = pelorus_cuda::Stream::new();
 }
 
-#[cfg(any(feature = "cuda", feature = "vulkan"))]
+#[cfg(any(feature = "cuda", feature = "metal", feature = "vulkan"))]
 #[inline]
 fn ms_to_us(ms: f64) -> u64 {
     (ms * 1000.0) as u64
@@ -407,6 +407,43 @@ fn try_cuda_downsample_from_filtered(
     Some(CUDA_DOWNSAMPLE_STREAM.with(|stream| {
         let (downsampled, timings) =
             pelorus_cuda::downsample_points_cuda(stream, filtered_cloud, point_skip, voxel_size);
+        let timings = DownsamplePhaseTimings {
+            gpu_downsample_us: ms_to_us(timings.total_ms),
+            gpu_upload_us: ms_to_us(timings.upload_ms),
+            gpu_key_build_us: ms_to_us(timings.key_build_ms),
+            gpu_keyed_sort_us: ms_to_us(timings.keyed_sort_ms),
+            gpu_run_length_encode_us: ms_to_us(timings.run_length_encode_ms),
+            gpu_run_starts_scan_us: ms_to_us(timings.run_starts_scan_ms),
+            gpu_unique_count_sync_us: ms_to_us(timings.unique_count_sync_ms),
+            gpu_medoid_reduce_us: ms_to_us(timings.medoid_reduce_ms),
+            gpu_timestamp_key_build_us: ms_to_us(timings.timestamp_key_build_ms),
+            gpu_timestamp_sort_us: ms_to_us(timings.timestamp_sort_ms),
+            gpu_download_us: ms_to_us(timings.download_ms),
+            ..Default::default()
+        };
+        (downsampled, timings)
+    }))
+}
+
+#[cfg(feature = "metal")]
+thread_local! {
+    static METAL_DOWNSAMPLE_STREAM: pelorus_metal::Stream = pelorus_metal::Stream::new();
+}
+
+#[cfg(feature = "metal")]
+fn try_metal_downsample_from_filtered(
+    filtered_cloud: &[PointXYZIT],
+    point_skip: usize,
+    voxel_size: f32,
+) -> Option<(Vec<PointXYZIT>, DownsamplePhaseTimings)> {
+    static AVAILABLE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    if !*AVAILABLE.get_or_init(pelorus_metal::is_available) {
+        return None;
+    }
+
+    Some(METAL_DOWNSAMPLE_STREAM.with(|stream| {
+        let (downsampled, timings) =
+            pelorus_metal::downsample_points_metal(stream, filtered_cloud, point_skip, voxel_size);
         let timings = DownsamplePhaseTimings {
             gpu_downsample_us: ms_to_us(timings.total_ms),
             gpu_upload_us: ms_to_us(timings.upload_ms),
@@ -644,7 +681,7 @@ fn filter_downsample<const N: usize, P: PointXYZITimestamp<N>>(
         phase_timings.bypass_filter_map_us = elapsed_us(start);
 
         // 2. Stage 2: Hash and Medoid Reduction
-        #[cfg(any(feature = "cuda", feature = "vulkan"))]
+        #[cfg(any(feature = "cuda", feature = "metal", feature = "vulkan"))]
         let use_backend_preprocessing =
             lifis_params.downsample.backend == PreprocessingBackend::Backend;
 
@@ -655,6 +692,15 @@ fn filter_downsample<const N: usize, P: PointXYZITimestamp<N>>(
 
         #[cfg(not(feature = "cuda"))]
         let gpu_downsample: Option<(Vec<PointXYZIT>, DownsamplePhaseTimings)> = None;
+
+        #[cfg(feature = "metal")]
+        let gpu_downsample = if use_backend_preprocessing {
+            gpu_downsample.or_else(|| {
+                try_metal_downsample_from_filtered(&filtered_cloud, point_skip, voxel_size)
+            })
+        } else {
+            gpu_downsample
+        };
 
         #[cfg(feature = "vulkan")]
         let gpu_downsample = if use_backend_preprocessing {
