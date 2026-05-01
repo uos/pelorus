@@ -2463,7 +2463,8 @@ impl StatsTui {
         let level_width = 5; // "TRACE"/"DEBUG"/"INFO "/"WARN "/"ERROR"
         let prefix_len = time_width + 1 + level_width + 1; // "<time> <level> "
         let selector_width = 1; // " " or "▶" marker rendered in ListItem mapping
-        let msg_width = content_width.saturating_sub(selector_width + left_gutter_width + prefix_len);
+        let msg_width =
+            content_width.saturating_sub(selector_width + left_gutter_width + prefix_len);
         let continuation_indent = " ".repeat(prefix_len);
 
         // Build wrapped lines with entry indices
