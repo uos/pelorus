@@ -1,4 +1,5 @@
 CC ?= gcc
+PYTHON ?= $(if $(wildcard ../../.venv/bin/python),$(abspath ../../.venv/bin/python),python3)
 CFLAGS ?= -Wall -Wextra -I..
 BUILD_TYPE ?= release
 TARGET_DIR ?= ../../target/$(BUILD_TYPE)
@@ -54,7 +55,7 @@ run: sync_blocking async_callback
 
 regression: sync_blocking async_callback cpp_wrapper
 	@echo "Running regression: compare async vs sync vs cpp outputs"
-	@PELORUS_DUMP_ALL_POINTS=1 python3 compare_async_sync.py
+	@PELORUS_DUMP_ALL_POINTS=1 $(PYTHON) compare_async_sync.py
 
 .PHONY: all clean run FORCE
 

@@ -41,6 +41,7 @@ def run_and_collect_until(cmd, env=None, sentinels=None):
     # Read stdout line-by-line until sentinel is matched
     matched = False
     should_stop_process = False
+    terminated_by_us = False
     try:
         point_count = None
         point_lines = 0
@@ -68,6 +69,7 @@ def run_and_collect_until(cmd, env=None, sentinels=None):
                         should_stop_process = True
                         break
         if should_stop_process and p.poll() is None:
+            terminated_by_us = True
             p.terminate()
             try:
                 rest_out, rest_err = p.communicate(timeout=5)
@@ -89,7 +91,10 @@ def run_and_collect_until(cmd, env=None, sentinels=None):
         if p.poll() is None:
             p.kill()
             p.wait()
-    return ("".join(out_lines), stderr, p.returncode)
+    rc = p.returncode
+    if terminated_by_us and rc is not None and rc < 0:
+        rc = 0
+    return ("".join(out_lines), stderr, rc)
 
 
 def parse_points(output):
@@ -198,6 +203,9 @@ def parse_registered_scan(output):
 def main():
     script_dir = os.path.dirname(os.path.abspath(__file__))
     os.chdir(script_dir)
+    repo_root = os.path.abspath(os.path.join(script_dir, "..", ".."))
+    venv_python = os.path.join(repo_root, ".venv", "bin", "python")
+    python_exe = venv_python if os.path.exists(venv_python) else sys.executable
 
     try:
         subprocess.check_call(["make", "-C", "."])
@@ -239,11 +247,11 @@ def main():
 
     can_run_py = True
     try:
-        subprocess.run("python3 -c \"import pelorus\"", shell=True, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        subprocess.run([python_exe, "-c", "import pelorus"], check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     except subprocess.CalledProcessError:
         try:
-            subprocess.run("python3 -m pip install -e ../../pelorus_py", shell=True, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-            subprocess.run("python3 -c \"import pelorus\"", shell=True, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            subprocess.run([python_exe, "-m", "pip", "install", "-e", "../../pelorus_py"], check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            subprocess.run([python_exe, "-c", "import pelorus"], check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         except subprocess.CalledProcessError:
             print("Error: Failed to install/import pelorus Python bindings")
             sys.exit(2)
@@ -254,7 +262,7 @@ def main():
     py_stderr = None
     if can_run_py:
         try:
-            py_stdout, py_stderr, py_returncode = run_and_collect_until("python3 ../../pelorus_py/examples/async_callback.py", env=env, sentinels=[r"Matched odom:", r"Callback invoked! Odometry #\d+ received \(scan_id=\d+\)"])
+            py_stdout, py_stderr, py_returncode = run_and_collect_until(f"{python_exe} ../../pelorus_py/examples/async_callback.py", env=env, sentinels=[r"Matched odom:", r"Callback invoked! Odometry #\d+ received \(scan_id=\d+\)"])
             if py_stdout is None:
                 pts_py = None
             else:
