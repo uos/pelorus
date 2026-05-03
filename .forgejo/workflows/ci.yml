@@ -53,7 +53,7 @@ jobs:
     container:
       image: ubuntu:26.04
     steps:
-      - run: apt-get update && apt-get install nodejs npm
+      - run: apt-get update -y && apt-get install -y nodejs npm
       - uses: actions/checkout@v4
       - name: Build lyrical target
         run: |
