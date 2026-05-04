@@ -29,8 +29,8 @@ log.workspace = true
 ros2-interfaces-jazzy-serde = { workspace = true, optional = true }
 rerun = { workspace = true, optional = true }
 futures-lite.workspace = true
-mimalloc = { version = "0.1.48", default-features = false, optional = true }
-clap = { version = "4.5.53", features = ["derive"] }
+mimalloc = { workspace = true, optional = true }
+clap.workspace = true
 r2r = { workspace = true, optional = true }
 mt_pubsub = { workspace = true, optional = true }
 ros2-interfaces-jazzy-rkyv = { workspace = true, optional = true }
@@ -39,11 +39,11 @@ mt_rat = { workspace = true, optional = true }
 rustc-hash.workspace = true
 ratslang.workspace = true
 petname.workspace = true
-colorous = "1.0"
-ratatui = "0.29"
-crossterm = "0.28"
-num_cpus = "1.16"
-libc = "0.2"
+colorous.workspace = true
+ratatui.workspace = true
+crossterm.workspace = true
+num_cpus.workspace = true
+libc.workspace = true
 rayon.workspace = true
 marina = { workspace = true, optional = true }
 clap_complete.workspace = true
@@ -161,3 +161,26 @@ depends = "minot (>= 0.7.0), minot (<< 0.8.0~)"
 section = "science"
 priority = "optional"
 assets = [["target/release/pelorus", "usr/bin/pelorus", "755"]]
+
+[package.metadata.multivers.x86_64]
+cpus = [
+  "x86-64",
+  "x86-64-v2", # SSE
+  "x86-64-v3", # AVX + a lot more
+  "x86-64-v4", # AVX 512 High End CPUs
+  "raptorlake", # my workstation
+  "pantherlake", # newest intel arch
+  "znver5", # newest amd arch
+]
+
+[package.metadata.multivers.aarch64]
+cpus = [
+  "generic",
+  "neoverse-v3ae", # Jetson Thor (automotive enhanced)
+  "cortex-a78ae",  # Jetson Orin
+  "apple-m1",
+  "apple-m2",
+  "apple-m3",
+  "apple-m4",
+  "apple-m5",
+]

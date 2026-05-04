@@ -8,6 +8,9 @@ import sys
 from math import isclose
 
 POINT_RE = re.compile(r"^\s*Point\s+(\d+):\s*\[([^]]+)\]\s*I=([0-9eE+\-\.]+)")
+TIMESTAMP_RE = re.compile(r"Timestamp:\s*(-?\d+)\.(\d+)")
+POSITION_RE = re.compile(r"Position:\s*\[([^]]+)\]")
+VELOCITY_RE = re.compile(r"Linear velocity:\s*\[([^]]+)\]")
 
 
 def log(msg):
@@ -167,6 +170,14 @@ def parse_registered_scan(output):
 
     lines = output.splitlines()
 
+    def parse_timestamp_line(ln):
+        m = TIMESTAMP_RE.search(ln)
+        if not m:
+            return None
+        sec = int(m.group(1))
+        fraction = m.group(2)
+        return float(f"{sec}.{fraction}")
+
     for ln in lines:
         if 'DEBUG: on_odom called' in ln and 'ts=' in ln and 'pts=' in ln:
             try:
@@ -199,8 +210,9 @@ def parse_registered_scan(output):
             for j in range(i + 1, min(i + 6, len(lines))):
                 if 'Timestamp:' in lines[j]:
                     try:
-                        parts = lines[j].split('Timestamp:')[1].strip()
-                        ts_val = float(parts.split()[0])
+                        ts_val = parse_timestamp_line(lines[j])
+                        if ts_val is None:
+                            continue
                         return (sid, ts_val)
                     except Exception:
                         continue
@@ -208,8 +220,9 @@ def parse_registered_scan(output):
     for i, ln in enumerate(lines):
         if 'Timestamp:' in ln:
             try:
-                parts = ln.split('Timestamp:')[1].strip()
-                ts_val = float(parts.split()[0])
+                ts_val = parse_timestamp_line(ln)
+                if ts_val is None:
+                    continue
             except Exception:
                 continue
             for j in range(i + 1, min(i + 8, len(lines))):
@@ -236,6 +249,45 @@ def parse_registered_scan(output):
     return (None, None)
 
 
+def parse_vec3(csv):
+    parts = [p.strip() for p in csv.split(",")]
+    if len(parts) != 3:
+        return None
+    try:
+        return (float(parts[0]), float(parts[1]), float(parts[2]))
+    except Exception:
+        return None
+
+
+def parse_registered_odom_state(output):
+    if output is None:
+        return None
+    lines = output.splitlines()
+    for i, ln in enumerate(lines):
+        if "Callback invoked!" not in ln:
+            continue
+        ts = None
+        pos = None
+        vel = None
+        for j in range(i + 1, min(i + 8, len(lines))):
+            line = lines[j]
+            if ts is None and "Timestamp:" in line:
+                m = TIMESTAMP_RE.search(line)
+                if m:
+                    ts = float(f"{int(m.group(1))}.{m.group(2)}")
+            if pos is None:
+                m = POSITION_RE.search(line)
+                if m:
+                    pos = parse_vec3(m.group(1))
+            if vel is None:
+                m = VELOCITY_RE.search(line)
+                if m:
+                    vel = parse_vec3(m.group(1))
+        if ts is not None and pos is not None and vel is not None:
+            return {"ts": ts, "pos": pos, "vel": vel}
+    return None
+
+
 def main():
     script_dir = os.path.dirname(os.path.abspath(__file__))
     os.chdir(script_dir)
@@ -251,6 +303,8 @@ def main():
 
     env = dict(**subprocess.os.environ)
     env['PELORUS_DUMP_ALL_POINTS'] = '1'
+    dataset_path = os.path.join(script_dir, "synthetic_dataset.bin")
+    run_cmd(f"{python_exe} generate_synthetic_dataset.py {dataset_path}")
 
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(line_buffering=True)
@@ -259,14 +313,14 @@ def main():
 
     log("Running async_callback...")
     out_async, err_async, rc_async = run_and_collect_until(
-        "./async_callback",
+        f"./async_callback {dataset_path}",
         env=env,
         sentinels=[r"Callback invoked! Odometry #\d+ received \(scan_id=\d+\)"],
     )
 
     log("Running sync_blocking...")
     out_sync, err_sync, rc_sync = run_and_collect_until(
-        "./sync_blocking",
+        f"./sync_blocking {dataset_path}",
         env=env,
         sentinels=[r"Point cloud: \d+ points"],
     )
@@ -277,7 +331,7 @@ def main():
         if subprocess.os.path.exists("build/cpp_wrapper"):
             log("Running cpp_wrapper (build/cpp_wrapper)...")
             out_cpp, err_cpp, rc_cpp = run_and_collect_until(
-                "./build/cpp_wrapper", env=env,
+                f"./build/cpp_wrapper {dataset_path}", env=env,
                 sentinels=[r"Point cloud: \d+ points", r"Callback invoked! Odometry #\d+ received "])
             if rc_cpp != 0:
                 print(f"Error: cpp_wrapper exited with code {rc_cpp}. stdout/stderr follow:\n{out_cpp}\n{err_cpp}")
@@ -307,7 +361,7 @@ def main():
     if can_run_py:
         try:
             py_stdout, py_stderr, py_returncode = run_and_collect_until(
-                f"{python_exe} ../../pelorus_py/examples/async_callback.py",
+                f"{python_exe} ../../pelorus_py/examples/async_callback.py {dataset_path}",
                 env=env,
                 sentinels=[r"Matched odom:", r"Callback invoked! Odometry #\d+ received \(scan_id=\d+\)"],
             )

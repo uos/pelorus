@@ -915,7 +915,6 @@ impl Iekf {
 
             // dx_ = K * h + (KH - I) * dx_new
             let dx_ = &kh_vec + &kh_i_dx;
-
             eval.stop("ekf_correct/it/gain").unwrap();
             eval.start("ekf_correct/it/state").unwrap();
 
@@ -951,7 +950,6 @@ impl Iekf {
             if converge_flag {
                 converge_count += 1;
             }
-
             // If not converged yet and this is second-to-last iteration, force converge
             // to re-search correspondences
             if converge_count == 0 && iter == max_iter - 1 {
@@ -967,7 +965,6 @@ impl Iekf {
         }
         let mut eval = eval.write().unwrap();
         eval.stop("ekf_correct/it").unwrap();
-
         // Covariance update: P = (I - KH) * P  (equation 19)
         eval.start("ekf_correct/cov").unwrap();
         let id24 = Mat::<f64>::identity(24, 24);

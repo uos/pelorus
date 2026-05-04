@@ -18,9 +18,9 @@ log.workspace = true
 libc.workspace = true
 
 [build-dependencies]
-bindgen = "0.72"
-walkdir = "2"
-rayon = "1"
+bindgen.workspace = true
+walkdir.workspace = true
+rayon.workspace = true
 
 [features]
 cuda_available = []

@@ -1,242 +1,104 @@
 #include <stdio.h>
 #include <stdlib.h>
-#include <string.h>
 #include <unistd.h>
-#include <math.h>
-#include "../pelorus.h"
 
-static void fill_identity_cov(double *cov, double diag)
+#include "../pelorus.h"
+#include "synthetic_dataset.h"
+
+static void print_odom(const pelorus_odometry *odom)
 {
-    for (size_t i = 0; i < 9; i++)
-    {
-        cov[i] = (i % 4 == 0) ? diag : 0.0;
+    printf("  Timestamp: %d.%09u\n", odom->timestamp_sec, odom->timestamp_nanosec);
+    printf("  Position: [%.6f, %.6f, %.6f] (scan_id=%llu)\n",
+           odom->position[0], odom->position[1], odom->position[2],
+           (unsigned long long)odom->scan_id);
+    printf("  Orientation: [%.6f, %.6f, %.6f, %.6f]\n",
+           odom->orientation[0], odom->orientation[1], odom->orientation[2], odom->orientation[3]);
+    printf("  Linear velocity: [%.6f, %.6f, %.6f]\n",
+           odom->linear_velocity[0], odom->linear_velocity[1], odom->linear_velocity[2]);
+    printf("  Angular velocity: [%.6f, %.6f, %.6f]\n",
+           odom->angular_velocity[0], odom->angular_velocity[1], odom->angular_velocity[2]);
+    printf("  Point cloud: %zu points\n", odom->num_points);
+
+    size_t limit = getenv("PELORUS_DUMP_ALL_POINTS") ? odom->num_points : (odom->num_points < 3 ? odom->num_points : 3);
+    for (size_t j = 0; j < limit; j++) {
+        const pelorus_point_xyzi *p = &odom->points[j];
+        if (getenv("PELORUS_DUMP_ALL_POINTS")) {
+            printf("    Point %zu: [%.6g, %.6g, %.6g] I=%.6g\n", j, p->x, p->y, p->z, p->intensity);
+        } else {
+            printf("    Point %zu: [%.2f, %.2f, %.2f] I=%.1f\n", j, p->x, p->y, p->z, p->intensity);
+        }
     }
 }
 
-int main(void)
+int main(int argc, char **argv)
 {
+    const char *dataset_path = argc >= 2 ? argv[1] : "./synthetic_dataset.bin";
     printf("Version: %s\n\n", pelorus_version());
 
-    // Use the comparison config so binding/backend comparisons all bypass the
-    // optional imu-fusion preprocessing in the same way.
-    PelorusHandle *pelorus = pelorus_create("./pico-equality.rl");
-    if (!pelorus)
-    {
+    PelorusHandle *pelorus = pelorus_create("./no-accum.rl");
+    if (!pelorus) {
         fprintf(stderr, "Failed to create Pelorus handle\n");
         return 1;
     }
     printf("Created Pelorus handle with comparison config\n\n");
 
-    // The library handles threading internally; this example stays single-threaded.
-    // We just feed IMU + point clouds in sequence and then call `pelorus_recv()`.
-
-    const int32_t base_sec = 1000;
-
-    // Send IMU messages for initialization (default config requires ~500ms).
-    printf("Sending 200 IMU messages for initialization...\n");
-    for (int i = 0; i < 200; i++)
-    {
-        pelorus_imu_msg imu = {0};
-        imu.timestamp_sec = base_sec;
-        imu.timestamp_nanosec = i * 5000000; // 5ms intervals
-        imu.frame_id = NULL;
-
-        imu.orientation[0] = 1.0;
-        imu.angular_velocity[0] = 0.004 + 0.001 * (i % 3 - 1);
-        imu.angular_velocity[1] = -0.002 + 0.001 * ((i + 1) % 3 - 1);
-        imu.angular_velocity[2] = 0.010 + 0.002 * ((i + 2) % 3 - 1);
-        imu.linear_acceleration[0] = 0.03 + 0.01 * (i % 5 - 2);
-        imu.linear_acceleration[1] = -0.015 + 0.01 * ((i + 1) % 5 - 2);
-        imu.linear_acceleration[2] = 9.81 + 0.02 + 0.01 * ((i + 2) % 5 - 2);
-
-        fill_identity_cov(imu.orientation_covariance, 0.01);
-        fill_identity_cov(imu.angular_velocity_covariance, 0.001);
-        fill_identity_cov(imu.linear_acceleration_covariance, 0.01);
-
-        pelorus_add_imu(pelorus, &imu);
+    FILE *f = fopen(dataset_path, "rb");
+    if (!f) {
+        perror(dataset_path);
+        pelorus_destroy(pelorus);
+        return 1;
     }
 
-#define NUM_POINTS 512
-
-    // Scan 1
-    float scan1_data[NUM_POINTS * 4];
-    for (int i = 0; i < NUM_POINTS; i++)
-    {
-        float x, y, z;
-        if (i < NUM_POINTS / 2)
-        {
-            int u = i % 16;
-            int v = i / 16;
-            x = 4.0f + 0.12f * u;
-            y = -1.0f + 0.12f * v;
-            z = 0.01f * ((u + v) % 2);
+    uint64_t target_scan_id = 0;
+    synthetic_record_t rec;
+    while (synthetic_read_record(f, &rec) > 0) {
+        if (rec.tag == SYNTH_TAG_IMU) {
+            pelorus_imu_msg imu;
+            synthetic_fill_imu_msg(&imu, &rec.imu);
+            pelorus_add_imu(pelorus, &imu);
+        } else if (rec.tag == SYNTH_TAG_CLOUD) {
+            int32_t sec;
+            uint32_t nsec;
+            synthetic_split_time(rec.cloud.start_time, &sec, &nsec);
+            float *points = synthetic_cloud_to_xyzit_ns(&rec.cloud);
+            if (!points) {
+                fprintf(stderr, "Failed to allocate cloud buffer\n");
+                synthetic_free_record(&rec);
+                fclose(f);
+                pelorus_destroy(pelorus);
+                return 1;
+            }
+            uint64_t scan_id = pelorus_add_points_xyzit_f32(
+                pelorus, sec, nsec, NULL, points, (size_t)rec.cloud.n_points);
+            free(points);
+            if (scan_id == 0) {
+                fprintf(stderr, "Failed to add point cloud\n");
+            } else {
+                target_scan_id = scan_id;
+                printf("Added scan id=%llu\n", (unsigned long long)scan_id);
+            }
         }
-        else
-        {
-            int j = i - NUM_POINTS / 2;
-            int u = j % 16;
-            int v = j / 16;
-            x = 6.0f + 0.005f * ((u + v) % 2);
-            y = -1.0f + 0.12f * u;
-            z = 0.10f + 0.12f * v;
-        }
-
-        scan1_data[i * 4 + 0] = x;
-        scan1_data[i * 4 + 1] = y;
-        scan1_data[i * 4 + 2] = z;
-        scan1_data[i * 4 + 3] = (float)i / NUM_POINTS * 100000000.0f;
+        synthetic_free_record(&rec);
     }
-    uint64_t scan1_id = pelorus_add_points_xyzt_f32(
-        pelorus,
-        base_sec,
-        600000000, // 600ms - after 500ms initialization
-        "lidar",
-        scan1_data,
-        NUM_POINTS);
-    if (scan1_id == 0)
-    {
-        fprintf(stderr, "Failed to add first point cloud\n");
-    }
-    else
-    {
-        printf("Added scan id=%llu\n", (unsigned long long)scan1_id);
-    }
+    fclose(f);
 
-    // Some more IMU
-    for (int i = 200; i < 300; i++)
-    {
-        pelorus_imu_msg imu = {0};
-        imu.timestamp_sec = base_sec;
-        imu.timestamp_nanosec = i * 5000000;
-        imu.frame_id = NULL;
-        imu.orientation[0] = 1.0;
-        imu.angular_velocity[0] = 0.004 + 0.001 * (i % 3 - 1);
-        imu.angular_velocity[1] = -0.002 + 0.001 * ((i + 1) % 3 - 1);
-        imu.angular_velocity[2] = 0.010 + 0.002 * ((i + 2) % 3 - 1);
-        imu.linear_acceleration[0] = 0.03 + 0.01 * (i % 5 - 2);
-        imu.linear_acceleration[1] = -0.015 + 0.01 * ((i + 1) % 5 - 2);
-        imu.linear_acceleration[2] = 9.81 + 0.02 + 0.01 * ((i + 2) % 5 - 2);
-        fill_identity_cov(imu.orientation_covariance, 0.01);
-        fill_identity_cov(imu.angular_velocity_covariance, 0.001);
-        fill_identity_cov(imu.linear_acceleration_covariance, 0.01);
-        pelorus_add_imu(pelorus, &imu);
-    }
-
-    // Scan 2 (slightly moved)
-    float scan2_data[NUM_POINTS * 5]; // Nx5: x,y,z,intensity,t
-    for (int i = 0; i < NUM_POINTS; i++)
-    {
-        float x, y, z;
-        if (i < NUM_POINTS / 2)
-        {
-            int u = i % 16;
-            int v = i / 16;
-            x = 4.0f + 0.12f * u;
-            y = -1.0f + 0.12f * v;
-            z = 0.01f * ((u + v) % 2);
-        }
-        else
-        {
-            int j = i - NUM_POINTS / 2;
-            int u = j % 16;
-            int v = j / 16;
-            x = 6.0f + 0.005f * ((u + v) % 2);
-            y = -1.0f + 0.12f * u;
-            z = 0.10f + 0.12f * v;
-        }
-
-        const float c = 0.996802f; // cos(0.08 rad)
-        const float s = 0.079915f; // sin(0.08 rad)
-        float x2 = c * x - s * y + 0.18f;
-        float y2 = s * x + c * y - 0.12f;
-        float z2 = z + 0.03f;
-
-        scan2_data[i * 5 + 0] = x2;
-        scan2_data[i * 5 + 1] = y2;
-        scan2_data[i * 5 + 2] = z2;
-        scan2_data[i * 5 + 3] = 0.0f; // intensity
-        scan2_data[i * 5 + 4] = (float)i / NUM_POINTS * 100000000.0f;
-    }
-    uint64_t scan2_id = pelorus_add_points_xyzit_f32(
-        pelorus,
-        base_sec + 1,
-        200000000,
-        NULL,
-        scan2_data,
-        NUM_POINTS);
-    if (scan2_id == 0)
-    {
-        fprintf(stderr, "Failed to add second point cloud\n");
-    }
-    else
-    {
-        printf("Added scan id=%llu\n", (unsigned long long)scan2_id);
-    }
-
-    // Now block waiting for an odometry result.
-    printf("Waiting for odometry (blocking)...\n\n");
-
-    /* Wait until we receive an odometry result that matches `scan2_id`. */
-    printf("Waiting for odometry for scan id %llu (blocking)...\n\n", (unsigned long long)scan2_id);
-    while (1)
-    {
+    printf("Waiting for odometry for scan id %llu (blocking)...\n\n", (unsigned long long)target_scan_id);
+    while (target_scan_id != 0) {
         pelorus_odometry odom = {0};
         const int recv_status = pelorus_recv(pelorus, &odom);
-        if (recv_status == PELORUS_STATUS_OK)
-        {
-            if (odom.scan_id == scan2_id)
-            {
-                printf("  Timestamp: %d.%09u\n", odom.timestamp_sec, odom.timestamp_nanosec);
-                printf("  Position: [%.6f, %.6f, %.6f] (scan_id=%llu)\n",
-                       odom.position[0], odom.position[1], odom.position[2], (unsigned long long)odom.scan_id);
-                printf("  Orientation: [%.6f, %.6f, %.6f, %.6f]\n",
-                       odom.orientation[0], odom.orientation[1],
-                       odom.orientation[2], odom.orientation[3]);
-                printf("  Linear velocity: [%.6f, %.6f, %.6f]\n",
-                       odom.linear_velocity[0], odom.linear_velocity[1], odom.linear_velocity[2]);
-                printf("  Angular velocity: [%.6f, %.6f, %.6f]\n",
-                       odom.angular_velocity[0], odom.angular_velocity[1], odom.angular_velocity[2]);
-                printf("  Point cloud: %zu points\n", odom.num_points);
-
-                if (getenv("PELORUS_DUMP_ALL_POINTS") != NULL)
-                {
-                    for (size_t j = 0; j < odom.num_points; j++)
-                    {
-                        const pelorus_point_xyzi *p = &odom.points[j];
-                        printf("    Point %zu: [%.6g, %.6g, %.6g] I=%.6g\n",
-                               j, p->x, p->y, p->z, p->intensity);
-                    }
-                }
-                else
-                {
-                    for (size_t j = 0; j < odom.num_points && j < 3; j++)
-                    {
-                        const pelorus_point_xyzi *p = &odom.points[j];
-                        printf("    Point %zu: [%.2f, %.2f, %.2f] I=%.1f\n",
-                               j, p->x, p->y, p->z, p->intensity);
-                    }
-                }
-
-                pelorus_free_odometry(&odom);
-                break;
-            }
-            else
-            {
-                /* Not the scan we were waiting for; free and continue waiting. */
-                pelorus_free_odometry(&odom);
-                continue;
-            }
-        }
-        else
-        {
+        if (recv_status != PELORUS_STATUS_OK) {
             fprintf(stderr, "Error receiving odometry (status: %d)\n", recv_status);
             break;
         }
+        if (odom.scan_id == target_scan_id) {
+            print_odom(&odom);
+            pelorus_free_odometry(&odom);
+            break;
+        }
+        pelorus_free_odometry(&odom);
     }
 
-    // Clean up
     pelorus_destroy(pelorus);
     printf("Destroyed Pelorus handle\n");
-
     return 0;
 }

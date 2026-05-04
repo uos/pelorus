@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.12)
-project(pelorus_c VERSION 0.0.4 LANGUAGES C)
+project(pelorus_c VERSION 0.0.5 LANGUAGES C)
 
 if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
     set(CMAKE_BUILD_TYPE "Release" CACHE STRING "Choose the type of build." FORCE)

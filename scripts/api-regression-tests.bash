@@ -5,12 +5,16 @@ usage() {
     cat <<'EOF'
 Usage: ./scripts/api-regression-tests.bash [--skip-apt]
 
-Run the same setup sequence as the .gitlab-ci.yml examples-regression job:
+Run the local API examples regression setup:
   1. install CI system dependencies with apt-get, unless --skip-apt is used
   2. select the stable Rust toolchain
   3. configure, build, and install pelorus_c with CMake
   4. install the Python bindings with maturin develop
   5. run make regression in pelorus_c/examples
+
+The examples regression generates pelorus_c/examples/synthetic_dataset.bin
+from the central synthetic dataset producer, then compares C async, C sync,
+Python, and C++ outputs against that same dataset.
 
 Set PELORUS_SKIP_APT=1 to skip apt-get without passing --skip-apt.
 EOF

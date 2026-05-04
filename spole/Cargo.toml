@@ -13,10 +13,10 @@ rust-version.workspace = true
 ros_pointcloud2.workspace = true
 nalgebra.workspace = true
 serde.workspace = true
-kiddo = { version = "5.2.3", optional = true }
+kiddo = { workspace = true, optional = true }
 log.workspace = true
 rayon.workspace = true
-bytemuck = "1.24.0"
+bytemuck.workspace = true
 morton-encoding.workspace = true
 rand.workspace = true
 rand_distr.workspace = true

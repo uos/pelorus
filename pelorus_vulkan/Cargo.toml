@@ -11,19 +11,18 @@ authors.workspace = true
 rust-version.workspace = true
 
 [dependencies]
-ash = "0.38"
+ash.workspace = true
 bytemuck.workspace = true
 nalgebra.workspace = true
 ros_pointcloud2.workspace = true
 pelorus_core.workspace = true
 spole.workspace = true
 log.workspace = true
-libc.workspace = true
-shaderc = { version = "0.8", optional = true }
+shaderc = { workspace = true, optional = true }
 
 [build-dependencies]
-pkg-config = "0.3"
-cc = "1.0"
+pkg-config.workspace = true
+cc.workspace = true
 
 [features]
 vulkan_available = []

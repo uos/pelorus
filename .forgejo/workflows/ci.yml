@@ -20,8 +20,6 @@ jobs:
         run: |
           rustup default stable
           cargo check
-          cargo build
-          RUSTFLAGS="-C panic=abort" cargo build -p pelorus_pico --release
           cargo test
 
   cuda-build:
@@ -53,12 +51,12 @@ jobs:
     container:
       image: ubuntu:26.04
     steps:
-      - run: apt-get update -y && apt-get install -y nodejs npm
+      - run: |
+          ./scripts/update_mirror.bash
+          apt-get install -y nodejs npm cargo git
       - uses: actions/checkout@v4
       - name: Build lyrical target
         run: |
-          apt-get update
-          apt-get install -y cargo git
           cargo build
 
   glim-build:

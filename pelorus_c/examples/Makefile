@@ -4,7 +4,6 @@ CFLAGS ?= -Wall -Wextra -I..
 BUILD_TYPE ?= release
 TARGET_DIR ?= ../../target/$(BUILD_TYPE)
 LDFLAGS ?= -L$(TARGET_DIR) -lpelorus -lpthread -ldl -lm
-PICO_STATICLIB ?= $(TARGET_DIR)/libpelorus_pico.a
 
 ifeq ($(BUILD_TYPE),release)
     CARGO_PROFILE_ARG := --release
@@ -20,23 +19,16 @@ ifeq ($(UNAME_S),Darwin)
     LDFLAGS += -Wl,-rpath,$(TARGET_DIR)
 endif
 
-PICO_FLAGS = -I../../pelorus_pico/include
-
-EXAMPLES = async_callback sync_blocking pico_equality cpp_wrapper
+EXAMPLES = async_callback sync_blocking cpp_wrapper
 CPP_BUILD_DIR ?= build
 
 all: $(EXAMPLES)
 
-async_callback: async_callback.c ../pelorus.h
+async_callback: async_callback.c synthetic_dataset.h ../pelorus.h
 	$(CC) $(CFLAGS) $< $(LDFLAGS) -o $@
 
-sync_blocking: sync_blocking.c ../pelorus.h
+sync_blocking: sync_blocking.c synthetic_dataset.h ../pelorus.h
 	$(CC) $(CFLAGS) $< $(LDFLAGS) -o $@
-
-pico_equality: pico_equality.c ../pelorus.h ../../pelorus_pico/include/pelorus_pico.h FORCE
-	cargo build -p pelorus_c $(CARGO_PROFILE_ARG)
-	RUSTFLAGS="-C panic=abort" cargo build -p pelorus_pico $(CARGO_PROFILE_ARG)
-	$(CC) $(CFLAGS) $(PICO_FLAGS) $< $(LDFLAGS) $(PICO_STATICLIB) -o $@
 
 # Build C++ example using CMake so it can find PCL/Eigen and use proper flags
 cpp_wrapper:
@@ -48,6 +40,7 @@ clean:
 	rm -f $(EXAMPLES)
 	rm -rf $(CPP_BUILD_DIR)
 	rm -f cpp_wrapper
+	rm -f synthetic_dataset.bin
 
 run: sync_blocking async_callback
 	./sync_blocking

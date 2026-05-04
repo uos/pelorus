@@ -11,7 +11,6 @@ fn main() {
 
     let enabled = env::var_os("CARGO_FEATURE_VULKAN_ENABLE").is_some();
     if !enabled {
-        println!("cargo:warning=Vulkan backend inactive (enable with feature `vulkan_enable`)");
         return;
     }
 

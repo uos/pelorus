@@ -381,14 +381,11 @@ fn cloud_callback(
 
     #[cfg(feature = "rat")]
     {
-        let now_ns = {
-            let mut ts = libc::timespec {
-                tv_sec: 0,
-                tv_nsec: 0,
-            };
-            unsafe { libc::clock_gettime(libc::CLOCK_MONOTONIC, &mut ts) };
-            ts.tv_sec as f64 * 1e9 + ts.tv_nsec as f64
-        };
+        static PRELIO_MONO_START: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
+        let now_ns = PRELIO_MONO_START
+            .get_or_init(std::time::Instant::now)
+            .elapsed()
+            .as_nanos() as f64;
         let mut ts = rat::NetArray::from(nalgebra::DMatrix::<f64>::from_element(1, 1, now_ns));
         // block_in_place temporarily removes the thread from the Tokio scheduler,
         // allowing mt_rat's internal current_thread runtime to call block_on without

@@ -10,8 +10,6 @@ fn main() {
             println!("cargo:rustc-link-lib=framework=Metal");
             println!("cargo:rustc-link-lib=framework=Foundation");
             println!("cargo:rustc-link-lib=framework=QuartzCore");
-        } else {
-            println!("cargo:warning=Metal backend inactive");
         }
     }
 }

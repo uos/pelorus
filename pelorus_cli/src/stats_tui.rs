@@ -531,12 +531,12 @@ impl SharedStats {
 fn get_ram_usage_mb() -> f64 {
     #[cfg(target_os = "linux")]
     {
-        if let Ok(content) = std::fs::read_to_string("/proc/self/stat") {
-            let parts: Vec<&str> = content.split_whitespace().collect();
-            if parts.len() > 23 {
-                if let Ok(rss) = parts[23].parse::<i64>() {
-                    let page_size = unsafe { libc::sysconf(libc::_SC_PAGE_SIZE) } as f64;
-                    return (rss as f64 * page_size) / (1024.0 * 1024.0);
+        if let Ok(content) = std::fs::read_to_string("/proc/self/status") {
+            for line in content.lines() {
+                if let Some(rest) = line.strip_prefix("VmRSS:") {
+                    if let Some(kb) = rest.split_whitespace().next().and_then(|v| v.parse::<f64>().ok()) {
+                        return kb / 1024.0;
+                    }
                 }
             }
         }
