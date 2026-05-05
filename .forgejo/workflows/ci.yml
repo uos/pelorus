@@ -52,7 +52,7 @@ jobs:
       image: ubuntu:26.04
     steps:
       - run: |
-          ./scripts/update_mirror.bash
+          apt-get update -y
           apt-get install -y nodejs npm cargo git
       - uses: actions/checkout@v4
       - name: Build lyrical target
