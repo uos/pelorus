@@ -22,24 +22,28 @@ jobs:
   metal-equivalence-test:
     runs-on: macos-latest
     steps:
-      - uses: actions/checkout@v4
-      - name: Install Rust
+      - name: Update Rust
         run: |
-          rustup toolchain uninstall stable
           rustup toolchain install stable
-      - name: Install marina
+          rustup default stable
+          rustup update
+      - name: Install SeaKit
         run: |
           brew tap uos/marina
-          brew install marina
+          brew tap uos/sounding
+          brew tap uos/minot
+          brew update
+          brew install marina sounding minot
       - name: Download dataset
         run: |
           marina pull -y wachsbleiche:hunter:parking_25
-      - name: Build Metal-enabled pelorus
+      - uses: actions/checkout@v4
+      - name: Build Metal-enabled Pelorus
         run: |
           cargo build --release --package pelorus_cli --features metal
-      - name: Run Metal equivalence test
+      - name: Metal equivalence test
         run: |
-          ./scripts/compare-backends-offline.bash "$(marina resolve -y wachsbleiche:hunter:parking_25)" pelorus.rl
+          ./scripts/compare-backends-offline.bash --backends metal "$(marina resolve -y wachsbleiche:hunter:parking_25)" pelorus.rl
       # - name: Cleanup
       #   run: |
       #     marina clean --all -y
