@@ -21,6 +21,8 @@ env:
 jobs:
   metal-equivalence-test:
     runs-on: macos-latest
+    env:
+      DATASET: wachsbleiche:hunter:parking_25
     steps:
       - name: Update Rust
         run: |
@@ -36,14 +38,14 @@ jobs:
           brew install marina sounding minot
       - name: Download dataset
         run: |
-          marina pull -y wachsbleiche:hunter:parking_25
+          marina pull -y $DATASET
       - uses: actions/checkout@v4
       - name: Build Metal-enabled Pelorus
         run: |
           cargo build --release --package pelorus_cli --features metal
       - name: Metal equivalence test
         run: |
-          ./scripts/compare-backends-offline.bash --backends metal "$(marina resolve -y wachsbleiche:hunter:parking_25)" pelorus.rl
+          ./scripts/compare-backends-offline.bash "$(marina resolve -y $DATASET)" "$(marina resolve -y $DATASET)/pelorus.rl"
       # - name: Cleanup
       #   run: |
       #     marina clean --all -y
