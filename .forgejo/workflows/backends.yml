@@ -43,7 +43,7 @@ jobs:
       - uses: actions/checkout@v4
       - name: Update Rust
         run: |
-          source ~/.bashrc
+          . "$HOME/.cargo/env"
           rustup toolchain install stable
           rustup default stable
           rustup update
@@ -58,6 +58,6 @@ jobs:
           marina pull -y $DATASET
       - name: Equivalence
         run: |
-          source ~/.bashrc
-          source .venv/bin/activate
+          . "$HOME/.cargo/env"
+            source .venv/bin/activate
           ./scripts/compare-backends-offline.bash --backends cuda,vulkan "$(marina resolve -y $DATASET)" "$(marina resolve -y $DATASET)/pelorus.rl"
