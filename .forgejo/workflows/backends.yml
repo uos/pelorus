@@ -1,0 +1,64 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/SchemaStore/schemastore/refs/heads/master/src/schemas/json/github-workflow.json
+
+name: backends
+
+on:
+  push:
+  pull_request:
+
+env:
+  RUST_FONTCONFIG_DLOPEN: 1
+
+jobs:
+  apple:
+    runs-on: macos-latest
+    env:
+      DATASET: wachsbleiche:hunter:parking_25
+    steps:
+      - name: Update Rust
+        run: |
+          rustup toolchain install stable
+          rustup default stable
+          rustup update
+      - name: Install SeaKit
+        run: |
+          brew tap uos/marina
+          brew tap uos/sounding
+          brew tap uos/minot
+          brew update
+          brew install marina sounding minot
+      - name: Download dataset
+        run: |
+          marina pull -y $DATASET
+      - uses: actions/checkout@v4
+      - name: Equivalence
+        run: |
+          ./scripts/compare-backends-offline.bash --backends metal "$(marina resolve -y $DATASET)" "$(marina resolve -y $DATASET)/pelorus.rl"
+
+  nvidia:
+    runs-on: noble
+    env:
+      DATASET: wachsbleiche:hunter:parking_25
+    steps:
+      - name: Update Rust
+        run: |
+          rustup toolchain install stable
+          rustup default stable
+          rustup update
+      - name: Setup PPA
+        run: |
+          curl -fsSL "https://uos-robotics.codeberg.page/ppa/ubuntu/key.gpg" | gpg --dearmor \
+            | sudo tee /usr/share/keyrings/uos-archive-keyring.gpg >/dev/null
+          echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/uos-archive-keyring.gpg] https://uos-robotics.codeberg.page/ppa/ubuntu $(. /etc/os-release && echo $UBUNTU_CODENAME) main" \
+            | sudo tee /etc/apt/sources.list.d/uos.list
+          sudo apt-get update
+      - name: Install SeaKit
+        run: |
+          apt-get install marina sounding minot
+      - name: Download dataset
+        run: |
+          marina pull -y $DATASET
+      - uses: actions/checkout@v4
+      - name: Equivalence
+        run: |
+          ./scripts/compare-backends-offline.bash --backends cuda,vulkan "$(marina resolve -y $DATASET)" "$(marina resolve -y $DATASET)/pelorus.rl"
