@@ -15,6 +15,7 @@ jobs:
     env:
       DATASET: wachsbleiche:hunter:parking_25
     steps:
+      - uses: actions/checkout@v4
       - name: Update Rust
         run: |
           rustup toolchain install stable
@@ -29,7 +30,6 @@ jobs:
         run: |
           source .venv/bin/activate
           marina pull -y $DATASET
-      - uses: actions/checkout@v4
       - name: Equivalence
         run: |
           source .venv/bin/activate
@@ -40,6 +40,7 @@ jobs:
     env:
       DATASET: wachsbleiche:hunter:parking_25
     steps:
+      - uses: actions/checkout@v4
       - name: Update Rust
         run: |
           rustup toolchain install stable
@@ -54,7 +55,6 @@ jobs:
         run: |
           source .venv/bin/activate
           marina pull -y $DATASET
-      - uses: actions/checkout@v4
       - name: Equivalence
         run: |
           source .venv/bin/activate
