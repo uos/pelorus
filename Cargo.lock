@@ -4079,9 +4079,9 @@ dependencies = [
 
 [[package]]
 name = "marina"
-version = "0.2.4"
+version = "0.2.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "46540ecebe336b9d47d29649c2b59f2b3bce4648f5de367df690e39344813bd8"
+checksum = "bd7ae7acbdb0b923dd6a04d673f4c3ef646c6f52ff9f0d7ae67cacd8c8ba4399"
 dependencies = [
  "anyhow",
  "async-trait",
