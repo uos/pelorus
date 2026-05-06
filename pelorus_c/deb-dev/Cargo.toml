@@ -24,3 +24,15 @@ assets = [
     ["pelorusConfigVersion.cmake", "usr/lib/cmake/pelorus/pelorusConfigVersion.cmake", "644"],
 ]
 
+[package.metadata.generate-rpm]
+name = "libpelorus-dev"
+assets = [
+    { source = "pelorus.h", dest = "/usr/include/pelorus.h", mode = "644" },
+    { source = "pelorus.hpp", dest = "/usr/include/pelorus.hpp", mode = "644" },
+    { source = "pelorus.pc", dest = "/usr/lib/pkgconfig/pelorus.pc", mode = "644" },
+    { source = "pelorusConfig.cmake", dest = "/usr/lib/cmake/pelorus/pelorusConfig.cmake", mode = "644" },
+    { source = "pelorusConfigVersion.cmake", dest = "/usr/lib/cmake/pelorus/pelorusConfigVersion.cmake", mode = "644" },
+]
+
+[package.metadata.generate-rpm.requires]
+libpelorus = "= %{version}"

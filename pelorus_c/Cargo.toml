@@ -36,3 +36,10 @@ assets = [
     ["target/release/libpelorus.so", "usr/lib/libpelorus.so", "644"],
     ["target/release/libpelorus.a", "usr/lib/libpelorus.a", "644"],
 ]
+
+[package.metadata.generate-rpm]
+name = "libpelorus"
+assets = [
+    { source = "target/release/libpelorus.so", dest = "/usr/lib/libpelorus.so", mode = "644" },
+    { source = "target/release/libpelorus.a", dest = "/usr/lib/libpelorus.a", mode = "644" },
+]

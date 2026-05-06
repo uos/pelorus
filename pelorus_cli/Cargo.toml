@@ -162,6 +162,13 @@ section = "science"
 priority = "optional"
 assets = [["target/release/pelorus", "usr/bin/pelorus", "755"]]
 
+[package.metadata.generate-rpm]
+name = "pelorus"
+assets = [{ source = "target/release/pelorus", dest = "/usr/bin/pelorus", mode = "755" }]
+
+[package.metadata.generate-rpm.requires]
+minot = ">= 0.7.0, < 0.8.0"
+
 [package.metadata.multivers.x86_64]
 cpus = [
   "x86-64",

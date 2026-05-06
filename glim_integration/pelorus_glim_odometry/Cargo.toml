@@ -19,3 +19,11 @@ assets = [
     ["build/libodometry_estimation_pelorus.so", "usr/lib/libodometry_estimation_pelorus.so", "644"],
 ]
 
+[package.metadata.generate-rpm]
+name = "libpelorus-glim-odometry"
+assets = [
+    { source = "build/libodometry_estimation_pelorus.so", dest = "/usr/lib/libodometry_estimation_pelorus.so", mode = "644" },
+]
+
+[package.metadata.generate-rpm.requires]
+libpelorus = "= %{version}"
