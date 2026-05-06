@@ -45,7 +45,7 @@ jobs:
           cargo build --release --package pelorus_cli --features metal
       - name: Metal equivalence test
         run: |
-          ./scripts/compare-backends-offline.bash "$(marina resolve -y $DATASET)" "$(marina resolve -y $DATASET)/pelorus.rl"
+          ./scripts/compare-backends-offline.bash --backends metal "$(marina resolve -y $DATASET)" "$(marina resolve -y $DATASET)/pelorus.rl"
       # - name: Cleanup
       #   run: |
       #     marina clean --all -y

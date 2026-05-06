@@ -332,8 +332,8 @@ fn lio_with_ready_signal(
     shared_stats: Option<std::sync::Arc<SharedStats>>,
     // Optional flag that, when set to true, will cause the LIO loop to exit
     shutdown_flag: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
-    // Optional blocking shutdown signal for immediate pipeline teardown.
-    shutdown_request_rx: Option<std::sync::mpsc::Receiver<()>>,
+    // Optional blocking shutdown signal for pipeline teardown mode.
+    shutdown_request_rx: Option<std::sync::mpsc::Receiver<OfflineShutdownRequest>>,
     offline_prefetch_scans: usize,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let export_trajectory = resolve_export_trajectory_path(export_trajectory);
@@ -485,10 +485,15 @@ fn lio_with_ready_signal(
         Some(ready_for_next_rx),
     )?;
     let lifis_node = std::sync::Arc::new(lifis_node);
+    let drain_on_shutdown = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
     if let Some(stop_rx) = shutdown_request_rx {
         let node_for_stop = std::sync::Arc::clone(&lifis_node);
+        let drain_on_shutdown_for_stop = std::sync::Arc::clone(&drain_on_shutdown);
         std::thread::spawn(move || {
-            if stop_rx.recv().is_ok() {
+            if let Ok(request) = stop_rx.recv() {
+                if matches!(request, OfflineShutdownRequest::DrainAfterEndOfBag) {
+                    drain_on_shutdown_for_stop.store(true, std::sync::atomic::Ordering::SeqCst);
+                }
                 node_for_stop.request_shutdown();
             }
         });
@@ -905,19 +910,48 @@ fn lio_with_ready_signal(
         // Main processing loop. Use recv_timeout when a shutdown flag is provided so we can
         // check for shutdown requests periodically. If no shutdown flag is provided, block
         // on recv() as before.
+        let mut draining_after_end_of_bag = false;
         loop {
             let lifis_tick = match processing_shutdown_flag.as_ref() {
                 Some(flag) => {
                     if flag.load(std::sync::atomic::Ordering::Relaxed) {
-                        if let Some(ref lifis_node) = lifis_node {
-                            lifis_node.request_shutdown();
+                        let drain_requested = drain_on_shutdown
+                            .load(std::sync::atomic::Ordering::SeqCst);
+                        if drain_requested {
+                            if !draining_after_end_of_bag {
+                                draining_after_end_of_bag = true;
+                                info!(
+                                    "Shutdown requested after end-of-bag hint; draining queued scans"
+                                );
+                            }
+                            match synced_rx.recv_timeout(std::time::Duration::from_millis(50)) {
+                                Ok(t) => t,
+                                Err(std::sync::mpsc::RecvTimeoutError::Timeout)
+                                | Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                                    if let Some(ref lifis_node) = lifis_node {
+                                        lifis_node.request_shutdown();
+                                    }
+                                    // Drop sync gate and node ownership so all producer chains can close.
+                                    drop(registration_ready_tx.take());
+                                    drop(ready_for_next_tx.take());
+                                    drop(lifis_node.take());
+                                    info!(
+                                        "Shutdown requested after end-of-bag hint, queue drained, exiting processing loop"
+                                    );
+                                    break;
+                                }
+                            }
+                        } else {
+                            if let Some(ref lifis_node) = lifis_node {
+                                lifis_node.request_shutdown();
+                            }
+                            // Drop sync gate and node ownership so all producer chains can close.
+                            drop(registration_ready_tx.take());
+                            drop(ready_for_next_tx.take());
+                            drop(lifis_node.take());
+                            info!("Shutdown requested, exiting processing loop");
+                            break;
                         }
-                        // Drop sync gate and node ownership so all producer chains can close.
-                        drop(registration_ready_tx.take());
-                        drop(ready_for_next_tx.take());
-                        drop(lifis_node.take());
-                        info!("Shutdown requested, exiting processing loop");
-                        break;
                     } else {
                         // Block with a short timeout so we can still respond promptly to shutdown signals.
                         match synced_rx.recv_timeout(std::time::Duration::from_millis(50)) {
@@ -1912,6 +1946,12 @@ enum OfflineRuntimeEvent {
     LioExited(Result<(), String>),
 }
 
+#[derive(Clone, Copy, Debug)]
+enum OfflineShutdownRequest {
+    Immediate,
+    DrainAfterEndOfBag,
+}
+
 #[cfg(feature = "rat")]
 fn signal_process(pid: u32, signal: libc::c_int) -> std::io::Result<()> {
     let rc = unsafe { libc::kill(pid as i32, signal) };
@@ -2649,7 +2689,8 @@ pf! i 1
                 let lio_shutdown_flag =
                     std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
                 let lio_shutdown_flag_for_thread = lio_shutdown_flag.clone();
-                let (lio_stop_tx, lio_stop_rx) = std::sync::mpsc::channel::<()>();
+                let (lio_stop_tx, lio_stop_rx) =
+                    std::sync::mpsc::channel::<OfflineShutdownRequest>();
                 let shared_stats_for_lio = shared_stats.clone();
                 let runtime_tx_lio = runtime_tx.clone();
                 let offline_prefetch_scans = offline_args.prefetch_scans;
@@ -2718,14 +2759,15 @@ pf! i 1
                         OfflineRuntimeEvent::MinotEndOfBag => {
                             info!("Minot reached end of bagfile");
                             if !lio_shutdown_requested {
-                                let _ = lio_stop_tx.send(());
+                                let _ =
+                                    lio_stop_tx.send(OfflineShutdownRequest::DrainAfterEndOfBag);
                                 lio_shutdown_requested = true;
                             }
                         }
                         OfflineRuntimeEvent::MinotExited(status) => {
                             minot_exit_result = Some(status);
                             if !lio_shutdown_requested {
-                                let _ = lio_stop_tx.send(());
+                                let _ = lio_stop_tx.send(OfflineShutdownRequest::Immediate);
                                 lio_shutdown_requested = true;
                             }
                         }
