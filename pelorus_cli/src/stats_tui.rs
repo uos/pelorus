@@ -1,3 +1,7 @@
+use alloc::sync::Arc;
+use core::mem;
+use core::sync::atomic::{AtomicBool, Ordering};
+use core::time::Duration;
 use crossterm::{
     cursor,
     event::{self, Event, KeyCode, KeyModifiers},
@@ -17,8 +21,7 @@ use ratatui::{
     },
 };
 use std::io::{self, IsTerminal};
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::Mutex;
 use std::time::Instant;
 
 use pelorus_core::LidarVendor;
@@ -534,7 +537,11 @@ fn get_ram_usage_mb() -> f64 {
         if let Ok(content) = std::fs::read_to_string("/proc/self/status") {
             for line in content.lines() {
                 if let Some(rest) = line.strip_prefix("VmRSS:") {
-                    if let Some(kb) = rest.split_whitespace().next().and_then(|v| v.parse::<f64>().ok()) {
+                    if let Some(kb) = rest
+                        .split_whitespace()
+                        .next()
+                        .and_then(|v| v.parse::<f64>().ok())
+                    {
                         return kb / 1024.0;
                     }
                 }
@@ -546,7 +553,7 @@ fn get_ram_usage_mb() -> f64 {
     #[cfg(target_os = "macos")]
     {
         unsafe {
-            let mut rusage: libc::rusage = std::mem::zeroed();
+            let mut rusage: libc::rusage = mem::zeroed();
             if libc::getrusage(libc::RUSAGE_SELF, &mut rusage) == 0 {
                 // On macOS ru_maxrss is in bytes
                 return rusage.ru_maxrss as f64 / (1024.0 * 1024.0);
@@ -607,7 +614,7 @@ fn get_cpu_usage_macos(last: Option<(u64, f64)>) -> (f64, (u64, f64)) {
         .unwrap_or(0);
 
     let cpu_time_secs = unsafe {
-        let mut rusage: libc::rusage = std::mem::zeroed();
+        let mut rusage: libc::rusage = mem::zeroed();
         if libc::getrusage(libc::RUSAGE_SELF, &mut rusage) == 0 {
             let user = rusage.ru_utime.tv_sec as f64 + rusage.ru_utime.tv_usec as f64 / 1_000_000.0;
             let sys = rusage.ru_stime.tv_sec as f64 + rusage.ru_stime.tv_usec as f64 / 1_000_000.0;
@@ -1348,7 +1355,7 @@ impl StatsTui {
                 self.render(f, &stats);
             })?;
 
-            if event::poll(std::time::Duration::from_millis(50))? {
+            if event::poll(Duration::from_millis(50))? {
                 if let Event::Key(key) = event::read()? {
                     let size = terminal.size()?;
                     let area = Rect::new(0, 0, size.width, size.height);

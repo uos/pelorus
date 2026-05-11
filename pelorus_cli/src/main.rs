@@ -1,16 +1,32 @@
+#![warn(clippy::std_instead_of_alloc, clippy::std_instead_of_core)]
+
+extern crate alloc;
+
+#[cfg(any(feature = "mt_pubsub", feature = "ros2-client", feature = "r2r"))]
+use alloc::collections::VecDeque;
+use alloc::sync::Arc;
 #[allow(unused_imports)]
 use anyhow::Error;
 use anyhow::anyhow;
 use clap::{CommandFactory, ValueEnum};
 use clap_complete::{Shell, generate};
+use core::error::Error as CoreError;
+#[cfg(feature = "rat")]
+use core::panic::AssertUnwindSafe;
+use core::sync::atomic::{AtomicBool, Ordering};
+use core::time::Duration;
 #[cfg(feature = "rat")]
 use marina::{Marina, ProgressReporter, ResolveResult, WriterProgress};
 #[cfg(feature = "mimalloc")]
 use mimalloc::MiMalloc;
+use pelorus_core::LioConfig;
 use pelorus_core::config::{ast_to_config, ast_to_config_with_user_usage};
+#[cfg(any(feature = "mt_pubsub", feature = "ros2-client", feature = "r2r"))]
+use pelorus_core::timestamp_to_secs;
+#[cfg(any(feature = "mt_pubsub", feature = "ros2-client", feature = "r2r"))]
 use pelorus_core::timing::RuntimeEvaluator;
-use pelorus_core::{LioConfig, timestamp_to_secs};
 use pelorus_reg::ActiveBackend;
+#[cfg(any(feature = "mt_pubsub", feature = "ros2-client", feature = "r2r"))]
 use pelorus_reg::pipeline::Pipeline;
 #[cfg(feature = "r2r")]
 use prelio_io::impl_r2r;
@@ -28,9 +44,11 @@ use ros2_interfaces_jazzy_serde::{
 use std::fs;
 #[cfg(feature = "rat")]
 use std::process::{Command as ProcessCommand, Stdio};
+#[cfg(any(feature = "mt_pubsub", feature = "ros2-client", feature = "r2r"))]
 const PATH_LIMIT: usize = 10_000;
 const DEFAULT_OFFLINE_PREFETCH_SCANS: usize = 4;
 
+#[cfg(any(feature = "mt_pubsub", feature = "ros2-client", feature = "r2r"))]
 use ros_pointcloud2::prelude::*;
 
 #[global_allocator]
@@ -43,6 +61,7 @@ use futures_lite::future;
 use log::{debug, error, info, trace, warn};
 #[cfg(feature = "mt_pubsub")]
 use mt_pubsub::Node;
+#[cfg(any(feature = "mt_pubsub", feature = "ros2-client", feature = "r2r"))]
 use nalgebra::{Isometry3, Translation3, UnitQuaternion};
 #[cfg(feature = "r2r")]
 #[allow(unused_imports)]
@@ -69,11 +88,11 @@ use ros2_interfaces_jazzy_rkyv::{
     std_msgs::msg::{Header, String as RosString},
     visualization_msgs::msg::Marker,
 };
-use std::collections::VecDeque;
 use std::io::IsTerminal;
 #[cfg(feature = "rat")]
 use std::io::Write;
 
+#[cfg(any(feature = "mt_pubsub", feature = "ros2-client", feature = "r2r"))]
 use prelio_io::prelio::LocatedBufferView;
 #[cfg(feature = "ros2-client")]
 use prelio_io::tf::TfBroadcaster;
@@ -82,15 +101,21 @@ use prelio_io::tf_lh::TfBroadcaster;
 #[cfg(feature = "r2r")]
 use prelio_io::tf_r2r::TfBroadcaster;
 
+#[cfg(any(feature = "mt_pubsub", feature = "ros2-client", feature = "r2r"))]
 use pelorus_reg::Registration;
+#[cfg(any(feature = "mt_pubsub", feature = "ros2-client", feature = "r2r"))]
 use prelio_io::PrelioNode;
 use std::path::PathBuf;
 
 use pelorus_cli::stats_tui::{
     SharedStats, StatsTui, init_logger, set_tui_active, update_log_level,
 };
-#[cfg(feature = "mt_pubsub")]
-use std::time::Duration;
+#[cfg(any(
+    feature = "mt_pubsub",
+    feature = "ros2-client",
+    feature = "r2r",
+    feature = "rat"
+))]
 use std::time::UNIX_EPOCH;
 
 #[allow(dead_code)]
@@ -249,6 +274,7 @@ pub enum GenerateKind {
 
 #[derive(Debug)]
 #[allow(dead_code)]
+#[cfg(any(feature = "mt_pubsub", feature = "ros2-client", feature = "r2r"))]
 struct RegisteredCloud {
     cloud: ros_pointcloud2::PointCloud2Msg,
     registration: nalgebra::Isometry3<f32>,
@@ -259,7 +285,7 @@ fn lio(
     config: LioConfig,
     export_trajectory: Option<String>,
     synchronous_mode: bool,
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> Result<(), Box<dyn CoreError>> {
     lio_with_ready_signal(
         config,
         None,
@@ -272,6 +298,12 @@ fn lio(
     )
 }
 
+#[cfg(any(
+    feature = "mt_pubsub",
+    feature = "ros2-client",
+    feature = "r2r",
+    feature = "rat"
+))]
 fn resolve_export_trajectory_path(export_trajectory: Option<String>) -> Option<String> {
     match export_trajectory {
         Some(path) if path.is_empty() => {
@@ -289,20 +321,22 @@ fn resolve_export_trajectory_path(export_trajectory: Option<String>) -> Option<S
     }
 }
 
+#[cfg(any(feature = "mt_pubsub", feature = "ros2-client", feature = "r2r"))]
 fn release_minot_tick(
-    shutdown_flag: Option<&std::sync::Arc<std::sync::atomic::AtomicBool>>,
+    shutdown_flag: Option<&Arc<AtomicBool>>,
     #[allow(unused_variables)] synchronous_mode: bool,
 ) {
     release_minot_ticks(shutdown_flag, synchronous_mode, 1);
 }
 
+#[cfg(any(feature = "mt_pubsub", feature = "ros2-client", feature = "r2r"))]
 fn release_minot_ticks(
-    shutdown_flag: Option<&std::sync::Arc<std::sync::atomic::AtomicBool>>,
+    shutdown_flag: Option<&Arc<AtomicBool>>,
     #[allow(unused_variables)] synchronous_mode: bool,
     #[allow(unused_variables)] count: usize,
 ) {
     if shutdown_flag
-        .map(|flag| flag.load(std::sync::atomic::Ordering::Relaxed))
+        .map(|flag| flag.load(Ordering::Relaxed))
         .unwrap_or(false)
     {
         return;
@@ -310,7 +344,8 @@ fn release_minot_ticks(
 
     #[cfg(feature = "rat")]
     if synchronous_mode {
-        static MINOT_MONO_START: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
+        static MINOT_MONO_START: std::sync::OnceLock<std::time::Instant> =
+            std::sync::OnceLock::new();
         for _ in 0..count {
             let now_ns = MINOT_MONO_START
                 .get_or_init(std::time::Instant::now)
@@ -324,25 +359,26 @@ fn release_minot_ticks(
     }
 }
 
+#[cfg(any(feature = "mt_pubsub", feature = "ros2-client", feature = "r2r"))]
 fn lio_with_ready_signal(
     config: LioConfig,
     ready_signal: Option<std::sync::mpsc::Sender<()>>,
     export_trajectory: Option<String>,
     #[allow(unused_variables)] synchronous_mode: bool,
-    shared_stats: Option<std::sync::Arc<SharedStats>>,
+    shared_stats: Option<Arc<SharedStats>>,
     // Optional flag that, when set to true, will cause the LIO loop to exit
-    shutdown_flag: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
+    shutdown_flag: Option<Arc<AtomicBool>>,
     // Optional blocking shutdown signal for pipeline teardown mode.
     shutdown_request_rx: Option<std::sync::mpsc::Receiver<OfflineShutdownRequest>>,
     offline_prefetch_scans: usize,
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> Result<(), Box<dyn CoreError>> {
     let export_trajectory = resolve_export_trajectory_path(export_trajectory);
     if let Some(path) = export_trajectory.as_ref() {
         warn!("Trajectory export target: {}", path);
     }
     #[cfg(any(feature = "mt_pubsub", feature = "rat"))]
     let rt = if cfg!(feature = "mt_pubsub") || (synchronous_mode && cfg!(feature = "rat")) {
-        Some(std::sync::Arc::new(
+        Some(Arc::new(
             tokio::runtime::Builder::new_multi_thread()
                 .enable_all()
                 .build()
@@ -363,7 +399,7 @@ fn lio_with_ready_signal(
         NodeOptions::new().enable_rosout(true),
     )?;
     #[cfg(feature = "mt_pubsub")]
-    let node = std::sync::Arc::new(
+    let node = Arc::new(
         rt.as_ref()
             .expect("rt always exists with mt_pubsub feat")
             .block_on(async {
@@ -380,7 +416,7 @@ fn lio_with_ready_signal(
     #[cfg(feature = "rat")]
     if synchronous_mode {
         if let Some(rt) = rt.as_ref() {
-            rat::init("pelorus", None, Some(std::sync::Arc::clone(rt))).unwrap();
+            rat::init("pelorus", None, Some(Arc::clone(rt))).unwrap();
         }
     }
 
@@ -392,7 +428,7 @@ fn lio_with_ready_signal(
     #[cfg(not(feature = "mt_pubsub"))]
     let tf_broadcaster = TfBroadcaster::new(&mut node);
     #[cfg(feature = "mt_pubsub")]
-    let tf_broadcaster = std::sync::Arc::new(TfBroadcaster::new(
+    let tf_broadcaster = Arc::new(TfBroadcaster::new(
         &node,
         rt.as_ref()
             .expect("rt always exists with mt_pubsub feat")
@@ -427,7 +463,7 @@ fn lio_with_ready_signal(
                 &rerun_server_addr
                     .parse()
                     .unwrap_or_else(|_| std::net::SocketAddr::from(([127, 0, 0, 1], 9876))),
-                std::time::Duration::from_millis(500),
+                Duration::from_millis(500),
             )
             .is_ok();
 
@@ -444,7 +480,7 @@ fn lio_with_ready_signal(
                 {
                     Ok(stream) => {
                         info!("Connected to Rerun at {}", rerun_server_addr);
-                        Some(std::sync::Arc::new(stream))
+                        Some(Arc::new(stream))
                     }
                     Err(e) => {
                         warn!(
@@ -484,15 +520,15 @@ fn lio_with_ready_signal(
         rec.clone(),
         Some(ready_for_next_rx),
     )?;
-    let lifis_node = std::sync::Arc::new(lifis_node);
-    let drain_on_shutdown = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let lifis_node = Arc::new(lifis_node);
+    let drain_on_shutdown = Arc::new(AtomicBool::new(false));
     if let Some(stop_rx) = shutdown_request_rx {
-        let node_for_stop = std::sync::Arc::clone(&lifis_node);
-        let drain_on_shutdown_for_stop = std::sync::Arc::clone(&drain_on_shutdown);
+        let node_for_stop = Arc::clone(&lifis_node);
+        let drain_on_shutdown_for_stop = Arc::clone(&drain_on_shutdown);
         std::thread::spawn(move || {
             if let Ok(request) = stop_rx.recv() {
                 if matches!(request, OfflineShutdownRequest::DrainAfterEndOfBag) {
-                    drain_on_shutdown_for_stop.store(true, std::sync::atomic::Ordering::SeqCst);
+                    drain_on_shutdown_for_stop.store(true, Ordering::SeqCst);
                 }
                 node_for_stop.request_shutdown();
             }
@@ -708,9 +744,7 @@ fn lio_with_ready_signal(
     let debug_render_interval = if config.debug_fps == 0 {
         None
     } else {
-        Some(std::time::Duration::from_secs_f64(
-            1.0 / config.debug_fps as f64,
-        ))
+        Some(Duration::from_secs_f64(1.0 / config.debug_fps as f64))
     };
     let mut last_render = std::time::Instant::now();
 
@@ -780,7 +814,7 @@ fn lio_with_ready_signal(
                 while relay_rx.recv().is_ok() {
                     if relay_shutdown_flag
                         .as_ref()
-                        .map(|flag| flag.load(std::sync::atomic::Ordering::Relaxed))
+                        .map(|flag| flag.load(Ordering::Relaxed))
                         .unwrap_or(false)
                     {
                         break;
@@ -914,9 +948,8 @@ fn lio_with_ready_signal(
         loop {
             let lifis_tick = match processing_shutdown_flag.as_ref() {
                 Some(flag) => {
-                    if flag.load(std::sync::atomic::Ordering::Relaxed) {
-                        let drain_requested = drain_on_shutdown
-                            .load(std::sync::atomic::Ordering::SeqCst);
+                    if flag.load(Ordering::Relaxed) {
+                        let drain_requested = drain_on_shutdown.load(Ordering::SeqCst);
                         if drain_requested {
                             if !draining_after_end_of_bag {
                                 draining_after_end_of_bag = true;
@@ -924,7 +957,7 @@ fn lio_with_ready_signal(
                                     "Shutdown requested after end-of-bag hint; draining queued scans"
                                 );
                             }
-                            match synced_rx.recv_timeout(std::time::Duration::from_millis(50)) {
+                            match synced_rx.recv_timeout(Duration::from_millis(50)) {
                                 Ok(t) => t,
                                 Err(std::sync::mpsc::RecvTimeoutError::Timeout)
                                 | Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
@@ -954,7 +987,7 @@ fn lio_with_ready_signal(
                         }
                     } else {
                         // Block with a short timeout so we can still respond promptly to shutdown signals.
-                        match synced_rx.recv_timeout(std::time::Duration::from_millis(50)) {
+                        match synced_rx.recv_timeout(Duration::from_millis(50)) {
                             Ok(t) => t,
                             Err(std::sync::mpsc::RecvTimeoutError::Timeout) => continue,
                             Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
@@ -1489,7 +1522,7 @@ fn lio_with_ready_signal(
             };
             #[cfg(feature = "mt_pubsub")]
             {
-                let inner_tf_broad = std::sync::Arc::clone(&tf_broadcaster);
+                let inner_tf_broad = Arc::clone(&tf_broadcaster);
                 std::thread::spawn(move || {
                     future::block_on(async move {
                         if let Err(err) = inner_tf_broad.send_transform(tf).await {
@@ -1844,12 +1877,12 @@ fn lio_with_ready_signal(
                 break;
             }
             if let Some(ref flag) = spinner_shutdown_flag {
-                if flag.load(std::sync::atomic::Ordering::Relaxed) {
+                if flag.load(Ordering::Relaxed) {
                     info!("Shutdown flag detected in mt_pubsub spinner");
                     break;
                 }
             }
-            std::thread::sleep(std::time::Duration::from_millis(100));
+            std::thread::sleep(Duration::from_millis(100));
         }
         // Wait for processing thread to finish (with timeout)
         let _ = processing_handle.join();
@@ -1875,7 +1908,7 @@ fn lio_with_ready_signal(
         // Monitor shutdown flag and wait for processing to complete
         loop {
             if let Some(ref flag) = spinner_shutdown {
-                if flag.load(std::sync::atomic::Ordering::Relaxed) {
+                if flag.load(Ordering::Relaxed) {
                     info!("Shutdown flag detected, waiting for processing thread");
                     break;
                 }
@@ -1884,7 +1917,7 @@ fn lio_with_ready_signal(
                 info!("Processing thread finished");
                 break;
             }
-            std::thread::sleep(std::time::Duration::from_millis(100));
+            std::thread::sleep(Duration::from_millis(100));
         }
 
         let _ = processing_handle.join();
@@ -1893,11 +1926,11 @@ fn lio_with_ready_signal(
 
     #[cfg(feature = "r2r")]
     {
-        let spin_timeout = std::time::Duration::from_millis(10);
+        let spin_timeout = Duration::from_millis(10);
         loop {
             node.spin_once(spin_timeout.clone());
             if let Some(ref flag) = spinner_shutdown_flag {
-                if flag.load(std::sync::atomic::Ordering::Relaxed) {
+                if flag.load(Ordering::Relaxed) {
                     info!("Shutdown flag detected in r2r spinner");
                     break;
                 }
@@ -1917,6 +1950,23 @@ fn lio_with_ready_signal(
         let _ = processing_handle.join();
         Ok(())
     }
+}
+
+#[cfg(not(any(feature = "mt_pubsub", feature = "ros2-client", feature = "r2r")))]
+fn lio_with_ready_signal(
+    _config: LioConfig,
+    _ready_signal: Option<std::sync::mpsc::Sender<()>>,
+    _export_trajectory: Option<String>,
+    _synchronous_mode: bool,
+    _shared_stats: Option<Arc<SharedStats>>,
+    _shutdown_flag: Option<Arc<AtomicBool>>,
+    _shutdown_request_rx: Option<std::sync::mpsc::Receiver<OfflineShutdownRequest>>,
+    _offline_prefetch_scans: usize,
+) -> Result<(), Box<dyn CoreError>> {
+    Err(anyhow!(
+        "No IO backend is enabled. Rebuild with one of: offline, mt_pubsub, ros2-client, or r2r."
+    )
+    .into())
 }
 
 #[allow(dead_code)]
@@ -1947,6 +1997,7 @@ enum OfflineRuntimeEvent {
 }
 
 #[derive(Clone, Copy, Debug)]
+#[allow(dead_code)]
 enum OfflineShutdownRequest {
     Immediate,
     DrainAfterEndOfBag,
@@ -2090,6 +2141,7 @@ mod vulkan_backend_details_tests {
     }
 }
 
+#[cfg(any(feature = "mt_pubsub", feature = "ros2-client", feature = "r2r"))]
 fn set_backend_from_runtime(
     shared_stats: &SharedStats,
     config: &LioConfig,
@@ -2236,7 +2288,7 @@ Please specify a local path or resolve/pull with an explicit registry.",
     canonicalize_bagfile_path(resolved_path.as_path())
 }
 
-fn main() -> Result<(), Box<dyn std::error::Error>> {
+fn main() -> Result<(), Box<dyn CoreError>> {
     // Initialize our custom logger that works with both TUI and console
     init_logger();
 
@@ -2286,6 +2338,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
 
             if config.num_threads > 0 {
+                #[cfg(feature = "rayon")]
                 if let Err(e) = rayon::ThreadPoolBuilder::new()
                     .num_threads(config.num_threads)
                     .build_global()
@@ -2295,6 +2348,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         config.num_threads
                     );
                 }
+                #[cfg(not(feature = "rayon"))]
+                warn!(
+                    "Ignoring num_threads={}; thread-pool configuration requires the rayon feature.",
+                    config.num_threads
+                );
             }
 
             // Update log level after config has set RUST_LOG
@@ -2312,7 +2370,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
 
             if show_tui {
-                let shared_stats = std::sync::Arc::new(SharedStats::new());
+                let shared_stats = Arc::new(SharedStats::new());
                 shared_stats.set_mode("Online");
                 set_backend_from_config(&shared_stats, &config);
                 let stats_for_tui = shared_stats.clone();
@@ -2333,8 +2391,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let lio_sync = config_args.rat;
                 let lio_stats = Some(shared_stats);
 
-                let lio_shutdown_flag =
-                    std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+                let lio_shutdown_flag = Arc::new(AtomicBool::new(false));
                 let lio_shutdown_flag_for_thread = lio_shutdown_flag.clone();
 
                 let lio_handle = std::thread::spawn(move || -> Result<(), String> {
@@ -2355,7 +2412,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 loop {
                     if shutdown_rx.try_recv().is_ok() {
                         // TUI requested shutdown -> request LIO to stop
-                        lio_shutdown_flag.store(true, std::sync::atomic::Ordering::SeqCst);
+                        lio_shutdown_flag.store(true, Ordering::SeqCst);
                         info!("received shutdown from TUI");
                         break;
                     }
@@ -2365,12 +2422,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         info!("lio finished, stopping tui");
                         break;
                     }
-                    std::thread::sleep(std::time::Duration::from_millis(100));
+                    std::thread::sleep(Duration::from_millis(100));
                 }
 
                 // Ensure both threads are asked to stop
                 let _ = tui_stop_tx.send(());
-                lio_shutdown_flag.store(true, std::sync::atomic::Ordering::SeqCst);
+                lio_shutdown_flag.store(true, Ordering::SeqCst);
 
                 // Join TUI thread first (should be quick)
                 let tui_join_result = tui_thread.join();
@@ -2390,7 +2447,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         #[cfg(feature = "rat")]
         Command::Offline(offline_args) => {
-            let shared_stats = std::sync::Arc::new(SharedStats::new());
+            let shared_stats = Arc::new(SharedStats::new());
             shared_stats.set_mode("Offline");
             let stats_for_tui = shared_stats.clone();
             // Set default target rate, will be updated by measured rate
@@ -2431,6 +2488,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             set_backend_from_config(&shared_stats, &config);
 
             if config.num_threads > 0 {
+                #[cfg(feature = "rayon")]
                 if let Err(e) = rayon::ThreadPoolBuilder::new()
                     .num_threads(config.num_threads)
                     .build_global()
@@ -2440,6 +2498,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         config.num_threads
                     );
                 }
+                #[cfg(not(feature = "rayon"))]
+                warn!(
+                    "Ignoring num_threads={}; thread-pool configuration requires the rayon feature.",
+                    config.num_threads
+                );
             }
 
             let show_tui = config.show_tui && std::io::stdout().is_terminal();
@@ -2562,7 +2625,7 @@ pf! i 1
                 use std::io::{BufRead, BufReader};
 
                 let (runtime_tx, runtime_rx) = std::sync::mpsc::channel::<OfflineRuntimeEvent>();
-                let ready_notified = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+                let ready_notified = Arc::new(AtomicBool::new(false));
 
                 // Thread for stdout
                 let runtime_tx_stdout = runtime_tx.clone();
@@ -2587,9 +2650,7 @@ pf! i 1
                                     || line.to_lowercase().contains("press enter")
                                     || line.to_lowercase().contains("stdin")
                                 {
-                                    if !ready_notified_stdout
-                                        .swap(true, std::sync::atomic::Ordering::SeqCst)
-                                    {
+                                    if !ready_notified_stdout.swap(true, Ordering::SeqCst) {
                                         let _ =
                                             runtime_tx_stdout.send(OfflineRuntimeEvent::MinotReady);
                                     }
@@ -2628,9 +2689,7 @@ pf! i 1
                                     || line.to_lowercase().contains("press enter")
                                     || line.to_lowercase().contains("stdin")
                                 {
-                                    if !ready_notified_stderr
-                                        .swap(true, std::sync::atomic::Ordering::SeqCst)
-                                    {
+                                    if !ready_notified_stderr.swap(true, Ordering::SeqCst) {
                                         let _ =
                                             runtime_tx_stderr.send(OfflineRuntimeEvent::MinotReady);
                                     }
@@ -2686,8 +2745,7 @@ pf! i 1
 
                 // start Odometry in thread
                 // Provide an atomic shutdown flag so we can request LIO to shutdown from main/TUI
-                let lio_shutdown_flag =
-                    std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+                let lio_shutdown_flag = Arc::new(AtomicBool::new(false));
                 let lio_shutdown_flag_for_thread = lio_shutdown_flag.clone();
                 let (lio_stop_tx, lio_stop_rx) =
                     std::sync::mpsc::channel::<OfflineShutdownRequest>();
@@ -2697,7 +2755,7 @@ pf! i 1
 
                 let lio_handle = std::thread::spawn(move || {
                     let synchronous_mode = config.prelio_node_params.synchronous_mode;
-                    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    let result = std::panic::catch_unwind(AssertUnwindSafe(|| {
                         lio_with_ready_signal(
                             config,
                             Some(pelorus_ready_tx),
@@ -2752,7 +2810,7 @@ pf! i 1
                                 // 1) request internal shutdown,
                                 // 2) finish current in-flight frame,
                                 // 3) terminate Minot only after LIO exits.
-                                lio_shutdown_flag.store(true, std::sync::atomic::Ordering::SeqCst);
+                                lio_shutdown_flag.store(true, Ordering::SeqCst);
                                 lio_shutdown_requested = true;
                             }
                         }
@@ -2979,13 +3037,13 @@ pf! i 1
                     });
                 });
 
-                let timeout = std::time::Duration::from_secs_f64(args.timeout);
+                let timeout = Duration::from_secs_f64(args.timeout);
                 let start = std::time::Instant::now();
                 let mut lidar_frame: Option<String> = None;
                 let mut imu_frame: Option<String> = None;
 
                 while start.elapsed() < timeout {
-                    node.spin_once(std::time::Duration::from_millis(10));
+                    node.spin_once(Duration::from_millis(10));
 
                     if lidar_frame.is_none() {
                         if let Ok(f) = lidar_rx.try_recv() {

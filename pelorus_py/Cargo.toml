@@ -16,9 +16,9 @@ crate-type = ["cdylib"]
 
 [dependencies]
 pelorus_core.workspace = true
-pelorus_reg.workspace = true
-prelio.workspace = true
-spole.workspace = true
+pelorus_reg = { workspace = true, default-features = false }
+prelio = { workspace = true, default-features = false }
+spole = { workspace = true, default-features = false }
 ros_pointcloud2.workspace = true
 ros2-interfaces-jazzy-serde.workspace = true
 nalgebra.workspace = true
@@ -26,14 +26,21 @@ anyhow.workspace = true
 log.workspace = true
 env_logger.workspace = true
 ratslang.workspace = true
-rayon.workspace = true
+rayon = { workspace = true, optional = true }
 
 ndarray.workspace = true
 pyo3.workspace = true
 numpy.workspace = true
 
 [features]
-default = []
+default = ["rayon"]
+rayon = [
+    "dep:rayon",
+    "prelio/rayon",
+    "pelorus_reg/rayon",
+    "spole/rayon",
+    "ros_pointcloud2/rayon",
+]
 downsample = ["prelio/downsample"]
 cuda = ["prelio/cuda", "pelorus_reg/cuda"]
 metal = ["prelio/metal", "pelorus_reg/metal"]

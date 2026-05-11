@@ -15,14 +15,15 @@ name = "pelorus"
 crate-type = ["cdylib", "staticlib"]
 
 [dependencies]
-pelorus.workspace = true
+pelorus = { workspace = true, default-features = false }
 log.workspace = true
 
 [build-dependencies]
 cbindgen.workspace = true
 
 [features]
-default = []
+default = ["rayon"]
+rayon = ["pelorus/rayon"]
 downsample = ["pelorus/downsample"]
 cuda = ["pelorus/cuda"]
 metal = ["pelorus/metal"]

@@ -1,3 +1,4 @@
+#[cfg(feature = "rayon")]
 use rayon::prelude::*;
 use std::env;
 use std::path::{Path, PathBuf};
@@ -87,8 +88,12 @@ fn main() {
                 }
             }
 
-            let object_files: Vec<PathBuf> = source_files
-                .par_iter()
+            #[cfg(feature = "rayon")]
+            let source_files_iter = source_files.par_iter();
+            #[cfg(not(feature = "rayon"))]
+            let source_files_iter = source_files.iter();
+
+            let object_files: Vec<PathBuf> = source_files_iter
                 .map(|source_file| {
                     let path = Path::new(source_file);
                     let filename = path.file_stem().unwrap().to_str().unwrap();

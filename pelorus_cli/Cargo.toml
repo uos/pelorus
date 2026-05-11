@@ -12,12 +12,12 @@ rust-version.workspace = true
 
 [dependencies]
 pelorus_core.workspace = true
-prelio_io.workspace = true
+prelio_io = { workspace = true, default-features = false }
 pelorus_cuda = { optional = true, workspace = true }
 pelorus_metal = { optional = true, workspace = true }
 pelorus_vulkan = { optional = true, workspace = true }
-prelio.workspace = true
-pelorus_reg.workspace = true
+prelio = { workspace = true, default-features = false }
+pelorus_reg = { workspace = true, default-features = false }
 ros_pointcloud2.workspace = true
 ros2-client = { workspace = true, optional = true }
 nalgebra.workspace = true
@@ -44,7 +44,7 @@ ratatui.workspace = true
 crossterm.workspace = true
 num_cpus.workspace = true
 libc.workspace = true
-rayon.workspace = true
+rayon = { workspace = true, optional = true }
 marina = { workspace = true, optional = true }
 clap_complete.workspace = true
 
@@ -55,7 +55,18 @@ path = "src/main.rs"
 [features]
 default = [
   "offline",
+  "rayon",
 ] # rerun needs newer rustc versions, so only enable it manually
+
+rayon = [
+  "dep:rayon",
+  "prelio_io/rayon",
+  "prelio/rayon",
+  "pelorus_reg/rayon",
+  "ros_pointcloud2/rayon",
+  "pelorus_cuda?/rayon",
+  "pelorus_vulkan?/rayon",
+]
 
 # -#-#-#-#-#- Sensor Communication -#-#-#-#-#-
 

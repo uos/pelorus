@@ -7,6 +7,7 @@ use pelorus_core::{
     COV_IMU_BIAS_DEFAULT, COV_IMU_RAW_DEFAULT, ImuMsg, ImuParameters, KinematicModel, LidarVendor,
     OdomMsg, PointXYZIT, timestamp_to_secs,
 };
+#[cfg(feature = "rayon")]
 use rayon::prelude::*;
 use sophus_lie::IsAffineGroup;
 
@@ -516,7 +517,7 @@ impl ImuProcessing {
                 point.z = p_compensate.z as f32;
             };
 
-            // parallelize the clouds as well
+            #[cfg(feature = "rayon")]
             rayon::scope(move |scope| {
                 scope.spawn(move |_| {
                     cloud.par_iter_mut().for_each(deskew);
@@ -527,6 +528,13 @@ impl ImuProcessing {
                     });
                 }
             });
+            #[cfg(not(feature = "rayon"))]
+            {
+                cloud.iter_mut().for_each(deskew);
+                if let Some(passthrough) = cloud_passthrough {
+                    passthrough.iter_mut().for_each(deskew);
+                }
+            }
         }
     }
 

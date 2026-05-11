@@ -1,6 +1,7 @@
+use core::error::Error as CoreError;
 use std::{env, path::PathBuf};
 
-fn main() -> Result<(), Box<dyn std::error::Error>> {
+fn main() -> Result<(), Box<dyn CoreError>> {
     let manifest_dir = env::var("CARGO_MANIFEST_DIR")?;
     let default_config_path = PathBuf::from(&manifest_dir).join("../default.rl");
 

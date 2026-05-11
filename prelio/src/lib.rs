@@ -1,6 +1,7 @@
 pub mod imu;
 mod naive_preint;
 mod naive_preint_eth;
+#[cfg(feature = "rayon")]
 use rayon::prelude::*;
 
 use log::{debug, error, info, warn};
@@ -37,6 +38,42 @@ const IMU_QUEUE_CAP: usize = 16_384;
 const ODOM_QUEUE_CAP: usize = 8_192;
 const FILTERED_CLOUD_QUEUE_CAP: usize = 8;
 const SYNCED_CLOUD_QUEUE_CAP: usize = 8;
+
+#[cfg(feature = "rayon")]
+fn sort_unstable_by<T, F>(slice: &mut [T], cmp: F)
+where
+    T: Send,
+    F: Fn(&T, &T) -> std::cmp::Ordering + Sync,
+{
+    slice.par_sort_unstable_by(cmp);
+}
+
+#[cfg(not(feature = "rayon"))]
+fn sort_unstable_by<T, F>(slice: &mut [T], cmp: F)
+where
+    F: Fn(&T, &T) -> std::cmp::Ordering,
+{
+    slice.sort_unstable_by(cmp);
+}
+
+#[cfg(feature = "rayon")]
+fn sort_unstable_by_key<T, K, F>(slice: &mut [T], f: F)
+where
+    T: Send,
+    K: Ord + Send,
+    F: Fn(&T) -> K + Sync,
+{
+    slice.par_sort_unstable_by_key(f);
+}
+
+#[cfg(not(feature = "rayon"))]
+fn sort_unstable_by_key<T, K, F>(slice: &mut [T], f: F)
+where
+    K: Ord,
+    F: Fn(&T) -> K,
+{
+    slice.sort_unstable_by_key(f);
+}
 
 #[derive(Clone)]
 pub struct LabeledPointCloud2Msg {
@@ -672,9 +709,17 @@ fn filter_downsample<const N: usize, P: PointXYZITimestamp<N>>(
         // 1. Stage 1: Filter and Undistort (Always happens first)
         let mut filtered_cloud: Vec<PointXYZIT> = Vec::with_capacity(cloud.dimensions.len());
         let start = std::time::Instant::now();
+        #[cfg(feature = "rayon")]
         filtered_cloud.par_extend(
             cloud
                 .try_into_par_iter()?
+                .map(map_to_non_trait)
+                .filter_map(filter_map_non_down),
+        );
+        #[cfg(not(feature = "rayon"))]
+        filtered_cloud.extend(
+            cloud
+                .try_into_iter()?
                 .map(map_to_non_trait)
                 .filter_map(filter_map_non_down),
         );
@@ -727,15 +772,27 @@ fn filter_downsample<const N: usize, P: PointXYZITimestamp<N>>(
         } else {
             let start = std::time::Instant::now();
             if point_skip == 1 {
+                #[cfg(feature = "rayon")]
                 keyed_points.par_extend(
                     filtered_cloud
                         .par_iter()
                         .filter_map(map_down_ref_from_bypass),
                 );
+                #[cfg(not(feature = "rayon"))]
+                keyed_points.extend(filtered_cloud.iter().filter_map(map_down_ref_from_bypass));
             } else {
+                #[cfg(feature = "rayon")]
                 keyed_points.par_extend(
                     filtered_cloud
                         .par_iter()
+                        .enumerate()
+                        .filter_map(|(idx, p)| (idx % point_skip == 0).then_some(p))
+                        .filter_map(map_down_ref_from_bypass),
+                );
+                #[cfg(not(feature = "rayon"))]
+                keyed_points.extend(
+                    filtered_cloud
+                        .iter()
                         .enumerate()
                         .filter_map(|(idx, p)| (idx % point_skip == 0).then_some(p))
                         .filter_map(map_down_ref_from_bypass),
@@ -744,7 +801,7 @@ fn filter_downsample<const N: usize, P: PointXYZITimestamp<N>>(
             phase_timings.filter_map_down_us = elapsed_us(start);
 
             let start = std::time::Instant::now();
-            keyed_points.par_sort_unstable_by_key(|(key, _)| *key);
+            sort_unstable_by_key(&mut keyed_points, |(key, _)| *key);
             phase_timings.keyed_sort_us = elapsed_us(start);
 
             let start = std::time::Instant::now();
@@ -756,14 +813,14 @@ fn filter_downsample<const N: usize, P: PointXYZITimestamp<N>>(
             phase_timings.medoid_reduce_us = elapsed_us(start);
 
             let start = std::time::Instant::now();
-            downsampled.par_sort_unstable_by(cmp);
+            sort_unstable_by(&mut downsampled, cmp);
             phase_timings.timestamp_sort_us = elapsed_us(start);
         }
 
         // 3. Handle Bypass Output
         if bypass_output_downsample {
             let start = std::time::Instant::now();
-            filtered_cloud.par_sort_unstable_by(cmp);
+            sort_unstable_by(&mut filtered_cloud, cmp);
             phase_timings.bypass_sort_us = elapsed_us(start);
             raw_out = Some((filtered_cloud, cloud.clone()));
         }

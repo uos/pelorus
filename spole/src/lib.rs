@@ -9,10 +9,30 @@ use nalgebra::{Point3, Vector3};
 use rand::{Rng, SeedableRng};
 
 use nalgebra::{Cholesky, Matrix3};
+#[cfg(feature = "rayon")]
 use rayon::slice::ParallelSliceMut;
 use ros_pointcloud2::points::PointXYZ;
 
 use serde::{Deserialize, Serialize};
+
+#[cfg(feature = "rayon")]
+fn sort_unstable_by_key<T, K, F>(slice: &mut [T], f: F)
+where
+    T: Send,
+    K: Ord + Send,
+    F: Fn(&T) -> K + Sync,
+{
+    slice.par_sort_unstable_by_key(f);
+}
+
+#[cfg(not(feature = "rayon"))]
+fn sort_unstable_by_key<T, K, F>(slice: &mut [T], f: F)
+where
+    K: Ord,
+    F: Fn(&T) -> K,
+{
+    slice.sort_unstable_by_key(f);
+}
 
 pub struct IVoxHashMap {
     nearby_type: IVoxNearbyType,
@@ -575,7 +595,7 @@ impl IVoxHashMap {
 
             // downsample first, then update per voxel using distributions
             // After this, all points in the same voxel are adjacent
-            keyed_points.par_sort_unstable_by_key(|(_, key)| *key);
+            sort_unstable_by_key(&mut keyed_points, |(_, key)| *key);
 
             // TODO chunk by seems extremely fast on M3 Pro
             // #[cfg(feature = "parallel")]

@@ -13,7 +13,7 @@ rust-version.workspace = true
 
 [dependencies]
 pelorus_core.workspace = true
-prelio.workspace = true
+prelio = { workspace = true, default-features = false }
 pelorus_cuda = { workspace = true, optional = true }
 pelorus_metal = { workspace = true, optional = true }
 pelorus_vulkan = { workspace = true, optional = true }
@@ -22,14 +22,23 @@ anyhow.workspace = true
 nalgebra.workspace = true
 faer.workspace = true
 sophus_lie.workspace = true
-rayon.workspace = true
-spole.workspace = true
+rayon = { workspace = true, optional = true }
+spole = { workspace = true, default-features = false }
 log.workspace = true
 serde.workspace = true
 either.workspace = true
 
 [features]
-default = []
+default = ["rayon"]
+rayon = [
+    "dep:rayon",
+    "prelio/rayon",
+    "spole/rayon",
+    "ros_pointcloud2/rayon",
+    "faer/rayon",
+    "pelorus_cuda?/rayon",
+    "pelorus_vulkan?/rayon",
+]
 nn_kdt = ["spole/nn_kdt"]
 cuda = ["dep:pelorus_cuda", "pelorus_cuda/cuda_available", "pelorus_cuda/cuda_enable", "prelio/cuda"]
 metal = ["dep:pelorus_metal", "pelorus_metal/metal_available", "pelorus_metal/metal_enable", "prelio/metal"]

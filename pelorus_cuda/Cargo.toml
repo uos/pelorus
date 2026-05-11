@@ -20,9 +20,11 @@ libc.workspace = true
 [build-dependencies]
 bindgen.workspace = true
 walkdir.workspace = true
-rayon.workspace = true
+rayon = { workspace = true, optional = true }
 
 [features]
+default = ["rayon"]
+rayon = ["dep:rayon"]
 cuda_available = []
 cuda_enable = []
 cuda_sort_thrust = []

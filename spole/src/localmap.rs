@@ -1,3 +1,4 @@
+#[cfg(feature = "rayon")]
 use rayon::{
     iter::{
         IndexedParallelIterator, IntoParallelRefIterator, IntoParallelRefMutIterator,
@@ -7,6 +8,23 @@ use rayon::{
 };
 
 use crate::VoxelDistribution;
+
+#[cfg(feature = "rayon")]
+fn sort_unstable_by<T, F>(slice: &mut [T], cmp: F)
+where
+    T: Send,
+    F: Fn(&T, &T) -> std::cmp::Ordering + Sync,
+{
+    slice.par_sort_unstable_by(cmp);
+}
+
+#[cfg(not(feature = "rayon"))]
+fn sort_unstable_by<T, F>(slice: &mut [T], cmp: F)
+where
+    F: Fn(&T, &T) -> std::cmp::Ordering,
+{
+    slice.sort_unstable_by(cmp);
+}
 
 // Saving the hash to know what to delete
 #[derive(Clone)]
@@ -162,8 +180,14 @@ impl Livodish {
         }
         self.lru_cursor = 0;
 
+        #[cfg(feature = "rayon")]
         let iter = self.lru_mapping.par_iter();
+        #[cfg(not(feature = "rayon"))]
+        let iter = self.lru_mapping.iter();
+        #[cfg(feature = "rayon")]
         let keys_iter = self.lru_mapping_keys.par_iter_mut();
+        #[cfg(not(feature = "rayon"))]
+        let keys_iter = self.lru_mapping_keys.iter_mut();
 
         iter.zip(keys_iter)
             .filter_map(|(&opt_idx, key)| opt_idx.and_then(|idx| Some((idx, key))))
@@ -207,7 +231,7 @@ impl Livodish {
             right_val.cmp(&left_val)
         };
 
-        self.lru_mapping_keys.par_sort_unstable_by(cmp);
+        sort_unstable_by(&mut self.lru_mapping_keys, cmp);
 
         for (i, key) in self.lru_mapping_keys.iter().enumerate() {
             unsafe { *self.lru_mapping.get_unchecked_mut(i) = Some(key.index) };

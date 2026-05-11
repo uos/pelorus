@@ -11,12 +11,16 @@ use futures_lite::{StreamExt, future};
 use log::{debug, error, info, warn};
 use pelorus_core::{
     ImuMsg, ImuPredictor, ImuPredictorUndistort, LidarVendor, LifisNodeParameters, LifisParameters,
-    LivoxMid360Point, LivoxPoint, OdomMsg, OusterPoint, PointXYZIT, PrelioProcessedCloud,
-    RobosensePoint, VelodynePoint, timing::RuntimeEvaluator,
+    LivoxMid360Point, LivoxPoint, OusterPoint, PointXYZIT, RobosensePoint, VelodynePoint,
+    timing::RuntimeEvaluator,
 };
+#[cfg(any(feature = "ros2-client", feature = "mt_pubsub", feature = "r2r"))]
+use pelorus_core::{OdomMsg, PrelioProcessedCloud};
 pub use prelio;
 
+#[cfg(any(feature = "ros2-client", feature = "mt_pubsub", feature = "r2r"))]
 use anyhow::anyhow;
+#[cfg(any(feature = "ros2-client", feature = "mt_pubsub", feature = "r2r"))]
 use prelio::timestamp_to_secs;
 
 #[cfg(feature = "mt_pubsub")]
@@ -67,6 +71,7 @@ impl_pointcloud2_for_ros2_interfaces_jazzy_rkyv!();
 #[cfg(feature = "r2r")]
 impl_pointcloud2_for_r2r!();
 
+#[cfg(any(feature = "ros2-client", feature = "mt_pubsub", feature = "r2r"))]
 const N_NTH_SCAN: usize = 1; // TODO to config
 #[cfg(feature = "rat")]
 const MINOT_IMU_INIT_TICK: &str = "imu_init_tick";
@@ -88,6 +93,7 @@ pub struct State {
 
     pub lifis: Arc<Mutex<prelio::Prelio>>,
     pub lifis_params: LifisParameters,
+    #[cfg(any(feature = "ros2-client", feature = "mt_pubsub", feature = "r2r"))]
     take_nth_scan: usize,
     pub lidar_vendor: LidarVendor,
     #[cfg(feature = "rerun")]
@@ -173,6 +179,7 @@ impl State {
                 }
             },
             lifis_params: config.clone(),
+            #[cfg(any(feature = "ros2-client", feature = "mt_pubsub", feature = "r2r"))]
             take_nth_scan: N_NTH_SCAN,
             lidar_vendor: config.lidar_vendor,
             last_lidar_time: None,
@@ -180,6 +187,7 @@ impl State {
     }
 }
 
+#[cfg(any(feature = "ros2-client", feature = "mt_pubsub", feature = "r2r"))]
 fn cloud_callback(
     state: Arc<Mutex<State>>,
     #[cfg(feature = "ros2-client")] tf_listener: Arc<tf::TfListener>,
@@ -381,7 +389,8 @@ fn cloud_callback(
 
     #[cfg(feature = "rat")]
     {
-        static PRELIO_MONO_START: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
+        static PRELIO_MONO_START: std::sync::OnceLock<std::time::Instant> =
+            std::sync::OnceLock::new();
         let now_ns = PRELIO_MONO_START
             .get_or_init(std::time::Instant::now)
             .elapsed()
@@ -468,6 +477,7 @@ pub struct Tick {
     pub map_only: bool,
     pub cloud_header: HeaderMsg,
     pub odom_time: TimeMsg,
+    #[cfg(any(feature = "ros2-client", feature = "mt_pubsub", feature = "r2r"))]
     pub imu_odom: Odometry,
     pub runtime_eval: RuntimeEvaluator,
 }
@@ -503,8 +513,10 @@ impl PrelioNode {
         #[cfg(feature = "mt_pubsub")] node: &Node,
         #[cfg(feature = "mt_pubsub")] rt: Arc<tokio::runtime::Runtime>,
         params: &LifisParameters,
-        node_params: &LifisNodeParameters,
-        imu_pose_predictor_init: Option<Arc<Mutex<dyn FnMut(&[ImuMsg]) + Send + Sync>>>,
+        #[allow(unused_variables)] node_params: &LifisNodeParameters,
+        #[allow(unused_variables)] imu_pose_predictor_init: Option<
+            Arc<Mutex<dyn FnMut(&[ImuMsg]) + Send + Sync>>,
+        >,
         imu_pose_prediction_undistort: Option<Box<ImuPredictorUndistort>>,
         imu_pose_prediction_init_guess: Option<Box<ImuPredictor>>,
         #[cfg(feature = "rerun")] rec: Option<Arc<rerun::RecordingStream>>,
@@ -531,18 +543,23 @@ impl PrelioNode {
             ready_for_next,
         )?;
 
+        #[cfg(any(feature = "ros2-client", feature = "mt_pubsub", feature = "r2r"))]
         let chan = {
             let mut lifis = state.lifis.lock().unwrap();
             lifis.get_chan().unwrap()
         };
 
         let (tx, rx) = std::sync::mpsc::channel();
+        #[cfg(not(any(feature = "ros2-client", feature = "mt_pubsub", feature = "r2r")))]
+        let _ = tx;
 
+        #[cfg(any(feature = "ros2-client", feature = "mt_pubsub", feature = "r2r"))]
         std::thread::spawn(move || {
             Self::transform_types(tx, chan);
         });
 
         // first option None = override not set.
+        #[cfg(any(feature = "ros2-client", feature = "mt_pubsub", feature = "r2r"))]
         let imu_tf_frame: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
 
         #[cfg(feature = "ros2-client")]
@@ -598,12 +615,18 @@ impl PrelioNode {
         // Share with cloud callback, TODO maybe the only one who needs it, so remove mutex and arc?
         let state = Arc::new(std::sync::Mutex::new(state));
 
-        #[cfg(not(feature = "no-imu-sync"))]
+        #[cfg(all(
+            not(feature = "no-imu-sync"),
+            any(feature = "ros2-client", feature = "mt_pubsub", feature = "r2r")
+        ))]
         struct ImuInitState {
             start_time: Option<f64>,
             buffer: Option<Vec<ImuMsg>>,
         }
-        #[cfg(not(feature = "no-imu-sync"))]
+        #[cfg(all(
+            not(feature = "no-imu-sync"),
+            any(feature = "ros2-client", feature = "mt_pubsub", feature = "r2r")
+        ))]
         let imu_init_state = Arc::new(Mutex::new(ImuInitState {
             start_time: None,
             buffer: Some(Vec::new()),
@@ -612,7 +635,12 @@ impl PrelioNode {
         #[cfg(any(feature = "ros2-client", feature = "mt_pubsub", feature = "r2r"))]
         let tf_listener_clone = tf_listener.clone();
         #[cfg(any(feature = "ros2-client", feature = "mt_pubsub", feature = "r2r"))]
+        #[cfg(any(feature = "ros2-client", feature = "mt_pubsub", feature = "r2r"))]
+        #[cfg(any(feature = "ros2-client", feature = "mt_pubsub", feature = "r2r"))]
+        #[cfg(any(feature = "ros2-client", feature = "mt_pubsub", feature = "r2r"))]
         let state_clone = state.clone();
+        #[cfg(any(feature = "ros2-client", feature = "mt_pubsub", feature = "r2r"))]
+        #[cfg(any(feature = "ros2-client", feature = "mt_pubsub", feature = "r2r"))]
         #[cfg(any(feature = "ros2-client", feature = "mt_pubsub", feature = "r2r"))]
         let imu_tf_frame_lidar_inner = Arc::clone(&imu_tf_frame);
         // #[cfg(all(not(feature = "no-imu-sync"), feature = "mt_pubsub"))]
@@ -772,6 +800,7 @@ impl PrelioNode {
                 })
             });
         }
+        #[cfg(any(feature = "ros2-client", feature = "mt_pubsub", feature = "r2r"))]
         let state_clone = state.clone();
         #[cfg(feature = "ros2-client")]
         let imu_subscription = node
@@ -832,7 +861,9 @@ impl PrelioNode {
             )?)))
         };
 
+        #[cfg(any(feature = "ros2-client", feature = "mt_pubsub", feature = "r2r"))]
         let imu_tf_frame_lidar_inner = Arc::clone(&imu_tf_frame);
+        #[cfg(any(feature = "ros2-client", feature = "mt_pubsub", feature = "r2r"))]
         let init_imu_time = node_params.imu_predictor_init_time_sec;
         #[cfg(feature = "ros2-client")]
         std::thread::spawn(move || {
@@ -1093,6 +1124,7 @@ impl PrelioNode {
         Ok((
             Self {
                 state,
+                #[cfg(any(feature = "ros2-client", feature = "mt_pubsub", feature = "r2r"))]
                 tf_listener,
                 logger: "".to_string(), // TODO rm logger prefix
             },
@@ -1109,6 +1141,7 @@ impl PrelioNode {
     }
 
     /// Translates ROS types to Prelio Types
+    #[cfg(any(feature = "ros2-client", feature = "mt_pubsub", feature = "r2r"))]
     pub fn transform_types(
         sender: std::sync::mpsc::Sender<Tick>,
         receiver: std::sync::mpsc::Receiver<PrelioProcessedCloud>,
@@ -1192,6 +1225,7 @@ impl Drop for PrelioNode {
 }
 
 // only used with r2r
+#[cfg(any(feature = "ros2-client", feature = "mt_pubsub", feature = "r2r"))]
 #[allow(dead_code)]
 fn odom_to_lifis(msg: Odometry) -> OdomMsg {
     let odom_msg = OdomMsg {
@@ -1251,6 +1285,7 @@ fn odom_to_lifis(msg: Odometry) -> OdomMsg {
     odom_msg
 }
 
+#[cfg(any(feature = "ros2-client", feature = "mt_pubsub", feature = "r2r"))]
 fn imu_to_lifis(msg: Imu) -> ImuMsg {
     ImuMsg {
         stamp: ros_pointcloud2::ros::TimeMsg {
@@ -1310,6 +1345,7 @@ fn imu_to_lifis(msg: Imu) -> ImuMsg {
     }
 }
 
+#[cfg(any(feature = "ros2-client", feature = "mt_pubsub", feature = "r2r"))]
 #[allow(dead_code)] // only used with ROS
 fn lifis_to_imu(msg: ImuMsg) -> Imu {
     Imu {

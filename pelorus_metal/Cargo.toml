@@ -23,5 +23,7 @@ libc.workspace = true
 rayon = { workspace = true, optional = true }
 
 [features]
+default = ["rayon"]
 metal_available = []
-metal_enable = ["dep:rayon", "dep:objc2", "dep:objc2-metal", "objc2-foundation"]
+rayon = ["dep:rayon"]
+metal_enable = ["rayon", "dep:objc2", "dep:objc2-metal", "objc2-foundation"]

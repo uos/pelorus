@@ -35,19 +35,18 @@ authors = ["Christopher Sieh <stelzo@steado.de>"]
 rust-version = "1.85"
 
 [workspace.dependencies]
-pelorus = { path = "pelorus", version = "0.0.5" }
+pelorus = { path = "pelorus", version = "0.0.5", default-features = false }
 pelorus_core = { path = "pelorus_core", version = "0.0.5" }
-pelorus_reg = { path = "pelorus_reg", version = "0.0.5" }
-prelio = { path = "prelio", version = "0.0.5" }
-prelio_io = { path = "prelio_io", version = "0.0.5" }
-spole = { path = "spole", version = "0.0.5" }
-pelorus_cuda = { path = "pelorus_cuda", version = "0.0.5" }
+pelorus_reg = { path = "pelorus_reg", version = "0.0.5", default-features = false }
+prelio = { path = "prelio", version = "0.0.5", default-features = false }
+prelio_io = { path = "prelio_io", version = "0.0.5", default-features = false }
+spole = { path = "spole", version = "0.0.5", default-features = false }
+pelorus_cuda = { path = "pelorus_cuda", version = "0.0.5", default-features = false }
 transforms_io = "0.1"
 pelorus_metal = { path = "pelorus_metal", version = "0.0.5" }
-pelorus_vulkan = { path = "pelorus_vulkan", version = "0.0.5" }
+pelorus_vulkan = { path = "pelorus_vulkan", version = "0.0.5", default-features = false }
 
 ros_pointcloud2 = { version = "1.0.0-rc.3", features = [
-  "rayon",
   "derive",
   "r2r",
   "ros2_interfaces_jazzy_serde",
@@ -58,7 +57,7 @@ ratslang = "0.4.1"
 mt_pubsub = "0.7.0"
 mt_rat = "0.7.0"
 imu-calib = "0.1" # TODO use noise calib
-marina = "0.2.5"
+marina = "0.2.7"
 ros2-interfaces-jazzy-serde = { version = "0.0.4", features = [
   "std_msgs",
   "geometry_msgs",
@@ -82,7 +81,6 @@ once_cell = "1.21"
 nalgebra = { version = "0.33", features = ["serde-serialize"] }
 faer = { version = "0.23", default-features = false, features = [
   "std",
-  "rayon",
   "sparse-linalg",
 ] }
 r2r = { version = "0.9.5" }

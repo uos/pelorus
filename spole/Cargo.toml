@@ -15,7 +15,7 @@ nalgebra.workspace = true
 serde.workspace = true
 kiddo = { workspace = true, optional = true }
 log.workspace = true
-rayon.workspace = true
+rayon = { workspace = true, optional = true }
 bytemuck.workspace = true
 morton-encoding.workspace = true
 rand.workspace = true
@@ -27,7 +27,8 @@ pelorus_core.workspace = true
 # kdtree = { version = "0.7.0", optional = true }
 
 [features]
-# default = ["nn_kdt"]
+default = ["rayon"]
+rayon = ["dep:rayon", "ros_pointcloud2/rayon"]
 nn_kdt = ["dep:kiddo"]
 
 # [dev-dependencies]

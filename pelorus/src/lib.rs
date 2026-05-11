@@ -18,9 +18,15 @@
 //! println!("position: {:?}", odom.position);
 //! ```
 
+#![warn(clippy::std_instead_of_alloc, clippy::std_instead_of_core)]
+
+extern crate alloc;
+
+use alloc::sync::Arc;
+use core::sync::atomic::{AtomicBool, Ordering};
+#[cfg(feature = "rayon")]
 use std::sync::OnceLock;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex, mpsc};
+use std::sync::{Mutex, mpsc};
 use std::thread;
 
 use anyhow::anyhow;
@@ -286,6 +292,7 @@ fn processing_thread_main(thread: ProcessingThread) {
 
 // ---------- thread pool ----------
 
+#[cfg(feature = "rayon")]
 static RAYON_THREADS: OnceLock<usize> = OnceLock::new();
 
 /// Configure the rayon global thread pool.
@@ -297,23 +304,30 @@ fn configure_thread_pool(num_threads: usize) {
     if num_threads == 0 {
         return; // 0 means "use all cores" — leave rayon's default alone
     }
-    let prev = RAYON_THREADS.get_or_init(|| {
-        if let Err(e) = rayon::ThreadPoolBuilder::new()
-            .num_threads(num_threads)
-            .build_global()
-        {
-            error!("Failed to configure rayon thread pool to {num_threads} threads: {e}");
-        }
-        num_threads
-    });
-    if *prev != num_threads {
-        log::warn!(
-            "Rayon thread pool already configured with {} threads; \
-             ignoring request for {} threads (first Handle wins).",
-            prev,
+    #[cfg(feature = "rayon")]
+    {
+        let prev = RAYON_THREADS.get_or_init(|| {
+            if let Err(e) = rayon::ThreadPoolBuilder::new()
+                .num_threads(num_threads)
+                .build_global()
+            {
+                error!("Failed to configure rayon thread pool to {num_threads} threads: {e}");
+            }
             num_threads
-        );
+        });
+        if *prev != num_threads {
+            log::warn!(
+                "Rayon thread pool already configured with {} threads; \
+             ignoring request for {} threads (first Handle wins).",
+                prev,
+                num_threads
+            );
+        }
     }
+    #[cfg(not(feature = "rayon"))]
+    log::warn!(
+        "Ignoring num_threads={num_threads}; thread-pool configuration requires the rayon feature."
+    );
 }
 
 // ---------- public API ----------

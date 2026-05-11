@@ -6,6 +6,7 @@ use nalgebra::*;
 use pelorus_core::timing::RuntimeEvaluator;
 use pelorus_core::{ImuMsg, ImuParameters, KinematicModel, LidarVendor, OdomMsg, PointXYZIT};
 use prelio::LocatedBufferView;
+#[cfg(feature = "rayon")]
 use rayon::prelude::*;
 use ros_pointcloud2::prelude::*;
 use spole::*;
@@ -446,7 +447,7 @@ impl crate::Registration for RegistrationState {
                                 .into_owned()
                                 .cast();
 
-                            let pm = cloud_pts.par_iter().flat_map(|point_local| {
+                            let point_to_plane = |point_local: &PointXYZIT| {
                                 let p_l = nalgebra::Point3::new(
                                     point_local.x,
                                     point_local.y,
@@ -478,8 +479,15 @@ impl crate::Registration for RegistrationState {
                                         plane[2],
                                     ))
                                 }
-                            });
+                            };
+                            #[cfg(feature = "rayon")]
+                            let pm = cloud_pts.par_iter().filter_map(point_to_plane);
+                            #[cfg(not(feature = "rayon"))]
+                            let pm = cloud_pts.iter().filter_map(point_to_plane);
+                            #[cfg(feature = "rayon")]
                             planes_buf.par_extend(pm);
+                            #[cfg(not(feature = "rayon"))]
+                            planes_buf.extend(pm);
                             planes_buf
                         }
                         #[cfg(feature = "cuda")]

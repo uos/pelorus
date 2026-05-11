@@ -228,6 +228,7 @@ impl PelorusHandle {
             .map_err(|e| PyRuntimeError::new_err(format!("Failed to load configuration: {}", e)))?;
 
         if config.num_threads > 0 {
+            #[cfg(feature = "rayon")]
             if let Err(e) = rayon::ThreadPoolBuilder::new()
                 .num_threads(config.num_threads)
                 .build_global()
@@ -237,6 +238,11 @@ impl PelorusHandle {
                     config.num_threads
                 );
             }
+            #[cfg(not(feature = "rayon"))]
+            log::warn!(
+                "Ignoring num_threads={}; thread-pool configuration requires the rayon feature.",
+                config.num_threads
+            );
         }
 
         if !device_specific_pointcloud2 {

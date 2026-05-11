@@ -16,7 +16,7 @@ bytemuck.workspace = true
 nalgebra.workspace = true
 ros_pointcloud2.workspace = true
 pelorus_core.workspace = true
-spole.workspace = true
+spole = { workspace = true, default-features = false }
 log.workspace = true
 shaderc = { workspace = true, optional = true }
 
@@ -25,5 +25,7 @@ pkg-config.workspace = true
 cc.workspace = true
 
 [features]
+default = ["rayon"]
+rayon = ["spole/rayon", "ros_pointcloud2/rayon"]
 vulkan_available = []
 vulkan_enable = ["dep:shaderc"]

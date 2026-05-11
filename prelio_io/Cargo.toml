@@ -17,7 +17,7 @@ ros_pointcloud2.workspace = true
 anyhow.workspace = true
 nalgebra.workspace = true
 futures-lite.workspace = true
-prelio.workspace = true
+prelio = { workspace = true, default-features = false }
 log.workspace = true
 env_logger.workspace = true
 ros2-client = { workspace = true, optional = true }
@@ -32,6 +32,8 @@ ros2-interfaces-jazzy-rkyv = { workspace = true, optional = true }
 transforms_io = { workspace = true }
 
 [features]
+default = ["rayon"]
+rayon = ["prelio/rayon", "ros_pointcloud2/rayon"]
 rat = ["dep:mt_rat"]
 downsample = ["prelio/downsample"]
 cuda = ["prelio/cuda"]
