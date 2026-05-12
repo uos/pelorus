@@ -69,7 +69,7 @@ string(REPLACE ";" "," CARGO_FEATURES_STR "${CARGO_FEATURES}")
 if(CARGO_FEATURES_STR)
     set(FEATURES_ARG "--features" "${CARGO_FEATURES_STR}")
 else()
-    set(FEATURES_ARG "--no-default-features")
+    set(FEATURES_ARG)
 endif()
 
 add_custom_target(pelorus_rust_build ALL

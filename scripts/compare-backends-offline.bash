@@ -37,9 +37,11 @@ UMEYAMA_SCALE_MAX=1.05
 
 # Trajectory filenames
 TRAJ_CPU="${OUTPUT_DIR}/pelorus_traj_cpu_${RUN_ID}.tum"
+TRAJ_RAYON="${OUTPUT_DIR}/pelorus_traj_rayon_${RUN_ID}.tum"
 TRAJ_METAL="${OUTPUT_DIR}/pelorus_traj_metal_${RUN_ID}.tum"
 TRAJ_CUDA="${OUTPUT_DIR}/pelorus_traj_cuda_${RUN_ID}.tum"
 TRAJ_VULKAN="${OUTPUT_DIR}/pelorus_traj_vulkan_${RUN_ID}.tum"
+COMPARISON_JSON_RAYON="${OUTPUT_DIR}/comparison_metrics_rayon_vs_cpu_${RUN_ID}.json"
 COMPARISON_JSON_METAL="${OUTPUT_DIR}/comparison_metrics_metal_vs_cpu_${RUN_ID}.json"
 COMPARISON_JSON_CUDA="${OUTPUT_DIR}/comparison_metrics_cuda_vs_cpu_${RUN_ID}.json"
 COMPARISON_JSON_VULKAN="${OUTPUT_DIR}/comparison_metrics_vulkan_vs_cpu_${RUN_ID}.json"
@@ -93,7 +95,7 @@ Usage: $0 [--backends <list|auto>] <bagfile-path> [config-file]
 
 Options:
   --backends   Comma-separated list of backends to test against CPU.
-               Supported values: cuda,metal,vulkan
+               Supported values: rayon,cuda,metal,vulkan
                Special value: auto (default) -> run all available backends.
 EOF
                 exit 0
@@ -114,7 +116,7 @@ EOF
 
 is_valid_backend() {
     case "$1" in
-        cuda|metal|vulkan) return 0 ;;
+        rayon|cuda|metal|vulkan) return 0 ;;
         *) return 1 ;;
     esac
 }
@@ -139,6 +141,7 @@ has_vulkan_hardware() {
 
 backend_supported_on_host() {
     case "$1" in
+        rayon) return 0 ;;
         metal) is_macos ;;
         cuda) has_nvidia_hardware ;;
         vulkan) has_vulkan_hardware ;;
@@ -148,6 +151,7 @@ backend_supported_on_host() {
 
 backend_display_name() {
     case "$1" in
+        rayon) echo "Rayon" ;;
         metal) echo "Metal" ;;
         cuda) echo "CUDA" ;;
         vulkan) echo "Vulkan" ;;
@@ -161,7 +165,7 @@ resolve_requested_backends() {
     local result=""
     
     if [[ "$spec" == "auto" ]]; then
-        for b in metal cuda vulkan; do
+        for b in rayon metal cuda vulkan; do
             if backend_supported_on_host "$b"; then
                 if [[ -z "$result" ]]; then
                     result="$b"
@@ -181,7 +185,7 @@ resolve_requested_backends() {
         local b
         b="$(echo "$raw" | tr '[:upper:]' '[:lower:]' | xargs)"
         [[ -n "$b" ]] || continue
-        is_valid_backend "$b" || fail "Unknown backend '$b' (supported: cuda, metal, vulkan)"
+        is_valid_backend "$b" || fail "Unknown backend '$b' (supported: rayon, cuda, metal, vulkan)"
         # Deduplicate while preserving order
         if [[ " $result " != *" $b "* ]]; then
             if [[ -z "$result" ]]; then
@@ -245,6 +249,7 @@ run_backend_test() {
     local backend_name="$1"
     local feature_flag="$2"
     local output_file="$3"
+    local no_default_features="${4:-false}"
 
     # Metal backend is supported only on macOS.
     if [[ "$feature_flag" == "metal" ]] && ! is_macos; then
@@ -254,6 +259,9 @@ run_backend_test() {
     log_info "Running Pelorus $backend_name backend..."
     
     local cmd=(cargo run --release --bin pelorus)
+    if [[ "$no_default_features" == "true" ]]; then
+        cmd+=(--no-default-features)
+    fi
     if [[ -n "$feature_flag" ]]; then
         cmd+=(--features "$feature_flag")
     fi
@@ -411,8 +419,8 @@ requested_backends_str="$(resolve_requested_backends "$BACKENDS_SPEC")"
 local requested_backends
 read -r -a requested_backends <<< "$requested_backends_str"
 
-# Run CPU backend (no features)
-    run_backend_test "CPU" "" "$TRAJ_CPU"
+# Run CPU backend without rayon (ground truth for rayon equivalency checks)
+    run_backend_test "CPU" "offline" "$TRAJ_CPU" "true"
     
     for backend in "${requested_backends[@]}"; do
         local backend_name
@@ -425,6 +433,10 @@ read -r -a requested_backends <<< "$requested_backends_str"
 
         local traj_file comparison_json
         case "$backend" in
+            rayon)
+                traj_file="$TRAJ_RAYON"
+                comparison_json="$COMPARISON_JSON_RAYON"
+                ;;
             metal)
                 traj_file="$TRAJ_METAL"
                 comparison_json="$COMPARISON_JSON_METAL"
@@ -442,7 +454,13 @@ read -r -a requested_backends <<< "$requested_backends_str"
                 ;;
         esac
 
-        run_backend_test "$backend_name" "$backend" "$traj_file"
+        local backend_features
+        case "$backend" in
+            rayon) backend_features="offline,rayon" ;;
+            *) backend_features="offline,$backend" ;;
+        esac
+
+        run_backend_test "$backend_name" "$backend_features" "$traj_file" "true"
         if ! compare_trajectories "$backend_name" "$traj_file" "CPU" "$TRAJ_CPU" "$comparison_json"; then
             log_error "Trajectory comparison FAILED ($backend_name vs CPU)"
             log_error "Equivalence thresholds were exceeded"

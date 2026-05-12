@@ -10,9 +10,9 @@ use futures_lite::{StreamExt, future};
 #[allow(unused_imports)]
 use log::{debug, error, info, warn};
 use pelorus_core::{
-    ImuMsg, ImuPredictor, ImuPredictorUndistort, LidarVendor, LifisNodeParameters, LifisParameters,
-    LivoxMid360Point, LivoxPoint, OusterPoint, PointXYZIT, RobosensePoint, VelodynePoint,
-    timing::RuntimeEvaluator,
+    HesaiPoint, ImuMsg, ImuPredictor, ImuPredictorUndistort, LidarVendor, LifisNodeParameters,
+    LifisParameters, LivoxMid360Point, LivoxPoint, OusterPoint, PointXYZIT, RobosensePoint,
+    VelodynePoint, timing::RuntimeEvaluator,
 };
 #[cfg(any(feature = "ros2-client", feature = "mt_pubsub", feature = "r2r"))]
 use pelorus_core::{OdomMsg, PrelioProcessedCloud};
@@ -143,6 +143,18 @@ impl State {
                 }
                 LidarVendor::LivoxMid360 => {
                     Arc::new(Mutex::new(prelio::Prelio::create::<5, LivoxMid360Point>(
+                        config.imu.gravity,
+                        config.imu.madgwick_setting,
+                        &config.imu.calibration,
+                        config, // TODO more specific
+                        imu_pose_prediction_undistort,
+                        imu_pose_prediction_init_guess,
+                        Some(config.lidar_vendor),
+                        ready_for_next,
+                    )?))
+                }
+                LidarVendor::Hesai => {
+                    Arc::new(Mutex::new(prelio::Prelio::create::<5, HesaiPoint>(
                         config.imu.gravity,
                         config.imu.madgwick_setting,
                         &config.imu.calibration,

@@ -1,6 +1,7 @@
 pub mod imu;
 mod naive_preint;
 mod naive_preint_eth;
+use pelorus_core::{HesaiPoint, HesaiPointNoIntensity};
 #[cfg(feature = "rayon")]
 use rayon::prelude::*;
 
@@ -381,6 +382,19 @@ fn find_medoid_in_slice(points: &[(i32, PointXYZIT)]) -> PointXYZIT {
             dist_a
                 .partial_cmp(&dist_b)
                 .unwrap_or(std::cmp::Ordering::Equal)
+                .then_with(|| {
+                    a.timestamp
+                        .partial_cmp(&b.timestamp)
+                        .unwrap_or(std::cmp::Ordering::Equal)
+                })
+                .then_with(|| a.x.partial_cmp(&b.x).unwrap_or(std::cmp::Ordering::Equal))
+                .then_with(|| a.y.partial_cmp(&b.y).unwrap_or(std::cmp::Ordering::Equal))
+                .then_with(|| a.z.partial_cmp(&b.z).unwrap_or(std::cmp::Ordering::Equal))
+                .then_with(|| {
+                    a.intensity
+                        .partial_cmp(&b.intensity)
+                        .unwrap_or(std::cmp::Ordering::Equal)
+                })
         })
         .unwrap()
 }
@@ -395,10 +409,6 @@ type DownsampleCloudMeta = (
 
 #[derive(Debug, Clone, Copy, Default)]
 struct DownsamplePhaseTimings {
-    filter_map_down_us: u64,
-    keyed_sort_us: u64,
-    medoid_reduce_us: u64,
-    timestamp_sort_us: u64,
     gpu_downsample_us: u64,
     gpu_upload_us: u64,
     gpu_key_build_us: u64,
@@ -410,13 +420,324 @@ struct DownsamplePhaseTimings {
     gpu_timestamp_key_build_us: u64,
     gpu_timestamp_sort_us: u64,
     gpu_download_us: u64,
-    bypass_filter_map_us: u64,
-    bypass_sort_us: u64,
+}
+
+type KeyedPoint = (i32, PointXYZIT);
+
+#[derive(Default)]
+struct DownsampleBuffers {
+    filtered_cloud: Vec<PointXYZIT>,
+    keyed_points: Vec<KeyedPoint>,
+}
+
+impl DownsampleBuffers {
+    fn prepare(&mut self, capacity: usize) {
+        self.filtered_cloud.clear();
+        self.keyed_points.clear();
+
+        if self.filtered_cloud.capacity() < capacity {
+            self.filtered_cloud
+                .reserve(capacity - self.filtered_cloud.capacity());
+        }
+        if self.keyed_points.capacity() < capacity {
+            self.keyed_points
+                .reserve(capacity - self.keyed_points.capacity());
+        }
+    }
 }
 
 #[inline]
-fn elapsed_us(start: std::time::Instant) -> u64 {
-    start.elapsed().as_micros() as u64
+fn compare_f32(a: f32, b: f32) -> std::cmp::Ordering {
+    a.partial_cmp(&b).unwrap_or(std::cmp::Ordering::Equal)
+}
+
+#[inline]
+fn compare_point_timestamp(a: &PointXYZIT, b: &PointXYZIT) -> std::cmp::Ordering {
+    compare_f32(a.timestamp, b.timestamp)
+        .then_with(|| compare_f32(a.x, b.x))
+        .then_with(|| compare_f32(a.y, b.y))
+        .then_with(|| compare_f32(a.z, b.z))
+        .then_with(|| compare_f32(a.intensity, b.intensity))
+}
+
+#[inline]
+fn keyed_point_sort_key((key, point): &KeyedPoint) -> (i32, u32, u32, u32, u32, u32) {
+    (
+        *key,
+        point.timestamp.to_bits(),
+        point.x.to_bits(),
+        point.y.to_bits(),
+        point.z.to_bits(),
+        point.intensity.to_bits(),
+    )
+}
+
+#[inline]
+fn key_downsample_point(point: &PointXYZIT, voxel_size: f32) -> KeyedPoint {
+    let key = hash(
+        &nalgebra::Point3::new(point.x, point.y, point.z),
+        voxel_size,
+    );
+    (key, *point)
+}
+
+#[inline]
+fn lidar_scan_reference_time(lidar_vendor: LidarVendor, header: &HeaderMsg) -> Option<f64> {
+    match lidar_vendor {
+        LidarVendor::Velodyne | LidarVendor::LivoxMid360 | LidarVendor::Hesai => {
+            Some(timestamp_to_secs(&header.stamp))
+        }
+        _ => None,
+    }
+}
+
+#[inline]
+fn internal_point_timestamp(
+    timestamp: f64,
+    lidar_vendor: LidarVendor,
+    scan_reference_time: Option<f64>,
+) -> Option<f64> {
+    if timestamp.is_nan() {
+        return None;
+    }
+
+    Some(match lidar_vendor {
+        LidarVendor::LivoxMid360 | LidarVendor::Hesai => {
+            let scan_reference_time = scan_reference_time.expect("vendor match out of date");
+            (timestamp - scan_reference_time).max(0.0)
+        }
+        _ => timestamp,
+    })
+}
+
+#[inline]
+fn passes_passthrough_filter(point: &PointXYZIT, lifis_params: &LifisParameters) -> bool {
+    if !(point.x.is_finite() && point.y.is_finite() && point.z.is_finite()) {
+        return false;
+    }
+
+    let params = &lifis_params.passthrough_filter;
+    let p_t = params.filter_frame_transform * nalgebra::Point3::new(point.x, point.y, point.z);
+
+    let dist = p_t.coords.norm_squared();
+    let is_within_range = if params.invert_distance {
+        dist < params.min_dist.powi(2) || dist > params.max_dist.powi(2)
+    } else {
+        dist >= params.min_dist.powi(2) && dist <= params.max_dist.powi(2)
+    };
+    if !is_within_range {
+        return false;
+    }
+
+    let is_within_intensity = if params.invert_intensity {
+        point.intensity < params.min_intensity || point.intensity > params.max_intensity
+    } else {
+        point.intensity >= params.min_intensity && point.intensity <= params.max_intensity
+    };
+    if !is_within_intensity {
+        return false;
+    }
+
+    let is_within_box = if params.invert_bounding_box {
+        !inside_box(p_t, params.min, params.max)
+    } else {
+        inside_box(p_t, params.min, params.max)
+    };
+    if !is_within_box {
+        return false;
+    }
+
+    let is_within_fov = if params.enable_horizontal_fov {
+        if params.invert_fov {
+            !inside_horizontal_fov(p_t, params.fov_right, params.fov_left, params.forward)
+        } else {
+            inside_horizontal_fov(p_t, params.fov_right, params.fov_left, params.forward)
+        }
+    } else {
+        true
+    };
+    if !is_within_fov {
+        return false;
+    }
+
+    match &params.polygon {
+        None => true,
+        Some(polygon) => {
+            let is_within_polygon = if params.invert_polygon {
+                !point_inside_polygon_winding_number(p_t, polygon, polygon.len())
+            } else {
+                point_inside_polygon_winding_number(p_t, polygon, polygon.len())
+            };
+            !polygon.is_empty() && is_within_polygon
+        }
+    }
+}
+
+#[inline]
+fn filter_point(mut point: PointXYZIT, lifis_params: &LifisParameters) -> Option<PointXYZIT> {
+    if !passes_passthrough_filter(&point, lifis_params) {
+        return None;
+    }
+
+    if point.timestamp.is_nan() {
+        return None;
+    }
+
+    point.intensity *= 255.0;
+    Some(point)
+}
+
+#[inline]
+fn cpu_key_downsample(
+    filtered_cloud: &[PointXYZIT],
+    point_skip: usize,
+    voxel_size: f32,
+    keyed_points: &mut Vec<KeyedPoint>,
+    eval: &mut RuntimeEvaluator,
+) -> Result<()> {
+    eval.start("filter_downsample/filter_map_down")?;
+    if point_skip == 1 {
+        #[cfg(feature = "rayon")]
+        keyed_points.par_extend(
+            filtered_cloud
+                .par_iter()
+                .map(|point| key_downsample_point(point, voxel_size)),
+        );
+        #[cfg(not(feature = "rayon"))]
+        keyed_points.extend(
+            filtered_cloud
+                .iter()
+                .map(|point| key_downsample_point(point, voxel_size)),
+        );
+    } else {
+        #[cfg(feature = "rayon")]
+        keyed_points.par_extend(filtered_cloud.par_iter().enumerate().filter_map(
+            |(idx, point)| (idx % point_skip == 0).then(|| key_downsample_point(point, voxel_size)),
+        ));
+        #[cfg(not(feature = "rayon"))]
+        keyed_points.extend(
+            filtered_cloud
+                .iter()
+                .enumerate()
+                .filter_map(|(idx, point)| {
+                    (idx % point_skip == 0).then(|| key_downsample_point(point, voxel_size))
+                }),
+        );
+    }
+    eval.stop("filter_downsample/filter_map_down")?;
+
+    Ok(())
+}
+
+#[inline]
+fn cpu_reduce_downsample(
+    keyed_points: &mut Vec<KeyedPoint>,
+    downsampled: &mut Vec<PointXYZIT>,
+    eval: &mut RuntimeEvaluator,
+) -> Result<()> {
+    eval.start("filter_downsample/keyed_sort")?;
+    sort_unstable_by_key(keyed_points, keyed_point_sort_key);
+    eval.stop("filter_downsample/keyed_sort")?;
+
+    eval.start("filter_downsample/medoid_reduce")?;
+    downsampled.extend(
+        keyed_points
+            .chunk_by(|a, b| a.0 == b.0)
+            .map(find_medoid_in_slice),
+    );
+    eval.stop("filter_downsample/medoid_reduce")?;
+
+    eval.start("filter_downsample/timestamp_sort")?;
+    sort_unstable_by(downsampled, compare_point_timestamp);
+    eval.stop("filter_downsample/timestamp_sort")?;
+
+    Ok(())
+}
+
+#[inline]
+fn cpu_downsample(
+    filtered_cloud: &[PointXYZIT],
+    point_skip: usize,
+    voxel_size: f32,
+    keyed_points: &mut Vec<KeyedPoint>,
+    downsampled: &mut Vec<PointXYZIT>,
+    eval: &mut RuntimeEvaluator,
+) -> Result<()> {
+    cpu_key_downsample(filtered_cloud, point_skip, voxel_size, keyed_points, eval)?;
+    cpu_reduce_downsample(keyed_points, downsampled, eval)
+}
+
+#[inline]
+fn sort_bypass_cloud(
+    filtered_cloud: &mut Vec<PointXYZIT>,
+    eval: &mut RuntimeEvaluator,
+) -> Result<()> {
+    eval.start("filter_downsample/bypass_sort")?;
+    sort_unstable_by(filtered_cloud, compare_point_timestamp);
+    eval.stop("filter_downsample/bypass_sort")?;
+    Ok(())
+}
+
+#[inline]
+fn scan_time_bounds(
+    downsampled: &[PointXYZIT],
+    raw_out: Option<&(Vec<PointXYZIT>, PointCloud2Msg)>,
+) -> Option<(f32, f32)> {
+    match (downsampled.first(), downsampled.last()) {
+        (Some(first), Some(last)) if last.timestamp > 0.0 => {
+            Some((first.timestamp, last.timestamp))
+        }
+        _ => raw_out.and_then(|(bypass, _)| match (bypass.first(), bypass.last()) {
+            (Some(first), Some(last)) if last.timestamp > 0.0 => {
+                Some((first.timestamp, last.timestamp))
+            }
+            _ => None,
+        }),
+    }
+}
+
+fn add_gpu_downsample_timings(eval: &mut RuntimeEvaluator, timings: DownsamplePhaseTimings) {
+    eval.add_external_measurement(
+        "filter_downsample/gpu_downsample",
+        timings.gpu_downsample_us as f64 / 1000.0,
+    );
+
+    let mut add_timing = |name: &str, us: u64| {
+        if us > 0 {
+            eval.add_external_measurement(name, us as f64 / 1000.0);
+        }
+    };
+    add_timing("filter_downsample/gpu_upload", timings.gpu_upload_us);
+    add_timing("filter_downsample/gpu_key_build", timings.gpu_key_build_us);
+    add_timing(
+        "filter_downsample/gpu_keyed_sort",
+        timings.gpu_keyed_sort_us,
+    );
+    add_timing(
+        "filter_downsample/gpu_run_length_encode",
+        timings.gpu_run_length_encode_us,
+    );
+    add_timing(
+        "filter_downsample/gpu_run_starts_scan",
+        timings.gpu_run_starts_scan_us,
+    );
+    add_timing(
+        "filter_downsample/gpu_unique_count_sync",
+        timings.gpu_unique_count_sync_us,
+    );
+    add_timing(
+        "filter_downsample/gpu_medoid_reduce",
+        timings.gpu_medoid_reduce_us,
+    );
+    add_timing(
+        "filter_downsample/gpu_timestamp_key_build",
+        timings.gpu_timestamp_key_build_us,
+    );
+    add_timing(
+        "filter_downsample/gpu_timestamp_sort",
+        timings.gpu_timestamp_sort_us,
+    );
+    add_timing("filter_downsample/gpu_download", timings.gpu_download_us);
 }
 
 #[cfg(feature = "cuda")]
@@ -548,15 +869,17 @@ fn filter_downsample_with_fallback<
 >(
     cloud: PointCloud2Msg,
     lifis_params: &LifisParameters,
-) -> Result<Option<(DownsampleCloudMeta, DownsamplePhaseTimings)>> {
-    let result = filter_downsample::<N, P>(&cloud, lifis_params);
+    eval: &mut RuntimeEvaluator,
+    buffers: &mut DownsampleBuffers,
+) -> Result<Option<DownsampleCloudMeta>> {
+    let result = filter_downsample::<N, P>(&cloud, lifis_params, eval, buffers);
 
     match result {
         Ok(data) => Ok(data),
         Err(e) => {
             let error_str = format!("{:?}", e);
             if error_str.contains("Some fields") && (error_str.contains("intensity")) {
-                filter_downsample::<N_FALLBACK, PFallback>(&cloud, lifis_params)
+                filter_downsample::<N_FALLBACK, PFallback>(&cloud, lifis_params, eval, buffers)
             } else {
                 Err(e)
             }
@@ -567,172 +890,60 @@ fn filter_downsample_with_fallback<
 fn filter_downsample<const N: usize, P: PointXYZITimestamp<N>>(
     cloud: &PointCloud2Msg,
     lifis_params: &LifisParameters,
-) -> Result<Option<(DownsampleCloudMeta, DownsamplePhaseTimings)>> {
+    eval: &mut RuntimeEvaluator,
+    buffers: &mut DownsampleBuffers,
+) -> Result<Option<DownsampleCloudMeta>> {
     let bypass_output_downsample = lifis_params.downsample.bypass_output_downsample;
     let header = cloud.header.clone();
     let voxel_size = lifis_params.downsample.voxel_size;
-
-    type PointsFiltered = (i32, PointXYZIT);
-
-    // NOTE: prepared start for when other lidar vendors get ideas of doing absolute timestamps...
-    let (_, end_t) = match lifis_params.lidar_vendor {
-        LidarVendor::Velodyne | LidarVendor::LivoxMid360 => {
-            (None, Some(timestamp_to_secs(&header.stamp)))
-        }
-        _ => (Some(timestamp_to_secs(&header.stamp)), None),
+    let scan_reference_time = lidar_scan_reference_time(lifis_params.lidar_vendor, &header);
+    let map_to_non_trait = |p: P| {
+        internal_point_timestamp(
+            p.timestamp(),
+            lifis_params.lidar_vendor,
+            scan_reference_time,
+        )
+        .map(|timestamp| PointXYZIT::from_p(p.xyz(), p.intensity(), timestamp as f32))
     };
+    let filter_map_point = |point| filter_point(point, lifis_params);
 
-    // --- Mapping and Filtering functions ---
-
-    let undistort = |mut point: PointXYZIT| -> Option<PointXYZIT> {
-        let ts = point.timestamp;
-        if ts.is_nan() {
-            return None;
-        }
-
-        // absolute to relative ts
-        point.timestamp = if matches!(lifis_params.lidar_vendor, LidarVendor::LivoxMid360) {
-            let scan_end_t = end_t.expect("vendor match out of date");
-            (ts - scan_end_t as f32).max(0.0) // handle driver inaccuracies
-        } else {
-            ts
-        };
-
-        Some(point)
-    };
-
-    let filter = |point: PointXYZIT| -> Option<PointXYZIT> {
-        if !(point.x.is_finite() && point.y.is_finite() && point.z.is_finite()) {
-            return None;
-        }
-
-        let params = &lifis_params.passthrough_filter;
-        let p_t = params.filter_frame_transform * nalgebra::Point3::new(point.x, point.y, point.z);
-
-        let dist = p_t.coords.norm_squared();
-        let is_within_range = if params.invert_distance {
-            dist < params.min_dist.powi(2) || dist > params.max_dist.powi(2)
-        } else {
-            dist >= params.min_dist.powi(2) && dist <= params.max_dist.powi(2)
-        };
-        if !is_within_range {
-            return None;
-        }
-
-        let is_within_intensity = if params.invert_intensity {
-            point.intensity < params.min_intensity || point.intensity > params.max_intensity
-        } else {
-            point.intensity >= params.min_intensity && point.intensity <= params.max_intensity
-        };
-        if !is_within_intensity {
-            return None;
-        }
-
-        let is_within_box = if params.invert_bounding_box {
-            !inside_box(p_t, params.min, params.max)
-        } else {
-            inside_box(p_t, params.min, params.max)
-        };
-        if !is_within_box {
-            return None;
-        }
-
-        let is_within_fov = if params.enable_horizontal_fov {
-            if params.invert_fov {
-                !inside_horizontal_fov(p_t, params.fov_right, params.fov_left, params.forward)
-            } else {
-                inside_horizontal_fov(p_t, params.fov_right, params.fov_left, params.forward)
-            }
-        } else {
-            true
-        };
-        if !is_within_fov {
-            return None;
-        }
-
-        let is_within_polygon = match &params.polygon {
-            None => true,
-            Some(polygon) => {
-                let is_within_polygon = if params.invert_polygon {
-                    !point_inside_polygon_winding_number(p_t, polygon, polygon.len())
-                } else {
-                    point_inside_polygon_winding_number(p_t, polygon, polygon.len())
-                };
-                !polygon.is_empty() && is_within_polygon
-            }
-        };
-        if !is_within_polygon {
-            return None;
-        }
-
-        undistort(point)
-    };
-
-    let map_down_ref_from_bypass = |point: &PointXYZIT| {
-        let key = hash(
-            &nalgebra::Point3::new(point.x, point.y, point.z),
-            voxel_size,
-        );
-        Some((key, *point))
-    };
-
-    let filter_map_non_down = |point: PointXYZIT| {
-        let mut point = filter(point)?;
-        point.intensity *= 255.0;
-        Some(point)
-    };
-
-    let cmp = |a: &PointXYZIT, b: &PointXYZIT| a.timestamp.partial_cmp(&b.timestamp).unwrap();
-
-    let map_to_non_trait = |p: P| PointXYZIT::from_p(p.xyz(), p.intensity(), p.timestamp() as f32);
-
-    // --- Buffer ---
-
-    #[allow(unused_mut)]
-    let mut keyed_points: Vec<PointsFiltered> = Vec::with_capacity(cloud.dimensions.len());
+    buffers.prepare(cloud.dimensions.len());
     let mut downsampled: Vec<PointXYZIT> = Vec::with_capacity(cloud.dimensions.len());
 
-    #[allow(unused_mut)]
-    let mut raw_out = {
-        if bypass_output_downsample {
-            Some((Vec::with_capacity(cloud.dimensions.len()), cloud.clone()))
-        } else {
-            None
-        }
-    };
+    let mut raw_out = None;
 
-    // --- Processing ---
-    let mut phase_timings = DownsamplePhaseTimings::default();
     {
         let point_skip = lifis_params.downsample.point_skip.max(1);
 
-        // 1. Stage 1: Filter and Undistort (Always happens first)
-        let mut filtered_cloud: Vec<PointXYZIT> = Vec::with_capacity(cloud.dimensions.len());
-        let start = std::time::Instant::now();
         #[cfg(feature = "rayon")]
-        filtered_cloud.par_extend(
-            cloud
-                .try_into_par_iter()?
-                .map(map_to_non_trait)
-                .filter_map(filter_map_non_down),
+        let cloud_iter = cloud.try_into_par_iter()?;
+        #[cfg(not(feature = "rayon"))]
+        let cloud_iter = cloud.try_into_iter()?;
+
+        eval.start("filter_downsample/bypass_filter_map")?;
+        #[cfg(feature = "rayon")]
+        buffers.filtered_cloud.par_extend(
+            cloud_iter
+                .filter_map(map_to_non_trait)
+                .filter_map(filter_map_point),
         );
         #[cfg(not(feature = "rayon"))]
-        filtered_cloud.extend(
-            cloud
-                .try_into_iter()?
-                .map(map_to_non_trait)
-                .filter_map(filter_map_non_down),
+        buffers.filtered_cloud.extend(
+            cloud_iter
+                .filter_map(map_to_non_trait)
+                .filter_map(filter_map_point),
         );
-        phase_timings.bypass_filter_map_us = elapsed_us(start);
+        eval.stop("filter_downsample/bypass_filter_map")?;
 
-        // 2. Stage 2: Hash and Medoid Reduction
         #[cfg(any(feature = "cuda", feature = "metal", feature = "vulkan"))]
         let use_backend_preprocessing =
             lifis_params.downsample.backend == PreprocessingBackend::Backend;
 
         #[cfg(feature = "cuda")]
         let gpu_downsample = use_backend_preprocessing
-            .then(|| try_cuda_downsample_from_filtered(&filtered_cloud, point_skip, voxel_size))
+            .then(|| {
+                try_cuda_downsample_from_filtered(&buffers.filtered_cloud, point_skip, voxel_size)
+            })
             .flatten();
 
         #[cfg(not(feature = "cuda"))]
@@ -741,7 +952,7 @@ fn filter_downsample<const N: usize, P: PointXYZITimestamp<N>>(
         #[cfg(feature = "metal")]
         let gpu_downsample = if use_backend_preprocessing {
             gpu_downsample.or_else(|| {
-                try_metal_downsample_from_filtered(&filtered_cloud, point_skip, voxel_size)
+                try_metal_downsample_from_filtered(&buffers.filtered_cloud, point_skip, voxel_size)
             })
         } else {
             gpu_downsample
@@ -750,7 +961,7 @@ fn filter_downsample<const N: usize, P: PointXYZITimestamp<N>>(
         #[cfg(feature = "vulkan")]
         let gpu_downsample = if use_backend_preprocessing {
             gpu_downsample.or_else(|| {
-                try_vulkan_downsample_from_filtered(&filtered_cloud, point_skip, voxel_size)
+                try_vulkan_downsample_from_filtered(&buffers.filtered_cloud, point_skip, voxel_size)
             })
         } else {
             gpu_downsample
@@ -758,95 +969,71 @@ fn filter_downsample<const N: usize, P: PointXYZITimestamp<N>>(
 
         if let Some((gpu_downsampled, gpu_timings)) = gpu_downsample {
             downsampled = gpu_downsampled;
-            phase_timings.gpu_downsample_us = gpu_timings.gpu_downsample_us;
-            phase_timings.gpu_upload_us = gpu_timings.gpu_upload_us;
-            phase_timings.gpu_key_build_us = gpu_timings.gpu_key_build_us;
-            phase_timings.gpu_keyed_sort_us = gpu_timings.gpu_keyed_sort_us;
-            phase_timings.gpu_run_length_encode_us = gpu_timings.gpu_run_length_encode_us;
-            phase_timings.gpu_run_starts_scan_us = gpu_timings.gpu_run_starts_scan_us;
-            phase_timings.gpu_unique_count_sync_us = gpu_timings.gpu_unique_count_sync_us;
-            phase_timings.gpu_medoid_reduce_us = gpu_timings.gpu_medoid_reduce_us;
-            phase_timings.gpu_timestamp_key_build_us = gpu_timings.gpu_timestamp_key_build_us;
-            phase_timings.gpu_timestamp_sort_us = gpu_timings.gpu_timestamp_sort_us;
-            phase_timings.gpu_download_us = gpu_timings.gpu_download_us;
-        } else {
-            let start = std::time::Instant::now();
-            if point_skip == 1 {
-                #[cfg(feature = "rayon")]
-                keyed_points.par_extend(
-                    filtered_cloud
-                        .par_iter()
-                        .filter_map(map_down_ref_from_bypass),
-                );
-                #[cfg(not(feature = "rayon"))]
-                keyed_points.extend(filtered_cloud.iter().filter_map(map_down_ref_from_bypass));
-            } else {
-                #[cfg(feature = "rayon")]
-                keyed_points.par_extend(
-                    filtered_cloud
-                        .par_iter()
-                        .enumerate()
-                        .filter_map(|(idx, p)| (idx % point_skip == 0).then_some(p))
-                        .filter_map(map_down_ref_from_bypass),
-                );
-                #[cfg(not(feature = "rayon"))]
-                keyed_points.extend(
-                    filtered_cloud
-                        .iter()
-                        .enumerate()
-                        .filter_map(|(idx, p)| (idx % point_skip == 0).then_some(p))
-                        .filter_map(map_down_ref_from_bypass),
-                );
+            add_gpu_downsample_timings(eval, gpu_timings);
+            if bypass_output_downsample {
+                sort_bypass_cloud(&mut buffers.filtered_cloud, eval)?;
+                raw_out = Some((std::mem::take(&mut buffers.filtered_cloud), cloud.clone()));
             }
-            phase_timings.filter_map_down_us = elapsed_us(start);
+        } else if bypass_output_downsample {
+            cpu_key_downsample(
+                &buffers.filtered_cloud,
+                point_skip,
+                voxel_size,
+                &mut buffers.keyed_points,
+                eval,
+            )?;
 
-            let start = std::time::Instant::now();
-            sort_unstable_by_key(&mut keyed_points, |(key, _)| *key);
-            phase_timings.keyed_sort_us = elapsed_us(start);
+            #[cfg(feature = "rayon")]
+            {
+                let mut downsample_eval = RuntimeEvaluator::new();
+                let mut bypass_eval = RuntimeEvaluator::new();
+                let (downsample_result, bypass_result) = rayon::join(
+                    || {
+                        cpu_reduce_downsample(
+                            &mut buffers.keyed_points,
+                            &mut downsampled,
+                            &mut downsample_eval,
+                        )
+                    },
+                    || sort_bypass_cloud(&mut buffers.filtered_cloud, &mut bypass_eval),
+                );
+                downsample_result?;
+                bypass_result?;
+                eval.merge(&downsample_eval);
+                eval.merge(&bypass_eval);
+            }
 
-            let start = std::time::Instant::now();
-            downsampled.extend(
-                keyed_points
-                    .chunk_by(|a, b| a.0 == b.0)
-                    .map(find_medoid_in_slice),
-            );
-            phase_timings.medoid_reduce_us = elapsed_us(start);
+            #[cfg(not(feature = "rayon"))]
+            {
+                cpu_reduce_downsample(&mut buffers.keyed_points, &mut downsampled, eval)?;
+                sort_bypass_cloud(&mut buffers.filtered_cloud, eval)?;
+            }
 
-            let start = std::time::Instant::now();
-            sort_unstable_by(&mut downsampled, cmp);
-            phase_timings.timestamp_sort_us = elapsed_us(start);
-        }
-
-        // 3. Handle Bypass Output
-        if bypass_output_downsample {
-            let start = std::time::Instant::now();
-            sort_unstable_by(&mut filtered_cloud, cmp);
-            phase_timings.bypass_sort_us = elapsed_us(start);
-            raw_out = Some((filtered_cloud, cloud.clone()));
+            raw_out = Some((std::mem::take(&mut buffers.filtered_cloud), cloud.clone()));
+        } else {
+            cpu_downsample(
+                &buffers.filtered_cloud,
+                point_skip,
+                voxel_size,
+                &mut buffers.keyed_points,
+                &mut downsampled,
+                eval,
+            )?;
         }
     }
-    let (first, last) = match (&downsampled.first(), &downsampled.last()) {
-        (Some(first), Some(last)) if (last.timestamp > 0.0) => (first.timestamp, last.timestamp),
-        _ => {
-            if let Some((bypass, _)) = raw_out.as_ref() {
-                match (&bypass.first(), &bypass.last()) {
-                    (Some(first), Some(last)) if (last.timestamp > 0.0) => {
-                        (first.timestamp, last.timestamp)
-                    }
-                    _ => return Ok(None),
-                }
-            } else {
-                return Ok(None);
-            }
-        }
+    let Some((first, last)) = scan_time_bounds(&downsampled, raw_out.as_ref()) else {
+        return Ok(None);
     };
 
     let raw_out = raw_out.map(|r| r.0);
 
     // TODO back to keeping the timestamp f64, only testing right now because of artefacts
     Ok(Some((
-        (downsampled, raw_out, first as f64, last as f64, header),
-        phase_timings,
+        downsampled,
+        raw_out,
+        first as f64,
+        last as f64,
+        header,
     )))
 }
 
@@ -1121,6 +1308,7 @@ impl Prelio {
         let vendor = lidar_vendor;
         thread::spawn(move || {
             let mut eval = RuntimeEvaluator::new();
+            let mut downsample_buffers = DownsampleBuffers::default();
             while let Ok(labeled) = preproc_rx.recv() {
                 preproc_queue_depth_worker
                     .fetch_update(Ordering::AcqRel, Ordering::Acquire, |depth| {
@@ -1134,126 +1322,72 @@ impl Prelio {
                         filter_downsample_with_fallback::<5, 4, OusterPoint, OusterPointNoIntensity>(
                             labeled.cloud,
                             &params_clone,
+                            &mut eval,
+                            &mut downsample_buffers,
                         )
                     }
-                    Some(LidarVendor::Velodyne) => {
-                        filter_downsample_with_fallback::<
-                            5,
-                            4,
-                            VelodynePoint,
-                            VelodynePointNoIntensity,
-                        >(labeled.cloud, &params_clone)
-                    }
+                    Some(LidarVendor::Velodyne) => filter_downsample_with_fallback::<
+                        5,
+                        4,
+                        VelodynePoint,
+                        VelodynePointNoIntensity,
+                    >(
+                        labeled.cloud,
+                        &params_clone,
+                        &mut eval,
+                        &mut downsample_buffers,
+                    ),
                     Some(LidarVendor::Livox) => {
                         filter_downsample_with_fallback::<5, 4, LivoxPoint, LivoxPointNoIntensity>(
                             labeled.cloud,
                             &params_clone,
+                            &mut eval,
+                            &mut downsample_buffers,
                         )
                     }
-                    Some(LidarVendor::LivoxMid360) => {
-                        filter_downsample_with_fallback::<
-                            5,
-                            4,
-                            LivoxMid360Point,
-                            LivoxMid360PointNoIntensity,
-                        >(labeled.cloud, &params_clone)
+                    Some(LidarVendor::LivoxMid360) => filter_downsample_with_fallback::<
+                        5,
+                        4,
+                        LivoxMid360Point,
+                        LivoxMid360PointNoIntensity,
+                    >(
+                        labeled.cloud,
+                        &params_clone,
+                        &mut eval,
+                        &mut downsample_buffers,
+                    ),
+                    Some(LidarVendor::Hesai) => {
+                        filter_downsample_with_fallback::<5, 4, HesaiPoint, HesaiPointNoIntensity>(
+                            labeled.cloud,
+                            &params_clone,
+                            &mut eval,
+                            &mut downsample_buffers,
+                        )
                     }
-                    Some(LidarVendor::Robosense) => {
-                        filter_downsample_with_fallback::<
-                            5,
-                            4,
-                            RobosensePoint,
-                            RobosensePointNoIntensity,
-                        >(labeled.cloud, &params_clone)
-                    }
+                    Some(LidarVendor::Robosense) => filter_downsample_with_fallback::<
+                        5,
+                        4,
+                        RobosensePoint,
+                        RobosensePointNoIntensity,
+                    >(
+                        labeled.cloud,
+                        &params_clone,
+                        &mut eval,
+                        &mut downsample_buffers,
+                    ),
                     None => {
                         // Fallback to generic processing with the compile-time type parameters
-                        filter_downsample::<N, P>(&labeled.cloud, &params_clone)
+                        filter_downsample::<N, P>(
+                            &labeled.cloud,
+                            &params_clone,
+                            &mut eval,
+                            &mut downsample_buffers,
+                        )
                     }
                 };
 
                 match result {
-                    Ok(Some((cloud_meta, phase_timings))) => {
-                        eval.add_external_measurement(
-                            "filter_downsample/filter_map_down",
-                            phase_timings.filter_map_down_us as f64 / 1000.0,
-                        );
-                        eval.add_external_measurement(
-                            "filter_downsample/keyed_sort",
-                            phase_timings.keyed_sort_us as f64 / 1000.0,
-                        );
-                        eval.add_external_measurement(
-                            "filter_downsample/medoid_reduce",
-                            phase_timings.medoid_reduce_us as f64 / 1000.0,
-                        );
-                        eval.add_external_measurement(
-                            "filter_downsample/timestamp_sort",
-                            phase_timings.timestamp_sort_us as f64 / 1000.0,
-                        );
-                        if phase_timings.gpu_downsample_us > 0 {
-                            eval.add_external_measurement(
-                                "filter_downsample/gpu_downsample",
-                                phase_timings.gpu_downsample_us as f64 / 1000.0,
-                            );
-                            let mut add_gpu_timing = |name: &str, us: u64| {
-                                if us > 0 {
-                                    eval.add_external_measurement(name, us as f64 / 1000.0);
-                                }
-                            };
-                            add_gpu_timing(
-                                "filter_downsample/gpu_upload",
-                                phase_timings.gpu_upload_us,
-                            );
-                            add_gpu_timing(
-                                "filter_downsample/gpu_key_build",
-                                phase_timings.gpu_key_build_us,
-                            );
-                            add_gpu_timing(
-                                "filter_downsample/gpu_keyed_sort",
-                                phase_timings.gpu_keyed_sort_us,
-                            );
-                            add_gpu_timing(
-                                "filter_downsample/gpu_run_length_encode",
-                                phase_timings.gpu_run_length_encode_us,
-                            );
-                            add_gpu_timing(
-                                "filter_downsample/gpu_run_starts_scan",
-                                phase_timings.gpu_run_starts_scan_us,
-                            );
-                            add_gpu_timing(
-                                "filter_downsample/gpu_unique_count_sync",
-                                phase_timings.gpu_unique_count_sync_us,
-                            );
-                            add_gpu_timing(
-                                "filter_downsample/gpu_medoid_reduce",
-                                phase_timings.gpu_medoid_reduce_us,
-                            );
-                            add_gpu_timing(
-                                "filter_downsample/gpu_timestamp_key_build",
-                                phase_timings.gpu_timestamp_key_build_us,
-                            );
-                            add_gpu_timing(
-                                "filter_downsample/gpu_timestamp_sort",
-                                phase_timings.gpu_timestamp_sort_us,
-                            );
-                            add_gpu_timing(
-                                "filter_downsample/gpu_download",
-                                phase_timings.gpu_download_us,
-                            );
-                        }
-                        if phase_timings.bypass_filter_map_us > 0 {
-                            eval.add_external_measurement(
-                                "filter_downsample/bypass_filter_map",
-                                phase_timings.bypass_filter_map_us as f64 / 1000.0,
-                            );
-                        }
-                        if phase_timings.bypass_sort_us > 0 {
-                            eval.add_external_measurement(
-                                "filter_downsample/bypass_sort",
-                                phase_timings.bypass_sort_us as f64 / 1000.0,
-                            );
-                        }
-
+                    Ok(Some(cloud_meta)) => {
                         eval.stop("filter_downsample").unwrap();
                         if let Err(e) =
                             filtered_cloud_tx.send((cloud_meta, labeled.scan_id, eval.clone()))

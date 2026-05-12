@@ -190,6 +190,51 @@ impl PointXYZITimestamp<4> for LivoxMid360PointNoIntensity {
 }
 
 #[derive(Debug, Clone, Default, PointConvertible, Copy)]
+pub struct HesaiPoint {
+    pub x: f32,
+    pub y: f32,
+    pub z: f32,
+    pub intensity: f32,
+    pub timestamp: f64,
+}
+
+impl PointXYZITimestamp<5> for HesaiPoint {
+    fn intensity(&self) -> f32 {
+        self.intensity / 255.0
+    }
+
+    fn timestamp(&self) -> f64 {
+        self.timestamp * 1.0
+    }
+
+    fn xyz(&self) -> nalgebra::Point3<f32> {
+        nalgebra::Point3::new(self.x, self.y, self.z)
+    }
+}
+
+#[derive(Debug, Clone, Default, PointConvertible, Copy)]
+pub struct HesaiPointNoIntensity {
+    pub x: f32,
+    pub y: f32,
+    pub z: f32,
+    pub timestamp: f64,
+}
+
+impl PointXYZITimestamp<4> for HesaiPointNoIntensity {
+    fn intensity(&self) -> f32 {
+        1.0
+    }
+
+    fn timestamp(&self) -> f64 {
+        self.timestamp * 1.0
+    }
+
+    fn xyz(&self) -> nalgebra::Point3<f32> {
+        nalgebra::Point3::new(self.x, self.y, self.z)
+    }
+}
+
+#[derive(Debug, Clone, Default, PointConvertible, Copy)]
 pub struct OusterPoint {
     pub x: f32,
     pub y: f32,
@@ -616,6 +661,7 @@ pub enum LidarVendor {
     Ouster,
     /// microseconds?
     Robosense,
+    Hesai,
     // Skip, // TODO add later and rename to <Any> but do not use timestamps for undistortion
 }
 
