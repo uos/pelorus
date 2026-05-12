@@ -948,8 +948,9 @@ fn lio_with_ready_signal(
         loop {
             let lifis_tick = match processing_shutdown_flag.as_ref() {
                 Some(flag) => {
-                    if flag.load(Ordering::Relaxed) {
-                        let drain_requested = drain_on_shutdown.load(Ordering::SeqCst);
+                    if flag.load(std::sync::atomic::Ordering::Relaxed) {
+                        let drain_requested =
+                            drain_on_shutdown.load(std::sync::atomic::Ordering::SeqCst);
                         if drain_requested {
                             if !draining_after_end_of_bag {
                                 draining_after_end_of_bag = true;
@@ -1996,6 +1997,7 @@ enum OfflineRuntimeEvent {
     LioExited(Result<(), String>),
 }
 
+#[cfg_attr(not(feature = "rat"), allow(dead_code))]
 #[derive(Clone, Copy, Debug)]
 #[allow(dead_code)]
 enum OfflineShutdownRequest {
