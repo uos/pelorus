@@ -30,6 +30,12 @@ jobs:
           python3 -m venv .venv
           source .venv/bin/activate
           pip install minot-cli marina-cli sounding-cli
+      - name: Trust Marina registry host
+        run: |
+          mkdir -p "$HOME/.ssh"
+          chmod 700 "$HOME/.ssh"
+          cp ci/marina/known_hosts "$HOME/.ssh/known_hosts"
+          chmod 600 "$HOME/.ssh/known_hosts"
       - name: Download dataset
         run: |
           source .venv/bin/activate
@@ -72,6 +78,12 @@ jobs:
           python3 -m venv .venv
           source .venv/bin/activate
           pip install minot-cli marina-cli sounding-cli
+      - name: Trust Marina registry host
+        run: |
+          mkdir -p "$HOME/.ssh"
+          chmod 700 "$HOME/.ssh"
+          cp ci/marina/known_hosts "$HOME/.ssh/known_hosts"
+          chmod 600 "$HOME/.ssh/known_hosts"
       - name: Download dataset
         run: |
           source .venv/bin/activate
