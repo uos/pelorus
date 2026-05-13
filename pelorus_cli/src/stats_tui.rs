@@ -1,7 +1,6 @@
 use alloc::sync::Arc;
 use core::sync::atomic::{AtomicBool, Ordering};
 use core::time::Duration;
-use std::mem;
 use crossterm::{
     cursor,
     event::{self, Event, KeyCode, KeyModifiers},
@@ -553,7 +552,7 @@ fn get_ram_usage_mb() -> f64 {
     #[cfg(target_os = "macos")]
     {
         unsafe {
-            let mut rusage: libc::rusage = mem::zeroed();
+            let mut rusage: libc::rusage = std::mem::zeroed();
             if libc::getrusage(libc::RUSAGE_SELF, &mut rusage) == 0 {
                 // On macOS ru_maxrss is in bytes
                 return rusage.ru_maxrss as f64 / (1024.0 * 1024.0);
@@ -614,7 +613,7 @@ fn get_cpu_usage_macos(last: Option<(u64, f64)>) -> (f64, (u64, f64)) {
         .unwrap_or(0);
 
     let cpu_time_secs = unsafe {
-        let mut rusage: libc::rusage = mem::zeroed();
+        let mut rusage: libc::rusage = std::mem::zeroed();
         if libc::getrusage(libc::RUSAGE_SELF, &mut rusage) == 0 {
             let user = rusage.ru_utime.tv_sec as f64 + rusage.ru_utime.tv_usec as f64 / 1_000_000.0;
             let sys = rusage.ru_stime.tv_sec as f64 + rusage.ru_stime.tv_usec as f64 / 1_000_000.0;
