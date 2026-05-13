@@ -1,6 +1,7 @@
 use alloc::sync::Arc;
 use core::sync::atomic::{AtomicBool, Ordering};
 use core::time::Duration;
+use std::mem;
 use crossterm::{
     cursor,
     event::{self, Event, KeyCode, KeyModifiers},
