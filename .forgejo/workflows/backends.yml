@@ -14,6 +14,10 @@ jobs:
     runs-on: macos-latest
     env:
       DATASET: wachsbleiche:hunter:parking_25
+      MARINA_CONFIG_DIR: ${{ github.workspace }}/ci/marina
+      MARINA_CACHE_DIR: /tmp/marina-cache
+      MARINA_SSH_KEY: "/Users/ti/.ssh/id_ed25519"
+      MARINA_SSH_TRANSPORT: "openssh"
     steps:
       - uses: actions/checkout@v4
       - name: Update Rust
@@ -29,6 +33,17 @@ jobs:
       - name: Download dataset
         run: |
           source .venv/bin/activate
+          set -x
+
+          which marina
+          marina --version || true
+          pip show marina-cli || true
+
+          nc -vz 131.173.32.180 22
+          ssh -o BatchMode=yes -o ConnectTimeout=5 131.173.32.180 true || true
+
+          marina registry ls
+
           marina pull -y $DATASET
       - name: Equivalence
         run: |
@@ -39,6 +54,11 @@ jobs:
     runs-on: noble
     env:
       DATASET: wachsbleiche:hunter:parking_25
+      MARINA_CONFIG_DIR: ${{ github.workspace }}/ci/marina
+      MARINA_CACHE_DIR: /tmp/marina-cache
+      MARINA_SSH_KEY: "/home/runner/.ssh/id_ed25519"
+      CUDA_HOME: "/usr/local/cuda"
+      MARINA_SSH_TRANSPORT: "openssh"
     steps:
       - uses: actions/checkout@v4
       - name: Update Rust

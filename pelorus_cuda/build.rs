@@ -6,11 +6,24 @@ use std::process::Command;
 
 use walkdir::WalkDir;
 
+fn cuda_home() -> Option<PathBuf> {
+    if let Ok(cuda_path) = env::var("CUDA_HOME") {
+        return Some(PathBuf::from(cuda_path));
+    }
+
+    ["/usr/local/cuda", "/opt/cuda"]
+        .into_iter()
+        .map(PathBuf::from)
+        .find(|path| path.exists())
+}
+
 fn main() {
     if env::var("CARGO_FEATURE_CUDA_ENABLE").is_ok() {
+        println!("cargo:rerun-if-env-changed=CUDA_HOME");
+
         let out_dir = PathBuf::from(env::var("OUT_DIR").unwrap());
 
-        if let Ok(cuda_path) = env::var("CUDA_HOME") {
+        if let Some(cuda_path) = cuda_home() {
             println!("cargo:rustc-cfg=cuda_available");
 
             let source_files = vec![
@@ -43,7 +56,6 @@ fn main() {
                 .collect();
 
             // CUDA Toolkit directory, TODO check jetson specific folders
-            let cuda_path = PathBuf::from(&cuda_path);
             let cuda_lib_path = cuda_path.join("lib64");
             let cuda_bin_path = cuda_path.join("bin");
             let nvcc_bin = cuda_bin_path.join("nvcc");
@@ -204,7 +216,9 @@ fn main() {
 
             println!("cargo:info=CUDA library compiled and bindings generated successfully.");
         } else {
-            println!("cargo:warning=CUDA_HOME not set. Skipping CUDA build.");
+            println!(
+                "cargo:warning=CUDA not found. Set the CUDA_HOME env variable if it exists on this target. Skipping CUDA build."
+            );
 
             let bindings_path = out_dir.join("bindings.rs");
             std::fs::write(&bindings_path, "").expect("Could not write empty bindings file.");
