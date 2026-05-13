@@ -1742,7 +1742,7 @@ impl Prelio {
                             Ok(imu) => {
                                 let imu_time = timestamp_to_secs(&imu.stamp);
                                 if imu_time < imu_span_start_time {
-                                    warn!("IMU msg too early, skipped.");
+                                    // warn!("IMU msg too early, skipped.");
                                     continue;
                                 }
 
