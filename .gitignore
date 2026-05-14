@@ -17,3 +17,7 @@ pelorus_c/examples/*.bin
 **/build/
 **/imgui.ini
 docs/site/**
+.claude
+.crush
+.codex
+pelorus-*.rl
