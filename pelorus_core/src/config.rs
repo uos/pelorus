@@ -129,6 +129,7 @@ fn ast_to_config_inner(
             "livoxmid360" => LidarVendor::LivoxMid360,
             "robosense" => LidarVendor::Robosense,
             "hesai" => LidarVendor::Hesai,
+            "blickfeld" => LidarVendor::Blickfeld,
             _ => return Err(anyhow!("Unknown Lidar vendor.")),
         })
     }

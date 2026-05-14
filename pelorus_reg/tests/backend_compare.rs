@@ -1,4 +1,4 @@
-use nalgebra::{Isometry3, Translation3, UnitQuaternion, Vector3};
+use nalgebra::Isometry3;
 use pelorus_core::timing::RuntimeEvaluator;
 use pelorus_core::{ImuParameters, PointXYZIT};
 use pelorus_reg::{ActiveBackend, Registration, registration::RegistrationState};
@@ -797,15 +797,16 @@ fn test_planes_transformed_extrinsic_equivalency_vulkan() {
     let query_cloud = create_complex_cloud();
 
     let map_pose = Isometry3::from_parts(
-        Translation3::new(1.25, -0.75, 0.5),
-        UnitQuaternion::from_euler_angles(0.1, -0.2, 0.3),
+        nalgebra::Translation3::new(1.25, -0.75, 0.5),
+        nalgebra::UnitQuaternion::from_euler_angles(0.1, -0.2, 0.3),
     );
     let query_pose = Isometry3::from_parts(
-        Translation3::new(1.4, -0.6, 0.7),
-        UnitQuaternion::from_euler_angles(0.08, -0.18, 0.32),
+        nalgebra::Translation3::new(1.4, -0.6, 0.7),
+        nalgebra::UnitQuaternion::from_euler_angles(0.08, -0.18, 0.32),
     );
-    let lidar_to_imu_q = UnitQuaternion::from_euler_angles(std::f64::consts::PI, 0.0, 0.0);
-    let lidar_to_imu_t = Vector3::new(0.1, -0.05, 0.02);
+    let lidar_to_imu_q =
+        nalgebra::UnitQuaternion::from_euler_angles(std::f64::consts::PI, 0.0, 0.0);
+    let lidar_to_imu_t = nalgebra::Vector3::new(0.1, -0.05, 0.02);
 
     let mut cpu_map = spole::IVoxHashMap::new(resolution, 10000, IVoxNearbyType::Nearby26, 0.1);
     cpu_map.add(&map_cloud, &map_pose, 1);
@@ -945,12 +946,12 @@ fn test_planes_after_moved_voxel_update_vulkan() {
     let map_cloud = create_simple_cloud();
 
     let first_pose = Isometry3::from_parts(
-        Translation3::new(1.25, -0.75, 0.5),
-        UnitQuaternion::from_euler_angles(0.1, -0.2, 0.3),
+        nalgebra::Translation3::new(1.25, -0.75, 0.5),
+        nalgebra::UnitQuaternion::from_euler_angles(0.1, -0.2, 0.3),
     );
     let second_pose = Isometry3::from_parts(
-        Translation3::new(1.28, -0.72, 0.53),
-        UnitQuaternion::from_euler_angles(0.11, -0.19, 0.31),
+        nalgebra::Translation3::new(1.28, -0.72, 0.53),
+        nalgebra::UnitQuaternion::from_euler_angles(0.11, -0.19, 0.31),
     );
 
     let mut cpu_map = spole::IVoxHashMap::new(resolution, 10000, IVoxNearbyType::Nearby26, 0.1);

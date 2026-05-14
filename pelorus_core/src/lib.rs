@@ -235,6 +235,51 @@ impl PointXYZITimestamp<4> for HesaiPointNoIntensity {
 }
 
 #[derive(Debug, Clone, Default, PointConvertible, Copy)]
+pub struct BlickfeldPoint {
+    pub x: f32,
+    pub y: f32,
+    pub z: f32,
+    pub intensity: u32,
+    pub point_time_offset: u32,
+}
+
+impl PointXYZITimestamp<5> for BlickfeldPoint {
+    fn intensity(&self) -> f32 {
+        self.intensity as f32 / 255.0
+    }
+
+    fn timestamp(&self) -> f64 {
+        self.point_time_offset as f64 * 1e-9
+    }
+
+    fn xyz(&self) -> nalgebra::Point3<f32> {
+        nalgebra::Point3::new(self.x, self.y, self.z)
+    }
+}
+
+#[derive(Debug, Clone, Default, PointConvertible, Copy)]
+pub struct BlickfeldPointNoIntensity {
+    pub x: f32,
+    pub y: f32,
+    pub z: f32,
+    pub point_time_offset: u32,
+}
+
+impl PointXYZITimestamp<4> for BlickfeldPointNoIntensity {
+    fn intensity(&self) -> f32 {
+        1.0
+    }
+
+    fn timestamp(&self) -> f64 {
+        self.point_time_offset as f64 * 1e-9
+    }
+
+    fn xyz(&self) -> nalgebra::Point3<f32> {
+        nalgebra::Point3::new(self.x, self.y, self.z)
+    }
+}
+
+#[derive(Debug, Clone, Default, PointConvertible, Copy)]
 pub struct OusterPoint {
     pub x: f32,
     pub y: f32,
@@ -662,6 +707,7 @@ pub enum LidarVendor {
     /// microseconds?
     Robosense,
     Hesai,
+    Blickfeld,
     // Skip, // TODO add later and rename to <Any> but do not use timestamps for undistortion
 }
 

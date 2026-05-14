@@ -5,9 +5,9 @@ use anyhow::anyhow;
 use either::Either;
 use nalgebra::{Isometry3, Translation3, UnitQuaternion};
 use pelorus_core::{
-    HesaiPoint, ImuMsg, ImuPosePrediction, ImuPredictor, ImuPredictorUndistort, KinematicModel,
-    LidarVendor, LioConfig, LivoxMid360Point, LivoxPoint, OdomMsg, OusterPoint, PointXYZIT,
-    PrelioProcessedCloud, RobosensePoint, VelodynePoint,
+    BlickfeldPoint, HesaiPoint, ImuMsg, ImuPosePrediction, ImuPredictor, ImuPredictorUndistort,
+    KinematicModel, LidarVendor, LioConfig, LivoxMid360Point, LivoxPoint, OdomMsg, OusterPoint,
+    PointXYZIT, PrelioProcessedCloud, RobosensePoint, VelodynePoint,
 };
 use prelio::{LocatedBufferView, Prelio};
 use spole::{IVoxHashMap, IVoxNearbyType};
@@ -542,6 +542,16 @@ impl Pipeline {
                 ready_for_next,
             ),
             LidarVendor::Hesai => Prelio::create::<5, HesaiPoint>(
+                gravity,
+                madgwick_filter,
+                &imu_calib,
+                params,
+                undistort,
+                init_guess,
+                Some(params.lidar_vendor),
+                ready_for_next,
+            ),
+            LidarVendor::Blickfeld => Prelio::create::<5, BlickfeldPoint>(
                 gravity,
                 madgwick_filter,
                 &imu_calib,

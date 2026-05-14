@@ -1,7 +1,7 @@
 pub mod imu;
 mod naive_preint;
 mod naive_preint_eth;
-use pelorus_core::{HesaiPoint, HesaiPointNoIntensity};
+use pelorus_core::{BlickfeldPoint, BlickfeldPointNoIntensity, HesaiPoint, HesaiPointNoIntensity};
 #[cfg(feature = "rayon")]
 use rayon::prelude::*;
 
@@ -1364,6 +1364,17 @@ impl Prelio {
                             &mut downsample_buffers,
                         )
                     }
+                    Some(LidarVendor::Blickfeld) => filter_downsample_with_fallback::<
+                        5,
+                        4,
+                        BlickfeldPoint,
+                        BlickfeldPointNoIntensity,
+                    >(
+                        labeled.cloud,
+                        &params_clone,
+                        &mut eval,
+                        &mut downsample_buffers,
+                    ),
                     Some(LidarVendor::Robosense) => filter_downsample_with_fallback::<
                         5,
                         4,

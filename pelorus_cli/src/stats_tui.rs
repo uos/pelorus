@@ -1092,6 +1092,7 @@ impl StatsTui {
             Some(LidarVendor::LivoxMid360) => "Livox Mid-360",
             Some(LidarVendor::Robosense) => "Robosense",
             Some(LidarVendor::Hesai) => "Hesai",
+            Some(LidarVendor::Blickfeld) => "Blickfeld",
             None => "Unknown",
         };
         let elapsed = format_duration(stats.elapsed_secs);
@@ -2183,6 +2184,7 @@ impl StatsTui {
             Some(LidarVendor::LivoxMid360) => "Livox Mid-360",
             Some(LidarVendor::Robosense) => "Robosense",
             Some(LidarVendor::Hesai) => "Hesai",
+            Some(LidarVendor::Blickfeld) => "Blickfeld",
             None => "Unknown",
         };
 
