@@ -2021,11 +2021,23 @@ fn signal_process(pid: u32, signal: libc::c_int) -> std::io::Result<()> {
 }
 
 fn cpu_backend_label(config: &LioConfig) -> String {
+    let cores = effective_cpu_cores(config);
+    let unit = if cores == 1 { "core" } else { "cores" };
+    format!("CPU ({cores} {unit})")
+}
+
+#[cfg(feature = "rayon")]
+fn effective_cpu_cores(config: &LioConfig) -> usize {
     if config.num_threads > 0 {
-        format!("CPU ({} cores)", config.num_threads)
+        config.num_threads
     } else {
-        format!("CPU ({} cores)", num_cpus::get())
+        num_cpus::get()
     }
+}
+
+#[cfg(not(feature = "rayon"))]
+fn effective_cpu_cores(_config: &LioConfig) -> usize {
+    1
 }
 
 fn set_backend_from_config(shared_stats: &SharedStats, config: &LioConfig) {
