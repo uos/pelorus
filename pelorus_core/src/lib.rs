@@ -235,6 +235,51 @@ impl PointXYZITimestamp<4> for HesaiPointNoIntensity {
 }
 
 #[derive(Debug, Clone, Default, PointConvertible, Copy)]
+pub struct SickMultiScanPoint {
+    pub x: f32,
+    pub y: f32,
+    pub z: f32,
+    pub i: f32,
+    pub ts: f32, // time offset in seconds relative to the header timestamp (4 byte, float32)
+}
+
+impl PointXYZITimestamp<5> for SickMultiScanPoint {
+    fn intensity(&self) -> f32 {
+        self.i as f32 / 65535.0
+    }
+
+    fn timestamp(&self) -> f64 {
+        self.ts as f64
+    }
+
+    fn xyz(&self) -> nalgebra::Point3<f32> {
+        nalgebra::Point3::new(self.x, self.y, self.z)
+    }
+}
+
+#[derive(Debug, Clone, Default, PointConvertible, Copy)]
+pub struct SickMultiScanPointNoIntensity {
+    pub x: f32,
+    pub y: f32,
+    pub z: f32,
+    pub ts: f32, // time offset in seconds relative to the header timestamp (4 byte, float32)
+}
+
+impl PointXYZITimestamp<4> for SickMultiScanPointNoIntensity {
+    fn intensity(&self) -> f32 {
+        1.0
+    }
+
+    fn timestamp(&self) -> f64 {
+        self.ts as f64
+    }
+
+    fn xyz(&self) -> nalgebra::Point3<f32> {
+        nalgebra::Point3::new(self.x, self.y, self.z)
+    }
+}
+
+#[derive(Debug, Clone, Default, PointConvertible, Copy)]
 pub struct BlickfeldPoint {
     pub x: f32,
     pub y: f32,
@@ -708,6 +753,7 @@ pub enum LidarVendor {
     Robosense,
     Hesai,
     Blickfeld,
+    SickMultiscan,
     // Skip, // TODO add later and rename to <Any> but do not use timestamps for undistortion
 }
 

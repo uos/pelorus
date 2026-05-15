@@ -130,6 +130,7 @@ fn ast_to_config_inner(
             "robosense" => LidarVendor::Robosense,
             "hesai" => LidarVendor::Hesai,
             "blickfeld" => LidarVendor::Blickfeld,
+            "sickmultiscan" => LidarVendor::SickMultiscan,
             _ => return Err(anyhow!("Unknown Lidar vendor.")),
         })
     }

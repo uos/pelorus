@@ -107,7 +107,7 @@ lidar {
   topic = "/ouster/points"
 
   # @recommended
-  # Velodyne | Ouster | Livox | Robosense | LivoxMid360 | Hesai | Blickfeld
+  # Velodyne | Ouster | Livox | Robosense | LivoxMid360 | Hesai | Blickfeld | SickMultiScan
   vendor = Ouster
 
   # @recommended
