@@ -369,6 +369,41 @@ impl PointXYZITimestamp<4> for OusterPointNoIntensity {
     }
 }
 
+#[derive(Debug, Clone, Default, PointConvertible, Copy)]
+pub struct PointXYZI {
+    pub x: f32,
+    pub y: f32,
+    pub z: f32,
+    pub intensity: f32,
+}
+
+impl PointXYZIntensity<4> for PointXYZI {
+    fn intensity(&self) -> f32 {
+        self.intensity / 255.0
+    }
+
+    fn xyz(&self) -> nalgebra::Point3<f32> {
+        nalgebra::Point3::new(self.x, self.y, self.z)
+    }
+}
+
+#[derive(Debug, Clone, Default, PointConvertible, Copy)]
+pub struct PointXYZ {
+    pub x: f32,
+    pub y: f32,
+    pub z: f32,
+}
+
+impl PointXYZIntensity<3> for PointXYZ {
+    fn intensity(&self) -> f32 {
+        1.0
+    }
+
+    fn xyz(&self) -> nalgebra::Point3<f32> {
+        nalgebra::Point3::new(self.x, self.y, self.z)
+    }
+}
+
 // const MAX_INI_COUNT: usize = 100; # unused, using time instead
 pub const COV_IMU_RAW_DEFAULT: f64 = 0.001;
 pub const COV_IMU_BIAS_DEFAULT: f64 = 0.0001;
@@ -610,6 +645,16 @@ pub trait PointXYZITimestamp<const N: usize>:
     fn timestamp(&self) -> f64;
 }
 
+pub trait PointXYZIntensity<const N: usize>:
+    PointConvertible<N> + Send + Sync + Sized + Copy
+{
+    fn xyz(&self) -> Point3<f32>;
+
+    /// Normalize to real 0..1 scale for filtering.
+    /// When setting back the point, it will be converted to 0..255 (f32).
+    fn intensity(&self) -> f32;
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct MeasureGroup {
     pub cloud: Vec<PointXYZIT>,
@@ -754,7 +799,7 @@ pub enum LidarVendor {
     Hesai,
     Blickfeld,
     SickMultiscan,
-    // Skip, // TODO add later and rename to <Any> but do not use timestamps for undistortion
+    NoTimestamp,
 }
 
 #[derive(Debug, Clone)]

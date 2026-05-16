@@ -296,7 +296,10 @@ impl ImuProcessing {
         debug_assert!(cloud_begin_time > 0.0);
         debug_assert!(cloud_end_time > 0.0);
 
-        if !matches!(lidar_vendor, Some(LidarVendor::Robosense)) {
+        if !matches!(
+            lidar_vendor,
+            Some(LidarVendor::Robosense | LidarVendor::NoTimestamp)
+        ) {
             cloud_end_time += cloud_begin_time;
         }
 
@@ -461,7 +464,7 @@ impl ImuProcessing {
         ekf.correct_kinematics(kinematic, gyro, constraint_std);
         self.imu_state = ekf.state;
 
-        {
+        if !matches!(lidar_vendor, Some(LidarVendor::NoTimestamp)) {
             let imu_state_pose_translation = self.imu_state.pose().translation();
             let imu_state_pose_rotation_t = self.imu_state.pose().rotation().matrix().transpose();
             let imu_state_lidar_to_imu_t = self.imu_state.offset_t_l_i;

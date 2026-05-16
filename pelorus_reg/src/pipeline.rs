@@ -5,9 +5,8 @@ use anyhow::anyhow;
 use either::Either;
 use nalgebra::{Isometry3, Translation3, UnitQuaternion};
 use pelorus_core::{
-    BlickfeldPoint, HesaiPoint, ImuMsg, ImuPosePrediction, ImuPredictor, ImuPredictorUndistort,
-    KinematicModel, LidarVendor, LioConfig, LivoxMid360Point, LivoxPoint, OdomMsg, OusterPoint,
-    PointXYZIT, PrelioProcessedCloud, RobosensePoint, SickMultiScanPoint, VelodynePoint,
+    ImuMsg, ImuPosePrediction, ImuPredictor, ImuPredictorUndistort, KinematicModel, LidarVendor,
+    LioConfig, OdomMsg, PointXYZIT, PrelioProcessedCloud,
 };
 use prelio::{LocatedBufferView, Prelio};
 use spole::{IVoxHashMap, IVoxNearbyType};
@@ -490,88 +489,16 @@ impl Pipeline {
         let undistort = Some(self.build_undistort());
         let init_guess = Some(self.build_init_guess());
 
-        let mut prelio = match params.lidar_vendor {
-            LidarVendor::Ouster => Prelio::create::<5, OusterPoint>(
-                gravity,
-                madgwick_filter,
-                &imu_calib,
-                params,
-                undistort,
-                init_guess,
-                Some(params.lidar_vendor),
-                ready_for_next,
-            ),
-            LidarVendor::Velodyne => Prelio::create::<5, VelodynePoint>(
-                gravity,
-                madgwick_filter,
-                &imu_calib,
-                params,
-                undistort,
-                init_guess,
-                Some(params.lidar_vendor),
-                ready_for_next,
-            ),
-            LidarVendor::Livox => Prelio::create::<5, LivoxPoint>(
-                gravity,
-                madgwick_filter,
-                &imu_calib,
-                params,
-                undistort,
-                init_guess,
-                Some(params.lidar_vendor),
-                ready_for_next,
-            ),
-            LidarVendor::Robosense => Prelio::create::<5, RobosensePoint>(
-                gravity,
-                madgwick_filter,
-                &imu_calib,
-                params,
-                undistort,
-                init_guess,
-                Some(params.lidar_vendor),
-                ready_for_next,
-            ),
-            LidarVendor::LivoxMid360 => Prelio::create::<5, LivoxMid360Point>(
-                gravity,
-                madgwick_filter,
-                &imu_calib,
-                params,
-                undistort,
-                init_guess,
-                Some(params.lidar_vendor),
-                ready_for_next,
-            ),
-            LidarVendor::Hesai => Prelio::create::<5, HesaiPoint>(
-                gravity,
-                madgwick_filter,
-                &imu_calib,
-                params,
-                undistort,
-                init_guess,
-                Some(params.lidar_vendor),
-                ready_for_next,
-            ),
-            LidarVendor::SickMultiscan => Prelio::create::<5, SickMultiScanPoint>(
-                gravity,
-                madgwick_filter,
-                &imu_calib,
-                params,
-                undistort,
-                init_guess,
-                Some(params.lidar_vendor),
-                ready_for_next,
-            ),
-            LidarVendor::Blickfeld => Prelio::create::<5, BlickfeldPoint>(
-                gravity,
-                madgwick_filter,
-                &imu_calib,
-                params,
-                undistort,
-                init_guess,
-                Some(params.lidar_vendor),
-                ready_for_next,
-            ),
-        }?;
+        let mut prelio = Prelio::create(
+            gravity,
+            madgwick_filter,
+            &imu_calib,
+            params,
+            undistort,
+            init_guess,
+            params.lidar_vendor,
+            ready_for_next,
+        )?;
 
         let rx = prelio
             .get_chan()

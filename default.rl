@@ -107,8 +107,9 @@ lidar {
   topic = "/ouster/points"
 
   # @recommended
-  # Velodyne | Ouster | Livox | Robosense | LivoxMid360 | Hesai | Blickfeld | SickMultiScan
-  vendor = Ouster
+  # Use the vendor specific cloud format timestamps for undeskewing
+  # Possible values: Velodyne | Ouster | Livox | Robosense | LivoxMid360 | Hesai | Blickfeld | SickMultiScan | NoTimestamp
+  vendor = NoTimestamp
 
   # @recommended
   # Reliable | BestEffort | SystemDefault. Any other setting than Reliable is undefined behavior.

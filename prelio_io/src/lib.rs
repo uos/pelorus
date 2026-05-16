@@ -10,9 +10,8 @@ use futures_lite::{StreamExt, future};
 #[allow(unused_imports)]
 use log::{debug, error, info, warn};
 use pelorus_core::{
-    BlickfeldPoint, HesaiPoint, ImuMsg, ImuPredictor, ImuPredictorUndistort, LidarVendor,
-    LifisNodeParameters, LifisParameters, LivoxMid360Point, LivoxPoint, OusterPoint, PointXYZIT,
-    RobosensePoint, SickMultiScanPoint, VelodynePoint, timing::RuntimeEvaluator,
+    ImuMsg, ImuPredictor, ImuPredictorUndistort, LidarVendor, LifisNodeParameters, LifisParameters,
+    PointXYZIT, timing::RuntimeEvaluator,
 };
 #[cfg(any(feature = "ros2-client", feature = "mt_pubsub", feature = "r2r"))]
 use pelorus_core::{OdomMsg, PrelioProcessedCloud};
@@ -116,104 +115,16 @@ impl State {
             global_polygon: None,
             sensor_tf: None,
             imu_tf: None,
-            lifis: match config.lidar_vendor {
-                LidarVendor::Velodyne => {
-                    Arc::new(Mutex::new(prelio::Prelio::create::<5, VelodynePoint>(
-                        config.imu.gravity,
-                        config.imu.madgwick_setting,
-                        &config.imu.calibration,
-                        config, // TODO more specific
-                        imu_pose_prediction_undistort,
-                        imu_pose_prediction_init_guess,
-                        Some(config.lidar_vendor),
-                        ready_for_next,
-                    )?))
-                }
-                LidarVendor::Livox => {
-                    Arc::new(Mutex::new(prelio::Prelio::create::<5, LivoxPoint>(
-                        config.imu.gravity,
-                        config.imu.madgwick_setting,
-                        &config.imu.calibration,
-                        config, // TODO more specific
-                        imu_pose_prediction_undistort,
-                        imu_pose_prediction_init_guess,
-                        Some(config.lidar_vendor),
-                        ready_for_next,
-                    )?))
-                }
-                LidarVendor::LivoxMid360 => {
-                    Arc::new(Mutex::new(prelio::Prelio::create::<5, LivoxMid360Point>(
-                        config.imu.gravity,
-                        config.imu.madgwick_setting,
-                        &config.imu.calibration,
-                        config, // TODO more specific
-                        imu_pose_prediction_undistort,
-                        imu_pose_prediction_init_guess,
-                        Some(config.lidar_vendor),
-                        ready_for_next,
-                    )?))
-                }
-                LidarVendor::Hesai => {
-                    Arc::new(Mutex::new(prelio::Prelio::create::<5, HesaiPoint>(
-                        config.imu.gravity,
-                        config.imu.madgwick_setting,
-                        &config.imu.calibration,
-                        config, // TODO more specific
-                        imu_pose_prediction_undistort,
-                        imu_pose_prediction_init_guess,
-                        Some(config.lidar_vendor),
-                        ready_for_next,
-                    )?))
-                }
-                LidarVendor::Blickfeld => {
-                    Arc::new(Mutex::new(prelio::Prelio::create::<5, BlickfeldPoint>(
-                        config.imu.gravity,
-                        config.imu.madgwick_setting,
-                        &config.imu.calibration,
-                        config, // TODO more specific
-                        imu_pose_prediction_undistort,
-                        imu_pose_prediction_init_guess,
-                        Some(config.lidar_vendor),
-                        ready_for_next,
-                    )?))
-                }
-                LidarVendor::SickMultiscan => {
-                    Arc::new(Mutex::new(prelio::Prelio::create::<5, SickMultiScanPoint>(
-                        config.imu.gravity,
-                        config.imu.madgwick_setting,
-                        &config.imu.calibration,
-                        config, // TODO more specific
-                        imu_pose_prediction_undistort,
-                        imu_pose_prediction_init_guess,
-                        Some(config.lidar_vendor),
-                        ready_for_next,
-                    )?))
-                }
-                LidarVendor::Robosense => {
-                    Arc::new(Mutex::new(prelio::Prelio::create::<5, RobosensePoint>(
-                        config.imu.gravity,
-                        config.imu.madgwick_setting,
-                        &config.imu.calibration,
-                        config, // TODO more specific
-                        imu_pose_prediction_undistort,
-                        imu_pose_prediction_init_guess,
-                        Some(config.lidar_vendor),
-                        ready_for_next,
-                    )?))
-                }
-                LidarVendor::Ouster => {
-                    Arc::new(Mutex::new(prelio::Prelio::create::<5, OusterPoint>(
-                        config.imu.gravity,
-                        config.imu.madgwick_setting,
-                        &config.imu.calibration,
-                        config, // TODO more specific
-                        imu_pose_prediction_undistort,
-                        imu_pose_prediction_init_guess,
-                        Some(config.lidar_vendor),
-                        ready_for_next,
-                    )?))
-                }
-            },
+            lifis: Arc::new(Mutex::new(prelio::Prelio::create(
+                config.imu.gravity,
+                config.imu.madgwick_setting,
+                &config.imu.calibration,
+                config,
+                imu_pose_prediction_undistort,
+                imu_pose_prediction_init_guess,
+                config.lidar_vendor,
+                ready_for_next,
+            )?)),
             lifis_params: config.clone(),
             #[cfg(any(feature = "ros2-client", feature = "mt_pubsub", feature = "r2r"))]
             take_nth_scan: N_NTH_SCAN,

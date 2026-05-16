@@ -1094,6 +1094,7 @@ impl StatsTui {
             Some(LidarVendor::Hesai) => "Hesai",
             Some(LidarVendor::Blickfeld) => "Blickfeld",
             Some(LidarVendor::SickMultiscan) => "SickMultiScan",
+            Some(LidarVendor::NoTimestamp) => "No Timestamp",
             None => "Unknown",
         };
         let elapsed = format_duration(stats.elapsed_secs);
@@ -2187,6 +2188,7 @@ impl StatsTui {
             Some(LidarVendor::Hesai) => "Hesai",
             Some(LidarVendor::Blickfeld) => "Blickfeld",
             Some(LidarVendor::SickMultiscan) => "SickMultiScan",
+            Some(LidarVendor::NoTimestamp) => "No Timestamp",
             None => "Unknown",
         };
 

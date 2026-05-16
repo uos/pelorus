@@ -131,6 +131,9 @@ fn ast_to_config_inner(
             "hesai" => LidarVendor::Hesai,
             "blickfeld" => LidarVendor::Blickfeld,
             "sickmultiscan" => LidarVendor::SickMultiscan,
+            "notimestamp" | "no_timestamp" | "genericnotimestamp" | "generic_no_timestamp" => {
+                LidarVendor::NoTimestamp
+            }
             _ => return Err(anyhow!("Unknown Lidar vendor.")),
         })
     }

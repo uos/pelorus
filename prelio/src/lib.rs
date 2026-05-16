@@ -15,10 +15,10 @@ use pelorus_core::log_debouncer::{set_default_debounce_secs, should_log_once_def
 use pelorus_core::{
     ImuCalibrationParameters, ImuMsg, ImuPosePrediction, ImuPredictor, ImuPredictorUndistort,
     LidarVendor, LifisParameters, LivoxMid360Point, LivoxMid360PointNoIntensity, LivoxPoint,
-    LivoxPointNoIntensity, MadgwickSetting, OdomMsg, OusterPoint, OusterPointNoIntensity,
-    PointXYZIT, PointXYZITimestamp, PrelioProcessedCloud, RobosensePoint,
-    RobosensePointNoIntensity, Twist, VelodynePoint, VelodynePointNoIntensity, time_msg_from_secs,
-    timing::RuntimeEvaluator,
+    LivoxPointNoIntensity, MadgwickSetting, OdomMsg, OusterPoint, OusterPointNoIntensity, PointXYZ,
+    PointXYZI, PointXYZIT, PointXYZITimestamp, PointXYZIntensity, PrelioProcessedCloud,
+    RobosensePoint, RobosensePointNoIntensity, Twist, VelodynePoint, VelodynePointNoIntensity,
+    time_msg_from_secs, timing::RuntimeEvaluator,
 };
 
 #[cfg(any(feature = "cuda", feature = "metal", feature = "vulkan"))]
@@ -334,6 +334,117 @@ impl<T> LocatedBufferView<T> {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ros_pointcloud2::ros::{HeaderMsg, PointFieldMsg, TimeMsg, make_field_name};
+    use ros_pointcloud2::{Denseness, Endian, FieldDatatype, PointCloud2MsgBuilder};
+
+    fn field(name: &'static str, offset: u32) -> PointFieldMsg {
+        PointFieldMsg {
+            name: make_field_name(name),
+            offset,
+            datatype: FieldDatatype::F32.into(),
+            count: 1,
+        }
+    }
+
+    fn no_timestamp_params() -> LifisParameters {
+        let mut params = LifisParameters::default();
+        params.lidar_vendor = LidarVendor::NoTimestamp;
+        params.downsample.voxel_size = 0.01;
+        params.downsample.point_skip = 1;
+        params.downsample.backend = pelorus_core::PreprocessingBackend::Cpu;
+        params.passthrough_filter.min_dist = 0.0;
+        params.passthrough_filter.max_dist = 100.0;
+        params.passthrough_filter.min_intensity = 0.0;
+        params.passthrough_filter.max_intensity = 255.0;
+        params.passthrough_filter.min = Vector3::new(-100.0, -100.0, -100.0);
+        params.passthrough_filter.max = Vector3::new(100.0, 100.0, 100.0);
+        params.passthrough_filter.filter_frame_transform = Isometry3::identity();
+        params
+    }
+
+    fn cloud(points: &[(f32, f32, f32, Option<f32>)]) -> PointCloud2Msg {
+        let has_intensity = points.iter().any(|p| p.3.is_some());
+        let point_step = if has_intensity { 16 } else { 12 };
+        let mut data = Vec::with_capacity(points.len() * point_step);
+        for (x, y, z, intensity) in points {
+            data.extend_from_slice(&x.to_le_bytes());
+            data.extend_from_slice(&y.to_le_bytes());
+            data.extend_from_slice(&z.to_le_bytes());
+            if has_intensity {
+                data.extend_from_slice(&intensity.unwrap_or(1.0).to_le_bytes());
+            }
+        }
+
+        let mut fields = vec![field("x", 0), field("y", 4), field("z", 8)];
+        if has_intensity {
+            fields.push(field("intensity", 12));
+        }
+
+        PointCloud2MsgBuilder::new()
+            .with_header(HeaderMsg {
+                seq: 0,
+                stamp: TimeMsg {
+                    sec: 123,
+                    nanosec: 456,
+                },
+                frame_id: "lidar".to_string(),
+            })
+            .with_width(points.len() as u32)
+            .with_fields(fields)
+            .with_endian(Endian::Little)
+            .with_point_step(point_step as u32)
+            .with_row_step((points.len() * point_step) as u32)
+            .with_data(data)
+            .with_dense(Denseness::Dense)
+            .build()
+            .unwrap()
+    }
+
+    #[test]
+    fn timestamp_less_xyzi_cloud_uses_zero_scan_bounds() {
+        let params = no_timestamp_params();
+        let mut eval = RuntimeEvaluator::new();
+        let mut buffers = DownsampleBuffers::default();
+        let cloud = cloud(&[(1.0, 0.0, 0.0, Some(42.0)), (2.0, 0.0, 0.0, Some(84.0))]);
+
+        let (_, _, begin, end, _) = filter_downsample_without_timestamps::<4, PointXYZI>(
+            &cloud,
+            &params,
+            &mut eval,
+            &mut buffers,
+        )
+        .unwrap()
+        .unwrap();
+
+        assert_eq!(begin, 0.0);
+        assert_eq!(end, 0.0);
+    }
+
+    #[test]
+    fn timestamp_less_xyz_cloud_falls_back_without_intensity() {
+        let params = no_timestamp_params();
+        let mut eval = RuntimeEvaluator::new();
+        let mut buffers = DownsampleBuffers::default();
+        let cloud = cloud(&[(1.0, 0.0, 0.0, None), (2.0, 0.0, 0.0, None)]);
+
+        let (points, _, begin, end, _) = filter_downsample_without_timestamps_with_fallback::<
+            4,
+            3,
+            PointXYZI,
+            PointXYZ,
+        >(cloud, &params, &mut eval, &mut buffers)
+        .unwrap()
+        .unwrap();
+
+        assert_eq!(begin, 0.0);
+        assert_eq!(end, 0.0);
+        assert!(points.iter().all(|p| p.timestamp == 0.0));
+    }
+}
+
 fn hash(point: &Point3<f32>, voxel_size: f32) -> i32 {
     const PRIME_1: i32 = 73_856_093;
     const PRIME_2: i32 = 471_943;
@@ -514,6 +625,11 @@ fn internal_point_timestamp(
 }
 
 #[inline]
+fn has_point_timestamps(lidar_vendor: LidarVendor) -> bool {
+    !matches!(lidar_vendor, LidarVendor::NoTimestamp)
+}
+
+#[inline]
 fn passes_passthrough_filter(point: &PointXYZIT, lifis_params: &LifisParameters) -> bool {
     if !(point.x.is_finite() && point.y.is_finite() && point.z.is_finite()) {
         return false;
@@ -636,6 +752,7 @@ fn cpu_key_downsample(
 fn cpu_reduce_downsample(
     keyed_points: &mut Vec<KeyedPoint>,
     downsampled: &mut Vec<PointXYZIT>,
+    sort_by_timestamp: bool,
     eval: &mut RuntimeEvaluator,
 ) -> Result<()> {
     eval.start("filter_downsample/keyed_sort")?;
@@ -650,9 +767,11 @@ fn cpu_reduce_downsample(
     );
     eval.stop("filter_downsample/medoid_reduce")?;
 
-    eval.start("filter_downsample/timestamp_sort")?;
-    sort_unstable_by(downsampled, compare_point_timestamp);
-    eval.stop("filter_downsample/timestamp_sort")?;
+    if sort_by_timestamp {
+        eval.start("filter_downsample/timestamp_sort")?;
+        sort_unstable_by(downsampled, compare_point_timestamp);
+        eval.stop("filter_downsample/timestamp_sort")?;
+    }
 
     Ok(())
 }
@@ -664,10 +783,11 @@ fn cpu_downsample(
     voxel_size: f32,
     keyed_points: &mut Vec<KeyedPoint>,
     downsampled: &mut Vec<PointXYZIT>,
+    sort_by_timestamp: bool,
     eval: &mut RuntimeEvaluator,
 ) -> Result<()> {
     cpu_key_downsample(filtered_cloud, point_skip, voxel_size, keyed_points, eval)?;
-    cpu_reduce_downsample(keyed_points, downsampled, eval)
+    cpu_reduce_downsample(keyed_points, downsampled, sort_by_timestamp, eval)
 }
 
 #[inline]
@@ -685,7 +805,12 @@ fn sort_bypass_cloud(
 fn scan_time_bounds(
     downsampled: &[PointXYZIT],
     raw_out: Option<&(Vec<PointXYZIT>, PointCloud2Msg)>,
+    sort_by_timestamp: bool,
 ) -> Option<(f32, f32)> {
+    if !sort_by_timestamp && !downsampled.is_empty() {
+        return Some((0.0, 0.0));
+    }
+
     match (downsampled.first(), downsampled.last()) {
         (Some(first), Some(last)) if last.timestamp > 0.0 => {
             Some((first.timestamp, last.timestamp))
@@ -896,18 +1021,70 @@ fn filter_downsample<const N: usize, P: PointXYZITimestamp<N>>(
     eval: &mut RuntimeEvaluator,
     buffers: &mut DownsampleBuffers,
 ) -> Result<Option<DownsampleCloudMeta>> {
-    let bypass_output_downsample = lifis_params.downsample.bypass_output_downsample;
-    let header = cloud.header.clone();
-    let voxel_size = lifis_params.downsample.voxel_size;
-    let scan_reference_time = lidar_scan_reference_time(lifis_params.lidar_vendor, &header);
-    let map_to_non_trait = |p: P| {
+    let scan_reference_time = lidar_scan_reference_time(lifis_params.lidar_vendor, &cloud.header);
+    filter_downsample_inner::<N, P>(cloud, lifis_params, eval, buffers, true, |p| {
         internal_point_timestamp(
             p.timestamp(),
             lifis_params.lidar_vendor,
             scan_reference_time,
         )
         .map(|timestamp| PointXYZIT::from_p(p.xyz(), p.intensity(), timestamp as f32))
-    };
+    })
+}
+
+fn filter_downsample_without_timestamps<const N: usize, P: PointXYZIntensity<N>>(
+    cloud: &PointCloud2Msg,
+    lifis_params: &LifisParameters,
+    eval: &mut RuntimeEvaluator,
+    buffers: &mut DownsampleBuffers,
+) -> Result<Option<DownsampleCloudMeta>> {
+    filter_downsample_inner::<N, P>(cloud, lifis_params, eval, buffers, false, |p| {
+        Some(PointXYZIT::from_p(p.xyz(), p.intensity(), 0.0))
+    })
+}
+
+fn filter_downsample_without_timestamps_with_fallback<
+    const N: usize,
+    const N_FALLBACK: usize,
+    P: PointXYZIntensity<N>,
+    PFallback: PointXYZIntensity<N_FALLBACK>,
+>(
+    cloud: PointCloud2Msg,
+    lifis_params: &LifisParameters,
+    eval: &mut RuntimeEvaluator,
+    buffers: &mut DownsampleBuffers,
+) -> Result<Option<DownsampleCloudMeta>> {
+    let result = filter_downsample_without_timestamps::<N, P>(&cloud, lifis_params, eval, buffers);
+
+    match result {
+        Ok(data) => Ok(data),
+        Err(e) => {
+            let error_str = format!("{:?}", e);
+            if error_str.contains("Some fields") && error_str.contains("intensity") {
+                filter_downsample_without_timestamps::<N_FALLBACK, PFallback>(
+                    &cloud,
+                    lifis_params,
+                    eval,
+                    buffers,
+                )
+            } else {
+                Err(e)
+            }
+        }
+    }
+}
+
+fn filter_downsample_inner<const N: usize, P: PointConvertible<N> + Send + Sync>(
+    cloud: &PointCloud2Msg,
+    lifis_params: &LifisParameters,
+    eval: &mut RuntimeEvaluator,
+    buffers: &mut DownsampleBuffers,
+    sort_by_timestamp: bool,
+    map_to_non_trait: impl Fn(P) -> Option<PointXYZIT> + Send + Sync,
+) -> Result<Option<DownsampleCloudMeta>> {
+    let bypass_output_downsample = lifis_params.downsample.bypass_output_downsample;
+    let header = cloud.header.clone();
+    let voxel_size = lifis_params.downsample.voxel_size;
     let filter_map_point = |point| filter_point(point, lifis_params);
 
     buffers.prepare(cloud.dimensions.len());
@@ -974,7 +1151,9 @@ fn filter_downsample<const N: usize, P: PointXYZITimestamp<N>>(
             downsampled = gpu_downsampled;
             add_gpu_downsample_timings(eval, gpu_timings);
             if bypass_output_downsample {
-                sort_bypass_cloud(&mut buffers.filtered_cloud, eval)?;
+                if sort_by_timestamp {
+                    sort_bypass_cloud(&mut buffers.filtered_cloud, eval)?;
+                }
                 raw_out = Some((std::mem::take(&mut buffers.filtered_cloud), cloud.clone()));
             }
         } else if bypass_output_downsample {
@@ -995,10 +1174,17 @@ fn filter_downsample<const N: usize, P: PointXYZITimestamp<N>>(
                         cpu_reduce_downsample(
                             &mut buffers.keyed_points,
                             &mut downsampled,
+                            sort_by_timestamp,
                             &mut downsample_eval,
                         )
                     },
-                    || sort_bypass_cloud(&mut buffers.filtered_cloud, &mut bypass_eval),
+                    || {
+                        if sort_by_timestamp {
+                            sort_bypass_cloud(&mut buffers.filtered_cloud, &mut bypass_eval)
+                        } else {
+                            Ok(())
+                        }
+                    },
                 );
                 downsample_result?;
                 bypass_result?;
@@ -1008,8 +1194,15 @@ fn filter_downsample<const N: usize, P: PointXYZITimestamp<N>>(
 
             #[cfg(not(feature = "rayon"))]
             {
-                cpu_reduce_downsample(&mut buffers.keyed_points, &mut downsampled, eval)?;
-                sort_bypass_cloud(&mut buffers.filtered_cloud, eval)?;
+                cpu_reduce_downsample(
+                    &mut buffers.keyed_points,
+                    &mut downsampled,
+                    sort_by_timestamp,
+                    eval,
+                )?;
+                if sort_by_timestamp {
+                    sort_bypass_cloud(&mut buffers.filtered_cloud, eval)?;
+                }
             }
 
             raw_out = Some((std::mem::take(&mut buffers.filtered_cloud), cloud.clone()));
@@ -1020,11 +1213,13 @@ fn filter_downsample<const N: usize, P: PointXYZITimestamp<N>>(
                 voxel_size,
                 &mut buffers.keyed_points,
                 &mut downsampled,
+                sort_by_timestamp,
                 eval,
             )?;
         }
     }
-    let Some((first, last)) = scan_time_bounds(&downsampled, raw_out.as_ref()) else {
+    let Some((first, last)) = scan_time_bounds(&downsampled, raw_out.as_ref(), sort_by_timestamp)
+    else {
         return Ok(None);
     };
 
@@ -1212,14 +1407,14 @@ pub struct Prelio {
 // }
 
 impl Prelio {
-    pub fn create<const N: usize, P: PointXYZITimestamp<N>>(
+    pub fn create(
         gravity: f64,
         madgwick_filter: MadgwickSetting,
         imu_intrinsic_calibration_params: &ImuCalibrationParameters,
         params: &LifisParameters,
         imu_pose_prediction_undistort: Option<Box<ImuPredictorUndistort>>,
         imu_pose_prediction_init_guess: Option<Box<ImuPredictor>>,
-        lidar_vendor: Option<LidarVendor>,
+        lidar_vendor: LidarVendor,
         ready_for_next: Option<std::sync::mpsc::Receiver<()>>,
     ) -> anyhow::Result<Self> {
         let imu_intrinsic_calibration = match imu_intrinsic_calibration_params
@@ -1321,7 +1516,7 @@ impl Prelio {
                 eval.start("filter_downsample").unwrap();
 
                 let result = match vendor {
-                    Some(LidarVendor::Ouster) => {
+                    LidarVendor::Ouster => {
                         filter_downsample_with_fallback::<5, 4, OusterPoint, OusterPointNoIntensity>(
                             labeled.cloud,
                             &params_clone,
@@ -1329,7 +1524,7 @@ impl Prelio {
                             &mut downsample_buffers,
                         )
                     }
-                    Some(LidarVendor::Velodyne) => filter_downsample_with_fallback::<
+                    LidarVendor::Velodyne => filter_downsample_with_fallback::<
                         5,
                         4,
                         VelodynePoint,
@@ -1340,7 +1535,7 @@ impl Prelio {
                         &mut eval,
                         &mut downsample_buffers,
                     ),
-                    Some(LidarVendor::Livox) => {
+                    LidarVendor::Livox => {
                         filter_downsample_with_fallback::<5, 4, LivoxPoint, LivoxPointNoIntensity>(
                             labeled.cloud,
                             &params_clone,
@@ -1348,7 +1543,7 @@ impl Prelio {
                             &mut downsample_buffers,
                         )
                     }
-                    Some(LidarVendor::LivoxMid360) => filter_downsample_with_fallback::<
+                    LidarVendor::LivoxMid360 => filter_downsample_with_fallback::<
                         5,
                         4,
                         LivoxMid360Point,
@@ -1359,7 +1554,7 @@ impl Prelio {
                         &mut eval,
                         &mut downsample_buffers,
                     ),
-                    Some(LidarVendor::Hesai) => {
+                    LidarVendor::Hesai => {
                         filter_downsample_with_fallback::<5, 4, HesaiPoint, HesaiPointNoIntensity>(
                             labeled.cloud,
                             &params_clone,
@@ -1367,7 +1562,7 @@ impl Prelio {
                             &mut downsample_buffers,
                         )
                     }
-                    Some(LidarVendor::Blickfeld) => filter_downsample_with_fallback::<
+                    LidarVendor::Blickfeld => filter_downsample_with_fallback::<
                         5,
                         4,
                         BlickfeldPoint,
@@ -1378,7 +1573,7 @@ impl Prelio {
                         &mut eval,
                         &mut downsample_buffers,
                     ),
-                    Some(LidarVendor::SickMultiscan) => filter_downsample_with_fallback::<
+                    LidarVendor::SickMultiscan => filter_downsample_with_fallback::<
                         5,
                         4,
                         SickMultiScanPoint,
@@ -1389,7 +1584,7 @@ impl Prelio {
                         &mut eval,
                         &mut downsample_buffers,
                     ),
-                    Some(LidarVendor::Robosense) => filter_downsample_with_fallback::<
+                    LidarVendor::Robosense => filter_downsample_with_fallback::<
                         5,
                         4,
                         RobosensePoint,
@@ -1400,10 +1595,14 @@ impl Prelio {
                         &mut eval,
                         &mut downsample_buffers,
                     ),
-                    None => {
-                        // Fallback to generic processing with the compile-time type parameters
-                        filter_downsample::<N, P>(
-                            &labeled.cloud,
+                    LidarVendor::NoTimestamp => {
+                        filter_downsample_without_timestamps_with_fallback::<
+                            4,
+                            3,
+                            PointXYZI,
+                            PointXYZ,
+                        >(
+                            labeled.cloud,
                             &params_clone,
                             &mut eval,
                             &mut downsample_buffers,
@@ -1659,7 +1858,7 @@ impl Prelio {
         mut imu_process: ImuProcess,
         imu_pose_prediction_undistort: Option<Box<ImuPredictorUndistort>>,
         imu_pose_prediction_init_guess: Option<Box<ImuPredictor>>,
-        lidar_vendor: Option<LidarVendor>,
+        lidar_vendor: LidarVendor,
         lidar_as_sync: bool,
         ready_for_next: Option<std::sync::mpsc::Receiver<()>>,
     ) {
@@ -1679,6 +1878,9 @@ impl Prelio {
 
             if cloud_count < initial_scan_accumulate {
                 cloud_count += 1;
+                if !has_point_timestamps(lidar_vendor) {
+                    *prev_lidar_end_time = lidar_time;
+                }
                 let res = PrelioProcessedCloud {
                     scan_id: scan_id,
                     cloud: cloud_downsampled,
@@ -1704,14 +1906,18 @@ impl Prelio {
 
             // Handle relative vs absolute timestamps
             let (lidar_begin_time, imu_span_end_time) = match lidar_vendor {
-                Some(LidarVendor::Robosense) => (lidar_begin_time, lidar_end_time),
-                Some(LidarVendor::LivoxMid360) => (lidar_time - lidar_end_time, lidar_time),
-                None | Some(_) => (lidar_begin_time + lidar_time, lidar_end_time + lidar_time),
+                LidarVendor::Robosense => (lidar_begin_time, lidar_end_time),
+                LidarVendor::LivoxMid360 => (lidar_time - lidar_end_time, lidar_time),
+                LidarVendor::NoTimestamp => (lidar_time, lidar_time),
+                _ => (lidar_begin_time + lidar_time, lidar_end_time + lidar_time),
             };
 
             // Use 0 as start if there was no last lidar frame which we can use as start for our time range
-            let imu_span_start_time = if *prev_lidar_end_time > 0.0 {
+            let no_previous_lidar_end_time = *prev_lidar_end_time <= 0.0;
+            let mut imu_span_start_time = if *prev_lidar_end_time > 0.0 {
                 *prev_lidar_end_time
+            } else if !has_point_timestamps(lidar_vendor) {
+                0.0
             } else {
                 lidar_begin_time
             };
@@ -1826,6 +2032,11 @@ impl Prelio {
                     .partial_cmp(&timestamp_to_secs(&b.stamp))
                     .unwrap()
             });
+            if !has_point_timestamps(lidar_vendor) && no_previous_lidar_end_time {
+                if let Some(first_imu) = imu_data.first() {
+                    imu_span_start_time = timestamp_to_secs(&first_imu.stamp);
+                }
+            }
             odom_data.sort_by(|a, b| {
                 timestamp_to_secs(&a.stamp)
                     .partial_cmp(&timestamp_to_secs(&b.stamp))
@@ -1845,7 +2056,11 @@ impl Prelio {
                     imu_frame: "".to_string(),
                     header: lidar_header,
                     end_of_frame_guess: Isometry3::identity(),
-                    end_of_frame_time: secs_to_timestamp(lidar_end_time),
+                    end_of_frame_time: if has_point_timestamps(lidar_vendor) {
+                        secs_to_timestamp(lidar_end_time)
+                    } else {
+                        secs_to_timestamp(lidar_begin_time)
+                    },
                     pose_covariance: [0.0; 36],
                     twist_covariance: [0.0; 36],
                     end_of_frame_twist: Twist {
@@ -1858,12 +2073,17 @@ impl Prelio {
                 };
                 synced_sender.send(res).unwrap();
             } else {
+                let meas_lidar_end_time = if has_point_timestamps(lidar_vendor) {
+                    lidar_end_time
+                } else {
+                    imu_span_end_time
+                };
                 let meas = MeasureGroup {
                     cloud: cloud_downsampled,
                     cloud_passthrough: cloud_output,
                     last_lidar_end_stamp: imu_span_start_time,
                     lidar_start_stamp: lidar_begin_time,
-                    lidar_end_stamp: lidar_end_time,
+                    lidar_end_stamp: meas_lidar_end_time,
                     imu_buffer: imu_data.clone(),
                     odom_buffer: odom_data.clone(),
                 };
@@ -1936,7 +2156,11 @@ impl Prelio {
                         imu_frame,
                         header: lidar_header,
                         end_of_frame_guess: imu_int.pose,
-                        end_of_frame_time: imu_data.last().unwrap().stamp,
+                        end_of_frame_time: if has_point_timestamps(lidar_vendor) {
+                            imu_data.last().unwrap().stamp
+                        } else {
+                            secs_to_timestamp(lidar_begin_time)
+                        },
                         pose_covariance: imu_cloud.integrated_covariance,
                         twist_covariance: imu_cloud.last_covariance,
                         end_of_frame_twist: Twist {
