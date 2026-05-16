@@ -50,7 +50,11 @@ int main(int argc, char **argv)
     const char *dataset_path = argc >= 2 ? argv[1] : "./synthetic_dataset.bin";
     printf("Version: %s\n\n", pelorus_version());
 
-    PelorusHandle *pelorus = pelorus_create("./no-accum.rl");
+    pelorus_create_options options = {
+        .config_path = "./no-accum.rl",
+        .device_specific_pointcloud2 = 0,
+    };
+    PelorusHandle *pelorus = pelorus_create_with_options(&options);
     if (!pelorus) {
         fprintf(stderr, "Failed to create Pelorus handle\n");
         return 1;

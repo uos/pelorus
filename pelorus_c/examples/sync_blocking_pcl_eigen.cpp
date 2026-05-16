@@ -82,7 +82,11 @@ int main(int argc, char **argv)
     const char *dataset_path = argc >= 2 ? argv[1] : "./synthetic_dataset.bin";
 
     try {
-        pelorus::Pelorus lio("./no-accum.rl");
+        pelorus_create_options options = {
+            .config_path = "./no-accum.rl",
+            .device_specific_pointcloud2 = 0,
+        };
+        pelorus::Pelorus lio(&options);
         FILE *f = fopen(dataset_path, "rb");
         if (!f) {
             perror(dataset_path);
