@@ -74,6 +74,14 @@ jobs:
             arch: arm64
             repo: resolute
             runner: ubuntu-latest-arm
+          - image: docker.io/stelzo/ubuntu-dev:noble
+            arch: amd64
+            repo: noble
+            runner: ubuntu-latest
+          - image: docker.io/stelzo/ubuntu-dev:noble
+            arch: arm64
+            repo: noble
+            runner: ubuntu-latest-arm
           - image: docker.io/stelzo/ubuntu-dev:jammy
             arch: amd64
             repo: jammy
@@ -701,6 +709,7 @@ jobs:
       - uses: actions/checkout@v4
       - name: Build wheels
         run: |
+          set -euo pipefail
           ulimit -n 65536
           rustup toolchain uninstall stable
           rustup toolchain install stable
@@ -710,21 +719,12 @@ jobs:
           export CFLAGS_aarch64_unknown_linux_gnu="-D__ARM_ARCH=8"
 
           if [[ "$TARGET" == *apple-darwin* ]]; then
-            export SDKROOT=/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk
-            export RUSTFLAGS="-C link-arg=-F${SDKROOT}/System/Library/Frameworks -C link-arg=-L${SDKROOT}/usr/lib -C link-arg=-isysroot -C link-arg=${SDKROOT}"
-            METAL_FEATURE=",metal"
+            maturin build --manifest-path pelorus_cli/Cargo.toml --release --target-dir wheels --features rerun,metal
+            maturin build --manifest-path pelorus_py/Cargo.toml --release --target-dir wheels --features metal
           else
-            METAL_FEATURE=""
+            maturin build --zig --manifest-path pelorus_cli/Cargo.toml --release --target-dir wheels --features rerun --target "$TARGET"
+            maturin build --zig --manifest-path pelorus_py/Cargo.toml --release --target-dir wheels --target "$TARGET"
           fi
-
-          # binary
-          MATURIN_ARGS="build --zig --manifest-path pelorus_cli/Cargo.toml --release --target-dir wheels --features rerun${METAL_FEATURE}"
-          maturin $MATURIN_ARGS --target "$TARGET"
-
-          # bindings
-          MATURIN_ARGS="build --zig --manifest-path pelorus_py/Cargo.toml --release --target-dir wheels"
-          [ -n "$METAL_FEATURE" ] && MATURIN_ARGS="${MATURIN_ARGS} --features metal"
-          maturin $MATURIN_ARGS --target "$TARGET"
 
       - name: Upload wheels
         uses: actions/upload-artifact@v3
