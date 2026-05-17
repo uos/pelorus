@@ -919,11 +919,11 @@ jobs:
         run: |
           set -euo pipefail
 
-          TAG="${GITHUB_REF_NAME}"
+          TAG="${FORGEJO_REF_NAME}"
           VERSION=$(toml get --raw Cargo.toml workspace.package.version)
 
-          tea login add --name codeberg --url ${{ github.server_url }} --token "${GITHUB_TOKEN}"
-          tea release delete --repo ${{ github.repository }} --confirm ${{ github.ref_name }} || true
+          tea login add --name codeberg --url "${FORGEJO_SERVER_URL}" --token "${GITHUB_TOKEN}"
+          tea release delete --repo "${FORGEJO_REPOSITORY}" --confirm "${FORGEJO_REF_NAME}" || true
 
           # Build --asset flags for every tarball
           ASSET_FLAGS=""
@@ -938,7 +938,7 @@ jobs:
           # tea will fail if the release already exists, so handle that
           if ! tea release create \
             --login codeberg \
-            --repo "${GITHUB_REPOSITORY}" \
+            --repo "${FORGEJO_REPOSITORY}" \
             --tag "${TAG}" \
             --title "${TAG}" \
             --note "Release ${TAG}
@@ -958,8 +958,8 @@ jobs:
               [ -f "$f" ] || continue
               echo "  uploading $(basename "$f")..."
               tea release create \
-                --login forgejo \
-                --repo "${GITHUB_REPOSITORY}" \
+                --login codeberg \
+                --repo "${FORGEJO_REPOSITORY}" \
                 --tag "${TAG}" \
                 --title "${TAG}" \
                 --asset "$f" 2>/dev/null || true
@@ -1166,9 +1166,12 @@ jobs:
 
           chown -R build:build . /home/build/.ssh
 
-          sudo -u build bash << 'EOF'
+          sudo -u build env \
+            GIT_SSH_COMMAND='ssh -i /home/build/.ssh/aur_key -o UserKnownHostsFile=/home/build/.ssh/known_hosts -o StrictHostKeyChecking=yes' \
+            FORGEJO_REPOSITORY="$FORGEJO_REPOSITORY" \
+            FORGEJO_SHA="$FORGEJO_SHA" \
+            bash << 'EOF'
             set -euo pipefail
-            export GIT_SSH_COMMAND='ssh -i /home/build/.ssh/aur_key -o UserKnownHostsFile=/home/build/.ssh/known_hosts -o StrictHostKeyChecking=yes'
 
             # Set git identity
             git config --global user.email "$(git log -1 --pretty=format:'%ae')"
@@ -1183,7 +1186,7 @@ jobs:
             makepkg --printsrcinfo > .SRCINFO
             
             git add -f .SRCINFO PKGBUILD
-            git commit -m "Update package from $GITHUB_REPOSITORY@$GITHUB_SHA"
+            git commit -m "Update package from $FORGEJO_REPOSITORY@$FORGEJO_SHA"
             git push origin
           EOF
           shred -u /home/build/.ssh/aur_key
