@@ -21,3 +21,4 @@ docs/site/**
 .crush
 .codex
 pelorus-*.rl
+*.mcap

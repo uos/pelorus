@@ -246,9 +246,6 @@ output {
                    [0.0, 0.0, 1.0] ]
     }
   }
-  
-  # When "mapping" flag is enabled, this defines the resolution of the global map.
-  mapping.resolution = 20cm
 
   rerun {
     # Logs the registered clouds static in world coordinates so they do not vanish.

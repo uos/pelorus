@@ -5234,6 +5234,7 @@ name = "pelorus_cli"
 version = "0.0.5"
 dependencies = [
  "anyhow",
+ "cdr",
  "clap",
  "clap_complete",
  "colorous",
@@ -5244,6 +5245,7 @@ dependencies = [
  "libc",
  "log",
  "marina",
+ "mcap",
  "mimalloc",
  "mt_pubsub",
  "mt_rat",
@@ -5268,6 +5270,7 @@ dependencies = [
  "ros2-interfaces-jazzy-serde",
  "ros_pointcloud2",
  "rustc-hash",
+ "serde",
  "tokio",
 ]
 

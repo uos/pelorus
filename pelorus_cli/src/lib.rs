@@ -1,4 +1,4 @@
 extern crate alloc;
 
-pub mod mapping;
+pub mod mcap_output;
 pub mod stats_tui;

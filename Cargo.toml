@@ -58,6 +58,8 @@ mt_pubsub = "0.7.0"
 mt_rat = "0.7.0"
 imu-calib = "0.1" # TODO use noise calib
 marina = "0.2.7"
+mcap = "0.24.0"
+cdr = "0.2.4"
 ros2-interfaces-jazzy-serde = { version = "0.0.4", features = [
   "std_msgs",
   "geometry_msgs",

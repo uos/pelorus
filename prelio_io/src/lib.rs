@@ -468,6 +468,7 @@ impl PrelioNode {
         imu_pose_prediction_init_guess: Option<Box<ImuPredictor>>,
         #[cfg(feature = "rerun")] rec: Option<Arc<rerun::RecordingStream>>,
         ready_for_next: Option<std::sync::mpsc::Receiver<()>>,
+        filtered_imu_sender: Option<std::sync::mpsc::Sender<ImuMsg>>,
     ) -> anyhow::Result<(Self, std::sync::mpsc::Receiver<Tick>)> {
         #[cfg(feature = "ros2-client")]
         let tf_listener = Arc::new(tf::TfListener::new(node));
@@ -592,6 +593,8 @@ impl PrelioNode {
         let imu_tf_frame_lidar_inner = Arc::clone(&imu_tf_frame);
         // #[cfg(all(not(feature = "no-imu-sync"), feature = "mt_pubsub"))]
         // let lidar_imu_init_buffer = imu_init_buffer.clone();
+        #[cfg(feature = "ros2-client")]
+        let filtered_imu_sender_ros2 = filtered_imu_sender.clone();
         #[cfg(feature = "ros2-client")]
         std::thread::spawn(move || {
             loop {
@@ -881,8 +884,11 @@ impl PrelioNode {
                         if let Some(trigger) = minot_bootstrap_trigger {
                             publish_minot_trigger(synchronous_mode, trigger);
                         }
-                        match (filtered, imu_filtered_publisher.as_ref()) {
-                            (Some(filtered), Some(imu_filtered_publisher)) => {
+                        if let Some(filtered) = filtered {
+                            if let Some(sender) = filtered_imu_sender_ros2.as_ref() {
+                                let _ = sender.send(filtered.clone());
+                            }
+                            if let Some(imu_filtered_publisher) = imu_filtered_publisher.as_ref() {
                                 imu_filtered_publisher
                                     .clone()
                                     .lock()
@@ -890,7 +896,6 @@ impl PrelioNode {
                                     .publish(&lifis_to_imu(filtered))
                                     .expect("could not publish filtered imu");
                             }
-                            _ => {}
                         }
                     }
                     Ok(None) => {
@@ -902,6 +907,7 @@ impl PrelioNode {
 
         #[cfg(feature = "mt_pubsub")]
         {
+            let filtered_imu_sender_mt = filtered_imu_sender.clone();
             let imu_sub_rt = Arc::clone(&rt);
             let mut imu_sub = imu_sub_rt.block_on(async {
                 node.create_subscriber::<Imu>(
@@ -968,34 +974,25 @@ impl PrelioNode {
                         }
                     }
 
-                    // outputs filtered imu msg to pub again but we can not right now
-                    let _ = state.lifis.lock().unwrap().add_imu(imu_lifis);
+                    let filtered = state.lifis.lock().unwrap().add_imu(imu_lifis);
                     drop(state);
                     #[cfg(feature = "rat")]
                     if let Some(trigger) = minot_bootstrap_trigger {
                         publish_minot_trigger(synchronous_mode, trigger);
                     }
 
-                    // let filtered = {
-                    //     let state = state_clone.lock().unwrap();
-                    //     let mut lifis = state.lifis.lock().unwrap();
-                    //     lifis.add_imu(imu_to_lifis(msg))
-                    // };
-
-                    // TODO can not pub filtered because imu_init_fn escapes its lifetime
-                    // match (filtered, wants_to_pub_imu_filtered) {
-                    //     (Some(filtered), true) => {
-                    //         // node.publish(&imu_filtered_topic, &lifis_to_imu(filtered))
-                    //         //     .await
-                    //         //     .expect("could not publish filtered imu");
-                    //     }
-                    //     _ => {}
-                    // }
+                    if let (Some(filtered), Some(sender)) =
+                        (filtered, filtered_imu_sender_mt.as_ref())
+                    {
+                        let _ = sender.send(filtered);
+                    }
                 }
             });
         }
 
         // TODO inline with upper because logic is same but conditionals around block on and err handling
+        #[cfg(all(feature = "r2r", not(feature = "no-imu-sync")))]
+        let filtered_imu_sender_r2r = filtered_imu_sender.clone();
         #[cfg(all(feature = "r2r", not(feature = "no-imu-sync")))]
         std::thread::spawn(move || {
             let imu_pose_predictor_init = imu_pose_predictor_init.clone();
@@ -1054,8 +1051,11 @@ impl PrelioNode {
                 if let Some(trigger) = minot_bootstrap_trigger {
                     publish_minot_trigger(synchronous_mode, trigger);
                 }
-                match (filtered, imu_filtered_publisher.as_ref()) {
-                    (Some(filtered), Some(imu_filtered_publisher)) => {
+                if let Some(filtered) = filtered {
+                    if let Some(sender) = filtered_imu_sender_r2r.as_ref() {
+                        let _ = sender.send(filtered.clone());
+                    }
+                    if let Some(imu_filtered_publisher) = imu_filtered_publisher.as_ref() {
                         imu_filtered_publisher
                             .clone()
                             .lock()
@@ -1063,7 +1063,6 @@ impl PrelioNode {
                             .publish(&lifis_to_imu(filtered))
                             .expect("could not publish filtered imu");
                     }
-                    _ => {}
                 }
             }
         });

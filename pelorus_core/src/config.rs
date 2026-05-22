@@ -385,7 +385,6 @@ fn ast_to_config_inner(
         debug_fps,
         map_frame,
         logger_prefix,
-        mapping_resolution,
         odom_qos,
         path_qos,
         imu_odom_qos,
@@ -397,7 +396,6 @@ fn ast_to_config_inner(
         base_to_lidar,
         base_to_lidar_tf_override,
     ): (
-        _,
         _,
         _,
         _,
@@ -445,8 +443,6 @@ fn ast_to_config_inner(
 
         let map_frame = resolve_var!(output_ns, "global_frame", as String, Rhs::Val(Val::StringVal(s)) | Rhs::Path(s) => {s})?;
         let logger_prefix = resolve_var!(output_ns, "logger_prefix", as String, Rhs::Val(Val::StringVal(s)) | Rhs::Path(s) => {s})?;
-        let mapping_ns = output_ns.filter_ns(&["mapping"]);
-        let mapping_resolution = resolve_var!(mapping_ns, "resolution", as f32, Rhs::Val(Val::UnitedVal(UnitVal::LengthVal(v))) => { v.get::<meter>() as f32 })?;
         let odom_qos = resolve_var!(output_ns, "lio_odometry_msg_qos", as Qos, Rhs::Val(Val::StringVal(s)) => {reliablility_parse(&s)?})?;
         let imu_filtered_topic = resolve_var!(output_ns, "imu_ahrs_filtered_topic", as String, Rhs::Val(Val::StringVal(s)) | Rhs::Path(s) => {s})?;
         let path_qos = resolve_var!(output_ns, "lio_path_msg_qos", as Qos, Rhs::Val(Val::StringVal(s)) => {reliablility_parse(&s)?})?;
@@ -495,7 +491,6 @@ fn ast_to_config_inner(
             debug_fps,
             map_frame,
             logger_prefix,
-            mapping_resolution,
             odom_qos,
             path_qos,
             imu_odom_qos,
@@ -640,7 +635,6 @@ fn ast_to_config_inner(
         lidar_odom_cov,
         show_tui,
         debug_fps,
-        mapping_resolution,
         odom_qos,
         path_qos,
         imu_odom_qos,

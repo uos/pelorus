@@ -35,7 +35,7 @@ use prelio_io::impl_ros2_interfaces_jazzy_rkyv;
 #[cfg(feature = "ros2-client")]
 use ros2_interfaces_jazzy_serde::{
     builtin_interfaces::msg::Time,
-    geometry_msgs::msg::{PoseStamped, Quaternion, Transform, TransformStamped, Vector3},
+    geometry_msgs::msg::{Point, PoseStamped, Quaternion, Transform, TransformStamped, Vector3},
     nav_msgs::msg::{Odometry, Path},
     sensor_msgs::msg::PointCloud2,
     std_msgs::msg::Header,
@@ -107,6 +107,7 @@ use pelorus_reg::Registration;
 use prelio_io::PrelioNode;
 use std::path::PathBuf;
 
+use pelorus_cli::mcap_output::{McapTopics, OfflineMcapWriter};
 use pelorus_cli::stats_tui::{
     SharedStats, StatsTui, init_logger, set_tui_active, update_log_level,
 };
@@ -194,6 +195,26 @@ pub struct OfflineArgs {
     /// keeps the preprocessing side fed while the current scan is registering.
     #[arg(long, default_value_t = DEFAULT_OFFLINE_PREFETCH_SCANS)]
     pub prefetch_scans: usize,
+
+    /// Write Pelorus offline outputs to this MCAP bagfile.
+    #[arg(long, value_name = "PATH")]
+    pub output_mcap: Option<PathBuf>,
+
+    /// MCAP topic for undistorted PointCloud2 output.
+    #[arg(long, default_value = "/registered")]
+    pub mcap_cloud_topic: String,
+
+    /// MCAP topic for Pelorus odometry output.
+    #[arg(long, default_value = "/odom")]
+    pub mcap_odom_topic: String,
+
+    /// MCAP topic for dynamic TF output.
+    #[arg(long, default_value = "/tf")]
+    pub mcap_tf_topic: String,
+
+    /// MCAP topic for filtered IMU output. Defaults to the configured filtered IMU topic.
+    #[arg(long)]
+    pub mcap_filtered_imu_topic: Option<String>,
 }
 
 #[derive(Debug, Clone, Parser)]
@@ -272,13 +293,185 @@ pub enum GenerateKind {
     Full,
 }
 
-#[derive(Debug)]
-#[allow(dead_code)]
+#[derive(Debug, Clone)]
+struct OfflineMcapConfig {
+    path: PathBuf,
+    topics: McapTopics,
+}
+
+fn normalize_mcap_topic(topic: impl Into<String>) -> String {
+    let topic = topic.into();
+    if topic.starts_with('/') {
+        topic
+    } else {
+        format!("/{topic}")
+    }
+}
+
 #[cfg(any(feature = "mt_pubsub", feature = "ros2-client", feature = "r2r"))]
-struct RegisteredCloud {
-    cloud: ros_pointcloud2::PointCloud2Msg,
-    registration: nalgebra::Isometry3<f32>,
-    timestamp: f64,
+fn copy_array<const N: usize>(values: &[f64]) -> [f64; N] {
+    let mut out = [0.0; N];
+    out.copy_from_slice(&values[..N]);
+    out
+}
+
+#[cfg(any(feature = "mt_pubsub", feature = "ros2-client", feature = "r2r"))]
+fn serde_time(time: &Time) -> ros2_interfaces_jazzy_serde::builtin_interfaces::msg::Time {
+    ros2_interfaces_jazzy_serde::builtin_interfaces::msg::Time {
+        sec: time.sec,
+        nanosec: time.nanosec,
+    }
+}
+
+#[cfg(any(feature = "mt_pubsub", feature = "ros2-client", feature = "r2r"))]
+fn serde_header(header: &Header) -> ros2_interfaces_jazzy_serde::std_msgs::msg::Header {
+    ros2_interfaces_jazzy_serde::std_msgs::msg::Header {
+        stamp: serde_time(&header.stamp),
+        frame_id: header.frame_id.clone(),
+    }
+}
+
+#[cfg(any(feature = "mt_pubsub", feature = "ros2-client", feature = "r2r"))]
+fn serde_vector3(vector: &Vector3) -> ros2_interfaces_jazzy_serde::geometry_msgs::msg::Vector3 {
+    ros2_interfaces_jazzy_serde::geometry_msgs::msg::Vector3 {
+        x: vector.x,
+        y: vector.y,
+        z: vector.z,
+    }
+}
+
+#[cfg(any(feature = "mt_pubsub", feature = "ros2-client", feature = "r2r"))]
+fn serde_quaternion(
+    quat: &Quaternion,
+) -> ros2_interfaces_jazzy_serde::geometry_msgs::msg::Quaternion {
+    ros2_interfaces_jazzy_serde::geometry_msgs::msg::Quaternion {
+        x: quat.x,
+        y: quat.y,
+        z: quat.z,
+        w: quat.w,
+    }
+}
+
+#[cfg(any(feature = "mt_pubsub", feature = "ros2-client", feature = "r2r"))]
+fn serde_point(point: &Point) -> ros2_interfaces_jazzy_serde::geometry_msgs::msg::Point {
+    ros2_interfaces_jazzy_serde::geometry_msgs::msg::Point {
+        x: point.x,
+        y: point.y,
+        z: point.z,
+    }
+}
+
+#[cfg(any(feature = "mt_pubsub", feature = "ros2-client", feature = "r2r"))]
+fn serde_cloud(cloud: &PointCloud2) -> ros2_interfaces_jazzy_serde::sensor_msgs::msg::PointCloud2 {
+    ros2_interfaces_jazzy_serde::sensor_msgs::msg::PointCloud2 {
+        header: serde_header(&cloud.header),
+        height: cloud.height,
+        width: cloud.width,
+        fields: cloud
+            .fields
+            .iter()
+            .map(
+                |field| ros2_interfaces_jazzy_serde::sensor_msgs::msg::PointField {
+                    name: field.name.clone(),
+                    offset: field.offset,
+                    datatype: field.datatype,
+                    count: field.count,
+                },
+            )
+            .collect(),
+        is_bigendian: cloud.is_bigendian,
+        point_step: cloud.point_step,
+        row_step: cloud.row_step,
+        data: cloud.data.clone(),
+        is_dense: cloud.is_dense,
+    }
+}
+
+#[cfg(any(feature = "mt_pubsub", feature = "ros2-client", feature = "r2r"))]
+fn serde_odom(odom: &Odometry) -> ros2_interfaces_jazzy_serde::nav_msgs::msg::Odometry {
+    ros2_interfaces_jazzy_serde::nav_msgs::msg::Odometry {
+        header: serde_header(&odom.header),
+        child_frame_id: odom.child_frame_id.clone(),
+        pose: ros2_interfaces_jazzy_serde::geometry_msgs::msg::PoseWithCovariance {
+            pose: ros2_interfaces_jazzy_serde::geometry_msgs::msg::Pose {
+                position: serde_point(&odom.pose.pose.position),
+                orientation: serde_quaternion(&odom.pose.pose.orientation),
+            },
+            covariance: copy_array::<36>(&odom.pose.covariance[..]),
+        },
+        twist: ros2_interfaces_jazzy_serde::geometry_msgs::msg::TwistWithCovariance {
+            twist: ros2_interfaces_jazzy_serde::geometry_msgs::msg::Twist {
+                linear: serde_vector3(&odom.twist.twist.linear),
+                angular: serde_vector3(&odom.twist.twist.angular),
+            },
+            covariance: copy_array::<36>(&odom.twist.covariance[..]),
+        },
+    }
+}
+
+#[cfg(any(feature = "mt_pubsub", feature = "ros2-client", feature = "r2r"))]
+fn serde_tf_message(
+    tf: &TransformStamped,
+) -> ros2_interfaces_jazzy_serde::tf2_msgs::msg::TFMessage {
+    ros2_interfaces_jazzy_serde::tf2_msgs::msg::TFMessage {
+        transforms: vec![
+            ros2_interfaces_jazzy_serde::geometry_msgs::msg::TransformStamped {
+                header: serde_header(&tf.header),
+                child_frame_id: tf.child_frame_id.clone(),
+                transform: ros2_interfaces_jazzy_serde::geometry_msgs::msg::Transform {
+                    translation: serde_vector3(&tf.transform.translation),
+                    rotation: serde_quaternion(&tf.transform.rotation),
+                },
+            },
+        ],
+    }
+}
+
+#[cfg(any(feature = "mt_pubsub", feature = "ros2-client", feature = "r2r"))]
+fn serde_imu_msg(msg: &pelorus_core::ImuMsg) -> ros2_interfaces_jazzy_serde::sensor_msgs::msg::Imu {
+    ros2_interfaces_jazzy_serde::sensor_msgs::msg::Imu {
+        header: ros2_interfaces_jazzy_serde::std_msgs::msg::Header {
+            stamp: ros2_interfaces_jazzy_serde::builtin_interfaces::msg::Time {
+                sec: msg.stamp.sec,
+                nanosec: msg.stamp.nanosec,
+            },
+            frame_id: msg.frame_id.clone(),
+        },
+        orientation: ros2_interfaces_jazzy_serde::geometry_msgs::msg::Quaternion {
+            x: msg.orientation[1],
+            y: msg.orientation[2],
+            z: msg.orientation[3],
+            w: msg.orientation[0],
+        },
+        orientation_covariance: msg.orientation_covariance,
+        angular_velocity: ros2_interfaces_jazzy_serde::geometry_msgs::msg::Vector3 {
+            x: msg.angular_velocity[0],
+            y: msg.angular_velocity[1],
+            z: msg.angular_velocity[2],
+        },
+        angular_velocity_covariance: msg.angular_velocity_covariance,
+        linear_acceleration: ros2_interfaces_jazzy_serde::geometry_msgs::msg::Vector3 {
+            x: msg.linear_acceleration[0],
+            y: msg.linear_acceleration[1],
+            z: msg.linear_acceleration[2],
+        },
+        linear_acceleration_covariance: msg.linear_acceleration_covariance,
+    }
+}
+
+#[cfg(any(feature = "mt_pubsub", feature = "ros2-client", feature = "r2r"))]
+fn drain_filtered_imu_mcap(
+    writer: &mut Option<OfflineMcapWriter<std::io::BufWriter<std::fs::File>>>,
+    rx: &mut Option<std::sync::mpsc::Receiver<pelorus_core::ImuMsg>>,
+) -> anyhow::Result<()> {
+    let (Some(writer), Some(rx)) = (writer.as_mut(), rx.as_mut()) else {
+        return Ok(());
+    };
+
+    while let Ok(msg) = rx.try_recv() {
+        writer.write_filtered_imu(&serde_imu_msg(&msg))?;
+    }
+    Ok(())
 }
 
 fn lio(
@@ -295,6 +488,7 @@ fn lio(
         None,
         None,
         1,
+        None,
     )
 }
 
@@ -371,6 +565,7 @@ fn lio_with_ready_signal(
     // Optional blocking shutdown signal for pipeline teardown mode.
     shutdown_request_rx: Option<std::sync::mpsc::Receiver<OfflineShutdownRequest>>,
     offline_prefetch_scans: usize,
+    output_mcap: Option<OfflineMcapConfig>,
 ) -> Result<(), Box<dyn CoreError>> {
     let export_trajectory = resolve_export_trajectory_path(export_trajectory);
     if let Some(path) = export_trajectory.as_ref() {
@@ -502,6 +697,13 @@ fn lio_with_ready_signal(
 
     let (ready_for_next_tx, ready_for_next_rx) = std::sync::mpsc::channel();
     let minot_replay_mode = synchronous_mode && shutdown_request_rx.is_some();
+    let (filtered_imu_tx, filtered_imu_rx) = if output_mcap.is_some() {
+        let (tx, rx) = std::sync::mpsc::channel();
+        (Some(tx), Some(rx))
+    } else {
+        (None, None)
+    };
+
     let (lifis_node, synced_rx) = PrelioNode::new(
         #[cfg(not(feature = "mt_pubsub"))]
         &mut node,
@@ -519,6 +721,7 @@ fn lio_with_ready_signal(
         #[cfg(feature = "rerun")]
         rec.clone(),
         Some(ready_for_next_rx),
+        filtered_imu_tx,
     )?;
     let lifis_node = Arc::new(lifis_node);
     let drain_on_shutdown = Arc::new(AtomicBool::new(false));
@@ -748,54 +951,18 @@ fn lio_with_ready_signal(
     };
     let mut last_render = std::time::Instant::now();
 
-    // Only create mapping channel if we will actually use it (mapping + rerun both enabled AND rerun is connected)
-    #[cfg(all(feature = "mapping", feature = "rerun"))]
-    let mapping_channel = if rec.is_some() {
-        Some(std::sync::mpsc::channel::<RegisteredCloud>())
-    } else {
-        None
-    };
-
-    #[cfg(all(feature = "mapping", feature = "rerun"))]
-    #[allow(unused_variables)]
-    let (out_chan_sender, out_chan_receiver) = if let Some((tx, rx)) = mapping_channel {
-        (Some(tx), Some(rx))
-    } else {
-        (None, None)
-    };
-
-    // TODO handle just mapping without rerun with fileio
-    // handle mapping of the registered results
-    #[cfg(all(feature = "mapping", feature = "rerun"))]
-    if let (Some(out_chan_receiver), Some(ref rec)) = (out_chan_receiver, &rec) {
-        let mapping_rec = rec.clone();
-        let mapping_resolution = config.mapping_resolution;
-        std::thread::spawn(move || {
-            let mut total_map = mapping::VoxelGrid::new(mapping_resolution);
-            while let Ok(reg) = out_chan_receiver.recv() {
-                reg.cloud.try_into_iter().unwrap().for_each(|p: PointXYZ| {
-                    let p = nalgebra::Point3::new(p.x, p.y, p.z);
-                    let p = reg.registration.transform_point(&p);
-                    total_map.insert(p);
-                });
-
-                mapping_rec.set_timestamp_secs_since_epoch("sensor", reg.timestamp);
-                if let Err(err) = mapping_rec.log(
-                    "world/mapping",
-                    &rerun::Points3D::update_fields()
-                        .with_positions(total_map.iter().map(|p| glam::Vec3::new(p.x, p.y, p.z))),
-                ) {
-                    error!("Error sending to rerun {err}");
-                }
-            }
-        });
-    }
-
     // Clone shutdown_flag for the processing thread; original is used for the spinner
     let processing_shutdown_flag = shutdown_flag.clone();
 
     let export_trajectory_for_worker = export_trajectory.clone();
-    let processing_handle = std::thread::spawn(move || {
+    let processing_handle = std::thread::spawn(move || -> anyhow::Result<()> {
+        let mut filtered_imu_rx = filtered_imu_rx;
+        let mut mcap_writer = match output_mcap {
+            Some(output) => Some(OfflineMcapWriter::create(&output.path, &output.topics)?),
+            None => None,
+        };
+        let gate_minot_replay_on_mcap = minot_replay_mode && mcap_writer.is_some();
+
         // Initialize Prelio prediction
         let mut ready_for_next_tx = Some(ready_for_next_tx);
         let mut registration_ready_tx = None;
@@ -1009,6 +1176,7 @@ fn lio_with_ready_signal(
             }
 
             eval.merge(&lifis_tick.runtime_eval);
+            drain_filtered_imu_mcap(&mut mcap_writer, &mut filtered_imu_rx)?;
 
             match &active_backend {
                 ActiveBackend::Cpu => {}
@@ -1163,7 +1331,9 @@ fn lio_with_ready_signal(
 
             let registration_result = {
                 let mut map = map.lock().unwrap();
-                let ready_for_registration = if minot_replay_mode {
+                let ready_for_registration = if gate_minot_replay_on_mcap {
+                    None
+                } else if minot_replay_mode {
                     registration_ready_tx.as_ref()
                 } else {
                     ready_for_next_tx.as_ref()
@@ -1521,6 +1691,7 @@ fn lio_with_ready_signal(
                     },
                 },
             };
+            let tf_for_mcap = tf.clone();
             #[cfg(feature = "mt_pubsub")]
             {
                 let inner_tf_broad = Arc::clone(&tf_broadcaster);
@@ -1537,6 +1708,18 @@ fn lio_with_ready_signal(
                 .send_transform(tf)
                 .expect("Failed to send transform");
             // -- --
+
+            if let Some(writer) = mcap_writer.as_mut() {
+                writer.write_cloud(&serde_cloud(&cloud))?;
+                writer.write_odom(&serde_odom(&pelorus_odom))?;
+                writer.write_tf(&serde_tf_message(&tf_for_mcap))?;
+            }
+            drain_filtered_imu_mcap(&mut mcap_writer, &mut filtered_imu_rx)?;
+            if gate_minot_replay_on_mcap {
+                if let Some(ready) = registration_ready_tx.as_ref() {
+                    let _ = ready.send(());
+                }
+            }
 
             #[cfg(feature = "rerun")]
             if let Some(ref rec) = rec {
@@ -1556,18 +1739,6 @@ fn lio_with_ready_signal(
                 if let Err(err) = rec.log("world/lidar", &pose) {
                     error!("Error sending to rerun {err}");
                 }
-            }
-
-            #[cfg(all(feature = "mapping", feature = "rerun"))]
-            if let Some(ref sender) = out_chan_sender {
-                let ps: ros_pointcloud2::PointCloud2Msg = cloud.clone().into();
-                let reg_out = RegisteredCloud {
-                    cloud: ps,
-                    registration: register_pose.pose.cast(),
-                    timestamp: current_cloud_time,
-                };
-
-                let _ = sender.send(reg_out); // currently ignore res
             }
 
             let mut imu_odom = pelorus_odom.clone();
@@ -1863,7 +2034,12 @@ fn lio_with_ready_signal(
             #[cfg(feature = "vulkan")]
             ActiveBackend::Vulkan(_) => pelorus_vulkan::cleanup_map(),
         }
+        drain_filtered_imu_mcap(&mut mcap_writer, &mut filtered_imu_rx)?;
+        if let Some(writer) = mcap_writer.take() {
+            writer.finish()?;
+        }
         info!("--- END lifis tick ---");
+        Ok(())
     });
 
     #[cfg(any(feature = "mt_pubsub", feature = "r2r"))]
@@ -1885,9 +2061,11 @@ fn lio_with_ready_signal(
             }
             std::thread::sleep(Duration::from_millis(100));
         }
-        // Wait for processing thread to finish (with timeout)
-        let _ = processing_handle.join();
-        return Ok(());
+        return match processing_handle.join() {
+            Ok(Ok(())) => Ok(()),
+            Ok(Err(err)) => Err(err.into()),
+            Err(_) => Err(anyhow!("LIO processing thread panicked").into()),
+        };
     }
 
     #[cfg(feature = "ros2-client")]
@@ -1921,8 +2099,11 @@ fn lio_with_ready_signal(
             std::thread::sleep(Duration::from_millis(100));
         }
 
-        let _ = processing_handle.join();
-        return Ok(());
+        return match processing_handle.join() {
+            Ok(Ok(())) => Ok(()),
+            Ok(Err(err)) => Err(err.into()),
+            Err(_) => Err(anyhow!("LIO processing thread panicked").into()),
+        };
     }
 
     #[cfg(feature = "r2r")]
@@ -1941,15 +2122,20 @@ fn lio_with_ready_signal(
                 break;
             }
         }
-        // Wait for processing thread to finish
-        let _ = processing_handle.join();
-        return Ok(());
+        return match processing_handle.join() {
+            Ok(Ok(())) => Ok(()),
+            Ok(Err(err)) => Err(err.into()),
+            Err(_) => Err(anyhow!("LIO processing thread panicked").into()),
+        };
     }
 
     #[cfg(not(any(feature = "mt_pubsub", feature = "ros2-client", feature = "r2r")))]
     {
-        let _ = processing_handle.join();
-        Ok(())
+        match processing_handle.join() {
+            Ok(Ok(())) => Ok(()),
+            Ok(Err(err)) => Err(err.into()),
+            Err(_) => Err(anyhow!("LIO processing thread panicked").into()),
+        }
     }
 }
 
@@ -1963,6 +2149,7 @@ fn lio_with_ready_signal(
     _shutdown_flag: Option<Arc<AtomicBool>>,
     _shutdown_request_rx: Option<std::sync::mpsc::Receiver<OfflineShutdownRequest>>,
     _offline_prefetch_scans: usize,
+    _output_mcap: Option<OfflineMcapConfig>,
 ) -> Result<(), Box<dyn CoreError>> {
     Err(anyhow!(
         "No IO backend is enabled. Rebuild with one of: offline, mt_pubsub, ros2-client, or r2r."
@@ -2229,6 +2416,42 @@ This command is non-interactive, so pull it first with `marina pull {}` and retr
 }
 
 #[cfg(feature = "rat")]
+fn confirm_mcap_overwrite(path: &std::path::Path) -> anyhow::Result<bool> {
+    if !path.exists() {
+        return Ok(true);
+    }
+
+    if !std::io::stdin().is_terminal() || !std::io::stdout().is_terminal() {
+        return Err(anyhow!(
+            "MCAP output '{}' already exists. This command is non-interactive, so refusing to overwrite it.",
+            path.display()
+        ));
+    }
+
+    print!(
+        "MCAP output '{}' already exists. Overwrite it? [y/N]: ",
+        path.display()
+    );
+    std::io::stdout()
+        .flush()
+        .map_err(|e| anyhow!("Failed to flush prompt output: {}", e))?;
+
+    let mut answer = String::new();
+    std::io::stdin()
+        .read_line(&mut answer)
+        .map_err(|e| anyhow!("Failed to read MCAP overwrite confirmation: {}", e))?;
+
+    match answer.trim().to_ascii_lowercase().as_str() {
+        "y" | "yes" => Ok(true),
+        "" | "n" | "no" => Ok(false),
+        _ => Err(anyhow!(
+            "Invalid response '{}'. Please answer with 'y' or 'n'.",
+            answer.trim()
+        )),
+    }
+}
+
+#[cfg(feature = "rat")]
 fn resolve_offline_bagfile_path(input: &std::path::Path) -> anyhow::Result<PathBuf> {
     if input.exists() {
         if input.is_dir() || input.is_file() {
@@ -2418,6 +2641,7 @@ fn main() -> Result<(), Box<dyn CoreError>> {
                         Some(lio_shutdown_flag_for_thread),
                         None,
                         1,
+                        None,
                     )
                     .map_err(|e| e.to_string())
                 });
@@ -2498,6 +2722,39 @@ fn main() -> Result<(), Box<dyn CoreError>> {
                 }
                 config
             };
+
+            let output_mcap_config = offline_args.output_mcap.clone().map(|path| {
+                let filtered_imu_topic = offline_args
+                    .mcap_filtered_imu_topic
+                    .clone()
+                    .unwrap_or_else(|| {
+                        let configured = config.prelio_node_params.imu_filtered_topic.clone();
+                        if configured.is_empty() {
+                            "imu/filtered".to_string()
+                        } else {
+                            configured
+                        }
+                    });
+                OfflineMcapConfig {
+                    path,
+                    topics: McapTopics {
+                        cloud: normalize_mcap_topic(offline_args.mcap_cloud_topic.clone()),
+                        odom: normalize_mcap_topic(offline_args.mcap_odom_topic.clone()),
+                        tf: normalize_mcap_topic(offline_args.mcap_tf_topic.clone()),
+                        filtered_imu: normalize_mcap_topic(filtered_imu_topic),
+                    },
+                }
+            });
+            if let Some(output_mcap) = output_mcap_config.as_ref() {
+                if !confirm_mcap_overwrite(&output_mcap.path)? {
+                    info!(
+                        "MCAP output '{}' was not overwritten; exiting.",
+                        output_mcap.path.display()
+                    );
+                    return Ok(());
+                }
+                info!("MCAP output target: {}", output_mcap.path.display());
+            }
 
             set_backend_from_config(&shared_stats, &config);
 
@@ -2766,6 +3023,7 @@ pf! i 1
                 let shared_stats_for_lio = shared_stats.clone();
                 let runtime_tx_lio = runtime_tx.clone();
                 let offline_prefetch_scans = offline_args.prefetch_scans;
+                let output_mcap_config_for_run = output_mcap_config.clone();
 
                 let lio_handle = std::thread::spawn(move || {
                     let synchronous_mode = config.prelio_node_params.synchronous_mode;
@@ -2779,6 +3037,7 @@ pf! i 1
                             Some(lio_shutdown_flag_for_thread),
                             Some(lio_stop_rx),
                             offline_prefetch_scans,
+                            output_mcap_config_for_run,
                         )
                     }))
                     .map_err(|_| "LIO thread panicked".to_string())

@@ -20,13 +20,15 @@ prelio = { workspace = true, default-features = false }
 pelorus_reg = { workspace = true, default-features = false }
 ros_pointcloud2.workspace = true
 ros2-client = { workspace = true, optional = true }
+mcap = { workspace = true }
+cdr = { workspace = true }
 nalgebra.workspace = true
 anyhow.workspace = true
 rand.workspace = true
 either.workspace = true
 env_logger.workspace = true
 log.workspace = true
-ros2-interfaces-jazzy-serde = { workspace = true, optional = true }
+ros2-interfaces-jazzy-serde = { workspace = true }
 rerun = { workspace = true, optional = true }
 futures-lite.workspace = true
 mimalloc = { workspace = true, optional = true }
@@ -47,6 +49,7 @@ libc.workspace = true
 rayon = { workspace = true, optional = true }
 marina = { workspace = true, optional = true }
 clap_complete.workspace = true
+serde.workspace = true
 
 [[bin]]
 name = "pelorus"
@@ -131,9 +134,6 @@ mimalloc = ["dep:mimalloc"]
 # Visualize data with rerun. Set the `RERUN_SERVER_ADDR` env variable to your rerun instance, default is '127.0.0.1:9876'.
 rerun = ["dep:rerun", "prelio_io/rerun"]
 
-# Collect undistorted and registered scans to a map. WARNING: This feature is really naiive right now and slows down computation dramatically. In combination with the "offline" flag, the synchronization for "mt_rat" will move to post-mapping.
-mapping = []
-
 # Publish the localmap. WARNING: You should only enable this for debugging or you want to fiddle with the config. Getting the map is inefficient and unoptimized.
 map = []
 
@@ -153,7 +153,6 @@ rat = ["dep:marina", "dep:mt_rat", "dep:tokio", "prelio_io/rat"]
 # Use native ROS2 as pub/sub system
 ros2-client = [
   "dep:ros2-client",
-  "dep:ros2-interfaces-jazzy-serde",
   "prelio_io/ros2-client",
 ]
 
