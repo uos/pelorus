@@ -49,7 +49,7 @@ jobs:
   lyrical-build:
     runs-on: ubuntu-dev-resolute
     container:
-      image: ubuntu:26.04
+      image: docker.io/stelzo/ubuntu-dev:lyrical
     steps:
       - run: |
           apt-get update -y
