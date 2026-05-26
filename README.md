@@ -79,6 +79,8 @@ For basics of the configuration language itself visit the [Ratslang](https://git
 
 ## Run
 
+Online
+
 ```sh
 # generate a config file with settings that are recommended to change for your use case
 ros2 run pelorus pelorus config generate recommended > pelorus.rl

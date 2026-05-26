@@ -189,6 +189,10 @@ pub struct OfflineArgs {
     #[arg(long, default_value_t = false)]
     pub cpu_only: bool,
 
+    /// Answer yes to overwrite prompts.
+    #[arg(short = 'y', long, default_value_t = false)]
+    pub yes: bool,
+
     /// Number of offline scans to request ahead from Minot.
     ///
     /// Registration and publishing remain gated one scan at a time; this only
@@ -197,8 +201,16 @@ pub struct OfflineArgs {
     pub prefetch_scans: usize,
 
     /// Write Pelorus offline outputs to this MCAP bagfile.
-    #[arg(long, value_name = "PATH")]
+    #[arg(long, value_name = "PATH", conflicts_with = "output_rosbag")]
     pub output_mcap: Option<PathBuf>,
+
+    /// Also write ROS 2 bag metadata.yaml for the MCAP output.
+    #[arg(long, value_name = "PATH", requires = "output_mcap")]
+    pub output_rosbag_metadata: Option<PathBuf>,
+
+    /// Write Pelorus offline outputs as a ROS 2 MCAP bag directory.
+    #[arg(long, value_name = "DIR", conflicts_with_all = ["output_mcap", "output_rosbag_metadata"])]
+    pub output_rosbag: Option<PathBuf>,
 
     /// MCAP topic for undistorted PointCloud2 output.
     #[arg(long, default_value = "/registered")]
@@ -207,6 +219,10 @@ pub struct OfflineArgs {
     /// MCAP topic for Pelorus odometry output.
     #[arg(long, default_value = "/odom")]
     pub mcap_odom_topic: String,
+
+    /// MCAP topic for Pelorus path output.
+    #[arg(long, default_value = "/path")]
+    pub mcap_path_topic: String,
 
     /// MCAP topic for dynamic TF output.
     #[arg(long, default_value = "/tf")]
@@ -296,6 +312,7 @@ pub enum GenerateKind {
 #[derive(Debug, Clone)]
 struct OfflineMcapConfig {
     path: PathBuf,
+    rosbag_metadata_path: Option<PathBuf>,
     topics: McapTopics,
 }
 
@@ -306,6 +323,15 @@ fn normalize_mcap_topic(topic: impl Into<String>) -> String {
     } else {
         format!("/{topic}")
     }
+}
+
+fn rosbag_mcap_path(rosbag_path: &std::path::Path) -> PathBuf {
+    let bag_name = rosbag_path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .filter(|name| !name.is_empty())
+        .unwrap_or("output");
+    rosbag_path.join(format!("{bag_name}.mcap"))
 }
 
 #[cfg(any(feature = "mt_pubsub", feature = "ros2-client", feature = "r2r"))]
@@ -406,6 +432,27 @@ fn serde_odom(odom: &Odometry) -> ros2_interfaces_jazzy_serde::nav_msgs::msg::Od
             },
             covariance: copy_array::<36>(&odom.twist.covariance[..]),
         },
+    }
+}
+
+#[cfg(any(feature = "mt_pubsub", feature = "ros2-client", feature = "r2r"))]
+fn serde_pose_stamped(
+    pose: &PoseStamped,
+) -> ros2_interfaces_jazzy_serde::geometry_msgs::msg::PoseStamped {
+    ros2_interfaces_jazzy_serde::geometry_msgs::msg::PoseStamped {
+        header: serde_header(&pose.header),
+        pose: ros2_interfaces_jazzy_serde::geometry_msgs::msg::Pose {
+            position: serde_point(&pose.pose.position),
+            orientation: serde_quaternion(&pose.pose.orientation),
+        },
+    }
+}
+
+#[cfg(any(feature = "mt_pubsub", feature = "ros2-client", feature = "r2r"))]
+fn serde_path(path: &Path) -> ros2_interfaces_jazzy_serde::nav_msgs::msg::Path {
+    ros2_interfaces_jazzy_serde::nav_msgs::msg::Path {
+        header: serde_header(&path.header),
+        poses: path.poses.iter().map(serde_pose_stamped).collect(),
     }
 }
 
@@ -958,7 +1005,11 @@ fn lio_with_ready_signal(
     let processing_handle = std::thread::spawn(move || -> anyhow::Result<()> {
         let mut filtered_imu_rx = filtered_imu_rx;
         let mut mcap_writer = match output_mcap {
-            Some(output) => Some(OfflineMcapWriter::create(&output.path, &output.topics)?),
+            Some(output) => Some(OfflineMcapWriter::create(
+                &output.path,
+                &output.topics,
+                output.rosbag_metadata_path,
+            )?),
             None => None,
         };
         let gate_minot_replay_on_mcap = minot_replay_mode && mcap_writer.is_some();
@@ -1712,6 +1763,17 @@ fn lio_with_ready_signal(
             if let Some(writer) = mcap_writer.as_mut() {
                 writer.write_cloud(&serde_cloud(&cloud))?;
                 writer.write_odom(&serde_odom(&pelorus_odom))?;
+                #[cfg(not(feature = "no-viz"))]
+                if changed_lidar_path {
+                    let lidar_path = Path {
+                        header: Header {
+                            frame_id: lidar_path_frame_id.clone(),
+                            stamp: pelorus_odom.header.stamp.clone(),
+                        },
+                        poses: lidar_path_poses.iter().cloned().collect(),
+                    };
+                    writer.write_path(&serde_path(&lidar_path))?;
+                }
                 writer.write_tf(&serde_tf_message(&tf_for_mcap))?;
             }
             drain_filtered_imu_mcap(&mut mcap_writer, &mut filtered_imu_rx)?;
@@ -2416,20 +2478,29 @@ This command is non-interactive, so pull it first with `marina pull {}` and retr
 }
 
 #[cfg(feature = "rat")]
-fn confirm_mcap_overwrite(path: &std::path::Path) -> anyhow::Result<bool> {
+fn confirm_output_overwrite(
+    label: &str,
+    path: &std::path::Path,
+    assume_yes: bool,
+) -> anyhow::Result<bool> {
     if !path.exists() {
+        return Ok(true);
+    }
+    if assume_yes {
         return Ok(true);
     }
 
     if !std::io::stdin().is_terminal() || !std::io::stdout().is_terminal() {
         return Err(anyhow!(
-            "MCAP output '{}' already exists. This command is non-interactive, so refusing to overwrite it.",
+            "{} '{}' already exists. This command is non-interactive, so refusing to overwrite it.",
+            label,
             path.display()
         ));
     }
 
     print!(
-        "MCAP output '{}' already exists. Overwrite it? [y/N]: ",
+        "{} '{}' already exists. Overwrite it? [y/N]: ",
+        label,
         path.display()
     );
     std::io::stdout()
@@ -2439,7 +2510,7 @@ fn confirm_mcap_overwrite(path: &std::path::Path) -> anyhow::Result<bool> {
     let mut answer = String::new();
     std::io::stdin()
         .read_line(&mut answer)
-        .map_err(|e| anyhow!("Failed to read MCAP overwrite confirmation: {}", e))?;
+        .map_err(|e| anyhow!("Failed to read overwrite confirmation: {}", e))?;
 
     match answer.trim().to_ascii_lowercase().as_str() {
         "y" | "yes" => Ok(true),
@@ -2723,30 +2794,75 @@ fn main() -> Result<(), Box<dyn CoreError>> {
                 config
             };
 
-            let output_mcap_config = offline_args.output_mcap.clone().map(|path| {
-                let filtered_imu_topic = offline_args
-                    .mcap_filtered_imu_topic
-                    .clone()
-                    .unwrap_or_else(|| {
-                        let configured = config.prelio_node_params.imu_filtered_topic.clone();
-                        if configured.is_empty() {
-                            "imu/filtered".to_string()
-                        } else {
-                            configured
-                        }
-                    });
-                OfflineMcapConfig {
-                    path,
-                    topics: McapTopics {
-                        cloud: normalize_mcap_topic(offline_args.mcap_cloud_topic.clone()),
-                        odom: normalize_mcap_topic(offline_args.mcap_odom_topic.clone()),
-                        tf: normalize_mcap_topic(offline_args.mcap_tf_topic.clone()),
-                        filtered_imu: normalize_mcap_topic(filtered_imu_topic),
-                    },
+            let output_mcap_config = offline_args
+                .output_mcap
+                .clone()
+                .or_else(|| {
+                    offline_args
+                        .output_rosbag
+                        .as_ref()
+                        .map(|path| rosbag_mcap_path(path))
+                })
+                .map(|path| {
+                    let filtered_imu_topic = offline_args
+                        .mcap_filtered_imu_topic
+                        .clone()
+                        .unwrap_or_else(|| {
+                            let configured = config.prelio_node_params.imu_filtered_topic.clone();
+                            if configured.is_empty() {
+                                "imu/filtered".to_string()
+                            } else {
+                                configured
+                            }
+                        });
+                    OfflineMcapConfig {
+                        path,
+                        rosbag_metadata_path: offline_args.output_rosbag_metadata.clone().or_else(
+                            || {
+                                offline_args
+                                    .output_rosbag
+                                    .as_ref()
+                                    .map(|path| path.join("metadata.yaml"))
+                            },
+                        ),
+                        topics: McapTopics {
+                            cloud: normalize_mcap_topic(offline_args.mcap_cloud_topic.clone()),
+                            odom: normalize_mcap_topic(offline_args.mcap_odom_topic.clone()),
+                            path: normalize_mcap_topic(offline_args.mcap_path_topic.clone()),
+                            tf: normalize_mcap_topic(offline_args.mcap_tf_topic.clone()),
+                            filtered_imu: normalize_mcap_topic(filtered_imu_topic),
+                        },
+                    }
+                });
+            let mut rosbag_overwrite_confirmed = false;
+            if let Some(rosbag_path) = offline_args.output_rosbag.as_ref() {
+                if !confirm_output_overwrite(
+                    "ROS bag output directory",
+                    rosbag_path,
+                    offline_args.yes,
+                )? {
+                    info!(
+                        "ROS bag output directory '{}' was not overwritten; exiting.",
+                        rosbag_path.display()
+                    );
+                    return Ok(());
                 }
-            });
+                rosbag_overwrite_confirmed = rosbag_path.exists();
+                std::fs::create_dir_all(rosbag_path).map_err(|e| {
+                    anyhow!(
+                        "Failed to create ROS bag output directory '{}': {}",
+                        rosbag_path.display(),
+                        e
+                    )
+                })?;
+                info!("ROS bag output directory: {}", rosbag_path.display());
+            }
             if let Some(output_mcap) = output_mcap_config.as_ref() {
-                if !confirm_mcap_overwrite(&output_mcap.path)? {
+                if !confirm_output_overwrite(
+                    "MCAP output",
+                    &output_mcap.path,
+                    offline_args.yes || rosbag_overwrite_confirmed,
+                )? {
                     info!(
                         "MCAP output '{}' was not overwritten; exiting.",
                         output_mcap.path.display()
@@ -2754,6 +2870,20 @@ fn main() -> Result<(), Box<dyn CoreError>> {
                     return Ok(());
                 }
                 info!("MCAP output target: {}", output_mcap.path.display());
+                if let Some(metadata_path) = output_mcap.rosbag_metadata_path.as_ref() {
+                    if !confirm_output_overwrite(
+                        "ROS bag metadata",
+                        metadata_path,
+                        offline_args.yes || rosbag_overwrite_confirmed,
+                    )? {
+                        info!(
+                            "ROS bag metadata '{}' was not overwritten; exiting.",
+                            metadata_path.display()
+                        );
+                        return Ok(());
+                    }
+                    info!("ROS bag metadata target: {}", metadata_path.display());
+                }
             }
 
             set_backend_from_config(&shared_stats, &config);
