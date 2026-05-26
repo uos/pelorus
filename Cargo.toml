@@ -30,21 +30,21 @@ include = [
 keywords = ["robotics"]
 license = "MIT OR Apache-2.0"
 repository = "https://codeberg.org/stelzo/pelorus/"
-version = "0.0.5"
+version = "0.0.6"
 authors = ["Christopher Sieh <stelzo@steado.de>"]
 rust-version = "1.85"
 
 [workspace.dependencies]
-pelorus = { path = "pelorus", version = "0.0.5", default-features = false }
-pelorus_core = { path = "pelorus_core", version = "0.0.5" }
-pelorus_reg = { path = "pelorus_reg", version = "0.0.5", default-features = false }
-prelio = { path = "prelio", version = "0.0.5", default-features = false }
-prelio_io = { path = "prelio_io", version = "0.0.5", default-features = false }
-spole = { path = "spole", version = "0.0.5", default-features = false }
-pelorus_cuda = { path = "pelorus_cuda", version = "0.0.5", default-features = false }
+pelorus = { path = "pelorus", version = "0.0.6", default-features = false }
+pelorus_core = { path = "pelorus_core", version = "0.0.6" }
+pelorus_reg = { path = "pelorus_reg", version = "0.0.6", default-features = false }
+prelio = { path = "prelio", version = "0.0.6", default-features = false }
+prelio_io = { path = "prelio_io", version = "0.0.6", default-features = false }
+spole = { path = "spole", version = "0.0.6", default-features = false }
+pelorus_cuda = { path = "pelorus_cuda", version = "0.0.6", default-features = false }
 transforms_io = "0.1"
-pelorus_metal = { path = "pelorus_metal", version = "0.0.5" }
-pelorus_vulkan = { path = "pelorus_vulkan", version = "0.0.5", default-features = false }
+pelorus_metal = { path = "pelorus_metal", version = "0.0.6" }
+pelorus_vulkan = { path = "pelorus_vulkan", version = "0.0.6", default-features = false }
 
 ros_pointcloud2 = { version = "1.0.0-rc.3", features = [
   "derive",
