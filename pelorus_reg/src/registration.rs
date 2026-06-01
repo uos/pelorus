@@ -266,6 +266,9 @@ impl crate::Registration for RegistrationState {
                     pelorus_vulkan::add_to_map(stream, buffer, transl, &rot_quat, scan_id);
                 }
             }
+            if let Some(ready) = ready_for_next {
+                let _ = ready.send(());
+            }
             return Ok(None);
         }
 

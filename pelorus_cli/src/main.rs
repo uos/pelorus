@@ -1408,12 +1408,26 @@ fn lio_with_ready_signal(
             let (register_pose, ekf_state) = match registration_result {
                 Ok(Some(result)) => result,
                 Ok(None) => {
-                    release_minot_tick(processing_shutdown_flag.as_ref(), synchronous_mode);
+                    drain_filtered_imu_mcap(&mut mcap_writer, &mut filtered_imu_rx)?;
+                    if gate_minot_replay_on_mcap {
+                        if let Some(ready) = registration_ready_tx.as_ref() {
+                            let _ = ready.send(());
+                        }
+                    } else {
+                        release_minot_tick(processing_shutdown_flag.as_ref(), synchronous_mode);
+                    }
                     continue;
                 } // skip outputting trivial solutions on initialization
                 Err(err) => {
                     error!("{err}");
-                    release_minot_tick(processing_shutdown_flag.as_ref(), synchronous_mode);
+                    drain_filtered_imu_mcap(&mut mcap_writer, &mut filtered_imu_rx)?;
+                    if gate_minot_replay_on_mcap {
+                        if let Some(ready) = registration_ready_tx.as_ref() {
+                            let _ = ready.send(());
+                        }
+                    } else {
+                        release_minot_tick(processing_shutdown_flag.as_ref(), synchronous_mode);
+                    }
                     continue;
                 }
             };
