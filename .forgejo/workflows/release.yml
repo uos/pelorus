@@ -375,9 +375,9 @@ jobs:
     strategy:
       matrix:
         include:
-          # - image: docker.io/stelzo/ubuntu-dev:lyrical
-          #   repo: resolute
-          #   runner: ubuntu-latest
+          - image: docker.io/stelzo/ubuntu-dev:lyrical
+            repo: resolute
+            runner: ubuntu-latest
           - image: docker.io/stelzo/ubuntu-dev:jazzy
             repo: noble
             runner: ubuntu-latest
@@ -387,9 +387,9 @@ jobs:
           - image: docker.io/stelzo/ubuntu-dev:lyrical
             repo: resolute
             runner: ubuntu-latest-arm
-          # - image: docker.io/stelzo/ubuntu-dev:lyrical
-          #   repo: resolute
-          #   runner: ubuntu-latest-arm
+          - image: docker.io/stelzo/ubuntu-dev:lyrical
+            repo: resolute
+            runner: ubuntu-latest-arm
           - image: docker.io/stelzo/ubuntu-dev:jazzy
             repo: noble
             runner: ubuntu-latest-arm
