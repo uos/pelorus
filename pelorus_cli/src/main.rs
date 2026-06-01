@@ -775,12 +775,20 @@ fn lio_with_ready_signal(
     if let Some(stop_rx) = shutdown_request_rx {
         let node_for_stop = Arc::clone(&lifis_node);
         let drain_on_shutdown_for_stop = Arc::clone(&drain_on_shutdown);
+        let shutdown_flag_for_stop = shutdown_flag.clone();
         std::thread::spawn(move || {
             if let Ok(request) = stop_rx.recv() {
-                if matches!(request, OfflineShutdownRequest::DrainAfterEndOfBag) {
-                    drain_on_shutdown_for_stop.store(true, Ordering::SeqCst);
+                if let Some(flag) = shutdown_flag_for_stop.as_ref() {
+                    flag.store(true, Ordering::SeqCst);
                 }
-                node_for_stop.request_shutdown();
+                match request {
+                    OfflineShutdownRequest::DrainAfterEndOfBag => {
+                        drain_on_shutdown_for_stop.store(true, Ordering::SeqCst);
+                    }
+                    OfflineShutdownRequest::Immediate => {
+                        node_for_stop.request_shutdown();
+                    }
+                }
             }
         });
     }
