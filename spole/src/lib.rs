@@ -434,8 +434,6 @@ pub fn encompassing_voxel_iter(grid_key: (i32, i32, i32), factor: i32) -> Encomp
 
 #[cfg(not(feature = "nn_kdt"))]
 fn hash(point: &Point3<f32>, voxel_size: f32) -> i32 {
-    // Match GPU arithmetic: cast to u32 before multiply for consistent hashing.
-    // See hash_grid for details.
     const PRIME_1: u32 = 73_856_093;
     const PRIME_2: u32 = 471_943;
     const PRIME_3: u32 = 83_492_791;
@@ -1285,16 +1283,9 @@ impl IVoxHashMap {
 
     #[inline(always)]
     pub fn hash_grid(grid_key: &(i32, i32, i32)) -> i32 {
-        // Match GPU arithmetic: cast to u32 before multiply for consistent hashing
-        // regardless of coordinate sign/quadrant. GPU shaders use:
-        //   uint32_t h = (uint32_t)g.x * 73856093u;
-        //   h += (uint32_t)g.y * 471943u;
-        //   h += (uint32_t)g.z * 83492791u;
-        //   return (int32_t)h;
-        // This ensures negative coordinates produce the same hash on CPU and GPU.
-        const PRIME_1: u32 = 73856093;
-        const PRIME_2: u32 = 471943;
-        const PRIME_3: u32 = 83492791;
+        const PRIME_1: u32 = 73_856_093;
+        const PRIME_2: u32 = 471_943;
+        const PRIME_3: u32 = 83_492_791;
 
         let h = (grid_key.0 as u32)
             .wrapping_mul(PRIME_1)
@@ -1306,8 +1297,6 @@ impl IVoxHashMap {
 
     #[inline(always)]
     pub fn hash(point: &nalgebra::Point3<f32>, voxel_size: f32) -> i32 {
-        // Match GPU arithmetic: cast to u32 before multiply for consistent hashing.
-        // See hash_grid for details.
         const PRIME_1: u32 = 73_856_093;
         const PRIME_2: u32 = 471_943;
         const PRIME_3: u32 = 83_492_791;

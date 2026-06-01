@@ -37,7 +37,7 @@ struct SortKey {
     point_count: u64,   // Denominator
 }
 
-// LeastRecentlyUsedCacheIncrementalVoxelDistributionHashmap
+// LeastRelevantCacheIncrementalVoxelDistributionHashmap
 pub struct Livodish {
     // all distributions in general
     buffer: Vec<Option<Value>>,

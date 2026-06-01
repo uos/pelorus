@@ -1030,15 +1030,15 @@ fn lio_with_ready_signal(
             ready_relay_handle = Some(std::thread::spawn(move || {
                 let mut requested_prefill = false;
                 while relay_rx.recv().is_ok() {
+                    if prelio_ready_tx.send(()).is_err() {
+                        break;
+                    }
                     if relay_shutdown_flag
                         .as_ref()
                         .map(|flag| flag.load(Ordering::Relaxed))
                         .unwrap_or(false)
                     {
-                        break;
-                    }
-                    if prelio_ready_tx.send(()).is_err() {
-                        break;
+                        continue;
                     }
                     let request_count = if requested_prefill {
                         1
