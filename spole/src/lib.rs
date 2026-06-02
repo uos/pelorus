@@ -109,12 +109,10 @@ impl VoxelDistribution {
             return Self::new();
         }
 
-        // --- 1. Calculate the mean of the points ---
         // Sum all point vectors and divide by the count to get the average.
         let sum_of_points: Vector3<f32> = points.iter().map(|p| p.0.coords).sum();
         let mean = Point3::from(sum_of_points / point_count as f32);
 
-        // --- 2. Calculate the covariance matrix ---
         // Covariance(X, Y) = E[(X - E[X]) * (Y - E[Y])^T]
         // We calculate the sum of the outer products of the deviation from the mean.
         let mut covariance = Matrix3::<f32>::zeros();
@@ -128,7 +126,6 @@ impl VoxelDistribution {
         // Finalize the covariance by dividing by the number of points.
         covariance /= point_count as f32;
 
-        // --- 3. Construct and return the VoxelDistribution ---
         VoxelDistribution {
             point_count: point_count as u64,
             mean,
@@ -138,7 +135,6 @@ impl VoxelDistribution {
         }
     }
 
-    // no cross-covariance
     pub fn pool(&mut self, other: Self) {
         let n1 = self.point_count as f32;
         let n2 = other.point_count as f32;
@@ -926,277 +922,6 @@ impl IVoxHashMap {
         let d = -normal.dot(&merged_dist.mean.coords);
 
         Some([normal.x, normal.y, normal.z, d])
-    }
-
-    pub fn plane_fit_from_distributions_lower_res(
-        &self,
-        query: &PointXYZ,
-        // You might want to add an error threshold for the eigenvalue check
-        res_factor: i32,
-    ) -> Option<[f32; 4]> {
-        let mut merged_dist = VoxelDistribution::new();
-
-        // 1. Find and merge all neighboring distributions
-        let grid = self.pos2grid(query);
-
-        let lower_res_voxel = |grid: &(i32, i32, i32)| -> Option<VoxelDistribution> {
-            let mut voxel: Option<VoxelDistribution> = None;
-
-            for g in encompassing_voxel_iter(*grid, res_factor) {
-                let k = Self::hash_grid(&g);
-                if let Some(dist) = self.livodish.find(&k) {
-                    // i += 1;
-                    if let Some(vup) = voxel.as_mut() {
-                        vup.pool(dist);
-                    } else {
-                        voxel = Some(dist);
-                    }
-                }
-            }
-
-            voxel
-        };
-
-        let (gx, gy, gz) = grid;
-        let lr_grid = (
-            gx.div_euclid(res_factor),
-            gy.div_euclid(res_factor),
-            gz.div_euclid(res_factor),
-        );
-        let neighbor_grids = match self.nearby_type {
-            IVoxNearbyType::Center => [
-                (lr_grid.0, lr_grid.1, lr_grid.2),
-                (0, 0, 0),
-                (0, 0, 0),
-                (0, 0, 0),
-                (0, 0, 0),
-                (0, 0, 0),
-                (0, 0, 0),
-                (0, 0, 0),
-                (0, 0, 0),
-                (0, 0, 0),
-                (0, 0, 0),
-                (0, 0, 0),
-                (0, 0, 0),
-                (0, 0, 0),
-                (0, 0, 0),
-                (0, 0, 0),
-                (0, 0, 0),
-                (0, 0, 0),
-                (0, 0, 0),
-                (0, 0, 0),
-                (0, 0, 0),
-                (0, 0, 0),
-                (0, 0, 0),
-                (0, 0, 0),
-                (0, 0, 0),
-                (0, 0, 0),
-                (0, 0, 0),
-            ],
-            IVoxNearbyType::Nearby6 => {
-                let n6 = Self::nearby_6(lr_grid);
-                let mut res = [(0, 0, 0); 27];
-                res[..7].copy_from_slice(&n6);
-                res
-            }
-            IVoxNearbyType::Nearby18 => {
-                let n18 = Self::nearby_18(lr_grid);
-                let mut res = [(0, 0, 0); 27];
-                res[..19].copy_from_slice(&n18);
-                res
-            }
-            IVoxNearbyType::Nearby26 => Self::nearby_26(lr_grid),
-        };
-
-        let n_cells = match self.nearby_type {
-            IVoxNearbyType::Center => 1,
-            IVoxNearbyType::Nearby6 => 7,
-            IVoxNearbyType::Nearby18 => 19,
-            IVoxNearbyType::Nearby26 => 27,
-        };
-
-        for g in neighbor_grids[..n_cells].iter() {
-            if let Some(dist) = lower_res_voxel(g) {
-                merged_dist.pool(dist);
-            }
-        }
-
-        // 2. Ensure we have enough data to define a plane
-        if merged_dist.point_count < 3 {
-            return None;
-        }
-
-        // 3. Calculate the plane normal from the merged covariance matrix.
-        // This logic is borrowed directly from your `plane_fit_stable` function.
-        let eigenvalues = Self::symmetric_eigen_3x3(&merged_dist.covariance);
-        let mut eigenvalues_vec = [eigenvalues.x, eigenvalues.y, eigenvalues.z];
-        eigenvalues_vec.sort_unstable_by(|a, b| a.total_cmp(b));
-
-        if eigenvalues_vec[0].is_nan() || eigenvalues_vec[2].is_nan() {
-            return None;
-        }
-
-        let lambda_0 = eigenvalues_vec[0]; // Smallest
-        let lambda_2 = eigenvalues_vec[2]; // Largest
-
-        // Ensure we don't divide by zero if the distribution is empty or a single point
-        if lambda_2 < 1e-9 {
-            return None;
-        }
-
-        let sphericity = lambda_0 / lambda_2;
-
-        // The threshold now needs to be much higher. Start with something around 0.5
-        // and adjust it based on your data. A lower threshold means you require
-        // a "flatter" distribution to consider it a plane.
-        if sphericity > 0.5 {
-            return None;
-        }
-
-        let min_eigenvalue = lambda_0; // Use the sorted smallest eigenvalue
-
-        let mut m = merged_dist.covariance;
-        m[(0, 0)] -= min_eigenvalue;
-        m[(1, 1)] -= min_eigenvalue;
-        m[(2, 2)] -= min_eigenvalue;
-
-        let row0 = m.row(0).transpose();
-        let row1 = m.row(1).transpose();
-        let row2 = m.row(2).transpose();
-
-        let v1 = row0.cross(&row1);
-        let v2 = row1.cross(&row2);
-        let v3 = row2.cross(&row0);
-
-        let mag1_sq = v1.norm_squared();
-        let mag2_sq = v2.norm_squared();
-        let mag3_sq = v3.norm_squared();
-
-        let normal_vec = if mag1_sq > mag2_sq && mag1_sq > mag3_sq {
-            v1
-        } else if mag2_sq > mag3_sq {
-            v2
-        } else {
-            v3
-        };
-
-        let normal = normal_vec.try_normalize(1e-12)?;
-
-        // 4. Calculate the 'd' parameter of the plane equation using the merged mean
-        let d = -normal.dot(&merged_dist.mean.coords);
-
-        Some([normal.x, normal.y, normal.z, d])
-    }
-    #[inline(always)]
-    #[must_use]
-    pub fn k_nearest_neighbor_query_lower_res(
-        &self,
-        query: &PointXYZ,
-        k: usize,
-        result: &mut [PointXYZ],
-        out_size: &mut usize,
-        res_factor: i32, // 2 means half the resolution
-    ) -> bool {
-        if k == 0 || result.is_empty() {
-            *out_size = 0;
-            return false;
-        }
-
-        let mut rng = self.rng.clone();
-
-        // --- Gather Neighbors and Total Density ---
-        const MAX_NEIGHBORS: usize = 27;
-        let mut cached_neighbors: [Option<VoxelDistribution>; MAX_NEIGHBORS] =
-            [None; MAX_NEIGHBORS];
-        let mut num_cached = 0;
-        let mut total_density = 0u64;
-
-        let lower_res_voxel = |grid: &(i32, i32, i32)| -> Option<VoxelDistribution> {
-            let mut voxel: Option<VoxelDistribution> = None;
-
-            for g in encompassing_voxel_iter(*grid, res_factor) {
-                let k = Self::hash_grid(&g);
-                if let Some(dist) = self.livodish.find(&k) {
-                    // i += 1;
-                    if let Some(vup) = voxel.as_mut() {
-                        vup.pool(dist);
-                    } else {
-                        voxel = Some(dist);
-                    }
-                }
-            }
-
-            voxel
-        };
-
-        let mut cache_and_sum_density = |grids: &[(i32, i32, i32)]| {
-            for g in grids {
-                if let Some(dist) = lower_res_voxel(g) {
-                    if dist.point_count > 0 && num_cached < MAX_NEIGHBORS {
-                        cached_neighbors[num_cached] = Some(dist);
-                        total_density += dist.point_count;
-                        num_cached += 1;
-                    }
-                }
-            }
-        };
-
-        let hr_grid = self.pos2grid(query);
-        let (gx, gy, gz) = hr_grid;
-        let lr_grid = (
-            gx.div_euclid(res_factor),
-            gy.div_euclid(res_factor),
-            gz.div_euclid(res_factor),
-        );
-        match self.nearby_type {
-            IVoxNearbyType::Center => cache_and_sum_density(&[lr_grid]),
-            IVoxNearbyType::Nearby6 => cache_and_sum_density(&Self::nearby_6(lr_grid)),
-            IVoxNearbyType::Nearby18 => cache_and_sum_density(&Self::nearby_18(lr_grid)),
-            IVoxNearbyType::Nearby26 => cache_and_sum_density(&Self::nearby_26(lr_grid)),
-        };
-
-        if total_density == 0 {
-            *out_size = 0;
-            return false;
-        }
-
-        // --- Proportional Sampling ---
-
-        let mut current_found_count = 0;
-
-        let mut sampled_out = [Point3::default(); MAX_NEIGHBORS];
-        for i in 0..num_cached {
-            if current_found_count >= k {
-                break;
-            }
-
-            if let Some(dist) = cached_neighbors[i] {
-                let relative_density = dist.point_count as f64 / total_density as f64;
-                let mut sample_count = (relative_density * k as f64).round() as usize;
-
-                let samples_needed = k - current_found_count;
-                sample_count = sample_count.min(samples_needed);
-
-                if sample_count == 0 {
-                    continue;
-                }
-
-                Self::sample_from_distribution(dist, sample_count, &mut rng, &mut sampled_out);
-
-                for i in 0..sample_count {
-                    let p = unsafe { sampled_out.get_unchecked(i) };
-                    result[current_found_count] = PointXYZ::new(p.x, p.y, p.z);
-                    current_found_count += 1;
-
-                    if current_found_count >= k {
-                        break;
-                    }
-                }
-            }
-        }
-
-        *out_size = current_found_count;
-        *out_size > 0
     }
 
     #[inline(always)]

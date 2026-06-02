@@ -778,15 +778,15 @@ fn lio_with_ready_signal(
         let shutdown_flag_for_stop = shutdown_flag.clone();
         std::thread::spawn(move || {
             if let Ok(request) = stop_rx.recv() {
-                if let Some(flag) = shutdown_flag_for_stop.as_ref() {
-                    flag.store(true, Ordering::SeqCst);
-                }
                 match request {
                     OfflineShutdownRequest::DrainAfterEndOfBag => {
                         drain_on_shutdown_for_stop.store(true, Ordering::SeqCst);
                     }
                     OfflineShutdownRequest::Immediate => {
                         node_for_stop.request_shutdown();
+                        if let Some(flag) = shutdown_flag_for_stop.as_ref() {
+                            flag.store(true, Ordering::SeqCst);
+                        }
                     }
                 }
             }
@@ -1034,6 +1034,7 @@ fn lio_with_ready_signal(
                 .expect("prelio ready sender must exist")
                 .clone();
             let relay_shutdown_flag = processing_shutdown_flag.clone();
+            let relay_drain_on_shutdown = Arc::clone(&drain_on_shutdown);
             let prefetch_scans = offline_prefetch_scans.max(1);
             ready_relay_handle = Some(std::thread::spawn(move || {
                 let mut requested_prefill = false;
@@ -1041,10 +1042,11 @@ fn lio_with_ready_signal(
                     if prelio_ready_tx.send(()).is_err() {
                         break;
                     }
-                    if relay_shutdown_flag
-                        .as_ref()
-                        .map(|flag| flag.load(Ordering::Relaxed))
-                        .unwrap_or(false)
+                    if relay_drain_on_shutdown.load(Ordering::SeqCst)
+                        || relay_shutdown_flag
+                            .as_ref()
+                            .map(|flag| flag.load(Ordering::Relaxed))
+                            .unwrap_or(false)
                     {
                         continue;
                     }
@@ -1174,9 +1176,10 @@ fn lio_with_ready_signal(
         loop {
             let lifis_tick = match processing_shutdown_flag.as_ref() {
                 Some(flag) => {
-                    if flag.load(std::sync::atomic::Ordering::Relaxed) {
-                        let drain_requested =
-                            drain_on_shutdown.load(std::sync::atomic::Ordering::SeqCst);
+                    let shutdown_requested = flag.load(std::sync::atomic::Ordering::Relaxed);
+                    let drain_requested =
+                        drain_on_shutdown.load(std::sync::atomic::Ordering::SeqCst);
+                    if shutdown_requested || drain_requested {
                         if drain_requested {
                             if !draining_after_end_of_bag {
                                 draining_after_end_of_bag = true;
