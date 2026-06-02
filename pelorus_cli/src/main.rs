@@ -46,6 +46,10 @@ use std::fs;
 use std::process::{Command as ProcessCommand, Stdio};
 #[cfg(any(feature = "mt_pubsub", feature = "ros2-client", feature = "r2r"))]
 const PATH_LIMIT: usize = 10_000;
+#[cfg(any(feature = "mt_pubsub", feature = "ros2-client", feature = "r2r"))]
+const MCAP_PATH_LIMIT: usize = 512;
+#[cfg(any(feature = "mt_pubsub", feature = "ros2-client", feature = "r2r"))]
+const MCAP_PATH_MIN_PERIOD_NS: u64 = 1_000_000_000;
 const DEFAULT_OFFLINE_PREFETCH_SCANS: usize = 4;
 
 #[cfg(any(feature = "mt_pubsub", feature = "ros2-client", feature = "r2r"))]
@@ -986,6 +990,7 @@ fn lio_with_ready_signal(
     // Use VecDeque for efficient removal from front (O(1) instead of O(n))
     let mut lidar_path_poses: VecDeque<PoseStamped> = VecDeque::new();
     let lidar_path_frame_id = config.prelio_params.map_frame.clone();
+    let mut last_mcap_path_write_time: Option<u64> = None;
 
     // let mut imu_path_poses: VecDeque<PoseStamped> = VecDeque::new();
     // let imu_path_frame_id = config.prelio_params.map_frame.clone();
@@ -1020,8 +1025,6 @@ fn lio_with_ready_signal(
             )?),
             None => None,
         };
-        let gate_minot_replay_on_mcap = minot_replay_mode && mcap_writer.is_some();
-
         // Initialize Prelio prediction
         let mut ready_for_next_tx = Some(ready_for_next_tx);
         let mut registration_ready_tx = None;
@@ -1393,10 +1396,8 @@ fn lio_with_ready_signal(
 
             let registration_result = {
                 let mut map = map.lock().unwrap();
-                let ready_for_registration = if gate_minot_replay_on_mcap {
+                let ready_for_registration = if minot_replay_mode {
                     None
-                } else if minot_replay_mode {
-                    registration_ready_tx.as_ref()
                 } else {
                     ready_for_next_tx.as_ref()
                 };
@@ -1420,7 +1421,7 @@ fn lio_with_ready_signal(
                 Ok(Some(result)) => result,
                 Ok(None) => {
                     drain_filtered_imu_mcap(&mut mcap_writer, &mut filtered_imu_rx)?;
-                    if gate_minot_replay_on_mcap {
+                    if minot_replay_mode {
                         if let Some(ready) = registration_ready_tx.as_ref() {
                             let _ = ready.send(());
                         }
@@ -1432,7 +1433,7 @@ fn lio_with_ready_signal(
                 Err(err) => {
                     error!("{err}");
                     drain_filtered_imu_mcap(&mut mcap_writer, &mut filtered_imu_rx)?;
-                    if gate_minot_replay_on_mcap {
+                    if minot_replay_mode {
                         if let Some(ready) = registration_ready_tx.as_ref() {
                             let _ = ready.send(());
                         }
@@ -1790,19 +1791,29 @@ fn lio_with_ready_signal(
                 writer.write_odom(&serde_odom(&pelorus_odom))?;
                 #[cfg(not(feature = "no-viz"))]
                 if changed_lidar_path {
-                    let lidar_path = Path {
-                        header: Header {
-                            frame_id: lidar_path_frame_id.clone(),
-                            stamp: pelorus_odom.header.stamp.clone(),
-                        },
-                        poses: lidar_path_poses.iter().cloned().collect(),
-                    };
-                    writer.write_path(&serde_path(&lidar_path))?;
+                    let path_time = (pelorus_odom.header.stamp.sec.max(0) as u64)
+                        .saturating_mul(1_000_000_000)
+                        .saturating_add(pelorus_odom.header.stamp.nanosec as u64);
+                    let should_write_path = last_mcap_path_write_time
+                        .map(|last| path_time.saturating_sub(last) >= MCAP_PATH_MIN_PERIOD_NS)
+                        .unwrap_or(true);
+                    if should_write_path {
+                        last_mcap_path_write_time = Some(path_time);
+                        let skip = lidar_path_poses.len().saturating_sub(MCAP_PATH_LIMIT);
+                        let lidar_path = Path {
+                            header: Header {
+                                frame_id: lidar_path_frame_id.clone(),
+                                stamp: pelorus_odom.header.stamp.clone(),
+                            },
+                            poses: lidar_path_poses.iter().skip(skip).cloned().collect(),
+                        };
+                        writer.write_path(&serde_path(&lidar_path))?;
+                    }
                 }
                 writer.write_tf(&serde_tf_message(&tf_for_mcap))?;
             }
             drain_filtered_imu_mcap(&mut mcap_writer, &mut filtered_imu_rx)?;
-            if gate_minot_replay_on_mcap {
+            if minot_replay_mode {
                 if let Some(ready) = registration_ready_tx.as_ref() {
                     let _ = ready.send(());
                 }
