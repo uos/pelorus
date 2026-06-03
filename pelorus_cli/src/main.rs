@@ -50,7 +50,7 @@ const PATH_LIMIT: usize = 10_000;
 const MCAP_PATH_LIMIT: usize = 512;
 #[cfg(any(feature = "mt_pubsub", feature = "ros2-client", feature = "r2r"))]
 const MCAP_PATH_MIN_PERIOD_NS: u64 = 1_000_000_000;
-const DEFAULT_OFFLINE_PREFETCH_SCANS: usize = 4;
+const DEFAULT_OFFLINE_PREFETCH_SCANS: usize = 1;
 
 #[cfg(any(feature = "mt_pubsub", feature = "ros2-client", feature = "r2r"))]
 use ros_pointcloud2::prelude::*;
@@ -1027,6 +1027,7 @@ fn lio_with_ready_signal(
             None => None,
         };
         let gate_minot_replay_on_mcap = minot_replay_mode && mcap_writer.is_some();
+        let mut minot_prefill_requested = false;
         // Initialize Prelio prediction
         let mut ready_for_next_tx = Some(ready_for_next_tx);
         let mut registration_ready_tx = None;
@@ -1427,6 +1428,18 @@ fn lio_with_ready_signal(
                         if let Some(ready) = registration_ready_tx.as_ref() {
                             let _ = ready.send(());
                         }
+                    } else if minot_replay_mode {
+                        let request_count = if minot_prefill_requested {
+                            1
+                        } else {
+                            minot_prefill_requested = true;
+                            offline_prefetch_scans.max(1)
+                        };
+                        release_minot_ticks(
+                            processing_shutdown_flag.as_ref(),
+                            synchronous_mode,
+                            request_count,
+                        );
                     } else {
                         release_minot_tick(processing_shutdown_flag.as_ref(), synchronous_mode);
                     }
@@ -1445,7 +1458,21 @@ fn lio_with_ready_signal(
                                 let _ = ready.send(());
                             }
                         }
-                        release_minot_tick(processing_shutdown_flag.as_ref(), synchronous_mode);
+                        if minot_replay_mode {
+                            let request_count = if minot_prefill_requested {
+                                1
+                            } else {
+                                minot_prefill_requested = true;
+                                offline_prefetch_scans.max(1)
+                            };
+                            release_minot_ticks(
+                                processing_shutdown_flag.as_ref(),
+                                synchronous_mode,
+                                request_count,
+                            );
+                        } else {
+                            release_minot_tick(processing_shutdown_flag.as_ref(), synchronous_mode);
+                        }
                     }
                     continue;
                 }
@@ -1825,7 +1852,17 @@ fn lio_with_ready_signal(
                     let _ = ready.send(());
                 }
             } else if minot_replay_mode {
-                release_minot_tick(processing_shutdown_flag.as_ref(), synchronous_mode);
+                let request_count = if minot_prefill_requested {
+                    1
+                } else {
+                    minot_prefill_requested = true;
+                    offline_prefetch_scans.max(1)
+                };
+                release_minot_ticks(
+                    processing_shutdown_flag.as_ref(),
+                    synchronous_mode,
+                    request_count,
+                );
             }
 
             #[cfg(feature = "rerun")]
