@@ -1027,12 +1027,13 @@ fn lio_with_ready_signal(
             None => None,
         };
         let gate_minot_replay_on_mcap = minot_replay_mode && mcap_writer.is_some();
+        let relay_minot_replay_on_registration = minot_replay_mode && mcap_writer.is_none();
         let mut minot_prefill_requested = false;
         // Initialize Prelio prediction
         let mut ready_for_next_tx = Some(ready_for_next_tx);
         let mut registration_ready_tx = None;
         let mut ready_relay_handle = None;
-        if gate_minot_replay_on_mcap {
+        if gate_minot_replay_on_mcap || relay_minot_replay_on_registration {
             let (relay_tx, relay_rx) = std::sync::mpsc::channel();
             registration_ready_tx = Some(relay_tx);
             let prelio_ready_tx = ready_for_next_tx
@@ -1399,7 +1400,9 @@ fn lio_with_ready_signal(
 
             let registration_result = {
                 let mut map = map.lock().unwrap();
-                let ready_for_registration = if gate_minot_replay_on_mcap {
+                let ready_for_registration = if relay_minot_replay_on_registration {
+                    registration_ready_tx.as_ref()
+                } else if gate_minot_replay_on_mcap {
                     None
                 } else {
                     ready_for_next_tx.as_ref()
@@ -1428,7 +1431,7 @@ fn lio_with_ready_signal(
                         if let Some(ready) = registration_ready_tx.as_ref() {
                             let _ = ready.send(());
                         }
-                    } else if minot_replay_mode {
+                    } else if !relay_minot_replay_on_registration && minot_replay_mode {
                         let request_count = if minot_prefill_requested {
                             1
                         } else {
@@ -1454,23 +1457,14 @@ fn lio_with_ready_signal(
                         }
                     } else {
                         if minot_replay_mode && !lifis_tick.map_only {
-                            if let Some(ready) = ready_for_next_tx.as_ref() {
+                            if let Some(ready) = registration_ready_tx
+                                .as_ref()
+                                .or_else(|| ready_for_next_tx.as_ref())
+                            {
                                 let _ = ready.send(());
                             }
                         }
-                        if minot_replay_mode {
-                            let request_count = if minot_prefill_requested {
-                                1
-                            } else {
-                                minot_prefill_requested = true;
-                                offline_prefetch_scans.max(1)
-                            };
-                            release_minot_ticks(
-                                processing_shutdown_flag.as_ref(),
-                                synchronous_mode,
-                                request_count,
-                            );
-                        } else {
+                        if !minot_replay_mode {
                             release_minot_tick(processing_shutdown_flag.as_ref(), synchronous_mode);
                         }
                     }
@@ -1851,7 +1845,7 @@ fn lio_with_ready_signal(
                 if let Some(ready) = registration_ready_tx.as_ref() {
                     let _ = ready.send(());
                 }
-            } else if minot_replay_mode {
+            } else if !relay_minot_replay_on_registration && minot_replay_mode {
                 let request_count = if minot_prefill_requested {
                     1
                 } else {
