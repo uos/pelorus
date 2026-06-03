@@ -108,6 +108,7 @@ impl State {
         imu_pose_prediction_init_guess: Option<Box<ImuPredictor>>,
         #[cfg(feature = "rerun")] rec: Option<Arc<rerun::RecordingStream>>,
         ready_for_next: Option<std::sync::mpsc::Receiver<()>>,
+        signal_paced: bool,
     ) -> anyhow::Result<Self> {
         Ok(State {
             #[cfg(feature = "rerun")]
@@ -124,6 +125,7 @@ impl State {
                 imu_pose_prediction_init_guess,
                 config.lidar_vendor,
                 ready_for_next,
+                signal_paced,
             )?)),
             lifis_params: config.clone(),
             #[cfg(any(feature = "ros2-client", feature = "mt_pubsub", feature = "r2r"))]
@@ -355,8 +357,8 @@ fn cloud_callback(
     }
 
     {
-        let state = state.lock().unwrap();
-        let mut lifis = state.lifis.lock().unwrap();
+        let lifis = state.lock().unwrap().lifis.clone();
+        let mut lifis = lifis.lock().unwrap();
         lifis.add_pointcloud(in_msg);
     }
 
@@ -469,6 +471,7 @@ impl PrelioNode {
         #[cfg(feature = "rerun")] rec: Option<Arc<rerun::RecordingStream>>,
         ready_for_next: Option<std::sync::mpsc::Receiver<()>>,
         filtered_imu_sender: Option<std::sync::mpsc::Sender<ImuMsg>>,
+        signal_paced: bool,
     ) -> anyhow::Result<(Self, std::sync::mpsc::Receiver<Tick>)> {
         #[cfg(feature = "ros2-client")]
         let tf_listener = Arc::new(tf::TfListener::new(node));
@@ -489,6 +492,7 @@ impl PrelioNode {
             #[cfg(feature = "rerun")]
             rec.clone(),
             ready_for_next,
+            signal_paced,
         )?;
 
         #[cfg(any(feature = "ros2-client", feature = "mt_pubsub", feature = "r2r"))]
@@ -877,9 +881,8 @@ impl PrelioNode {
                             }
                         }
 
-                        let state = state_clone.lock().unwrap();
-                        let filtered = state.lifis.lock().unwrap().add_imu(imu_lifis);
-                        drop(state);
+                        let lifis = state_clone.lock().unwrap().lifis.clone();
+                        let filtered = lifis.lock().unwrap().add_imu(imu_lifis);
                         #[cfg(feature = "rat")]
                         if let Some(trigger) = minot_bootstrap_trigger {
                             publish_minot_trigger(synchronous_mode, trigger);
@@ -924,14 +927,15 @@ impl PrelioNode {
                 let imu_pose_predictor_init = imu_pose_predictor_init.clone();
                 while let Some(msg) = imu_sub_rt.block_on(imu_sub.next()) {
                     // debug!("received imu");
-                    let state = state_clone.lock().unwrap();
-                    {
+                    let lifis = {
+                        let state = state_clone.lock().unwrap();
                         imu_tf_frame_lidar_inner
                             .clone()
                             .lock()
                             .unwrap()
                             .get_or_insert(msg.header.frame_id.clone());
-                    }
+                        state.lifis.clone()
+                    };
                     let imu_init_state = imu_imu_init_state.clone();
 
                     let imu_lifis = imu_to_lifis(msg.clone());
@@ -974,8 +978,7 @@ impl PrelioNode {
                         }
                     }
 
-                    let filtered = state.lifis.lock().unwrap().add_imu(imu_lifis);
-                    drop(state);
+                    let filtered = lifis.lock().unwrap().add_imu(imu_lifis);
                     #[cfg(feature = "rat")]
                     if let Some(trigger) = minot_bootstrap_trigger {
                         publish_minot_trigger(synchronous_mode, trigger);
@@ -997,12 +1000,15 @@ impl PrelioNode {
         std::thread::spawn(move || {
             let imu_pose_predictor_init = imu_pose_predictor_init.clone();
             while let Some(msg) = future::block_on(imu_subscription.next()) {
-                let state = state_clone.lock().unwrap();
-                imu_tf_frame_lidar_inner
-                    .clone()
-                    .lock()
-                    .unwrap()
-                    .get_or_insert(msg.header.frame_id.clone());
+                let lifis = {
+                    let state = state_clone.lock().unwrap();
+                    imu_tf_frame_lidar_inner
+                        .clone()
+                        .lock()
+                        .unwrap()
+                        .get_or_insert(msg.header.frame_id.clone());
+                    state.lifis.clone()
+                };
                 let imu_init_state = imu_init_state.clone();
 
                 let imu_lifis = imu_to_lifis(msg.clone());
@@ -1045,8 +1051,7 @@ impl PrelioNode {
                     }
                 }
 
-                let filtered = state.lifis.lock().unwrap().add_imu(imu_lifis);
-                drop(state);
+                let filtered = lifis.lock().unwrap().add_imu(imu_lifis);
                 #[cfg(feature = "rat")]
                 if let Some(trigger) = minot_bootstrap_trigger {
                     publish_minot_trigger(synchronous_mode, trigger);

@@ -15,10 +15,11 @@ use pelorus_core::log_debouncer::{set_default_debounce_secs, should_log_once_def
 use pelorus_core::{
     ImuCalibrationParameters, ImuMsg, ImuPosePrediction, ImuPredictor, ImuPredictorUndistort,
     LidarVendor, LifisParameters, LivoxMid360Point, LivoxMid360PointNoIntensity, LivoxPoint,
-    LivoxPointNoIntensity, MadgwickSetting, OdomMsg, OusterPoint, OusterPointNoIntensity, PointXYZ,
-    PointXYZI, PointXYZIT, PointXYZITimestamp, PointXYZIntensity, PrelioProcessedCloud,
-    RobosensePoint, RobosensePointNoIntensity, Twist, VelodynePoint, VelodynePointNoIntensity,
-    time_msg_from_secs, timing::RuntimeEvaluator,
+    LivoxPointNoIntensity, LivoxPointOffsetTime, LivoxPointOffsetTimeNoIntensity, MadgwickSetting,
+    OdomMsg, OusterPoint, OusterPointNoIntensity, PointXYZ, PointXYZI, PointXYZIT,
+    PointXYZITimestamp, PointXYZIntensity, PrelioProcessedCloud, RobosensePoint,
+    RobosensePointNoIntensity, Twist, VelodynePoint, VelodynePointNoIntensity, time_msg_from_secs,
+    timing::RuntimeEvaluator,
 };
 
 #[cfg(any(feature = "cuda", feature = "metal", feature = "vulkan"))]
@@ -1015,6 +1016,49 @@ fn filter_downsample_with_fallback<
     }
 }
 
+fn filter_downsample_livox(
+    cloud: PointCloud2Msg,
+    lifis_params: &LifisParameters,
+    eval: &mut RuntimeEvaluator,
+    buffers: &mut DownsampleBuffers,
+) -> Result<Option<DownsampleCloudMeta>> {
+    let result = filter_downsample::<5, LivoxPoint>(&cloud, lifis_params, eval, buffers);
+    match result {
+        Ok(data) => Ok(data),
+        Err(t_error) => {
+            let offset_time_result =
+                filter_downsample::<5, LivoxPointOffsetTime>(&cloud, lifis_params, eval, buffers);
+            match offset_time_result {
+                Ok(data) => Ok(data),
+                Err(offset_time_error) => {
+                    let error_str = format!("{offset_time_error:?}");
+                    if error_str.contains("Some fields") && error_str.contains("intensity") {
+                        filter_downsample::<4, LivoxPointOffsetTimeNoIntensity>(
+                            &cloud,
+                            lifis_params,
+                            eval,
+                            buffers,
+                        )
+                    } else {
+                        let t_error_str = format!("{t_error:?}");
+                        if t_error_str.contains("Some fields") && t_error_str.contains("intensity")
+                        {
+                            filter_downsample::<4, LivoxPointNoIntensity>(
+                                &cloud,
+                                lifis_params,
+                                eval,
+                                buffers,
+                            )
+                        } else {
+                            Err(offset_time_error)
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
 fn filter_downsample<const N: usize, P: PointXYZITimestamp<N>>(
     cloud: &PointCloud2Msg,
     lifis_params: &LifisParameters,
@@ -1416,6 +1460,7 @@ impl Prelio {
         imu_pose_prediction_init_guess: Option<Box<ImuPredictor>>,
         lidar_vendor: LidarVendor,
         ready_for_next: Option<std::sync::mpsc::Receiver<()>>,
+        signal_paced: bool,
     ) -> anyhow::Result<Self> {
         let imu_intrinsic_calibration = match imu_intrinsic_calibration_params
             .imu_intrinsics_calib_file_path
@@ -1498,6 +1543,7 @@ impl Prelio {
                 lidar_vendor,
                 lidar_as_sync,
                 ready_for_next,
+                signal_paced,
             )
         });
 
@@ -1535,14 +1581,12 @@ impl Prelio {
                         &mut eval,
                         &mut downsample_buffers,
                     ),
-                    LidarVendor::Livox => {
-                        filter_downsample_with_fallback::<5, 4, LivoxPoint, LivoxPointNoIntensity>(
-                            labeled.cloud,
-                            &params_clone,
-                            &mut eval,
-                            &mut downsample_buffers,
-                        )
-                    }
+                    LidarVendor::Livox => filter_downsample_livox(
+                        labeled.cloud,
+                        &params_clone,
+                        &mut eval,
+                        &mut downsample_buffers,
+                    ),
                     LidarVendor::LivoxMid360 => filter_downsample_with_fallback::<
                         5,
                         4,
@@ -1861,6 +1905,7 @@ impl Prelio {
         lidar_vendor: LidarVendor,
         lidar_as_sync: bool,
         ready_for_next: Option<std::sync::mpsc::Receiver<()>>,
+        signal_paced: bool,
     ) {
         let mut eval = RuntimeEvaluator::new();
         let mut to_next: Option<ImuMsg> = None;
@@ -1905,8 +1950,14 @@ impl Prelio {
             }
 
             // Handle relative vs absolute timestamps
+            let lidar_point_time_span = lidar_end_time - lidar_begin_time;
+            let livox_use_header_span = matches!(lidar_vendor, LidarVendor::Livox)
+                && (lidar_point_time_span <= f64::EPSILON || lidar_end_time > 0.2);
+            let use_point_timestamps_for_frame =
+                has_point_timestamps(lidar_vendor) && !livox_use_header_span;
             let (lidar_begin_time, imu_span_end_time) = match lidar_vendor {
                 LidarVendor::Robosense => (lidar_begin_time, lidar_end_time),
+                LidarVendor::Livox if livox_use_header_span => (lidar_time, lidar_time),
                 LidarVendor::LivoxMid360 => (lidar_time - lidar_end_time, lidar_time),
                 LidarVendor::NoTimestamp => (lidar_time, lidar_time),
                 _ => (lidar_begin_time + lidar_time, lidar_end_time + lidar_time),
@@ -1921,6 +1972,33 @@ impl Prelio {
             } else {
                 lidar_begin_time
             };
+            if imu_span_end_time <= imu_span_start_time {
+                *prev_lidar_end_time = imu_span_end_time;
+                let res = PrelioProcessedCloud {
+                    scan_id: scan_id,
+                    cloud: Vec::new(),
+                    passthrough: None,
+                    imu_frame: "".to_string(),
+                    header: lidar_header,
+                    end_of_frame_guess: Isometry3::identity(),
+                    end_of_frame_time: if use_point_timestamps_for_frame {
+                        secs_to_timestamp(lidar_end_time)
+                    } else {
+                        secs_to_timestamp(lidar_begin_time)
+                    },
+                    pose_covariance: [0.0; 36],
+                    twist_covariance: [0.0; 36],
+                    end_of_frame_twist: Twist {
+                        linear: Vector3::new(0., 0., 0.),
+                        angular: Vector3::new(0., 0., 0.),
+                    },
+                    runtime_eval: eval.clone(),
+                    should_map_only: true,
+                    lidar_end_time_abs: abs_lidar_end,
+                };
+                synced_sender.send(res).unwrap();
+                continue;
+            }
 
             let mut imu_data = Vec::with_capacity(100);
             let mut odom_data = Vec::with_capacity(100);
@@ -1941,7 +2019,42 @@ impl Prelio {
             // );
             // Populate IMU with buffered
             if let Some(imu_receiver) = imu_receiver.as_ref() {
-                if lidar_as_sync {
+                if signal_paced {
+                    let mut received_from_batch = false;
+                    loop {
+                        let imu = if received_from_batch {
+                            match imu_receiver.try_recv() {
+                                Ok(imu) => imu,
+                                Err(std::sync::mpsc::TryRecvError::Empty) => break,
+                                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                                    error!("Imu receiver closed");
+                                    return;
+                                }
+                            }
+                        } else {
+                            match imu_receiver.recv() {
+                                Ok(imu) => imu,
+                                Err(e) => {
+                                    error!("Imu receiver closed: {e}");
+                                    return;
+                                }
+                            }
+                        };
+                        let imu_time = timestamp_to_secs(&imu.stamp);
+
+                        if imu_time < imu_span_start_time {
+                            continue;
+                        }
+                        received_from_batch = true;
+
+                        if imu_time > imu_span_end_time {
+                            to_next = Some(imu);
+                            break;
+                        }
+
+                        imu_data.push(imu);
+                    }
+                } else if lidar_as_sync {
                     loop {
                         match imu_receiver.try_recv() {
                             Ok(imu) => {
@@ -1995,6 +2108,30 @@ impl Prelio {
 
                 if imu_data.is_empty() {
                     warn!("No imu data in span");
+                    *prev_lidar_end_time = imu_span_end_time;
+                    let res = PrelioProcessedCloud {
+                        scan_id: scan_id,
+                        cloud: Vec::new(),
+                        passthrough: None,
+                        imu_frame: "".to_string(),
+                        header: lidar_header,
+                        end_of_frame_guess: Isometry3::identity(),
+                        end_of_frame_time: if use_point_timestamps_for_frame {
+                            secs_to_timestamp(lidar_end_time)
+                        } else {
+                            secs_to_timestamp(lidar_begin_time)
+                        },
+                        pose_covariance: [0.0; 36],
+                        twist_covariance: [0.0; 36],
+                        end_of_frame_twist: Twist {
+                            linear: Vector3::new(0., 0., 0.),
+                            angular: Vector3::new(0., 0., 0.),
+                        },
+                        runtime_eval: eval.clone(),
+                        should_map_only: true,
+                        lidar_end_time_abs: abs_lidar_end,
+                    };
+                    synced_sender.send(res).unwrap();
                     continue;
                 }
             }
@@ -2056,7 +2193,7 @@ impl Prelio {
                     imu_frame: "".to_string(),
                     header: lidar_header,
                     end_of_frame_guess: Isometry3::identity(),
-                    end_of_frame_time: if has_point_timestamps(lidar_vendor) {
+                    end_of_frame_time: if use_point_timestamps_for_frame {
                         secs_to_timestamp(lidar_end_time)
                     } else {
                         secs_to_timestamp(lidar_begin_time)
@@ -2073,7 +2210,7 @@ impl Prelio {
                 };
                 synced_sender.send(res).unwrap();
             } else {
-                let meas_lidar_end_time = if has_point_timestamps(lidar_vendor) {
+                let meas_lidar_end_time = if use_point_timestamps_for_frame {
                     lidar_end_time
                 } else {
                     imu_span_end_time
@@ -2156,7 +2293,7 @@ impl Prelio {
                         imu_frame,
                         header: lidar_header,
                         end_of_frame_guess: imu_int.pose,
-                        end_of_frame_time: if has_point_timestamps(lidar_vendor) {
+                        end_of_frame_time: if use_point_timestamps_for_frame {
                             imu_data.last().unwrap().stamp
                         } else {
                             secs_to_timestamp(lidar_begin_time)

@@ -773,6 +773,7 @@ fn lio_with_ready_signal(
         rec.clone(),
         Some(ready_for_next_rx),
         filtered_imu_tx,
+        minot_replay_mode,
     )?;
     let lifis_node = Arc::new(lifis_node);
     let drain_on_shutdown = Arc::new(AtomicBool::new(false));
@@ -1025,11 +1026,12 @@ fn lio_with_ready_signal(
             )?),
             None => None,
         };
+        let gate_minot_replay_on_mcap = minot_replay_mode && mcap_writer.is_some();
         // Initialize Prelio prediction
         let mut ready_for_next_tx = Some(ready_for_next_tx);
         let mut registration_ready_tx = None;
         let mut ready_relay_handle = None;
-        if minot_replay_mode {
+        if gate_minot_replay_on_mcap {
             let (relay_tx, relay_rx) = std::sync::mpsc::channel();
             registration_ready_tx = Some(relay_tx);
             let prelio_ready_tx = ready_for_next_tx
@@ -1396,7 +1398,7 @@ fn lio_with_ready_signal(
 
             let registration_result = {
                 let mut map = map.lock().unwrap();
-                let ready_for_registration = if minot_replay_mode {
+                let ready_for_registration = if gate_minot_replay_on_mcap {
                     None
                 } else {
                     ready_for_next_tx.as_ref()
@@ -1421,7 +1423,7 @@ fn lio_with_ready_signal(
                 Ok(Some(result)) => result,
                 Ok(None) => {
                     drain_filtered_imu_mcap(&mut mcap_writer, &mut filtered_imu_rx)?;
-                    if minot_replay_mode {
+                    if gate_minot_replay_on_mcap {
                         if let Some(ready) = registration_ready_tx.as_ref() {
                             let _ = ready.send(());
                         }
@@ -1433,11 +1435,16 @@ fn lio_with_ready_signal(
                 Err(err) => {
                     error!("{err}");
                     drain_filtered_imu_mcap(&mut mcap_writer, &mut filtered_imu_rx)?;
-                    if minot_replay_mode {
+                    if gate_minot_replay_on_mcap {
                         if let Some(ready) = registration_ready_tx.as_ref() {
                             let _ = ready.send(());
                         }
                     } else {
+                        if minot_replay_mode && !lifis_tick.map_only {
+                            if let Some(ready) = ready_for_next_tx.as_ref() {
+                                let _ = ready.send(());
+                            }
+                        }
                         release_minot_tick(processing_shutdown_flag.as_ref(), synchronous_mode);
                     }
                     continue;
@@ -1813,10 +1820,12 @@ fn lio_with_ready_signal(
                 writer.write_tf(&serde_tf_message(&tf_for_mcap))?;
             }
             drain_filtered_imu_mcap(&mut mcap_writer, &mut filtered_imu_rx)?;
-            if minot_replay_mode {
+            if gate_minot_replay_on_mcap {
                 if let Some(ready) = registration_ready_tx.as_ref() {
                     let _ = ready.send(());
                 }
+            } else if minot_replay_mode {
+                release_minot_tick(processing_shutdown_flag.as_ref(), synchronous_mode);
             }
 
             #[cfg(feature = "rerun")]

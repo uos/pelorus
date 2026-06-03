@@ -498,6 +498,7 @@ impl Pipeline {
             init_guess,
             params.lidar_vendor,
             ready_for_next,
+            false,
         )?;
 
         let rx = prelio
