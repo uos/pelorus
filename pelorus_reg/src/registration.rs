@@ -224,13 +224,6 @@ impl crate::Registration for RegistrationState {
     ) -> anyhow::Result<Option<crate::CloudRegisterResult>> {
         let eval_cb = Arc::new(RwLock::new(&mut *eval));
 
-        if cloud.len() == 0 {
-            if let Some(ready) = ready_for_next {
-                let _ = ready.send(());
-            }
-            return Ok(None);
-        }
-
         let map_empty = match backend {
             ActiveBackend::Cpu => self.map.is_empty(),
             #[cfg(feature = "cuda")]
@@ -272,9 +265,6 @@ impl crate::Registration for RegistrationState {
                     let rot_quat: pelorus_vulkan::Quaternion = imu_transform.rotation.into();
                     pelorus_vulkan::add_to_map(stream, buffer, transl, &rot_quat, scan_id);
                 }
-            }
-            if let Some(ready) = ready_for_next {
-                let _ = ready.send(());
             }
             return Ok(None);
         }

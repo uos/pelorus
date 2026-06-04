@@ -1973,30 +1973,6 @@ impl Prelio {
                 lidar_begin_time
             };
             if imu_span_end_time <= imu_span_start_time {
-                *prev_lidar_end_time = imu_span_end_time;
-                let res = PrelioProcessedCloud {
-                    scan_id: scan_id,
-                    cloud: Vec::new(),
-                    passthrough: None,
-                    imu_frame: "".to_string(),
-                    header: lidar_header,
-                    end_of_frame_guess: Isometry3::identity(),
-                    end_of_frame_time: if use_point_timestamps_for_frame {
-                        secs_to_timestamp(lidar_end_time)
-                    } else {
-                        secs_to_timestamp(lidar_begin_time)
-                    },
-                    pose_covariance: [0.0; 36],
-                    twist_covariance: [0.0; 36],
-                    end_of_frame_twist: Twist {
-                        linear: Vector3::new(0., 0., 0.),
-                        angular: Vector3::new(0., 0., 0.),
-                    },
-                    runtime_eval: eval.clone(),
-                    should_map_only: true,
-                    lidar_end_time_abs: abs_lidar_end,
-                };
-                synced_sender.send(res).unwrap();
                 continue;
             }
 
@@ -2108,30 +2084,6 @@ impl Prelio {
 
                 if imu_data.is_empty() {
                     warn!("No imu data in span");
-                    *prev_lidar_end_time = imu_span_end_time;
-                    let res = PrelioProcessedCloud {
-                        scan_id: scan_id,
-                        cloud: Vec::new(),
-                        passthrough: None,
-                        imu_frame: "".to_string(),
-                        header: lidar_header,
-                        end_of_frame_guess: Isometry3::identity(),
-                        end_of_frame_time: if use_point_timestamps_for_frame {
-                            secs_to_timestamp(lidar_end_time)
-                        } else {
-                            secs_to_timestamp(lidar_begin_time)
-                        },
-                        pose_covariance: [0.0; 36],
-                        twist_covariance: [0.0; 36],
-                        end_of_frame_twist: Twist {
-                            linear: Vector3::new(0., 0., 0.),
-                            angular: Vector3::new(0., 0., 0.),
-                        },
-                        runtime_eval: eval.clone(),
-                        should_map_only: true,
-                        lidar_end_time_abs: abs_lidar_end,
-                    };
-                    synced_sender.send(res).unwrap();
                     continue;
                 }
             }
