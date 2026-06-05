@@ -50,7 +50,7 @@ const PATH_LIMIT: usize = 10_000;
 const MCAP_PATH_LIMIT: usize = 512;
 #[cfg(any(feature = "mt_pubsub", feature = "ros2-client", feature = "r2r"))]
 const MCAP_PATH_MIN_PERIOD_NS: u64 = 1_000_000_000;
-const DEFAULT_OFFLINE_PREFETCH_SCANS: usize = 1;
+const DEFAULT_OFFLINE_PREFETCH_SCANS: usize = 4;
 
 #[cfg(any(feature = "mt_pubsub", feature = "ros2-client", feature = "r2r"))]
 use ros_pointcloud2::prelude::*;
@@ -66,7 +66,7 @@ use log::{debug, error, info, trace, warn};
 #[cfg(feature = "mt_pubsub")]
 use mt_pubsub::Node;
 #[cfg(any(feature = "mt_pubsub", feature = "ros2-client", feature = "r2r"))]
-use nalgebra::{Isometry3, Matrix3, Translation3, UnitQuaternion};
+use nalgebra::{Isometry3, Translation3, UnitQuaternion};
 #[cfg(feature = "r2r")]
 #[allow(unused_imports)]
 use r2r::{
@@ -1622,7 +1622,7 @@ fn lio_with_ready_signal(
                 }
 
                 let pose_cov = &pelorus_odom.pose.covariance;
-                let position_cov_world = Matrix3::new(
+                let position_cov_world = nalgebra::Matrix3::new(
                     pose_cov[0],
                     pose_cov[1],
                     pose_cov[2],
