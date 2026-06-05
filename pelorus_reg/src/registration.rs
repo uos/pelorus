@@ -44,6 +44,11 @@ pub struct RegistrationState {
 }
 
 impl RegistrationState {
+    #[cfg(not(feature = "nn_kdt"))]
+    pub fn get_distributions(&self) -> Vec<VoxelDistribution> {
+        self.map.get_distributions()
+    }
+
     fn ensure_cloud_matches_backend(
         backend: &ActiveBackend,
         cloud: &LocatedBufferView<PointXYZIT>,

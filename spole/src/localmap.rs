@@ -168,6 +168,13 @@ impl Livodish {
             .collect()
     }
 
+    pub fn get_distributions(&self) -> Vec<VoxelDistribution> {
+        self.buffer
+            .iter()
+            .filter_map(|v| Some(v.as_ref()?.0.1))
+            .collect()
+    }
+
     pub fn find(&self, key: &i32) -> Option<VoxelDistribution> {
         let idx = self.lookup.get(key)?;
         unsafe { self.buffer.get_unchecked(*idx).as_ref() }.map(|v| v.0.1)

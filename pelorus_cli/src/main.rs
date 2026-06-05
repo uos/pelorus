@@ -66,7 +66,7 @@ use log::{debug, error, info, trace, warn};
 #[cfg(feature = "mt_pubsub")]
 use mt_pubsub::Node;
 #[cfg(any(feature = "mt_pubsub", feature = "ros2-client", feature = "r2r"))]
-use nalgebra::{Isometry3, Translation3, UnitQuaternion};
+use nalgebra::{Isometry3, Matrix3, Translation3, UnitQuaternion};
 #[cfg(feature = "r2r")]
 #[allow(unused_imports)]
 use r2r::{
@@ -1582,6 +1582,93 @@ fn lio_with_ready_signal(
                 }
             }
 
+            #[cfg(feature = "rerun")]
+            if let Some(ref rec) = rec {
+                let odom_pose = Isometry3::from_parts(
+                    nalgebra::Translation3::new(
+                        pelorus_odom.pose.pose.position.x,
+                        pelorus_odom.pose.pose.position.y,
+                        pelorus_odom.pose.pose.position.z,
+                    ),
+                    UnitQuaternion::from_quaternion(nalgebra::Quaternion::new(
+                        pelorus_odom.pose.pose.orientation.w,
+                        pelorus_odom.pose.pose.orientation.x,
+                        pelorus_odom.pose.pose.orientation.y,
+                        pelorus_odom.pose.pose.orientation.z,
+                    )),
+                );
+                let odom_pose_rerun = ros_to_rerun.cast() * odom_pose;
+                let odom_transform = rerun::Transform3D::from_translation(glam::Vec3::new(
+                    odom_pose_rerun.translation.x as f32,
+                    odom_pose_rerun.translation.y as f32,
+                    odom_pose_rerun.translation.z as f32,
+                ))
+                .with_quaternion(glam::Quat::from_xyzw(
+                    odom_pose_rerun.rotation.quaternion().i as f32,
+                    odom_pose_rerun.rotation.quaternion().j as f32,
+                    odom_pose_rerun.rotation.quaternion().k as f32,
+                    odom_pose_rerun.rotation.quaternion().w as f32,
+                ));
+
+                if let Err(err) = rec.log("world/latest_odometry", &odom_transform) {
+                    error!("Error sending latest odometry pose to rerun {err}");
+                }
+
+                if let Err(err) = rec.log(
+                    "world/latest_odometry",
+                    &rerun::TransformAxes3D::new(0.75).with_show_frame(false),
+                ) {
+                    error!("Error sending latest odometry axes to rerun {err}");
+                }
+
+                let pose_cov = &pelorus_odom.pose.covariance;
+                let position_cov_world = Matrix3::new(
+                    pose_cov[0],
+                    pose_cov[1],
+                    pose_cov[2],
+                    pose_cov[6],
+                    pose_cov[7],
+                    pose_cov[8],
+                    pose_cov[12],
+                    pose_cov[13],
+                    pose_cov[14],
+                );
+                let odom_rotation = odom_pose.rotation.to_rotation_matrix();
+                let position_cov_local = odom_rotation.matrix().transpose()
+                    * position_cov_world
+                    * odom_rotation.matrix();
+                let eig = position_cov_local.symmetric_eigen();
+                let mut eig_vectors = eig.eigenvectors;
+                if eig_vectors.determinant() < 0.0 {
+                    eig_vectors.set_column(0, &(-eig_vectors.column(0)));
+                }
+
+                let covariance_visual_scale = 300.0;
+                let covariance_half_sizes = glam::Vec3::new(
+                    (covariance_visual_scale * eig.eigenvalues.x.max(0.0).sqrt()) as f32,
+                    (covariance_visual_scale * eig.eigenvalues.y.max(0.0).sqrt()) as f32,
+                    (covariance_visual_scale * eig.eigenvalues.z.max(0.0).sqrt()) as f32,
+                );
+                let covariance_rotation = UnitQuaternion::from_matrix(&eig_vectors);
+                let covariance_quat = covariance_rotation.quaternion();
+                let covariance_ellipsoid = rerun::Ellipsoids3D::update_fields()
+                    .with_half_sizes([covariance_half_sizes])
+                    .with_quaternions([glam::Quat::from_xyzw(
+                        covariance_quat.i as f32,
+                        covariance_quat.j as f32,
+                        covariance_quat.k as f32,
+                        covariance_quat.w as f32,
+                    )])
+                    .with_colors([rerun::Color::from_unmultiplied_rgba(64, 180, 255, 96)])
+                    .with_fill_mode(rerun::components::FillMode::TransparentFillMajorWireframe)
+                    .with_line_radii([rerun::Radius::new_ui_points(1.0)]);
+
+                if let Err(err) = rec.log("world/latest_odometry/covariance", &covariance_ellipsoid)
+                {
+                    error!("Error sending latest odometry covariance to rerun {err}");
+                }
+            }
+
             // publish paths but only add new poses if the robot moved enough
             #[cfg(not(feature = "no-viz"))]
             let changed_lidar_path = {
@@ -1731,14 +1818,54 @@ fn lio_with_ready_signal(
             {
                 eval.start("pub_localmap").unwrap();
                 #[cfg(not(any(feature = "cuda", feature = "metal", feature = "vulkan")))]
-                let total_map = map.lock().unwrap().get_entire_map();
+                let map_distributions = map.lock().unwrap().get_distributions();
                 #[cfg(feature = "cuda")]
                 let total_map = pelorus_cuda::get_map();
                 #[cfg(feature = "metal")]
                 let total_map = pelorus_metal::get_map();
                 #[cfg(feature = "vulkan")]
                 let total_map = pelorus_vulkan::get_map();
-                #[cfg(feature = "rerun")]
+                #[cfg(all(
+                    feature = "rerun",
+                    not(any(feature = "cuda", feature = "metal", feature = "vulkan"))
+                ))]
+                if let Some(ref rec) = rec {
+                    let map_distribution_visual_scale = 3.0f32;
+                    let mut strips = Vec::with_capacity(map_distributions.len() * 3);
+
+                    for distribution in map_distributions.iter() {
+                        let eig = distribution.covariance.symmetric_eigen();
+                        let center = glam::Vec3::new(
+                            distribution.mean.x,
+                            distribution.mean.y,
+                            distribution.mean.z,
+                        );
+
+                        for axis in 0..3 {
+                            let dir = eig.eigenvectors.column(axis);
+                            let radius = map_distribution_visual_scale
+                                * eig.eigenvalues[axis].max(0.0).sqrt();
+                            let offset =
+                                glam::Vec3::new(dir.x * radius, dir.y * radius, dir.z * radius);
+                            strips.push(rerun::LineStrip3D::from_iter([
+                                center - offset,
+                                center + offset,
+                            ]));
+                        }
+                    }
+
+                    let map_patches = rerun::LineStrips3D::new(strips)
+                        .with_colors([rerun::Color::from_rgb(255, 180, 64)])
+                        .with_radii([rerun::Radius::new_ui_points(0.75)]);
+
+                    if let Err(err) = rec.log("world/map_distributions", &map_patches) {
+                        error!("Error sending CPU map distributions to rerun {err}");
+                    }
+                }
+                #[cfg(all(
+                    feature = "rerun",
+                    any(feature = "cuda", feature = "metal", feature = "vulkan")
+                ))]
                 if let Some(ref rec) = rec {
                     let points = total_map.iter().map(|v| {
                         let v = ros_to_rerun.cast().transform_point(v);
@@ -1910,16 +2037,13 @@ fn lio_with_ready_signal(
                 let ps = impl_r2r::to_pointcloud2_msg(cloud.clone());
 
                 let gradient = colorous::TURBO;
+                let t_world_lidar_rerun = (ros_to_rerun * register_pose.pose).cast();
                 let (positions, colors): (Vec<_>, Vec<_>) = ps
                     .try_into_iter()
                     .unwrap()
                     .map(|v: PointXYZI| {
                         let color = gradient.eval_continuous(v.intensity as f64 / 255.0);
-                        let v = if config.rerun_undistorted_static_world {
-                            register_pose.pose.cast() * nalgebra::Point3::new(v.x, v.y, v.z)
-                        } else {
-                            nalgebra::Point3::new(v.x, v.y, v.z)
-                        };
+                        let v = t_world_lidar_rerun * nalgebra::Point3::new(v.x, v.y, v.z);
                         let pos = glam::Vec3::new(v.x as f32, v.y as f32, v.z as f32);
                         let color_rgb = [color.r, color.g, color.b];
 
@@ -1930,7 +2054,7 @@ fn lio_with_ready_signal(
                 let topic = if config.rerun_undistorted_static_world {
                     format!("undistorted_{:?}", current_cloud_time)
                 } else {
-                    "world/lidar/undistorted".to_string()
+                    "world/latest_scan".to_string()
                 };
 
                 if let Err(err) = rec.log(

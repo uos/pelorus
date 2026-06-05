@@ -1057,6 +1057,12 @@ impl IVoxHashMap {
             self.livodish.get_map()
         }
     }
+
+    #[cfg(not(feature = "nn_kdt"))]
+    #[must_use]
+    pub fn get_distributions(&self) -> Vec<VoxelDistribution> {
+        self.livodish.get_distributions()
+    }
 }
 
 // #[cfg(test)]
