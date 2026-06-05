@@ -37,6 +37,12 @@ struct SortKey {
     point_count: u64,   // Denominator
 }
 
+#[derive(Clone, Copy, Debug)]
+pub struct VoxelDistributionLru {
+    pub distribution: VoxelDistribution,
+    pub lru_score: f32,
+}
+
 // LeastRelevantCacheIncrementalVoxelDistributionHashmap
 pub struct Livodish {
     // all distributions in general
@@ -172,6 +178,31 @@ impl Livodish {
         self.buffer
             .iter()
             .filter_map(|v| Some(v.as_ref()?.0.1))
+            .collect()
+    }
+
+    pub fn get_distributions_with_lru_scores(&self) -> Vec<VoxelDistributionLru> {
+        let mut ranks = vec![self.capacity; self.capacity];
+        for (rank, opt_idx) in self.lru_mapping.iter().enumerate() {
+            if let Some(idx) = opt_idx {
+                if *idx < ranks.len() {
+                    ranks[*idx] = rank;
+                }
+            }
+        }
+
+        let denom = self.capacity.max(1) as f32;
+        self.buffer
+            .iter()
+            .enumerate()
+            .filter_map(|(idx, v)| {
+                let distribution = v.as_ref()?.0.1;
+                let rank = ranks.get(idx).copied().unwrap_or(self.capacity) as f32;
+                Some(VoxelDistributionLru {
+                    distribution,
+                    lru_score: (rank / denom).clamp(0.0, 1.0),
+                })
+            })
             .collect()
     }
 

@@ -1818,7 +1818,7 @@ fn lio_with_ready_signal(
             {
                 eval.start("pub_localmap").unwrap();
                 #[cfg(not(any(feature = "cuda", feature = "metal", feature = "vulkan")))]
-                let map_distributions = map.lock().unwrap().get_distributions();
+                let map_distributions = map.lock().unwrap().get_distributions_with_lru_scores();
                 #[cfg(feature = "cuda")]
                 let total_map = pelorus_cuda::get_map();
                 #[cfg(feature = "metal")]
@@ -1831,32 +1831,94 @@ fn lio_with_ready_signal(
                 ))]
                 if let Some(ref rec) = rec {
                     let map_distribution_visual_scale = 3.0f32;
-                    let mut strips = Vec::with_capacity(map_distributions.len() * 3);
+                    let min_patch_half_size = (config.map_resolution as f32 * 0.25).max(0.02);
+                    const SURFEL_DISC_SEGMENTS: u32 = 8;
+                    let vertices_per_disc = SURFEL_DISC_SEGMENTS as usize + 1;
+                    let mut vertices =
+                        Vec::with_capacity(map_distributions.len() * vertices_per_disc);
+                    let mut normals =
+                        Vec::with_capacity(map_distributions.len() * vertices_per_disc);
+                    let mut vertex_colors =
+                        Vec::with_capacity(map_distributions.len() * vertices_per_disc);
+                    let mut triangles =
+                        Vec::with_capacity(map_distributions.len() * SURFEL_DISC_SEGMENTS as usize);
 
-                    for distribution in map_distributions.iter() {
+                    for scored_distribution in map_distributions.iter() {
+                        let distribution = &scored_distribution.distribution;
                         let eig = distribution.covariance.symmetric_eigen();
                         let center = glam::Vec3::new(
                             distribution.mean.x,
                             distribution.mean.y,
                             distribution.mean.z,
                         );
+                        let value = scored_distribution.lru_score.clamp(0.0, 1.0);
+                        let surfel_color = if value < 0.5 {
+                            let t = value * 2.0;
+                            rerun::Color::from_rgb(
+                                (150.0 + 95.0 * t) as u8,
+                                (58.0 + 116.0 * t) as u8,
+                                (70.0 - 20.0 * t) as u8,
+                            )
+                        } else {
+                            let t = (value - 0.5) * 2.0;
+                            rerun::Color::from_rgb(
+                                (245.0 - 171.0 * t) as u8,
+                                (174.0 + 42.0 * t) as u8,
+                                (50.0 + 166.0 * t) as u8,
+                            )
+                        };
 
-                        for axis in 0..3 {
-                            let dir = eig.eigenvectors.column(axis);
-                            let radius = map_distribution_visual_scale
-                                * eig.eigenvalues[axis].max(0.0).sqrt();
-                            let offset =
-                                glam::Vec3::new(dir.x * radius, dir.y * radius, dir.z * radius);
-                            strips.push(rerun::LineStrip3D::from_iter([
-                                center - offset,
-                                center + offset,
-                            ]));
+                        let mut axes = [
+                            (eig.eigenvalues.x.max(0.0), eig.eigenvectors.column(0)),
+                            (eig.eigenvalues.y.max(0.0), eig.eigenvectors.column(1)),
+                            (eig.eigenvalues.z.max(0.0), eig.eigenvectors.column(2)),
+                        ];
+                        axes.sort_by(|a, b| a.0.total_cmp(&b.0));
+
+                        let major_radius = (map_distribution_visual_scale * axes[2].0.sqrt())
+                            .max(min_patch_half_size);
+                        let minor_radius = (map_distribution_visual_scale * axes[1].0.sqrt())
+                            .max(min_patch_half_size);
+                        let major_dir = axes[2].1;
+                        let minor_dir = axes[1].1;
+                        let major = glam::Vec3::new(
+                            major_dir.x * major_radius,
+                            major_dir.y * major_radius,
+                            major_dir.z * major_radius,
+                        );
+                        let minor = glam::Vec3::new(
+                            minor_dir.x * minor_radius,
+                            minor_dir.y * minor_radius,
+                            minor_dir.z * minor_radius,
+                        );
+                        let normal_dir = axes[0].1;
+                        let normal = glam::Vec3::new(normal_dir.x, normal_dir.y, normal_dir.z)
+                            .normalize_or_zero();
+                        let base_idx = vertices.len() as u32;
+
+                        vertices.push(center);
+                        normals.push(normal);
+                        vertex_colors.push(surfel_color);
+
+                        for segment in 0..SURFEL_DISC_SEGMENTS {
+                            let angle = std::f32::consts::TAU * segment as f32
+                                / SURFEL_DISC_SEGMENTS as f32;
+                            vertices.push(center + major * angle.cos() + minor * angle.sin());
+                            normals.push(normal);
+                            vertex_colors.push(surfel_color);
+                        }
+
+                        for segment in 0..SURFEL_DISC_SEGMENTS {
+                            let first = base_idx + 1 + segment;
+                            let second = base_idx + 1 + ((segment + 1) % SURFEL_DISC_SEGMENTS);
+                            triangles.push([base_idx, first, second]);
                         }
                     }
 
-                    let map_patches = rerun::LineStrips3D::new(strips)
-                        .with_colors([rerun::Color::from_rgb(255, 180, 64)])
-                        .with_radii([rerun::Radius::new_ui_points(0.75)]);
+                    let map_patches = rerun::Mesh3D::new(vertices)
+                        .with_triangle_indices(triangles)
+                        .with_vertex_normals(normals)
+                        .with_vertex_colors(vertex_colors);
 
                     if let Err(err) = rec.log("world/map_distributions", &map_patches) {
                         error!("Error sending CPU map distributions to rerun {err}");
