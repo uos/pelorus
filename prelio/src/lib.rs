@@ -1,6 +1,10 @@
 pub mod imu;
 mod naive_preint;
 mod naive_preint_eth;
+#[cfg(not(feature = "rayon"))]
+use pelorus_core::adaptive_execution::ExecutionMode;
+#[cfg(feature = "rayon")]
+use pelorus_core::adaptive_execution::{AdaptiveExecutionPlanner, ExecutionMode, HeavyPhase};
 use pelorus_core::{
     BlickfeldPoint, BlickfeldPointNoIntensity, HesaiPoint, HesaiPointNoIntensity,
     SickMultiScanPoint, SickMultiScanPointNoIntensity,
@@ -33,6 +37,8 @@ use std::sync::{
     atomic::{AtomicUsize, Ordering},
 };
 use std::thread;
+#[cfg(feature = "rayon")]
+use std::time::Instant;
 
 use anyhow::Result;
 use ros_pointcloud2::prelude::*;
@@ -45,16 +51,19 @@ const FILTERED_CLOUD_QUEUE_CAP: usize = 8;
 const SYNCED_CLOUD_QUEUE_CAP: usize = 8;
 
 #[cfg(feature = "rayon")]
-fn sort_unstable_by<T, F>(slice: &mut [T], cmp: F)
+fn sort_unstable_by<T, F>(slice: &mut [T], cmp: F, mode: ExecutionMode)
 where
     T: Send,
     F: Fn(&T, &T) -> std::cmp::Ordering + Sync,
 {
-    slice.par_sort_unstable_by(cmp);
+    match mode {
+        ExecutionMode::Sequential => slice.sort_unstable_by(cmp),
+        ExecutionMode::Rayon => slice.par_sort_unstable_by(cmp),
+    }
 }
 
 #[cfg(not(feature = "rayon"))]
-fn sort_unstable_by<T, F>(slice: &mut [T], cmp: F)
+fn sort_unstable_by<T, F>(slice: &mut [T], cmp: F, _mode: ExecutionMode)
 where
     F: Fn(&T, &T) -> std::cmp::Ordering,
 {
@@ -62,17 +71,20 @@ where
 }
 
 #[cfg(feature = "rayon")]
-fn sort_unstable_by_key<T, K, F>(slice: &mut [T], f: F)
+fn sort_unstable_by_key<T, K, F>(slice: &mut [T], f: F, mode: ExecutionMode)
 where
     T: Send,
     K: Ord + Send,
     F: Fn(&T) -> K + Sync,
 {
-    slice.par_sort_unstable_by_key(f);
+    match mode {
+        ExecutionMode::Sequential => slice.sort_unstable_by_key(f),
+        ExecutionMode::Rayon => slice.par_sort_unstable_by_key(f),
+    }
 }
 
 #[cfg(not(feature = "rayon"))]
-fn sort_unstable_by_key<T, K, F>(slice: &mut [T], f: F)
+fn sort_unstable_by_key<T, K, F>(slice: &mut [T], f: F, _mode: ExecutionMode)
 where
     K: Ord,
     F: Fn(&T) -> K,
@@ -416,9 +428,11 @@ mod tests {
             &params,
             &mut eval,
             &mut buffers,
+            ExecutionMode::Sequential,
         )
         .unwrap()
-        .unwrap();
+        .unwrap()
+        .0;
 
         assert_eq!(begin, 0.0);
         assert_eq!(end, 0.0);
@@ -431,18 +445,50 @@ mod tests {
         let mut buffers = DownsampleBuffers::default();
         let cloud = cloud(&[(1.0, 0.0, 0.0, None), (2.0, 0.0, 0.0, None)]);
 
-        let (points, _, begin, end, _) = filter_downsample_without_timestamps_with_fallback::<
-            4,
-            3,
-            PointXYZI,
-            PointXYZ,
-        >(cloud, &params, &mut eval, &mut buffers)
-        .unwrap()
-        .unwrap();
+        let (points, _, begin, end, _) =
+            filter_downsample_without_timestamps_with_fallback::<4, 3, PointXYZI, PointXYZ>(
+                cloud,
+                &params,
+                &mut eval,
+                &mut buffers,
+                ExecutionMode::Sequential,
+            )
+            .unwrap()
+            .unwrap()
+            .0;
 
         assert_eq!(begin, 0.0);
         assert_eq!(end, 0.0);
         assert!(points.iter().all(|p| p.timestamp == 0.0));
+    }
+
+    #[cfg(feature = "rayon")]
+    #[test]
+    fn sequential_and_rayon_preprocessing_match() {
+        let params = no_timestamp_params();
+        let cloud = cloud(&[
+            (1.0, 0.0, 0.0, Some(42.0)),
+            (2.0, 0.0, 0.0, Some(84.0)),
+            (1.001, 0.0, 0.0, Some(21.0)),
+        ]);
+
+        let run = |mode| {
+            let mut eval = RuntimeEvaluator::new();
+            let mut buffers = DownsampleBuffers::default();
+            filter_downsample_without_timestamps::<4, PointXYZI>(
+                &cloud,
+                &params,
+                &mut eval,
+                &mut buffers,
+                mode,
+            )
+            .unwrap()
+            .unwrap()
+            .0
+            .0
+        };
+
+        assert_eq!(run(ExecutionMode::Sequential), run(ExecutionMode::Rayon));
     }
 }
 
@@ -521,6 +567,7 @@ type DownsampleCloudMeta = (
     f64,
     HeaderMsg,
 );
+type DownsampleResult = (DownsampleCloudMeta, bool);
 
 #[derive(Debug, Clone, Copy, Default)]
 struct DownsamplePhaseTimings {
@@ -714,15 +761,25 @@ fn cpu_key_downsample(
     voxel_size: f32,
     keyed_points: &mut Vec<KeyedPoint>,
     eval: &mut RuntimeEvaluator,
+    mode: ExecutionMode,
 ) -> Result<()> {
+    #[cfg(not(feature = "rayon"))]
+    let _ = mode;
     eval.start("filter_downsample/filter_map_down")?;
     if point_skip == 1 {
         #[cfg(feature = "rayon")]
-        keyed_points.par_extend(
-            filtered_cloud
-                .par_iter()
-                .map(|point| key_downsample_point(point, voxel_size)),
-        );
+        match mode {
+            ExecutionMode::Sequential => keyed_points.extend(
+                filtered_cloud
+                    .iter()
+                    .map(|point| key_downsample_point(point, voxel_size)),
+            ),
+            ExecutionMode::Rayon => keyed_points.par_extend(
+                filtered_cloud
+                    .par_iter()
+                    .map(|point| key_downsample_point(point, voxel_size)),
+            ),
+        }
         #[cfg(not(feature = "rayon"))]
         keyed_points.extend(
             filtered_cloud
@@ -731,9 +788,22 @@ fn cpu_key_downsample(
         );
     } else {
         #[cfg(feature = "rayon")]
-        keyed_points.par_extend(filtered_cloud.par_iter().enumerate().filter_map(
-            |(idx, point)| (idx % point_skip == 0).then(|| key_downsample_point(point, voxel_size)),
-        ));
+        match mode {
+            ExecutionMode::Sequential => {
+                keyed_points.extend(filtered_cloud.iter().enumerate().filter_map(
+                    |(idx, point)| {
+                        (idx % point_skip == 0).then(|| key_downsample_point(point, voxel_size))
+                    },
+                ));
+            }
+            ExecutionMode::Rayon => {
+                keyed_points.par_extend(filtered_cloud.par_iter().enumerate().filter_map(
+                    |(idx, point)| {
+                        (idx % point_skip == 0).then(|| key_downsample_point(point, voxel_size))
+                    },
+                ));
+            }
+        }
         #[cfg(not(feature = "rayon"))]
         keyed_points.extend(
             filtered_cloud
@@ -755,9 +825,10 @@ fn cpu_reduce_downsample(
     downsampled: &mut Vec<PointXYZIT>,
     sort_by_timestamp: bool,
     eval: &mut RuntimeEvaluator,
+    mode: ExecutionMode,
 ) -> Result<()> {
     eval.start("filter_downsample/keyed_sort")?;
-    sort_unstable_by_key(keyed_points, keyed_point_sort_key);
+    sort_unstable_by_key(keyed_points, keyed_point_sort_key, mode);
     eval.stop("filter_downsample/keyed_sort")?;
 
     eval.start("filter_downsample/medoid_reduce")?;
@@ -770,7 +841,7 @@ fn cpu_reduce_downsample(
 
     if sort_by_timestamp {
         eval.start("filter_downsample/timestamp_sort")?;
-        sort_unstable_by(downsampled, compare_point_timestamp);
+        sort_unstable_by(downsampled, compare_point_timestamp, mode);
         eval.stop("filter_downsample/timestamp_sort")?;
     }
 
@@ -786,18 +857,27 @@ fn cpu_downsample(
     downsampled: &mut Vec<PointXYZIT>,
     sort_by_timestamp: bool,
     eval: &mut RuntimeEvaluator,
+    mode: ExecutionMode,
 ) -> Result<()> {
-    cpu_key_downsample(filtered_cloud, point_skip, voxel_size, keyed_points, eval)?;
-    cpu_reduce_downsample(keyed_points, downsampled, sort_by_timestamp, eval)
+    cpu_key_downsample(
+        filtered_cloud,
+        point_skip,
+        voxel_size,
+        keyed_points,
+        eval,
+        mode,
+    )?;
+    cpu_reduce_downsample(keyed_points, downsampled, sort_by_timestamp, eval, mode)
 }
 
 #[inline]
 fn sort_bypass_cloud(
     filtered_cloud: &mut Vec<PointXYZIT>,
     eval: &mut RuntimeEvaluator,
+    mode: ExecutionMode,
 ) -> Result<()> {
     eval.start("filter_downsample/bypass_sort")?;
-    sort_unstable_by(filtered_cloud, compare_point_timestamp);
+    sort_unstable_by(filtered_cloud, compare_point_timestamp, mode);
     eval.stop("filter_downsample/bypass_sort")?;
     Ok(())
 }
@@ -1000,15 +1080,22 @@ fn filter_downsample_with_fallback<
     lifis_params: &LifisParameters,
     eval: &mut RuntimeEvaluator,
     buffers: &mut DownsampleBuffers,
-) -> Result<Option<DownsampleCloudMeta>> {
-    let result = filter_downsample::<N, P>(&cloud, lifis_params, eval, buffers);
+    mode: ExecutionMode,
+) -> Result<Option<DownsampleResult>> {
+    let result = filter_downsample::<N, P>(&cloud, lifis_params, eval, buffers, mode);
 
     match result {
         Ok(data) => Ok(data),
         Err(e) => {
             let error_str = format!("{:?}", e);
             if error_str.contains("Some fields") && (error_str.contains("intensity")) {
-                filter_downsample::<N_FALLBACK, PFallback>(&cloud, lifis_params, eval, buffers)
+                filter_downsample::<N_FALLBACK, PFallback>(
+                    &cloud,
+                    lifis_params,
+                    eval,
+                    buffers,
+                    mode,
+                )
             } else {
                 Err(e)
             }
@@ -1021,13 +1108,19 @@ fn filter_downsample_livox(
     lifis_params: &LifisParameters,
     eval: &mut RuntimeEvaluator,
     buffers: &mut DownsampleBuffers,
-) -> Result<Option<DownsampleCloudMeta>> {
-    let result = filter_downsample::<5, LivoxPoint>(&cloud, lifis_params, eval, buffers);
+    mode: ExecutionMode,
+) -> Result<Option<DownsampleResult>> {
+    let result = filter_downsample::<5, LivoxPoint>(&cloud, lifis_params, eval, buffers, mode);
     match result {
         Ok(data) => Ok(data),
         Err(t_error) => {
-            let offset_time_result =
-                filter_downsample::<5, LivoxPointOffsetTime>(&cloud, lifis_params, eval, buffers);
+            let offset_time_result = filter_downsample::<5, LivoxPointOffsetTime>(
+                &cloud,
+                lifis_params,
+                eval,
+                buffers,
+                mode,
+            );
             match offset_time_result {
                 Ok(data) => Ok(data),
                 Err(offset_time_error) => {
@@ -1038,6 +1131,7 @@ fn filter_downsample_livox(
                             lifis_params,
                             eval,
                             buffers,
+                            mode,
                         )
                     } else {
                         let t_error_str = format!("{t_error:?}");
@@ -1048,6 +1142,7 @@ fn filter_downsample_livox(
                                 lifis_params,
                                 eval,
                                 buffers,
+                                mode,
                             )
                         } else {
                             Err(offset_time_error)
@@ -1064,16 +1159,25 @@ fn filter_downsample<const N: usize, P: PointXYZITimestamp<N>>(
     lifis_params: &LifisParameters,
     eval: &mut RuntimeEvaluator,
     buffers: &mut DownsampleBuffers,
-) -> Result<Option<DownsampleCloudMeta>> {
+    mode: ExecutionMode,
+) -> Result<Option<DownsampleResult>> {
     let scan_reference_time = lidar_scan_reference_time(lifis_params.lidar_vendor, &cloud.header);
-    filter_downsample_inner::<N, P>(cloud, lifis_params, eval, buffers, true, |p| {
-        internal_point_timestamp(
-            p.timestamp(),
-            lifis_params.lidar_vendor,
-            scan_reference_time,
-        )
-        .map(|timestamp| PointXYZIT::from_p(p.xyz(), p.intensity(), timestamp as f32))
-    })
+    filter_downsample_inner::<N, P>(
+        cloud,
+        lifis_params,
+        eval,
+        buffers,
+        true,
+        |p| {
+            internal_point_timestamp(
+                p.timestamp(),
+                lifis_params.lidar_vendor,
+                scan_reference_time,
+            )
+            .map(|timestamp| PointXYZIT::from_p(p.xyz(), p.intensity(), timestamp as f32))
+        },
+        mode,
+    )
 }
 
 fn filter_downsample_without_timestamps<const N: usize, P: PointXYZIntensity<N>>(
@@ -1081,10 +1185,17 @@ fn filter_downsample_without_timestamps<const N: usize, P: PointXYZIntensity<N>>
     lifis_params: &LifisParameters,
     eval: &mut RuntimeEvaluator,
     buffers: &mut DownsampleBuffers,
-) -> Result<Option<DownsampleCloudMeta>> {
-    filter_downsample_inner::<N, P>(cloud, lifis_params, eval, buffers, false, |p| {
-        Some(PointXYZIT::from_p(p.xyz(), p.intensity(), 0.0))
-    })
+    mode: ExecutionMode,
+) -> Result<Option<DownsampleResult>> {
+    filter_downsample_inner::<N, P>(
+        cloud,
+        lifis_params,
+        eval,
+        buffers,
+        false,
+        |p| Some(PointXYZIT::from_p(p.xyz(), p.intensity(), 0.0)),
+        mode,
+    )
 }
 
 fn filter_downsample_without_timestamps_with_fallback<
@@ -1097,8 +1208,10 @@ fn filter_downsample_without_timestamps_with_fallback<
     lifis_params: &LifisParameters,
     eval: &mut RuntimeEvaluator,
     buffers: &mut DownsampleBuffers,
-) -> Result<Option<DownsampleCloudMeta>> {
-    let result = filter_downsample_without_timestamps::<N, P>(&cloud, lifis_params, eval, buffers);
+    mode: ExecutionMode,
+) -> Result<Option<DownsampleResult>> {
+    let result =
+        filter_downsample_without_timestamps::<N, P>(&cloud, lifis_params, eval, buffers, mode);
 
     match result {
         Ok(data) => Ok(data),
@@ -1110,6 +1223,7 @@ fn filter_downsample_without_timestamps_with_fallback<
                     lifis_params,
                     eval,
                     buffers,
+                    mode,
                 )
             } else {
                 Err(e)
@@ -1125,7 +1239,8 @@ fn filter_downsample_inner<const N: usize, P: PointConvertible<N> + Send + Sync>
     buffers: &mut DownsampleBuffers,
     sort_by_timestamp: bool,
     map_to_non_trait: impl Fn(P) -> Option<PointXYZIT> + Send + Sync,
-) -> Result<Option<DownsampleCloudMeta>> {
+    mode: ExecutionMode,
+) -> Result<Option<DownsampleResult>> {
     let bypass_output_downsample = lifis_params.downsample.bypass_output_downsample;
     let header = cloud.header.clone();
     let voxel_size = lifis_params.downsample.voxel_size;
@@ -1135,25 +1250,31 @@ fn filter_downsample_inner<const N: usize, P: PointConvertible<N> + Send + Sync>
     let mut downsampled: Vec<PointXYZIT> = Vec::with_capacity(cloud.dimensions.len());
 
     let mut raw_out = None;
+    let used_cpu_downsample;
 
     {
         let point_skip = lifis_params.downsample.point_skip.max(1);
 
-        #[cfg(feature = "rayon")]
-        let cloud_iter = cloud.try_into_par_iter()?;
-        #[cfg(not(feature = "rayon"))]
-        let cloud_iter = cloud.try_into_iter()?;
-
         eval.start("filter_downsample/bypass_filter_map")?;
         #[cfg(feature = "rayon")]
-        buffers.filtered_cloud.par_extend(
-            cloud_iter
-                .filter_map(map_to_non_trait)
-                .filter_map(filter_map_point),
-        );
+        match mode {
+            ExecutionMode::Sequential => buffers.filtered_cloud.extend(
+                cloud
+                    .try_into_iter()?
+                    .filter_map(map_to_non_trait)
+                    .filter_map(filter_map_point),
+            ),
+            ExecutionMode::Rayon => buffers.filtered_cloud.par_extend(
+                cloud
+                    .try_into_par_iter()?
+                    .filter_map(map_to_non_trait)
+                    .filter_map(filter_map_point),
+            ),
+        }
         #[cfg(not(feature = "rayon"))]
         buffers.filtered_cloud.extend(
-            cloud_iter
+            cloud
+                .try_into_iter()?
                 .filter_map(map_to_non_trait)
                 .filter_map(filter_map_point),
         );
@@ -1191,12 +1312,13 @@ fn filter_downsample_inner<const N: usize, P: PointConvertible<N> + Send + Sync>
             gpu_downsample
         };
 
+        used_cpu_downsample = gpu_downsample.is_none();
         if let Some((gpu_downsampled, gpu_timings)) = gpu_downsample {
             downsampled = gpu_downsampled;
             add_gpu_downsample_timings(eval, gpu_timings);
             if bypass_output_downsample {
                 if sort_by_timestamp {
-                    sort_bypass_cloud(&mut buffers.filtered_cloud, eval)?;
+                    sort_bypass_cloud(&mut buffers.filtered_cloud, eval, mode)?;
                 }
                 raw_out = Some((std::mem::take(&mut buffers.filtered_cloud), cloud.clone()));
             }
@@ -1207,10 +1329,11 @@ fn filter_downsample_inner<const N: usize, P: PointConvertible<N> + Send + Sync>
                 voxel_size,
                 &mut buffers.keyed_points,
                 eval,
+                mode,
             )?;
 
             #[cfg(feature = "rayon")]
-            {
+            if mode == ExecutionMode::Rayon {
                 let mut downsample_eval = RuntimeEvaluator::new();
                 let mut bypass_eval = RuntimeEvaluator::new();
                 let (downsample_result, bypass_result) = rayon::join(
@@ -1220,11 +1343,12 @@ fn filter_downsample_inner<const N: usize, P: PointConvertible<N> + Send + Sync>
                             &mut downsampled,
                             sort_by_timestamp,
                             &mut downsample_eval,
+                            mode,
                         )
                     },
                     || {
                         if sort_by_timestamp {
-                            sort_bypass_cloud(&mut buffers.filtered_cloud, &mut bypass_eval)
+                            sort_bypass_cloud(&mut buffers.filtered_cloud, &mut bypass_eval, mode)
                         } else {
                             Ok(())
                         }
@@ -1234,6 +1358,17 @@ fn filter_downsample_inner<const N: usize, P: PointConvertible<N> + Send + Sync>
                 bypass_result?;
                 eval.merge(&downsample_eval);
                 eval.merge(&bypass_eval);
+            } else {
+                cpu_reduce_downsample(
+                    &mut buffers.keyed_points,
+                    &mut downsampled,
+                    sort_by_timestamp,
+                    eval,
+                    mode,
+                )?;
+                if sort_by_timestamp {
+                    sort_bypass_cloud(&mut buffers.filtered_cloud, eval, mode)?;
+                }
             }
 
             #[cfg(not(feature = "rayon"))]
@@ -1243,9 +1378,10 @@ fn filter_downsample_inner<const N: usize, P: PointConvertible<N> + Send + Sync>
                     &mut downsampled,
                     sort_by_timestamp,
                     eval,
+                    mode,
                 )?;
                 if sort_by_timestamp {
-                    sort_bypass_cloud(&mut buffers.filtered_cloud, eval)?;
+                    sort_bypass_cloud(&mut buffers.filtered_cloud, eval, mode)?;
                 }
             }
 
@@ -1259,6 +1395,7 @@ fn filter_downsample_inner<const N: usize, P: PointConvertible<N> + Send + Sync>
                 &mut downsampled,
                 sort_by_timestamp,
                 eval,
+                mode,
             )?;
         }
     }
@@ -1271,11 +1408,8 @@ fn filter_downsample_inner<const N: usize, P: PointConvertible<N> + Send + Sync>
 
     // TODO back to keeping the timestamp f64, only testing right now because of artefacts
     Ok(Some((
-        downsampled,
-        raw_out,
-        first as f64,
-        last as f64,
-        header,
+        (downsampled, raw_out, first as f64, last as f64, header),
+        used_cpu_downsample,
     )))
 }
 
@@ -1462,6 +1596,12 @@ impl Prelio {
         ready_for_next: Option<std::sync::mpsc::Receiver<()>>,
         signal_paced: bool,
     ) -> anyhow::Result<Self> {
+        #[cfg(not(feature = "rayon"))]
+        if params.parallelism_execution_policy
+            == pelorus_core::adaptive_execution::ExecutionPolicy::Rayon
+        {
+            anyhow::bail!("parallelism.execution_mode=Rayon requires the rayon feature");
+        }
         let imu_intrinsic_calibration = match imu_intrinsic_calibration_params
             .imu_intrinsics_calib_file_path
             .as_ref()
@@ -1553,6 +1693,12 @@ impl Prelio {
         thread::spawn(move || {
             let mut eval = RuntimeEvaluator::new();
             let mut downsample_buffers = DownsampleBuffers::default();
+            #[cfg(feature = "rayon")]
+            let mut execution_planner = AdaptiveExecutionPlanner::new(
+                params_clone.parallelism_decision_threshold_stddevs,
+                params_clone.parallelism_decision_samples_per_mode,
+                params_clone.parallelism_execution_policy,
+            );
             while let Ok(labeled) = preproc_rx.recv() {
                 preproc_queue_depth_worker
                     .fetch_update(Ordering::AcqRel, Ordering::Acquire, |depth| {
@@ -1560,6 +1706,14 @@ impl Prelio {
                     })
                     .ok();
                 eval.start("filter_downsample").unwrap();
+                #[cfg(feature = "rayon")]
+                let mode = execution_planner.mode_for(HeavyPhase::Preprocessing);
+                #[cfg(not(feature = "rayon"))]
+                let mode = ExecutionMode::Sequential;
+                #[cfg(feature = "rayon")]
+                let started = Instant::now();
+                #[cfg(feature = "rayon")]
+                let input_points = labeled.cloud.dimensions.len().max(1);
 
                 let result = match vendor {
                     LidarVendor::Ouster => {
@@ -1568,6 +1722,7 @@ impl Prelio {
                             &params_clone,
                             &mut eval,
                             &mut downsample_buffers,
+                            mode,
                         )
                     }
                     LidarVendor::Velodyne => filter_downsample_with_fallback::<
@@ -1580,12 +1735,14 @@ impl Prelio {
                         &params_clone,
                         &mut eval,
                         &mut downsample_buffers,
+                        mode,
                     ),
                     LidarVendor::Livox => filter_downsample_livox(
                         labeled.cloud,
                         &params_clone,
                         &mut eval,
                         &mut downsample_buffers,
+                        mode,
                     ),
                     LidarVendor::LivoxMid360 => filter_downsample_with_fallback::<
                         5,
@@ -1597,6 +1754,7 @@ impl Prelio {
                         &params_clone,
                         &mut eval,
                         &mut downsample_buffers,
+                        mode,
                     ),
                     LidarVendor::Hesai => {
                         filter_downsample_with_fallback::<5, 4, HesaiPoint, HesaiPointNoIntensity>(
@@ -1604,6 +1762,7 @@ impl Prelio {
                             &params_clone,
                             &mut eval,
                             &mut downsample_buffers,
+                            mode,
                         )
                     }
                     LidarVendor::Blickfeld => filter_downsample_with_fallback::<
@@ -1616,6 +1775,7 @@ impl Prelio {
                         &params_clone,
                         &mut eval,
                         &mut downsample_buffers,
+                        mode,
                     ),
                     LidarVendor::SickMultiscan => filter_downsample_with_fallback::<
                         5,
@@ -1627,6 +1787,7 @@ impl Prelio {
                         &params_clone,
                         &mut eval,
                         &mut downsample_buffers,
+                        mode,
                     ),
                     LidarVendor::Robosense => filter_downsample_with_fallback::<
                         5,
@@ -1638,6 +1799,7 @@ impl Prelio {
                         &params_clone,
                         &mut eval,
                         &mut downsample_buffers,
+                        mode,
                     ),
                     LidarVendor::NoTimestamp => {
                         filter_downsample_without_timestamps_with_fallback::<
@@ -1650,13 +1812,33 @@ impl Prelio {
                             &params_clone,
                             &mut eval,
                             &mut downsample_buffers,
+                            mode,
                         )
                     }
                 };
 
                 match result {
-                    Ok(Some(cloud_meta)) => {
+                    Ok(Some((cloud_meta, used_cpu_downsample))) => {
                         eval.stop("filter_downsample").unwrap();
+                        #[cfg(feature = "rayon")]
+                        if used_cpu_downsample {
+                            let nanos_per_point =
+                                started.elapsed().as_nanos() as f64 / input_points as f64;
+                            if let Some(decision) = execution_planner.record(
+                                HeavyPhase::Preprocessing,
+                                mode,
+                                nanos_per_point,
+                            ) {
+                                warn!(
+                                    "{}: using {} ({:.2}x faster)",
+                                    HeavyPhase::Preprocessing.name(),
+                                    decision.mode.name(),
+                                    decision.speedup,
+                                );
+                            }
+                        }
+                        #[cfg(not(feature = "rayon"))]
+                        let _ = used_cpu_downsample;
                         if let Err(e) =
                             filtered_cloud_tx.send((cloud_meta, labeled.scan_id, eval.clone()))
                         {

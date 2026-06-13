@@ -3,6 +3,10 @@ use crate::ImuEkfPrediction;
 use crate::iekf::{Iekf, SO3, skew_symmetric_na};
 use crate::imu::ImuProcessing;
 use nalgebra::*;
+#[cfg(not(feature = "rayon"))]
+use pelorus_core::adaptive_execution::ExecutionMode;
+#[cfg(feature = "rayon")]
+use pelorus_core::adaptive_execution::{AdaptiveExecutionPlanner, ExecutionMode, HeavyPhase};
 use pelorus_core::timing::RuntimeEvaluator;
 use pelorus_core::{ImuMsg, ImuParameters, KinematicModel, LidarVendor, OdomMsg, PointXYZIT};
 use prelio::LocatedBufferView;
@@ -10,6 +14,8 @@ use prelio::LocatedBufferView;
 use rayon::prelude::*;
 use ros_pointcloud2::prelude::*;
 use spole::*;
+#[cfg(feature = "rayon")]
+use std::sync::Mutex;
 use std::sync::{Arc, RwLock};
 
 #[cfg(feature = "cuda")]
@@ -37,6 +43,8 @@ pub struct RegistrationState {
     pub base_to_lidar: Isometry3<f64>,
     pub planes_cpu_buffer: Vec<PointXYZINormal>,
     pub planes_gpu_buffer: Option<GpuPlanesBuffer>,
+    #[cfg(feature = "rayon")]
+    execution_planner: Arc<Mutex<AdaptiveExecutionPlanner>>,
     #[cfg(feature = "vulkan")]
     pub planes_vulkan_download_buffer: Vec<pelorus_vulkan::PointNormal>,
     #[cfg(feature = "vulkan")]
@@ -124,6 +132,40 @@ impl RegistrationState {
         ekf_max_iterations: usize,
         initial_guess: Option<ImuEkfPrediction>,
     ) -> Self {
+        Self::new_with_execution_config(
+            map,
+            imu_params,
+            lidar_to_imu,
+            base_to_lidar,
+            gravity,
+            laser_point_noise_cov,
+            ekf_max_iterations,
+            initial_guess,
+            2.0,
+            20,
+            pelorus_core::adaptive_execution::ExecutionPolicy::Auto,
+        )
+    }
+
+    pub fn new_with_execution_config(
+        map: IVoxHashMap,
+        imu_params: &ImuParameters,
+        lidar_to_imu: &Isometry3<f64>,
+        base_to_lidar: &Isometry3<f64>,
+        gravity: f64,
+        laser_point_noise_cov: f64,
+        ekf_max_iterations: usize,
+        initial_guess: Option<ImuEkfPrediction>,
+        parallelism_decision_threshold_stddevs: f64,
+        parallelism_decision_samples_per_mode: usize,
+        parallelism_execution_policy: pelorus_core::adaptive_execution::ExecutionPolicy,
+    ) -> Self {
+        #[cfg(not(feature = "rayon"))]
+        let _ = (
+            parallelism_decision_threshold_stddevs,
+            parallelism_decision_samples_per_mode,
+            parallelism_execution_policy,
+        );
         let mut ekf = Iekf::new(gravity, base_to_lidar.clone());
         if let Some(guess) = initial_guess {
             ekf.state.pos = guess.pose.translation.vector;
@@ -152,11 +194,53 @@ impl RegistrationState {
             base_to_lidar: base_to_lidar.clone(),
             planes_cpu_buffer: Vec::new(),
             planes_gpu_buffer: None,
+            #[cfg(feature = "rayon")]
+            execution_planner: Arc::new(Mutex::new(AdaptiveExecutionPlanner::new(
+                parallelism_decision_threshold_stddevs,
+                parallelism_decision_samples_per_mode,
+                parallelism_execution_policy,
+            ))),
             #[cfg(feature = "vulkan")]
             planes_vulkan_download_buffer: Vec::new(),
             #[cfg(feature = "vulkan")]
             planes_vulkan_counter_buffer: [0; 3],
         }
+    }
+
+    fn execution_mode(&self, phase: pelorus_core::adaptive_execution::HeavyPhase) -> ExecutionMode {
+        #[cfg(feature = "rayon")]
+        {
+            self.execution_planner.lock().unwrap().mode_for(phase)
+        }
+        #[cfg(not(feature = "rayon"))]
+        {
+            let _ = phase;
+            ExecutionMode::Sequential
+        }
+    }
+
+    fn record_execution(
+        &self,
+        phase: pelorus_core::adaptive_execution::HeavyPhase,
+        mode: ExecutionMode,
+        normalized_duration: f64,
+    ) {
+        #[cfg(feature = "rayon")]
+        if let Some(decision) =
+            self.execution_planner
+                .lock()
+                .unwrap()
+                .record(phase, mode, normalized_duration)
+        {
+            log::warn!(
+                "{}: using {} ({:.2}x faster)",
+                phase.name(),
+                decision.mode.name(),
+                decision.speedup,
+            );
+        }
+        #[cfg(not(feature = "rayon"))]
+        let _ = (phase, mode, normalized_duration);
     }
 
     fn add_to_map(
@@ -170,7 +254,17 @@ impl RegistrationState {
             anyhow::bail!("CPU add_to_map called with non-RAM buffer");
         };
 
-        self.map.add(cloud, &pose, scan_id);
+        let mode = self.execution_mode(pelorus_core::adaptive_execution::HeavyPhase::MapUpdate);
+        if let Some(normalized_duration) = self
+            .map
+            .add_with_execution_mode(cloud, &pose, scan_id, mode)
+        {
+            self.record_execution(
+                pelorus_core::adaptive_execution::HeavyPhase::MapUpdate,
+                mode,
+                normalized_duration,
+            );
+        }
         Ok(())
     }
 
@@ -375,6 +469,8 @@ impl crate::Registration for RegistrationState {
             let planes_vulkan_counter_buffer_ptr =
                 std::ptr::addr_of_mut!(self.planes_vulkan_counter_buffer);
             let map_ptr = std::ptr::addr_of!(self.map);
+            #[cfg(feature = "rayon")]
+            let execution_planner = Arc::clone(&self.execution_planner);
 
             #[cfg(not(any(feature = "cuda", feature = "metal", feature = "vulkan")))]
             let _ = planes_gpu_buffer_ptr;
@@ -431,6 +527,13 @@ impl crate::Registration for RegistrationState {
                             let planes_buf = unsafe { &mut *planes_cpu_buffer_ptr };
                             planes_buf.clear();
                             let map = unsafe { &*map_ptr };
+                            #[cfg(feature = "rayon")]
+                            let mode = execution_planner
+                                .lock()
+                                .unwrap()
+                                .mode_for(HeavyPhase::PlaneCorrespondence);
+                            #[cfg(feature = "rayon")]
+                            let started = std::time::Instant::now();
 
                             // Match the GPU backends' f32 transform precision so CPU↔GPU
                             // plane selection stays numerically equivalent. GPU shaders do
@@ -491,13 +594,31 @@ impl crate::Registration for RegistrationState {
                                 }
                             };
                             #[cfg(feature = "rayon")]
-                            let pm = cloud_pts.par_iter().filter_map(point_to_plane);
+                            match mode {
+                                ExecutionMode::Sequential => {
+                                    planes_buf.extend(cloud_pts.iter().filter_map(point_to_plane));
+                                }
+                                ExecutionMode::Rayon => {
+                                    planes_buf.par_extend(
+                                        cloud_pts.par_iter().filter_map(point_to_plane),
+                                    );
+                                }
+                            }
                             #[cfg(not(feature = "rayon"))]
-                            let pm = cloud_pts.iter().filter_map(point_to_plane);
+                            planes_buf.extend(cloud_pts.iter().filter_map(point_to_plane));
                             #[cfg(feature = "rayon")]
-                            planes_buf.par_extend(pm);
-                            #[cfg(not(feature = "rayon"))]
-                            planes_buf.extend(pm);
+                            if let Some(decision) = execution_planner.lock().unwrap().record(
+                                HeavyPhase::PlaneCorrespondence,
+                                mode,
+                                started.elapsed().as_nanos() as f64 / cloud_pts.len().max(1) as f64,
+                            ) {
+                                log::warn!(
+                                    "{}: using {} ({:.2}x faster)",
+                                    HeavyPhase::PlaneCorrespondence.name(),
+                                    decision.mode.name(),
+                                    decision.speedup,
+                                );
+                            }
                             planes_buf
                         }
                         #[cfg(feature = "cuda")]
@@ -844,7 +965,8 @@ impl crate::Registration for RegistrationState {
         cloud_passthrough: Option<&mut Vec<PointXYZIT>>,
         lidar_vendor: Option<LidarVendor>,
     ) {
-        self.imu_processing.undistort(
+        let mode = self.execution_mode(pelorus_core::adaptive_execution::HeavyPhase::PointDeskew);
+        let measurement = self.imu_processing.undistort(
             &mut self.ekf,
             imu_msgs,
             odom_msgs,
@@ -856,7 +978,15 @@ impl crate::Registration for RegistrationState {
             cloud,
             cloud_passthrough,
             lidar_vendor,
+            mode,
         );
+        if let Some(normalized_duration) = measurement {
+            self.record_execution(
+                pelorus_core::adaptive_execution::HeavyPhase::PointDeskew,
+                mode,
+                normalized_duration,
+            );
+        }
     }
 
     fn imu_ekf_predict(

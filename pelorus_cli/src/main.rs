@@ -111,6 +111,7 @@ use pelorus_reg::Registration;
 use prelio_io::PrelioNode;
 use std::path::PathBuf;
 
+#[cfg(any(feature = "mt_pubsub", feature = "ros2-client", feature = "r2r"))]
 use pelorus_cli::mcap_output::{McapTopics, OfflineMcapWriter};
 use pelorus_cli::stats_tui::{
     SharedStats, StatsTui, init_logger, set_tui_active, update_log_level,
@@ -315,11 +316,15 @@ pub enum GenerateKind {
 
 #[derive(Debug, Clone)]
 struct OfflineMcapConfig {
+    #[cfg(any(feature = "mt_pubsub", feature = "ros2-client", feature = "r2r"))]
     path: PathBuf,
+    #[cfg(any(feature = "mt_pubsub", feature = "ros2-client", feature = "r2r"))]
     rosbag_metadata_path: Option<PathBuf>,
+    #[cfg(any(feature = "mt_pubsub", feature = "ros2-client", feature = "r2r"))]
     topics: McapTopics,
 }
 
+#[cfg(feature = "offline")]
 fn normalize_mcap_topic(topic: impl Into<String>) -> String {
     let topic = topic.into();
     if topic.starts_with('/') {
@@ -329,6 +334,7 @@ fn normalize_mcap_topic(topic: impl Into<String>) -> String {
     }
 }
 
+#[cfg(feature = "offline")]
 fn rosbag_mcap_path(rosbag_path: &std::path::Path) -> PathBuf {
     let bag_name = rosbag_path
         .file_name()

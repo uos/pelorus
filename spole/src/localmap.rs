@@ -8,18 +8,22 @@ use rayon::{
 };
 
 use crate::VoxelDistribution;
+use pelorus_core::adaptive_execution::ExecutionMode;
 
 #[cfg(feature = "rayon")]
-fn sort_unstable_by<T, F>(slice: &mut [T], cmp: F)
+fn sort_unstable_by<T, F>(slice: &mut [T], cmp: F, mode: ExecutionMode)
 where
     T: Send,
     F: Fn(&T, &T) -> std::cmp::Ordering + Sync,
 {
-    slice.par_sort_unstable_by(cmp);
+    match mode {
+        ExecutionMode::Sequential => slice.sort_unstable_by(cmp),
+        ExecutionMode::Rayon => slice.par_sort_unstable_by(cmp),
+    }
 }
 
 #[cfg(not(feature = "rayon"))]
-fn sort_unstable_by<T, F>(slice: &mut [T], cmp: F)
+fn sort_unstable_by<T, F>(slice: &mut [T], cmp: F, _mode: ExecutionMode)
 where
     F: Fn(&T, &T) -> std::cmp::Ordering,
 {
@@ -93,7 +97,13 @@ impl Livodish {
     }
 
     /// Insert at the beginning, since the ones in the beginning are the ones least used
-    pub fn add(&mut self, dist: VoxelDistribution, hash: i32, scan_number: usize) {
+    pub fn add(
+        &mut self,
+        dist: VoxelDistribution,
+        hash: i32,
+        scan_number: usize,
+        execution_mode: ExecutionMode,
+    ) {
         let entry = self.lookup.get_mut(&hash);
 
         match entry {
@@ -123,7 +133,7 @@ impl Livodish {
                     }
                     let lru_never_run = self.lru_mapping.is_empty();
                     if lru_never_run {
-                        self.build(scan_number);
+                        self.build(scan_number, execution_mode);
                     }
                     let must_be_deleted = unsafe {
                         self.lru_mapping
@@ -212,24 +222,14 @@ impl Livodish {
     }
 
     /// Re-arranges the map to be ready for new inserts.
-    pub fn build(&mut self, scan_number: usize) {
+    pub fn build(&mut self, scan_number: usize, execution_mode: ExecutionMode) {
         if self.add_cursor < self.capacity {
             return;
         }
         self.lru_cursor = 0;
 
-        #[cfg(feature = "rayon")]
-        let iter = self.lru_mapping.par_iter();
-        #[cfg(not(feature = "rayon"))]
-        let iter = self.lru_mapping.iter();
-        #[cfg(feature = "rayon")]
-        let keys_iter = self.lru_mapping_keys.par_iter_mut();
-        #[cfg(not(feature = "rayon"))]
-        let keys_iter = self.lru_mapping_keys.iter_mut();
-
-        iter.zip(keys_iter)
-            .filter_map(|(&opt_idx, key)| opt_idx.and_then(|idx| Some((idx, key))))
-            .for_each(|(idx, key)| {
+        let update_key = |(&opt_idx, key): (&Option<usize>, &mut SortKey)| {
+            opt_idx.map(|idx| {
                 // SAFETY: safe because of the first line of this function.
                 let item = unsafe {
                     &self
@@ -248,7 +248,32 @@ impl Livodish {
                     temporal_dist,
                     point_count: item.point_count,
                 };
-            });
+            })
+        };
+
+        #[cfg(feature = "rayon")]
+        match execution_mode {
+            ExecutionMode::Sequential => {
+                self.lru_mapping
+                    .iter()
+                    .zip(self.lru_mapping_keys.iter_mut())
+                    .filter_map(update_key)
+                    .for_each(drop);
+            }
+            ExecutionMode::Rayon => {
+                self.lru_mapping
+                    .par_iter()
+                    .zip(self.lru_mapping_keys.par_iter_mut())
+                    .filter_map(update_key)
+                    .for_each(drop);
+            }
+        }
+        #[cfg(not(feature = "rayon"))]
+        self.lru_mapping
+            .iter()
+            .zip(self.lru_mapping_keys.iter_mut())
+            .filter_map(update_key)
+            .for_each(drop);
 
         let cmp = |a: &SortKey, b: &SortKey| {
             if a.point_count == 0 && b.point_count == 0 {
@@ -269,7 +294,7 @@ impl Livodish {
             right_val.cmp(&left_val)
         };
 
-        sort_unstable_by(&mut self.lru_mapping_keys, cmp);
+        sort_unstable_by(&mut self.lru_mapping_keys, cmp, execution_mode);
 
         for (i, key) in self.lru_mapping_keys.iter().enumerate() {
             unsafe { *self.lru_mapping.get_unchecked_mut(i) = Some(key.index) };

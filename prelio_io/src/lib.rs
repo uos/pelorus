@@ -470,6 +470,10 @@ impl PrelioNode {
         imu_pose_prediction_init_guess: Option<Box<ImuPredictor>>,
         #[cfg(feature = "rerun")] rec: Option<Arc<rerun::RecordingStream>>,
         ready_for_next: Option<std::sync::mpsc::Receiver<()>>,
+        #[cfg_attr(
+            not(any(feature = "ros2-client", feature = "mt_pubsub", feature = "r2r")),
+            allow(unused_variables)
+        )]
         filtered_imu_sender: Option<std::sync::mpsc::Sender<ImuMsg>>,
         signal_paced: bool,
     ) -> anyhow::Result<(Self, std::sync::mpsc::Receiver<Tick>)> {
