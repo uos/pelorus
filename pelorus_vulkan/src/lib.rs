@@ -1180,7 +1180,7 @@ enum BufferMemoryPolicy {
 const EMPTY_KEY: i32 = i32::MIN;
 const THREADS_PER_GROUP: u32 = 256;
 const DESCRIPTOR_BINDING_COUNT: u32 = 18;
-const MAX_DISPATCHES_PER_SESSION: u32 = 20;
+const MAX_DISPATCHES_PER_SESSION: u32 = 1024;
 
 #[repr(C)]
 #[derive(Clone, Copy, Default, Pod, Zeroable)]
@@ -1259,6 +1259,7 @@ struct VulkanComputePipelines {
     plane_krnl: vk::Pipeline,
     compact_planes: vk::Pipeline,
     plane_count: vk::Pipeline,
+    portable_sort: vk::Pipeline,
     rle: vk::Pipeline,
     assign_indices: vk::Pipeline,
     lru_score: vk::Pipeline,
@@ -1287,6 +1288,7 @@ impl Drop for VulkanComputePipelines {
             device.destroy_pipeline(self.plane_krnl, None);
             device.destroy_pipeline(self.compact_planes, None);
             device.destroy_pipeline(self.plane_count, None);
+            device.destroy_pipeline(self.portable_sort, None);
             device.destroy_pipeline(self.rle, None);
             device.destroy_pipeline(self.assign_indices, None);
             device.destroy_pipeline(self.lru_score, None);
@@ -1438,6 +1440,16 @@ fn with_state<R>(f: impl FnOnce(&mut VulkanMapState) -> R) -> R {
     f(state)
 }
 
+fn requires_portable_map_sort(context: &VulkanContext) -> bool {
+    let properties = unsafe {
+        context
+            .instance
+            .get_physical_device_properties(context.physical_device)
+    };
+    properties.vendor_id == 0x8086
+        && properties.device_type == vk::PhysicalDeviceType::INTEGRATED_GPU
+}
+
 #[cfg(feature = "vulkan_enable")]
 fn compile_shader(
     compiler: &mut shaderc::Compiler,
@@ -1535,6 +1547,7 @@ fn build_pipelines(context: Arc<VulkanContext>) -> Arc<VulkanComputePipelines> {
     let planes_src = shaders::source_with_common(shaders::PLANES);
     let compact_planes_src = shaders::source_with_common(shaders::COMPACT_PLANES);
     let plane_count_src = shaders::source_with_common(shaders::PLANE_COUNT);
+    let portable_sort_src = shaders::source_with_common(shaders::PORTABLE_SORT);
     let rle_src = shaders::source_with_common(shaders::RLE);
     let assign_indices_src = shaders::source_with_common(shaders::ASSIGN_INDICES);
     let lru_score_src = shaders::source_with_common(shaders::LRU_SCORE);
@@ -1564,6 +1577,7 @@ fn build_pipelines(context: Arc<VulkanContext>) -> Arc<VulkanComputePipelines> {
         ("plane_krnl", &planes_src, vec![]),
         ("compact_planes", &compact_planes_src, vec![]),
         ("plane_count", &plane_count_src, vec![]),
+        ("portable_sort", &portable_sort_src, vec![]),
         ("rle", &rle_src, vec![]),
         ("assign_indices", &assign_indices_src, vec![]),
         ("lru_score", &lru_score_src, vec![]),
@@ -1613,19 +1627,20 @@ fn build_pipelines(context: Arc<VulkanContext>) -> Arc<VulkanComputePipelines> {
         plane_krnl: pipelines[5],
         compact_planes: pipelines[6],
         plane_count: pipelines[7],
-        rle: pipelines[8],
-        assign_indices: pipelines[9],
-        lru_score: pipelines[10],
-        classify_keys: pipelines[11],
-        exclusive_scan: pipelines[12],
-        assign_new_targets: pipelines[13],
-        finalize_cursors: pipelines[14],
-        scan_block_sums: pipelines[15],
-        add_block_prefix: pipelines[16],
-        downsample_build_keys: pipelines[17],
-        downsample_medoids: pipelines[18],
-        downsample_timestamp_keys: pipelines[19],
-        downsample_reorder: pipelines[20],
+        portable_sort: pipelines[8],
+        rle: pipelines[9],
+        assign_indices: pipelines[10],
+        lru_score: pipelines[11],
+        classify_keys: pipelines[12],
+        exclusive_scan: pipelines[13],
+        assign_new_targets: pipelines[14],
+        finalize_cursors: pipelines[15],
+        scan_block_sums: pipelines[16],
+        add_block_prefix: pipelines[17],
+        downsample_build_keys: pipelines[18],
+        downsample_medoids: pipelines[19],
+        downsample_timestamp_keys: pipelines[20],
+        downsample_reorder: pipelines[21],
         shader_modules: modules,
     })
 }
@@ -1958,6 +1973,45 @@ impl<'a> ComputeCommandSession<'a> {
     }
 }
 
+fn record_portable_sort(
+    session: &mut ComputeCommandSession,
+    compute: &VulkanComputePipelines,
+    dummy: vk::Buffer,
+    keys: vk::Buffer,
+    values: vk::Buffer,
+    count: u32,
+    capacity: u32,
+) {
+    assert!(capacity.is_power_of_two());
+    assert!(count <= capacity);
+
+    let buffers = [
+        dummy, dummy, keys, values, dummy, dummy, dummy, dummy, dummy, dummy, dummy, dummy, dummy,
+        dummy, dummy, dummy, dummy, dummy,
+    ];
+    let mut params = PushConstants {
+        n: count,
+        cap: capacity,
+        k: 0,
+        ..PushConstants::default()
+    };
+    session.dispatch(compute, compute.portable_sort, &buffers, &params, capacity);
+    session.barrier();
+
+    let mut sequence_size = 2;
+    while sequence_size <= capacity {
+        let mut comparison_stride = sequence_size / 2;
+        while comparison_stride > 0 {
+            params.j = comparison_stride;
+            params.k = sequence_size;
+            session.dispatch(compute, compute.portable_sort, &buffers, &params, capacity);
+            session.barrier();
+            comparison_stride /= 2;
+        }
+        sequence_size *= 2;
+    }
+}
+
 pub fn init_map(
     stream: &Stream,
     capacity: usize,
@@ -2046,8 +2100,16 @@ pub fn init_map(
                 counter: VulkanBuffer::new_host_visible(stream, size_of::<u32>(), 3),
                 sorter_scratch: VulkanBuffer::new(stream, 1, requirements.size as usize),
                 // This buffer is hot in map-full replacement and LRU sort; keep it device-local.
-                lru_mapping: VulkanBuffer::new(stream, size_of::<u32>(), dist_cap as usize),
-                lru_keys: VulkanBuffer::new(stream, size_of::<u32>(), dist_cap as usize),
+                lru_mapping: VulkanBuffer::new(
+                    stream,
+                    size_of::<u32>(),
+                    (dist_cap as usize).next_power_of_two(),
+                ),
+                lru_keys: VulkanBuffer::new(
+                    stream,
+                    size_of::<u32>(),
+                    (dist_cap as usize).next_power_of_two(),
+                ),
                 is_new: VulkanBuffer::new(stream, size_of::<u32>(), 1),
                 new_offset: VulkanBuffer::new(stream, size_of::<u32>(), 1),
                 block_sums: VulkanBuffer::new(stream, size_of::<u32>(), 1),
@@ -2635,7 +2697,9 @@ fn ensure_scratch_capacity(state: &mut VulkanGpuMapState, stream: &Stream, n_poi
     if state.scratch.capacity >= n_points {
         return;
     }
-    let new_cap = (((n_points as f32) * 1.5).ceil() as usize).max(n_points.next_power_of_two());
+    let new_cap = (((n_points as f32) * 1.5).ceil() as usize)
+        .max(n_points)
+        .next_power_of_two();
     state.scratch.keys = VulkanBuffer::new(stream, size_of::<i32>(), new_cap);
     state.scratch.indices = VulkanBuffer::new(stream, size_of::<u32>(), new_cap);
     state.scratch.packed = VulkanBuffer::new(stream, size_of::<u64>(), new_cap);
@@ -2715,22 +2779,34 @@ fn rebuild_gpu_lru_order(
     session.dispatch(compute, compute.lru_score, &all_buffers, &params, dist_cap);
     session.barrier();
 
-    unsafe {
-        vrdxCmdSortKeyValue(
-            session.command_buffer(),
-            scratch.sorter,
-            dist_cap,
+    if requires_portable_map_sort(&session.context) {
+        record_portable_sort(
+            session,
+            compute,
+            dummy,
             lru_keys,
-            0,
             lru_mapping,
-            0,
-            sorter_scratch,
-            0,
-            vk::QueryPool::null(),
-            0,
+            dist_cap,
+            scratch.lru_keys.capacity() as u32,
         );
+    } else {
+        unsafe {
+            vrdxCmdSortKeyValue(
+                session.command_buffer(),
+                scratch.sorter,
+                dist_cap,
+                lru_keys,
+                0,
+                lru_mapping,
+                0,
+                sorter_scratch,
+                0,
+                vk::QueryPool::null(),
+                0,
+            );
+        }
+        session.barrier();
     }
-    session.barrier();
 }
 
 pub fn add_to_map(
@@ -2853,23 +2929,35 @@ pub fn add_to_map(
             session.barrier();
 
             // 2. GPU Sort
-            let sorter_scratch = vk_buffer_handle(&state.scratch.sorter_scratch);
-            unsafe {
-                vrdxCmdSortKeyValue(
-                    session.command_buffer(),
-                    state.scratch.sorter,
-                    n_points as u32,
+            if requires_portable_map_sort(&state.context) {
+                record_portable_sort(
+                    &mut session,
+                    &state.compute,
+                    dummy,
                     keys_b,
-                    0,
                     indices_b,
-                    0,
-                    sorter_scratch,
-                    0,
-                    vk::QueryPool::null(),
-                    0,
+                    n_points as u32,
+                    state.scratch.capacity as u32,
                 );
+            } else {
+                let sorter_scratch = vk_buffer_handle(&state.scratch.sorter_scratch);
+                unsafe {
+                    vrdxCmdSortKeyValue(
+                        session.command_buffer(),
+                        state.scratch.sorter,
+                        n_points as u32,
+                        keys_b,
+                        0,
+                        indices_b,
+                        0,
+                        sorter_scratch,
+                        0,
+                        vk::QueryPool::null(),
+                        0,
+                    );
+                }
+                session.barrier();
             }
-            session.barrier();
 
             // 3. GPU Run-Length Encoding
             // RLE is split into deterministic mark/scan/emit passes. The old
@@ -3552,6 +3640,8 @@ impl Drop for VulkanBuffer {
 #[cfg(test)]
 mod map_full_tests {
     use std::collections::HashMap;
+    use std::mem::size_of;
+    use std::sync::{Arc, Mutex};
 
     #[cfg(feature = "vulkan_enable")]
     #[test]
@@ -3582,6 +3672,58 @@ mod map_full_tests {
         for (name, source, defines) in cases {
             super::compile_shader(&mut compiler, source, name, &defines);
         }
+    }
+
+    #[cfg(feature = "vulkan_enable")]
+    #[test]
+    fn portable_sort_matches_unsigned_key_value_order() {
+        let stream = super::Stream::new();
+        if !stream.is_vulkan() {
+            return;
+        }
+        let super::StreamBackend::Vulkan(context) = &stream.backend else {
+            unreachable!();
+        };
+
+        let count = 100_000usize;
+        let capacity = count.next_power_of_two();
+        let source_keys: Vec<i32> = (0..count)
+            .map(|i| {
+                let value = (i.wrapping_mul(2654435761usize) ^ (i / 7)) as u32;
+                (value % 97).wrapping_mul(0x01010101) as i32
+            })
+            .collect();
+        let source_values: Vec<u32> = (0..count as u32).collect();
+        let mut keys = super::VulkanBuffer::new(&stream, size_of::<i32>(), capacity);
+        let mut values = super::VulkanBuffer::new(&stream, size_of::<u32>(), capacity);
+        keys.upload(&stream, &source_keys);
+        values.upload(&stream, &source_values);
+        let dummy = super::VulkanBuffer::new(&stream, size_of::<u32>(), 1);
+
+        let compute = super::build_pipelines(Arc::clone(context));
+        let resources = Mutex::new(super::ComputeCommandResources::new(context, &compute));
+        let mut session = super::ComputeCommandSession::begin(
+            context,
+            &resources,
+            super::vk_buffer_handle(&dummy),
+        );
+        super::record_portable_sort(
+            &mut session,
+            &compute,
+            super::vk_buffer_handle(&dummy),
+            super::vk_buffer_handle(&keys),
+            super::vk_buffer_handle(&values),
+            count as u32,
+            capacity as u32,
+        );
+        session.submit();
+
+        let sorted_keys: Vec<i32> = keys.download(&stream);
+        let sorted_values: Vec<u32> = values.download(&stream);
+        let mut expected: Vec<(i32, u32)> = source_keys.into_iter().zip(source_values).collect();
+        expected.sort_unstable_by_key(|(key, value)| (*key as u32, *value));
+        let actual: Vec<(i32, u32)> = sorted_keys.into_iter().zip(sorted_values).collect();
+        assert_eq!(actual, expected);
     }
 
     const EMPTY_KEY: i32 = i32::MIN;

@@ -8,6 +8,8 @@ fn main() {
     println!("cargo:rerun-if-env-changed=PATH");
     println!("cargo:rerun-if-env-changed=LD_LIBRARY_PATH");
     println!("cargo:rerun-if-env-changed=DYLD_LIBRARY_PATH");
+    println!("cargo:rerun-if-changed=src/vk_radix_sort.h");
+    println!("cargo:rerun-if-changed=src/vk_radix_sort_impl.cpp");
 
     let enabled = env::var_os("CARGO_FEATURE_VULKAN_ENABLE").is_some();
     if !enabled {

@@ -2384,6 +2384,7 @@ void gpuSort(VkCommandBuffer commandBuffer, VrdxSorter sorter, uint32_t elementC
 
 struct VrdxSorter_T {
   VkDevice device = VK_NULL_HANDLE;
+  PFN_vkCmdPushDescriptorSetKHR cmdPushDescriptorSet = nullptr;
 
   VkDescriptorSetLayout descriptorSetLayout = VK_NULL_HANDLE;
   VkPipelineLayout pipelineLayout = VK_NULL_HANDLE;
@@ -2402,6 +2403,12 @@ struct PushConstants {
 void vrdxCreateSorter(const VrdxSorterCreateInfo* pCreateInfo, VrdxSorter* pSorter) {
   VkDevice device = pCreateInfo->device;
   VkPipelineCache pipelineCache = pCreateInfo->pipelineCache;
+  auto cmdPushDescriptorSet = reinterpret_cast<PFN_vkCmdPushDescriptorSetKHR>(
+      vkGetDeviceProcAddr(device, "vkCmdPushDescriptorSetKHR"));
+  if (!cmdPushDescriptorSet) {
+    *pSorter = VK_NULL_HANDLE;
+    return;
+  }
 
   // descriptor layout
   constexpr int bindingCount = 7;
@@ -2517,6 +2524,7 @@ void vrdxCreateSorter(const VrdxSorterCreateInfo* pCreateInfo, VrdxSorter* pSort
 
   *pSorter = new VrdxSorter_T();
   (*pSorter)->device = device;
+  (*pSorter)->cmdPushDescriptorSet = cmdPushDescriptorSet;
 
   (*pSorter)->descriptorSetLayout = descriptorSetLayout;
   (*pSorter)->pipelineLayout = pipelineLayout;
@@ -2698,8 +2706,8 @@ void gpuSort(VkCommandBuffer commandBuffer, VrdxSorter sorter, uint32_t elementC
       writes[i].pBufferInfo = &buffers[i];
     }
 
-    vkCmdPushDescriptorSet(commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, pipelineLayout, 0,
-                           writeCount, writes);
+    sorter->cmdPushDescriptorSet(commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, pipelineLayout, 0,
+                                 writeCount, writes);
 
     vkCmdPushConstants(commandBuffer, sorter->pipelineLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0,
                        sizeof(pushConstants), &pushConstants);

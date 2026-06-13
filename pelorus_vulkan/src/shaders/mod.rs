@@ -5,6 +5,7 @@ pub const REORDER: &str = include_str!("reorder.comp");
 pub const PLANES: &str = include_str!("planes.comp");
 pub const COMPACT_PLANES: &str = include_str!("compact_planes.comp");
 pub const PLANE_COUNT: &str = include_str!("plane_count.comp");
+pub const PORTABLE_SORT: &str = include_str!("portable_sort.comp");
 pub const RLE: &str = include_str!("rle.comp");
 pub const ASSIGN_INDICES: &str = include_str!("assign_indices.comp");
 pub const LRU_SCORE: &str = include_str!("lru_score.comp");
