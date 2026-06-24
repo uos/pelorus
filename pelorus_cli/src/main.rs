@@ -93,7 +93,6 @@ use ros2_interfaces_jazzy_rkyv::{
     visualization_msgs::msg::Marker,
 };
 use std::io::IsTerminal;
-#[cfg(feature = "rat")]
 use std::io::Write;
 
 #[cfg(any(feature = "mt_pubsub", feature = "ros2-client", feature = "r2r"))]
@@ -111,7 +110,7 @@ use pelorus_reg::Registration;
 use prelio_io::PrelioNode;
 use std::path::PathBuf;
 
-use pelorus_cli::mcap_output::{McapTopics, OfflineMcapWriter};
+use pelorus_cli::mcap_output::{McapOutputWriter, McapTopics};
 use pelorus_cli::stats_tui::{
     SharedStats, StatsTui, init_logger, set_tui_active, update_log_level,
 };
@@ -193,6 +192,9 @@ pub struct OfflineArgs {
     #[arg(long, default_value_t = false)]
     pub cpu_only: bool,
 
+    #[command(flatten)]
+    pub recording: RecordingArgs,
+
     /// Answer yes to overwrite prompts.
     #[arg(short = 'y', long, default_value_t = false)]
     pub yes: bool,
@@ -203,38 +205,6 @@ pub struct OfflineArgs {
     /// keeps the preprocessing side fed while the current scan is registering.
     #[arg(long, default_value_t = DEFAULT_OFFLINE_PREFETCH_SCANS)]
     pub prefetch_scans: usize,
-
-    /// Write Pelorus offline outputs to this MCAP bagfile.
-    #[arg(long, value_name = "PATH", conflicts_with = "output_rosbag")]
-    pub output_mcap: Option<PathBuf>,
-
-    /// Also write ROS 2 bag metadata.yaml for the MCAP output.
-    #[arg(long, value_name = "PATH", requires = "output_mcap")]
-    pub output_rosbag_metadata: Option<PathBuf>,
-
-    /// Write Pelorus offline outputs as a ROS 2 MCAP bag directory.
-    #[arg(long, value_name = "DIR", conflicts_with_all = ["output_mcap", "output_rosbag_metadata"])]
-    pub output_rosbag: Option<PathBuf>,
-
-    /// MCAP topic for undistorted PointCloud2 output.
-    #[arg(long, default_value = "/registered")]
-    pub mcap_cloud_topic: String,
-
-    /// MCAP topic for Pelorus odometry output.
-    #[arg(long, default_value = "/odom")]
-    pub mcap_odom_topic: String,
-
-    /// MCAP topic for Pelorus path output.
-    #[arg(long, default_value = "/path")]
-    pub mcap_path_topic: String,
-
-    /// MCAP topic for dynamic TF output.
-    #[arg(long, default_value = "/tf")]
-    pub mcap_tf_topic: String,
-
-    /// MCAP topic for filtered IMU output. Defaults to the configured filtered IMU topic.
-    #[arg(long)]
-    pub mcap_filtered_imu_topic: Option<String>,
 }
 
 #[derive(Debug, Clone, Parser)]
@@ -264,6 +234,48 @@ pub struct ConfigArgs {
     /// Force CPU-only processing regardless of available GPU backends.
     #[arg(long, default_value_t = false)]
     pub cpu_only: bool,
+
+    #[command(flatten)]
+    pub recording: RecordingArgs,
+
+    /// Answer yes to overwrite prompts.
+    #[arg(short = 'y', long, default_value_t = false)]
+    pub yes: bool,
+}
+
+#[derive(Debug, Clone, Parser)]
+pub struct RecordingArgs {
+    /// Write Pelorus outputs to this MCAP bagfile.
+    #[arg(long, value_name = "PATH", conflicts_with = "output_rosbag")]
+    pub output_mcap: Option<PathBuf>,
+
+    /// Also write ROS 2 bag metadata.yaml for the MCAP output.
+    #[arg(long, value_name = "PATH", requires = "output_mcap")]
+    pub output_rosbag_metadata: Option<PathBuf>,
+
+    /// Write Pelorus outputs as a ROS 2 MCAP bag directory.
+    #[arg(long, value_name = "DIR", conflicts_with_all = ["output_mcap", "output_rosbag_metadata"])]
+    pub output_rosbag: Option<PathBuf>,
+
+    /// MCAP topic for undistorted PointCloud2 output.
+    #[arg(long, default_value = "/registered")]
+    pub mcap_cloud_topic: String,
+
+    /// MCAP topic for Pelorus odometry output.
+    #[arg(long, default_value = "/odom")]
+    pub mcap_odom_topic: String,
+
+    /// MCAP topic for Pelorus path output.
+    #[arg(long, default_value = "/path")]
+    pub mcap_path_topic: String,
+
+    /// MCAP topic for dynamic TF output.
+    #[arg(long, default_value = "/tf")]
+    pub mcap_tf_topic: String,
+
+    /// MCAP topic for filtered IMU output. Defaults to the configured filtered IMU topic.
+    #[arg(long)]
+    pub mcap_filtered_imu_topic: Option<String>,
 }
 
 #[derive(Debug, Clone, Subcommand)]
@@ -314,7 +326,7 @@ pub enum GenerateKind {
 }
 
 #[derive(Debug, Clone)]
-struct OfflineMcapConfig {
+struct McapOutputConfig {
     path: PathBuf,
     rosbag_metadata_path: Option<PathBuf>,
     topics: McapTopics,
@@ -336,6 +348,105 @@ fn rosbag_mcap_path(rosbag_path: &std::path::Path) -> PathBuf {
         .filter(|name| !name.is_empty())
         .unwrap_or("output");
     rosbag_path.join(format!("{bag_name}.mcap"))
+}
+
+fn build_mcap_output_config(args: &RecordingArgs, config: &LioConfig) -> Option<McapOutputConfig> {
+    build_mcap_output_config_with_filtered_topic(
+        args,
+        &config.prelio_node_params.imu_filtered_topic,
+    )
+}
+
+fn build_mcap_output_config_with_filtered_topic(
+    args: &RecordingArgs,
+    configured_filtered_imu_topic: &str,
+) -> Option<McapOutputConfig> {
+    args.output_mcap
+        .clone()
+        .or_else(|| {
+            args.output_rosbag
+                .as_ref()
+                .map(|path| rosbag_mcap_path(path))
+        })
+        .map(|path| {
+            let filtered_imu_topic = args.mcap_filtered_imu_topic.clone().unwrap_or_else(|| {
+                if configured_filtered_imu_topic.is_empty() {
+                    "imu/filtered".to_string()
+                } else {
+                    configured_filtered_imu_topic.to_string()
+                }
+            });
+            McapOutputConfig {
+                path,
+                rosbag_metadata_path: args.output_rosbag_metadata.clone().or_else(|| {
+                    args.output_rosbag
+                        .as_ref()
+                        .map(|path| path.join("metadata.yaml"))
+                }),
+                topics: McapTopics {
+                    cloud: normalize_mcap_topic(args.mcap_cloud_topic.clone()),
+                    odom: normalize_mcap_topic(args.mcap_odom_topic.clone()),
+                    path: normalize_mcap_topic(args.mcap_path_topic.clone()),
+                    tf: normalize_mcap_topic(args.mcap_tf_topic.clone()),
+                    filtered_imu: normalize_mcap_topic(filtered_imu_topic),
+                },
+            }
+        })
+}
+
+fn prepare_mcap_output_targets(
+    args: &RecordingArgs,
+    output_mcap: Option<&McapOutputConfig>,
+    assume_yes: bool,
+) -> anyhow::Result<bool> {
+    let mut rosbag_overwrite_confirmed = false;
+    if let Some(rosbag_path) = args.output_rosbag.as_ref() {
+        if !confirm_output_overwrite("ROS bag output directory", rosbag_path, assume_yes)? {
+            info!(
+                "ROS bag output directory '{}' was not overwritten; exiting.",
+                rosbag_path.display()
+            );
+            return Ok(false);
+        }
+        rosbag_overwrite_confirmed = rosbag_path.exists();
+        std::fs::create_dir_all(rosbag_path).map_err(|e| {
+            anyhow!(
+                "Failed to create ROS bag output directory '{}': {}",
+                rosbag_path.display(),
+                e
+            )
+        })?;
+        info!("ROS bag output directory: {}", rosbag_path.display());
+    }
+    if let Some(output_mcap) = output_mcap {
+        if !confirm_output_overwrite(
+            "MCAP output",
+            &output_mcap.path,
+            assume_yes || rosbag_overwrite_confirmed,
+        )? {
+            info!(
+                "MCAP output '{}' was not overwritten; exiting.",
+                output_mcap.path.display()
+            );
+            return Ok(false);
+        }
+        info!("MCAP output target: {}", output_mcap.path.display());
+        if let Some(metadata_path) = output_mcap.rosbag_metadata_path.as_ref() {
+            if !confirm_output_overwrite(
+                "ROS bag metadata",
+                metadata_path,
+                assume_yes || rosbag_overwrite_confirmed,
+            )? {
+                info!(
+                    "ROS bag metadata '{}' was not overwritten; exiting.",
+                    metadata_path.display()
+                );
+                return Ok(false);
+            }
+            info!("ROS bag metadata target: {}", metadata_path.display());
+        }
+    }
+    Ok(true)
 }
 
 #[cfg(any(feature = "mt_pubsub", feature = "ros2-client", feature = "r2r"))]
@@ -512,7 +623,7 @@ fn serde_imu_msg(msg: &pelorus_core::ImuMsg) -> ros2_interfaces_jazzy_serde::sen
 
 #[cfg(any(feature = "mt_pubsub", feature = "ros2-client", feature = "r2r"))]
 fn drain_filtered_imu_mcap(
-    writer: &mut Option<OfflineMcapWriter<std::io::BufWriter<std::fs::File>>>,
+    writer: &mut Option<McapOutputWriter<std::io::BufWriter<std::fs::File>>>,
     rx: &mut Option<std::sync::mpsc::Receiver<pelorus_core::ImuMsg>>,
 ) -> anyhow::Result<()> {
     let (Some(writer), Some(rx)) = (writer.as_mut(), rx.as_mut()) else {
@@ -529,6 +640,7 @@ fn lio(
     config: LioConfig,
     export_trajectory: Option<String>,
     synchronous_mode: bool,
+    output_mcap: Option<McapOutputConfig>,
 ) -> Result<(), Box<dyn CoreError>> {
     lio_with_ready_signal(
         config,
@@ -539,7 +651,7 @@ fn lio(
         None,
         None,
         1,
-        None,
+        output_mcap,
     )
 }
 
@@ -616,7 +728,7 @@ fn lio_with_ready_signal(
     // Optional blocking shutdown signal for pipeline teardown mode.
     shutdown_request_rx: Option<std::sync::mpsc::Receiver<OfflineShutdownRequest>>,
     offline_prefetch_scans: usize,
-    output_mcap: Option<OfflineMcapConfig>,
+    output_mcap: Option<McapOutputConfig>,
 ) -> Result<(), Box<dyn CoreError>> {
     let export_trajectory = resolve_export_trajectory_path(export_trajectory);
     if let Some(path) = export_trajectory.as_ref() {
@@ -1018,7 +1130,7 @@ fn lio_with_ready_signal(
     let processing_handle = std::thread::spawn(move || -> anyhow::Result<()> {
         let mut filtered_imu_rx = filtered_imu_rx;
         let mut mcap_writer = match output_mcap {
-            Some(output) => Some(OfflineMcapWriter::create(
+            Some(output) => Some(McapOutputWriter::create(
                 &output.path,
                 &output.topics,
                 output.rosbag_metadata_path,
@@ -2247,7 +2359,7 @@ fn lio_with_ready_signal(
     _shutdown_flag: Option<Arc<AtomicBool>>,
     _shutdown_request_rx: Option<std::sync::mpsc::Receiver<OfflineShutdownRequest>>,
     _offline_prefetch_scans: usize,
-    _output_mcap: Option<OfflineMcapConfig>,
+    _output_mcap: Option<McapOutputConfig>,
 ) -> Result<(), Box<dyn CoreError>> {
     Err(anyhow!(
         "No IO backend is enabled. Rebuild with one of: offline, mt_pubsub, ros2-client, or r2r."
@@ -2440,6 +2552,79 @@ mod vulkan_backend_details_tests {
     }
 }
 
+#[cfg(test)]
+mod mcap_output_config_tests {
+    use super::*;
+
+    fn recording_args() -> RecordingArgs {
+        RecordingArgs {
+            output_mcap: None,
+            output_rosbag_metadata: None,
+            output_rosbag: None,
+            mcap_cloud_topic: "/registered".to_string(),
+            mcap_odom_topic: "/odom".to_string(),
+            mcap_path_topic: "/path".to_string(),
+            mcap_tf_topic: "/tf".to_string(),
+            mcap_filtered_imu_topic: None,
+        }
+    }
+
+    #[test]
+    fn builds_direct_mcap_output_without_metadata_by_default() {
+        let mut args = recording_args();
+        args.output_mcap = Some(PathBuf::from("out.mcap"));
+
+        let output = build_mcap_output_config_with_filtered_topic(&args, "imu/ahrs").unwrap();
+
+        assert_eq!(output.path, PathBuf::from("out.mcap"));
+        assert_eq!(output.rosbag_metadata_path, None);
+        assert_eq!(output.topics.filtered_imu, "/imu/ahrs");
+    }
+
+    #[test]
+    fn builds_rosbag_directory_paths() {
+        let mut args = recording_args();
+        args.output_rosbag = Some(PathBuf::from("bags/run1"));
+
+        let output = build_mcap_output_config_with_filtered_topic(&args, "imu/ahrs").unwrap();
+
+        assert_eq!(output.path, PathBuf::from("bags/run1/run1.mcap"));
+        assert_eq!(
+            output.rosbag_metadata_path,
+            Some(PathBuf::from("bags/run1/metadata.yaml"))
+        );
+    }
+
+    #[test]
+    fn normalizes_topic_overrides() {
+        let mut args = recording_args();
+        args.output_mcap = Some(PathBuf::from("out.mcap"));
+        args.mcap_cloud_topic = "cloud".to_string();
+        args.mcap_odom_topic = "odom".to_string();
+        args.mcap_path_topic = "path".to_string();
+        args.mcap_tf_topic = "tf".to_string();
+        args.mcap_filtered_imu_topic = Some("imu/custom".to_string());
+
+        let output = build_mcap_output_config_with_filtered_topic(&args, "imu/ahrs").unwrap();
+
+        assert_eq!(output.topics.cloud, "/cloud");
+        assert_eq!(output.topics.odom, "/odom");
+        assert_eq!(output.topics.path, "/path");
+        assert_eq!(output.topics.tf, "/tf");
+        assert_eq!(output.topics.filtered_imu, "/imu/custom");
+    }
+
+    #[test]
+    fn uses_default_filtered_imu_topic_when_configured_topic_is_empty() {
+        let mut args = recording_args();
+        args.output_mcap = Some(PathBuf::from("out.mcap"));
+
+        let output = build_mcap_output_config_with_filtered_topic(&args, "").unwrap();
+
+        assert_eq!(output.topics.filtered_imu, "/imu/filtered");
+    }
+}
+
 #[cfg(any(feature = "mt_pubsub", feature = "ros2-client", feature = "r2r"))]
 fn set_backend_from_runtime(
     shared_stats: &SharedStats,
@@ -2513,7 +2698,6 @@ This command is non-interactive, so pull it first with `marina pull {}` and retr
     }
 }
 
-#[cfg(feature = "rat")]
 fn confirm_output_overwrite(
     label: &str,
     path: &std::path::Path,
@@ -2681,6 +2865,15 @@ fn main() -> Result<(), Box<dyn CoreError>> {
                 config.cpu_only = true;
             }
 
+            let output_mcap_config = build_mcap_output_config(&config_args.recording, &config);
+            if !prepare_mcap_output_targets(
+                &config_args.recording,
+                output_mcap_config.as_ref(),
+                config_args.yes,
+            )? {
+                return Ok(());
+            }
+
             if config.num_threads > 0 {
                 #[cfg(feature = "rayon")]
                 if let Err(e) = rayon::ThreadPoolBuilder::new()
@@ -2734,6 +2927,7 @@ fn main() -> Result<(), Box<dyn CoreError>> {
                 let lio_export = config_args.export_trajectory.clone();
                 let lio_sync = config_args.rat;
                 let lio_stats = Some(shared_stats);
+                let lio_output_mcap = output_mcap_config.clone();
 
                 let lio_shutdown_flag = Arc::new(AtomicBool::new(false));
                 let lio_shutdown_flag_for_thread = lio_shutdown_flag.clone();
@@ -2748,7 +2942,7 @@ fn main() -> Result<(), Box<dyn CoreError>> {
                         Some(lio_shutdown_flag_for_thread),
                         None,
                         1,
-                        None,
+                        lio_output_mcap,
                     )
                     .map_err(|e| e.to_string())
                 });
@@ -2787,7 +2981,12 @@ fn main() -> Result<(), Box<dyn CoreError>> {
                     Err(_) => Err(anyhow!("LIO thread panicked").into()),
                 }
             } else {
-                lio(config, config_args.export_trajectory, config_args.rat)
+                lio(
+                    config,
+                    config_args.export_trajectory,
+                    config_args.rat,
+                    output_mcap_config,
+                )
             }
         }
         #[cfg(feature = "rat")]
@@ -2830,96 +3029,13 @@ fn main() -> Result<(), Box<dyn CoreError>> {
                 config
             };
 
-            let output_mcap_config = offline_args
-                .output_mcap
-                .clone()
-                .or_else(|| {
-                    offline_args
-                        .output_rosbag
-                        .as_ref()
-                        .map(|path| rosbag_mcap_path(path))
-                })
-                .map(|path| {
-                    let filtered_imu_topic = offline_args
-                        .mcap_filtered_imu_topic
-                        .clone()
-                        .unwrap_or_else(|| {
-                            let configured = config.prelio_node_params.imu_filtered_topic.clone();
-                            if configured.is_empty() {
-                                "imu/filtered".to_string()
-                            } else {
-                                configured
-                            }
-                        });
-                    OfflineMcapConfig {
-                        path,
-                        rosbag_metadata_path: offline_args.output_rosbag_metadata.clone().or_else(
-                            || {
-                                offline_args
-                                    .output_rosbag
-                                    .as_ref()
-                                    .map(|path| path.join("metadata.yaml"))
-                            },
-                        ),
-                        topics: McapTopics {
-                            cloud: normalize_mcap_topic(offline_args.mcap_cloud_topic.clone()),
-                            odom: normalize_mcap_topic(offline_args.mcap_odom_topic.clone()),
-                            path: normalize_mcap_topic(offline_args.mcap_path_topic.clone()),
-                            tf: normalize_mcap_topic(offline_args.mcap_tf_topic.clone()),
-                            filtered_imu: normalize_mcap_topic(filtered_imu_topic),
-                        },
-                    }
-                });
-            let mut rosbag_overwrite_confirmed = false;
-            if let Some(rosbag_path) = offline_args.output_rosbag.as_ref() {
-                if !confirm_output_overwrite(
-                    "ROS bag output directory",
-                    rosbag_path,
-                    offline_args.yes,
-                )? {
-                    info!(
-                        "ROS bag output directory '{}' was not overwritten; exiting.",
-                        rosbag_path.display()
-                    );
-                    return Ok(());
-                }
-                rosbag_overwrite_confirmed = rosbag_path.exists();
-                std::fs::create_dir_all(rosbag_path).map_err(|e| {
-                    anyhow!(
-                        "Failed to create ROS bag output directory '{}': {}",
-                        rosbag_path.display(),
-                        e
-                    )
-                })?;
-                info!("ROS bag output directory: {}", rosbag_path.display());
-            }
-            if let Some(output_mcap) = output_mcap_config.as_ref() {
-                if !confirm_output_overwrite(
-                    "MCAP output",
-                    &output_mcap.path,
-                    offline_args.yes || rosbag_overwrite_confirmed,
-                )? {
-                    info!(
-                        "MCAP output '{}' was not overwritten; exiting.",
-                        output_mcap.path.display()
-                    );
-                    return Ok(());
-                }
-                info!("MCAP output target: {}", output_mcap.path.display());
-                if let Some(metadata_path) = output_mcap.rosbag_metadata_path.as_ref() {
-                    if !confirm_output_overwrite(
-                        "ROS bag metadata",
-                        metadata_path,
-                        offline_args.yes || rosbag_overwrite_confirmed,
-                    )? {
-                        info!(
-                            "ROS bag metadata '{}' was not overwritten; exiting.",
-                            metadata_path.display()
-                        );
-                        return Ok(());
-                    }
-                    info!("ROS bag metadata target: {}", metadata_path.display());
-                }
+            let output_mcap_config = build_mcap_output_config(&offline_args.recording, &config);
+            if !prepare_mcap_output_targets(
+                &offline_args.recording,
+                output_mcap_config.as_ref(),
+                offline_args.yes,
+            )? {
+                return Ok(());
             }
 
             set_backend_from_config(&shared_stats, &config);

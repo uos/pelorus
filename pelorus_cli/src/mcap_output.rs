@@ -190,7 +190,7 @@ pub struct McapTopics {
     pub filtered_imu: String,
 }
 
-pub struct OfflineMcapWriter<W: Write + Seek> {
+pub struct McapOutputWriter<W: Write + Seek> {
     writer: mcap::Writer<W>,
     mcap_path: Option<PathBuf>,
     rosbag_metadata_path: Option<PathBuf>,
@@ -210,7 +210,7 @@ pub struct OfflineMcapWriter<W: Write + Seek> {
     filtered_imu_seq: u32,
 }
 
-impl OfflineMcapWriter<BufWriter<File>> {
+impl McapOutputWriter<BufWriter<File>> {
     pub fn create(
         path: &Path,
         topics: &McapTopics,
@@ -225,7 +225,7 @@ impl OfflineMcapWriter<BufWriter<File>> {
     }
 }
 
-impl<W: Write + Seek> OfflineMcapWriter<W> {
+impl<W: Write + Seek> McapOutputWriter<W> {
     pub fn new(writer: W, topics: &McapTopics) -> Result<Self> {
         let mut writer = mcap::WriteOptions::new()
             .profile("ros2")
@@ -398,7 +398,7 @@ fn stamp_to_nanos(stamp: &Time) -> u64 {
 fn write_rosbag_metadata<W: Write + Seek>(
     metadata_path: &Path,
     mcap_path: &Path,
-    writer: &OfflineMcapWriter<W>,
+    writer: &McapOutputWriter<W>,
 ) -> Result<()> {
     let relative_mcap_path = metadata_path
         .parent()
@@ -525,7 +525,7 @@ mod tests {
             filtered_imu: "/imu_out".to_string(),
         };
 
-        let mut writer = OfflineMcapWriter::create(&path, &topics, None)?;
+        let mut writer = McapOutputWriter::create(&path, &topics, None)?;
 
         let stamp = Time {
             sec: 12,
@@ -599,7 +599,7 @@ mod tests {
             filtered_imu: "/imu_out".to_string(),
         };
 
-        let mut writer = OfflineMcapWriter::create(&path, &topics, Some(metadata_path.clone()))?;
+        let mut writer = McapOutputWriter::create(&path, &topics, Some(metadata_path.clone()))?;
 
         let stamp = Time {
             sec: 12,
