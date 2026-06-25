@@ -340,7 +340,9 @@ impl ImuProcessing {
             let tail_stamp = timestamp_to_secs(&tail.stamp);
 
             if head_stamp == tail_stamp {
-                warn!("Found the same stamps from IMU, skipping a msg");
+                if should_log_once_default("imu_same_stamp_skip") {
+                    warn!("Found the same stamps from IMU, skipping a msg");
+                }
                 head = tail;
                 continue;
             }

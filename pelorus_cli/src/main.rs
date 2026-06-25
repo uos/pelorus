@@ -40,6 +40,8 @@ use ros2_interfaces_jazzy_serde::{
     sensor_msgs::msg::PointCloud2,
     std_msgs::msg::Header,
 };
+#[cfg(feature = "r2r")]
+use std::ffi::OsString;
 #[cfg(feature = "rat")]
 use std::fs;
 #[cfg(feature = "rat")]
@@ -323,6 +325,46 @@ pub struct GenerateArgs {
 pub enum GenerateKind {
     Recommended,
     Full,
+}
+
+#[cfg(feature = "r2r")]
+fn args_without_ros_args<I>(args: I) -> Vec<OsString>
+where
+    I: IntoIterator<Item = OsString>,
+{
+    let mut filtered = Vec::new();
+    let mut args = args.into_iter();
+
+    while let Some(arg) = args.next() {
+        if arg != "--ros-args" {
+            filtered.push(arg);
+            continue;
+        }
+
+        while let Some(arg) = args.next() {
+            match arg.to_str() {
+                Some("--") => break,
+                Some(
+                    "-r" | "--remap" | "-p" | "--param" | "--params-file" | "--log-level"
+                    | "--enclave",
+                ) => {
+                    let _ = args.next();
+                }
+                Some(
+                    "--disable-rosout-logs"
+                    | "--disable-stdout-logs"
+                    | "--disable-external-lib-logs"
+                    | "--enable-rosout-logs"
+                    | "--enable-stdout-logs"
+                    | "--enable-external-lib-logs",
+                ) => {}
+                Some(value) if value.starts_with("__") || value.contains(":=") => {}
+                Some(_) | None => {}
+            }
+        }
+    }
+
+    filtered
 }
 
 #[derive(Debug, Clone)]
@@ -885,6 +927,7 @@ fn lio_with_ready_signal(
         rec.clone(),
         Some(ready_for_next_rx),
         filtered_imu_tx,
+        minot_replay_mode,
     )?;
     let lifis_node = Arc::new(lifis_node);
     let drain_on_shutdown = Arc::new(AtomicBool::new(false));
@@ -1137,11 +1180,14 @@ fn lio_with_ready_signal(
             )?),
             None => None,
         };
+        let gate_minot_replay_on_mcap = minot_replay_mode && mcap_writer.is_some();
+        let relay_minot_replay_on_registration = minot_replay_mode && mcap_writer.is_none();
+        let mut minot_prefill_requested = false;
         // Initialize Prelio prediction
         let mut ready_for_next_tx = Some(ready_for_next_tx);
         let mut registration_ready_tx = None;
         let mut ready_relay_handle = None;
-        if minot_replay_mode {
+        if gate_minot_replay_on_mcap || relay_minot_replay_on_registration {
             let (relay_tx, relay_rx) = std::sync::mpsc::channel();
             registration_ready_tx = Some(relay_tx);
             let prelio_ready_tx = ready_for_next_tx
@@ -1508,7 +1554,9 @@ fn lio_with_ready_signal(
 
             let registration_result = {
                 let mut map = map.lock().unwrap();
-                let ready_for_registration = if minot_replay_mode {
+                let ready_for_registration = if relay_minot_replay_on_registration {
+                    registration_ready_tx.as_ref()
+                } else if gate_minot_replay_on_mcap {
                     None
                 } else {
                     ready_for_next_tx.as_ref()
@@ -1533,10 +1581,22 @@ fn lio_with_ready_signal(
                 Ok(Some(result)) => result,
                 Ok(None) => {
                     drain_filtered_imu_mcap(&mut mcap_writer, &mut filtered_imu_rx)?;
-                    if minot_replay_mode {
+                    if gate_minot_replay_on_mcap {
                         if let Some(ready) = registration_ready_tx.as_ref() {
                             let _ = ready.send(());
                         }
+                    } else if !relay_minot_replay_on_registration && minot_replay_mode {
+                        let request_count = if minot_prefill_requested {
+                            1
+                        } else {
+                            minot_prefill_requested = true;
+                            offline_prefetch_scans.max(1)
+                        };
+                        release_minot_ticks(
+                            processing_shutdown_flag.as_ref(),
+                            synchronous_mode,
+                            request_count,
+                        );
                     } else {
                         release_minot_tick(processing_shutdown_flag.as_ref(), synchronous_mode);
                     }
@@ -1545,12 +1605,22 @@ fn lio_with_ready_signal(
                 Err(err) => {
                     error!("{err}");
                     drain_filtered_imu_mcap(&mut mcap_writer, &mut filtered_imu_rx)?;
-                    if minot_replay_mode {
+                    if gate_minot_replay_on_mcap {
                         if let Some(ready) = registration_ready_tx.as_ref() {
                             let _ = ready.send(());
                         }
                     } else {
-                        release_minot_tick(processing_shutdown_flag.as_ref(), synchronous_mode);
+                        if minot_replay_mode && !lifis_tick.map_only {
+                            if let Some(ready) = registration_ready_tx
+                                .as_ref()
+                                .or_else(|| ready_for_next_tx.as_ref())
+                            {
+                                let _ = ready.send(());
+                            }
+                        }
+                        if !minot_replay_mode {
+                            release_minot_tick(processing_shutdown_flag.as_ref(), synchronous_mode);
+                        }
                     }
                     continue;
                 }
@@ -1663,6 +1733,93 @@ fn lio_with_ready_signal(
                 {
                     pelorus_odom.pose.covariance = pose_cov_iekf.to_vec();
                     pelorus_odom.twist.covariance = twist_cov_iekf.to_vec();
+                }
+            }
+
+            #[cfg(feature = "rerun")]
+            if let Some(ref rec) = rec {
+                let odom_pose = Isometry3::from_parts(
+                    nalgebra::Translation3::new(
+                        pelorus_odom.pose.pose.position.x,
+                        pelorus_odom.pose.pose.position.y,
+                        pelorus_odom.pose.pose.position.z,
+                    ),
+                    UnitQuaternion::from_quaternion(nalgebra::Quaternion::new(
+                        pelorus_odom.pose.pose.orientation.w,
+                        pelorus_odom.pose.pose.orientation.x,
+                        pelorus_odom.pose.pose.orientation.y,
+                        pelorus_odom.pose.pose.orientation.z,
+                    )),
+                );
+                let odom_pose_rerun = ros_to_rerun.cast() * odom_pose;
+                let odom_transform = rerun::Transform3D::from_translation(glam::Vec3::new(
+                    odom_pose_rerun.translation.x as f32,
+                    odom_pose_rerun.translation.y as f32,
+                    odom_pose_rerun.translation.z as f32,
+                ))
+                .with_quaternion(glam::Quat::from_xyzw(
+                    odom_pose_rerun.rotation.quaternion().i as f32,
+                    odom_pose_rerun.rotation.quaternion().j as f32,
+                    odom_pose_rerun.rotation.quaternion().k as f32,
+                    odom_pose_rerun.rotation.quaternion().w as f32,
+                ));
+
+                if let Err(err) = rec.log("world/latest_odometry", &odom_transform) {
+                    error!("Error sending latest odometry pose to rerun {err}");
+                }
+
+                if let Err(err) = rec.log(
+                    "world/latest_odometry",
+                    &rerun::TransformAxes3D::new(0.75).with_show_frame(false),
+                ) {
+                    error!("Error sending latest odometry axes to rerun {err}");
+                }
+
+                let pose_cov = &pelorus_odom.pose.covariance;
+                let position_cov_world = nalgebra::Matrix3::new(
+                    pose_cov[0],
+                    pose_cov[1],
+                    pose_cov[2],
+                    pose_cov[6],
+                    pose_cov[7],
+                    pose_cov[8],
+                    pose_cov[12],
+                    pose_cov[13],
+                    pose_cov[14],
+                );
+                let odom_rotation = odom_pose.rotation.to_rotation_matrix();
+                let position_cov_local = odom_rotation.matrix().transpose()
+                    * position_cov_world
+                    * odom_rotation.matrix();
+                let eig = position_cov_local.symmetric_eigen();
+                let mut eig_vectors = eig.eigenvectors;
+                if eig_vectors.determinant() < 0.0 {
+                    eig_vectors.set_column(0, &(-eig_vectors.column(0)));
+                }
+
+                let covariance_visual_scale = 300.0;
+                let covariance_half_sizes = glam::Vec3::new(
+                    (covariance_visual_scale * eig.eigenvalues.x.max(0.0).sqrt()) as f32,
+                    (covariance_visual_scale * eig.eigenvalues.y.max(0.0).sqrt()) as f32,
+                    (covariance_visual_scale * eig.eigenvalues.z.max(0.0).sqrt()) as f32,
+                );
+                let covariance_rotation = UnitQuaternion::from_matrix(&eig_vectors);
+                let covariance_quat = covariance_rotation.quaternion();
+                let covariance_ellipsoid = rerun::Ellipsoids3D::update_fields()
+                    .with_half_sizes([covariance_half_sizes])
+                    .with_quaternions([glam::Quat::from_xyzw(
+                        covariance_quat.i as f32,
+                        covariance_quat.j as f32,
+                        covariance_quat.k as f32,
+                        covariance_quat.w as f32,
+                    )])
+                    .with_colors([rerun::Color::from_unmultiplied_rgba(64, 180, 255, 96)])
+                    .with_fill_mode(rerun::components::FillMode::TransparentFillMajorWireframe)
+                    .with_line_radii([rerun::Radius::new_ui_points(1.0)]);
+
+                if let Err(err) = rec.log("world/latest_odometry/covariance", &covariance_ellipsoid)
+                {
+                    error!("Error sending latest odometry covariance to rerun {err}");
                 }
             }
 
@@ -1815,14 +1972,116 @@ fn lio_with_ready_signal(
             {
                 eval.start("pub_localmap").unwrap();
                 #[cfg(not(any(feature = "cuda", feature = "metal", feature = "vulkan")))]
-                let total_map = map.lock().unwrap().get_entire_map();
+                let map_distributions = map.lock().unwrap().get_distributions_with_lru_scores();
                 #[cfg(feature = "cuda")]
                 let total_map = pelorus_cuda::get_map();
                 #[cfg(feature = "metal")]
                 let total_map = pelorus_metal::get_map();
                 #[cfg(feature = "vulkan")]
                 let total_map = pelorus_vulkan::get_map();
-                #[cfg(feature = "rerun")]
+                #[cfg(all(
+                    feature = "rerun",
+                    not(any(feature = "cuda", feature = "metal", feature = "vulkan"))
+                ))]
+                if let Some(ref rec) = rec {
+                    let map_distribution_visual_scale = 3.0f32;
+                    let min_patch_half_size = (config.map_resolution as f32 * 0.25).max(0.02);
+                    const SURFEL_DISC_SEGMENTS: u32 = 8;
+                    let vertices_per_disc = SURFEL_DISC_SEGMENTS as usize + 1;
+                    let mut vertices =
+                        Vec::with_capacity(map_distributions.len() * vertices_per_disc);
+                    let mut normals =
+                        Vec::with_capacity(map_distributions.len() * vertices_per_disc);
+                    let mut vertex_colors =
+                        Vec::with_capacity(map_distributions.len() * vertices_per_disc);
+                    let mut triangles =
+                        Vec::with_capacity(map_distributions.len() * SURFEL_DISC_SEGMENTS as usize);
+
+                    for scored_distribution in map_distributions.iter() {
+                        let distribution = &scored_distribution.distribution;
+                        let eig = distribution.covariance.symmetric_eigen();
+                        let center = glam::Vec3::new(
+                            distribution.mean.x,
+                            distribution.mean.y,
+                            distribution.mean.z,
+                        );
+                        let value = scored_distribution.lru_score.clamp(0.0, 1.0);
+                        let surfel_color = if value < 0.5 {
+                            let t = value * 2.0;
+                            rerun::Color::from_rgb(
+                                (150.0 + 95.0 * t) as u8,
+                                (58.0 + 116.0 * t) as u8,
+                                (70.0 - 20.0 * t) as u8,
+                            )
+                        } else {
+                            let t = (value - 0.5) * 2.0;
+                            rerun::Color::from_rgb(
+                                (245.0 - 171.0 * t) as u8,
+                                (174.0 + 42.0 * t) as u8,
+                                (50.0 + 166.0 * t) as u8,
+                            )
+                        };
+
+                        let mut axes = [
+                            (eig.eigenvalues.x.max(0.0), eig.eigenvectors.column(0)),
+                            (eig.eigenvalues.y.max(0.0), eig.eigenvectors.column(1)),
+                            (eig.eigenvalues.z.max(0.0), eig.eigenvectors.column(2)),
+                        ];
+                        axes.sort_by(|a, b| a.0.total_cmp(&b.0));
+
+                        let major_radius = (map_distribution_visual_scale * axes[2].0.sqrt())
+                            .max(min_patch_half_size);
+                        let minor_radius = (map_distribution_visual_scale * axes[1].0.sqrt())
+                            .max(min_patch_half_size);
+                        let major_dir = axes[2].1;
+                        let minor_dir = axes[1].1;
+                        let major = glam::Vec3::new(
+                            major_dir.x * major_radius,
+                            major_dir.y * major_radius,
+                            major_dir.z * major_radius,
+                        );
+                        let minor = glam::Vec3::new(
+                            minor_dir.x * minor_radius,
+                            minor_dir.y * minor_radius,
+                            minor_dir.z * minor_radius,
+                        );
+                        let normal_dir = axes[0].1;
+                        let normal = glam::Vec3::new(normal_dir.x, normal_dir.y, normal_dir.z)
+                            .normalize_or_zero();
+                        let base_idx = vertices.len() as u32;
+
+                        vertices.push(center);
+                        normals.push(normal);
+                        vertex_colors.push(surfel_color);
+
+                        for segment in 0..SURFEL_DISC_SEGMENTS {
+                            let angle = std::f32::consts::TAU * segment as f32
+                                / SURFEL_DISC_SEGMENTS as f32;
+                            vertices.push(center + major * angle.cos() + minor * angle.sin());
+                            normals.push(normal);
+                            vertex_colors.push(surfel_color);
+                        }
+
+                        for segment in 0..SURFEL_DISC_SEGMENTS {
+                            let first = base_idx + 1 + segment;
+                            let second = base_idx + 1 + ((segment + 1) % SURFEL_DISC_SEGMENTS);
+                            triangles.push([base_idx, first, second]);
+                        }
+                    }
+
+                    let map_patches = rerun::Mesh3D::new(vertices)
+                        .with_triangle_indices(triangles)
+                        .with_vertex_normals(normals)
+                        .with_vertex_colors(vertex_colors);
+
+                    if let Err(err) = rec.log("world/map_distributions", &map_patches) {
+                        error!("Error sending CPU map distributions to rerun {err}");
+                    }
+                }
+                #[cfg(all(
+                    feature = "rerun",
+                    any(feature = "cuda", feature = "metal", feature = "vulkan")
+                ))]
                 if let Some(ref rec) = rec {
                     let points = total_map.iter().map(|v| {
                         let v = ros_to_rerun.cast().transform_point(v);
@@ -1925,10 +2184,22 @@ fn lio_with_ready_signal(
                 writer.write_tf(&serde_tf_message(&tf_for_mcap))?;
             }
             drain_filtered_imu_mcap(&mut mcap_writer, &mut filtered_imu_rx)?;
-            if minot_replay_mode {
+            if gate_minot_replay_on_mcap {
                 if let Some(ready) = registration_ready_tx.as_ref() {
                     let _ = ready.send(());
                 }
+            } else if !relay_minot_replay_on_registration && minot_replay_mode {
+                let request_count = if minot_prefill_requested {
+                    1
+                } else {
+                    minot_prefill_requested = true;
+                    offline_prefetch_scans.max(1)
+                };
+                release_minot_ticks(
+                    processing_shutdown_flag.as_ref(),
+                    synchronous_mode,
+                    request_count,
+                );
             }
 
             #[cfg(feature = "rerun")]
@@ -1982,16 +2253,13 @@ fn lio_with_ready_signal(
                 let ps = impl_r2r::to_pointcloud2_msg(cloud.clone());
 
                 let gradient = colorous::TURBO;
+                let t_world_lidar_rerun = (ros_to_rerun * register_pose.pose).cast();
                 let (positions, colors): (Vec<_>, Vec<_>) = ps
                     .try_into_iter()
                     .unwrap()
                     .map(|v: PointXYZI| {
                         let color = gradient.eval_continuous(v.intensity as f64 / 255.0);
-                        let v = if config.rerun_undistorted_static_world {
-                            register_pose.pose.cast() * nalgebra::Point3::new(v.x, v.y, v.z)
-                        } else {
-                            nalgebra::Point3::new(v.x, v.y, v.z)
-                        };
+                        let v = t_world_lidar_rerun * nalgebra::Point3::new(v.x, v.y, v.z);
                         let pos = glam::Vec3::new(v.x as f32, v.y as f32, v.z as f32);
                         let color_rgb = [color.r, color.g, color.b];
 
@@ -2002,7 +2270,7 @@ fn lio_with_ready_signal(
                 let topic = if config.rerun_undistorted_static_world {
                     format!("undistorted_{:?}", current_cloud_time)
                 } else {
-                    "world/lidar/undistorted".to_string()
+                    "world/latest_scan".to_string()
                 };
 
                 if let Err(err) = rec.log(
@@ -2528,6 +2796,50 @@ mod backend_details_tests {
     }
 }
 
+#[cfg(all(test, feature = "r2r"))]
+mod ros_args_tests {
+    use super::args_without_ros_args;
+    use std::ffi::OsString;
+
+    fn strings(args: &[&str]) -> Vec<OsString> {
+        args.iter().map(OsString::from).collect()
+    }
+
+    #[test]
+    fn removes_ros_args_section_after_pelorus_args() {
+        let args = args_without_ros_args(strings(&[
+            "pelorus",
+            "online",
+            "-c",
+            "pelorus.rl",
+            "--ros-args",
+            "-r",
+            "__node:=lidar_odom",
+            "-r",
+            "__ns:=/robot",
+            "--params-file",
+            "/tmp/launch_params.yaml",
+        ]));
+
+        assert_eq!(args, strings(&["pelorus", "online", "-c", "pelorus.rl"]));
+    }
+
+    #[test]
+    fn keeps_pelorus_args_after_ros_args_delimiter() {
+        let args = args_without_ros_args(strings(&[
+            "pelorus",
+            "--ros-args",
+            "--log-level",
+            "debug",
+            "--",
+            "online",
+            "--cpu-only",
+        ]));
+
+        assert_eq!(args, strings(&["pelorus", "online", "--cpu-only"]));
+    }
+}
+
 #[cfg(all(test, feature = "vulkan"))]
 mod vulkan_backend_details_tests {
     use super::format_vulkan_metadata_details;
@@ -2820,6 +3132,9 @@ fn main() -> Result<(), Box<dyn CoreError>> {
     // Initialize our custom logger that works with both TUI and console
     init_logger();
 
+    #[cfg(feature = "r2r")]
+    let args = Args::parse_from(args_without_ros_args(std::env::args_os()));
+    #[cfg(not(feature = "r2r"))]
     let args = Args::parse();
 
     const DEFAULT_CONFIG_STR: &str = include_str!("../../default.rl");
@@ -3659,7 +3974,7 @@ pf! i 1
 
                 // --- imu.from_lidar_transform ---
                 if let (Some(lf), Some(imuf)) = (&lidar_frame, &imu_frame) {
-                    match tf_listener.lookup_transform(lf, imuf, t0.clone()) {
+                    match tf_listener.lookup_transform(imuf, lf, t0.clone()) {
                         Ok(tf) => {
                             let iso = isometry_from_transform(&tf.transform);
                             let t = &iso.translation;
@@ -3717,13 +4032,13 @@ pf! i 1
                                     .push_str(&format!("\nimu {{\n  {}\n}}\n", new_block));
                             }
                         }
-                        Err(e) => eprintln!("TF lookup {lf} → {imuf} failed: {e}"),
+                        Err(e) => eprintln!("TF lookup {imuf} ← {lf} failed: {e}"),
                     }
                 }
 
                 // --- output.base_link.from_lidar_transform ---
                 if let (Some(lf), Some(blf)) = (&lidar_frame, &lio_config.base_link_frame) {
-                    match tf_listener.lookup_transform(lf, blf, t0) {
+                    match tf_listener.lookup_transform(blf, lf, t0) {
                         Ok(tf) => {
                             let iso = isometry_from_transform(&tf.transform);
                             let t = &iso.translation;
@@ -3793,7 +4108,7 @@ pf! i 1
                                 ));
                             }
                         }
-                        Err(e) => eprintln!("TF lookup {lf} → {blf} failed: {e}"),
+                        Err(e) => eprintln!("TF lookup {blf} ← {lf} failed: {e}"),
                     }
                 }
 

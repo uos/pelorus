@@ -145,6 +145,53 @@ impl PointXYZITimestamp<4> for LivoxPointNoIntensity {
 }
 
 #[derive(Debug, Clone, Default, PointConvertible, Copy)]
+pub struct LivoxPointOffsetTime {
+    pub x: f32,
+    pub y: f32,
+    pub z: f32,
+    #[ros(remap("offset_time"))]
+    pub t: u32,
+    pub intensity: u32,
+}
+
+impl PointXYZITimestamp<5> for LivoxPointOffsetTime {
+    fn intensity(&self) -> f32 {
+        self.intensity as f32 / 255.0
+    }
+
+    fn timestamp(&self) -> f64 {
+        self.t as f64 * 1e-9
+    }
+
+    fn xyz(&self) -> nalgebra::Point3<f32> {
+        nalgebra::Point3::new(self.x, self.y, self.z)
+    }
+}
+
+#[derive(Debug, Clone, Default, PointConvertible, Copy)]
+pub struct LivoxPointOffsetTimeNoIntensity {
+    pub x: f32,
+    pub y: f32,
+    pub z: f32,
+    #[ros(remap("offset_time"))]
+    pub t: u32,
+}
+
+impl PointXYZITimestamp<4> for LivoxPointOffsetTimeNoIntensity {
+    fn intensity(&self) -> f32 {
+        1.0
+    }
+
+    fn timestamp(&self) -> f64 {
+        self.t as f64 * 1e-9
+    }
+
+    fn xyz(&self) -> nalgebra::Point3<f32> {
+        nalgebra::Point3::new(self.x, self.y, self.z)
+    }
+}
+
+#[derive(Debug, Clone, Default, PointConvertible, Copy)]
 pub struct LivoxMid360Point {
     pub x: f32,
     pub y: f32,
