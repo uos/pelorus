@@ -237,12 +237,29 @@ pub struct ConfigArgs {
     #[arg(long, default_value_t = false)]
     pub cpu_only: bool,
 
+    /// ROS node name used by the r2r backend.
+    #[cfg(feature = "r2r")]
+    #[arg(long, default_value = "pelorus")]
+    pub node_name: String,
+
+    /// ROS namespace used by the r2r backend.
+    #[cfg(feature = "r2r")]
+    #[arg(long, default_value = "pelorus")]
+    pub namespace: String,
+
     #[command(flatten)]
     pub recording: RecordingArgs,
 
     /// Answer yes to overwrite prompts.
     #[arg(short = 'y', long, default_value_t = false)]
     pub yes: bool,
+}
+
+#[cfg(feature = "r2r")]
+#[derive(Debug, Clone)]
+struct RosNodeArgs {
+    node_name: String,
+    namespace: String,
 }
 
 #[derive(Debug, Clone, Parser)]
@@ -682,6 +699,7 @@ fn lio(
     config: LioConfig,
     export_trajectory: Option<String>,
     synchronous_mode: bool,
+    #[cfg(feature = "r2r")] ros_node_args: RosNodeArgs,
     output_mcap: Option<McapOutputConfig>,
 ) -> Result<(), Box<dyn CoreError>> {
     lio_with_ready_signal(
@@ -689,6 +707,8 @@ fn lio(
         None,
         export_trajectory,
         synchronous_mode,
+        #[cfg(feature = "r2r")]
+        ros_node_args,
         None,
         None,
         None,
@@ -764,6 +784,7 @@ fn lio_with_ready_signal(
     ready_signal: Option<std::sync::mpsc::Sender<()>>,
     export_trajectory: Option<String>,
     #[allow(unused_variables)] synchronous_mode: bool,
+    #[cfg(feature = "r2r")] ros_node_args: RosNodeArgs,
     shared_stats: Option<Arc<SharedStats>>,
     // Optional flag that, when set to true, will cause the LIO loop to exit
     shutdown_flag: Option<Arc<AtomicBool>>,
@@ -823,7 +844,7 @@ fn lio_with_ready_signal(
     #[cfg(feature = "r2r")]
     let ctx = r2r::Context::create()?;
     #[cfg(feature = "r2r")]
-    let mut node = r2r::Node::create(ctx, "pelorus", "pelorus")?;
+    let mut node = r2r::Node::create(ctx, &ros_node_args.node_name, &ros_node_args.namespace)?;
 
     #[cfg(not(feature = "mt_pubsub"))]
     let tf_broadcaster = TfBroadcaster::new(&mut node);
@@ -3243,6 +3264,11 @@ fn main() -> Result<(), Box<dyn CoreError>> {
                 let lio_sync = config_args.rat;
                 let lio_stats = Some(shared_stats);
                 let lio_output_mcap = output_mcap_config.clone();
+                #[cfg(feature = "r2r")]
+                let lio_ros_node_args = RosNodeArgs {
+                    node_name: config_args.node_name.clone(),
+                    namespace: config_args.namespace.clone(),
+                };
 
                 let lio_shutdown_flag = Arc::new(AtomicBool::new(false));
                 let lio_shutdown_flag_for_thread = lio_shutdown_flag.clone();
@@ -3253,6 +3279,8 @@ fn main() -> Result<(), Box<dyn CoreError>> {
                         None,
                         lio_export,
                         lio_sync,
+                        #[cfg(feature = "r2r")]
+                        lio_ros_node_args,
                         lio_stats,
                         Some(lio_shutdown_flag_for_thread),
                         None,
@@ -3300,6 +3328,11 @@ fn main() -> Result<(), Box<dyn CoreError>> {
                     config,
                     config_args.export_trajectory,
                     config_args.rat,
+                    #[cfg(feature = "r2r")]
+                    RosNodeArgs {
+                        node_name: config_args.node_name,
+                        namespace: config_args.namespace,
+                    },
                     output_mcap_config,
                 )
             }
@@ -3630,6 +3663,11 @@ pf! i 1
                             Some(pelorus_ready_tx),
                             export_trajectory_path_for_run.clone(),
                             synchronous_mode,
+                            #[cfg(feature = "r2r")]
+                            RosNodeArgs {
+                                node_name: "pelorus".to_string(),
+                                namespace: "pelorus".to_string(),
+                            },
                             Some(shared_stats_for_lio),
                             Some(lio_shutdown_flag_for_thread),
                             Some(lio_stop_rx),
