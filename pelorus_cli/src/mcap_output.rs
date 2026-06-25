@@ -216,6 +216,17 @@ impl McapOutputWriter<BufWriter<File>> {
         topics: &McapTopics,
         rosbag_metadata_path: Option<PathBuf>,
     ) -> Result<Self> {
+        if let Some(parent) = path
+            .parent()
+            .filter(|parent| !parent.as_os_str().is_empty())
+        {
+            std::fs::create_dir_all(parent).with_context(|| {
+                format!(
+                    "Failed to create MCAP output directory '{}'",
+                    parent.display()
+                )
+            })?;
+        }
         let file = File::create(path)
             .with_context(|| format!("Failed to create MCAP output '{}'", path.display()))?;
         let mut writer = Self::new(BufWriter::new(file), topics)?;
@@ -478,6 +489,17 @@ fn write_rosbag_metadata<W: Write + Seek>(
     metadata.push_str("  custom_data: {}\n");
     metadata.push_str("  ros_distro: jazzy\n");
 
+    if let Some(parent) = metadata_path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+    {
+        std::fs::create_dir_all(parent).with_context(|| {
+            format!(
+                "Failed to create ROS bag metadata directory '{}'",
+                parent.display()
+            )
+        })?;
+    }
     std::fs::write(metadata_path, metadata).with_context(|| {
         format!(
             "Failed to write ROS bag metadata '{}'",

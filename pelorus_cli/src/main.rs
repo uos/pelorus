@@ -52,6 +52,8 @@ const PATH_LIMIT: usize = 10_000;
 const MCAP_PATH_LIMIT: usize = 512;
 #[cfg(any(feature = "mt_pubsub", feature = "ros2-client", feature = "r2r"))]
 const MCAP_PATH_MIN_PERIOD_NS: u64 = 1_000_000_000;
+#[cfg(any(feature = "mt_pubsub", feature = "ros2-client", feature = "r2r"))]
+static ONLINE_SIGNAL_SHUTDOWN: AtomicBool = AtomicBool::new(false);
 const DEFAULT_OFFLINE_PREFETCH_SCANS: usize = 4;
 
 #[cfg(any(feature = "mt_pubsub", feature = "ros2-client", feature = "r2r"))]
@@ -509,6 +511,42 @@ fn prepare_mcap_output_targets(
 }
 
 #[cfg(any(feature = "mt_pubsub", feature = "ros2-client", feature = "r2r"))]
+extern "C" fn handle_online_shutdown_signal(signal: libc::c_int) {
+    if ONLINE_SIGNAL_SHUTDOWN.swap(true, Ordering::SeqCst) {
+        if signal == libc::SIGINT {
+            unsafe {
+                libc::signal(signal, libc::SIG_DFL);
+                libc::raise(signal);
+            }
+        }
+    }
+}
+
+#[cfg(any(feature = "mt_pubsub", feature = "ros2-client", feature = "r2r"))]
+fn install_online_shutdown_signal_handler(shutdown_flag: Arc<AtomicBool>) {
+    ONLINE_SIGNAL_SHUTDOWN.store(false, Ordering::SeqCst);
+    unsafe {
+        libc::signal(
+            libc::SIGINT,
+            handle_online_shutdown_signal as *const () as libc::sighandler_t,
+        );
+        libc::signal(
+            libc::SIGTERM,
+            handle_online_shutdown_signal as *const () as libc::sighandler_t,
+        );
+    }
+    std::thread::spawn(move || {
+        while !shutdown_flag.load(Ordering::Relaxed) {
+            if ONLINE_SIGNAL_SHUTDOWN.load(Ordering::SeqCst) {
+                shutdown_flag.store(true, Ordering::SeqCst);
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+    });
+}
+
+#[cfg(any(feature = "mt_pubsub", feature = "ros2-client", feature = "r2r"))]
 fn copy_array<const N: usize>(values: &[f64]) -> [f64; N] {
     let mut out = [0.0; N];
     out.copy_from_slice(&values[..N]);
@@ -700,6 +738,7 @@ fn lio(
     export_trajectory: Option<String>,
     synchronous_mode: bool,
     #[cfg(feature = "r2r")] ros_node_args: RosNodeArgs,
+    shutdown_flag: Option<Arc<AtomicBool>>,
     output_mcap: Option<McapOutputConfig>,
 ) -> Result<(), Box<dyn CoreError>> {
     lio_with_ready_signal(
@@ -710,7 +749,7 @@ fn lio(
         #[cfg(feature = "r2r")]
         ros_node_args,
         None,
-        None,
+        shutdown_flag,
         None,
         1,
         output_mcap,
@@ -3324,6 +3363,8 @@ fn main() -> Result<(), Box<dyn CoreError>> {
                     Err(_) => Err(anyhow!("LIO thread panicked").into()),
                 }
             } else {
+                let lio_shutdown_flag = Arc::new(AtomicBool::new(false));
+                install_online_shutdown_signal_handler(Arc::clone(&lio_shutdown_flag));
                 lio(
                     config,
                     config_args.export_trajectory,
@@ -3333,6 +3374,7 @@ fn main() -> Result<(), Box<dyn CoreError>> {
                         node_name: config_args.node_name,
                         namespace: config_args.namespace,
                     },
+                    Some(lio_shutdown_flag),
                     output_mcap_config,
                 )
             }
