@@ -91,4 +91,7 @@ ros2 run pelorus pelorus config verify pelorus.rl
 
 # run Pelorus with the config file
 ros2 run pelorus pelorus online -c pelorus.rl
+
+# or with Launchfile
+ros2 launch pelorus pelorus.launch.py config_path:=/path/to/pelorus.rl
 ```
