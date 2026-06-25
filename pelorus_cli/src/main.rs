@@ -40,6 +40,8 @@ use ros2_interfaces_jazzy_serde::{
     sensor_msgs::msg::PointCloud2,
     std_msgs::msg::Header,
 };
+#[cfg(feature = "r2r")]
+use std::ffi::OsString;
 #[cfg(feature = "rat")]
 use std::fs;
 #[cfg(feature = "rat")]
@@ -311,6 +313,46 @@ pub struct GenerateArgs {
 pub enum GenerateKind {
     Recommended,
     Full,
+}
+
+#[cfg(feature = "r2r")]
+fn args_without_ros_args<I>(args: I) -> Vec<OsString>
+where
+    I: IntoIterator<Item = OsString>,
+{
+    let mut filtered = Vec::new();
+    let mut args = args.into_iter();
+
+    while let Some(arg) = args.next() {
+        if arg != "--ros-args" {
+            filtered.push(arg);
+            continue;
+        }
+
+        while let Some(arg) = args.next() {
+            match arg.to_str() {
+                Some("--") => break,
+                Some(
+                    "-r" | "--remap" | "-p" | "--param" | "--params-file" | "--log-level"
+                    | "--enclave",
+                ) => {
+                    let _ = args.next();
+                }
+                Some(
+                    "--disable-rosout-logs"
+                    | "--disable-stdout-logs"
+                    | "--disable-external-lib-logs"
+                    | "--enable-rosout-logs"
+                    | "--enable-stdout-logs"
+                    | "--enable-external-lib-logs",
+                ) => {}
+                Some(value) if value.starts_with("__") || value.contains(":=") => {}
+                Some(_) | None => {}
+            }
+        }
+    }
+
+    filtered
 }
 
 #[derive(Debug, Clone)]
@@ -2642,6 +2684,50 @@ mod backend_details_tests {
     }
 }
 
+#[cfg(all(test, feature = "r2r"))]
+mod ros_args_tests {
+    use super::args_without_ros_args;
+    use std::ffi::OsString;
+
+    fn strings(args: &[&str]) -> Vec<OsString> {
+        args.iter().map(OsString::from).collect()
+    }
+
+    #[test]
+    fn removes_ros_args_section_after_pelorus_args() {
+        let args = args_without_ros_args(strings(&[
+            "pelorus",
+            "online",
+            "-c",
+            "pelorus.rl",
+            "--ros-args",
+            "-r",
+            "__node:=lidar_odom",
+            "-r",
+            "__ns:=/robot",
+            "--params-file",
+            "/tmp/launch_params.yaml",
+        ]));
+
+        assert_eq!(args, strings(&["pelorus", "online", "-c", "pelorus.rl"]));
+    }
+
+    #[test]
+    fn keeps_pelorus_args_after_ros_args_delimiter() {
+        let args = args_without_ros_args(strings(&[
+            "pelorus",
+            "--ros-args",
+            "--log-level",
+            "debug",
+            "--",
+            "online",
+            "--cpu-only",
+        ]));
+
+        assert_eq!(args, strings(&["pelorus", "online", "--cpu-only"]));
+    }
+}
+
 #[cfg(all(test, feature = "vulkan"))]
 mod vulkan_backend_details_tests {
     use super::format_vulkan_metadata_details;
@@ -2862,6 +2948,9 @@ fn main() -> Result<(), Box<dyn CoreError>> {
     // Initialize our custom logger that works with both TUI and console
     init_logger();
 
+    #[cfg(feature = "r2r")]
+    let args = Args::parse_from(args_without_ros_args(std::env::args_os()));
+    #[cfg(not(feature = "r2r"))]
     let args = Args::parse();
 
     const DEFAULT_CONFIG_STR: &str = include_str!("../../default.rl");
@@ -3769,7 +3858,7 @@ pf! i 1
 
                 // --- imu.from_lidar_transform ---
                 if let (Some(lf), Some(imuf)) = (&lidar_frame, &imu_frame) {
-                    match tf_listener.lookup_transform(lf, imuf, t0.clone()) {
+                    match tf_listener.lookup_transform(imuf, lf, t0.clone()) {
                         Ok(tf) => {
                             let iso = isometry_from_transform(&tf.transform);
                             let t = &iso.translation;
@@ -3827,13 +3916,13 @@ pf! i 1
                                     .push_str(&format!("\nimu {{\n  {}\n}}\n", new_block));
                             }
                         }
-                        Err(e) => eprintln!("TF lookup {lf} → {imuf} failed: {e}"),
+                        Err(e) => eprintln!("TF lookup {imuf} ← {lf} failed: {e}"),
                     }
                 }
 
                 // --- output.base_link.from_lidar_transform ---
                 if let (Some(lf), Some(blf)) = (&lidar_frame, &lio_config.base_link_frame) {
-                    match tf_listener.lookup_transform(lf, blf, t0) {
+                    match tf_listener.lookup_transform(blf, lf, t0) {
                         Ok(tf) => {
                             let iso = isometry_from_transform(&tf.transform);
                             let t = &iso.translation;
@@ -3903,7 +3992,7 @@ pf! i 1
                                 ));
                             }
                         }
-                        Err(e) => eprintln!("TF lookup {lf} → {blf} failed: {e}"),
+                        Err(e) => eprintln!("TF lookup {blf} ← {lf} failed: {e}"),
                     }
                 }
 
