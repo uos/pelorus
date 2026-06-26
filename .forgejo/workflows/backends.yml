@@ -13,7 +13,7 @@ jobs:
   apple:
     runs-on: macos-latest
     env:
-      DATASET: wachsbleiche:hunter:parking_25
+      DATASET: wachsbleiche/parking_25:hunter
       MARINA_CONFIG_DIR: ${{ github.workspace }}/ci/marina
       MARINA_CACHE_DIR: /tmp/marina-cache
       MARINA_SSH_KEY: "/Users/ti/.ssh/id_ed25519"
@@ -59,7 +59,7 @@ jobs:
   nvidia:
     runs-on: noble
     env:
-      DATASET: wachsbleiche:hunter:parking_25
+      DATASET: wachsbleiche/parking_25:hunter
       MARINA_CONFIG_DIR: ${{ github.workspace }}/ci/marina
       MARINA_CACHE_DIR: /tmp/marina-cache
       MARINA_SSH_KEY: "/home/runner/.ssh/id_ed25519"
