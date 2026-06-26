@@ -819,7 +819,7 @@ fn release_minot_ticks(
 
 #[cfg(any(feature = "mt_pubsub", feature = "ros2-client", feature = "r2r"))]
 fn lio_with_ready_signal(
-    config: LioConfig,
+    mut config: LioConfig,
     ready_signal: Option<std::sync::mpsc::Sender<()>>,
     export_trajectory: Option<String>,
     #[allow(unused_variables)] synchronous_mode: bool,
@@ -1726,7 +1726,8 @@ fn lio_with_ready_signal(
                                     "Updated base_link to lidar transform from TF: translation={:?}, rotation={:?}",
                                     iso.translation.vector, iso.rotation
                                 );
-                                // Update the local config and the registration's internal transform
+                                // Keep output conversion and registration on the same transform.
+                                config.base_to_lidar = iso;
                                 pipeline.set_base_to_lidar(iso);
                             }
                             Err(e) => {
@@ -1774,12 +1775,16 @@ fn lio_with_ready_signal(
             pelorus_odom.twist.twist.angular.z = ang_vel_body.z;
 
             {
-                // TODO covariances probably not in the right frame right now and ignores extrinsic rotation
                 let (pose_cov_iekf, twist_cov_iekf) = {
                     let map = pipeline.map();
                     let guard = map.lock().unwrap();
-                    let (pose_cov, _lv_cov_unused) = guard.get_odometry_covariances();
-                    let tw_cov = guard.get_twist_covariance_6x6();
+                    let lidar_to_child = if config.base_link_frame.is_some() {
+                        config.base_to_lidar.inverse()
+                    } else {
+                        Isometry3::identity()
+                    };
+                    let pose_cov = guard.get_output_pose_covariance(&lidar_to_child);
+                    let tw_cov = guard.get_output_twist_covariance(&t_world);
                     (pose_cov, tw_cov)
                 };
 
@@ -2199,7 +2204,6 @@ fn lio_with_ready_signal(
                     },
                 },
             };
-            let tf_for_mcap = tf.clone();
             #[cfg(feature = "mt_pubsub")]
             {
                 let inner_tf_broad = Arc::clone(&tf_broadcaster);
@@ -2218,8 +2222,71 @@ fn lio_with_ready_signal(
             // -- --
 
             if let Some(writer) = mcap_writer.as_mut() {
+                let lidar_pose = register_pose.pose;
+                let lidar_lin_vel_body = lidar_pose.rotation.inverse() * ekf_state.linear_velocity;
+                let lidar_ang_vel_body =
+                    ekf_state.lidar_imu_extrinsic.rotation.inverse() * ekf_state.angular_velocity;
+
+                let mut mcap_odom = pelorus_odom.clone();
+                mcap_odom.child_frame_id = orig_frame.clone();
+                mcap_odom.pose.pose.position.x = lidar_pose.translation.vector.x;
+                mcap_odom.pose.pose.position.y = lidar_pose.translation.vector.y;
+                mcap_odom.pose.pose.position.z = lidar_pose.translation.vector.z;
+                mcap_odom.pose.pose.orientation.x = lidar_pose.rotation.i;
+                mcap_odom.pose.pose.orientation.y = lidar_pose.rotation.j;
+                mcap_odom.pose.pose.orientation.z = lidar_pose.rotation.k;
+                mcap_odom.pose.pose.orientation.w = lidar_pose.rotation.w;
+                mcap_odom.twist.twist.linear.x = lidar_lin_vel_body.x;
+                mcap_odom.twist.twist.linear.y = lidar_lin_vel_body.y;
+                mcap_odom.twist.twist.linear.z = lidar_lin_vel_body.z;
+                mcap_odom.twist.twist.angular.x = lidar_ang_vel_body.x;
+                mcap_odom.twist.twist.angular.y = lidar_ang_vel_body.y;
+                mcap_odom.twist.twist.angular.z = lidar_ang_vel_body.z;
+                let (mcap_pose_cov, mcap_twist_cov) = {
+                    let map = pipeline.map();
+                    let guard = map.lock().unwrap();
+                    (
+                        guard.get_output_pose_covariance(&Isometry3::identity()),
+                        guard.get_output_twist_covariance(&lidar_pose),
+                    )
+                };
+                #[cfg(not(feature = "r2r"))]
+                {
+                    mcap_odom.pose.covariance = mcap_pose_cov;
+                    mcap_odom.twist.covariance = mcap_twist_cov;
+                }
+                #[cfg(feature = "r2r")]
+                {
+                    mcap_odom.pose.covariance = mcap_pose_cov.to_vec();
+                    mcap_odom.twist.covariance = mcap_twist_cov.to_vec();
+                }
+
+                let mcap_tf = TransformStamped {
+                    header: Header {
+                        frame_id: config.prelio_params.map_frame.clone(),
+                        stamp: Time {
+                            sec: lifis_tick.odom_time.sec,
+                            nanosec: lifis_tick.odom_time.nanosec,
+                        },
+                    },
+                    child_frame_id: orig_frame.clone(),
+                    transform: Transform {
+                        translation: Vector3 {
+                            x: lidar_pose.translation.vector.x as f64,
+                            y: lidar_pose.translation.vector.y as f64,
+                            z: lidar_pose.translation.vector.z as f64,
+                        },
+                        rotation: Quaternion {
+                            x: lidar_pose.rotation.quaternion().i as f64,
+                            y: lidar_pose.rotation.quaternion().j as f64,
+                            z: lidar_pose.rotation.quaternion().k as f64,
+                            w: lidar_pose.rotation.quaternion().w as f64,
+                        },
+                    },
+                };
+
                 writer.write_cloud(&serde_cloud(&cloud))?;
-                writer.write_odom(&serde_odom(&pelorus_odom))?;
+                writer.write_odom(&serde_odom(&mcap_odom))?;
                 #[cfg(not(feature = "no-viz"))]
                 if changed_lidar_path {
                     let path_time = (pelorus_odom.header.stamp.sec.max(0) as u64)
@@ -2241,7 +2308,7 @@ fn lio_with_ready_signal(
                         writer.write_path(&serde_path(&lidar_path))?;
                     }
                 }
-                writer.write_tf(&serde_tf_message(&tf_for_mcap))?;
+                writer.write_tf(&serde_tf_message(&mcap_tf))?;
             }
             drain_filtered_imu_mcap(&mut mcap_writer, &mut filtered_imu_rx)?;
             if gate_minot_replay_on_mcap {

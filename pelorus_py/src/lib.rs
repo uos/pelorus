@@ -9,6 +9,7 @@ use std::sync::{Arc, Mutex, mpsc};
 use std::thread;
 
 use log::{error, info};
+use nalgebra::{Isometry3, Matrix3, SMatrix};
 
 use pelorus_core::config::ast_to_config;
 use pelorus_core::{ImuMsg, LidarVendor, LioConfig, OdomMsg, PrelioProcessedCloud};
@@ -26,6 +27,58 @@ impl_pointcloud2_for_ros2_interfaces_jazzy_serde!();
 /// Helper to convert sec/nanosec to f64 seconds
 fn sec_nanosec_to_timestamp(sec: i32, nanosec: u32) -> f64 {
     sec as f64 + (nanosec as f64 / 1e9)
+}
+
+fn transform_pose_covariance(
+    covariance: [f64; 36],
+    lidar_pose: &Isometry3<f64>,
+    lidar_to_output: &Isometry3<f64>,
+) -> [f64; 36] {
+    let r_wl = lidar_pose.rotation.to_rotation_matrix();
+    let r_lo = lidar_to_output.rotation.to_rotation_matrix();
+    let t_lo = lidar_to_output.translation.vector;
+
+    let mut jacobian = SMatrix::<f64, 6, 6>::identity();
+    jacobian
+        .fixed_view_mut::<3, 3>(0, 3)
+        .copy_from(&(-r_wl.matrix() * skew_symmetric(&t_lo)));
+    jacobian
+        .fixed_view_mut::<3, 3>(3, 3)
+        .copy_from(&r_lo.matrix().transpose());
+
+    let input_cov = SMatrix::<f64, 6, 6>::from_fn(|row, col| covariance[row * 6 + col]);
+    matrix6_to_array(jacobian * input_cov * jacobian.transpose())
+}
+
+fn transform_twist_covariance(
+    covariance: [f64; 36],
+    lidar_to_output: &Isometry3<f64>,
+) -> [f64; 36] {
+    let r_ol = lidar_to_output.rotation.inverse().to_rotation_matrix();
+    let mut transform = SMatrix::<f64, 6, 6>::zeros();
+    transform
+        .fixed_view_mut::<3, 3>(0, 0)
+        .copy_from(r_ol.matrix());
+    transform
+        .fixed_view_mut::<3, 3>(3, 3)
+        .copy_from(r_ol.matrix());
+
+    let input_cov = SMatrix::<f64, 6, 6>::from_fn(|row, col| covariance[row * 6 + col]);
+    matrix6_to_array(transform * input_cov * transform.transpose())
+}
+
+fn skew_symmetric(v: &nalgebra::Vector3<f64>) -> Matrix3<f64> {
+    Matrix3::new(0.0, -v.z, v.y, v.z, 0.0, -v.x, -v.y, v.x, 0.0)
+}
+
+fn matrix6_to_array(matrix: SMatrix<f64, 6, 6>) -> [f64; 36] {
+    let mut out = [0.0; 36];
+    for row in 0..6 {
+        for col in 0..6 {
+            out[row * 6 + col] = matrix[(row, col)];
+        }
+    }
+    out
 }
 
 fn load_pelorus_config(config_path: Option<&str>) -> anyhow::Result<LioConfig> {
@@ -162,8 +215,9 @@ fn processing_thread_main(thread: ProcessingThread) {
                 // Build fallback from current map state (no registered cloud available)
                 if let Ok(map_guard) = thread.pipeline.map().lock() {
                     let state = map_guard.get_state();
-                    let (pose_cov, _) = map_guard.get_odometry_covariances();
-                    let twist_cov = map_guard.get_twist_covariance_6x6();
+                    let pose_cov =
+                        map_guard.get_output_pose_covariance(&nalgebra::Isometry3::identity());
+                    let twist_cov = map_guard.get_output_twist_covariance(&state.pose);
 
                     let fallback = PelorusOutput {
                         scan_id,
@@ -725,6 +779,15 @@ impl PelorusHandle {
         let angvel = r_b_i * odom.angular_velocity;
         let frame_id = config.base_link_frame.as_deref().unwrap_or(&odom.frame_id);
         dict.set_item("frame_id", frame_id)?;
+        let (pose_covariance, twist_covariance) = if config.base_link_frame.is_some() {
+            let lidar_to_base = config.base_to_lidar.inverse();
+            (
+                transform_pose_covariance(odom.pose_covariance, &odom.pose, &lidar_to_base),
+                transform_twist_covariance(odom.twist_covariance, &lidar_to_base),
+            )
+        } else {
+            (odom.pose_covariance, odom.twist_covariance)
+        };
 
         let position = vec![pose.translation.x, pose.translation.y, pose.translation.z];
         dict.set_item("position", position)?;
@@ -733,7 +796,7 @@ impl PelorusHandle {
         let orientation = vec![q.w, q.i, q.j, q.k];
         dict.set_item("orientation", orientation)?;
 
-        dict.set_item("pose_covariance", odom.pose_covariance.to_vec())?;
+        dict.set_item("pose_covariance", pose_covariance.to_vec())?;
 
         let linear_velocity = vec![linvel.x, linvel.y, linvel.z];
         dict.set_item("linear_velocity", linear_velocity)?;
@@ -741,7 +804,7 @@ impl PelorusHandle {
         let angular_velocity = vec![angvel.x, angvel.y, angvel.z];
         dict.set_item("angular_velocity", angular_velocity)?;
 
-        dict.set_item("twist_covariance", odom.twist_covariance.to_vec())?;
+        dict.set_item("twist_covariance", twist_covariance.to_vec())?;
 
         let num_points = odom.cloud.len();
         let mut flat_data = Vec::with_capacity(num_points * 4);

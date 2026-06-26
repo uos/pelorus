@@ -31,7 +31,7 @@ use std::thread;
 
 use anyhow::anyhow;
 use log::error;
-use nalgebra::Isometry3;
+use nalgebra::{Isometry3, Matrix3, SMatrix};
 use pelorus_core::config::ast_to_config;
 use pelorus_core::{ImuMsg, LidarVendor, LioConfig, OdomMsg, PrelioProcessedCloud};
 use pelorus_reg::pipeline::{PelorusOutput, Pipeline};
@@ -133,6 +133,15 @@ fn to_odometry(raw: &PelorusOutput, config: &LioConfig, ext: &Isometry3<f64>) ->
         .as_deref()
         .unwrap_or(&raw.frame_id)
         .to_string();
+    let (pose_covariance, twist_covariance) = if config.base_link_frame.is_some() {
+        let lidar_to_base = config.base_to_lidar.inverse();
+        (
+            transform_pose_covariance(raw.pose_covariance, &raw.pose, &lidar_to_base),
+            transform_twist_covariance(raw.twist_covariance, &lidar_to_base),
+        )
+    } else {
+        (raw.pose_covariance, raw.twist_covariance)
+    };
     let points = raw
         .cloud
         .iter()
@@ -149,14 +158,66 @@ fn to_odometry(raw: &PelorusOutput, config: &LioConfig, ext: &Isometry3<f64>) ->
         timestamp_nanosec: raw.timestamp.nanosec,
         position: [pose.translation.x, pose.translation.y, pose.translation.z],
         orientation: [q.w, q.i, q.j, q.k],
-        pose_covariance: raw.pose_covariance,
+        pose_covariance,
         linear_velocity: [linvel.x, linvel.y, linvel.z],
         angular_velocity: [angvel.x, angvel.y, angvel.z],
-        twist_covariance: raw.twist_covariance,
+        twist_covariance,
         scan_id: raw.scan_id,
         points,
         frame_id,
     }
+}
+
+fn transform_pose_covariance(
+    covariance: [f64; 36],
+    lidar_pose: &Isometry3<f64>,
+    lidar_to_output: &Isometry3<f64>,
+) -> [f64; 36] {
+    let r_wl = lidar_pose.rotation.to_rotation_matrix();
+    let r_lo = lidar_to_output.rotation.to_rotation_matrix();
+    let t_lo = lidar_to_output.translation.vector;
+
+    let mut jacobian = SMatrix::<f64, 6, 6>::identity();
+    jacobian
+        .fixed_view_mut::<3, 3>(0, 3)
+        .copy_from(&(-r_wl.matrix() * skew_symmetric(&t_lo)));
+    jacobian
+        .fixed_view_mut::<3, 3>(3, 3)
+        .copy_from(&r_lo.matrix().transpose());
+
+    let input_cov = SMatrix::<f64, 6, 6>::from_fn(|row, col| covariance[row * 6 + col]);
+    matrix6_to_array(jacobian * input_cov * jacobian.transpose())
+}
+
+fn transform_twist_covariance(
+    covariance: [f64; 36],
+    lidar_to_output: &Isometry3<f64>,
+) -> [f64; 36] {
+    let r_ol = lidar_to_output.rotation.inverse().to_rotation_matrix();
+    let mut transform = SMatrix::<f64, 6, 6>::zeros();
+    transform
+        .fixed_view_mut::<3, 3>(0, 0)
+        .copy_from(r_ol.matrix());
+    transform
+        .fixed_view_mut::<3, 3>(3, 3)
+        .copy_from(r_ol.matrix());
+
+    let input_cov = SMatrix::<f64, 6, 6>::from_fn(|row, col| covariance[row * 6 + col]);
+    matrix6_to_array(transform * input_cov * transform.transpose())
+}
+
+fn skew_symmetric(v: &nalgebra::Vector3<f64>) -> Matrix3<f64> {
+    Matrix3::new(0.0, -v.z, v.y, v.z, 0.0, -v.x, -v.y, v.x, 0.0)
+}
+
+fn matrix6_to_array(matrix: SMatrix<f64, 6, 6>) -> [f64; 36] {
+    let mut out = [0.0; 36];
+    for row in 0..6 {
+        for col in 0..6 {
+            out[row * 6 + col] = matrix[(row, col)];
+        }
+    }
+    out
 }
 
 fn build_cloud_msg(

@@ -278,8 +278,8 @@ impl Pipeline {
                 ) {
                     Ok(Some(res)) => {
                         let state = map.get_state();
-                        let (pose_cov_map, _lv_unused) = map.get_odometry_covariances();
-                        let twist_cov_map = map.get_twist_covariance_6x6();
+                        let pose_cov_map = map.get_output_pose_covariance(&Isometry3::identity());
+                        let twist_cov_map = map.get_output_twist_covariance(&res.pose);
                         Some((res, state, pose_cov_map, twist_cov_map))
                     }
                     Ok(None) => None,
@@ -337,8 +337,8 @@ impl Pipeline {
                 ) {
                     Ok(Some(res)) => {
                         let state = map.get_state();
-                        let (pose_cov_map, _lv_unused) = map.get_odometry_covariances();
-                        let twist_cov_map = map.get_twist_covariance_6x6();
+                        let pose_cov_map = map.get_output_pose_covariance(&Isometry3::identity());
+                        let twist_cov_map = map.get_output_twist_covariance(&res.pose);
                         Some((res, state, pose_cov_map, twist_cov_map))
                     }
                     Ok(None) => None,
@@ -396,8 +396,8 @@ impl Pipeline {
                 ) {
                     Ok(Some(res)) => {
                         let state = map.get_state();
-                        let (pose_cov_map, _lv_unused) = map.get_odometry_covariances();
-                        let twist_cov_map = map.get_twist_covariance_6x6();
+                        let pose_cov_map = map.get_output_pose_covariance(&Isometry3::identity());
+                        let twist_cov_map = map.get_output_twist_covariance(&res.pose);
                         Some((res, state, pose_cov_map, twist_cov_map))
                     }
                     Ok(None) => None,
@@ -443,8 +443,8 @@ impl Pipeline {
             ) {
                 Ok(Some(res)) => {
                     let state = map.get_state();
-                    let (pose_cov_map, _lv_unused) = map.get_odometry_covariances();
-                    let twist_cov_map = map.get_twist_covariance_6x6();
+                    let pose_cov_map = map.get_output_pose_covariance(&Isometry3::identity());
+                    let twist_cov_map = map.get_output_twist_covariance(&res.pose);
                     Some((res, state, pose_cov_map, twist_cov_map))
                 }
                 Ok(None) => None,
