@@ -7,6 +7,13 @@
 #include <vulkan/vulkan.h>
 #endif
 
+#if !defined(VK_DESCRIPTOR_SET_LAYOUT_CREATE_PUSH_DESCRIPTOR_BIT) && \
+    defined(VK_DESCRIPTOR_SET_LAYOUT_CREATE_PUSH_DESCRIPTOR_BIT_KHR)
+#define VK_DESCRIPTOR_SET_LAYOUT_CREATE_PUSH_DESCRIPTOR_BIT \
+  VK_DESCRIPTOR_SET_LAYOUT_CREATE_PUSH_DESCRIPTOR_BIT_KHR
+#define vkCmdPushDescriptorSet vkCmdPushDescriptorSetKHR
+#endif
+
 #ifdef __cplusplus
 extern "C" {
 #endif
