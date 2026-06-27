@@ -42,7 +42,7 @@ prelio = { path = "prelio", version = "0.0.6", default-features = false }
 prelio_io = { path = "prelio_io", version = "0.0.6", default-features = false }
 spole = { path = "spole", version = "0.0.6", default-features = false }
 pelorus_cuda = { path = "pelorus_cuda", version = "0.0.6", default-features = false }
-transforms_io = "0.1"
+transforms_io = "0.2"
 pelorus_metal = { path = "pelorus_metal", version = "0.0.6" }
 pelorus_vulkan = { path = "pelorus_vulkan", version = "0.0.6", default-features = false }
 
@@ -54,8 +54,8 @@ ros_pointcloud2 = { version = "1.0.0-rc.3", features = [
   "nalgebra",
 ] }
 ratslang = "0.4.1"
-mt_pubsub = "0.7.0"
-mt_rat = "0.7.0"
+mt_pubsub = "0.8.0"
+mt_rat = "0.8.0"
 imu-calib = "0.1" # TODO use noise calib
 marina = "0.2.9"
 mcap = "0.24.0"
@@ -180,7 +180,6 @@ inherits = "release"
 opt-level = 3
 
 # [patch.crates-io]
-# ratpub = { git = "https://codeberg.org/stelzo/minot" }
-# mt_rat = { git = "https://codeberg.org/stelzo/minot" }
-# ratpub = { path = "../minot/ratpub" }
+# mt_pubsub = { path = "../minot/mt_pubsub" }
 # mt_rat = { path = "../minot/mt_rat" }
+# transforms_io = { path = "../transforms_io" }

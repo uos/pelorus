@@ -44,6 +44,8 @@ use ros2_interfaces_jazzy_serde::{
 use std::ffi::OsString;
 #[cfg(feature = "rat")]
 use std::fs;
+#[cfg(all(feature = "rat", unix))]
+use std::os::unix::process::CommandExt;
 #[cfg(feature = "rat")]
 use std::process::{Command as ProcessCommand, Stdio};
 #[cfg(any(feature = "mt_pubsub", feature = "ros2-client", feature = "r2r"))]
@@ -752,6 +754,7 @@ fn lio(
         shutdown_flag,
         None,
         1,
+        false,
         output_mcap,
     )
 }
@@ -830,6 +833,7 @@ fn lio_with_ready_signal(
     // Optional blocking shutdown signal for pipeline teardown mode.
     shutdown_request_rx: Option<std::sync::mpsc::Receiver<OfflineShutdownRequest>>,
     offline_prefetch_scans: usize,
+    #[allow(unused_variables)] mt_pubsub_local_only: bool,
     output_mcap: Option<McapOutputConfig>,
 ) -> Result<(), Box<dyn CoreError>> {
     let export_trajectory = resolve_export_trajectory_path(export_trajectory);
@@ -863,11 +867,16 @@ fn lio_with_ready_signal(
         rt.as_ref()
             .expect("rt always exists with mt_pubsub feat")
             .block_on(async {
-                Node::create(mt_pubsub::NodeConfig {
-                    name: "pelorus_node".to_owned(),
-                    mode: mt_pubsub::Qos::Reliable,
-                    coord_mode: mt_pubsub::CoordMode::AutoStart,
-                })
+                Node::create(
+                    mt_pubsub::NodeConfig::new("pelorus_node")
+                        .mode(mt_pubsub::Qos::Reliable)
+                        .coord_mode(if mt_pubsub_local_only {
+                            mt_pubsub::CoordMode::External
+                        } else {
+                            mt_pubsub::CoordMode::AutoStart
+                        })
+                        .local_only(mt_pubsub_local_only),
+                )
                 .await
                 .unwrap()
             }),
@@ -889,10 +898,11 @@ fn lio_with_ready_signal(
     let tf_broadcaster = TfBroadcaster::new(&mut node);
     #[cfg(feature = "mt_pubsub")]
     let tf_broadcaster = Arc::new(TfBroadcaster::new(
-        &node,
         rt.as_ref()
             .expect("rt always exists with mt_pubsub feat")
             .clone(),
+        mt_pubsub_local_only,
+        mt_pubsub::Qos::Reliable,
     ));
 
     let mut pipeline = Pipeline::new(&config);
@@ -2754,6 +2764,7 @@ fn lio_with_ready_signal(
     _shutdown_flag: Option<Arc<AtomicBool>>,
     _shutdown_request_rx: Option<std::sync::mpsc::Receiver<OfflineShutdownRequest>>,
     _offline_prefetch_scans: usize,
+    _mt_pubsub_local_only: bool,
     _output_mcap: Option<McapOutputConfig>,
 ) -> Result<(), Box<dyn CoreError>> {
     Err(anyhow!(
@@ -2798,8 +2809,41 @@ enum OfflineShutdownRequest {
 }
 
 #[cfg(feature = "rat")]
-fn signal_process(pid: u32, signal: libc::c_int) -> std::io::Result<()> {
-    let rc = unsafe { libc::kill(pid as i32, signal) };
+#[derive(Debug)]
+struct MinotProcessGuard {
+    pgid: u32,
+    exited: Arc<AtomicBool>,
+}
+
+#[cfg(feature = "rat")]
+impl MinotProcessGuard {
+    fn new(pgid: u32, exited: Arc<AtomicBool>) -> Self {
+        Self { pgid, exited }
+    }
+
+    fn kill(&self) -> std::io::Result<()> {
+        if self.exited.load(Ordering::SeqCst) {
+            return Ok(());
+        }
+        signal_process_group(self.pgid, libc::SIGKILL)
+    }
+}
+
+#[cfg(feature = "rat")]
+impl Drop for MinotProcessGuard {
+    fn drop(&mut self) {
+        if let Err(e) = self.kill() {
+            warn!(
+                "Failed to kill Minot process group {} during cleanup: {}",
+                self.pgid, e
+            );
+        }
+    }
+}
+
+#[cfg(feature = "rat")]
+fn signal_process_group(pgid: u32, signal: libc::c_int) -> std::io::Result<()> {
+    let rc = unsafe { libc::kill(-(pgid as i32), signal) };
     if rc == 0 {
         return Ok(());
     }
@@ -3391,6 +3435,7 @@ fn main() -> Result<(), Box<dyn CoreError>> {
                         Some(lio_shutdown_flag_for_thread),
                         None,
                         1,
+                        false,
                         lio_output_mcap,
                     )
                     .map_err(|e| e.to_string())
@@ -3604,18 +3649,36 @@ pf! i 1
 
                 info!("Generated .mt file at: {:?}", mt_file_path);
 
-                // Spawn minot in headless mode with --sync
-                let mut minot_child = ProcessCommand::new(&offline_args.minot_path)
+                // Spawn Minot in its own process group so cleanup can kill Minot and
+                // any background coordinator it starts.
+                let mut minot_command = ProcessCommand::new(&offline_args.minot_path);
+                minot_command
                     .arg("headless")
                     .arg(&mt_file_path)
                     .arg("--sync")
+                    .arg("--local-only")
                     .stdin(Stdio::piped())
                     .stdout(Stdio::piped())
-                    .stderr(Stdio::piped())
+                    .stderr(Stdio::piped());
+
+                #[cfg(unix)]
+                unsafe {
+                    minot_command.pre_exec(|| {
+                        if libc::setpgid(0, 0) == 0 {
+                            Ok(())
+                        } else {
+                            Err(std::io::Error::last_os_error())
+                        }
+                    });
+                }
+
+                let mut minot_child = minot_command
                     .spawn()
                     .map_err(|e| anyhow!("Failed to spawn minot: {}", e))?;
 
                 let minot_pid = minot_child.id();
+                let minot_exited = Arc::new(AtomicBool::new(false));
+                let minot_guard = MinotProcessGuard::new(minot_pid, Arc::clone(&minot_exited));
                 info!("Spawned minot process with PID: {}", minot_pid);
 
                 let mut minot_stdin = minot_child
@@ -3714,8 +3777,10 @@ pf! i 1
                 });
 
                 let runtime_tx_wait = runtime_tx.clone();
+                let minot_exited_for_wait = Arc::clone(&minot_exited);
                 std::thread::spawn(move || {
                     let status = minot_child.wait();
+                    minot_exited_for_wait.store(true, Ordering::SeqCst);
                     let _ = runtime_tx_wait.send(OfflineRuntimeEvent::MinotExited(status));
                 });
 
@@ -3733,7 +3798,7 @@ pf! i 1
                     {
                         OfflineRuntimeEvent::MinotReady => break,
                         OfflineRuntimeEvent::TuiShutdownRequested => {
-                            let _ = signal_process(minot_pid, libc::SIGKILL);
+                            let _ = minot_guard.kill();
                             return Ok(());
                         }
                         OfflineRuntimeEvent::MinotExited(Ok(status)) => {
@@ -3781,6 +3846,7 @@ pf! i 1
                             Some(lio_shutdown_flag_for_thread),
                             Some(lio_stop_rx),
                             offline_prefetch_scans,
+                            true,
                             output_mcap_config_for_run,
                         )
                     }))
@@ -3854,14 +3920,16 @@ pf! i 1
                             {
                                 // Stop external data source only after current-frame processing
                                 // has completed and LIO has exited.
-                                signal_process(minot_pid, libc::SIGKILL)
+                                minot_guard
+                                    .kill()
                                     .map_err(|e| anyhow!("Failed to terminate Minot: {}", e))?;
                                 minot_force_stopped = true;
                                 // On user interrupt, once LIO is down we don't wait on child
                                 // wait-notification delivery to avoid deadlocks.
                                 wait_for_minot_exit = false;
                             } else if minot_exit_result.is_none() && !minot_force_stopped {
-                                signal_process(minot_pid, libc::SIGKILL)
+                                minot_guard
+                                    .kill()
                                     .map_err(|e| anyhow!("Failed to terminate Minot: {}", e))?;
                                 minot_force_stopped = true;
                             }
