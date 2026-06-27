@@ -13,6 +13,7 @@ use crate::{
     DownsampleParameters, ImuCalibrationParameters, ImuConfigParameter, ImuParameters,
     KinematicModel, LidarVendor, LifisNodeParameters, LifisParameters, LioConfig, MadgwickSetting,
     PassthroughFilterParameters, PreprocessingBackend, Qos, Reliability,
+    adaptive_execution::ExecutionPolicy,
 };
 
 /// Resolves an angle range (e.g., for FOV).
@@ -156,6 +157,18 @@ fn ast_to_config_inner(
             "backend" => Ok(PreprocessingBackend::Backend),
             _ => Err(anyhow!(
                 "Unknown preprocessing backend: {}. Expected 'Backend' or 'Cpu'.",
+                s
+            )),
+        }
+    }
+
+    fn execution_policy_parse(s: &str) -> anyhow::Result<ExecutionPolicy> {
+        match s.to_lowercase().as_str() {
+            "auto" => Ok(ExecutionPolicy::Auto),
+            "singlecore" | "single_core" | "single-core" => Ok(ExecutionPolicy::SingleCore),
+            "rayon" => Ok(ExecutionPolicy::Rayon),
+            _ => Err(anyhow!(
+                "Unknown parallelism execution mode: {}. Expected 'Auto', 'SingleCore', or 'Rayon'.",
                 s
             )),
         }
@@ -606,7 +619,13 @@ fn ast_to_config_inner(
         )
     };
 
-    let (num_threads, cpu_only) = {
+    let (
+        num_threads,
+        cpu_only,
+        parallelism_decision_threshold_stddevs,
+        parallelism_decision_samples_per_mode,
+        parallelism_execution_policy,
+    ) = {
         let parallelism_ns = asts.filter_ns(&["parallelism"]);
         let num_threads = {
             let rhs = resolve_var!(parallelism_ns, "num_threads", as &Rhs, r => { r })?;
@@ -622,7 +641,43 @@ fn ast_to_config_inner(
         };
         let cpu_only =
             resolve_var!(parallelism_ns, "cpu_only", as bool, Rhs::Val(Val::BoolVal(b)) => { b })?;
-        (num_threads, cpu_only)
+        let parallelism_execution_policy = resolve_var!(
+            parallelism_ns,
+            "execution_mode",
+            as ExecutionPolicy,
+            Rhs::Val(Val::StringVal(s)) | Rhs::Path(s) => { execution_policy_parse(&s)? }
+        )?;
+        let parallelism_decision_threshold_stddevs: f64 = resolve_var!(
+            parallelism_ns,
+            "decision_threshold_stddevs",
+            as f64,
+            Rhs::Val(Val::NumVal(NumVal::Floating(v))) => { v }
+        )?;
+        if !parallelism_decision_threshold_stddevs.is_finite()
+            || parallelism_decision_threshold_stddevs < 0.0
+        {
+            return Err(anyhow!(
+                "parallelism.decision_threshold_stddevs must be finite and non-negative"
+            ));
+        }
+        let parallelism_decision_samples_per_mode = resolve_var!(
+            parallelism_ns,
+            "decision_samples_per_mode",
+            as usize,
+            Rhs::Val(Val::NumVal(NumVal::Integer(v))) => { v }
+        )?;
+        if parallelism_decision_samples_per_mode == 0 {
+            return Err(anyhow!(
+                "parallelism.decision_samples_per_mode must be greater than zero"
+            ));
+        }
+        (
+            num_threads,
+            cpu_only,
+            parallelism_decision_threshold_stddevs,
+            parallelism_decision_samples_per_mode,
+            parallelism_execution_policy,
+        )
     };
 
     let final_config = LioConfig {
@@ -676,6 +731,9 @@ fn ast_to_config_inner(
             wheel_odom_cov,
             lidar_as_sync,
             warning_debounce,
+            parallelism_decision_threshold_stddevs,
+            parallelism_decision_samples_per_mode,
+            parallelism_execution_policy,
         },
         // TODO currently hardcoded
         registered_cloud_qos: Qos::Sensor(Reliability::Reliable),

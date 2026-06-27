@@ -1,0 +1,38 @@
+#version 450
+
+layout(local_size_x = 256) in;
+
+layout(std430, set = 0, binding = 2) buffer SortKeys { uint keys[]; };
+layout(std430, set = 0, binding = 3) buffer SortValues { uint values[]; };
+
+void main() {
+    uint idx = gl_GlobalInvocationID.x;
+    if (idx >= pc.cap) return;
+
+    if (pc.k == 0u) {
+        if (idx >= pc.n) {
+            keys[idx] = 0xFFFFFFFFu;
+            values[idx] = idx;
+        }
+        return;
+    }
+
+    uint partner = idx ^ pc.j;
+    if (partner <= idx || partner >= pc.cap) return;
+
+    uint key_a = keys[idx];
+    uint key_b = keys[partner];
+    uint value_a = values[idx];
+    uint value_b = values[partner];
+    bool ascending = (idx & pc.k) == 0u;
+    bool swap_pair = ascending
+        ? (key_a > key_b || (key_a == key_b && value_a > value_b))
+        : (key_a < key_b || (key_a == key_b && value_a < value_b));
+
+    if (swap_pair) {
+        keys[idx] = key_b;
+        values[idx] = value_b;
+        keys[partner] = key_a;
+        values[partner] = value_a;
+    }
+}

@@ -9,6 +9,7 @@ use nalgebra::{Point3, Vector3};
 use rand::{Rng, SeedableRng};
 
 use nalgebra::{Cholesky, Matrix3};
+use pelorus_core::adaptive_execution::ExecutionMode;
 #[cfg(feature = "rayon")]
 use rayon::slice::ParallelSliceMut;
 use ros_pointcloud2::points::PointXYZ;
@@ -16,17 +17,20 @@ use ros_pointcloud2::points::PointXYZ;
 use serde::{Deserialize, Serialize};
 
 #[cfg(feature = "rayon")]
-fn sort_unstable_by_key<T, K, F>(slice: &mut [T], f: F)
+fn sort_unstable_by_key<T, K, F>(slice: &mut [T], f: F, mode: ExecutionMode)
 where
     T: Send,
     K: Ord + Send,
     F: Fn(&T) -> K + Sync,
 {
-    slice.par_sort_unstable_by_key(f);
+    match mode {
+        ExecutionMode::Sequential => slice.sort_unstable_by_key(f),
+        ExecutionMode::Rayon => slice.par_sort_unstable_by_key(f),
+    }
 }
 
 #[cfg(not(feature = "rayon"))]
-fn sort_unstable_by_key<T, K, F>(slice: &mut [T], f: F)
+fn sort_unstable_by_key<T, K, F>(slice: &mut [T], f: F, _mode: ExecutionMode)
 where
     K: Ord,
     F: Fn(&T) -> K,
@@ -484,6 +488,20 @@ impl IVoxHashMap {
         transform: &nalgebra::Isometry3<f64>,
         scan_id: usize,
     ) {
+        #[cfg(feature = "rayon")]
+        let execution_mode = ExecutionMode::Rayon;
+        #[cfg(not(feature = "rayon"))]
+        let execution_mode = ExecutionMode::Sequential;
+        let _ = self.add_with_execution_mode(points, transform, scan_id, execution_mode);
+    }
+
+    pub fn add_with_execution_mode(
+        &mut self,
+        points: &[pelorus_core::PointXYZIT],
+        transform: &nalgebra::Isometry3<f64>,
+        scan_id: usize,
+        execution_mode: ExecutionMode,
+    ) -> Option<f64> {
         self.scan_number = scan_id;
 
         #[cfg(feature = "nn_kdt")]
@@ -589,7 +607,9 @@ impl IVoxHashMap {
 
             // downsample first, then update per voxel using distributions
             // After this, all points in the same voxel are adjacent
-            sort_unstable_by_key(&mut keyed_points, |(_, key)| *key);
+            let sort_started = std::time::Instant::now();
+            sort_unstable_by_key(&mut keyed_points, |(_, key)| *key, execution_mode);
+            let mut adaptive_nanos = sort_started.elapsed().as_nanos() as f64;
 
             // TODO chunk by seems extremely fast on M3 Pro
             // #[cfg(feature = "parallel")]
@@ -633,13 +653,20 @@ impl IVoxHashMap {
                         z: dist.mean.z,
                     });
                     let voxel_key = Self::hash_grid(&grid);
-                    self.livodish.add(dist, voxel_key, self.scan_number);
+                    self.livodish
+                        .add(dist, voxel_key, self.scan_number, execution_mode);
                 });
             // }
 
             // Re-arranges the map to be ready for new inserts.
-            self.livodish.build(self.scan_number);
+            let build_started = std::time::Instant::now();
+            self.livodish.build(self.scan_number, execution_mode);
+            adaptive_nanos += build_started.elapsed().as_nanos() as f64;
+            return Some(adaptive_nanos / points.len().max(1) as f64);
         }
+
+        #[cfg(feature = "nn_kdt")]
+        None
     }
 
     #[inline(always)]

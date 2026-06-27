@@ -276,11 +276,26 @@ output {
 
 parallelism {
   # @recommended
-  # Maximum number of CPU threads used for parallel point-cloud processing.
+  # Maximum number of CPU threads used for parallel processing.
   # Set to `all` to use all available cores or specify a number like `4` for a fixed number.
   # High numbers will result in more substantial CPU load.
   num_threads = 3
 
   # Force CPU-only processing regardless of available GPU backends.
   cpu_only = false
+
+  # @recommended
+  # Auto benchmarks both modes at runtime. Other options overwrite automatic decisions.
+  # This is recommended when measuring computational footprint or runtime for scientific papers.
+  # Setting num_threads to 1 will still use rayon implementations. To truly run single-core,
+  # disable the rayon feature or set various pipeline steps to SingleCore with this setting.
+  # Auto | SingleCore | Rayon
+  execution_mode = Auto
+
+  # Number of standard errors by which one CPU execution mode must beat the other
+  # before Pelorus decides the execution mode for the next phase.
+  decision_threshold_stddevs = 2.0
+
+  # Number of measurements collected for each mode before a decision is allowed.
+  decision_samples_per_mode = 20
 }

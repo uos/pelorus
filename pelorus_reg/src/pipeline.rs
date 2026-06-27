@@ -143,7 +143,7 @@ impl Pipeline {
             config.dist_update_sensitivity as f32,
         );
 
-        let map = RegistrationState::new(
+        let map = RegistrationState::new_with_execution_config(
             ivox,
             &config.imu_params,
             &ext_lidar_to_imu,
@@ -152,6 +152,9 @@ impl Pipeline {
             config.lidar_odom_cov,
             config.ekf_max_iterations,
             None,
+            config.prelio_params.parallelism_decision_threshold_stddevs,
+            config.prelio_params.parallelism_decision_samples_per_mode,
+            config.prelio_params.parallelism_execution_policy,
         );
 
         Self {

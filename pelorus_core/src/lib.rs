@@ -4,6 +4,7 @@ use nalgebra::{Isometry3, Matrix3, Point2, Point3, Vector2, Vector3};
 use ros_pointcloud2::prelude::*;
 use serde::{Deserialize, Serialize};
 
+pub mod adaptive_execution;
 pub mod config;
 pub mod timing;
 
@@ -527,6 +528,9 @@ pub struct LifisParameters {
     pub wheel_to_imu_rotation: nalgebra::Matrix3<f64>,
     pub warning_debounce: f64,
     pub lidar_as_sync: bool,
+    pub parallelism_decision_threshold_stddevs: f64,
+    pub parallelism_decision_samples_per_mode: usize,
+    pub parallelism_execution_policy: adaptive_execution::ExecutionPolicy,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]

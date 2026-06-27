@@ -5,7 +5,7 @@ use nalgebra::*;
 use pelorus_core::log_debouncer::should_log_once_default;
 use pelorus_core::{
     COV_IMU_BIAS_DEFAULT, COV_IMU_RAW_DEFAULT, ImuMsg, ImuParameters, KinematicModel, LidarVendor,
-    OdomMsg, PointXYZIT, timestamp_to_secs,
+    OdomMsg, PointXYZIT, adaptive_execution::ExecutionMode, timestamp_to_secs,
 };
 #[cfg(feature = "rayon")]
 use rayon::prelude::*;
@@ -290,7 +290,8 @@ impl ImuProcessing {
         cloud: &mut Vec<PointXYZIT>,
         cloud_passthrough: Option<&mut Vec<PointXYZIT>>,
         lidar_vendor: Option<LidarVendor>,
-    ) {
+        execution_mode: ExecutionMode,
+    ) -> Option<f64> {
         debug_assert!(!imu_msgs.is_empty());
         debug_assert!(last_cloud_end_time > 0.0);
         debug_assert!(cloud_begin_time > 0.0);
@@ -328,7 +329,7 @@ impl ImuProcessing {
         let mut all_imus = std::iter::once(&self.last_imu).chain(imu_msgs.iter());
 
         let Some(mut head) = all_imus.next() else {
-            return;
+            return None;
         };
 
         // Keep odometry corrections in lockstep with IMU prediction.
@@ -473,6 +474,8 @@ impl ImuProcessing {
             let imu_state_lidar_to_imu_r = self.imu_state.offset_r_l_i.matrix();
             let imu_state_lidar_to_imu_r_t = imu_state_lidar_to_imu_r.transpose();
             let imu_poses_for_downsampled = imu_poses.clone();
+            let point_count =
+                cloud.len() + cloud_passthrough.as_ref().map_or(0, |points| points.len());
 
             let deskew = |point: &mut PointXYZIT| {
                 // For each point, find the correct IMU pose interval.
@@ -522,25 +525,37 @@ impl ImuProcessing {
                 point.z = p_compensate.z as f32;
             };
 
+            let started = std::time::Instant::now();
             #[cfg(feature = "rayon")]
-            rayon::scope(move |scope| {
-                scope.spawn(move |_| {
-                    cloud.par_iter_mut().for_each(deskew);
-                });
-                if let Some(passthrough) = cloud_passthrough {
-                    scope.spawn(move |_| {
-                        passthrough.par_iter_mut().for_each(deskew);
-                    });
+            match execution_mode {
+                ExecutionMode::Sequential => {
+                    cloud.iter_mut().for_each(deskew);
+                    if let Some(passthrough) = cloud_passthrough {
+                        passthrough.iter_mut().for_each(deskew);
+                    }
                 }
-            });
+                ExecutionMode::Rayon => rayon::scope(move |scope| {
+                    scope.spawn(move |_| {
+                        cloud.par_iter_mut().for_each(deskew);
+                    });
+                    if let Some(passthrough) = cloud_passthrough {
+                        scope.spawn(move |_| {
+                            passthrough.par_iter_mut().for_each(deskew);
+                        });
+                    }
+                }),
+            }
             #[cfg(not(feature = "rayon"))]
             {
+                let _ = execution_mode;
                 cloud.iter_mut().for_each(deskew);
                 if let Some(passthrough) = cloud_passthrough {
                     passthrough.iter_mut().for_each(deskew);
                 }
             }
+            return Some(started.elapsed().as_nanos() as f64 / point_count.max(1) as f64);
         }
+        None
     }
 
     pub fn predict(

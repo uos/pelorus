@@ -122,19 +122,37 @@ is_valid_backend() {
 }
 
 has_vulkan_hardware() {
-    # Best signal: working Vulkan instance query.
-    if command -v vulkaninfo &> /dev/null; then
-        vulkaninfo --summary &> /dev/null && return 0
+    local entry dir
+    local manifest_files="${VK_DRIVER_FILES:-${VK_ICD_FILENAMES:-}}"
+
+    # Explicit loader configuration takes precedence over standard discovery.
+    if [[ -n "$manifest_files" ]]; then
+        local IFS=':'
+        local configured_manifests
+        read -r -a configured_manifests <<< "$manifest_files"
+        for entry in "${configured_manifests[@]}"; do
+            [[ -f "$entry" ]] && return 0
+        done
+        return 1
     fi
 
-    # Fallback path when vulkaninfo isn't installed:
-    # 1) Vulkan loader library is present
-    # 2) A render node exists (typical for GPU compute access on Linux)
-    if command -v ldconfig &> /dev/null && ldconfig -p 2>/dev/null | grep -q 'libvulkan\.so'; then
-        if compgen -G "/dev/dri/renderD*" > /dev/null; then
-            return 0
-        fi
-    fi
+    local data_dirs="${XDG_DATA_HOME:-${HOME:-}/.local/share}:${XDG_DATA_DIRS:-/usr/local/share:/usr/share}"
+    local icd_dirs=(
+        /etc/vulkan/icd.d
+        /usr/local/etc/vulkan/icd.d
+        /opt/homebrew/share/vulkan/icd.d
+    )
+
+    local IFS=':'
+    local data_dir_list
+    read -r -a data_dir_list <<< "$data_dirs"
+    for dir in "${data_dir_list[@]}"; do
+        [[ -n "$dir" ]] && icd_dirs+=("${dir%/}/vulkan/icd.d")
+    done
+
+    for dir in "${icd_dirs[@]}"; do
+        compgen -G "$dir/*.json" > /dev/null && return 0
+    done
 
     return 1
 }
