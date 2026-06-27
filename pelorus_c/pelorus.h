@@ -16,9 +16,9 @@
 #include <stdlib.h>
 
 enum pelorus_status
-#ifdef __cplusplus
+#if defined(__cplusplus) || __STDC_VERSION__ >= 202311L
   : int32_t
-#endif // __cplusplus
+#endif // defined(__cplusplus) || __STDC_VERSION__ >= 202311L
  {
   PELORUS_STATUS_OK = 0,
   PELORUS_STATUS_NO_DATA = 1,
@@ -27,7 +27,11 @@ enum pelorus_status
   PELORUS_STATUS_DISCONNECTED = -3,
 };
 #ifndef __cplusplus
+#if __STDC_VERSION__ >= 202311L
+typedef enum pelorus_status pelorus_status;
+#else
 typedef int32_t pelorus_status;
+#endif // __STDC_VERSION__ >= 202311L
 #endif // __cplusplus
 
 typedef struct PelorusHandle PelorusHandle;
