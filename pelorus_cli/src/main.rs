@@ -194,9 +194,26 @@ pub struct OfflineArgs {
     )]
     pub export_trajectory: Option<String>,
 
+    /// Export processing time samples as timestamp and nanoseconds.
+    /// If not provided, processing times are not exported.
+    /// If provided without value, automatically generates a filename.
+    /// If provided with a path, exports to that exact location.
+    #[cfg(feature = "processing-time-export")]
+    #[arg(
+        long,
+        value_name = "PATH",
+        num_args = 0..=1,
+        default_missing_value = ""
+    )]
+    pub export_processing_time: Option<String>,
+
     /// Force CPU-only processing regardless of available GPU backends.
     #[arg(long, default_value_t = false)]
     pub cpu_only: bool,
+
+    /// Allow Minot and Pelorus pub/sub to use non-local networking in offline mode.
+    #[arg(long, default_value_t = false)]
+    pub no_local_only: bool,
 
     #[command(flatten)]
     pub recording: RecordingArgs,
@@ -233,6 +250,19 @@ pub struct ConfigArgs {
     )]
     pub export_trajectory: Option<String>,
 
+    /// Export processing time samples as timestamp and nanoseconds.
+    /// If not provided, processing times are not exported.
+    /// If provided without value, automatically generates a filename.
+    /// If provided with a path, exports to that exact location.
+    #[cfg(feature = "processing-time-export")]
+    #[arg(
+        long,
+        value_name = "PATH",
+        num_args = 0..=1,
+        default_missing_value = ""
+    )]
+    pub export_processing_time: Option<String>,
+
     /// Publish tick_end checkpoint using ratlib from Minot.
     #[arg(short, long)]
     pub rat: bool,
@@ -240,6 +270,10 @@ pub struct ConfigArgs {
     /// Force CPU-only processing regardless of available GPU backends.
     #[arg(long, default_value_t = false)]
     pub cpu_only: bool,
+
+    /// Restrict Pelorus pub/sub communication to this host.
+    #[arg(long, default_value_t = false)]
+    pub local_only: bool,
 
     /// ROS node name used by the r2r backend.
     #[cfg(feature = "r2r")]
@@ -391,13 +425,10 @@ where
 #[derive(Debug, Clone)]
 struct McapOutputConfig {
     path: PathBuf,
-    #[cfg(any(feature = "mt_pubsub", feature = "ros2-client", feature = "r2r"))]
     rosbag_metadata_path: Option<PathBuf>,
-    #[cfg(any(feature = "mt_pubsub", feature = "ros2-client", feature = "r2r"))]
     topics: McapTopics,
 }
 
-#[cfg(feature = "offline")]
 fn normalize_mcap_topic(topic: impl Into<String>) -> String {
     let topic = topic.into();
     if topic.starts_with('/') {
@@ -407,7 +438,6 @@ fn normalize_mcap_topic(topic: impl Into<String>) -> String {
     }
 }
 
-#[cfg(feature = "offline")]
 fn rosbag_mcap_path(rosbag_path: &std::path::Path) -> PathBuf {
     let bag_name = rosbag_path
         .file_name()
@@ -551,6 +581,9 @@ fn install_online_shutdown_signal_handler(shutdown_flag: Arc<AtomicBool>) {
         }
     });
 }
+
+#[cfg(not(any(feature = "mt_pubsub", feature = "ros2-client", feature = "r2r")))]
+fn install_online_shutdown_signal_handler(_shutdown_flag: Arc<AtomicBool>) {}
 
 #[cfg(any(feature = "mt_pubsub", feature = "ros2-client", feature = "r2r"))]
 fn copy_array<const N: usize>(values: &[f64]) -> [f64; N] {
@@ -742,15 +775,19 @@ fn drain_filtered_imu_mcap(
 fn lio(
     config: LioConfig,
     export_trajectory: Option<String>,
+    #[cfg(feature = "processing-time-export")] export_processing_time: Option<String>,
     synchronous_mode: bool,
     #[cfg(feature = "r2r")] ros_node_args: RosNodeArgs,
     shutdown_flag: Option<Arc<AtomicBool>>,
+    mt_pubsub_local_only: bool,
     output_mcap: Option<McapOutputConfig>,
 ) -> Result<(), Box<dyn CoreError>> {
     lio_with_ready_signal(
         config,
         None,
         export_trajectory,
+        #[cfg(feature = "processing-time-export")]
+        export_processing_time,
         synchronous_mode,
         #[cfg(feature = "r2r")]
         ros_node_args,
@@ -758,7 +795,7 @@ fn lio(
         shutdown_flag,
         None,
         1,
-        false,
+        mt_pubsub_local_only,
         output_mcap,
     )
 }
@@ -775,6 +812,27 @@ fn resolve_export_trajectory_path(export_trajectory: Option<String>) -> Option<S
             let name = petname::petname(2, "_").unwrap_or_else(|| "unnamed".to_string());
             Some(format!(
                 "pelorus_trajectory_{}_{}.tum",
+                std::time::SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .expect("time goes forward")
+                    .as_secs(),
+                name
+            ))
+        }
+        other => other,
+    }
+}
+
+#[cfg(all(
+    feature = "processing-time-export",
+    any(feature = "mt_pubsub", feature = "ros2-client", feature = "r2r")
+))]
+fn resolve_export_processing_time_path(export_processing_time: Option<String>) -> Option<String> {
+    match export_processing_time {
+        Some(path) if path.is_empty() => {
+            let name = petname::petname(2, "_").unwrap_or_else(|| "unnamed".to_string());
+            Some(format!(
+                "pelorus_processing_time_{}_{}.tum",
                 std::time::SystemTime::now()
                     .duration_since(UNIX_EPOCH)
                     .expect("time goes forward")
@@ -829,6 +887,7 @@ fn lio_with_ready_signal(
     mut config: LioConfig,
     ready_signal: Option<std::sync::mpsc::Sender<()>>,
     export_trajectory: Option<String>,
+    #[cfg(feature = "processing-time-export")] export_processing_time: Option<String>,
     #[allow(unused_variables)] synchronous_mode: bool,
     #[cfg(feature = "r2r")] ros_node_args: RosNodeArgs,
     shared_stats: Option<Arc<SharedStats>>,
@@ -843,6 +902,12 @@ fn lio_with_ready_signal(
     let export_trajectory = resolve_export_trajectory_path(export_trajectory);
     if let Some(path) = export_trajectory.as_ref() {
         warn!("Trajectory export target: {}", path);
+    }
+    #[cfg(feature = "processing-time-export")]
+    let export_processing_time = resolve_export_processing_time_path(export_processing_time);
+    #[cfg(feature = "processing-time-export")]
+    if let Some(path) = export_processing_time.as_ref() {
+        warn!("Processing time export target: {}", path);
     }
     #[cfg(any(feature = "mt_pubsub", feature = "rat"))]
     let rt = if cfg!(feature = "mt_pubsub") || (synchronous_mode && cfg!(feature = "rat")) {
@@ -871,19 +936,14 @@ fn lio_with_ready_signal(
         rt.as_ref()
             .expect("rt always exists with mt_pubsub feat")
             .block_on(async {
-                Node::create(
-                    mt_pubsub::NodeConfig::new("pelorus_node")
-                        .mode(mt_pubsub::Qos::Reliable)
-                        .coord_mode(if mt_pubsub_local_only {
-                            mt_pubsub::CoordMode::External
-                        } else {
-                            mt_pubsub::CoordMode::AutoStart
-                        })
-                        .local_only(mt_pubsub_local_only),
-                )
-                .await
-                .unwrap()
-            }),
+                let node_config = mt_pubsub::NodeConfig::new("pelorus_node")
+                    .mode(mt_pubsub::Qos::Reliable)
+                    .coord_mode(mt_pubsub::CoordMode::AutoStart)
+                    .local_only(mt_pubsub_local_only);
+
+                Node::create(node_config).await
+            })
+            .map_err(|err| anyhow!("Failed to create mt_pubsub node: {err}"))?,
     );
 
     #[cfg(feature = "rat")]
@@ -1244,6 +1304,8 @@ fn lio_with_ready_signal(
     let processing_shutdown_flag = shutdown_flag.clone();
 
     let export_trajectory_for_worker = export_trajectory.clone();
+    #[cfg(feature = "processing-time-export")]
+    let export_processing_time_for_worker = export_processing_time.clone();
     let processing_handle = std::thread::spawn(move || -> anyhow::Result<()> {
         let mut filtered_imu_rx = filtered_imu_rx;
         let mut mcap_writer = match output_mcap {
@@ -1359,6 +1421,20 @@ fn lio_with_ready_signal(
                 None
             }
         };
+        #[cfg(feature = "processing-time-export")]
+        let mut processing_time_file = match export_processing_time_for_worker {
+            Some(path_str) => {
+                log::info!("Saving processing times to {}", &path_str);
+                match std::fs::File::create(&path_str) {
+                    Ok(f) => Some(f),
+                    Err(e) => {
+                        log::error!("Failed to create processing time file {}: {}", &path_str, e);
+                        None
+                    }
+                }
+            }
+            None => None,
+        };
 
         if let Some(signal) = ready_signal {
             let _ = signal.send(());
@@ -1467,6 +1543,8 @@ fn lio_with_ready_signal(
                     Err(_) => break,
                 },
             };
+            #[cfg(feature = "processing-time-export")]
+            let processing_started = std::time::Instant::now();
             // Record scan arrival for measuring actual sensor rate
             if let Some(ref stats) = shared_stats {
                 stats.record_scan();
@@ -1876,11 +1954,10 @@ fn lio_with_ready_signal(
                     eig_vectors.set_column(0, &(-eig_vectors.column(0)));
                 }
 
-                let covariance_visual_scale = 300.0;
                 let covariance_half_sizes = glam::Vec3::new(
-                    (covariance_visual_scale * eig.eigenvalues.x.max(0.0).sqrt()) as f32,
-                    (covariance_visual_scale * eig.eigenvalues.y.max(0.0).sqrt()) as f32,
-                    (covariance_visual_scale * eig.eigenvalues.z.max(0.0).sqrt()) as f32,
+                    eig.eigenvalues.x.max(0.0).sqrt() as f32,
+                    eig.eigenvalues.y.max(0.0).sqrt() as f32,
+                    eig.eigenvalues.z.max(0.0).sqrt() as f32,
                 );
                 let covariance_rotation = UnitQuaternion::from_matrix(&eig_vectors);
                 let covariance_quat = covariance_rotation.quaternion();
@@ -2032,6 +2109,13 @@ fn lio_with_ready_signal(
                 sec: lifis_tick.odom_time.sec,
                 nanosec: lifis_tick.odom_time.nanosec,
             };
+            #[cfg(feature = "processing-time-export")]
+            if let Some(processing_time_file) = processing_time_file.as_mut() {
+                let processing_time_ns = processing_started.elapsed().as_nanos();
+                let content_to_write = format!("{current_cloud_time} {processing_time_ns}\n");
+
+                std::io::Write::write_all(processing_time_file, content_to_write.as_bytes())?;
+            }
             if let Some(mut trajectory_file) = trajectory_file.as_mut() {
                 let t = &t_world.translation.vector;
                 let q = t_world.rotation.quaternion();
@@ -2763,6 +2847,7 @@ fn lio_with_ready_signal(
     _config: LioConfig,
     _ready_signal: Option<std::sync::mpsc::Sender<()>>,
     _export_trajectory: Option<String>,
+    #[cfg(feature = "processing-time-export")] _export_processing_time: Option<String>,
     _synchronous_mode: bool,
     _shared_stats: Option<Arc<SharedStats>>,
     _shutdown_flag: Option<Arc<AtomicBool>>,
@@ -3415,9 +3500,12 @@ fn main() -> Result<(), Box<dyn CoreError>> {
                 });
                 let lio_config = config.clone();
                 let lio_export = config_args.export_trajectory.clone();
+                #[cfg(feature = "processing-time-export")]
+                let lio_export_processing_time = config_args.export_processing_time.clone();
                 let lio_sync = config_args.rat;
                 let lio_stats = Some(shared_stats);
                 let lio_output_mcap = output_mcap_config.clone();
+                let lio_local_only = config_args.local_only;
                 #[cfg(feature = "r2r")]
                 let lio_ros_node_args = RosNodeArgs {
                     node_name: config_args.node_name.clone(),
@@ -3432,6 +3520,8 @@ fn main() -> Result<(), Box<dyn CoreError>> {
                         lio_config,
                         None,
                         lio_export,
+                        #[cfg(feature = "processing-time-export")]
+                        lio_export_processing_time,
                         lio_sync,
                         #[cfg(feature = "r2r")]
                         lio_ros_node_args,
@@ -3439,7 +3529,7 @@ fn main() -> Result<(), Box<dyn CoreError>> {
                         Some(lio_shutdown_flag_for_thread),
                         None,
                         1,
-                        false,
+                        lio_local_only,
                         lio_output_mcap,
                     )
                     .map_err(|e| e.to_string())
@@ -3484,6 +3574,8 @@ fn main() -> Result<(), Box<dyn CoreError>> {
                 lio(
                     config,
                     config_args.export_trajectory,
+                    #[cfg(feature = "processing-time-export")]
+                    config_args.export_processing_time,
                     config_args.rat,
                     #[cfg(feature = "r2r")]
                     RosNodeArgs {
@@ -3491,6 +3583,7 @@ fn main() -> Result<(), Box<dyn CoreError>> {
                         namespace: config_args.namespace,
                     },
                     Some(lio_shutdown_flag),
+                    config_args.local_only,
                     output_mcap_config,
                 )
             }
@@ -3645,7 +3738,13 @@ pf! i 1
             // Define the main logic as a closure/block to easily handle errors and cleanup
             let export_trajectory_path =
                 resolve_export_trajectory_path(offline_args.export_trajectory.clone());
+            #[cfg(feature = "processing-time-export")]
+            let export_processing_time_path =
+                resolve_export_processing_time_path(offline_args.export_processing_time.clone());
             let export_trajectory_path_for_run = export_trajectory_path.clone();
+            #[cfg(feature = "processing-time-export")]
+            let export_processing_time_path_for_run = export_processing_time_path.clone();
+            let offline_local_only = !offline_args.no_local_only;
             let run_offline_logic = || -> anyhow::Result<()> {
                 let mt_file_path = std::env::temp_dir().join("pelorus_offline.mt");
                 fs::write(&mt_file_path, mt_content)
@@ -3660,10 +3759,12 @@ pf! i 1
                     .arg("headless")
                     .arg(&mt_file_path)
                     .arg("--sync")
-                    .arg("--local-only")
                     .stdin(Stdio::piped())
                     .stdout(Stdio::piped())
                     .stderr(Stdio::piped());
+                if offline_local_only {
+                    minot_command.arg("--local-only");
+                }
 
                 #[cfg(unix)]
                 unsafe {
@@ -3832,6 +3933,7 @@ pf! i 1
                 let runtime_tx_lio = runtime_tx.clone();
                 let offline_prefetch_scans = offline_args.prefetch_scans;
                 let output_mcap_config_for_run = output_mcap_config.clone();
+                let lio_local_only = offline_local_only;
 
                 let lio_handle = std::thread::spawn(move || {
                     let synchronous_mode = config.prelio_node_params.synchronous_mode;
@@ -3840,6 +3942,8 @@ pf! i 1
                             config,
                             Some(pelorus_ready_tx),
                             export_trajectory_path_for_run.clone(),
+                            #[cfg(feature = "processing-time-export")]
+                            export_processing_time_path_for_run.clone(),
                             synchronous_mode,
                             #[cfg(feature = "r2r")]
                             RosNodeArgs {
@@ -3850,7 +3954,7 @@ pf! i 1
                             Some(lio_shutdown_flag_for_thread),
                             Some(lio_stop_rx),
                             offline_prefetch_scans,
-                            true,
+                            lio_local_only,
                             output_mcap_config_for_run,
                         )
                     }))

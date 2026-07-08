@@ -30,6 +30,7 @@ either.workspace = true
 
 [features]
 default = ["rayon"]
+processing-time-export = []
 rayon = [
     "dep:rayon",
     "prelio/rayon",

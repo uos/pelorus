@@ -107,7 +107,7 @@ lidar {
   topic = "/ouster/points"
 
   # @recommended
-  # Use the vendor specific cloud format timestamps for undeskewing
+  # Use the vendor specific cloud format timestamps for deskewing
   # Possible values: Velodyne | Ouster | Livox | Robosense | LivoxMid360 | Hesai | Blickfeld | SickMultiScan | NoTimestamp
   vendor = NoTimestamp
 

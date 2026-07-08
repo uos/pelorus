@@ -102,6 +102,9 @@ pub struct Odometry {
     pub points: Vec<PointXyzi>,
     /// Frame whose pose is expressed above (base_link or lidar frame name).
     pub frame_id: String,
+    /// Processing latency from processed cloud input to odometry output, in nanoseconds.
+    #[cfg(feature = "processing-time-export")]
+    pub processing_time_ns: u128,
 }
 
 // ---------- internal helpers ----------
@@ -165,6 +168,8 @@ fn to_odometry(raw: &PelorusOutput, config: &LioConfig, ext: &Isometry3<f64>) ->
         scan_id: raw.scan_id,
         points,
         frame_id,
+        #[cfg(feature = "processing-time-export")]
+        processing_time_ns: raw.processing_time_ns,
     }
 }
 

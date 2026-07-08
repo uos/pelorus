@@ -179,7 +179,9 @@ inherits = "release"
 [profile.dev.package.backtrace]
 opt-level = 3
 
-# [patch.crates-io]
+[patch.crates-io]
 # mt_pubsub = { path = "../minot/mt_pubsub" }
 # mt_rat = { path = "../minot/mt_rat" }
+mt_pubsub = { git = "https://codeberg.org/stelzo/minot" }
+mt_rat = { git = "https://codeberg.org/stelzo/minot" }
 # transforms_io = { path = "../transforms_io" }

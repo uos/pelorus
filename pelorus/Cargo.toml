@@ -28,6 +28,7 @@ rayon = { workspace = true, optional = true }
 
 [features]
 default = ["rayon"]
+processing-time-export = ["pelorus_reg/processing-time-export"]
 rayon = ["dep:rayon", "prelio/rayon", "pelorus_reg/rayon", "ros_pointcloud2/rayon"]
 downsample = ["prelio/downsample"]
 cuda = ["prelio/cuda", "pelorus_reg/cuda"]

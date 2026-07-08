@@ -129,6 +129,9 @@ offline = ["mt_pubsub", "rat"]
 # Use Mimalloc as allocator. General speedup when using dynamic memory.
 mimalloc = ["dep:mimalloc"]
 
+# Export one processing-time sample per odometry output.
+processing-time-export = ["pelorus_reg/processing-time-export"]
+
 # -#-#-#-#-#- Visualizations -#-#-#-#-#-
 
 # Visualize data with rerun. Set the `RERUN_SERVER_ADDR` env variable to your rerun instance, default is '127.0.0.1:9876'.
@@ -167,7 +170,7 @@ ratslang.workspace = true
 
 [package.metadata.deb]
 name = "pelorus"
-depends = "minot (>= 0.7.0), minot (<< 0.8.0~)"
+depends = "minot (>= 0.8.0), minot (<< 0.9.0~)"
 section = "science"
 priority = "optional"
 assets = [["target/release/pelorus", "usr/bin/pelorus", "755"]]
@@ -177,7 +180,7 @@ name = "pelorus"
 assets = [{ source = "target/release/pelorus", dest = "/usr/bin/pelorus", mode = "755" }]
 
 [package.metadata.generate-rpm.requires]
-minot = ">= 0.7.0, < 0.8.0"
+minot = ">= 0.8.0, < 0.9.0"
 
 [package.metadata.multivers.x86_64]
 cpus = [

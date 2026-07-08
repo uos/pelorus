@@ -1,4 +1,6 @@
 use std::sync::{Arc, Mutex};
+#[cfg(feature = "processing-time-export")]
+use std::time::Instant;
 
 use crate::{ActiveBackend, Registration, registration::RegistrationState};
 use anyhow::anyhow;
@@ -78,6 +80,8 @@ pub struct PelorusOutput {
     pub twist_covariance: [f64; 36],
     pub cloud: Vec<PointXYZIT>,
     pub frame_id: String,
+    #[cfg(feature = "processing-time-export")]
+    pub processing_time_ns: u128,
 }
 
 impl Pipeline {
@@ -252,6 +256,8 @@ impl Pipeline {
         mut processed: PrelioProcessedCloud,
         ready_for_next: Option<&std::sync::mpsc::Sender<()>>,
     ) -> anyhow::Result<Option<PelorusOutput>> {
+        #[cfg(feature = "processing-time-export")]
+        let processing_started = Instant::now();
         self.ensure_backend_map_initialized();
 
         let mut eval = processed.runtime_eval;
@@ -309,6 +315,8 @@ impl Pipeline {
                 twist_covariance: twist_cov_map,
                 cloud,
                 frame_id: processed.header.frame_id,
+                #[cfg(feature = "processing-time-export")]
+                processing_time_ns: processing_started.elapsed().as_nanos(),
             }));
         }
 
@@ -368,6 +376,8 @@ impl Pipeline {
                 twist_covariance: twist_cov_map,
                 cloud,
                 frame_id: processed.header.frame_id,
+                #[cfg(feature = "processing-time-export")]
+                processing_time_ns: processing_started.elapsed().as_nanos(),
             }));
         }
 
@@ -427,6 +437,8 @@ impl Pipeline {
                 twist_covariance: twist_cov_map,
                 cloud,
                 frame_id: processed.header.frame_id,
+                #[cfg(feature = "processing-time-export")]
+                processing_time_ns: processing_started.elapsed().as_nanos(),
             }));
         }
 
@@ -478,6 +490,8 @@ impl Pipeline {
             twist_covariance: twist_cov_map,
             cloud,
             frame_id: processed.header.frame_id,
+            #[cfg(feature = "processing-time-export")]
+            processing_time_ns: processing_started.elapsed().as_nanos(),
         }))
     }
 
