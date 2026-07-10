@@ -4387,7 +4387,7 @@ checksum = "96a1fe2275b68991faded2c80aa4a33dba398b77d276038b8f50701a22e55918"
 [[package]]
 name = "mt_coord"
 version = "0.8.1"
-source = "git+https://codeberg.org/stelzo/minot#75a04fd7df00003297d5e07591a6a9c42410e055"
+source = "git+https://codeberg.org/stelzo/minot#8634d165d6657423d848fe31d75e8ef3118142b7"
 dependencies = [
  "anyhow",
  "fs2",
@@ -4402,7 +4402,7 @@ dependencies = [
 [[package]]
 name = "mt_net"
 version = "0.8.1"
-source = "git+https://codeberg.org/stelzo/minot#75a04fd7df00003297d5e07591a6a9c42410e055"
+source = "git+https://codeberg.org/stelzo/minot#8634d165d6657423d848fe31d75e8ef3118142b7"
 dependencies = [
  "anyhow",
  "rkyv",
@@ -4413,7 +4413,7 @@ dependencies = [
 [[package]]
 name = "mt_pubsub"
 version = "0.8.1"
-source = "git+https://codeberg.org/stelzo/minot#75a04fd7df00003297d5e07591a6a9c42410e055"
+source = "git+https://codeberg.org/stelzo/minot#8634d165d6657423d848fe31d75e8ef3118142b7"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -4432,7 +4432,7 @@ dependencies = [
 [[package]]
 name = "mt_rat"
 version = "0.8.1"
-source = "git+https://codeberg.org/stelzo/minot#75a04fd7df00003297d5e07591a6a9c42410e055"
+source = "git+https://codeberg.org/stelzo/minot#8634d165d6657423d848fe31d75e8ef3118142b7"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -4448,7 +4448,7 @@ dependencies = [
 [[package]]
 name = "mt_scope"
 version = "0.8.1"
-source = "git+https://codeberg.org/stelzo/minot#75a04fd7df00003297d5e07591a6a9c42410e055"
+source = "git+https://codeberg.org/stelzo/minot#8634d165d6657423d848fe31d75e8ef3118142b7"
 dependencies = [
  "anyhow",
  "env_logger",
@@ -4463,7 +4463,7 @@ dependencies = [
 [[package]]
 name = "mt_sea"
 version = "0.8.1"
-source = "git+https://codeberg.org/stelzo/minot#75a04fd7df00003297d5e07591a6a9c42410e055"
+source = "git+https://codeberg.org/stelzo/minot#8634d165d6657423d848fe31d75e8ef3118142b7"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -9640,9 +9640,8 @@ dependencies = [
 
 [[package]]
 name = "transforms_io"
-version = "0.2.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0a3c4bf3015d4794266da52de94b7b8ebfc21f8da934780756b516f51ac7f6b4"
+version = "0.2.1"
+source = "git+https://codeberg.org/stelzo/transforms_io#f6ed4eb28a9a273ca61747c64e59d07ea25289a9"
 dependencies = [
  "futures-lite",
  "log",

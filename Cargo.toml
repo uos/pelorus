@@ -182,6 +182,7 @@ opt-level = 3
 [patch.crates-io]
 # mt_pubsub = { path = "../minot/mt_pubsub" }
 # mt_rat = { path = "../minot/mt_rat" }
+# transforms_io = { path = "../transforms_io" }
 mt_pubsub = { git = "https://codeberg.org/stelzo/minot" }
 mt_rat = { git = "https://codeberg.org/stelzo/minot" }
-# transforms_io = { path = "../transforms_io" }
+transforms_io = { git = "https://codeberg.org/stelzo/transforms_io" }
