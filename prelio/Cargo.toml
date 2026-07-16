@@ -34,6 +34,7 @@ cuda = ["dep:pelorus_cuda", "pelorus_cuda/cuda_available", "pelorus_cuda/cuda_en
 metal = ["dep:pelorus_metal", "pelorus_metal/metal_available", "pelorus_metal/metal_enable"]
 vulkan = ["dep:pelorus_vulkan", "pelorus_vulkan/vulkan_available", "pelorus_vulkan/vulkan_enable"]
 no-imu-sync = []
+large-processing-queue = []
 default = ["rayon"]
 rayon = [
     "dep:rayon",

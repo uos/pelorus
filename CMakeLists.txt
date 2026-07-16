@@ -31,4 +31,8 @@ install(DIRECTORY launch
   DESTINATION share/${PROJECT_NAME}
 )
 
+install(DIRECTORY pelorus_cli/rviz
+  DESTINATION share/${PROJECT_NAME}
+)
+
 ament_package()

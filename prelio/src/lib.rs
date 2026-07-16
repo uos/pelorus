@@ -44,11 +44,30 @@ use anyhow::Result;
 use ros_pointcloud2::prelude::*;
 pub use ros_pointcloud2::ros::TimeMsg;
 
+#[cfg(not(feature = "large-processing-queue"))]
 const PREPROC_QUEUE_CAP: usize = 4;
+#[cfg(feature = "large-processing-queue")]
+const PREPROC_QUEUE_CAP: usize = 1_024;
+
+#[cfg(not(feature = "large-processing-queue"))]
 const IMU_QUEUE_CAP: usize = 16_384;
+#[cfg(feature = "large-processing-queue")]
+const IMU_QUEUE_CAP: usize = 1_048_576;
+
+#[cfg(not(feature = "large-processing-queue"))]
 const ODOM_QUEUE_CAP: usize = 8_192;
+#[cfg(feature = "large-processing-queue")]
+const ODOM_QUEUE_CAP: usize = 1_048_576;
+
+#[cfg(not(feature = "large-processing-queue"))]
 const FILTERED_CLOUD_QUEUE_CAP: usize = 8;
+#[cfg(feature = "large-processing-queue")]
+const FILTERED_CLOUD_QUEUE_CAP: usize = 1_024;
+
+#[cfg(not(feature = "large-processing-queue"))]
 const SYNCED_CLOUD_QUEUE_CAP: usize = 8;
+#[cfg(feature = "large-processing-queue")]
+const SYNCED_CLOUD_QUEUE_CAP: usize = 1_024;
 
 #[cfg(feature = "rayon")]
 fn sort_unstable_by<T, F>(slice: &mut [T], cmp: F, mode: ExecutionMode)

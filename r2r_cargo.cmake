@@ -133,6 +133,14 @@ function(r2r_cargo)
   if (PELORUS_RERUN)
     list(APPEND FEATURES "rerun")
   endif()
+  if(PELORUS_LARGE_PROCESSING_QUEUE)
+    list(APPEND FEATURES "large-processing-queue")
+  elseif(DEFINED ENV{PELORUS_LARGE_PROCESSING_QUEUE}
+         AND NOT "$ENV{PELORUS_LARGE_PROCESSING_QUEUE}" STREQUAL ""
+         AND NOT "$ENV{PELORUS_LARGE_PROCESSING_QUEUE}" STREQUAL "0"
+         AND NOT "$ENV{PELORUS_LARGE_PROCESSING_QUEUE}" STREQUAL "OFF")
+    list(APPEND FEATURES "large-processing-queue")
+  endif()
 
 
   string(JOIN "," FEATURES_STR ${FEATURES})

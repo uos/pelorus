@@ -28,6 +28,7 @@ downsample = ["pelorus/downsample"]
 cuda = ["pelorus/cuda"]
 metal = ["pelorus/metal"]
 no-imu-sync = ["pelorus/no-imu-sync"]
+large-processing-queue = ["pelorus/large-processing-queue"]
 
 [package.metadata.deb]
 name = "libpelorus"

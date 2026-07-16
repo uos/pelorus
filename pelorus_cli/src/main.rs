@@ -1544,7 +1544,9 @@ fn lio_with_ready_signal(
                 },
             };
             #[cfg(feature = "processing-time-export")]
-            let processing_started = std::time::Instant::now();
+            let processing_started = processing_time_file
+                .as_ref()
+                .map(|_| std::time::Instant::now());
             // Record scan arrival for measuring actual sensor rate
             if let Some(ref stats) = shared_stats {
                 stats.record_scan();
@@ -2110,7 +2112,9 @@ fn lio_with_ready_signal(
                 nanosec: lifis_tick.odom_time.nanosec,
             };
             #[cfg(feature = "processing-time-export")]
-            if let Some(processing_time_file) = processing_time_file.as_mut() {
+            if let (Some(processing_time_file), Some(processing_started)) =
+                (processing_time_file.as_mut(), processing_started)
+            {
                 let processing_time_ns = processing_started.elapsed().as_nanos();
                 let content_to_write = format!("{current_cloud_time} {processing_time_ns}\n");
 
@@ -2928,6 +2932,14 @@ impl Drop for MinotProcessGuard {
             );
         }
     }
+}
+
+#[cfg(feature = "rat")]
+fn join_minot_wait_thread(handle: std::thread::JoinHandle<()>) -> anyhow::Result<()> {
+    handle
+        .join()
+        .map_err(|_| anyhow!("Minot wait thread panicked"))?;
+    Ok(())
 }
 
 #[cfg(feature = "rat")]
@@ -3883,11 +3895,11 @@ pf! i 1
 
                 let runtime_tx_wait = runtime_tx.clone();
                 let minot_exited_for_wait = Arc::clone(&minot_exited);
-                std::thread::spawn(move || {
+                let mut minot_wait_handle = Some(std::thread::spawn(move || {
                     let status = minot_child.wait();
                     minot_exited_for_wait.store(true, Ordering::SeqCst);
                     let _ = runtime_tx_wait.send(OfflineRuntimeEvent::MinotExited(status));
-                });
+                }));
 
                 let runtime_tx_tui = runtime_tx.clone();
                 std::thread::spawn(move || {
@@ -3904,15 +3916,24 @@ pf! i 1
                         OfflineRuntimeEvent::MinotReady => break,
                         OfflineRuntimeEvent::TuiShutdownRequested => {
                             let _ = minot_guard.kill();
+                            if let Some(handle) = minot_wait_handle.take() {
+                                join_minot_wait_thread(handle)?;
+                            }
                             return Ok(());
                         }
                         OfflineRuntimeEvent::MinotExited(Ok(status)) => {
+                            if let Some(handle) = minot_wait_handle.take() {
+                                join_minot_wait_thread(handle)?;
+                            }
                             return Err(anyhow!(
                                 "Minot exited before readiness handshake: {}",
                                 status
                             ));
                         }
                         OfflineRuntimeEvent::MinotExited(Err(e)) => {
+                            if let Some(handle) = minot_wait_handle.take() {
+                                join_minot_wait_thread(handle)?;
+                            }
                             return Err(anyhow!("Failed to wait on Minot: {}", e));
                         }
                         OfflineRuntimeEvent::MinotEndOfBag | OfflineRuntimeEvent::LioExited(_) => {}
@@ -4050,6 +4071,10 @@ pf! i 1
                     Ok(Ok(())) => {}
                     Ok(Err(e)) => return Err(anyhow!("{}", e)),
                     Err(_) => return Err(anyhow!("LIO thread panicked")),
+                }
+
+                if let Some(handle) = minot_wait_handle.take() {
+                    join_minot_wait_thread(handle)?;
                 }
 
                 if wait_for_minot_exit {

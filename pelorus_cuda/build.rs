@@ -7,19 +7,31 @@ use std::process::Command;
 use walkdir::WalkDir;
 
 fn cuda_home() -> Option<PathBuf> {
-    if let Ok(cuda_path) = env::var("CUDA_HOME") {
-        return Some(PathBuf::from(cuda_path));
+    for env_name in ["CUDA_HOME", "CUDA_PATH"] {
+        if let Ok(cuda_path) = env::var(env_name) {
+            let path = PathBuf::from(&cuda_path);
+            if path.join("bin").join("nvcc").exists() {
+                return Some(path);
+            }
+            panic!(
+                "{} is set to {}, but {}/bin/nvcc was not found.",
+                env_name,
+                cuda_path,
+                path.display()
+            );
+        }
     }
 
     ["/usr/local/cuda", "/opt/cuda"]
         .into_iter()
         .map(PathBuf::from)
-        .find(|path| path.exists())
+        .find(|path| path.join("bin").join("nvcc").exists())
 }
 
 fn main() {
     if env::var("CARGO_FEATURE_CUDA_ENABLE").is_ok() {
         println!("cargo:rerun-if-env-changed=CUDA_HOME");
+        println!("cargo:rerun-if-env-changed=CUDA_PATH");
 
         let out_dir = PathBuf::from(env::var("OUT_DIR").unwrap());
 
@@ -142,9 +154,9 @@ fn main() {
                         cmd.arg(g);
                     }
 
-                    let output = cmd
-                        .output()
-                        .expect("Failed to spawn nvcc – is it on your PATH?");
+                    let output = cmd.output().unwrap_or_else(|err| {
+                        panic!("Failed to spawn {}: {}", nvcc_bin.display(), err)
+                    });
 
                     if !output.status.success() {
                         return Err(format!(
@@ -175,9 +187,13 @@ fn main() {
             for obj in &object_files {
                 dlink_cmd.arg(obj);
             }
-            let status_dlink = dlink_cmd
-                .status()
-                .expect("Failed to execute nvcc for device link.");
+            let status_dlink = dlink_cmd.status().unwrap_or_else(|err| {
+                panic!(
+                    "Failed to execute {} for device link: {}",
+                    nvcc_bin.display(),
+                    err
+                )
+            });
 
             if !status_dlink.success() {
                 panic!("nvcc device link (Stage 2) failed");

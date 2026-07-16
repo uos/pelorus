@@ -58,6 +58,7 @@ path = "src/main.rs"
 [features]
 default = [
   "offline",
+  "processing-time-export",
   "rayon",
 ] # rerun needs newer rustc versions, so only enable it manually
 
@@ -77,10 +78,10 @@ rayon = [
 ros2 = ["ros2c"]
 
 # ROS2 Node via C bindings. See the lio.toml for controlling QoS.
-ros2c = ["r2r"]
+ros2c = ["r2r", "processing-time-export"]
 
 # ROS2 with Rust native implementation. No ROS2 installation required. See the lio.toml for controlling QoS.
-ros2-rust = ["ros2-client"]
+ros2-rust = ["ros2-client", "processing-time-export"]
 
 # Custom Rust-only pub/sub implementation used in my offline-mapping, development and debugging workflow (see https://uos.github.io/minot/#native-publishsubscribe).
 mt_pubsub = [
@@ -131,6 +132,11 @@ mimalloc = ["dep:mimalloc"]
 
 # Export one processing-time sample per odometry output.
 processing-time-export = ["pelorus_reg/processing-time-export"]
+
+# Use much larger bounded queues between input, preprocessing, synchronization,
+# and registration stages. Intended for stress tests or intentionally buffered
+# offline runs; default capacities are much smaller.
+large-processing-queue = ["prelio_io/large-processing-queue", "prelio/large-processing-queue"]
 
 # -#-#-#-#-#- Visualizations -#-#-#-#-#-
 
