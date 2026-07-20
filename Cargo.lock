@@ -4618,7 +4618,7 @@ checksum = "96a1fe2275b68991faded2c80aa4a33dba398b77d276038b8f50701a22e55918"
 [[package]]
 name = "mt_coord"
 version = "0.9.0"
-source = "git+ssh://git@git.steado.tech/minot.git?branch=hiroz#a89a8e2d607c6124cdca2a87a59efc53ca11fa08"
+source = "git+ssh://git@git.steado.tech/minot.git?tag=v0.9.0-hiroz#a89a8e2d607c6124cdca2a87a59efc53ca11fa08"
 dependencies = [
  "anyhow",
  "fs2",
@@ -4633,7 +4633,7 @@ dependencies = [
 [[package]]
 name = "mt_net"
 version = "0.9.0"
-source = "git+ssh://git@git.steado.tech/minot.git?branch=hiroz#a89a8e2d607c6124cdca2a87a59efc53ca11fa08"
+source = "git+ssh://git@git.steado.tech/minot.git?tag=v0.9.0-hiroz#a89a8e2d607c6124cdca2a87a59efc53ca11fa08"
 dependencies = [
  "anyhow",
  "rkyv",
@@ -4644,7 +4644,7 @@ dependencies = [
 [[package]]
 name = "mt_pubsub"
 version = "0.9.0"
-source = "git+ssh://git@git.steado.tech/minot.git?branch=hiroz#a89a8e2d607c6124cdca2a87a59efc53ca11fa08"
+source = "git+ssh://git@git.steado.tech/minot.git?tag=v0.9.0-hiroz#a89a8e2d607c6124cdca2a87a59efc53ca11fa08"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -4663,7 +4663,7 @@ dependencies = [
 [[package]]
 name = "mt_rat"
 version = "0.9.0"
-source = "git+ssh://git@git.steado.tech/minot.git?branch=hiroz#a89a8e2d607c6124cdca2a87a59efc53ca11fa08"
+source = "git+ssh://git@git.steado.tech/minot.git?tag=v0.9.0-hiroz#a89a8e2d607c6124cdca2a87a59efc53ca11fa08"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -4679,7 +4679,7 @@ dependencies = [
 [[package]]
 name = "mt_scope"
 version = "0.9.0"
-source = "git+ssh://git@git.steado.tech/minot.git?branch=hiroz#a89a8e2d607c6124cdca2a87a59efc53ca11fa08"
+source = "git+ssh://git@git.steado.tech/minot.git?tag=v0.9.0-hiroz#a89a8e2d607c6124cdca2a87a59efc53ca11fa08"
 dependencies = [
  "anyhow",
  "env_logger",
@@ -4694,7 +4694,7 @@ dependencies = [
 [[package]]
 name = "mt_sea"
 version = "0.9.0"
-source = "git+ssh://git@git.steado.tech/minot.git?branch=hiroz#a89a8e2d607c6124cdca2a87a59efc53ca11fa08"
+source = "git+ssh://git@git.steado.tech/minot.git?tag=v0.9.0-hiroz#a89a8e2d607c6124cdca2a87a59efc53ca11fa08"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -7968,8 +7968,8 @@ dependencies = [
 
 [[package]]
 name = "ros_pointcloud2"
-version = "1.0.0-rc.4"
-source = "git+ssh://git@git.steado.tech/ros_pointcloud2.git#deb82386be19d557675c09ad964c9e8ebc4d2ef7"
+version = "1.0.0-rc.3"
+source = "git+ssh://git@git.steado.tech/ros_pointcloud2.git?tag=v1.0.0-rc.3-hiroz#1eb6dd34bf74905ef22b21619a193136fc39098f"
 dependencies = [
  "rayon",
  "rkyv",
@@ -8000,7 +8000,7 @@ dependencies = [
 [[package]]
 name = "rpcl2-derive"
 version = "1.0.0-rc.1"
-source = "git+ssh://git@git.steado.tech/ros_pointcloud2.git#deb82386be19d557675c09ad964c9e8ebc4d2ef7"
+source = "git+ssh://git@git.steado.tech/ros_pointcloud2.git?tag=v1.0.0-rc.3-hiroz#1eb6dd34bf74905ef22b21619a193136fc39098f"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -10038,7 +10038,7 @@ dependencies = [
 [[package]]
 name = "transforms_io"
 version = "0.3.0"
-source = "git+ssh://git@git.steado.tech/transforms_io.git#44df10b29140b06a79038753714ea19d87a21a20"
+source = "git+ssh://git@git.steado.tech/transforms_io.git?tag=v0.3.0-hiroz#f49aa12c3fe1acf4435fdac79c6962bb6df33e15"
 dependencies = [
  "futures-lite",
  "hiroz",

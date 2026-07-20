@@ -46,7 +46,7 @@ transforms_io = "0.3"
 pelorus_metal = { path = "pelorus_metal", version = "0.0.6" }
 pelorus_vulkan = { path = "pelorus_vulkan", version = "0.0.6", default-features = false }
 
-ros_pointcloud2 = { version = "1.0.0-rc.4", features = [
+ros_pointcloud2 = { version = "1.0.0-rc.3", features = [
   "derive",
   "r2r",
   "ros2_interfaces_jazzy_serde",
@@ -195,8 +195,7 @@ opt-level = 3
 
 [patch.crates-io]
 # mt_pubsub = { path = "../minot/mt_pubsub" }
-# mt_rat = { path = "../minot/mt_rat" }
-transforms_io = { git = "ssh://git@git.steado.tech/transforms_io.git" }
-ros_pointcloud2 = { git = "ssh://git@git.steado.tech/ros_pointcloud2.git" }
-mt_pubsub = { git = "ssh://git@git.steado.tech/minot.git", branch = "hiroz" }
-mt_rat = { git = "ssh://git@git.steado.tech/minot.git", branch = "hiroz" }
+transforms_io = { git = "ssh://git@git.steado.tech/transforms_io.git", tag = "v0.3.0-hiroz" }
+ros_pointcloud2 = { git = "ssh://git@git.steado.tech/ros_pointcloud2.git", tag = "v1.0.0-rc.3-hiroz" }
+mt_pubsub = { git = "ssh://git@git.steado.tech/minot.git", tag = "v0.9.0-hiroz" }
+mt_rat = { git = "ssh://git@git.steado.tech/minot.git", tag = "v0.9.0-hiroz" }
