@@ -757,6 +757,7 @@ pub struct ImuPosePrediction {
 #[derive(Debug)]
 pub struct PrelioProcessedCloud {
     pub scan_id: u64,
+    pub received_at: std::time::Instant,
     pub cloud: Vec<PointXYZIT>,
     pub passthrough: Option<Vec<PointXYZIT>>,
     pub imu_frame: String,

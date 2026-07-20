@@ -36,9 +36,7 @@ use std::sync::{
     Arc,
     atomic::{AtomicUsize, Ordering},
 };
-use std::thread;
-#[cfg(feature = "rayon")]
-use std::time::Instant;
+use std::{thread, time::Instant};
 
 use anyhow::Result;
 use ros_pointcloud2::prelude::*;
@@ -114,6 +112,7 @@ where
 #[derive(Clone)]
 pub struct LabeledPointCloud2Msg {
     pub scan_id: u64,
+    pub received_at: Instant,
     pub cloud: PointCloud2Msg,
 }
 
@@ -1646,7 +1645,7 @@ impl Prelio {
             std::sync::mpsc::SyncSender<OdomMsg>,
             std::sync::mpsc::Receiver<OdomMsg>,
         ) = std::sync::mpsc::sync_channel(ODOM_QUEUE_CAP);
-        // filtered_cloud carries: (cloud_meta (downsampled, output, first_ts, last_ts, header), scan_id, runtime_eval)
+        // filtered_cloud carries: (cloud_meta (downsampled, output, first_ts, last_ts, header), scan_id, received_at, runtime_eval)
         let (filtered_cloud_tx, filtered_cloud_rx) = std::sync::mpsc::sync_channel::<(
             (
                 Vec<PointXYZIT>,
@@ -1656,6 +1655,7 @@ impl Prelio {
                 HeaderMsg,
             ),
             u64,
+            Instant,
             RuntimeEvaluator,
         )>(FILTERED_CLOUD_QUEUE_CAP);
         let (synced_cloud_imu_tx, synced_cloud_imu_rx) =
@@ -1858,9 +1858,12 @@ impl Prelio {
                         }
                         #[cfg(not(feature = "rayon"))]
                         let _ = used_cpu_downsample;
-                        if let Err(e) =
-                            filtered_cloud_tx.send((cloud_meta, labeled.scan_id, eval.clone()))
-                        {
+                        if let Err(e) = filtered_cloud_tx.send((
+                            cloud_meta,
+                            labeled.scan_id,
+                            labeled.received_at,
+                            eval.clone(),
+                        )) {
                             info!("Closing filtering Thread: {}", e);
                             return;
                         }
@@ -1907,6 +1910,15 @@ impl Prelio {
     // also, this should be configurable with defaults and toggleable
     /// Add a point cloud to the buffer. Returns a `scan_id` assigned to this cloud.
     pub fn add_pointcloud(&mut self, cloud: PointCloud2Msg) -> u64 {
+        self.add_pointcloud_with_received_at(cloud, Instant::now())
+    }
+
+    /// Add a point cloud with an externally captured callback-entry timestamp.
+    pub fn add_pointcloud_with_received_at(
+        &mut self,
+        cloud: PointCloud2Msg,
+        received_at: Instant,
+    ) -> u64 {
         let cloud_stamp = timestamp_to_secs(&cloud.header.stamp);
 
         // TODO handle time jumps in the past?
@@ -1929,7 +1941,11 @@ impl Prelio {
         // Generate a unique scan id and send a labeled cloud into preprocessing.
         static SCAN_ID_COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
         let scan_id = SCAN_ID_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        let labeled = LabeledPointCloud2Msg { scan_id, cloud };
+        let labeled = LabeledPointCloud2Msg {
+            scan_id,
+            received_at,
+            cloud,
+        };
         match self.preproc_sender.as_ref() {
             Some(sender) => match sender.try_send(labeled) {
                 Ok(_) => {
@@ -2094,6 +2110,7 @@ impl Prelio {
                 HeaderMsg,
             ),
             u64,
+            Instant,
             RuntimeEvaluator,
         )>,
         imu_receiver: Option<std::sync::mpsc::Receiver<ImuMsg>>,
@@ -2114,6 +2131,7 @@ impl Prelio {
         while let Ok((
             (cloud_downsampled, cloud_output, lidar_begin_time, lidar_end_time, lidar_header),
             scan_id,
+            received_at,
             prelio_eval,
         )) = lidar_receiver.recv()
         {
@@ -2129,6 +2147,7 @@ impl Prelio {
                 }
                 let res = PrelioProcessedCloud {
                     scan_id: scan_id,
+                    received_at,
                     cloud: cloud_downsampled,
                     passthrough: cloud_output,
                     imu_frame: "".to_string(),
@@ -2341,6 +2360,7 @@ impl Prelio {
 
                 let res = PrelioProcessedCloud {
                     scan_id: scan_id,
+                    received_at,
                     cloud: cloud_downsampled,
                     passthrough: cloud_output,
                     imu_frame: "".to_string(),
@@ -2441,6 +2461,7 @@ impl Prelio {
 
                     let res = PrelioProcessedCloud {
                         scan_id: scan_id,
+                        received_at,
                         cloud: imu_cloud.cloud,
                         passthrough: imu_cloud.cloud_output,
                         imu_frame,

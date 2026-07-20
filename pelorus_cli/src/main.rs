@@ -2,7 +2,12 @@
 
 extern crate alloc;
 
-#[cfg(any(feature = "mt_pubsub", feature = "ros2-client", feature = "r2r"))]
+#[cfg(any(
+    feature = "mt_pubsub",
+    feature = "ros2-client",
+    feature = "r2r",
+    feature = "hiroz"
+))]
 use alloc::collections::VecDeque;
 use alloc::sync::Arc;
 #[allow(unused_imports)]
@@ -21,13 +26,30 @@ use marina::{Marina, ProgressReporter, ResolveResult, WriterProgress};
 use mimalloc::MiMalloc;
 use pelorus_core::LioConfig;
 use pelorus_core::config::{ast_to_config, ast_to_config_with_user_usage};
-#[cfg(any(feature = "mt_pubsub", feature = "ros2-client", feature = "r2r"))]
+#[cfg(any(
+    feature = "mt_pubsub",
+    feature = "ros2-client",
+    feature = "r2r",
+    feature = "hiroz"
+))]
 use pelorus_core::timestamp_to_secs;
-#[cfg(any(feature = "mt_pubsub", feature = "ros2-client", feature = "r2r"))]
+#[cfg(any(
+    feature = "mt_pubsub",
+    feature = "ros2-client",
+    feature = "r2r",
+    feature = "hiroz"
+))]
 use pelorus_core::timing::RuntimeEvaluator;
 use pelorus_reg::ActiveBackend;
-#[cfg(any(feature = "mt_pubsub", feature = "ros2-client", feature = "r2r"))]
+#[cfg(any(
+    feature = "mt_pubsub",
+    feature = "ros2-client",
+    feature = "r2r",
+    feature = "hiroz"
+))]
 use pelorus_reg::pipeline::Pipeline;
+#[cfg(feature = "hiroz")]
+use prelio_io::impl_hiroz;
 #[cfg(feature = "r2r")]
 use prelio_io::impl_r2r;
 #[cfg(feature = "mt_pubsub")]
@@ -48,17 +70,42 @@ use std::fs;
 use std::os::unix::process::CommandExt;
 #[cfg(feature = "rat")]
 use std::process::{Command as ProcessCommand, Stdio};
-#[cfg(any(feature = "mt_pubsub", feature = "ros2-client", feature = "r2r"))]
+#[cfg(any(
+    feature = "mt_pubsub",
+    feature = "ros2-client",
+    feature = "r2r",
+    feature = "hiroz"
+))]
 const PATH_LIMIT: usize = 10_000;
-#[cfg(any(feature = "mt_pubsub", feature = "ros2-client", feature = "r2r"))]
+#[cfg(any(
+    feature = "mt_pubsub",
+    feature = "ros2-client",
+    feature = "r2r",
+    feature = "hiroz"
+))]
 const MCAP_PATH_LIMIT: usize = 512;
-#[cfg(any(feature = "mt_pubsub", feature = "ros2-client", feature = "r2r"))]
+#[cfg(any(
+    feature = "mt_pubsub",
+    feature = "ros2-client",
+    feature = "r2r",
+    feature = "hiroz"
+))]
 const MCAP_PATH_MIN_PERIOD_NS: u64 = 1_000_000_000;
-#[cfg(any(feature = "mt_pubsub", feature = "ros2-client", feature = "r2r"))]
+#[cfg(any(
+    feature = "mt_pubsub",
+    feature = "ros2-client",
+    feature = "r2r",
+    feature = "hiroz"
+))]
 static ONLINE_SIGNAL_SHUTDOWN: AtomicBool = AtomicBool::new(false);
 const DEFAULT_OFFLINE_PREFETCH_SCANS: usize = 4;
 
-#[cfg(any(feature = "mt_pubsub", feature = "ros2-client", feature = "r2r"))]
+#[cfg(any(
+    feature = "mt_pubsub",
+    feature = "ros2-client",
+    feature = "r2r",
+    feature = "hiroz"
+))]
 use ros_pointcloud2::prelude::*;
 
 #[global_allocator]
@@ -68,10 +115,25 @@ static GLOBAL: MiMalloc = MiMalloc;
 use clap::{Parser, Subcommand};
 #[allow(unused_imports)]
 use futures_lite::future;
+#[cfg(feature = "hiroz")]
+use hiroz::{Builder, context::ZContextBuilder};
+#[cfg(feature = "hiroz")]
+use hiroz_msgs::{
+    builtin_interfaces::Time,
+    geometry_msgs::{Point, PoseStamped, Quaternion, Transform, TransformStamped, Vector3},
+    nav_msgs::{Odometry, Path},
+    sensor_msgs::PointCloud2,
+    std_msgs::{Header, String as RosString},
+};
 use log::{debug, error, info, trace, warn};
 #[cfg(feature = "mt_pubsub")]
 use mt_pubsub::Node;
-#[cfg(any(feature = "mt_pubsub", feature = "ros2-client", feature = "r2r"))]
+#[cfg(any(
+    feature = "mt_pubsub",
+    feature = "ros2-client",
+    feature = "r2r",
+    feature = "hiroz"
+))]
 use nalgebra::{Isometry3, Translation3, UnitQuaternion};
 #[cfg(feature = "r2r")]
 #[allow(unused_imports)]
@@ -101,18 +163,35 @@ use ros2_interfaces_jazzy_rkyv::{
 use std::io::IsTerminal;
 use std::io::Write;
 
-#[cfg(any(feature = "mt_pubsub", feature = "ros2-client", feature = "r2r"))]
+#[cfg(any(
+    feature = "mt_pubsub",
+    feature = "ros2-client",
+    feature = "r2r",
+    feature = "hiroz"
+))]
 use prelio_io::prelio::LocatedBufferView;
 #[cfg(feature = "ros2-client")]
 use prelio_io::tf::TfBroadcaster;
+#[cfg(feature = "hiroz")]
+use prelio_io::tf_hiroz::TfBroadcaster;
 #[cfg(feature = "mt_pubsub")]
 use prelio_io::tf_lh::TfBroadcaster;
 #[cfg(feature = "r2r")]
 use prelio_io::tf_r2r::TfBroadcaster;
 
-#[cfg(any(feature = "mt_pubsub", feature = "ros2-client", feature = "r2r"))]
+#[cfg(any(
+    feature = "mt_pubsub",
+    feature = "ros2-client",
+    feature = "r2r",
+    feature = "hiroz"
+))]
 use pelorus_reg::Registration;
-#[cfg(any(feature = "mt_pubsub", feature = "ros2-client", feature = "r2r"))]
+#[cfg(any(
+    feature = "mt_pubsub",
+    feature = "ros2-client",
+    feature = "r2r",
+    feature = "hiroz"
+))]
 use prelio_io::PrelioNode;
 use std::path::PathBuf;
 
@@ -124,6 +203,7 @@ use pelorus_cli::stats_tui::{
     feature = "mt_pubsub",
     feature = "ros2-client",
     feature = "r2r",
+    feature = "hiroz",
     feature = "rat"
 ))]
 use std::time::UNIX_EPOCH;
@@ -285,6 +365,16 @@ pub struct ConfigArgs {
     #[arg(long, default_value = "pelorus")]
     pub namespace: String,
 
+    /// Hiroz/Zenoh session mode.
+    #[cfg(feature = "hiroz")]
+    #[arg(long, default_value = "peer")]
+    pub hiroz_mode: String,
+
+    /// Hiroz/Zenoh endpoint to connect to. Can be passed multiple times.
+    #[cfg(feature = "hiroz")]
+    #[arg(long, value_name = "ENDPOINT")]
+    pub hiroz_endpoint: Vec<String>,
+
     #[command(flatten)]
     pub recording: RecordingArgs,
 
@@ -298,6 +388,13 @@ pub struct ConfigArgs {
 struct RosNodeArgs {
     node_name: String,
     namespace: String,
+}
+
+#[cfg(feature = "hiroz")]
+#[derive(Debug, Clone)]
+struct HirozNodeArgs {
+    mode: String,
+    endpoints: Vec<String>,
 }
 
 #[derive(Debug, Clone, Parser)]
@@ -546,7 +643,12 @@ fn prepare_mcap_output_targets(
     Ok(true)
 }
 
-#[cfg(any(feature = "mt_pubsub", feature = "ros2-client", feature = "r2r"))]
+#[cfg(any(
+    feature = "mt_pubsub",
+    feature = "ros2-client",
+    feature = "r2r",
+    feature = "hiroz"
+))]
 extern "C" fn handle_online_shutdown_signal(signal: libc::c_int) {
     if ONLINE_SIGNAL_SHUTDOWN.swap(true, Ordering::SeqCst) {
         if signal == libc::SIGINT {
@@ -558,7 +660,12 @@ extern "C" fn handle_online_shutdown_signal(signal: libc::c_int) {
     }
 }
 
-#[cfg(any(feature = "mt_pubsub", feature = "ros2-client", feature = "r2r"))]
+#[cfg(any(
+    feature = "mt_pubsub",
+    feature = "ros2-client",
+    feature = "r2r",
+    feature = "hiroz"
+))]
 fn install_online_shutdown_signal_handler(shutdown_flag: Arc<AtomicBool>) {
     ONLINE_SIGNAL_SHUTDOWN.store(false, Ordering::SeqCst);
     unsafe {
@@ -582,17 +689,32 @@ fn install_online_shutdown_signal_handler(shutdown_flag: Arc<AtomicBool>) {
     });
 }
 
-#[cfg(not(any(feature = "mt_pubsub", feature = "ros2-client", feature = "r2r")))]
+#[cfg(not(any(
+    feature = "mt_pubsub",
+    feature = "ros2-client",
+    feature = "r2r",
+    feature = "hiroz"
+)))]
 fn install_online_shutdown_signal_handler(_shutdown_flag: Arc<AtomicBool>) {}
 
-#[cfg(any(feature = "mt_pubsub", feature = "ros2-client", feature = "r2r"))]
+#[cfg(any(
+    feature = "mt_pubsub",
+    feature = "ros2-client",
+    feature = "r2r",
+    feature = "hiroz"
+))]
 fn copy_array<const N: usize>(values: &[f64]) -> [f64; N] {
     let mut out = [0.0; N];
     out.copy_from_slice(&values[..N]);
     out
 }
 
-#[cfg(any(feature = "mt_pubsub", feature = "ros2-client", feature = "r2r"))]
+#[cfg(any(
+    feature = "mt_pubsub",
+    feature = "ros2-client",
+    feature = "r2r",
+    feature = "hiroz"
+))]
 fn serde_time(time: &Time) -> ros2_interfaces_jazzy_serde::builtin_interfaces::msg::Time {
     ros2_interfaces_jazzy_serde::builtin_interfaces::msg::Time {
         sec: time.sec,
@@ -600,7 +722,12 @@ fn serde_time(time: &Time) -> ros2_interfaces_jazzy_serde::builtin_interfaces::m
     }
 }
 
-#[cfg(any(feature = "mt_pubsub", feature = "ros2-client", feature = "r2r"))]
+#[cfg(any(
+    feature = "mt_pubsub",
+    feature = "ros2-client",
+    feature = "r2r",
+    feature = "hiroz"
+))]
 fn serde_header(header: &Header) -> ros2_interfaces_jazzy_serde::std_msgs::msg::Header {
     ros2_interfaces_jazzy_serde::std_msgs::msg::Header {
         stamp: serde_time(&header.stamp),
@@ -608,7 +735,12 @@ fn serde_header(header: &Header) -> ros2_interfaces_jazzy_serde::std_msgs::msg::
     }
 }
 
-#[cfg(any(feature = "mt_pubsub", feature = "ros2-client", feature = "r2r"))]
+#[cfg(any(
+    feature = "mt_pubsub",
+    feature = "ros2-client",
+    feature = "r2r",
+    feature = "hiroz"
+))]
 fn serde_vector3(vector: &Vector3) -> ros2_interfaces_jazzy_serde::geometry_msgs::msg::Vector3 {
     ros2_interfaces_jazzy_serde::geometry_msgs::msg::Vector3 {
         x: vector.x,
@@ -617,7 +749,12 @@ fn serde_vector3(vector: &Vector3) -> ros2_interfaces_jazzy_serde::geometry_msgs
     }
 }
 
-#[cfg(any(feature = "mt_pubsub", feature = "ros2-client", feature = "r2r"))]
+#[cfg(any(
+    feature = "mt_pubsub",
+    feature = "ros2-client",
+    feature = "r2r",
+    feature = "hiroz"
+))]
 fn serde_quaternion(
     quat: &Quaternion,
 ) -> ros2_interfaces_jazzy_serde::geometry_msgs::msg::Quaternion {
@@ -629,7 +766,12 @@ fn serde_quaternion(
     }
 }
 
-#[cfg(any(feature = "mt_pubsub", feature = "ros2-client", feature = "r2r"))]
+#[cfg(any(
+    feature = "mt_pubsub",
+    feature = "ros2-client",
+    feature = "r2r",
+    feature = "hiroz"
+))]
 fn serde_point(point: &Point) -> ros2_interfaces_jazzy_serde::geometry_msgs::msg::Point {
     ros2_interfaces_jazzy_serde::geometry_msgs::msg::Point {
         x: point.x,
@@ -638,7 +780,10 @@ fn serde_point(point: &Point) -> ros2_interfaces_jazzy_serde::geometry_msgs::msg
     }
 }
 
-#[cfg(any(feature = "mt_pubsub", feature = "ros2-client", feature = "r2r"))]
+#[cfg(all(
+    any(feature = "mt_pubsub", feature = "ros2-client", feature = "r2r"),
+    not(feature = "hiroz")
+))]
 fn serde_cloud(cloud: &PointCloud2) -> ros2_interfaces_jazzy_serde::sensor_msgs::msg::PointCloud2 {
     ros2_interfaces_jazzy_serde::sensor_msgs::msg::PointCloud2 {
         header: serde_header(&cloud.header),
@@ -664,7 +809,45 @@ fn serde_cloud(cloud: &PointCloud2) -> ros2_interfaces_jazzy_serde::sensor_msgs:
     }
 }
 
-#[cfg(any(feature = "mt_pubsub", feature = "ros2-client", feature = "r2r"))]
+#[cfg(feature = "hiroz")]
+fn serde_cloud(cloud: &PointCloud2) -> ros2_interfaces_jazzy_serde::sensor_msgs::msg::PointCloud2 {
+    let cloud = impl_hiroz::to_pointcloud2_msg(cloud.clone());
+    ros2_interfaces_jazzy_serde::sensor_msgs::msg::PointCloud2 {
+        header: ros2_interfaces_jazzy_serde::std_msgs::msg::Header {
+            stamp: ros2_interfaces_jazzy_serde::builtin_interfaces::msg::Time {
+                sec: cloud.header.stamp.sec,
+                nanosec: cloud.header.stamp.nanosec,
+            },
+            frame_id: cloud.header.frame_id,
+        },
+        height: cloud.dimensions.height,
+        width: cloud.dimensions.width,
+        fields: cloud
+            .fields
+            .iter()
+            .map(
+                |field| ros2_interfaces_jazzy_serde::sensor_msgs::msg::PointField {
+                    name: field.name.to_string(),
+                    offset: field.offset,
+                    datatype: field.datatype,
+                    count: field.count,
+                },
+            )
+            .collect(),
+        is_bigendian: matches!(cloud.endian, ros_pointcloud2::Endian::Big),
+        point_step: cloud.point_step,
+        row_step: cloud.row_step,
+        data: cloud.data,
+        is_dense: matches!(cloud.dense, ros_pointcloud2::Denseness::Dense),
+    }
+}
+
+#[cfg(any(
+    feature = "mt_pubsub",
+    feature = "ros2-client",
+    feature = "r2r",
+    feature = "hiroz"
+))]
 fn serde_odom(odom: &Odometry) -> ros2_interfaces_jazzy_serde::nav_msgs::msg::Odometry {
     ros2_interfaces_jazzy_serde::nav_msgs::msg::Odometry {
         header: serde_header(&odom.header),
@@ -686,7 +869,12 @@ fn serde_odom(odom: &Odometry) -> ros2_interfaces_jazzy_serde::nav_msgs::msg::Od
     }
 }
 
-#[cfg(any(feature = "mt_pubsub", feature = "ros2-client", feature = "r2r"))]
+#[cfg(any(
+    feature = "mt_pubsub",
+    feature = "ros2-client",
+    feature = "r2r",
+    feature = "hiroz"
+))]
 fn serde_pose_stamped(
     pose: &PoseStamped,
 ) -> ros2_interfaces_jazzy_serde::geometry_msgs::msg::PoseStamped {
@@ -699,7 +887,12 @@ fn serde_pose_stamped(
     }
 }
 
-#[cfg(any(feature = "mt_pubsub", feature = "ros2-client", feature = "r2r"))]
+#[cfg(any(
+    feature = "mt_pubsub",
+    feature = "ros2-client",
+    feature = "r2r",
+    feature = "hiroz"
+))]
 fn serde_path(path: &Path) -> ros2_interfaces_jazzy_serde::nav_msgs::msg::Path {
     ros2_interfaces_jazzy_serde::nav_msgs::msg::Path {
         header: serde_header(&path.header),
@@ -707,7 +900,12 @@ fn serde_path(path: &Path) -> ros2_interfaces_jazzy_serde::nav_msgs::msg::Path {
     }
 }
 
-#[cfg(any(feature = "mt_pubsub", feature = "ros2-client", feature = "r2r"))]
+#[cfg(any(
+    feature = "mt_pubsub",
+    feature = "ros2-client",
+    feature = "r2r",
+    feature = "hiroz"
+))]
 fn serde_tf_message(
     tf: &TransformStamped,
 ) -> ros2_interfaces_jazzy_serde::tf2_msgs::msg::TFMessage {
@@ -725,7 +923,12 @@ fn serde_tf_message(
     }
 }
 
-#[cfg(any(feature = "mt_pubsub", feature = "ros2-client", feature = "r2r"))]
+#[cfg(any(
+    feature = "mt_pubsub",
+    feature = "ros2-client",
+    feature = "r2r",
+    feature = "hiroz"
+))]
 fn serde_imu_msg(msg: &pelorus_core::ImuMsg) -> ros2_interfaces_jazzy_serde::sensor_msgs::msg::Imu {
     ros2_interfaces_jazzy_serde::sensor_msgs::msg::Imu {
         header: ros2_interfaces_jazzy_serde::std_msgs::msg::Header {
@@ -757,7 +960,12 @@ fn serde_imu_msg(msg: &pelorus_core::ImuMsg) -> ros2_interfaces_jazzy_serde::sen
     }
 }
 
-#[cfg(any(feature = "mt_pubsub", feature = "ros2-client", feature = "r2r"))]
+#[cfg(any(
+    feature = "mt_pubsub",
+    feature = "ros2-client",
+    feature = "r2r",
+    feature = "hiroz"
+))]
 fn drain_filtered_imu_mcap(
     writer: &mut Option<McapOutputWriter<std::io::BufWriter<std::fs::File>>>,
     rx: &mut Option<std::sync::mpsc::Receiver<pelorus_core::ImuMsg>>,
@@ -778,6 +986,7 @@ fn lio(
     #[cfg(feature = "processing-time-export")] export_processing_time: Option<String>,
     synchronous_mode: bool,
     #[cfg(feature = "r2r")] ros_node_args: RosNodeArgs,
+    #[cfg(feature = "hiroz")] hiroz_node_args: HirozNodeArgs,
     shutdown_flag: Option<Arc<AtomicBool>>,
     mt_pubsub_local_only: bool,
     output_mcap: Option<McapOutputConfig>,
@@ -791,6 +1000,8 @@ fn lio(
         synchronous_mode,
         #[cfg(feature = "r2r")]
         ros_node_args,
+        #[cfg(feature = "hiroz")]
+        hiroz_node_args,
         None,
         shutdown_flag,
         None,
@@ -804,6 +1015,7 @@ fn lio(
     feature = "mt_pubsub",
     feature = "ros2-client",
     feature = "r2r",
+    feature = "hiroz",
     feature = "rat"
 ))]
 fn resolve_export_trajectory_path(export_trajectory: Option<String>) -> Option<String> {
@@ -825,7 +1037,12 @@ fn resolve_export_trajectory_path(export_trajectory: Option<String>) -> Option<S
 
 #[cfg(all(
     feature = "processing-time-export",
-    any(feature = "mt_pubsub", feature = "ros2-client", feature = "r2r")
+    any(
+        feature = "mt_pubsub",
+        feature = "ros2-client",
+        feature = "r2r",
+        feature = "hiroz"
+    )
 ))]
 fn resolve_export_processing_time_path(export_processing_time: Option<String>) -> Option<String> {
     match export_processing_time {
@@ -844,7 +1061,12 @@ fn resolve_export_processing_time_path(export_processing_time: Option<String>) -
     }
 }
 
-#[cfg(any(feature = "mt_pubsub", feature = "ros2-client", feature = "r2r"))]
+#[cfg(any(
+    feature = "mt_pubsub",
+    feature = "ros2-client",
+    feature = "r2r",
+    feature = "hiroz"
+))]
 fn release_minot_tick(
     shutdown_flag: Option<&Arc<AtomicBool>>,
     #[allow(unused_variables)] synchronous_mode: bool,
@@ -852,7 +1074,12 @@ fn release_minot_tick(
     release_minot_ticks(shutdown_flag, synchronous_mode, 1);
 }
 
-#[cfg(any(feature = "mt_pubsub", feature = "ros2-client", feature = "r2r"))]
+#[cfg(any(
+    feature = "mt_pubsub",
+    feature = "ros2-client",
+    feature = "r2r",
+    feature = "hiroz"
+))]
 fn release_minot_ticks(
     shutdown_flag: Option<&Arc<AtomicBool>>,
     #[allow(unused_variables)] synchronous_mode: bool,
@@ -882,7 +1109,12 @@ fn release_minot_ticks(
     }
 }
 
-#[cfg(any(feature = "mt_pubsub", feature = "ros2-client", feature = "r2r"))]
+#[cfg(any(
+    feature = "mt_pubsub",
+    feature = "ros2-client",
+    feature = "r2r",
+    feature = "hiroz"
+))]
 fn lio_with_ready_signal(
     mut config: LioConfig,
     ready_signal: Option<std::sync::mpsc::Sender<()>>,
@@ -890,6 +1122,7 @@ fn lio_with_ready_signal(
     #[cfg(feature = "processing-time-export")] export_processing_time: Option<String>,
     #[allow(unused_variables)] synchronous_mode: bool,
     #[cfg(feature = "r2r")] ros_node_args: RosNodeArgs,
+    #[cfg(feature = "hiroz")] hiroz_node_args: HirozNodeArgs,
     shared_stats: Option<Arc<SharedStats>>,
     // Optional flag that, when set to true, will cause the LIO loop to exit
     shutdown_flag: Option<Arc<AtomicBool>>,
@@ -909,8 +1142,10 @@ fn lio_with_ready_signal(
     if let Some(path) = export_processing_time.as_ref() {
         warn!("Processing time export target: {}", path);
     }
-    #[cfg(any(feature = "mt_pubsub", feature = "rat"))]
-    let rt = if cfg!(feature = "mt_pubsub") || (synchronous_mode && cfg!(feature = "rat")) {
+    #[cfg(any(feature = "mt_pubsub", feature = "hiroz", feature = "rat"))]
+    let rt = if cfg!(any(feature = "mt_pubsub", feature = "hiroz"))
+        || (synchronous_mode && cfg!(feature = "rat"))
+    {
         Some(Arc::new(
             tokio::runtime::Builder::new_multi_thread()
                 .enable_all()
@@ -921,7 +1156,7 @@ fn lio_with_ready_signal(
         None
     };
 
-    #[cfg(not(feature = "mt_pubsub"))]
+    #[cfg(not(any(feature = "mt_pubsub", feature = "hiroz")))]
     #[allow(unused_variables)]
     let namespace = "/pelorus";
     #[cfg(feature = "ros2-client")]
@@ -946,6 +1181,30 @@ fn lio_with_ready_signal(
             .map_err(|err| anyhow!("Failed to create mt_pubsub node: {err}"))?,
     );
 
+    #[cfg(feature = "hiroz")]
+    let node = {
+        info!(
+            "Starting Hiroz backend: mode={}, endpoints={:?}, cloud_topic={}, imu_topic={}",
+            hiroz_node_args.mode,
+            hiroz_node_args.endpoints,
+            config.prelio_node_params.cloud_src_topic,
+            config.prelio_node_params.imu_src_topic
+        );
+        let mut builder = ZContextBuilder::default()
+            .with_mode(hiroz_node_args.mode.clone())
+            .keyexpr_format(hiroz_protocol::KeyExprFormat::RmwZenoh);
+        if !hiroz_node_args.endpoints.is_empty() {
+            builder = builder.with_connect_endpoints(hiroz_node_args.endpoints.clone());
+        }
+        let ctx = builder
+            .build()
+            .map_err(|e| anyhow!("Failed to create Hiroz context: {e}"))?;
+        ctx.create_node("pelorus_node")
+            .with_namespace("/pelorus")
+            .build()
+            .map_err(|e| anyhow!("Failed to create Hiroz node: {e}"))?
+    };
+
     #[cfg(feature = "rat")]
     if synchronous_mode {
         if let Some(rt) = rt.as_ref() {
@@ -958,7 +1217,7 @@ fn lio_with_ready_signal(
     #[cfg(feature = "r2r")]
     let mut node = r2r::Node::create(ctx, &ros_node_args.node_name, &ros_node_args.namespace)?;
 
-    #[cfg(not(feature = "mt_pubsub"))]
+    #[cfg(any(feature = "ros2-client", feature = "r2r"))]
     let tf_broadcaster = TfBroadcaster::new(&mut node);
     #[cfg(feature = "mt_pubsub")]
     let tf_broadcaster = Arc::new(TfBroadcaster::new(
@@ -968,6 +1227,9 @@ fn lio_with_ready_signal(
         mt_pubsub_local_only,
         mt_pubsub::Qos::Reliable,
     ));
+    #[cfg(feature = "hiroz")]
+    let tf_broadcaster = TfBroadcaster::new(&node)
+        .map_err(|e| anyhow!("Failed to create Hiroz TF broadcaster: {e}"))?;
 
     let mut pipeline = Pipeline::new(&config);
     let map = pipeline.map();
@@ -1044,13 +1306,13 @@ fn lio_with_ready_signal(
     };
 
     let (lifis_node, synced_rx) = PrelioNode::new(
-        #[cfg(not(feature = "mt_pubsub"))]
+        #[cfg(any(feature = "ros2-client", feature = "r2r"))]
         &mut node,
-        #[cfg(feature = "mt_pubsub")]
+        #[cfg(any(feature = "mt_pubsub", feature = "hiroz"))]
         &node,
-        #[cfg(feature = "mt_pubsub")]
+        #[cfg(any(feature = "mt_pubsub", feature = "hiroz"))]
         rt.as_ref()
-            .expect("rt always exists with mt_pubsub feat")
+            .expect("rt always exists with mt_pubsub/hiroz feat")
             .clone(),
         &config.prelio_params,
         &config.prelio_node_params,
@@ -1207,6 +1469,12 @@ fn lio_with_ready_signal(
                 .await
                 .unwrap()
         });
+    #[cfg(feature = "hiroz")]
+    let cloud_publisher = node
+        .create_pub::<PointCloud2>("registered")
+        .with_qos(prelio_io::qos_to_hiroz(config.registered_cloud_qos))
+        .build()
+        .map_err(|e| anyhow!("Failed to create Hiroz registered cloud publisher: {e}"))?;
     #[cfg(feature = "r2r")]
     let odom_publisher = node.create_publisher::<Odometry>("odom", config.odom_qos.into())?;
     #[cfg(feature = "mt_pubsub")]
@@ -1218,6 +1486,12 @@ fn lio_with_ready_signal(
                 .await
                 .unwrap()
         });
+    #[cfg(feature = "hiroz")]
+    let odom_publisher = node
+        .create_pub::<Odometry>("odom")
+        .with_qos(prelio_io::qos_to_hiroz(config.odom_qos))
+        .build()
+        .map_err(|e| anyhow!("Failed to create Hiroz odom publisher: {e}"))?;
     #[cfg(all(not(feature = "no-viz"), feature = "r2r"))]
     let lidar_path_publisher = node.create_publisher::<Path>("path", config.path_qos.into())?;
     #[cfg(all(not(feature = "no-viz"), feature = "mt_pubsub"))]
@@ -1229,6 +1503,12 @@ fn lio_with_ready_signal(
                 .await
                 .unwrap()
         });
+    #[cfg(all(not(feature = "no-viz"), feature = "hiroz"))]
+    let lidar_path_publisher = node
+        .create_pub::<Path>("path")
+        .with_qos(prelio_io::qos_to_hiroz(config.path_qos))
+        .build()
+        .map_err(|e| anyhow!("Failed to create Hiroz path publisher: {e}"))?;
     #[cfg(all(not(feature = "no-viz"), feature = "r2r"))]
     let imu_odom_publisher =
         node.create_publisher::<Odometry>("imu_odom", config.imu_odom_qos.into())?;
@@ -1241,6 +1521,12 @@ fn lio_with_ready_signal(
                 .await
                 .unwrap()
         });
+    #[cfg(all(not(feature = "no-viz"), feature = "hiroz"))]
+    let imu_odom_publisher = node
+        .create_pub::<Odometry>("imu_odom")
+        .with_qos(prelio_io::qos_to_hiroz(config.imu_odom_qos))
+        .build()
+        .map_err(|e| anyhow!("Failed to create Hiroz IMU odom publisher: {e}"))?;
     #[cfg(feature = "mt_pubsub")]
     let stats_publisher = rt
         .as_ref()
@@ -1250,6 +1536,12 @@ fn lio_with_ready_signal(
                 .await
                 .unwrap()
         });
+    #[cfg(feature = "hiroz")]
+    let stats_publisher = node
+        .create_pub::<RosString>("pelorus_stats")
+        .with_qos(prelio_io::qos_to_hiroz(pelorus_core::Qos::SystemDefault))
+        .build()
+        .map_err(|e| anyhow!("Failed to create Hiroz stats publisher: {e}"))?;
     // #[cfg(all(not(feature = "no-viz"), feature = "r2r"))]
     // let imu_path_publisher =
     //     node.create_publisher::<Path>("imu_path", config.imu_path_qos.into())?;
@@ -1273,7 +1565,7 @@ fn lio_with_ready_signal(
 
     let mut t_world = nalgebra::Isometry3::identity();
     let mut t_last_current = nalgebra::Isometry3::identity();
-    #[cfg(feature = "mt_pubsub")]
+    #[cfg(any(feature = "mt_pubsub", feature = "hiroz"))]
     let mut last_stats_pub = std::time::Instant::now();
 
     // Use VecDeque for efficient removal from front (O(1) instead of O(n))
@@ -1369,6 +1661,7 @@ fn lio_with_ready_signal(
         let mut lifis_node = Some(lifis_node);
 
         let active_backend = ActiveBackend::detect(&config);
+        log_active_backend(&config, &active_backend);
         if let Some(ref stats) = shared_stats {
             set_backend_from_runtime(stats, &config, &active_backend);
         }
@@ -1546,7 +1839,7 @@ fn lio_with_ready_signal(
             #[cfg(feature = "processing-time-export")]
             let processing_started = processing_time_file
                 .as_ref()
-                .map(|_| std::time::Instant::now());
+                .map(|_| lifis_tick.received_at);
             // Record scan arrival for measuring actual sensor rate
             if let Some(ref stats) = shared_stats {
                 stats.record_scan();
@@ -1815,6 +2108,9 @@ fn lio_with_ready_signal(
                                 let iso = prelio_io::tf::isometry_from_transform(&tf.transform);
                                 #[cfg(feature = "mt_pubsub")]
                                 let iso = prelio_io::tf_lh::isometry_from_transform(&tf.transform);
+                                #[cfg(feature = "hiroz")]
+                                let iso =
+                                    prelio_io::tf_hiroz::isometry_from_transform(&tf.transform);
 
                                 info!(
                                     "Updated base_link to lidar transform from TF: translation={:?}, rotation={:?}",
@@ -2058,6 +2354,8 @@ fn lio_with_ready_signal(
                         let out = impl_ros2_interfaces_jazzy_rkyv::from_pointcloud2_msg(msg);
                         #[cfg(feature = "r2r")]
                         let out = impl_r2r::from_pointcloud2_msg(msg);
+                        #[cfg(feature = "hiroz")]
+                        let out = impl_hiroz::from_pointcloud2_msg(msg);
 
                         out
                     }
@@ -2071,6 +2369,8 @@ fn lio_with_ready_signal(
                         let out = impl_ros2_interfaces_jazzy_rkyv::from_pointcloud2_msg(msg);
                         #[cfg(feature = "r2r")]
                         let out = impl_r2r::from_pointcloud2_msg(msg);
+                        #[cfg(feature = "hiroz")]
+                        let out = impl_hiroz::from_pointcloud2_msg(msg);
 
                         out
                     }
@@ -2100,6 +2400,8 @@ fn lio_with_ready_signal(
                         let out = impl_ros2_interfaces_jazzy_rkyv::from_pointcloud2_msg(msg);
                         #[cfg(feature = "r2r")]
                         let out = impl_r2r::from_pointcloud2_msg(msg);
+                        #[cfg(feature = "hiroz")]
+                        let out = impl_hiroz::from_pointcloud2_msg(msg);
 
                         out
                     }
@@ -2480,6 +2782,8 @@ fn lio_with_ready_signal(
                 let ps = impl_ros2_interfaces_jazzy_rkyv::to_pointcloud2_msg(cloud.clone());
                 #[cfg(feature = "r2r")]
                 let ps = impl_r2r::to_pointcloud2_msg(cloud.clone());
+                #[cfg(feature = "hiroz")]
+                let ps = impl_hiroz::to_pointcloud2_msg(cloud.clone());
 
                 let gradient = colorous::TURBO;
                 let t_world_lidar_rerun = (ros_to_rerun * register_pose.pose).cast();
@@ -2662,7 +2966,7 @@ fn lio_with_ready_signal(
                 stats.record_comp_time(iteration_time_ms);
             }
 
-            #[cfg(feature = "mt_pubsub")]
+            #[cfg(any(feature = "mt_pubsub", feature = "hiroz"))]
             if let Some(ref stats) = shared_stats {
                 if last_stats_pub.elapsed() >= Duration::from_millis(250) {
                     last_stats_pub = std::time::Instant::now();
@@ -2692,10 +2996,16 @@ fn lio_with_ready_signal(
                         snapshot.angular_velocity[2],
                     );
                     let msg = RosString { data: payload };
+                    #[cfg(feature = "mt_pubsub")]
                     let _ = rt
                         .as_ref()
                         .expect("rt always exists with mt_pubsub feat")
                         .block_on(async { stats_publisher.publish(&msg).await });
+                    #[cfg(feature = "hiroz")]
+                    let _ = rt
+                        .as_ref()
+                        .expect("rt always exists with hiroz feat")
+                        .block_on(async { stats_publisher.async_publish(&msg).await });
                 }
             }
 
@@ -2749,7 +3059,7 @@ fn lio_with_ready_signal(
         Ok(())
     });
 
-    #[cfg(any(feature = "mt_pubsub", feature = "r2r"))]
+    #[cfg(any(feature = "mt_pubsub", feature = "r2r", feature = "hiroz"))]
     let spinner_shutdown_flag = shutdown_flag.clone();
 
     #[cfg(feature = "mt_pubsub")]
@@ -2836,7 +3146,34 @@ fn lio_with_ready_signal(
         };
     }
 
-    #[cfg(not(any(feature = "mt_pubsub", feature = "ros2-client", feature = "r2r")))]
+    #[cfg(feature = "hiroz")]
+    {
+        loop {
+            if processing_handle.is_finished() {
+                info!("Processing thread finished in Hiroz backend");
+                break;
+            }
+            if let Some(ref flag) = spinner_shutdown_flag {
+                if flag.load(Ordering::Relaxed) {
+                    info!("Shutdown flag detected in Hiroz backend");
+                    break;
+                }
+            }
+            std::thread::sleep(Duration::from_millis(100));
+        }
+        return match processing_handle.join() {
+            Ok(Ok(())) => Ok(()),
+            Ok(Err(err)) => Err(err.into()),
+            Err(_) => Err(anyhow!("LIO processing thread panicked").into()),
+        };
+    }
+
+    #[cfg(not(any(
+        feature = "mt_pubsub",
+        feature = "ros2-client",
+        feature = "r2r",
+        feature = "hiroz"
+    )))]
     {
         match processing_handle.join() {
             Ok(Ok(())) => Ok(()),
@@ -2846,7 +3183,12 @@ fn lio_with_ready_signal(
     }
 }
 
-#[cfg(not(any(feature = "mt_pubsub", feature = "ros2-client", feature = "r2r")))]
+#[cfg(not(any(
+    feature = "mt_pubsub",
+    feature = "ros2-client",
+    feature = "r2r",
+    feature = "hiroz"
+)))]
 fn lio_with_ready_signal(
     _config: LioConfig,
     _ready_signal: Option<std::sync::mpsc::Sender<()>>,
@@ -2861,7 +3203,7 @@ fn lio_with_ready_signal(
     _output_mcap: Option<McapOutputConfig>,
 ) -> Result<(), Box<dyn CoreError>> {
     Err(anyhow!(
-        "No IO backend is enabled. Rebuild with one of: offline, mt_pubsub, ros2-client, or r2r."
+        "No IO backend is enabled. Rebuild with one of: offline, mt_pubsub, ros2-client, r2r, or hiroz."
     )
     .into())
 }
@@ -3001,6 +3343,19 @@ fn set_backend_from_config(shared_stats: &SharedStats, config: &LioConfig) {
     };
 
     shared_stats.set_backend_info(backend, accelerator, details);
+}
+
+fn log_active_backend(config: &LioConfig, active_backend: &ActiveBackend) {
+    match active_backend {
+        ActiveBackend::Cpu if config.cpu_only => info!("Backend: CPU (forced)"),
+        ActiveBackend::Cpu => info!("Backend: CPU"),
+        #[cfg(feature = "cuda")]
+        ActiveBackend::Cuda(_) => info!("Backend: CUDA"),
+        #[cfg(feature = "metal")]
+        ActiveBackend::Metal(_) => info!("Backend: Metal"),
+        #[cfg(feature = "vulkan")]
+        ActiveBackend::Vulkan(_) => info!("Backend: Vulkan"),
+    }
 }
 
 #[cfg(feature = "cuda")]
@@ -3209,7 +3564,12 @@ mod mcap_output_config_tests {
     }
 }
 
-#[cfg(any(feature = "mt_pubsub", feature = "ros2-client", feature = "r2r"))]
+#[cfg(any(
+    feature = "mt_pubsub",
+    feature = "ros2-client",
+    feature = "r2r",
+    feature = "hiroz"
+))]
 fn set_backend_from_runtime(
     shared_stats: &SharedStats,
     config: &LioConfig,
@@ -3523,6 +3883,11 @@ fn main() -> Result<(), Box<dyn CoreError>> {
                     node_name: config_args.node_name.clone(),
                     namespace: config_args.namespace.clone(),
                 };
+                #[cfg(feature = "hiroz")]
+                let lio_hiroz_node_args = HirozNodeArgs {
+                    mode: config_args.hiroz_mode.clone(),
+                    endpoints: config_args.hiroz_endpoint.clone(),
+                };
 
                 let lio_shutdown_flag = Arc::new(AtomicBool::new(false));
                 let lio_shutdown_flag_for_thread = lio_shutdown_flag.clone();
@@ -3537,6 +3902,8 @@ fn main() -> Result<(), Box<dyn CoreError>> {
                         lio_sync,
                         #[cfg(feature = "r2r")]
                         lio_ros_node_args,
+                        #[cfg(feature = "hiroz")]
+                        lio_hiroz_node_args,
                         lio_stats,
                         Some(lio_shutdown_flag_for_thread),
                         None,
@@ -3593,6 +3960,11 @@ fn main() -> Result<(), Box<dyn CoreError>> {
                     RosNodeArgs {
                         node_name: config_args.node_name,
                         namespace: config_args.namespace,
+                    },
+                    #[cfg(feature = "hiroz")]
+                    HirozNodeArgs {
+                        mode: config_args.hiroz_mode,
+                        endpoints: config_args.hiroz_endpoint,
                     },
                     Some(lio_shutdown_flag),
                     config_args.local_only,
@@ -3970,6 +4342,11 @@ pf! i 1
                             RosNodeArgs {
                                 node_name: "pelorus".to_string(),
                                 namespace: "pelorus".to_string(),
+                            },
+                            #[cfg(feature = "hiroz")]
+                            HirozNodeArgs {
+                                mode: "peer".to_string(),
+                                endpoints: Vec::new(),
                             },
                             Some(shared_stats_for_lio),
                             Some(lio_shutdown_flag_for_thread),

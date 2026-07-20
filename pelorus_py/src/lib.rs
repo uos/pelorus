@@ -229,6 +229,8 @@ fn processing_thread_main(thread: ProcessingThread) {
                         twist_covariance: twist_cov,
                         cloud: Vec::new(),
                         frame_id: String::new(),
+                        #[cfg(feature = "processing-time-export")]
+                        processing_time_ns: 0,
                     };
 
                     dispatch_output(

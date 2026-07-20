@@ -1,5 +1,7 @@
 #[cfg(feature = "ros2-client")]
 pub mod tf;
+#[cfg(feature = "hiroz")]
+pub mod tf_hiroz;
 #[cfg(feature = "mt_pubsub")]
 pub mod tf_lh;
 #[cfg(feature = "r2r")]
@@ -13,15 +15,44 @@ use pelorus_core::{
     ImuMsg, ImuPredictor, ImuPredictorUndistort, LidarVendor, LifisNodeParameters, LifisParameters,
     PointXYZIT, timing::RuntimeEvaluator,
 };
-#[cfg(any(feature = "ros2-client", feature = "mt_pubsub", feature = "r2r"))]
+#[cfg(any(
+    feature = "ros2-client",
+    feature = "mt_pubsub",
+    feature = "r2r",
+    feature = "hiroz"
+))]
 use pelorus_core::{OdomMsg, PrelioProcessedCloud};
 pub use prelio;
 
-#[cfg(any(feature = "ros2-client", feature = "mt_pubsub", feature = "r2r"))]
+#[cfg(any(
+    feature = "ros2-client",
+    feature = "mt_pubsub",
+    feature = "r2r",
+    feature = "hiroz"
+))]
 use anyhow::anyhow;
-#[cfg(any(feature = "ros2-client", feature = "mt_pubsub", feature = "r2r"))]
+#[cfg(any(
+    feature = "ros2-client",
+    feature = "mt_pubsub",
+    feature = "r2r",
+    feature = "hiroz"
+))]
 use prelio::timestamp_to_secs;
 
+#[cfg(feature = "hiroz")]
+use hiroz::Builder;
+#[cfg(feature = "hiroz")]
+use hiroz::node::ZNode;
+#[cfg(feature = "hiroz")]
+use hiroz_msgs::{
+    builtin_interfaces::Time,
+    geometry_msgs::{
+        Point, Pose, PoseWithCovariance, Quaternion, Twist, TwistWithCovariance, Vector3,
+    },
+    nav_msgs::Odometry,
+    sensor_msgs::{Imu, PointCloud2},
+    std_msgs::Header,
+};
 #[cfg(feature = "mt_pubsub")]
 use mt_pubsub::Node;
 #[cfg(feature = "r2r")]
@@ -62,6 +93,8 @@ use ros2_interfaces_jazzy_serde::{
     std_msgs::msg::Header,
 };
 use std::sync::{Arc, Mutex};
+#[cfg(feature = "hiroz")]
+use zenoh_buffers::buffer::Buffer;
 
 #[cfg(feature = "ros2-client")]
 impl_pointcloud2_for_ros2_interfaces_jazzy_serde!();
@@ -69,8 +102,15 @@ impl_pointcloud2_for_ros2_interfaces_jazzy_serde!();
 impl_pointcloud2_for_ros2_interfaces_jazzy_rkyv!();
 #[cfg(feature = "r2r")]
 impl_pointcloud2_for_r2r!();
+#[cfg(feature = "hiroz")]
+impl_pointcloud2_for_hiroz!();
 
-#[cfg(any(feature = "ros2-client", feature = "mt_pubsub", feature = "r2r"))]
+#[cfg(any(
+    feature = "ros2-client",
+    feature = "mt_pubsub",
+    feature = "r2r",
+    feature = "hiroz"
+))]
 const N_NTH_SCAN: usize = 1; // TODO to config
 #[cfg(feature = "rat")]
 const MINOT_IMU_INIT_TICK: &str = "imu_init_tick";
@@ -92,7 +132,12 @@ pub struct State {
 
     pub lifis: Arc<Mutex<prelio::Prelio>>,
     pub lifis_params: LifisParameters,
-    #[cfg(any(feature = "ros2-client", feature = "mt_pubsub", feature = "r2r"))]
+    #[cfg(any(
+        feature = "ros2-client",
+        feature = "mt_pubsub",
+        feature = "r2r",
+        feature = "hiroz"
+    ))]
     take_nth_scan: usize,
     pub lidar_vendor: LidarVendor,
     #[cfg(feature = "rerun")]
@@ -128,7 +173,12 @@ impl State {
                 signal_paced,
             )?)),
             lifis_params: config.clone(),
-            #[cfg(any(feature = "ros2-client", feature = "mt_pubsub", feature = "r2r"))]
+            #[cfg(any(
+                feature = "ros2-client",
+                feature = "mt_pubsub",
+                feature = "r2r",
+                feature = "hiroz"
+            ))]
             take_nth_scan: N_NTH_SCAN,
             lidar_vendor: config.lidar_vendor,
             last_lidar_time: None,
@@ -136,17 +186,25 @@ impl State {
     }
 }
 
-#[cfg(any(feature = "ros2-client", feature = "mt_pubsub", feature = "r2r"))]
+#[cfg(any(
+    feature = "ros2-client",
+    feature = "mt_pubsub",
+    feature = "r2r",
+    feature = "hiroz"
+))]
 fn cloud_callback(
     state: Arc<Mutex<State>>,
     #[cfg(feature = "ros2-client")] tf_listener: Arc<tf::TfListener>,
     #[cfg(feature = "r2r")] tf_listener: Arc<tf_r2r::TfListener>,
     #[cfg(feature = "mt_pubsub")] tf_listener: Arc<tf_lh::TfListener>,
+    #[cfg(feature = "hiroz")] tf_listener: Arc<tf_hiroz::TfListener>,
     #[cfg(feature = "ros2-client")] msg: PointCloud2,
     #[cfg(feature = "mt_pubsub")] msg: PointCloud2,
     #[cfg(feature = "r2r")] msg: r2r::sensor_msgs::msg::PointCloud2,
+    #[cfg(feature = "hiroz")] msg: PointCloud2,
     first_imu_tf: Option<String>,
 ) -> anyhow::Result<()> {
+    let callback_started = std::time::Instant::now();
     let orig_header = msg.header.clone();
     #[cfg(feature = "ros2-client")]
     let in_msg = impl_ros2_interfaces_jazzy_serde::to_pointcloud2_msg(msg);
@@ -154,6 +212,8 @@ fn cloud_callback(
     let in_msg = impl_ros2_interfaces_jazzy_rkyv::to_pointcloud2_msg(msg);
     #[cfg(feature = "r2r")]
     let in_msg = impl_r2r::to_pointcloud2_msg(msg);
+    #[cfg(feature = "hiroz")]
+    let in_msg = impl_hiroz::to_pointcloud2_msg(msg);
 
     let in_stamp = orig_header.stamp;
     let points_n = (in_msg.dimensions.width * in_msg.dimensions.height) as usize;
@@ -359,7 +419,7 @@ fn cloud_callback(
     {
         let lifis = state.lock().unwrap().lifis.clone();
         let mut lifis = lifis.lock().unwrap();
-        lifis.add_pointcloud(in_msg);
+        lifis.add_pointcloud_with_received_at(in_msg, callback_started);
     }
 
     Ok(())
@@ -373,6 +433,8 @@ pub struct PrelioNode {
     pub tf_listener: Arc<tf_lh::TfListener>,
     #[cfg(feature = "r2r")]
     pub tf_listener: Arc<tf_r2r::TfListener>,
+    #[cfg(feature = "hiroz")]
+    pub tf_listener: Arc<tf_hiroz::TfListener>,
     pub logger: String,
 }
 
@@ -418,15 +480,59 @@ pub fn qos_to_ros2(value: pelorus_core::Qos) -> ros2::QosPolicies {
     }
 }
 
+#[cfg(feature = "hiroz")]
+pub fn qos_to_hiroz(value: pelorus_core::Qos) -> hiroz::qos::QosProfile {
+    use std::num::NonZeroUsize;
+
+    use hiroz::qos::{QosDurability, QosHistory, QosProfile, QosReliability};
+
+    let (reliability, depth) = match value {
+        pelorus_core::Qos::Sensor(pelorus_core::Reliability::Reliable) => {
+            (QosReliability::Reliable, 5)
+        }
+        pelorus_core::Qos::Sensor(pelorus_core::Reliability::BestEffort) => {
+            (QosReliability::BestEffort, 5)
+        }
+        pelorus_core::Qos::SystemDefault => (QosReliability::Reliable, 1),
+    };
+
+    QosProfile {
+        reliability,
+        durability: QosDurability::Volatile,
+        history: QosHistory::KeepLast(NonZeroUsize::new(depth).expect("depth is non-zero")),
+        ..Default::default()
+    }
+}
+
+#[cfg(feature = "hiroz")]
+pub fn qos_to_hiroz_static() -> hiroz::qos::QosProfile {
+    use std::num::NonZeroUsize;
+
+    use hiroz::qos::{QosDurability, QosHistory, QosProfile, QosReliability};
+
+    QosProfile {
+        reliability: QosReliability::Reliable,
+        durability: QosDurability::TransientLocal,
+        history: QosHistory::KeepLast(NonZeroUsize::new(1).expect("depth is non-zero")),
+        ..Default::default()
+    }
+}
+
 #[derive(Debug)]
 pub struct Tick {
     pub scan_id: u64,
+    pub received_at: std::time::Instant,
     pub deskewed_cloud: Vec<PointXYZIT>,
     pub deskewed_cloud_passthrough: Option<Vec<PointXYZIT>>,
     pub map_only: bool,
     pub cloud_header: HeaderMsg,
     pub odom_time: TimeMsg,
-    #[cfg(any(feature = "ros2-client", feature = "mt_pubsub", feature = "r2r"))]
+    #[cfg(any(
+        feature = "ros2-client",
+        feature = "mt_pubsub",
+        feature = "r2r",
+        feature = "hiroz"
+    ))]
     pub imu_odom: Odometry,
     pub runtime_eval: RuntimeEvaluator,
 }
@@ -460,7 +566,8 @@ impl PrelioNode {
         #[cfg(feature = "ros2-client")] node: &mut ros2_client::Node,
         #[cfg(feature = "r2r")] node: &mut r2r::Node,
         #[cfg(feature = "mt_pubsub")] node: &Node,
-        #[cfg(feature = "mt_pubsub")] rt: Arc<tokio::runtime::Runtime>,
+        #[cfg(feature = "hiroz")] node: &ZNode,
+        #[cfg(any(feature = "mt_pubsub", feature = "hiroz"))] rt: Arc<tokio::runtime::Runtime>,
         params: &LifisParameters,
         #[allow(unused_variables)] node_params: &LifisNodeParameters,
         #[allow(unused_variables)] imu_pose_predictor_init: Option<
@@ -471,7 +578,12 @@ impl PrelioNode {
         #[cfg(feature = "rerun")] rec: Option<Arc<rerun::RecordingStream>>,
         ready_for_next: Option<std::sync::mpsc::Receiver<()>>,
         #[cfg_attr(
-            not(any(feature = "ros2-client", feature = "mt_pubsub", feature = "r2r")),
+            not(any(
+                feature = "ros2-client",
+                feature = "mt_pubsub",
+                feature = "r2r",
+                feature = "hiroz"
+            )),
             allow(unused_variables)
         )]
         filtered_imu_sender: Option<std::sync::mpsc::Sender<ImuMsg>>,
@@ -486,6 +598,12 @@ impl PrelioNode {
         #[cfg(feature = "mt_pubsub")]
         let tf_listener = Arc::new(tf_lh::TfListener::new(node, rt.clone()));
 
+        #[cfg(feature = "hiroz")]
+        let tf_listener = Arc::new(
+            tf_hiroz::TfListener::new(node)
+                .map_err(|e| anyhow!("Failed to create Hiroz TF listener: {e}"))?,
+        );
+
         #[cfg(feature = "rat")]
         let synchronous_mode = node_params.synchronous_mode;
 
@@ -499,23 +617,43 @@ impl PrelioNode {
             signal_paced,
         )?;
 
-        #[cfg(any(feature = "ros2-client", feature = "mt_pubsub", feature = "r2r"))]
+        #[cfg(any(
+            feature = "ros2-client",
+            feature = "mt_pubsub",
+            feature = "r2r",
+            feature = "hiroz"
+        ))]
         let chan = {
             let mut lifis = state.lifis.lock().unwrap();
             lifis.get_chan().unwrap()
         };
 
         let (tx, rx) = std::sync::mpsc::channel();
-        #[cfg(not(any(feature = "ros2-client", feature = "mt_pubsub", feature = "r2r")))]
+        #[cfg(not(any(
+            feature = "ros2-client",
+            feature = "mt_pubsub",
+            feature = "r2r",
+            feature = "hiroz"
+        )))]
         let _ = tx;
 
-        #[cfg(any(feature = "ros2-client", feature = "mt_pubsub", feature = "r2r"))]
+        #[cfg(any(
+            feature = "ros2-client",
+            feature = "mt_pubsub",
+            feature = "r2r",
+            feature = "hiroz"
+        ))]
         std::thread::spawn(move || {
             Self::transform_types(tx, chan);
         });
 
         // first option None = override not set.
-        #[cfg(any(feature = "ros2-client", feature = "mt_pubsub", feature = "r2r"))]
+        #[cfg(any(
+            feature = "ros2-client",
+            feature = "mt_pubsub",
+            feature = "r2r",
+            feature = "hiroz"
+        ))]
         let imu_tf_frame: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
 
         #[cfg(feature = "ros2-client")]
@@ -553,6 +691,18 @@ impl PrelioNode {
             .unwrap()
         });
 
+        #[cfg(feature = "hiroz")]
+        let cloud_subscriber = {
+            debug!(
+                "Creating Hiroz cloud subscriber: topic={}, qos={:?}",
+                node_params.cloud_src_topic, node_params.cloud_qos
+            );
+            node.create_sub::<PointCloud2>(&node_params.cloud_src_topic)
+                .with_qos(qos_to_hiroz(node_params.cloud_qos))
+                .build()
+                .map_err(|e| anyhow!("Failed to create Hiroz cloud subscriber: {e}"))?
+        };
+
         #[cfg(feature = "r2r")]
         let wheel_subscriber =
             node.subscribe::<Odometry>(&node_params.wheel_src_topic, node_params.wheel_qos.into())?;
@@ -568,12 +718,29 @@ impl PrelioNode {
             .unwrap()
         });
 
+        #[cfg(feature = "hiroz")]
+        let wheel_subscriber = {
+            debug!(
+                "Creating Hiroz wheel odom subscriber: topic={}, qos={:?}",
+                node_params.wheel_src_topic, node_params.wheel_qos
+            );
+            node.create_sub::<Odometry>(&node_params.wheel_src_topic)
+                .with_qos(qos_to_hiroz(node_params.wheel_qos))
+                .build()
+                .map_err(|e| anyhow!("Failed to create Hiroz wheel subscriber: {e}"))?
+        };
+
         // Share with cloud callback, TODO maybe the only one who needs it, so remove mutex and arc?
         let state = Arc::new(std::sync::Mutex::new(state));
 
         #[cfg(all(
             not(feature = "no-imu-sync"),
-            any(feature = "ros2-client", feature = "mt_pubsub", feature = "r2r")
+            any(
+                feature = "ros2-client",
+                feature = "mt_pubsub",
+                feature = "r2r",
+                feature = "hiroz"
+            )
         ))]
         struct ImuInitState {
             start_time: Option<f64>,
@@ -581,23 +748,38 @@ impl PrelioNode {
         }
         #[cfg(all(
             not(feature = "no-imu-sync"),
-            any(feature = "ros2-client", feature = "mt_pubsub", feature = "r2r")
+            any(
+                feature = "ros2-client",
+                feature = "mt_pubsub",
+                feature = "r2r",
+                feature = "hiroz"
+            )
         ))]
         let imu_init_state = Arc::new(Mutex::new(ImuInitState {
             start_time: None,
             buffer: Some(Vec::new()),
         }));
 
-        #[cfg(any(feature = "ros2-client", feature = "mt_pubsub", feature = "r2r"))]
+        #[cfg(any(
+            feature = "ros2-client",
+            feature = "mt_pubsub",
+            feature = "r2r",
+            feature = "hiroz"
+        ))]
         let tf_listener_clone = tf_listener.clone();
-        #[cfg(any(feature = "ros2-client", feature = "mt_pubsub", feature = "r2r"))]
-        #[cfg(any(feature = "ros2-client", feature = "mt_pubsub", feature = "r2r"))]
-        #[cfg(any(feature = "ros2-client", feature = "mt_pubsub", feature = "r2r"))]
-        #[cfg(any(feature = "ros2-client", feature = "mt_pubsub", feature = "r2r"))]
+        #[cfg(any(
+            feature = "ros2-client",
+            feature = "mt_pubsub",
+            feature = "r2r",
+            feature = "hiroz"
+        ))]
         let state_clone = state.clone();
-        #[cfg(any(feature = "ros2-client", feature = "mt_pubsub", feature = "r2r"))]
-        #[cfg(any(feature = "ros2-client", feature = "mt_pubsub", feature = "r2r"))]
-        #[cfg(any(feature = "ros2-client", feature = "mt_pubsub", feature = "r2r"))]
+        #[cfg(any(
+            feature = "ros2-client",
+            feature = "mt_pubsub",
+            feature = "r2r",
+            feature = "hiroz"
+        ))]
         let imu_tf_frame_lidar_inner = Arc::clone(&imu_tf_frame);
         // #[cfg(all(not(feature = "no-imu-sync"), feature = "mt_pubsub"))]
         // let lidar_imu_init_buffer = imu_init_buffer.clone();
@@ -724,6 +906,31 @@ impl PrelioNode {
                 })
             });
         }
+        #[cfg(feature = "hiroz")]
+        {
+            let wheel_sub_rt = Arc::clone(&rt);
+            let state_wheel = state.clone();
+            let ext = nalgebra::Isometry3::from_parts(
+                nalgebra::Translation3::new(0.0, 0.0, 0.0),
+                nalgebra::UnitQuaternion::from_matrix(&params.wheel_to_imu_rotation),
+            );
+            wheel_sub_rt.spawn(async move {
+                let mut received_first = false;
+                while let Ok(msg) = wheel_subscriber.async_recv().await {
+                    if !received_first {
+                        received_first = true;
+                        info!(
+                            "Received first Hiroz wheel odom message: frame={}, stamp={}.{}",
+                            msg.header.frame_id, msg.header.stamp.sec, msg.header.stamp.nanosec
+                        );
+                    }
+                    let mut odom_msg = odom_to_lifis(msg);
+                    odom_msg.twist_linear = ext.transform_vector(&odom_msg.twist_linear);
+                    let state_lock = state_wheel.lock().unwrap();
+                    state_lock.lifis.lock().unwrap().add_odom(odom_msg);
+                }
+            });
+        }
         // let state_clone = state.clone();
 
         #[cfg(feature = "mt_pubsub")]
@@ -758,7 +965,47 @@ impl PrelioNode {
                 })
             });
         }
-        #[cfg(any(feature = "ros2-client", feature = "mt_pubsub", feature = "r2r"))]
+        #[cfg(feature = "hiroz")]
+        {
+            let cloud_sub_rt = Arc::clone(&rt);
+            cloud_sub_rt.spawn(async move {
+                let mut received_first = false;
+                while let Ok(msg) = cloud_subscriber.async_recv().await {
+                    if !received_first {
+                        received_first = true;
+                        info!(
+                            "Received first Hiroz cloud message: frame={}, stamp={}.{}, size={}x{}, data_bytes={}",
+                            msg.header.frame_id,
+                            msg.header.stamp.sec,
+                            msg.header.stamp.nanosec,
+                            msg.width,
+                            msg.height,
+                            msg.data.len()
+                        );
+                    }
+                    let imu_tf_frame_lidar_inner =
+                        imu_tf_frame_lidar_inner.clone().lock().unwrap().clone();
+
+                    match cloud_callback(
+                        state_clone.clone(),
+                        tf_listener_clone.clone(),
+                        msg,
+                        imu_tf_frame_lidar_inner,
+                    ) {
+                        Ok(_) => {}
+                        Err(e) => {
+                            error!("{:?}", e);
+                        }
+                    }
+                }
+            });
+        }
+        #[cfg(any(
+            feature = "ros2-client",
+            feature = "mt_pubsub",
+            feature = "r2r",
+            feature = "hiroz"
+        ))]
         let state_clone = state.clone();
         #[cfg(feature = "ros2-client")]
         let imu_subscription = node
@@ -783,6 +1030,18 @@ impl PrelioNode {
         #[cfg(all(feature = "r2r", not(feature = "no-imu-sync")))]
         let mut imu_subscription =
             node.subscribe::<Imu>(&node_params.imu_src_topic, node_params.imu_qos.into())?;
+
+        #[cfg(feature = "hiroz")]
+        let imu_subscription = {
+            debug!(
+                "Creating Hiroz IMU subscriber: topic={}, qos={:?}",
+                node_params.imu_src_topic, node_params.imu_qos
+            );
+            node.create_sub::<Imu>(&node_params.imu_src_topic)
+                .with_qos(qos_to_hiroz(node_params.imu_qos))
+                .build()
+                .map_err(|e| anyhow!("Failed to create Hiroz IMU subscriber: {e}"))?
+        };
 
         // do not publish filtered imu if no topic is provided
         #[cfg(feature = "ros2-client")]
@@ -818,10 +1077,31 @@ impl PrelioNode {
                 node_params.imu_filtered_qos.into(),
             )?)))
         };
+        #[cfg(feature = "hiroz")]
+        let imu_filtered_publisher = if node_params.imu_filtered_topic == "" {
+            None
+        } else {
+            Some(Arc::new(
+                node.create_pub::<Imu>(&node_params.imu_filtered_topic)
+                    .with_qos(qos_to_hiroz(node_params.imu_filtered_qos))
+                    .build()
+                    .map_err(|e| anyhow!("Failed to create Hiroz filtered IMU publisher: {e}"))?,
+            ))
+        };
 
-        #[cfg(any(feature = "ros2-client", feature = "mt_pubsub", feature = "r2r"))]
+        #[cfg(any(
+            feature = "ros2-client",
+            feature = "mt_pubsub",
+            feature = "r2r",
+            feature = "hiroz"
+        ))]
         let imu_tf_frame_lidar_inner = Arc::clone(&imu_tf_frame);
-        #[cfg(any(feature = "ros2-client", feature = "mt_pubsub", feature = "r2r"))]
+        #[cfg(any(
+            feature = "ros2-client",
+            feature = "mt_pubsub",
+            feature = "r2r",
+            feature = "hiroz"
+        ))]
         let init_imu_time = node_params.imu_predictor_init_time_sec;
         #[cfg(feature = "ros2-client")]
         std::thread::spawn(move || {
@@ -1076,10 +1356,97 @@ impl PrelioNode {
             }
         });
 
+        #[cfg(feature = "hiroz")]
+        {
+            let filtered_imu_sender_hiroz = filtered_imu_sender.clone();
+            let imu_sub_rt = Arc::clone(&rt);
+            let imu_imu_init_state = imu_init_state.clone();
+            imu_sub_rt.spawn(async move {
+                let imu_pose_predictor_init = imu_pose_predictor_init.clone();
+                let mut received_first = false;
+                while let Ok(msg) = imu_subscription.async_recv().await {
+                    if !received_first {
+                        received_first = true;
+                        info!(
+                            "Received first Hiroz IMU message: frame={}, stamp={}.{}",
+                            msg.header.frame_id, msg.header.stamp.sec, msg.header.stamp.nanosec
+                        );
+                    }
+                    let lifis = {
+                        let state = state_clone.lock().unwrap();
+                        imu_tf_frame_lidar_inner
+                            .clone()
+                            .lock()
+                            .unwrap()
+                            .get_or_insert(msg.header.frame_id.clone());
+                        state.lifis.clone()
+                    };
+                    let imu_init_state = imu_imu_init_state.clone();
+
+                    let imu_lifis = imu_to_lifis(msg.clone());
+                    let curr_stamp = timestamp_to_secs(&imu_lifis.stamp);
+                    #[cfg(feature = "rat")]
+                    let mut minot_bootstrap_trigger: Option<&'static str> = None;
+
+                    if let Some(imu_pose_predictor_init) = imu_pose_predictor_init.as_ref() {
+                        let mut imu_pose_predictor_init = imu_pose_predictor_init.lock().unwrap();
+                        let mut init_state = imu_init_state.lock().unwrap();
+
+                        if init_state.start_time.is_none() {
+                            init_state.start_time = Some(curr_stamp);
+                        }
+
+                        if let Some(init_time) = init_state.start_time {
+                            let delta = curr_stamp - init_time;
+                            if delta < init_imu_time {
+                                if let Some(ref mut buffer) = init_state.buffer {
+                                    buffer.push(imu_lifis.clone());
+
+                                    #[cfg(feature = "rat")]
+                                    {
+                                        minot_bootstrap_trigger = Some(MINOT_IMU_INIT_TICK);
+                                    }
+                                }
+                            } else if let Some(buffer) = init_state.buffer.take() {
+                                imu_pose_predictor_init(&buffer);
+                                info!("EKF: Imu initialized");
+                                #[cfg(feature = "rat")]
+                                {
+                                    minot_bootstrap_trigger = Some(MINOT_LIO_START_TICK);
+                                }
+                            }
+                        }
+                    }
+
+                    let filtered = lifis.lock().unwrap().add_imu(imu_lifis);
+                    #[cfg(feature = "rat")]
+                    if let Some(trigger) = minot_bootstrap_trigger {
+                        publish_minot_trigger(synchronous_mode, trigger);
+                    }
+                    if let Some(filtered) = filtered {
+                        if let Some(sender) = filtered_imu_sender_hiroz.as_ref() {
+                            let _ = sender.send(filtered.clone());
+                        }
+                        if let Some(imu_filtered_publisher) = imu_filtered_publisher.as_ref() {
+                            imu_filtered_publisher
+                                .async_publish(&lifis_to_imu(filtered))
+                                .await
+                                .expect("could not publish filtered imu");
+                        }
+                    }
+                }
+            });
+        }
+
         Ok((
             Self {
                 state,
-                #[cfg(any(feature = "ros2-client", feature = "mt_pubsub", feature = "r2r"))]
+                #[cfg(any(
+                    feature = "ros2-client",
+                    feature = "mt_pubsub",
+                    feature = "r2r",
+                    feature = "hiroz"
+                ))]
                 tf_listener,
                 logger: "".to_string(), // TODO rm logger prefix
             },
@@ -1096,7 +1463,12 @@ impl PrelioNode {
     }
 
     /// Translates ROS types to Prelio Types
-    #[cfg(any(feature = "ros2-client", feature = "mt_pubsub", feature = "r2r"))]
+    #[cfg(any(
+        feature = "ros2-client",
+        feature = "mt_pubsub",
+        feature = "r2r",
+        feature = "hiroz"
+    ))]
     pub fn transform_types(
         sender: std::sync::mpsc::Sender<Tick>,
         receiver: std::sync::mpsc::Receiver<PrelioProcessedCloud>,
@@ -1156,6 +1528,7 @@ impl PrelioNode {
 
             let res = Tick {
                 scan_id: synced_data.scan_id,
+                received_at: synced_data.received_at,
                 map_only: synced_data.should_map_only,
                 deskewed_cloud: synced_data.cloud,
                 deskewed_cloud_passthrough: synced_data.passthrough,
@@ -1180,7 +1553,12 @@ impl Drop for PrelioNode {
 }
 
 // only used with r2r
-#[cfg(any(feature = "ros2-client", feature = "mt_pubsub", feature = "r2r"))]
+#[cfg(any(
+    feature = "ros2-client",
+    feature = "mt_pubsub",
+    feature = "r2r",
+    feature = "hiroz"
+))]
 #[allow(dead_code)]
 fn odom_to_lifis(msg: Odometry) -> OdomMsg {
     let odom_msg = OdomMsg {
@@ -1240,7 +1618,12 @@ fn odom_to_lifis(msg: Odometry) -> OdomMsg {
     odom_msg
 }
 
-#[cfg(any(feature = "ros2-client", feature = "mt_pubsub", feature = "r2r"))]
+#[cfg(any(
+    feature = "ros2-client",
+    feature = "mt_pubsub",
+    feature = "r2r",
+    feature = "hiroz"
+))]
 fn imu_to_lifis(msg: Imu) -> ImuMsg {
     ImuMsg {
         stamp: ros_pointcloud2::ros::TimeMsg {
@@ -1300,7 +1683,12 @@ fn imu_to_lifis(msg: Imu) -> ImuMsg {
     }
 }
 
-#[cfg(any(feature = "ros2-client", feature = "mt_pubsub", feature = "r2r"))]
+#[cfg(any(
+    feature = "ros2-client",
+    feature = "mt_pubsub",
+    feature = "r2r",
+    feature = "hiroz"
+))]
 #[allow(dead_code)] // only used with ROS
 fn lifis_to_imu(msg: ImuMsg) -> Imu {
     Imu {
@@ -1317,7 +1705,7 @@ fn lifis_to_imu(msg: ImuMsg) -> Imu {
             z: msg.orientation[3],
             w: msg.orientation[0],
         },
-        #[cfg(feature = "ros2-client")]
+        #[cfg(any(feature = "ros2-client", feature = "hiroz"))]
         orientation_covariance: [
             msg.orientation_covariance[0],
             msg.orientation_covariance[1],
@@ -1359,7 +1747,7 @@ fn lifis_to_imu(msg: ImuMsg) -> Imu {
             y: msg.angular_velocity[1],
             z: msg.angular_velocity[2],
         },
-        #[cfg(feature = "ros2-client")]
+        #[cfg(any(feature = "ros2-client", feature = "hiroz"))]
         angular_velocity_covariance: [
             msg.angular_velocity_covariance[0],
             msg.angular_velocity_covariance[1],
@@ -1401,7 +1789,7 @@ fn lifis_to_imu(msg: ImuMsg) -> Imu {
             y: msg.linear_acceleration[1],
             z: msg.linear_acceleration[2],
         },
-        #[cfg(feature = "ros2-client")]
+        #[cfg(any(feature = "ros2-client", feature = "hiroz"))]
         linear_acceleration_covariance: [
             msg.linear_acceleration_covariance[0],
             msg.linear_acceleration_covariance[1],

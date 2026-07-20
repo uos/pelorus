@@ -134,6 +134,11 @@ pub fn get_log_buffer() -> Arc<Mutex<LogBuffer>> {
 /// Custom logger that captures to TUI buffer and also prints to console
 pub struct TuiLogger;
 
+fn is_noisy_hiroz_info(message: &str) -> bool {
+    message.starts_with("pub_build;")
+        || message.starts_with("[SRV] Declaring queryable on key expression:")
+}
+
 impl log::Log for TuiLogger {
     fn enabled(&self, metadata: &log::Metadata) -> bool {
         // Use the max level set by init_logger
@@ -146,6 +151,10 @@ impl log::Log for TuiLogger {
         }
 
         let message = format!("{}", record.args());
+        if record.level() == log::Level::Info && is_noisy_hiroz_info(&message) {
+            return;
+        }
+
         let level = LogLevel::from(record.level());
         let target = record.target().to_string();
 

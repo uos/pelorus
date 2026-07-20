@@ -35,6 +35,9 @@ mimalloc = { workspace = true, optional = true }
 clap.workspace = true
 r2r = { workspace = true, optional = true }
 mt_pubsub = { workspace = true, optional = true }
+hiroz = { workspace = true, optional = true }
+hiroz-msgs = { workspace = true, optional = true }
+hiroz-protocol = { workspace = true, optional = true }
 ros2-interfaces-jazzy-rkyv = { workspace = true, optional = true }
 tokio = { workspace = true, optional = true }
 mt_rat = { workspace = true, optional = true }
@@ -91,6 +94,15 @@ mt_pubsub = [
   "prelio_io/mt_pubsub",
 ]
 
+# Pure Rust ROS 2-compatible communication over Zenoh via Hiroz.
+hiroz = [
+  "dep:hiroz",
+  "dep:hiroz-msgs",
+  "dep:hiroz-protocol",
+  "dep:tokio",
+  "prelio_io/hiroz",
+]
+
 # -#-#-#-#-#- Performance and Methods -#-#-#-#-#-
 
 # The input scan is reduced for faster registration (resolution affects accuracy)
@@ -136,7 +148,10 @@ processing-time-export = ["pelorus_reg/processing-time-export"]
 # Use much larger bounded queues between input, preprocessing, synchronization,
 # and registration stages. Intended for stress tests or intentionally buffered
 # offline runs; default capacities are much smaller.
-large-processing-queue = ["prelio_io/large-processing-queue", "prelio/large-processing-queue"]
+large-processing-queue = [
+  "prelio_io/large-processing-queue",
+  "prelio/large-processing-queue",
+]
 
 # -#-#-#-#-#- Visualizations -#-#-#-#-#-
 
@@ -160,10 +175,7 @@ dev = ["offline", "rerun", "map"]
 rat = ["dep:marina", "dep:mt_rat", "dep:tokio", "prelio_io/rat"]
 
 # Use native ROS2 as pub/sub system
-ros2-client = [
-  "dep:ros2-client",
-  "prelio_io/ros2-client",
-]
+ros2-client = ["dep:ros2-client", "prelio_io/ros2-client"]
 
 # Use rclc bindings as pub/sub system
 r2r = ["dep:r2r", "prelio_io/r2r"]
@@ -176,27 +188,29 @@ ratslang.workspace = true
 
 [package.metadata.deb]
 name = "pelorus"
-depends = "minot (>= 0.8.0), minot (<< 0.9.0~)"
+depends = "minot (>= 0.9.0), minot (<< 0.10.0~)"
 section = "science"
 priority = "optional"
 assets = [["target/release/pelorus", "usr/bin/pelorus", "755"]]
 
 [package.metadata.generate-rpm]
 name = "pelorus"
-assets = [{ source = "target/release/pelorus", dest = "/usr/bin/pelorus", mode = "755" }]
+assets = [
+  { source = "target/release/pelorus", dest = "/usr/bin/pelorus", mode = "755" },
+]
 
 [package.metadata.generate-rpm.requires]
-minot = ">= 0.8.0, < 0.9.0"
+minot = ">= 0.9.0, < 0.10.0"
 
 [package.metadata.multivers.x86_64]
 cpus = [
   "x86-64",
-  "x86-64-v2", # SSE
-  "x86-64-v3", # AVX + a lot more
-  "x86-64-v4", # AVX 512 High End CPUs
-  "raptorlake", # my workstation
+  "x86-64-v2",   # SSE
+  "x86-64-v3",   # AVX + a lot more
+  "x86-64-v4",   # AVX 512 High End CPUs
+  "raptorlake",  # my workstation
   "pantherlake", # newest intel arch
-  "znver5", # newest amd arch
+  "znver5",      # newest amd arch
 ]
 
 [package.metadata.multivers.aarch64]

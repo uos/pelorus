@@ -27,29 +27,24 @@ impl ActiveBackend {
     #[allow(unreachable_code)]
     pub fn detect(config: &LioConfig) -> Self {
         if config.cpu_only {
-            log::info!("Backend: CPU (forced)");
             return Self::Cpu;
         }
 
         #[cfg(all(feature = "metal", target_os = "macos"))]
         {
-            log::info!("Backend: Metal");
             return Self::Metal(pelorus_metal::Stream::new());
         }
 
         #[cfg(feature = "cuda")]
         if pelorus_cuda::is_available() {
-            log::info!("Backend: CUDA");
             return Self::Cuda(pelorus_cuda::Stream::new());
         }
 
         #[cfg(feature = "vulkan")]
         if pelorus_vulkan::is_available() {
-            log::info!("Backend: Vulkan");
             return Self::Vulkan(pelorus_vulkan::Stream::new());
         }
 
-        log::info!("Backend: CPU");
         Self::Cpu
     }
 

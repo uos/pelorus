@@ -33,7 +33,7 @@ pyo3.workspace = true
 numpy.workspace = true
 
 [features]
-default = ["rayon"]
+default = ["processing-time-export", "rayon"]
 rayon = [
     "dep:rayon",
     "prelio/rayon",
@@ -46,3 +46,4 @@ cuda = ["prelio/cuda", "pelorus_reg/cuda"]
 metal = ["prelio/metal", "pelorus_reg/metal"]
 no-imu-sync = ["prelio/no-imu-sync"]
 large-processing-queue = ["prelio/large-processing-queue"]
+processing-time-export = ["pelorus_reg/processing-time-export"]
