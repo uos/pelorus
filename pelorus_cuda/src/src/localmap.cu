@@ -746,13 +746,16 @@ struct CudaMapState {
     int*      table_keys;   // size: table_cap
     uint32_t* table_vals;   // size: table_cap
 
-    // Managed (CPU+GPU shared)
+    // Device buffers. Do not use cudaMallocManaged here: on the Jetson CUDA
+    // driver a host load from a newly allocated managed page can fault even
+    // though cudaMallocManaged reported success. Host observations of these
+    // buffers are made explicitly with cudaMemcpy below.
     GpuVoxelDist* dist_buf;     // size: dist_cap
     int*          dist_keys;    // size: dist_cap
-    uint32_t*     counter;      // managed: atomic planes output counter
-    uint32_t*     d_add_cursor; // managed
-    uint32_t*     d_lru_cursor; // managed
-    uint32_t*     d_num_unique; // managed
+    uint32_t*     counter;
+    uint32_t*     d_add_cursor;
+    uint32_t*     d_lru_cursor;
+    uint32_t*     d_num_unique;
 
     // Scratch (device memory)
     int*      scratch_keys;
@@ -908,14 +911,13 @@ void init_map_impl(cudaStream_t stream, uint32_t capacity, float voxel_size,
     CUDA_CHECK(cudaMalloc(&s->table_keys, table_cap * sizeof(int)));
     CUDA_CHECK(cudaMalloc(&s->table_vals, table_cap * sizeof(uint32_t)));
 
-    // Managed (CPU+GPU shared) buffers
-    CUDA_CHECK(cudaMallocManaged(&s->dist_buf,     dist_cap * sizeof(GpuVoxelDist)));
-    CUDA_CHECK(cudaMallocManaged(&s->dist_keys,    dist_cap * sizeof(int)));
-    CUDA_CHECK(cudaMallocManaged(&s->counter,      sizeof(uint32_t)));
-    CUDA_CHECK(cudaMallocManaged(&s->d_add_cursor, sizeof(uint32_t)));
-    CUDA_CHECK(cudaMallocManaged(&s->d_lru_cursor, sizeof(uint32_t)));
-    CUDA_CHECK(cudaMallocManaged(&s->d_num_unique, sizeof(uint32_t)));
-    CUDA_CHECK(cudaMallocManaged(&s->d_selected_planes, sizeof(uint32_t)));
+    CUDA_CHECK(cudaMalloc(&s->dist_buf,     dist_cap * sizeof(GpuVoxelDist)));
+    CUDA_CHECK(cudaMalloc(&s->dist_keys,    dist_cap * sizeof(int)));
+    CUDA_CHECK(cudaMalloc(&s->counter,      sizeof(uint32_t)));
+    CUDA_CHECK(cudaMalloc(&s->d_add_cursor, sizeof(uint32_t)));
+    CUDA_CHECK(cudaMalloc(&s->d_lru_cursor, sizeof(uint32_t)));
+    CUDA_CHECK(cudaMalloc(&s->d_num_unique, sizeof(uint32_t)));
+    CUDA_CHECK(cudaMalloc(&s->d_selected_planes, sizeof(uint32_t)));
 
     // LRU buffers
     CUDA_CHECK(cudaMalloc(&s->d_lru_mapping,     dist_cap * sizeof(uint32_t)));
@@ -933,11 +935,11 @@ void init_map_impl(cudaStream_t stream, uint32_t capacity, float voxel_size,
     for (uint32_t i = 0; i < dist_cap; i++) h_lru[i] = i;
     CUDA_CHECK(cudaMemcpyAsync(s->d_lru_mapping, h_lru.data(), dist_cap * sizeof(uint32_t), cudaMemcpyHostToDevice, stream));
 
-    *s->counter      = 0;
-    *s->d_add_cursor = 0;
-    *s->d_lru_cursor = 0;
-    *s->d_num_unique = 0;
-    *s->d_selected_planes = 0;
+    CUDA_CHECK(cudaMemsetAsync(s->counter, 0, sizeof(uint32_t), stream));
+    CUDA_CHECK(cudaMemsetAsync(s->d_add_cursor, 0, sizeof(uint32_t), stream));
+    CUDA_CHECK(cudaMemsetAsync(s->d_lru_cursor, 0, sizeof(uint32_t), stream));
+    CUDA_CHECK(cudaMemsetAsync(s->d_num_unique, 0, sizeof(uint32_t), stream));
+    CUDA_CHECK(cudaMemsetAsync(s->d_selected_planes, 0, sizeof(uint32_t), stream));
 
     // Scratch buffers (minimum size; will grow on first add_to_map_impl)
     alloc_scratch(s, 1);
@@ -1076,9 +1078,15 @@ void add_to_map_impl(cudaStream_t stream, Point* points, uint32_t n_points, Pose
 
     if (s->trace_map_debug && ((scan_number % 100u) == 0u)) {
         CUDA_CHECK(cudaStreamSynchronize(stream));
+        uint32_t unique = 0;
+        uint32_t add_cursor = 0;
+        uint32_t lru_cursor = 0;
+        CUDA_CHECK(cudaMemcpy(&unique, s->d_num_unique, sizeof(unique), cudaMemcpyDeviceToHost));
+        CUDA_CHECK(cudaMemcpy(&add_cursor, s->d_add_cursor, sizeof(add_cursor), cudaMemcpyDeviceToHost));
+        CUDA_CHECK(cudaMemcpy(&lru_cursor, s->d_lru_cursor, sizeof(lru_cursor), cudaMemcpyDeviceToHost));
         fprintf(stderr,
                 "[CUDA-MAP] scan=%u points=%u unique=%u add_cursor=%u lru_cursor=%u\n",
-                scan_number, n_points, *s->d_num_unique, *s->d_add_cursor, *s->d_lru_cursor);
+                scan_number, n_points, unique, add_cursor, lru_cursor);
     }
 }
 
@@ -1132,7 +1140,9 @@ uint32_t planes_impl(cudaStream_t stream, Point* cloud, uint32_t cloud_size,
 
     CUDA_CHECK(cudaStreamSynchronize(stream));
 
-    uint32_t selected = *s->d_selected_planes;
+    uint32_t selected = 0;
+    CUDA_CHECK(cudaMemcpy(&selected, s->d_selected_planes, sizeof(selected),
+                          cudaMemcpyDeviceToHost));
     if (selected > 0) {
         CUDA_CHECK(cudaMemcpyAsync(out_buff, s->scratch_compacted_planes,
                                    selected * sizeof(PointNormal),
@@ -1147,14 +1157,21 @@ void get_map_impl(Point* points, uint32_t* size) {
     if (!g_state) { *size = 0; return; }
     CudaMapState* s = g_state;
 
-    uint32_t add_cursor = *s->d_add_cursor;
+    uint32_t add_cursor = 0;
+    CUDA_CHECK(cudaMemcpy(&add_cursor, s->d_add_cursor, sizeof(add_cursor),
+                          cudaMemcpyDeviceToHost));
     uint32_t valid = (add_cursor < s->dist_cap) ? add_cursor : s->dist_cap;
+    std::vector<GpuVoxelDist> dist_buf(valid);
+    if (valid > 0) {
+        CUDA_CHECK(cudaMemcpy(dist_buf.data(), s->dist_buf,
+                              valid * sizeof(GpuVoxelDist), cudaMemcpyDeviceToHost));
+    }
     uint32_t count = 0;
     for (uint32_t i = 0; i < valid; i++) {
-        if (s->dist_buf[i].point_count > 0) {
-            points[count].x = s->dist_buf[i].mean[0];
-            points[count].y = s->dist_buf[i].mean[1];
-            points[count].z = s->dist_buf[i].mean[2];
+        if (dist_buf[i].point_count > 0) {
+            points[count].x = dist_buf[i].mean[0];
+            points[count].y = dist_buf[i].mean[1];
+            points[count].z = dist_buf[i].mean[2];
             points[count].i = 0.0f;
             points[count].t = 0.0f;
             count++;
@@ -1169,7 +1186,9 @@ uint32_t get_map_capacity_impl() {
 
 uint32_t get_map_size_impl() {
     if (!g_state) return 0;
-    uint32_t add_cursor = *g_state->d_add_cursor;
+    uint32_t add_cursor = 0;
+    CUDA_CHECK(cudaMemcpy(&add_cursor, g_state->d_add_cursor, sizeof(add_cursor),
+                          cudaMemcpyDeviceToHost));
     return (add_cursor < g_state->dist_cap) ? add_cursor : g_state->dist_cap;
 }
 

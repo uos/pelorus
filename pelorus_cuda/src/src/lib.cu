@@ -16,6 +16,42 @@ namespace rm = rmagine;
 
 static_assert(sizeof(Point) % 4 == 0, "Point is not aligned properly");
 
+// CUDA contexts are current per host thread. Streams are shared with the ROS
+// processing workers, so every C ABI entry point that uses a stream must make
+// the stream's owning context current before calling the CUDA runtime. Without
+// this, a worker can pass a valid stream handle to a thread with no current
+// context, which the CUDA runtime may report as an invalid handle or crash.
+class StreamContextGuard {
+public:
+  explicit StreamContextGuard(rm::CudaStream *stream) {
+    if (stream == nullptr) {
+      throw std::invalid_argument("CUDA stream is null");
+    }
+
+    CUresult status = cuCtxGetCurrent(&previous_);
+    if (status != CUDA_SUCCESS) {
+      throw std::runtime_error("failed to get current CUDA context");
+    }
+
+    status = cuCtxSetCurrent(stream->context()->ref());
+    if (status != CUDA_SUCCESS) {
+      throw std::runtime_error("failed to activate CUDA stream context");
+    }
+  }
+
+  ~StreamContextGuard() {
+    // There is no useful recovery at this FFI boundary if restoration fails.
+    // Do not throw from a destructor.
+    cuCtxSetCurrent(previous_);
+  }
+
+  StreamContextGuard(const StreamContextGuard &) = delete;
+  StreamContextGuard &operator=(const StreamContextGuard &) = delete;
+
+private:
+  CUcontext previous_ = nullptr;
+};
+
 // Convert C NearbyType enum (0/1/2/3) to neighbor count (0/6/18/26)
 static uint32_t nbtype_to_count(NearbyType t) {
     switch (t) {
@@ -39,6 +75,7 @@ void *cupcl_create_empty_buffer(void *stream, unsigned int element_size,
                                 unsigned int n) {
   try {
     rm::CudaStream *stream_ = (rm::CudaStream *)stream;
+    StreamContextGuard context_guard(stream_);
     void *buff = NULL;
     RM_CUDA_CHECK(cudaMallocAsync(&buff, element_size * n, stream_->handle()));
     RM_CUDA_CHECK(
@@ -57,6 +94,7 @@ void cupcl_upload_buffer(void *stream, void *gpu_buffer, void *cpu_buffer,
                          unsigned int element_size, unsigned int n) {
   try {
     rm::CudaStream *stream_ = (rm::CudaStream *)stream;
+    StreamContextGuard context_guard(stream_);
     RM_CUDA_CHECK(cudaMemcpyAsync(gpu_buffer, cpu_buffer, element_size * n,
                                   cudaMemcpyHostToDevice, stream_->handle()));
   } catch (const std::exception &e) {
@@ -72,6 +110,7 @@ void cupcl_download_buffer(void *stream, void *cpu_buffer, void *gpu_buffer,
                            unsigned int element_size, unsigned int n) {
   try {
     rm::CudaStream *stream_ = (rm::CudaStream *)stream;
+    StreamContextGuard context_guard(stream_);
     RM_CUDA_CHECK(cudaMemcpyAsync(cpu_buffer, gpu_buffer, element_size * n,
                                   cudaMemcpyDeviceToHost, stream_->handle()));
   } catch (const std::exception &e) {
@@ -87,6 +126,7 @@ void cupcl_copy_buffer(void *stream, void *src, void *target,
                        unsigned int element_size, unsigned int n) {
   try {
     rm::CudaStream *stream_ = (rm::CudaStream *)stream;
+    StreamContextGuard context_guard(stream_);
     RM_CUDA_CHECK(cudaMemcpyAsync(target, src, element_size * n,
                                   cudaMemcpyDeviceToDevice, stream_->handle()));
   } catch (const std::exception &e) {
@@ -102,6 +142,7 @@ void *cupcl_create_buffer(void *stream, void *buffer_cpu,
                           unsigned int element_size, unsigned int n) {
   try {
     rm::CudaStream *stream_ = (rm::CudaStream *)stream;
+    StreamContextGuard context_guard(stream_);
     void *buff = NULL;
     RM_CUDA_CHECK(cudaMallocAsync(&buff, element_size * n, stream_->handle()));
     RM_CUDA_CHECK(cudaMemcpyAsync(buff, buffer_cpu, element_size * n,
@@ -137,6 +178,7 @@ void cupcl_free_buffer(void *buffer) {
 void cupcl_sync_stream(void *stream) {
   try {
     rm::CudaStream *stream_ = (rm::CudaStream *)stream;
+    StreamContextGuard context_guard(stream_);
     stream_->synchronize();
   } catch (const std::exception &e) {
     std::cerr << "Caught exception: " << e.what() << std::endl;
@@ -174,8 +216,10 @@ void cupcl_free_pointcloud(Point *cloud) { cupcl_free_buffer(cloud); }
 
 void cupcl_destroy_stream(void *stream) {
   if (stream != NULL) {
-    static_cast<rm::CudaStream *>(stream)->synchronize();
-    delete (rm::CudaStream *)stream;
+    rm::CudaStream *stream_ = static_cast<rm::CudaStream *>(stream);
+    StreamContextGuard context_guard(stream_);
+    stream_->synchronize();
+    delete stream_;
     stream = NULL;
   }
 }
@@ -185,6 +229,7 @@ void add_to_map(void *stream, Point *points, u_int32_t size,
   try {
     assert(stream != NULL);
     rm::CudaStream *stream_ = (rm::CudaStream *)stream;
+    StreamContextGuard context_guard(stream_);
     add_to_map_impl(stream_->handle(), points, size, registered_pose, scan_id);
   } catch (const std::exception &e) {
     std::cerr << "Caught exception: " << e.what() << std::endl;
@@ -200,7 +245,7 @@ void init_map(void *stream, u_int32_t map_capacity, float sensitivity,
   try {
     assert(stream != NULL);
     rm::CudaStream *stream_ = (rm::CudaStream *)stream;
-    stream_->context().get()->use();
+    StreamContextGuard context_guard(stream_);
     init_map_impl(stream_->handle(), map_capacity, map_resolution,
                   sensitivity, min_dist, nbtype_to_count(nbtype));
   } catch (const std::exception &e) {
@@ -214,6 +259,7 @@ void init_map(void *stream, u_int32_t map_capacity, float sensitivity,
 
 void get_map(Point *points, uint32_t *points_size) {
   try {
+    rm::cuda_current_context()->use();
     get_map_impl(points, points_size);
   } catch (const std::exception &e) {
     std::cerr << "Caught exception: " << e.what() << std::endl;
@@ -238,6 +284,7 @@ uint32_t get_map_capacity() {
 
 uint32_t get_map_size() {
   try {
+    rm::cuda_current_context()->use();
     return get_map_size_impl();
   } catch (const std::exception &e) {
     std::cerr << "Caught exception: " << e.what() << std::endl;
@@ -264,6 +311,7 @@ u_int32_t planes(void *stream, Point *cloud, uint32_t cloud_size,
                  Pose ekf_lidar_to_imu, Pose ekf_pose, PointNormal *out_buff) {
   try {
     rm::CudaStream *stream_ = (rm::CudaStream *)stream;
+    StreamContextGuard context_guard(stream_);
     return planes_impl(stream_->handle(), cloud, cloud_size,
                        ekf_lidar_to_imu, ekf_pose, out_buff);
   } catch (const std::exception &e) {
@@ -309,6 +357,7 @@ void cupcl_event_destroy(void *event) {
 void cupcl_event_record(void *event, void *stream) {
   try {
     rm::CudaStream *stream_ = (rm::CudaStream *)stream;
+    StreamContextGuard context_guard(stream_);
     cudaEvent_t *evt = (cudaEvent_t *)event;
     RM_CUDA_CHECK(cudaEventRecord(*evt, stream_->handle()));
   } catch (const std::exception &e) {
