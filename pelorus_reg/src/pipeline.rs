@@ -10,7 +10,7 @@ use pelorus_core::{
     ImuMsg, ImuPosePrediction, ImuPredictor, ImuPredictorUndistort, KinematicModel, LidarVendor,
     LioConfig, OdomMsg, PointXYZIT, PrelioProcessedCloud,
 };
-use prelio::{LocatedBufferView, Prelio};
+use prelio::{ImuSyncMode, LocatedBufferView, Prelio};
 use spole::{IVoxHashMap, IVoxNearbyType};
 
 #[cfg(feature = "cuda")]
@@ -77,6 +77,8 @@ pub struct PelorusOutput {
     pub pose_covariance: [f64; 36],
     pub linear_velocity: nalgebra::Vector3<f64>,
     pub angular_velocity: nalgebra::Vector3<f64>,
+    pub accel_bias: nalgebra::Vector3<f64>,
+    pub gyro_bias: nalgebra::Vector3<f64>,
     pub twist_covariance: [f64; 36],
     pub cloud: Vec<PointXYZIT>,
     pub frame_id: String,
@@ -312,6 +314,8 @@ impl Pipeline {
                 pose_covariance: pose_cov_map,
                 linear_velocity: state.linear_velocity,
                 angular_velocity: processed.end_of_frame_twist.angular,
+                accel_bias: state.accel_bias,
+                gyro_bias: state.gyro_bias,
                 twist_covariance: twist_cov_map,
                 cloud,
                 frame_id: processed.header.frame_id,
@@ -373,6 +377,8 @@ impl Pipeline {
                 pose_covariance: pose_cov_map,
                 linear_velocity: state.linear_velocity,
                 angular_velocity: processed.end_of_frame_twist.angular,
+                accel_bias: state.accel_bias,
+                gyro_bias: state.gyro_bias,
                 twist_covariance: twist_cov_map,
                 cloud,
                 frame_id: processed.header.frame_id,
@@ -434,6 +440,8 @@ impl Pipeline {
                 pose_covariance: pose_cov_map,
                 linear_velocity: state.linear_velocity,
                 angular_velocity: processed.end_of_frame_twist.angular,
+                accel_bias: state.accel_bias,
+                gyro_bias: state.gyro_bias,
                 twist_covariance: twist_cov_map,
                 cloud,
                 frame_id: processed.header.frame_id,
@@ -487,6 +495,8 @@ impl Pipeline {
             pose_covariance: pose_cov_map,
             linear_velocity: state.linear_velocity,
             angular_velocity: processed.end_of_frame_twist.angular,
+            accel_bias: state.accel_bias,
+            gyro_bias: state.gyro_bias,
             twist_covariance: twist_cov_map,
             cloud,
             frame_id: processed.header.frame_id,
@@ -506,6 +516,11 @@ impl Pipeline {
         let undistort = Some(self.build_undistort());
         let init_guess = Some(self.build_init_guess());
 
+        let imu_sync_mode = if params.lidar_as_sync {
+            ImuSyncMode::LidarDriven
+        } else {
+            ImuSyncMode::Continuous
+        };
         let mut prelio = Prelio::create(
             gravity,
             madgwick_filter,
@@ -515,7 +530,7 @@ impl Pipeline {
             init_guess,
             params.lidar_vendor,
             ready_for_next,
-            false,
+            imu_sync_mode,
         )?;
 
         let rx = prelio

@@ -1,4 +1,4 @@
-/* Pelorus C Library - High Efficient Lidar Inertial Odometry.
+/* Pelorus C Library - Resource-aware Lidar Inertial Odometry.
  *
  * Threading and async processing are handled internally.
  *
@@ -101,6 +101,17 @@ typedef struct pelorus_odometry {
   char *child_frame_id;
 } pelorus_odometry;
 
+typedef struct pelorus_imu_bias {
+  /**
+   * Accelerometer bias in the IMU frame, in m/s².
+   */
+  double accel_bias[3];
+  /**
+   * Gyroscope bias in the IMU frame, in rad/s.
+   */
+  double gyro_bias[3];
+} pelorus_imu_bias;
+
 /**
  * Callback function type for asynchronous odometry reception.
  *
@@ -108,6 +119,10 @@ typedef struct pelorus_odometry {
  * `user_data` is the pointer passed to `pelorus_set_callback`.
  */
 typedef void (*PelorusOdometryCallback)(const struct pelorus_odometry*, void*);
+
+typedef void (*PelorusOdometryWithBiasCallback)(const struct pelorus_odometry*,
+                                                const struct pelorus_imu_bias*,
+                                                void*);
 
 #ifdef __cplusplus
 extern "C" {
@@ -226,9 +241,20 @@ uint64_t pelorus_add_points_xyzit_f32(struct PelorusHandle *handle,
  * - `result` must be a valid pointer to write the result
  *
  * # Returns
- * 1 if odometry was received, 0 if no data is available, -1 on error
+ * `PELORUS_STATUS_OK` if odometry was received, `PELORUS_STATUS_NO_DATA` if no
+ * data is available, or a negative `pelorus_status` value on error.
  */
 int32_t pelorus_try_recv(struct PelorusHandle *handle, struct pelorus_odometry *result);
+
+/**
+ * Try to receive odometry and its associated IMU bias estimate (non-blocking).
+ *
+ * This is the bias-aware counterpart of [`pelorus_try_recv`]. It keeps the
+ * original `pelorus_odometry` ABI unchanged.
+ */
+int32_t pelorus_try_recv_with_bias(struct PelorusHandle *handle,
+                                   struct pelorus_odometry *result,
+                                   struct pelorus_imu_bias *bias);
 
 /**
  * Blocking receive odometry from Pelorus (synchronous)
@@ -241,9 +267,20 @@ int32_t pelorus_try_recv(struct PelorusHandle *handle, struct pelorus_odometry *
  * - `result` must be a valid pointer to write the result
  *
  * # Returns
- * 1 if odometry was received, -1 on error (e.g., channel disconnected)
+ * `PELORUS_STATUS_OK` if odometry was received, or a negative
+ * `pelorus_status` value on error (for example, if the channel disconnected).
  */
 int32_t pelorus_recv(struct PelorusHandle *handle, struct pelorus_odometry *result);
+
+/**
+ * Receive odometry and its associated IMU bias estimate (blocking).
+ *
+ * This is the bias-aware counterpart of [`pelorus_recv`]. It keeps the
+ * original `pelorus_odometry` ABI unchanged.
+ */
+int32_t pelorus_recv_with_bias(struct PelorusHandle *handle,
+                               struct pelorus_odometry *result,
+                               struct pelorus_imu_bias *bias);
 
 /**
  * Set a callback for asynchronous odometry reception
@@ -263,6 +300,14 @@ int32_t pelorus_recv(struct PelorusHandle *handle, struct pelorus_odometry *resu
 int32_t pelorus_set_callback(struct PelorusHandle *handle,
                              PelorusOdometryCallback callback,
                              void *user_data);
+
+/**
+ * Set a callback that receives odometry together with the corresponding IMU
+ * bias estimate.
+ */
+int32_t pelorus_set_callback_with_bias(struct PelorusHandle *handle,
+                                       PelorusOdometryWithBiasCallback callback,
+                                       void *user_data);
 
 /**
  * Free memory allocated for odometry result

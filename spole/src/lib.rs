@@ -108,26 +108,19 @@ impl VoxelDistribution {
     pub fn from_points(points: &[(Point3<f32>, i32)], current_scan_number: usize) -> Self {
         let point_count = points.len();
 
-        // If there are no points, return an empty distribution.
         if point_count == 0 {
             return Self::new();
         }
 
-        // Sum all point vectors and divide by the count to get the average.
         let sum_of_points: Vector3<f32> = points.iter().map(|p| p.0.coords).sum();
         let mean = Point3::from(sum_of_points / point_count as f32);
 
-        // Covariance(X, Y) = E[(X - E[X]) * (Y - E[Y])^T]
-        // We calculate the sum of the outer products of the deviation from the mean.
         let mut covariance = Matrix3::<f32>::zeros();
         for (point, _) in points {
-            // Calculate the difference vector from the mean.
             let diff = point - mean;
-            // Add the outer product of the difference vector to the sum.
             covariance += diff * diff.transpose();
         }
 
-        // Finalize the covariance by dividing by the number of points.
         covariance /= point_count as f32;
 
         VoxelDistribution {
@@ -179,20 +172,15 @@ impl VoxelDistribution {
         &mut self,
         other: &Self,
         sensitivity: f32,
-        // min_dist is not used here, as the weighting from the Mahalanobis
-        // distance naturally handles far-away distributions by assigning them a
-        // weight near zero, achieving the goal of "not updating too much".
         _min_dist: f32,
         current_scan_number: usize,
     ) {
-        // If the other distribution is empty, there's nothing to update from.
         if other.point_count == 0 {
             return;
         }
 
         self.last_updated_at_scan = current_scan_number;
 
-        // If this distribution is empty, it simply becomes the other one.
         if self.point_count == 0 {
             self.point_count = other.point_count;
             self.mean = other.mean;
@@ -201,58 +189,38 @@ impl VoxelDistribution {
             return;
         }
 
-        // --- 1. Calculate Mahalanobis Distance for Weighting ---
-
         let mean_diff = self.mean - other.mean;
 
-        // Regularize the covariance matrix to prevent numerical instability and ensure it's invertible.
         let regularization_factor = 1e-6;
         let regularized_cov = self.covariance + Matrix3::identity() * regularization_factor;
 
-        // Calculate the squared Mahalanobis distance using Cholesky decomposition.
-        // D^2 = (x - μ)^T * Σ^-1 * (x - μ) = ||L^-1 * (x - μ)||^2
         let mahalanobis_sq = if let Some(chol) = Cholesky::new(regularized_cov) {
             chol.solve(&mean_diff).dot(&mean_diff)
         } else {
-            // Fallback to squared Euclidean distance if covariance is singular.
             mean_diff.norm_squared()
         };
 
-        // --- 2. Calculate Update Weight (alpha) ---
-
-        // As the distribution matures (gains points), it becomes less sensitive to new updates.
-        // This prevents a well-established voxel from being drastically changed by a single new measurement.
         let maturity_decay = (self.point_count as f32).ln().max(1.0);
         let effective_sensitivity = sensitivity / maturity_decay;
 
-        // The weight `alpha` is calculated using a Gaussian function.
         // A large distance results in a weight close to 0.
         let alpha = (-mahalanobis_sq / (2.0 * effective_sensitivity)).exp();
 
-        // If alpha is negligible, skip the update to save computation.
         if alpha < 1e-5 {
             return;
         }
 
-        // --- 3. Fuse the Mean and Covariance ---
-
-        // The new mean is a weighted average of the two original means.
         let new_mean = Point3::from((1.0 - alpha) * self.mean.coords + alpha * other.mean.coords);
 
-        // The new covariance is calculated using the parallel axis theorem, weighted by alpha.
-        // This correctly combines the internal variances of both distributions plus the
-        // variance between their means.
         let outer_product_mean_diff = mean_diff * mean_diff.transpose();
         let new_covariance = (1.0 - alpha) * self.covariance
             + alpha * other.covariance
             + alpha * (1.0 - alpha) * outer_product_mean_diff;
 
-        // --- 4. Apply the Updates ---
         self.mean = new_mean;
         self.covariance = new_covariance;
         self.point_count += other.point_count; // Aggregate point counts
 
-        // Optional: Update the transform based on the new covariance if needed.
         if let Some(chol) = Cholesky::new(self.covariance) {
             self.transform = chol.l();
         }
@@ -267,7 +235,6 @@ impl VoxelDistribution {
     ) {
         self.last_updated_at_scan = current_scan_number;
 
-        // --- Initial Bootstrap (Welford's Algorithm) ---
         if self.point_count < 2 {
             if self.point_count == 1 {
                 let new_point_dist_to_mean_sq = (self.mean - new_point).norm_squared();
@@ -298,12 +265,6 @@ impl VoxelDistribution {
             return;
         }
 
-        // --- Weighted Update with Maturity ---
-
-        // As point_count grows, the log term increases, making the distribution
-        // less sensitive (more "skeptical") to new points.
-        // We use `(point_count - 1)` because the EMA regime starts after 2 points.
-        // `max(1.0)` ensures we don't increase sensitivity for low point counts.
         let maturity_decay = (self.point_count as f32 - 1.0).ln().max(1.0);
         let effective_sensitivity = sensitivity / maturity_decay;
 
@@ -321,7 +282,6 @@ impl VoxelDistribution {
             diff_from_old_mean.norm_squared()
         };
 
-        // The weight `alpha` is now calculated using the decayed `effective_sensitivity`.
         let alpha = (-distance_sq / (2.0 * effective_sensitivity)).exp();
 
         let new_mean = ((1.0 - alpha) * self.mean.coords + alpha * new_point.coords).into();
@@ -366,18 +326,14 @@ pub struct EncompassingVoxelIter {
 
 /// Implementation of the Iterator trait for `EncompassingVoxelIter`.
 impl Iterator for EncompassingVoxelIter {
-    // The iterator yields items of type (i32, i32, i32), representing voxel coordinates.
     type Item = (i32, i32, i32);
 
     /// Advances the iterator and returns the next voxel coordinate.
     fn next(&mut self) -> Option<Self::Item> {
-        // If we have iterated through all the voxels in the block, return None.
         if self.current_index >= self.max_index {
             return None;
         }
 
-        // Deconstruct the 1D `current_index` into 3D offsets (dx, dy, dz)
-        // relative to the origin of the encompassing voxel block.
         let i = self.current_index;
         let f = self.factor;
 
@@ -386,16 +342,10 @@ impl Iterator for EncompassingVoxelIter {
         let dy = remainder / f;
         let dx = remainder % f;
 
-        // Get the origin coordinate.
         let (ox, oy, oz) = self.origin;
-
-        // Calculate the coordinate of the next voxel by adding the offset to the origin.
         let next_voxel = (ox + dx, oy + dy, oz + dz);
-
-        // Increment the index for the next iteration.
         self.current_index += 1;
 
-        // Return the calculated voxel coordinate.
         Some(next_voxel)
     }
 }
@@ -414,12 +364,6 @@ pub fn encompassing_voxel_iter(grid_key: (i32, i32, i32), factor: i32) -> Encomp
 
     let (gx, gy, gz) = grid_key;
 
-    // To find the origin of the encompassing block, we use Euclidean division.
-    // This correctly handles negative coordinates by rounding towards negative infinity,
-    // ensuring we always get the minimum corner of the block.
-    // For example, with factor 2, a key of (-1, -1, -1) belongs to the block
-    // whose origin is (-2, -2, -2).
-    // (-1).div_euclid(2) * 2 == -1 * 2 == -2.
     let ox = gx.div_euclid(factor) * factor;
     let oy = gy.div_euclid(factor) * factor;
     let oz = gz.div_euclid(factor) * factor;
@@ -605,8 +549,6 @@ impl IVoxHashMap {
                 })
                 .collect::<Vec<_>>();
 
-            // downsample first, then update per voxel using distributions
-            // After this, all points in the same voxel are adjacent
             let sort_started = std::time::Instant::now();
             sort_unstable_by_key(&mut keyed_points, |(_, key)| *key, execution_mode);
             let mut adaptive_nanos = sort_started.elapsed().as_nanos() as f64;
@@ -709,7 +651,6 @@ impl IVoxHashMap {
         let mut rng = self.rng.clone();
         let query_p = nalgebra::Point3::new(query.x, query.y, query.z);
 
-        // --- Gather Neighbors and Total Density ---
         const MAX_NEIGHBORS: usize = 27;
         let mut cached_neighbors: [Option<VoxelDistribution>; MAX_NEIGHBORS] =
             [None; MAX_NEIGHBORS];
@@ -742,8 +683,6 @@ impl IVoxHashMap {
             *out_size = 0;
             return false;
         }
-
-        // --- Proportional Sampling ---
 
         let mut current_found_count = 0;
 
@@ -785,8 +724,6 @@ impl IVoxHashMap {
     }
 
     fn symmetric_eigen_3x3(a: &Matrix3<f32>) -> Vector3<f32> {
-        // The characteristic equation is λ³ - tr(A)λ² + c₂λ - det(A) = 0
-        // where c₂ = 0.5 * (tr(A)² - tr(A²))
         let trace_a = a.trace();
 
         let c2 = (a[(0, 0)] * a[(1, 1)] + a[(0, 0)] * a[(2, 2)] + a[(1, 1)] * a[(2, 2)])
@@ -794,19 +731,14 @@ impl IVoxHashMap {
 
         let det_a = a.determinant();
 
-        // Solve the cubic equation: x³ + p*x² + q*x + r = 0
         let p = -trace_a;
         let q = c2;
         let r = -det_a;
 
-        // Convert to depressed cubic: t³ + a*t + b = 0
         let a_cub = (3.0 * q - p * p) / 3.0;
         let b_cub = (2.0 * p * p * p - 9.0 * p * q + 27.0 * r) / 27.0;
 
-        // For symmetric matrices, eigenvalues are real, so the discriminant is <= 0.
-        // We use the trigonometric solution for three real roots.
         let angle = if a_cub.abs() < 1e-6 {
-            // Handle case where a is zero
             0.0
         } else {
             let acos_arg = (-b_cub / 2.0) / (-a_cub * a_cub * a_cub / 27.0).sqrt();

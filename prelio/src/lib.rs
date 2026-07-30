@@ -194,32 +194,17 @@ pub fn secs_to_timestamp(secs: f64) -> TimeMsg {
     TimeMsg { sec, nanosec }
 }
 
-fn update_imu_period_estimate(
-    last_timestamp: &mut Option<f64>,
-    period_estimate: &mut Option<f64>,
-    timestamp: f64,
-) {
-    if let Some(previous) = *last_timestamp {
-        let period = timestamp - previous;
-        if period > 0.0 {
-            *period_estimate = Some(match *period_estimate {
-                Some(estimate) if period < estimate * 4.0 => estimate * 0.9 + period * 0.1,
-                Some(estimate) => estimate,
-                None => period,
-            });
-        }
-    }
-    *last_timestamp = Some(timestamp);
-}
-
-fn paced_imu_interval_complete(
-    period_estimate: Option<f64>,
-    timestamp: f64,
-    interval_end: f64,
-) -> bool {
-    period_estimate
-        .map(|period| interval_end - timestamp <= period * 1.5)
-        .unwrap_or(false)
+/// Selects how the synchronizer obtains IMU messages for each LiDAR interval.
+pub enum ImuSyncMode {
+    /// Wait for timestamp-bracketing IMU messages from a continuous source.
+    Continuous,
+    /// Drain only the IMU messages already available when a LiDAR scan arrives.
+    LidarDriven,
+    /// During bounded replay, advance one scan when timestamp-bracketing IMU data
+    /// has not arrived yet.
+    DemandDrivenReplay {
+        request_next_scan: Box<dyn FnMut() + Send>,
+    },
 }
 
 #[derive(Debug, Clone, Default)]
@@ -398,30 +383,6 @@ mod tests {
     use super::*;
     use ros_pointcloud2::ros::{HeaderMsg, PointFieldMsg, TimeMsg, make_field_name};
     use ros_pointcloud2::{Denseness, Endian, FieldDatatype, PointCloud2MsgBuilder};
-
-    #[test]
-    fn paced_imu_interval_waits_for_the_full_timestamp_span() {
-        let mut last_timestamp = None;
-        let mut period_estimate = None;
-        for timestamp in [0.01, 0.02, 0.03, 0.04] {
-            update_imu_period_estimate(&mut last_timestamp, &mut period_estimate, timestamp);
-        }
-
-        assert!(!paced_imu_interval_complete(period_estimate, 0.04, 0.1));
-        assert!(paced_imu_interval_complete(period_estimate, 0.09, 0.1));
-    }
-
-    #[test]
-    fn paced_imu_period_ignores_missing_sample_gaps() {
-        let mut last_timestamp = None;
-        let mut period_estimate = None;
-        for timestamp in [0.01, 0.02, 0.03, 0.08] {
-            update_imu_period_estimate(&mut last_timestamp, &mut period_estimate, timestamp);
-        }
-
-        assert!((period_estimate.unwrap() - 0.01).abs() < 1e-12);
-        assert!(!paced_imu_interval_complete(period_estimate, 0.04, 0.1));
-    }
 
     fn field(name: &'static str, offset: u32) -> PointFieldMsg {
         PointFieldMsg {
@@ -1834,7 +1795,7 @@ impl Prelio {
         imu_pose_prediction_init_guess: Option<Box<ImuPredictor>>,
         lidar_vendor: LidarVendor,
         ready_for_next: Option<std::sync::mpsc::Receiver<()>>,
-        signal_paced: bool,
+        imu_sync_mode: ImuSyncMode,
     ) -> anyhow::Result<Self> {
         #[cfg(not(feature = "rayon"))]
         if params.parallelism_execution_policy
@@ -1894,8 +1855,6 @@ impl Prelio {
         // TODO move to main processing, since else predict and correct is async
         let intrinsic_given = imu_intrinsic_calibration.is_some();
         let initial_scan_accumulate = params.initial_scan_accumulate;
-        let lidar_as_sync = params.lidar_as_sync;
-
         // configure global default for the log debouncer from parameters
         set_default_debounce_secs(params.warning_debounce);
 
@@ -1922,9 +1881,8 @@ impl Prelio {
                 imu_pose_prediction_undistort,
                 imu_pose_prediction_init_guess,
                 lidar_vendor,
-                lidar_as_sync,
                 ready_for_next,
-                signal_paced,
+                imu_sync_mode,
             )
         });
 
@@ -2343,14 +2301,11 @@ impl Prelio {
         imu_pose_prediction_undistort: Option<Box<ImuPredictorUndistort>>,
         imu_pose_prediction_init_guess: Option<Box<ImuPredictor>>,
         lidar_vendor: LidarVendor,
-        lidar_as_sync: bool,
         ready_for_next: Option<std::sync::mpsc::Receiver<()>>,
-        signal_paced: bool,
+        mut imu_sync_mode: ImuSyncMode,
     ) {
         let mut eval = RuntimeEvaluator::new();
         let mut to_next: Option<ImuMsg> = None;
-        let mut last_observed_imu_time: Option<f64> = None;
-        let mut imu_period_estimate: Option<f64> = None;
         let mut cloud_count: usize = 0;
         while let Ok((
             (cloud_downsampled, cloud_output, lidar_begin_time, lidar_end_time, lidar_header),
@@ -2439,90 +2394,54 @@ impl Prelio {
             // );
             // Populate IMU with buffered
             if let Some(imu_receiver) = imu_receiver.as_ref() {
-                if signal_paced {
-                    loop {
-                        let imu = match imu_receiver.recv() {
-                            Ok(imu) => imu,
-                            Err(e) => {
-                                error!("Imu receiver closed: {e}");
-                                return;
-                            }
-                        };
-                        let imu_time = timestamp_to_secs(&imu.stamp);
-                        update_imu_period_estimate(
-                            &mut last_observed_imu_time,
-                            &mut imu_period_estimate,
-                            imu_time,
-                        );
-
-                        if imu_time < imu_span_start_time {
-                            continue;
-                        }
-
-                        if imu_time > imu_span_end_time {
-                            to_next = Some(imu);
-                            break;
-                        }
-
-                        imu_data.push(imu);
-                        if paced_imu_interval_complete(
-                            imu_period_estimate,
-                            imu_time,
-                            imu_span_end_time,
-                        ) {
-                            break;
-                        }
-                    }
-                } else if lidar_as_sync {
-                    loop {
-                        match imu_receiver.try_recv() {
-                            Ok(imu) => {
-                                let imu_time = timestamp_to_secs(&imu.stamp);
-
-                                if imu_time < imu_span_start_time {
-                                    // skip
-                                    continue;
-                                }
-
-                                // Too late: stash for next cloud and stop draining
-                                if imu_time > imu_span_end_time {
-                                    to_next = Some(imu);
-                                    break;
-                                }
-
-                                imu_data.push(imu);
-                            }
+                let mut requested_next_replay_scan = false;
+                loop {
+                    let imu = match &mut imu_sync_mode {
+                        ImuSyncMode::Continuous => imu_receiver.recv(),
+                        ImuSyncMode::LidarDriven => match imu_receiver.try_recv() {
+                            Ok(imu) => Ok(imu),
                             Err(std::sync::mpsc::TryRecvError::Empty) => break,
                             Err(std::sync::mpsc::TryRecvError::Disconnected) => {
                                 error!("Imu receiver closed");
                                 return;
                             }
-                        }
-                    }
-                } else {
-                    loop {
-                        match imu_receiver.recv() {
-                            Ok(imu) => {
-                                let imu_time = timestamp_to_secs(&imu.stamp);
-                                if imu_time < imu_span_start_time {
-                                    // warn!("IMU msg too early, skipped.");
-                                    continue;
+                        },
+                        ImuSyncMode::DemandDrivenReplay { request_next_scan } => {
+                            match imu_receiver.try_recv() {
+                                Ok(imu) => Ok(imu),
+                                Err(std::sync::mpsc::TryRecvError::Empty) => {
+                                    if !requested_next_replay_scan {
+                                        request_next_scan();
+                                        requested_next_replay_scan = true;
+                                    }
+                                    imu_receiver.recv()
                                 }
-
-                                // Too late
-                                if imu_time > imu_span_end_time {
-                                    to_next = Some(imu);
-                                    break;
+                                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                                    error!("Imu receiver closed");
+                                    return;
                                 }
-
-                                imu_data.push(imu);
-                            }
-                            Err(e) => {
-                                error!("Imu receiver closed: {e}");
-                                return;
                             }
                         }
+                    };
+
+                    let imu = match imu {
+                        Ok(imu) => imu,
+                        Err(e) => {
+                            error!("Imu receiver closed: {e}");
+                            return;
+                        }
+                    };
+                    let imu_time = timestamp_to_secs(&imu.stamp);
+                    if imu_time < imu_span_start_time {
+                        continue;
                     }
+
+                    if imu_time > imu_span_end_time {
+                        to_next = Some(imu);
+                        break;
+                    }
+
+                    imu_data.push(imu);
                 }
 
                 if imu_data.is_empty() {

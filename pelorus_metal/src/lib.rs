@@ -73,10 +73,10 @@ pub fn init_map(
     voxel_size: f32,
     sensitivity: f32,
     min_dist: f32,
-    _nbtype: NeighborType,
+    nbtype: NeighborType,
 ) {
     assert!(capacity > 0, "capacity must be > 0");
-    map::init_map_impl(stream, capacity, voxel_size, sensitivity, min_dist, _nbtype);
+    map::init_map_impl(stream, capacity, voxel_size, sensitivity, min_dist, nbtype);
 
     // Register cleanup hook (runs before Metal teardown on process exit)
     ensure_cleanup_registered();

@@ -1,6 +1,6 @@
 [package]
 name = "pelorus_vulkan"
-description = "Vulkan Accelerated Components for Pelorus Odometry."
+description = "Vulkan Accelerated Components for Pelorus resource-aware Lidar-Inertial Odometry."
 edition.workspace = true
 include.workspace = true
 keywords.workspace = true

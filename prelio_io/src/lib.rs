@@ -153,7 +153,7 @@ impl State {
         imu_pose_prediction_init_guess: Option<Box<ImuPredictor>>,
         #[cfg(feature = "rerun")] rec: Option<Arc<rerun::RecordingStream>>,
         ready_for_next: Option<std::sync::mpsc::Receiver<()>>,
-        signal_paced: bool,
+        imu_sync_mode: prelio::ImuSyncMode,
     ) -> anyhow::Result<Self> {
         Ok(State {
             #[cfg(feature = "rerun")]
@@ -170,7 +170,7 @@ impl State {
                 imu_pose_prediction_init_guess,
                 config.lidar_vendor,
                 ready_for_next,
-                signal_paced,
+                imu_sync_mode,
             )?)),
             lifis_params: config.clone(),
             #[cfg(any(
@@ -587,7 +587,7 @@ impl PrelioNode {
             allow(unused_variables)
         )]
         filtered_imu_sender: Option<std::sync::mpsc::Sender<ImuMsg>>,
-        signal_paced: bool,
+        imu_sync_mode: prelio::ImuSyncMode,
     ) -> anyhow::Result<(Self, std::sync::mpsc::Receiver<Tick>)> {
         #[cfg(feature = "ros2-client")]
         let tf_listener = Arc::new(tf::TfListener::new(node));
@@ -614,7 +614,7 @@ impl PrelioNode {
             #[cfg(feature = "rerun")]
             rec.clone(),
             ready_for_next,
-            signal_paced,
+            imu_sync_mode,
         )?;
 
         #[cfg(any(

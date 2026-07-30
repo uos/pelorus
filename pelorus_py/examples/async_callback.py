@@ -53,8 +53,8 @@ def main():
     dataset_path = sys.argv[1] if len(sys.argv) >= 2 else os.path.join(examples_dir, "synthetic_dataset.bin")
     lio = pelorus.Handle(config_path=config_path, device_specific_pointcloud2=False)
 
-    done_event = threading.Event()
-    matched_odom = {}
+    completion = threading.Condition()
+    received_odometry = {}
     target_scan_id = None
 
     def on_odom(odom):
@@ -64,7 +64,7 @@ def main():
         pts = np.asarray(pts)
         if odom.get("timestamp_sec", 0) == 0 and odom.get("timestamp_nanosec", 0) == 0:
             return
-        if pts.size == 0 or target_scan_id is None or odom.get("scan_id", 0) != target_scan_id:
+        if pts.size == 0:
             return
 
         pos = np.asarray(odom["position"], dtype=np.float64)
@@ -73,13 +73,7 @@ def main():
         av = np.asarray(odom["angular_velocity"], dtype=np.float64)
         pts = np.asarray(pts, dtype=np.float64)
 
-        print(f"Callback invoked! Odometry #1 received (scan_id={odom.get('scan_id', 0)})")
-        print(f"  Timestamp: {odom['timestamp_sec']}.{odom['timestamp_nanosec']:09d}")
-        print(f"  Position: [{pos[0]:.6f}, {pos[1]:.6f}, {pos[2]:.6f}]")
-        print(f"  Linear velocity: [{lv[0]:.6f}, {lv[1]:.6f}, {lv[2]:.6f}]")
-        print(f"  Point cloud: {len(pts)} points")
-
-        matched_odom["odom"] = {
+        callback_odom = {
             "timestamp_sec": odom["timestamp_sec"],
             "timestamp_nanosec": odom["timestamp_nanosec"],
             "scan_id": odom.get("scan_id", None),
@@ -89,15 +83,9 @@ def main():
             "angular_velocity": av,
             "points": pts,
         }
-        done_event.set()
-        limit = len(pts) if DUMP_ALL else min(3, len(pts))
-        for i in range(limit):
-            p = pts[i]
-            if DUMP_ALL:
-                print("    Point %d: [%.6g, %.6g, %.6g] I=%.6g" % (i, p[0], p[1], p[2], p[3]))
-            else:
-                print("    Point %d: [%.2f, %.2f, %.2f] I=%.1f" % (i, p[0], p[1], p[2], p[3]))
-        print()
+        with completion:
+            received_odometry[callback_odom["scan_id"]] = callback_odom
+            completion.notify_all()
 
     lio.set_callback(on_odom)
 
@@ -125,15 +113,42 @@ def main():
             target_scan_id = scan_id
             print(f"Added scan id={scan_id} with {len(cloud)} points")
 
-    if not done_event.wait(1.0):
-        print("Timed out waiting for callback for scan_id", target_scan_id)
+    if target_scan_id is None:
         lio.clear_callback()
-        return 1
+        raise RuntimeError("Dataset did not contain a valid LiDAR scan")
+
+    with completion:
+        while target_scan_id not in received_odometry:
+            completion.wait()
+        matched_odom = received_odometry[target_scan_id]
 
     lio.clear_callback()
+    pts = matched_odom["points"]
+    pos = matched_odom["position"]
+    lv = matched_odom["linear_velocity"]
+    print(f"Callback invoked! Odometry #1 received (scan_id={matched_odom['scan_id']})")
+    print(
+        f"  Timestamp: {matched_odom['timestamp_sec']}.{matched_odom['timestamp_nanosec']:09d}"
+    )
+    print(f"  Position: [{pos[0]:.6f}, {pos[1]:.6f}, {pos[2]:.6f}]")
+    print(f"  Linear velocity: [{lv[0]:.6f}, {lv[1]:.6f}, {lv[2]:.6f}]")
+    print(f"  Point cloud: {len(pts)} points")
+    limit = len(pts) if DUMP_ALL else min(3, len(pts))
+    for i in range(limit):
+        p = pts[i]
+        if DUMP_ALL:
+            print(
+                "    Point %d: [%.6g, %.6g, %.6g] I=%.6g"
+                % (i, p[0], p[1], p[2], p[3])
+            )
+        else:
+            print(
+                "    Point %d: [%.2f, %.2f, %.2f] I=%.1f"
+                % (i, p[0], p[1], p[2], p[3])
+            )
+    print()
     print("Matched odom:")
-    if matched_odom:
-        print(matched_odom["odom"])
+    print(matched_odom)
     return 0
 
 

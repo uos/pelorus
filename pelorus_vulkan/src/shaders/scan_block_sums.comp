@@ -13,7 +13,6 @@ void main() {
     uint lid = gl_LocalInvocationID.x;
     uint group_size = gl_WorkGroupSize.x;
 
-    // Assume num_blocks <= 1024 (handles arrays up to ~262K elements)
     uint idx1 = lid;
     uint idx2 = lid + group_size;
 
@@ -24,7 +23,7 @@ void main() {
 
     barrier();
 
-    // Upsweep (reduce) phase
+    // Upsweep
     uint offset = 1u;
     for (uint d = group_size; d > 0u; d >>= 1u) {
         if (lid < d) {
@@ -36,14 +35,14 @@ void main() {
         offset *= 2u;
     }
 
-    // Clear last element (no need to store total)
+    // Clear last element
     if (lid == 0u) {
         shared_data[2u * group_size - 1u] = 0u;
     }
 
     barrier();
 
-    // Downsweep phase
+    // Downsweep
     for (uint d = 1u; d < 2u * group_size; d *= 2u) {
         offset >>= 1u;
         barrier();
@@ -58,7 +57,7 @@ void main() {
 
     barrier();
 
-    // Write results back to block_sums (now contains exclusive prefix of block sums)
+    // Write results back to block_sums
     block_sums[idx1] = shared_data[lid];
     if (idx2 < 1024u) block_sums[idx2] = shared_data[lid + group_size];
 }

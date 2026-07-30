@@ -1,6 +1,6 @@
 # Pelorus Python Bindings
 
-Python bindings for Pelorus - a LiDAR-Inertial Odometry system.
+Python bindings for Pelorus, a resource-aware Lidar-Inertial Odometry.
 
 ## Installation
 
@@ -12,11 +12,26 @@ pip install maturin
 maturin develop --release
 ```
 
+Select at most one GPU backend when building:
+
+```bash
+maturin develop --release --features cuda
+maturin develop --release --features vulkan
+maturin develop --release --features metal
+```
+
+Metal is available on macOS; CUDA requires a supported NVIDIA CUDA
+installation; Vulkan requires a compatible device and driver. The default
+features enable Rayon CPU parallelism and include `processing_time_ns` in
+odometry results. Additional features are `no-imu-sync` and
+`large-processing-queue`. The legacy `downsample` feature is retained for
+compatibility but does not control the current configuration-based downsampling.
+
 Or build a wheel:
 
 ```bash
-maturin build --release
-pip install target/wheels/pelorus-*.whl
+maturin build --release --out dist
+pip install dist/pelorus-*.whl
 ```
 
 ## Usage
@@ -28,7 +43,7 @@ import pelorus
 import numpy as np
 
 # Create Pelorus instance
-lio = pelorus.Handle()  # Uses embedded default config
+lio = pelorus.Handle() # Uses embedded default config
 
 # Or with custom config:
 # lio = pelorus.Handle("path/to/config.rl")
@@ -54,23 +69,33 @@ lio.add_imu(
 # - If you already have ROS2 messages, pass them directly:
 #   lio.add_pointcloud2_ros(cloud_msg)
 #
-# - For non-ROS point sources, use numpy/list inputs:
+# - For non-ROS point sources, use NumPy/sequence inputs:
 # - Nx3: [x,y,z] (no per-point timing)
 # - Nx4: [x,y,z,t] where t is uint32 nanosecond offset
 # - Nx5: [x,y,z,intensity,t]
-# For numpy/list inputs, you must also provide the scan header timestamp:
-# lio.add_pointcloud(points_np, timestamp_sec=..., timestamp_nanosec=...)
+# NumPy arrays may use float32 or float64. Inputs must be non-empty. The t value
+# must be finite and in the uint32 range; fractional values are rounded to the
+# nearest nanosecond. The scan header timestamp is required:
+points = np.array([[1.0, 2.0, 3.0, 0.0]], dtype=np.float32)
+scan_id = lio.add_pointcloud(
+    points,
+    timestamp_sec=1000,
+    timestamp_nanosec=0,
+)
 
-# Try to receive odometry (non-blocking)
+# After feeding enough synchronized IMU and LiDAR data, receive odometry:
 odom = lio.try_recv()
 if odom:
     print(f"Position: {odom['position']}")
     print(f"Orientation: {odom['orientation']}")
     print(f"Linear velocity: {odom['linear_velocity']}")
+    print(f"Accelerometer bias: {odom['accel_bias']}")
+    print(f"Gyroscope bias: {odom['gyro_bias']}")
     print(f"Points: {len(odom['points'])}")
 
-# Or block until odometry is available
-odom = lio.recv()
+# Or block until the next odometry result is available. Do this only while
+# another producer is feeding data or when an output is expected.
+# odom = lio.recv()
 
 
 # Or receive odometry asynchronously via callback (like pelorus_c)
@@ -104,9 +129,12 @@ Main interface to the Pelorus system.
 
 #### Methods
 - `add_imu(...)`: Add an IMU measurement
-- `add_odom(...)`: Add an odometry measurement  
+- `add_imu_ros(imu_msg)`: Add a ROS2 `sensor_msgs/msg/Imu` object directly
+- `add_odom(...)`: Add an odometry measurement
+- `add_odom_ros(odom_msg)`: Add a ROS2 `nav_msgs/msg/Odometry` object directly
 - `add_pointcloud(cloud_dict)`: Add a point cloud (PointCloud2 format)
-- `add_pointcloud(cloud_np, timestamp_sec=..., timestamp_nanosec=...)`: Add a point cloud from numpy
+- `add_pointcloud(cloud_np, timestamp_sec=..., timestamp_nanosec=...)`: Add a point cloud from a non-empty float32/float64 NumPy array
+- `add_pointcloud(cloud_sequence, timestamp_sec=..., timestamp_nanosec=...)`: Add a point cloud from lists, tuples, or other Python sequences
 - `add_pointcloud2_ros(cloud_msg)`: Add a ROS2 `sensor_msgs/msg/PointCloud2` message directly
 - `try_recv()`: Try to receive odometry (non-blocking), returns `None` if no data
 - `recv()`: Receive odometry (blocks until available)
@@ -129,7 +157,11 @@ The effective point time is:
 
 `point_time_abs = header_time_abs + (t * 1e-9)`
 
-Odometry outputs include `timestamp_sec`/`timestamp_nanosec` (and `timestamp` as float for convenience).
+Odometry outputs include `timestamp_sec`/`timestamp_nanosec` (and `timestamp`
+as float for convenience), `scan_id`, pose/twist data and covariances,
+`accel_bias` and `gyro_bias` in the IMU frame, a `points` NumPy array, and
+`frame_id`. Builds using the default `processing-time-export` feature also
+include `processing_time_ns`.
 
 ## Development
 

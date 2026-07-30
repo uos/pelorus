@@ -18,6 +18,15 @@ use clap_complete::{Shell, generate};
 use core::error::Error as CoreError;
 #[cfg(feature = "rat")]
 use core::panic::AssertUnwindSafe;
+#[cfg(all(feature = "rat", unix))]
+use core::sync::atomic::AtomicI32;
+#[cfg(any(
+    feature = "mt_pubsub",
+    feature = "ros2-client",
+    feature = "r2r",
+    feature = "hiroz"
+))]
+use core::sync::atomic::AtomicUsize;
 use core::sync::atomic::{AtomicBool, Ordering};
 use core::time::Duration;
 #[cfg(feature = "rat")]
@@ -92,12 +101,15 @@ const MCAP_PATH_LIMIT: usize = 512;
 ))]
 const MCAP_PATH_MIN_PERIOD_NS: u64 = 1_000_000_000;
 #[cfg(any(
+    feature = "rat",
     feature = "mt_pubsub",
     feature = "ros2-client",
     feature = "r2r",
     feature = "hiroz"
 ))]
-static ONLINE_SIGNAL_SHUTDOWN: AtomicBool = AtomicBool::new(false);
+static PROCESS_SIGNAL_SHUTDOWN: AtomicBool = AtomicBool::new(false);
+#[cfg(all(feature = "rat", unix))]
+static ACTIVE_MINOT_PGID: AtomicI32 = AtomicI32::new(0);
 const DEFAULT_OFFLINE_PREFETCH_SCANS: usize = 4;
 
 #[cfg(any(
@@ -169,7 +181,7 @@ use std::io::Write;
     feature = "r2r",
     feature = "hiroz"
 ))]
-use prelio_io::prelio::LocatedBufferView;
+use prelio_io::prelio::{ImuSyncMode, LocatedBufferView};
 #[cfg(feature = "ros2-client")]
 use prelio_io::tf::TfBroadcaster;
 #[cfg(feature = "hiroz")]
@@ -644,19 +656,51 @@ fn prepare_mcap_output_targets(
 }
 
 #[cfg(any(
+    feature = "rat",
     feature = "mt_pubsub",
     feature = "ros2-client",
     feature = "r2r",
     feature = "hiroz"
 ))]
-extern "C" fn handle_online_shutdown_signal(signal: libc::c_int) {
-    if ONLINE_SIGNAL_SHUTDOWN.swap(true, Ordering::SeqCst) {
-        if signal == libc::SIGINT {
+extern "C" fn handle_shutdown_signal(signal: libc::c_int) {
+    if PROCESS_SIGNAL_SHUTDOWN.swap(true, Ordering::SeqCst) {
+        #[cfg(all(feature = "rat", unix))]
+        {
+            let pgid = ACTIVE_MINOT_PGID.load(Ordering::SeqCst);
+            if pgid > 0 {
+                unsafe {
+                    libc::kill(-pgid, libc::SIGKILL);
+                }
+            }
+        }
+
+        if signal == libc::SIGINT || signal == libc::SIGTERM {
             unsafe {
                 libc::signal(signal, libc::SIG_DFL);
                 libc::raise(signal);
             }
         }
+    }
+}
+
+#[cfg(any(
+    feature = "rat",
+    feature = "mt_pubsub",
+    feature = "ros2-client",
+    feature = "r2r",
+    feature = "hiroz"
+))]
+fn install_shutdown_signal_handlers() {
+    PROCESS_SIGNAL_SHUTDOWN.store(false, Ordering::SeqCst);
+    unsafe {
+        libc::signal(
+            libc::SIGINT,
+            handle_shutdown_signal as *const () as libc::sighandler_t,
+        );
+        libc::signal(
+            libc::SIGTERM,
+            handle_shutdown_signal as *const () as libc::sighandler_t,
+        );
     }
 }
 
@@ -667,20 +711,10 @@ extern "C" fn handle_online_shutdown_signal(signal: libc::c_int) {
     feature = "hiroz"
 ))]
 fn install_online_shutdown_signal_handler(shutdown_flag: Arc<AtomicBool>) {
-    ONLINE_SIGNAL_SHUTDOWN.store(false, Ordering::SeqCst);
-    unsafe {
-        libc::signal(
-            libc::SIGINT,
-            handle_online_shutdown_signal as *const () as libc::sighandler_t,
-        );
-        libc::signal(
-            libc::SIGTERM,
-            handle_online_shutdown_signal as *const () as libc::sighandler_t,
-        );
-    }
+    install_shutdown_signal_handlers();
     std::thread::spawn(move || {
         while !shutdown_flag.load(Ordering::Relaxed) {
-            if ONLINE_SIGNAL_SHUTDOWN.load(Ordering::SeqCst) {
+            if PROCESS_SIGNAL_SHUTDOWN.load(Ordering::SeqCst) {
                 shutdown_flag.store(true, Ordering::SeqCst);
                 break;
             }
@@ -1115,6 +1149,50 @@ fn release_minot_ticks(
     feature = "r2r",
     feature = "hiroz"
 ))]
+fn request_count_after_replay_debt(debt: &AtomicUsize, requested: usize) -> usize {
+    let previous = debt
+        .fetch_update(Ordering::AcqRel, Ordering::Acquire, |outstanding| {
+            Some(outstanding.saturating_sub(requested))
+        })
+        .expect("replay tick debt update always succeeds");
+    requested.saturating_sub(previous)
+}
+
+#[cfg(all(
+    test,
+    any(
+        feature = "mt_pubsub",
+        feature = "ros2-client",
+        feature = "r2r",
+        feature = "hiroz"
+    )
+))]
+mod replay_tick_debt_tests {
+    use super::*;
+
+    #[test]
+    fn demand_ticks_are_deducted_from_later_refills() {
+        let debt = AtomicUsize::new(2);
+
+        assert_eq!(request_count_after_replay_debt(&debt, 4), 2);
+        assert_eq!(debt.load(Ordering::Acquire), 0);
+    }
+
+    #[test]
+    fn demand_debt_carries_across_small_refills() {
+        let debt = AtomicUsize::new(3);
+
+        assert_eq!(request_count_after_replay_debt(&debt, 1), 0);
+        assert_eq!(debt.load(Ordering::Acquire), 2);
+    }
+}
+
+#[cfg(any(
+    feature = "mt_pubsub",
+    feature = "ros2-client",
+    feature = "r2r",
+    feature = "hiroz"
+))]
 fn lio_with_ready_signal(
     mut config: LioConfig,
     ready_signal: Option<std::sync::mpsc::Sender<()>>,
@@ -1298,6 +1376,28 @@ fn lio_with_ready_signal(
 
     let (ready_for_next_tx, ready_for_next_rx) = std::sync::mpsc::channel();
     let minot_replay_mode = synchronous_mode && shutdown_request_rx.is_some();
+    let replay_tick_debt = Arc::new(AtomicUsize::new(0));
+    let imu_sync_mode = if minot_replay_mode {
+        let demand_tick_debt = Arc::clone(&replay_tick_debt);
+        let demand_shutdown_flag = shutdown_flag.clone();
+        ImuSyncMode::DemandDrivenReplay {
+            request_next_scan: Box::new(move || {
+                if demand_shutdown_flag
+                    .as_ref()
+                    .map(|flag| flag.load(Ordering::Relaxed))
+                    .unwrap_or(false)
+                {
+                    return;
+                }
+                demand_tick_debt.fetch_add(1, Ordering::AcqRel);
+                release_minot_tick(demand_shutdown_flag.as_ref(), synchronous_mode);
+            }),
+        }
+    } else if config.prelio_params.lidar_as_sync {
+        ImuSyncMode::LidarDriven
+    } else {
+        ImuSyncMode::Continuous
+    };
     let (filtered_imu_tx, filtered_imu_rx) = if output_mcap.is_some() {
         let (tx, rx) = std::sync::mpsc::channel();
         (Some(tx), Some(rx))
@@ -1323,7 +1423,7 @@ fn lio_with_ready_signal(
         rec.clone(),
         Some(ready_for_next_rx),
         filtered_imu_tx,
-        minot_replay_mode,
+        imu_sync_mode,
     )?;
     let lifis_node = Arc::new(lifis_node);
     let drain_on_shutdown = Arc::new(AtomicBool::new(false));
@@ -1624,6 +1724,7 @@ fn lio_with_ready_signal(
                 .clone();
             let relay_shutdown_flag = processing_shutdown_flag.clone();
             let relay_drain_on_shutdown = Arc::clone(&drain_on_shutdown);
+            let relay_tick_debt = Arc::clone(&replay_tick_debt);
             let prefetch_scans = offline_prefetch_scans.max(1);
             ready_relay_handle = Some(std::thread::spawn(move || {
                 let mut requested_prefill = false;
@@ -1639,17 +1740,21 @@ fn lio_with_ready_signal(
                     {
                         continue;
                     }
-                    let request_count = if requested_prefill {
+                    let desired_request_count = if requested_prefill {
                         1
                     } else {
                         requested_prefill = true;
                         prefetch_scans
                     };
-                    release_minot_ticks(
-                        relay_shutdown_flag.as_ref(),
-                        synchronous_mode,
-                        request_count,
-                    );
+                    let request_count =
+                        request_count_after_replay_debt(&relay_tick_debt, desired_request_count);
+                    if request_count > 0 {
+                        release_minot_ticks(
+                            relay_shutdown_flag.as_ref(),
+                            synchronous_mode,
+                            request_count,
+                        );
+                    }
                 }
             }));
         }
@@ -3247,19 +3352,17 @@ enum OfflineShutdownRequest {
 #[derive(Debug)]
 struct MinotProcessGuard {
     pgid: u32,
-    exited: Arc<AtomicBool>,
 }
 
 #[cfg(feature = "rat")]
 impl MinotProcessGuard {
-    fn new(pgid: u32, exited: Arc<AtomicBool>) -> Self {
-        Self { pgid, exited }
+    fn new(pgid: u32) -> Self {
+        #[cfg(unix)]
+        ACTIVE_MINOT_PGID.store(pgid as i32, Ordering::SeqCst);
+        Self { pgid }
     }
 
     fn kill(&self) -> std::io::Result<()> {
-        if self.exited.load(Ordering::SeqCst) {
-            return Ok(());
-        }
         signal_process_group(self.pgid, libc::SIGKILL)
     }
 }
@@ -3272,6 +3375,36 @@ impl Drop for MinotProcessGuard {
                 "Failed to kill Minot process group {} during cleanup: {}",
                 self.pgid, e
             );
+        }
+        #[cfg(unix)]
+        {
+            let _ = ACTIVE_MINOT_PGID.compare_exchange(
+                self.pgid as i32,
+                0,
+                Ordering::SeqCst,
+                Ordering::SeqCst,
+            );
+        }
+    }
+}
+
+#[cfg(feature = "rat")]
+fn recv_offline_runtime_event(
+    receiver: &std::sync::mpsc::Receiver<OfflineRuntimeEvent>,
+    signal_handled: &mut bool,
+) -> anyhow::Result<OfflineRuntimeEvent> {
+    loop {
+        if !*signal_handled && PROCESS_SIGNAL_SHUTDOWN.load(Ordering::SeqCst) {
+            *signal_handled = true;
+            return Ok(OfflineRuntimeEvent::TuiShutdownRequested);
+        }
+
+        match receiver.recv_timeout(Duration::from_millis(50)) {
+            Ok(event) => return Ok(event),
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                return Err(anyhow!("Offline runtime channel closed unexpectedly"));
+            }
         }
     }
 }
@@ -3296,6 +3429,68 @@ fn signal_process_group(pgid: u32, signal: libc::c_int) -> std::io::Result<()> {
         Ok(())
     } else {
         Err(err)
+    }
+}
+
+#[cfg(all(test, feature = "rat", target_os = "linux"))]
+mod minot_process_guard_tests {
+    use std::io::{BufRead, BufReader};
+
+    use super::*;
+
+    fn process_is_running(pid: u32) -> bool {
+        let Ok(stat) = fs::read_to_string(format!("/proc/{pid}/stat")) else {
+            return false;
+        };
+        stat.split_whitespace().nth(2) != Some("Z")
+    }
+
+    #[test]
+    fn kills_descendants_after_group_leader_exits() {
+        let mut command = ProcessCommand::new("sh");
+        command
+            .args([
+                "-c",
+                "sleep 30 </dev/null >/dev/null 2>&1 & child=$!; echo \"$child\"",
+            ])
+            .stdout(Stdio::piped());
+        unsafe {
+            command.pre_exec(|| {
+                if libc::setpgid(0, 0) == 0 {
+                    Ok(())
+                } else {
+                    Err(std::io::Error::last_os_error())
+                }
+            });
+        }
+
+        let mut leader = command
+            .spawn()
+            .expect("failed to spawn process-group leader");
+        let guard = MinotProcessGuard::new(leader.id());
+        let stdout = leader.stdout.take().expect("missing leader stdout");
+        let mut child_pid = String::new();
+        BufReader::new(stdout)
+            .read_line(&mut child_pid)
+            .expect("failed to read descendant PID");
+        let child_pid = child_pid
+            .trim()
+            .parse::<u32>()
+            .expect("invalid descendant PID");
+
+        assert!(leader.wait().expect("failed to wait for leader").success());
+        assert!(process_is_running(child_pid));
+
+        drop(guard);
+
+        for _ in 0..100 {
+            if !process_is_running(child_pid) {
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+
+        panic!("descendant {child_pid} survived Minot process-group cleanup");
     }
 }
 
@@ -4130,6 +4325,8 @@ pf! i 1
             let export_processing_time_path_for_run = export_processing_time_path.clone();
             let offline_local_only = !offline_args.no_local_only;
             let run_offline_logic = || -> anyhow::Result<()> {
+                install_shutdown_signal_handlers();
+
                 let mt_file_path = std::env::temp_dir().join("pelorus_offline.mt");
                 fs::write(&mt_file_path, mt_content)
                     .map_err(|e| anyhow!("Failed to write .mt file: {}", e))?;
@@ -4166,8 +4363,7 @@ pf! i 1
                     .map_err(|e| anyhow!("Failed to spawn minot: {}", e))?;
 
                 let minot_pid = minot_child.id();
-                let minot_exited = Arc::new(AtomicBool::new(false));
-                let minot_guard = MinotProcessGuard::new(minot_pid, Arc::clone(&minot_exited));
+                let minot_guard = MinotProcessGuard::new(minot_pid);
                 info!("Spawned minot process with PID: {}", minot_pid);
 
                 let mut minot_stdin = minot_child
@@ -4266,10 +4462,8 @@ pf! i 1
                 });
 
                 let runtime_tx_wait = runtime_tx.clone();
-                let minot_exited_for_wait = Arc::clone(&minot_exited);
                 let mut minot_wait_handle = Some(std::thread::spawn(move || {
                     let status = minot_child.wait();
-                    minot_exited_for_wait.store(true, Ordering::SeqCst);
                     let _ = runtime_tx_wait.send(OfflineRuntimeEvent::MinotExited(status));
                 }));
 
@@ -4280,11 +4474,9 @@ pf! i 1
                     }
                 });
 
+                let mut signal_handled = false;
                 loop {
-                    match runtime_rx
-                        .recv()
-                        .map_err(|_| anyhow!("Failed while waiting for Minot readiness"))?
-                    {
+                    match recv_offline_runtime_event(&runtime_rx, &mut signal_handled)? {
                         OfflineRuntimeEvent::MinotReady => break,
                         OfflineRuntimeEvent::TuiShutdownRequested => {
                             let _ = minot_guard.kill();
@@ -4294,6 +4486,9 @@ pf! i 1
                             return Ok(());
                         }
                         OfflineRuntimeEvent::MinotExited(Ok(status)) => {
+                            minot_guard.kill().map_err(|e| {
+                                anyhow!("Failed to terminate Minot process group: {}", e)
+                            })?;
                             if let Some(handle) = minot_wait_handle.take() {
                                 join_minot_wait_thread(handle)?;
                             }
@@ -4303,6 +4498,12 @@ pf! i 1
                             ));
                         }
                         OfflineRuntimeEvent::MinotExited(Err(e)) => {
+                            minot_guard.kill().map_err(|kill_error| {
+                                anyhow!(
+                                    "Failed to terminate Minot process group after wait error: {}",
+                                    kill_error
+                                )
+                            })?;
                             if let Some(handle) = minot_wait_handle.take() {
                                 join_minot_wait_thread(handle)?;
                             }
@@ -4388,10 +4589,7 @@ pf! i 1
                 while lio_exit_result.is_none()
                     || (wait_for_minot_exit && minot_exit_result.is_none())
                 {
-                    match runtime_rx
-                        .recv()
-                        .map_err(|_| anyhow!("Offline runtime channel closed unexpectedly"))?
-                    {
+                    match recv_offline_runtime_event(&runtime_rx, &mut signal_handled)? {
                         OfflineRuntimeEvent::TuiShutdownRequested => {
                             user_shutdown_requested = true;
                             if !lio_shutdown_requested {
@@ -4412,6 +4610,9 @@ pf! i 1
                             }
                         }
                         OfflineRuntimeEvent::MinotExited(status) => {
+                            minot_guard
+                                .kill()
+                                .map_err(|e| anyhow!("Failed to terminate Minot: {}", e))?;
                             minot_exit_result = Some(status);
                             if !lio_shutdown_requested {
                                 let _ = lio_stop_tx.send(OfflineShutdownRequest::Immediate);

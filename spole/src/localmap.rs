@@ -154,14 +154,9 @@ impl Livodish {
 
                     // add new inplace
                     *del = value;
-                    // lru_mapping keeps idx, since inplace update
-                    // lookup keeps index but changes hash
                     self.lookup.insert(hash, must_be_deleted);
-
-                    // self.lru_cursor += 1; // TODO check should be wrong
                 } else {
                     // map not at capacity, clean add
-                    // TODO use expect
                     self.buffer
                         .get_mut(self.add_cursor)
                         .expect("map must have been unexpectedly cleared before")
@@ -299,10 +294,5 @@ impl Livodish {
         for (i, key) in self.lru_mapping_keys.iter().enumerate() {
             unsafe { *self.lru_mapping.get_unchecked_mut(i) = Some(key.index) };
         }
-
-        // for i in kl..self.lru_mapping.len() {
-        //     panic!("should never happen");
-        //     self.lru_mapping[i] = None;
-        // }
     }
 }

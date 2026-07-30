@@ -1,9 +1,7 @@
-// localmap.cu — CUDA port of pelorus_metal (shaders/ + map.rs)
+// localmap.cu — CUDA voxel-map kernels.
 //
-// Matches the Metal backend one-to-one:
-//   - Same GPU kernels (common.metal, bitonic.metal, localmap.metal, planes.metal, hashmap.metal)
-//   - Same CPU-side LRU policy (map.rs: assign_target_indices_with_cpu_lru / rebuild_cpu_lru_order)
-//   - cudaMallocManaged for buffers the CPU accesses; cudaMalloc for GPU-only buffers
+// The map update, LRU ranking, and plane-selection stages mirror the Metal and
+// Vulkan backends while using CUB for sorting and scans.
 
 #include <algorithm>
 #include <cassert>
@@ -17,8 +15,6 @@
 #include <vector>
 
 #include <cub/cub.cuh>
-#include <thrust/sort.h>
-#include <thrust/execution_policy.h>
 
 #include <lib.h>
 #include <localmap.cuh>

@@ -5,6 +5,13 @@ use std::slice;
 use log::error;
 use pelorus::{Handle, Odometry as RsOdometry, Pcloud2Field};
 
+#[cfg(any(
+    all(feature = "cuda", feature = "metal"),
+    all(feature = "cuda", feature = "vulkan"),
+    all(feature = "metal", feature = "vulkan"),
+))]
+compile_error!("Select at most one Pelorus acceleration backend: Metal, CUDA, or Vulkan");
+
 #[allow(non_camel_case_types)]
 #[repr(C)]
 pub struct pelorus_create_options {
@@ -84,6 +91,15 @@ pub struct pelorus_odometry {
     pub child_frame_id: *mut c_char,
 }
 
+#[allow(non_camel_case_types)]
+#[repr(C)]
+pub struct pelorus_imu_bias {
+    /// Accelerometer bias in the IMU frame, in m/s².
+    pub accel_bias: [f64; 3],
+    /// Gyroscope bias in the IMU frame, in rad/s.
+    pub gyro_bias: [f64; 3],
+}
+
 // Status codes used by the C API.
 #[allow(non_camel_case_types)]
 #[repr(i32)]
@@ -136,6 +152,13 @@ fn rs_to_c_odometry(odom: RsOdometry) -> pelorus_odometry {
         points: pvec,
         num_points: pcount,
         child_frame_id,
+    }
+}
+
+fn rs_to_c_imu_bias(odom: &RsOdometry) -> pelorus_imu_bias {
+    pelorus_imu_bias {
+        accel_bias: odom.accel_bias,
+        gyro_bias: odom.gyro_bias,
     }
 }
 
@@ -474,7 +497,8 @@ pub unsafe extern "C" fn pelorus_add_points_xyzit_f32(
 /// - `result` must be a valid pointer to write the result
 ///
 /// # Returns
-/// 1 if odometry was received, 0 if no data is available, -1 on error
+/// `PELORUS_STATUS_OK` if odometry was received, `PELORUS_STATUS_NO_DATA` if no
+/// data is available, or a negative `pelorus_status` value on error.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn pelorus_try_recv(
     handle: *mut PelorusHandle,
@@ -496,6 +520,33 @@ pub unsafe extern "C" fn pelorus_try_recv(
     }
 }
 
+/// Try to receive odometry and its associated IMU bias estimate (non-blocking).
+///
+/// This is the bias-aware counterpart of [`pelorus_try_recv`]. It keeps the
+/// original `pelorus_odometry` ABI unchanged.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn pelorus_try_recv_with_bias(
+    handle: *mut PelorusHandle,
+    result: *mut pelorus_odometry,
+    bias: *mut pelorus_imu_bias,
+) -> i32 {
+    if handle.is_null() || result.is_null() || bias.is_null() {
+        return PelorusStatus::ERROR as i32;
+    }
+    let handle = unsafe { &*handle };
+    match handle.inner.try_recv() {
+        Ok(Some(odom)) => {
+            unsafe {
+                *bias = rs_to_c_imu_bias(&odom);
+                *result = rs_to_c_odometry(odom);
+            }
+            PelorusStatus::OK as i32
+        }
+        Ok(None) => PelorusStatus::NO_DATA as i32,
+        Err(e) => map_error(&e),
+    }
+}
+
 /// Blocking receive odometry from Pelorus (synchronous)
 ///
 /// This function blocks until odometry data is available or an error occurs.
@@ -506,7 +557,8 @@ pub unsafe extern "C" fn pelorus_try_recv(
 /// - `result` must be a valid pointer to write the result
 ///
 /// # Returns
-/// 1 if odometry was received, -1 on error (e.g., channel disconnected)
+/// `PELORUS_STATUS_OK` if odometry was received, or a negative
+/// `pelorus_status` value on error (for example, if the channel disconnected).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn pelorus_recv(
     handle: *mut PelorusHandle,
@@ -527,12 +579,40 @@ pub unsafe extern "C" fn pelorus_recv(
     }
 }
 
+/// Receive odometry and its associated IMU bias estimate (blocking).
+///
+/// This is the bias-aware counterpart of [`pelorus_recv`]. It keeps the
+/// original `pelorus_odometry` ABI unchanged.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn pelorus_recv_with_bias(
+    handle: *mut PelorusHandle,
+    result: *mut pelorus_odometry,
+    bias: *mut pelorus_imu_bias,
+) -> i32 {
+    if handle.is_null() || result.is_null() || bias.is_null() {
+        return PelorusStatus::ERROR as i32;
+    }
+    let handle = unsafe { &*handle };
+    match handle.inner.recv() {
+        Ok(odom) => {
+            unsafe {
+                *bias = rs_to_c_imu_bias(&odom);
+                *result = rs_to_c_odometry(odom);
+            }
+            PelorusStatus::OK as i32
+        }
+        Err(e) => map_error(&e),
+    }
+}
+
 /// Callback function type for asynchronous odometry reception.
 ///
 /// `odom` is valid only for the duration of the callback.
 /// `user_data` is the pointer passed to `pelorus_set_callback`.
 pub type PelorusOdometryCallback =
     Option<unsafe extern "C" fn(*const pelorus_odometry, *mut c_void)>;
+pub type PelorusOdometryWithBiasCallback =
+    Option<unsafe extern "C" fn(*const pelorus_odometry, *const pelorus_imu_bias, *mut c_void)>;
 
 /// Set a callback for asynchronous odometry reception
 ///
@@ -574,6 +654,34 @@ pub unsafe extern "C" fn pelorus_set_callback(
     PelorusStatus::OK as i32
 }
 
+/// Set a callback that receives odometry together with the corresponding IMU
+/// bias estimate.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn pelorus_set_callback_with_bias(
+    handle: *mut PelorusHandle,
+    callback: PelorusOdometryWithBiasCallback,
+    user_data: *mut c_void,
+) -> i32 {
+    if handle.is_null() {
+        return PelorusStatus::ERROR as i32;
+    }
+    let handle = unsafe { &mut *handle };
+    if let Some(cb) = callback {
+        let ud = SendSyncPtr(user_data);
+        handle.inner.set_callback(move |odom: RsOdometry| {
+            let c_bias = rs_to_c_imu_bias(&odom);
+            let mut c_odom = rs_to_c_odometry(odom);
+            unsafe {
+                cb(&c_odom, &c_bias, ud.as_ptr());
+                free_odometry_fields(&mut c_odom);
+            }
+        });
+    } else {
+        handle.inner.clear_callback();
+    }
+    PelorusStatus::OK as i32
+}
+
 /// Free memory allocated for odometry result
 ///
 /// # Safety
@@ -606,6 +714,31 @@ mod tests {
     use std::ptr;
 
     unsafe extern "C" fn dummy_cb(_odom: *const pelorus_odometry, _user: *mut c_void) {}
+
+    #[test]
+    fn c_odometry_preserves_imu_bias_estimates() {
+        let odometry = RsOdometry {
+            timestamp_sec: 1,
+            timestamp_nanosec: 2,
+            position: [0.0; 3],
+            orientation: [1.0, 0.0, 0.0, 0.0],
+            pose_covariance: [0.0; 36],
+            linear_velocity: [0.0; 3],
+            angular_velocity: [0.0; 3],
+            accel_bias: [0.1, -0.2, 0.3],
+            gyro_bias: [-0.01, 0.02, -0.03],
+            twist_covariance: [0.0; 36],
+            scan_id: 7,
+            points: Vec::new(),
+            frame_id: "lidar".to_string(),
+        };
+
+        let c_bias = rs_to_c_imu_bias(&odometry);
+        let _c_odometry = rs_to_c_odometry(odometry);
+
+        assert_eq!(c_bias.accel_bias, [0.1, -0.2, 0.3]);
+        assert_eq!(c_bias.gyro_bias, [-0.01, 0.02, -0.03]);
+    }
 
     #[test]
     fn test_recv_fails_when_callback_set() {

@@ -330,30 +330,23 @@ impl RuntimeEvaluator {
         ];
         let field_count: usize = table.len();
 
-        // compute raw impacts and max for normalization
         let impacts: Vec<f64> = sorted_evals.iter().map(|e| e.impact_score()).collect();
         let max_impact = impacts.iter().cloned().fold(0. / 0., f64::max).max(1.0);
 
-        // Pre-compute impact scores for all entries
         let impact_map: std::collections::HashMap<String, f64> = sorted_evals
             .iter()
             .map(|e| (e.name.clone(), e.impact_score()))
             .collect();
 
-        // Hierarchical sort with impact-based ordering within each level
         sorted_evals.sort_by(|a, b| {
             let a_parts: Vec<&str> = a.name.split('/').collect();
             let b_parts: Vec<&str> = b.name.split('/').collect();
 
-            // Compare each level of the hierarchy
             for depth in 0..a_parts.len().min(b_parts.len()) {
-                // At each level, first check if the path components are the same
                 if a_parts[depth] != b_parts[depth] {
-                    // Different at this level - need to sort by impact at this level
                     let a_path_at_depth = a_parts[..=depth].join("/");
                     let b_path_at_depth = b_parts[..=depth].join("/");
 
-                    // Find the impact for these paths
                     let a_impact = impact_map
                         .get(&a_path_at_depth)
                         .copied()
@@ -371,11 +364,9 @@ impl RuntimeEvaluator {
                 }
             }
 
-            // One is a parent of the other - parent comes first
             a_parts.len().cmp(&b_parts.len())
         });
 
-        // Calculate width considering indentation; cap widths to keep table compact
         let mut name_width = 0usize;
         for ef in sorted_evals.iter() {
             let depth = ef.name.matches('/').count();
@@ -386,7 +377,6 @@ impl RuntimeEvaluator {
         name_width = std::cmp::max(name_width, table[0].len());
         let name_width = std::cmp::min(std::cmp::max(name_width, 10), 24); // cap between 10 and 24
 
-        // determine numeric column width based on headers and default
         let mut max_numeric_header = 0usize;
         for i in 1..field_count {
             max_numeric_header = std::cmp::max(max_numeric_header, table[i].len());
@@ -395,7 +385,6 @@ impl RuntimeEvaluator {
 
         let mut ss = String::new();
         ss.push('\n');
-        // print header: name column then numeric columns
         ss.push_str(&format!(
             "{:name_width$}",
             table[0],
@@ -403,7 +392,6 @@ impl RuntimeEvaluator {
         ));
         ss.push_str(" | ");
         for i in 1..field_count {
-            // center numeric header for readability
             let label = &table[i];
             let padding = num_width.saturating_sub(label.len());
             let left = padding / 2;
@@ -430,7 +418,6 @@ impl RuntimeEvaluator {
             }
         }
 
-        // Compute total over top-level (highest hierarchy) entries
         let mut total_avg_micros: u128 = 0;
         let mut total_run_avg_micros: u128 = 0;
         let mut total_variance: f64 = 0.0; // sum of variances
@@ -444,7 +431,6 @@ impl RuntimeEvaluator {
         }
         let total_stddev = total_variance.sqrt();
 
-        // Render special TOTAL row (highlighted)
         let total_name = "total";
         ss.push_str(&format!(
             "{:name_width$}",
@@ -452,13 +438,13 @@ impl RuntimeEvaluator {
             name_width = name_width
         ));
         ss.push_str(" | ");
-        // impact column: show '-' centered
         let dash = "-".to_string();
         let padding = num_width.saturating_sub(dash.len());
         let left = padding / 2;
         let right = padding - left;
         ss.push_str(&" ".repeat(left));
-        // magenta highlight for total values
+
+        // magenta
         ss.push_str(&format!("\x1b[95m{}\x1b[0m", dash));
         ss.push_str(&" ".repeat(right));
         ss.push_str(" | ");
@@ -523,13 +509,12 @@ impl RuntimeEvaluator {
         }
         ss.push('\n');
 
-        // Now render individual rows
+        // Render rows
         for ef in sorted_evals.iter() {
             let avg = ef.sum_time / ef.num_measurements as u32;
             let run_avg = Duration::from_micros(ef.filter.mean as u64);
             let std_dev = Duration::from_micros(ef.std_dev() as u64);
             let impact = ef.impact_score() as u64;
-            // Swapped: run_avg comes before avg
             let values = [Duration::from_micros(impact), run_avg, avg, std_dev];
 
             // Calculate indentation based on hierarchy depth
@@ -545,12 +530,10 @@ impl RuntimeEvaluator {
             ));
             ss.push_str(" | ");
 
-            // Print all timing values with colors in numeric columns
             for (i, value) in values.iter().enumerate() {
                 let micros = value.as_micros() as u64;
 
                 if i == 0 {
-                    // impact: show relative multiplier normalized to max_impact
                     let rel = (micros as f64) / max_impact;
                     let mut rel_text = format!("{:.2}", rel.max(0.0));
                     // omit leading zero for values < 1: 0.33 -> .33
@@ -560,7 +543,6 @@ impl RuntimeEvaluator {
                     rel_text.push('x');
                     ss.push_str(&format!("{:>num_width$}", rel_text, num_width = num_width));
                 } else {
-                    // timing columns: format with tick and colors
                     if micros >= 1000 {
                         let ms = micros / 1000;
                         let us = micros % 1000;
@@ -593,8 +575,6 @@ impl RuntimeEvaluator {
         if let Some(total_index) = total_index {
             let form = &self.evaluations[total_index];
 
-            //                  columns with padding    +    separators     -       start of line
-            // approximate line length: name column + numeric columns and separators
             let line_length = name_width + (field_count - 1) * (num_width + 3) - "10-20: ".len();
 
             for i in 0..self.histogram.len() {

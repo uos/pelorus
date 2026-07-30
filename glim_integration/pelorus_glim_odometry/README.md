@@ -12,7 +12,8 @@ sudo -E make install
 
 ## Enable Pelorus odometry in GLIM
 
-> Note: Pelorus needs the ROS communication in `config_sensors` to be set to `reliable` in order to work correctly.
+> Note: Pelorus needs GLIM's IMU subscription in `config_ros` to use reliable
+> QoS (`glim_ros.imu_qos.reliability = "reliable"`).
 
 In GLIM's `config.json`, set:
  - `"config_odometry": "config_odometry_pelorus.json"`
@@ -28,10 +29,20 @@ Create the config file in your GLIM config root:
     // optional, overrides all glim configs
     //"pelorus_rl_path": "path/to/your/pelorus.rl",
 
-    "input_resolution": 0.2,
+    "query_resolution_factor": 0.5,
     "map_resolution": 0.5
   }
 }
 ```
+
+`query_resolution_factor` is forwarded unchanged to Pelorus. The resulting
+query voxel size is `query_resolution_factor * map_resolution`.
+
+The generated Pelorus overlay selects backend preprocessing. CUDA, Vulkan, or
+Metal is used when the corresponding backend is built and available; otherwise
+Pelorus falls back to CPU preprocessing.
+
+Pelorus accelerometer and gyroscope bias estimates are forwarded to GLIM's
+`EstimationFrame::imu_bias` in `[accelerometer, gyroscope]` order.
 
 Now run GLIM as usual.

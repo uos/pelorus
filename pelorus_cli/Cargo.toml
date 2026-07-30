@@ -1,6 +1,6 @@
 [package]
 name = "pelorus_cli"
-description = "Highly efficient Lidar Inertial Odometry."
+description = "Resource-aware Lidar-Inertial Odometry."
 edition.workspace = true
 include.workspace = true
 keywords.workspace = true
@@ -115,7 +115,6 @@ cuda = [
   "pelorus_reg/cuda",
   "pelorus_cuda/cuda_enable",
 ]
-cuda-sort-thrust = ["cuda", "pelorus_cuda/cuda_sort_thrust"]
 metal = [
   "prelio_io/metal",
   "prelio/metal",

@@ -1,5 +1,4 @@
 #include <cassert>
-#include <core/common.cuh>
 #include <core/cuda_debug.cuh>
 #include <core/cuda_stream.cuh>
 #include <core/memory.cuh>

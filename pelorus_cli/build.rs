@@ -19,12 +19,10 @@ fn main() -> Result<(), Box<dyn CoreError>> {
         .map_err(|e| anyhow::anyhow!("Failed to compile default config: {}", e))?;
     let empty_user_ast = ratslang::compile_code("")?;
 
-    // Parse the config - this will resolve variables and return usage info
     let (_config, (assigned_vars, evaluated_vars)) =
         pelorus_core::config::ast_to_config_with_usage(default_ast, empty_user_ast)
             .map_err(|e| anyhow::anyhow!("Default configuration is invalid: {}", e))?;
 
-    // After config parsing, check for unused variables
     for var in assigned_vars.iter() {
         if !evaluated_vars.contains(var) {
             println!(

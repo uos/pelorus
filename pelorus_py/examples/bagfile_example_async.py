@@ -6,7 +6,7 @@ This example reads IMU and LiDAR data from an MCAP bagfile and processes it
 through Pelorus to produce odometry estimates.
 
 Unlike bagfile_example.py (blocking recv), this script uses the async callback
-API. It stops once it has received at least `min_odoms` odometry outputs.
+API. It waits for the odometry corresponding to a specific input scan.
 
 Requirements:
     pip install pelorus mcap mcap-ros2-support
@@ -52,19 +52,22 @@ def main() -> None:
     imu_count = 0
     lidar_count = 0
 
-    min_odoms = 24
     max_lidar_scans = 50
 
-    odom_count_lock = threading.Lock()
+    completion = threading.Condition()
     odom_count = 0
-    done = threading.Event()
+    received_scan_ids = set()
+    target_scan_id = None
+    previous_scan_id = None
 
     def on_odom(odom: dict) -> None:
         nonlocal odom_count
 
-        with odom_count_lock:
+        with completion:
             odom_count += 1
             current = odom_count
+            received_scan_ids.add(odom["scan_id"])
+            completion.notify_all()
 
         print(
             f"  Odom #{current}: pos=[{odom['position'][0]:.3f}, {odom['position'][1]:.3f}, {odom['position'][2]:.3f}] "
@@ -72,21 +75,14 @@ def main() -> None:
             f"points={len(odom['points'])}"
         )
 
-        if current >= min_odoms:
-            done.set()
-
     # Set the callback to receive odometry results asynchronously.
     lio.set_callback(on_odom)
 
     print(f"Processing messages from topics: {imu_topic}, {lidar_topic}")
-    print(f"Stopping once odometry results received: {min_odoms}")
     print()
 
     with open(bagfile_path, "rb") as f:
         for msg in read_ros2_messages(f):
-            if done.is_set():
-                break
-
             topic = msg.channel.topic
 
             if topic == imu_topic:
@@ -94,19 +90,28 @@ def main() -> None:
                 imu_count += 1
 
             elif topic == lidar_topic:
-                _ = lio.add_pointcloud2_ros(msg.ros_msg)
+                scan_id = lio.add_pointcloud2_ros(msg.ros_msg)
+                target_scan_id = previous_scan_id
+                previous_scan_id = scan_id
                 lidar_count += 1
                 
                 if lidar_count >= max_lidar_scans:
                     break
 
-    # Wait until we have enough outputs.
-    done.wait()
+    if target_scan_id is None:
+        lio.clear_callback()
+        raise RuntimeError("The bag must contain at least two LiDAR scans")
+
+    # The final LiDAR message is a support scan for the target immediately
+    # before it. Wait for that exact result; no wall-clock timeout is needed.
+    with completion:
+        while target_scan_id not in received_scan_ids:
+            completion.wait()
 
     # Disable callback delivery before printing the summary.
     lio.clear_callback()
 
-    with odom_count_lock:
+    with completion:
         final_odom_count = odom_count
 
     print()

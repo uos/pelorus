@@ -99,8 +99,6 @@ void main() {
     if (pc.j == 3u) value = p.z;
     if (pc.j == 4u) value = p.i;
 
-    // Match prelio::keyed_point_sort_key, which compares the raw f32 bit
-    // patterns of all secondary fields as unsigned integers.
     keys[idx] = int(floatBitsToUint(value));
 #endif
 }

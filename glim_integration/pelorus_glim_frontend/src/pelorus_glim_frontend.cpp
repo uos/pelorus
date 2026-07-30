@@ -42,9 +42,9 @@ public:
         cfg.param<std::string>("pelorus_frontend", "pelorus_rl_path", "");
     const bool use_glim_config =
         cfg.param<bool>("pelorus_frontend", "use_glim_config", true);
-    double preprocess_downsample_resolution_m =
-        cfg.param<double>("pelorus_frontend", "input_resolution", 0.5);
-    double map_resolution_m =
+    const double query_resolution_factor =
+        cfg.param<double>("pelorus_frontend", "query_resolution_factor", 0.5);
+    const double map_resolution_m =
         cfg.param<double>("pelorus_frontend", "map_resolution", 0.5);
 
     std::string effective_rl_path = rl_path;
@@ -56,15 +56,9 @@ public:
                                                  Eigen::Isometry3d::Identity());
         const Eigen::Isometry3d T_imu_lidar = T_lidar_imu.inverse();
 
-        // Store T_lidar_imu for use in odometry callback to transform poses
-        // from IMU frame to Lidar frame
+        // Store the GLIM extrinsic for the auxiliary IMU pose attached to each
+        // LiDAR-frame estimate.
         T_lidar_imu_ = T_lidar_imu;
-
-        // Ensure map resolution is at least as large as preprocessing
-        // resolution (match odometry adapter behaviour)
-        if (preprocess_downsample_resolution_m > map_resolution_m) {
-          map_resolution_m = preprocess_downsample_resolution_m;
-        }
 
         // Pelorus expects LiDAR->IMU transform (translation in meters + 3x3
         // rotation).
@@ -102,13 +96,9 @@ public:
           ofs << "  }\n";
           ofs << "}\n";
           ofs << "lidar.as_sync = true\n";
-          ofs << "output.lidar_as_map_tf_base = true\n";
           ofs << "preprocessing.downsample.bypass_output_downsample = true\n";
-
-          if (preprocess_downsample_resolution_m > 0.0) {
-            ofs << "preprocessing.downsample.resolution = "
-                << preprocess_downsample_resolution_m << "m\n";
-          }
+          ofs << "preprocessing.downsample.query_resolution_factor = "
+              << query_resolution_factor << "\n";
           if (map_resolution_m > 0.0) {
             ofs << "registration.map.resolution = " << map_resolution_m
                 << "m\n";
@@ -135,18 +125,20 @@ public:
       // Register callback to receive odometry asynchronously and populate
       // caches.
       {
-        pelorus_->set_callback([this](const pelorus_odometry *odom_c) {
-          if (odom_c) {
-            // Delegate to member handler
-            this->on_odometry_callback(odom_c);
-          }
-        });
+        pelorus_->set_callback_with_bias(
+            [this](const pelorus_odometry *odom_c,
+                   const pelorus_imu_bias *bias_c) {
+              if (odom_c && bias_c) {
+                this->on_odometry_callback(odom_c, bias_c);
+              }
+            });
       }
     } catch (const pelorus::Exception &e) {
       spdlog::error("[pelorus_frontend] Pelorus init failed: {}", e.what());
     }
 
-    // Constraint parameters (kept simple and robust by default)
+    // Constraint parameters (kept simple for now, TODO actually good values
+    // here)
     stamp_match_tolerance_sec_ = cfg.param<double>(
         "pelorus_frontend", "stamp_match_tolerance_sec", 0.02);
     between_sigma_trans_ =
@@ -179,7 +171,6 @@ private:
     double stamp;
   };
 
-  // Result cache (filled by callback when odometry arrives)
   struct CachedResult {
     Eigen::Isometry3d T_world_lidar;
     Eigen::Vector3d velocity;
@@ -187,7 +178,6 @@ private:
     std::shared_ptr<void> cloud;
   };
 
-  // Recent scan ids waiting to be associated with created frames
   std::mutex pelorus_scan_mutex_;
   std::deque<uint64_t> recent_scan_ids_;
   std::unordered_map<uint64_t, long> scanid_to_frameid_;
@@ -205,8 +195,7 @@ private:
   // Store per-frame pose covariances when odometry gets attached to frames
   std::map<long, Eigen::Matrix<double, 6, 6>> pelorus_pose_cov_by_id_;
 
-  // Lidar-to-IMU extrinsic transform (Pelorus outputs poses in IMU frame; need
-  // to convert to Lidar frame)
+  // GLIM's IMU-to-LiDAR extrinsic transform.
   Eigen::Isometry3d T_lidar_imu_{Eigen::Isometry3d::Identity()};
 
   // Last known transform (fallback)
@@ -382,8 +371,7 @@ private:
       xyzit[i * 5 + 4] = static_cast<float>(t_ns);
     }
 
-    uint64_t scan_id =
-        pelorus_->add_points_xyzit(xyzit.data(), n, sec, nsec, "");
+    uint64_t scan_id = pelorus_->add_points_xyzit(xyzit.data(), n, sec, nsec);
     if (scan_id != 0) {
       std::lock_guard<std::mutex> lk(pelorus_scan_mutex_);
       if (pelorus_initialized_) {
@@ -557,18 +545,15 @@ private:
   }
 
   // Triggered from background Pelorus thread (C context)
-  void on_odometry_callback(const pelorus_odometry *odom_c) {
-    if (!odom_c)
+  void on_odometry_callback(const pelorus_odometry *odom_c,
+                            const pelorus_imu_bias *bias_c) {
+    if (!odom_c || !bias_c)
       return;
 
     uint64_t scan_id = odom_c->scan_id;
 
-    // Reconstruct Pose from Pelorus
-    // NOTE: When lidar_as_map_tf_base=true (default), C library outputs in
-    // Lidar frame.
-    //       When lidar_as_map_tf_base=false, C library outputs in IMU frame.
-    //       Since we set lidar_as_map_tf_base=true, we get Lidar frame
-    //       directly.
+    // Pelorus poses and deskewed clouds are always expressed in the LiDAR
+    // frame.
     const double *p = odom_c->position;
     const double *q = odom_c->orientation; // w, x, y, z
 
@@ -589,8 +574,7 @@ private:
     }
 
     spdlog::warn("[pelorus_frontend] Odometry callback received scan_id={}, "
-                 "pos=[{:.3f},{:.3f},{:.3f}], vel=[{:.3f},{:.3f},{:.3f}] "
-                 "(transformed to Lidar frame)",
+                 "pos=[{:.3f},{:.3f},{:.3f}], vel=[{:.3f},{:.3f},{:.3f}]",
                  scan_id, T_world_lidar.translation().x(),
                  T_world_lidar.translation().y(),
                  T_world_lidar.translation().z(), velocity.x(), velocity.y(),
@@ -624,7 +608,9 @@ private:
       estimated->T_world_lidar = T_world_lidar;
       estimated->T_world_imu = T_world_lidar * T_lidar_imu_;
       estimated->v_world_imu = velocity;
-      estimated->imu_bias.setZero();
+      estimated->imu_bias << bias_c->accel_bias[0], bias_c->accel_bias[1],
+          bias_c->accel_bias[2], bias_c->gyro_bias[0], bias_c->gyro_bias[1],
+          bias_c->gyro_bias[2];
       estimated->frame_id = FrameID::LIDAR;
       IMUStateInitializationCallbacks::on_finished(estimated);
 
@@ -690,7 +676,7 @@ private:
 
   ~PelorusGlimFrontend() override {
     if (pelorus_) {
-      pelorus_->set_callback(nullptr);
+      pelorus_->set_callback_with_bias(nullptr);
     }
   }
 

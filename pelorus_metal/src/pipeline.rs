@@ -20,18 +20,6 @@ pub struct Pipelines {
     pub assign_indices: Retained<ProtocolObject<dyn MTLComputePipelineState>>,
     pub lru_score: Retained<ProtocolObject<dyn MTLComputePipelineState>>,
     pub plane_krnl: Retained<ProtocolObject<dyn MTLComputePipelineState>>,
-    #[allow(dead_code)]
-    pub pack_keys: Retained<ProtocolObject<dyn MTLComputePipelineState>>,
-    #[allow(dead_code)]
-    pub unpack_keys: Retained<ProtocolObject<dyn MTLComputePipelineState>>,
-    #[allow(dead_code)]
-    pub pack_u32_pairs: Retained<ProtocolObject<dyn MTLComputePipelineState>>,
-    #[allow(dead_code)]
-    pub unpack_u32_pairs: Retained<ProtocolObject<dyn MTLComputePipelineState>>,
-    #[allow(dead_code)]
-    pub init_pad: Retained<ProtocolObject<dyn MTLComputePipelineState>>,
-    #[allow(dead_code)]
-    pub bitonic_step: Retained<ProtocolObject<dyn MTLComputePipelineState>>,
     pub radix_zero_hist: Retained<ProtocolObject<dyn MTLComputePipelineState>>,
     pub radix_block_histogram: Retained<ProtocolObject<dyn MTLComputePipelineState>>,
     pub radix_prefix_blocks: Retained<ProtocolObject<dyn MTLComputePipelineState>>,
@@ -84,12 +72,6 @@ impl Pipelines {
             assign_indices: make("assign_indices"),
             lru_score: make("lru_score"),
             plane_krnl: make("plane_krnl"),
-            pack_keys: make("pack_keys"),
-            unpack_keys: make("unpack_keys"),
-            pack_u32_pairs: make("pack_u32_pairs"),
-            unpack_u32_pairs: make("unpack_u32_pairs"),
-            init_pad: make("init_pad"),
-            bitonic_step: make("bitonic_step"),
             radix_zero_hist: make("radix_zero_hist"),
             radix_block_histogram: make("radix_block_histogram"),
             radix_prefix_blocks: make("radix_prefix_blocks"),

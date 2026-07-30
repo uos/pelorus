@@ -1,8 +1,5 @@
 #version 450
 
-// Local exclusive prefix sum (Blelloch algorithm)
-// First pass: each workgroup computes local scan and stores block sum
-
 layout(local_size_x = 256) in;
 
 layout(std430, set = 0, binding = 15) readonly buffer IsNew { uint is_new[]; };
@@ -66,7 +63,7 @@ void main() {
 
     barrier();
 
-    // Write local exclusive scan results
+    // Write local results
     if (idx1 < n) new_offset[idx1] = shared_data[lid];
     if (idx2 < n) new_offset[idx2] = shared_data[lid + group_size];
 }

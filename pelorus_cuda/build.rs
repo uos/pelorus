@@ -40,17 +40,14 @@ fn main() {
 
             let source_files = vec![
                 "src/src/lib.cu",
-                "src/src/common.cu",
                 "src/src/cuda_context.cu",
                 "src/src/cuda_debug.cu",
                 "src/src/memory_cuda.cu",
                 "src/src/exceptions.cu",
                 "src/src/cuda_stream.cu",
-                "src/src/hashmap.cu",
                 "src/src/localmap.cu",
                 "src/src/downsample.cu",
             ];
-            let use_thrust_sort = env::var("CARGO_FEATURE_CUDA_SORT_THRUST").is_ok();
             let include_paths = vec!["src/include"];
 
             // orin: 87
@@ -73,17 +70,14 @@ fn main() {
             let nvcc_bin = cuda_bin_path.join("nvcc");
 
             // let gencode = format!("arch={},code={}", compute, arch);
-            let gencode_args = if let Ok(_) = env::var("PELORUS_CUDA_NATIVE") {
+            let gencode_args = if env::var("PELORUS_CUDA_NATIVE").is_ok() {
                 vec!["-arch=native".to_string()]
             } else {
                 arches
                     .iter()
                     .flat_map(|arch| {
                         let compute = format!("compute_{}", arch);
-                        #[allow(unused_variables)]
-                        let sm = format!("sm_{}", arch);
                         vec![
-                            // format!("-gencode=arch={},code={}", compute, sm),
                             // emit PTX only for JIT compilation of newer GPUs
                             format!("-gencode=arch={},code={}", compute, compute),
                         ]
@@ -134,11 +128,6 @@ fn main() {
 
                     for path in &include_paths {
                         nvcc_compile_cmd.arg(format!("-I{}", path));
-                    }
-                    if use_thrust_sort {
-                        nvcc_compile_cmd
-                            .arg("-DPELORUS_CUDA_SORT_THRUST=1")
-                            .arg("--extended-lambda");
                     }
 
                     let cmd = nvcc_compile_cmd

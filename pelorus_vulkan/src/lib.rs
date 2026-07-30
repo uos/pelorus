@@ -1261,7 +1261,6 @@ struct VulkanComputePipelines {
     plane_count: vk::Pipeline,
     portable_sort: vk::Pipeline,
     rle: vk::Pipeline,
-    assign_indices: vk::Pipeline,
     lru_score: vk::Pipeline,
     classify_keys: vk::Pipeline,
     exclusive_scan: vk::Pipeline,
@@ -1272,7 +1271,6 @@ struct VulkanComputePipelines {
     downsample_build_keys: vk::Pipeline,
     downsample_medoids: vk::Pipeline,
     downsample_timestamp_keys: vk::Pipeline,
-    downsample_reorder: vk::Pipeline,
     shader_modules: Vec<vk::ShaderModule>,
 }
 
@@ -1290,7 +1288,6 @@ impl Drop for VulkanComputePipelines {
             device.destroy_pipeline(self.plane_count, None);
             device.destroy_pipeline(self.portable_sort, None);
             device.destroy_pipeline(self.rle, None);
-            device.destroy_pipeline(self.assign_indices, None);
             device.destroy_pipeline(self.lru_score, None);
             device.destroy_pipeline(self.classify_keys, None);
             device.destroy_pipeline(self.exclusive_scan, None);
@@ -1301,7 +1298,6 @@ impl Drop for VulkanComputePipelines {
             device.destroy_pipeline(self.downsample_build_keys, None);
             device.destroy_pipeline(self.downsample_medoids, None);
             device.destroy_pipeline(self.downsample_timestamp_keys, None);
-            device.destroy_pipeline(self.downsample_reorder, None);
             for module in self.shader_modules.drain(..) {
                 device.destroy_shader_module(module, None);
             }
@@ -1549,7 +1545,6 @@ fn build_pipelines(context: Arc<VulkanContext>) -> Arc<VulkanComputePipelines> {
     let plane_count_src = shaders::source_with_common(shaders::PLANE_COUNT);
     let portable_sort_src = shaders::source_with_common(shaders::PORTABLE_SORT);
     let rle_src = shaders::source_with_common(shaders::RLE);
-    let assign_indices_src = shaders::source_with_common(shaders::ASSIGN_INDICES);
     let lru_score_src = shaders::source_with_common(shaders::LRU_SCORE);
     let classify_keys_src = shaders::source_with_common(shaders::CLASSIFY_KEYS);
     let exclusive_scan_src = shaders::source_with_common(shaders::EXCLUSIVE_SCAN);
@@ -1558,7 +1553,6 @@ fn build_pipelines(context: Arc<VulkanContext>) -> Arc<VulkanComputePipelines> {
     let scan_block_sums_src = shaders::source_with_common(shaders::SCAN_BLOCK_SUMS);
     let add_block_prefix_src = shaders::source_with_common(shaders::ADD_BLOCK_PREFIX);
     let downsample_src = shaders::source_with_common(shaders::DOWNSAMPLE);
-    let downsample_reorder_src = shaders::source_with_common(shaders::DOWNSAMPLE_REORDER);
 
     let shader_defs = [
         ("hashmap_init", &hashmap_src, vec![("HASHMAP_INIT", None)]),
@@ -1579,7 +1573,6 @@ fn build_pipelines(context: Arc<VulkanContext>) -> Arc<VulkanComputePipelines> {
         ("plane_count", &plane_count_src, vec![]),
         ("portable_sort", &portable_sort_src, vec![]),
         ("rle", &rle_src, vec![]),
-        ("assign_indices", &assign_indices_src, vec![]),
         ("lru_score", &lru_score_src, vec![]),
         ("classify_keys", &classify_keys_src, vec![]),
         ("exclusive_scan", &exclusive_scan_src, vec![]),
@@ -1602,7 +1595,6 @@ fn build_pipelines(context: Arc<VulkanContext>) -> Arc<VulkanComputePipelines> {
             &downsample_src,
             vec![("TIMESTAMP_KEYS", None)],
         ),
-        ("downsample_reorder", &downsample_reorder_src, vec![]),
     ];
 
     let mut modules = Vec::with_capacity(shader_defs.len());
@@ -1629,18 +1621,16 @@ fn build_pipelines(context: Arc<VulkanContext>) -> Arc<VulkanComputePipelines> {
         plane_count: pipelines[7],
         portable_sort: pipelines[8],
         rle: pipelines[9],
-        assign_indices: pipelines[10],
-        lru_score: pipelines[11],
-        classify_keys: pipelines[12],
-        exclusive_scan: pipelines[13],
-        assign_new_targets: pipelines[14],
-        finalize_cursors: pipelines[15],
-        scan_block_sums: pipelines[16],
-        add_block_prefix: pipelines[17],
-        downsample_build_keys: pipelines[18],
-        downsample_medoids: pipelines[19],
-        downsample_timestamp_keys: pipelines[20],
-        downsample_reorder: pipelines[21],
+        lru_score: pipelines[10],
+        classify_keys: pipelines[11],
+        exclusive_scan: pipelines[12],
+        assign_new_targets: pipelines[13],
+        finalize_cursors: pipelines[14],
+        scan_block_sums: pipelines[15],
+        add_block_prefix: pipelines[16],
+        downsample_build_keys: pipelines[17],
+        downsample_medoids: pipelines[18],
+        downsample_timestamp_keys: pipelines[19],
         shader_modules: modules,
     })
 }
@@ -2212,7 +2202,6 @@ pub fn init_map(
     };
 
     *global_state().lock().expect("vulkan map mutex poisoned") = Some(VulkanMapState { backend });
-    ensure_cleanup_registered();
 }
 
 fn vk_buffer_handle(buf: &VulkanBuffer) -> vk::Buffer {
@@ -2659,7 +2648,7 @@ pub fn downsample_points_vulkan(
 
     let sort_start = std::time::Instant::now();
     out.sort_unstable_by(compare_downsample_points);
-    let _timestamp_sort_ms = sort_start.elapsed().as_secs_f64() * 1000.0;
+    let timestamp_sort_ms = sort_start.elapsed().as_secs_f64() * 1000.0;
 
     (
         out,
@@ -2672,6 +2661,7 @@ pub fn downsample_points_vulkan(
             run_starts_scan_ms: elapsed_query_ms(5, 6),
             unique_count_sync_ms,
             medoid_reduce_ms: elapsed_query_ms(7, 8),
+            timestamp_sort_ms,
             download_ms: download_ms + elapsed_query_ms(8, 9),
             ..Default::default()
         },
@@ -2956,7 +2946,6 @@ pub fn add_to_map(
             let dummy = vk_buffer_handle(&state.dummy_buf);
             let mut session =
                 ComputeCommandSession::begin(&state.context, &state.command_resources, dummy);
-            // Reset timestamp queries for add_to_map (queries 2-3)
             unsafe {
                 state.context.device.cmd_reset_query_pool(
                     session.command_buffer(),
@@ -2967,7 +2956,6 @@ pub fn add_to_map(
             }
             session.write_timestamp(state.timestamp_pool, 2);
 
-            // 1. Calculate Keys
             session.dispatch(
                 &state.compute,
                 state.compute.calculate_keys,
@@ -2977,7 +2965,6 @@ pub fn add_to_map(
             );
             session.barrier();
 
-            // 2. GPU Sort
             if requires_portable_map_sort(&state.context) {
                 record_portable_sort(
                     &mut session,
@@ -3008,10 +2995,6 @@ pub fn add_to_map(
                 session.barrier();
             }
 
-            // 3. GPU Run-Length Encoding
-            // RLE is split into deterministic mark/scan/emit passes. The old
-            // atomic append made unique-key order depend on shader scheduling,
-            // which changes later LRU victim assignment.
             let counters_host = [n_points as u32, state.add_cursor, 0u32];
             state.scratch.counter.upload(stream, &counters_host);
 
@@ -3062,8 +3045,6 @@ pub fn add_to_map(
             );
             session.barrier();
 
-            // 4. Classify Keys (deterministic: mark each key as new or existing)
-            // Run classify_keys.comp to populate is_new[], target_indices[], update_flags[]
             session.dispatch(
                 &state.compute,
                 state.compute.classify_keys,
@@ -3073,16 +3054,6 @@ pub fn add_to_map(
             );
             session.barrier();
 
-            // 5. Exclusive Prefix Sum on is_new[] -> new_offset[]
-            // Multi-pass Blelloch scan for arbitrary array sizes:
-            //   Pass 1: local scan per workgroup, store block sums
-            //   Pass 2: prefix sum of block sums (single workgroup)
-            // Pass 3: add block prefix to each element
-
-            // Calculate number of workgroups needed (each processes 2 * THREADS_PER_GROUP = 512 elements)
-            let _scan_workgroups = div_ceil_u32(n_points as u32, 2 * THREADS_PER_GROUP);
-
-            // Pass 1: Local exclusive scan
             session.dispatch(
                 &state.compute,
                 state.compute.exclusive_scan,
@@ -3092,7 +3063,6 @@ pub fn add_to_map(
             );
             session.barrier();
 
-            // Pass 2: Prefix sum of block sums (single workgroup, handles up to 1024 blocks)
             session.dispatch(
                 &state.compute,
                 state.compute.scan_block_sums,
@@ -3102,7 +3072,6 @@ pub fn add_to_map(
             );
             session.barrier();
 
-            // Pass 3: Add block prefix to each element
             session.dispatch(
                 &state.compute,
                 state.compute.add_block_prefix,
@@ -3112,8 +3081,6 @@ pub fn add_to_map(
             );
             session.barrier();
 
-            // 6. Assign New Targets (deterministic slot assignment)
-            // Uses prev_add_cursor + new_offset[idx] for deterministic slots
             session.dispatch(
                 &state.compute,
                 state.compute.assign_new_targets,
@@ -3123,7 +3090,6 @@ pub fn add_to_map(
             );
             session.barrier();
 
-            // 7. Finalize Cursors (single-thread update)
             session.dispatch(
                 &state.compute,
                 state.compute.finalize_cursors,
@@ -3133,7 +3099,6 @@ pub fn add_to_map(
             );
             session.barrier();
 
-            // 8. Reorder Points
             session.dispatch(
                 &state.compute,
                 state.compute.reorder_points,
@@ -3143,7 +3108,6 @@ pub fn add_to_map(
             );
             session.barrier();
 
-            // 9. Build Voxels
             session.dispatch(
                 &state.compute,
                 state.compute.build_voxels,
@@ -3153,7 +3117,6 @@ pub fn add_to_map(
             );
             session.barrier();
 
-            // 10. Rebuild Hashmap
             params.cap = state.table_cap;
             session.dispatch(
                 &state.compute,
@@ -3192,7 +3155,6 @@ pub fn add_to_map(
                 .pending_add_to_map_timing
                 .store(true, std::sync::atomic::Ordering::Release);
 
-            // Download counters to update host-side state
             let counters_result: Vec<u32> = state.scratch.counter.download(stream);
             state.add_cursor = counters_result[1].min(state.dist_cap);
             state.lru_cursor = counters_result[2].min(state.dist_cap);
@@ -3339,8 +3301,6 @@ pub fn planes_vulkan(
 
             ensure_scratch_capacity(state, stream, cloud.n);
 
-            // Capacity-based reuse keeps allocations down, but downloads are
-            // bounded by logical length. Reset plane buffers for the current cloud.
             out_buff_gpu.n = cloud.n;
             state.scratch.plane_compact.n = cloud.n;
             state.scratch.plane_readback.n = cloud.n;
@@ -3559,12 +3519,6 @@ pub fn planes_vulkan(
     })
 }
 
-fn ensure_cleanup_registered() {
-    // Avoid registering atexit cleanup for Vulkan map state.
-    // On some macOS setups this can run during a fragile late shutdown phase
-    // and trigger bus errors while tearing down driver resources.
-}
-
 impl From<NeighborType> for IVoxNearbyType {
     fn from(value: NeighborType) -> Self {
         match value {
@@ -3591,8 +3545,7 @@ pub fn get_used_memory() -> u64 {
 }
 
 /// Try to retrieve GPU timing measurements from previous operations.
-/// Returns (planes_ms, add_to_map_ms) if timing results are available.
-/// This is non-blocking - returns None if queries are not ready.
+/// (planes_ms, add_to_map_ms)
 pub fn try_get_gpu_timings() -> Option<(f64, f64)> {
     with_state(|state| match &mut state.backend {
         MapBackendState::Host(_) => None,
@@ -3600,7 +3553,6 @@ pub fn try_get_gpu_timings() -> Option<(f64, f64)> {
             let mut planes_ms = None;
             let mut add_to_map_ms = None;
 
-            // Check planes timing (queries 0-1)
             if gpu
                 .pending_planes_timing
                 .load(std::sync::atomic::Ordering::Acquire)
@@ -3615,7 +3567,6 @@ pub fn try_get_gpu_timings() -> Option<(f64, f64)> {
                 }
             }
 
-            // Check add_to_map timing (queries 2-3)
             if gpu
                 .pending_add_to_map_timing
                 .load(std::sync::atomic::Ordering::Acquire)
@@ -3697,7 +3648,6 @@ mod map_full_tests {
     fn downsample_shaders_compile() {
         let mut compiler = shaderc::Compiler::new().expect("failed creating shader compiler");
         let downsample_src = super::shaders::source_with_common(super::shaders::DOWNSAMPLE);
-        let reorder_src = super::shaders::source_with_common(super::shaders::DOWNSAMPLE_REORDER);
 
         let cases = [
             (
@@ -3715,7 +3665,6 @@ mod map_full_tests {
                 downsample_src.as_str(),
                 vec![("TIMESTAMP_KEYS", None)],
             ),
-            ("downsample_reorder", reorder_src.as_str(), vec![]),
         ];
 
         for (name, source, defines) in cases {

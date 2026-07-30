@@ -36,6 +36,9 @@ The extension reads parameters from a config file named `config_pelorus_frontend
     // if config not set
     "use_glim_config": true,
 
+    "query_resolution_factor": 0.5,
+    "map_resolution": 0.5,
+
     // untested, see above warning
     "stamp_match_tolerance_sec": 0.02,
     "between_sigma_trans": 0.2,

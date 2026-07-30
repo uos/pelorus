@@ -46,14 +46,13 @@ target_link_libraries(my_app pelorus)
 
 ## Building the examples
 
-From this directory:
+From `pelorus_c`:
 
 ```bash
-mkdir build
-cd build
-cmake ..
-make
-./my_pelorus_app
+cmake -S . -B build -DPELORUS_BUILD_EXAMPLES=ON
+cmake --build build
+./build/examples/sync_blocking
+./build/examples/async_callback
 ```
 
 ## C++ Usage

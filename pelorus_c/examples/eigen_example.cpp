@@ -42,6 +42,14 @@ int main()
         test_odom.angular_velocity[1] = 0.0;
         test_odom.angular_velocity[2] = 0.1;
 
+        pelorus_imu_bias test_bias = {0};
+        test_bias.accel_bias[0] = 0.01;
+        test_bias.accel_bias[1] = -0.02;
+        test_bias.accel_bias[2] = 0.03;
+        test_bias.gyro_bias[0] = 0.001;
+        test_bias.gyro_bias[1] = -0.002;
+        test_bias.gyro_bias[2] = 0.003;
+
         // Identity covariances for simplicity
         for (int i = 0; i < 36; i++)
         {
@@ -50,7 +58,7 @@ int main()
         }
 
         // Wrap in Odometry object
-        pelorus::Odometry odom(test_odom);
+        pelorus::Odometry odom(test_odom, test_bias);
 
         std::cout << "1. Basic Conversions\n";
         std::cout << "--------------------\n";
@@ -105,6 +113,8 @@ int main()
         std::cout << "Transform translation: " << state.transform.translation().transpose() << "\n";
         std::cout << "Linear velocity: " << state.linear_velocity.transpose() << "\n";
         std::cout << "Angular velocity: " << state.angular_velocity.transpose() << "\n";
+        std::cout << "Accelerometer bias: " << state.accel_bias.transpose() << "\n";
+        std::cout << "Gyroscope bias: " << state.gyro_bias.transpose() << "\n";
         std::cout << "Pose covariance (first row): " << state.pose_cov.row(0) << "\n";
         std::cout << "Twist covariance (first row): " << state.twist_cov.row(0) << "\n\n";
 

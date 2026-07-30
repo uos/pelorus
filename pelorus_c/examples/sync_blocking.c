@@ -86,8 +86,14 @@ int main(int argc, char **argv)
     }
     fclose(f);
 
+    if (target_scan_id == 0) {
+        fprintf(stderr, "Dataset did not contain a valid LiDAR scan\n");
+        pelorus_destroy(pelorus);
+        return 1;
+    }
+
     printf("Waiting for odometry for scan id %llu (blocking)...\n\n", (unsigned long long)target_scan_id);
-    while (target_scan_id != 0) {
+    while (1) {
         pelorus_odometry odom = {0};
         const int recv_status = pelorus_recv(pelorus, &odom);
         if (recv_status != PELORUS_STATUS_OK) {

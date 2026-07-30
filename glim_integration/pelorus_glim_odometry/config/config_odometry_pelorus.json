@@ -1,6 +1,13 @@
 {
   "odometry_estimation": {
     "so_name": "libodometry_estimation_pelorus.so",
-    "max_wait_ms": 200
+    "use_glim_config": true,
+
+    // Optional: bypass GLIM config forwarding and use this Pelorus overlay.
+    // "pelorus_rl_path": "/abs/path/to/pelorus.rl",
+
+    // Pelorus query voxel size = this factor * map_resolution.
+    "query_resolution_factor": 0.5,
+    "map_resolution": 0.5
   }
 }

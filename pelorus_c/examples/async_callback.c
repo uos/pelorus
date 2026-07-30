@@ -8,6 +8,7 @@
 typedef struct {
     int count;
     uint64_t target_scan_id;
+    uint64_t latest_scan_id;
     pthread_mutex_t mutex;
     pthread_cond_t cond;
 } UserContext;
@@ -15,17 +16,18 @@ typedef struct {
 static void odometry_callback(const pelorus_odometry *odom, void *user_data)
 {
     UserContext *ctx = (UserContext *)user_data;
-    if (ctx->target_scan_id != 0 && odom->scan_id != ctx->target_scan_id) {
-        return;
-    }
 
     pthread_mutex_lock(&ctx->mutex);
     ctx->count++;
-    pthread_cond_signal(&ctx->cond);
+    const int callback_count = ctx->count;
+    if (odom->scan_id > ctx->latest_scan_id) {
+        ctx->latest_scan_id = odom->scan_id;
+    }
+    pthread_cond_broadcast(&ctx->cond);
     pthread_mutex_unlock(&ctx->mutex);
 
     printf("Callback invoked! Odometry #%d received (scan_id=%llu)\n",
-           ctx->count, (unsigned long long)odom->scan_id);
+           callback_count, (unsigned long long)odom->scan_id);
     printf("  Timestamp: %d.%09u\n", odom->timestamp_sec, odom->timestamp_nanosec);
     printf("  Position: [%.6f, %.6f, %.6f]\n",
            odom->position[0], odom->position[1], odom->position[2]);
@@ -103,7 +105,9 @@ int main(int argc, char **argv)
             if (scan_id == 0) {
                 fprintf(stderr, "Failed to add point cloud\n");
             } else {
+                pthread_mutex_lock(&ctx.mutex);
                 ctx.target_scan_id = scan_id;
+                pthread_mutex_unlock(&ctx.mutex);
                 printf("Added scan id=%llu\n", (unsigned long long)scan_id);
             }
         }
@@ -111,10 +115,23 @@ int main(int argc, char **argv)
     }
     fclose(f);
 
-    printf("Waiting for registered odometry callback (scan id %llu)...\n",
-           (unsigned long long)ctx.target_scan_id);
     pthread_mutex_lock(&ctx.mutex);
-    while (ctx.count < 1) {
+    const uint64_t target_scan_id = ctx.target_scan_id;
+    pthread_mutex_unlock(&ctx.mutex);
+
+    if (target_scan_id == 0) {
+        fprintf(stderr, "Dataset did not contain a valid LiDAR scan\n");
+        pelorus_set_callback(pelorus, NULL, NULL);
+        pthread_cond_destroy(&ctx.cond);
+        pthread_mutex_destroy(&ctx.mutex);
+        pelorus_destroy(pelorus);
+        return 1;
+    }
+
+    printf("Waiting for registered odometry callback (scan id %llu)...\n",
+           (unsigned long long)target_scan_id);
+    pthread_mutex_lock(&ctx.mutex);
+    while (ctx.latest_scan_id < target_scan_id) {
         pthread_cond_wait(&ctx.cond, &ctx.mutex);
     }
     pthread_mutex_unlock(&ctx.mutex);

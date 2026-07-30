@@ -121,9 +121,6 @@ bool cholesky_3x3(in float A[9], out float L[9]) {
     return true;
 }
 
-// NOTE: invert_3x3 removed - using Cholesky decomposition for Mahalanobis distance.
-// Cholesky is numerically superior for SPD matrices and doesn't require explicit inverse.
-
 vec3 cholesky_solve_3x3(in float L[9], vec3 b) {
     vec3 y;
     y.x = b.x / L[0];

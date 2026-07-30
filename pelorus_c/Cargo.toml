@@ -27,6 +27,7 @@ rayon = ["pelorus/rayon"]
 downsample = ["pelorus/downsample"]
 cuda = ["pelorus/cuda"]
 metal = ["pelorus/metal"]
+vulkan = ["pelorus/vulkan"]
 no-imu-sync = ["pelorus/no-imu-sync"]
 large-processing-queue = ["pelorus/large-processing-queue"]
 

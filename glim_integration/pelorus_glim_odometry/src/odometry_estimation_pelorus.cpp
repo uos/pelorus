@@ -1,17 +1,21 @@
 #include <glim/odometry/odometry_estimation_base.hpp>
 
+#include <glim/common/cloud_covariance_estimation.hpp>
 #include <glim/odometry/callbacks.hpp>
 #include <glim/odometry/estimation_frame.hpp>
 #include <glim/util/config.hpp>
 
+#include <gtsam_points/ann/kdtree.hpp>
 #include <gtsam_points/types/point_cloud_cpu.hpp>
 
 #include <Eigen/Cholesky>
 #include <Eigen/Geometry>
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <cmath>
+#include <condition_variable>
 #include <cstdint>
 #include <deque>
 #include <filesystem>
@@ -38,6 +42,10 @@ public:
         cfg.param<std::string>("odometry_estimation", "pelorus_rl_path", "");
     const bool use_glim_config =
         cfg.param<bool>("odometry_estimation", "use_glim_config", true);
+    const double query_resolution_factor = cfg.param<double>(
+        "odometry_estimation", "query_resolution_factor", 0.5);
+    const double map_resolution_m =
+        cfg.param<double>("odometry_estimation", "map_resolution", 0.5);
 
     // Load sensor extrinsics
     {
@@ -56,21 +64,6 @@ public:
         const Eigen::Isometry3d T_imu_lidar = T_lidar_imu_.inverse();
         const Eigen::Vector3d t = T_imu_lidar.translation();
         const Eigen::Matrix3d R = T_imu_lidar.linear();
-
-        double preprocess_downsample_resolution_m = 0.5;
-        double map_resolution_m = 0.5;
-        try {
-          Config pelorus_cfg(GlobalConfig::get_config_path("config_odometry"));
-          preprocess_downsample_resolution_m = pelorus_cfg.param<double>(
-              "odometry_estimation", "input_resolution", 0.2);
-          map_resolution_m = pelorus_cfg.param<double>("odometry_estimation",
-                                                       "map_resolution", 0.5);
-        } catch (...) {
-        }
-
-        if (preprocess_downsample_resolution_m > map_resolution_m) {
-          map_resolution_m = preprocess_downsample_resolution_m;
-        }
 
         const auto tmp_dir = std::filesystem::temp_directory_path();
         std::ostringstream name;
@@ -95,19 +88,19 @@ public:
           ofs << "  }\n";
           ofs << "}\n";
           ofs << "lidar.as_sync = true\n";
-          ofs << "output.lidar_as_map_tf_base = true\n";
           ofs << "preprocessing.downsample.bypass_output_downsample = true\n";
-          if (preprocess_downsample_resolution_m > 0.0)
-            ofs << "preprocessing.downsample.resolution = "
-                << preprocess_downsample_resolution_m << "m\n";
+          ofs << "preprocessing.downsample.backend = Backend\n";
+          ofs << "preprocessing.downsample.query_resolution_factor = "
+              << query_resolution_factor << "\n";
           if (map_resolution_m > 0.0)
             ofs << "registration.map.resolution = " << map_resolution_m
                 << "m\n";
 
           effective_rl_path = generated_rl_path_;
-          logger->info("[odometry_estimation_pelorus] input_resolution={}m, "
-                       "map_resolution={}m",
-                       preprocess_downsample_resolution_m, map_resolution_m);
+          logger->info(
+              "[odometry_estimation_pelorus] query_resolution_factor={}, "
+              "map_resolution={}m",
+              query_resolution_factor, map_resolution_m);
         }
       } catch (const std::exception &e) {
         logger->error("[odometry_estimation_pelorus] Config gen failed: {}",
@@ -129,17 +122,20 @@ public:
       // We set the callback immediately. Note: 'this' is safe here because the
       // object is constructed. We must unset it in the destructor.
       {
-        pelorus_->set_callback([this](const pelorus_odometry *odom_c) {
-          if (odom_c) {
-            this->on_odometry_callback(odom_c);
-          }
-        });
+        pelorus_->set_callback_with_bias(
+            [this](const pelorus_odometry *odom_c,
+                   const pelorus_imu_bias *bias_c) {
+              if (odom_c && bias_c) {
+                this->on_odometry_callback(odom_c, bias_c);
+              }
+            });
       }
     } catch (const pelorus::Exception &e) {
       logger->error("[odometry_estimation_pelorus] Pelorus init failed: {}",
                     e.what());
     }
 
+    covariance_estimation_ = std::make_unique<CloudCovarianceEstimation>();
     last_T_world_lidar_.setIdentity();
   }
 
@@ -147,7 +143,7 @@ public:
     if (pelorus_) {
       // Disable callback first to prevent use-after-free of 'this' if pelorus
       // thread is still active
-      pelorus_->set_callback(nullptr);
+      pelorus_->set_callback_with_bias(nullptr);
     }
     // generated_rl_path_ could be deleted here if desired, but keeping it for
     // debug is often useful.
@@ -179,6 +175,7 @@ public:
       const PreprocessedFrame::Ptr &frame,
       std::vector<EstimationFrame::ConstPtr> &marginalized_states) override {
     OdometryEstimationBase::insert_frame(frame, marginalized_states);
+    drain_marginalized_frames(marginalized_states);
 
     if (!pelorus_ || !frame) {
       return EstimationFrame::ConstPtr();
@@ -211,8 +208,7 @@ public:
       xyzit[i * 5 + 4] = static_cast<float>(t_ns);
     }
 
-    uint64_t scan_id =
-        pelorus_->add_points_xyzit(xyzit.data(), n, sec, nsec);
+    uint64_t scan_id = pelorus_->add_points_xyzit(xyzit.data(), n, sec, nsec);
 
     if (scan_id == 0) {
       logger->error(
@@ -236,6 +232,7 @@ public:
       cloud->add_times(frame->times);
     out->frame = cloud;
 
+    EstimationFrame::Ptr completed_frame;
     {
       std::lock_guard<std::mutex> lock(data_mutex_);
 
@@ -254,9 +251,7 @@ public:
           }
         }
 
-        // Notify listeners immediately.
-        OdometryEstimationCallbacks::on_new_frame(out);
-        return out;
+        completed_frame = out;
       } else {
         // MISS: The callback hasn't arrived yet (normal case). Register as
         // pending.
@@ -264,34 +259,81 @@ public:
       }
     }
 
-    // Return nullptr: GLIM's AsyncOdometryEstimation will skip null returns
-    // (see async_odometry_estimation.cpp:132). We call
-    // OdometryEstimationCallbacks::on_new_frame() explicitly when the result is
-    // ready in on_odometry_callback().
+    if (completed_frame) {
+      complete_frame(completed_frame);
+      drain_marginalized_frames(marginalized_states);
+      return completed_frame;
+    }
+
+    // Pelorus completes asynchronously. The callback publishes the current
+    // estimate, and a later insert_frame() (or get_remaining_frames() at end of
+    // sequence) hands finalized frames to GLIM's submapping path.
     return EstimationFrame::ConstPtr();
+  }
+
+  std::vector<EstimationFrame::ConstPtr> get_remaining_frames() override {
+    std::vector<EstimationFrame::ConstPtr> remaining_frames;
+
+    {
+      std::unique_lock<std::mutex> lock(data_mutex_);
+      std::uint64_t observed_generation = result_generation_;
+
+      while (!pending_frames_.empty()) {
+        const bool made_progress = results_cv_.wait_for(
+            lock, kResultStallTimeout, [this, observed_generation] {
+              return pending_frames_.empty() ||
+                     result_generation_ != observed_generation;
+            });
+
+        if (!made_progress) {
+          logger->warn(
+              "[odometry_estimation_pelorus] Timed out waiting for {} pending "
+              "Pelorus result(s) at end of sequence.",
+              pending_frames_.size());
+          break;
+        }
+
+        observed_generation = result_generation_;
+      }
+
+      while (!marginalized_frames_.empty()) {
+        remaining_frames.push_back(marginalized_frames_.front());
+        marginalized_frames_.pop_front();
+      }
+
+      while (!active_frames_.empty()) {
+        remaining_frames.push_back(active_frames_.front());
+        active_frames_.pop_front();
+      }
+    }
+
+    if (!remaining_frames.empty()) {
+      OdometryEstimationCallbacks::on_marginalized_frames(remaining_frames);
+    }
+
+    return remaining_frames;
   }
 
 private:
   struct CachedResult {
     Eigen::Isometry3d T_world_lidar;
     Eigen::Vector3d velocity;
+    Eigen::Vector3d accel_bias;
+    Eigen::Vector3d gyro_bias;
     std::shared_ptr<gtsam_points::PointCloudCPU> cloud;
   };
 
   // Triggered from background Pelorus thread (C context)
-  void on_odometry_callback(const pelorus_odometry *odom_c) {
-    if (!odom_c)
+  void on_odometry_callback(const pelorus_odometry *odom_c,
+                            const pelorus_imu_bias *bias_c) {
+    if (!odom_c || !bias_c)
       return;
 
     uint64_t scan_id = odom_c->scan_id;
     CachedResult result;
 
-    // Reconstruct Pose from Pelorus
-    // NOTE: When lidar_as_map_tf_base=true (default), C library outputs in
-    // Lidar frame.
-    //       When lidar_as_map_tf_base=false, C library outputs in IMU frame.
-    //       Since we set lidar_as_map_tf_base=true, we get Lidar frame
-    //       directly.
+    // Pelorus poses and deskewed clouds are always expressed in the LiDAR
+    // frame.
     const double *p = odom_c->position;
     const double *q = odom_c->orientation; // w, x, y, z
 
@@ -302,56 +344,40 @@ private:
     result.T_world_lidar.translation() = trans;
 
     const double *v = odom_c->linear_velocity;
-    result.velocity = Eigen::Vector3d(v[0], v[1], v[2]);
+    result.velocity =
+        result.T_world_lidar.linear() * Eigen::Vector3d(v[0], v[1], v[2]);
+    result.accel_bias =
+        Eigen::Vector3d(bias_c->accel_bias[0], bias_c->accel_bias[1],
+                        bias_c->accel_bias[2]);
+    result.gyro_bias =
+        Eigen::Vector3d(bias_c->gyro_bias[0], bias_c->gyro_bias[1],
+                        bias_c->gyro_bias[2]);
 
     result.cloud = od_to_cloud_raw(odom_c);
 
     // Prepare holders for notifications we will perform outside the lock
     EstimationFrame::Ptr frame_to_publish = nullptr;
     std::vector<EstimationFrame::Ptr> frames_to_publish;
-    PreprocessedFrame::ConstPtr init_update_frame;
-    Eigen::Isometry3d init_update_pose = Eigen::Isometry3d::Identity();
     EstimationFrame::Ptr init_finished_frame;
 
     {
       std::lock_guard<std::mutex> lock(data_mutex_);
 
       last_T_world_lidar_ = result.T_world_lidar;
+      result_generation_++;
 
-      // If Pelorus hasn't finished its own init yet, it tends to return scan_id
-      // == 1 for the pre-init scan. We use that to suppress publishing until
-      // Pelorus reports the first non-1 scan_id.
+      // Pelorus's initial map-only scans do not produce odometry results. The
+      // first callback therefore marks initialization complete; discard older
+      // pending input frames because no result will arrive for them.
       if (!pelorus_initialized_) {
-        if (scan_id == 1) {
-          // Still initializing
-          auto pending_it = pending_frames_.find(scan_id);
-          if (pending_it != pending_frames_.end() && pending_it->second &&
-              pending_it->second->raw_frame) {
-            init_update_frame = pending_it->second->raw_frame;
-            init_update_pose = result.T_world_lidar;
-            // Drop the pending frame so it won't be published later
-            pending_frames_.erase(pending_it);
+        for (auto it = pending_frames_.begin(); it != pending_frames_.end();) {
+          if (it->first < scan_id) {
+            it = pending_frames_.erase(it);
+          } else {
+            ++it;
           }
-
-          // Ensure we don't keep cached init-phase results either
-          if (cached_results_.find(scan_id) != cached_results_.end()) {
-            cached_results_.erase(scan_id);
-            // remove from cache_order_ if present
-            for (auto it = cache_order_.begin(); it != cache_order_.end();
-                 ++it) {
-              if (*it == scan_id) {
-                cache_order_.erase(it);
-                break;
-              }
-            }
-          }
-
-          // Do not publish while Pelorus is initializing and do not store
-          // init-phase frames.
-          return;
         }
 
-        // First non-1 scan id => consider Pelorus initialized now.
         pelorus_initialized_ = true;
 
         // Compose an estimated frame to signal 'finished' to GLIM
@@ -373,68 +399,25 @@ private:
         estimated->T_world_lidar = result.T_world_lidar;
         estimated->T_world_imu = result.T_world_lidar * T_lidar_imu_;
         estimated->v_world_imu = result.velocity;
-        estimated->imu_bias.setZero();
-        estimated->frame_id = FrameID::IMU;
+        estimated->imu_bias << result.accel_bias, result.gyro_bias;
+        estimated->frame_id = FrameID::LIDAR;
 
         init_finished_frame = estimated;
 
         logger->info("[odometry_estimation_pelorus] Pelorus reported "
-                     "initialization (scan_id={}). Draining cached results.",
+                     "initialization (scan_id={}).",
                      scan_id);
 
-        // Drain cached results: for any cached result that has a pending frame,
-        // apply and publish
-        for (const uint64_t id : cache_order_) {
-          auto cache_it = cached_results_.find(id);
-          if (cache_it == cached_results_.end())
-            continue;
-
-          auto pending_it2 = pending_frames_.find(id);
-          if (pending_it2 != pending_frames_.end()) {
-            EstimationFrame::Ptr f = pending_it2->second;
-            apply_result_to_frame(f, cache_it->second);
-            frames_to_publish.push_back(f);
-            pending_frames_.erase(pending_it2);
-            // We'll erase cached results below for processed entries.
-          }
-        }
-
-        // Remove processed cached entries (those corresponding to frames we
-        // published)
-        for (auto it = cache_order_.begin(); it != cache_order_.end();) {
-          if (cached_results_.find(*it) == cached_results_.end()) {
-            it = cache_order_.erase(it);
-          } else {
-            // If this id was published above, remove it
-            bool published = false;
-            for (const auto &pf : frames_to_publish) {
-              if (pf->raw_frame &&
-                  pf->raw_frame ==
-                      pf->raw_frame) { /* no-op, keep logic clear */
-              }
-            }
-            // Erase cached entry only if we published a frame for it
-            if (std::any_of(frames_to_publish.begin(), frames_to_publish.end(),
-                            [&](const EstimationFrame::Ptr &pf) {
-                              return pf->raw_frame &&
-                                     cached_results_.count(*it) &&
-                                     (cached_results_[*it].cloud == pf->frame);
-                            })) {
-              cached_results_.erase(*it);
-              it = cache_order_.erase(it);
-            } else {
-              ++it;
-            }
-          }
-        }
-
-        // Handle current scan's pending frame if present (ensure it's
-        // published)
+        // Associate the first result with its input frame. If the callback won
+        // the race with insert_frame(), cache it for the normal cache-hit path.
         auto pending_it_curr = pending_frames_.find(scan_id);
         if (pending_it_curr != pending_frames_.end()) {
           apply_result_to_frame(pending_it_curr->second, result);
           frames_to_publish.push_back(pending_it_curr->second);
           pending_frames_.erase(pending_it_curr);
+        } else {
+          cached_results_[scan_id] = result;
+          cache_order_.push_back(scan_id);
         }
 
         // Update last pose again
@@ -460,14 +443,18 @@ private:
           }
         }
       }
+
+      if (frame_to_publish) {
+        queue_completed_frame_locked(frame_to_publish);
+      }
+      for (const auto &frame : frames_to_publish) {
+        queue_completed_frame_locked(frame);
+      }
     }
+
+    results_cv_.notify_all();
 
     // Perform notifications outside the lock
-    if (init_update_frame) {
-      IMUStateInitializationCallbacks::on_updated(init_update_frame,
-                                                  init_update_pose);
-    }
-
     if (init_finished_frame) {
       IMUStateInitializationCallbacks::on_finished(init_finished_frame);
     }
@@ -481,18 +468,112 @@ private:
     }
   }
 
+  void complete_frame(const EstimationFrame::Ptr &frame) {
+    {
+      std::lock_guard<std::mutex> lock(data_mutex_);
+      queue_completed_frame_locked(frame);
+    }
+
+    OdometryEstimationCallbacks::on_new_frame(frame);
+  }
+
+  void queue_completed_frame_locked(const EstimationFrame::ConstPtr &frame) {
+    active_frames_.push_back(frame);
+
+    while (active_frames_.size() > kMaxActiveFrames) {
+      marginalized_frames_.push_back(active_frames_.front());
+      active_frames_.pop_front();
+    }
+  }
+
+  void drain_marginalized_frames(
+      std::vector<EstimationFrame::ConstPtr> &marginalized_states) {
+    std::vector<EstimationFrame::ConstPtr> newly_marginalized;
+
+    {
+      std::lock_guard<std::mutex> lock(data_mutex_);
+      while (!marginalized_frames_.empty()) {
+        newly_marginalized.push_back(marginalized_frames_.front());
+        marginalized_frames_.pop_front();
+      }
+    }
+
+    marginalized_states.insert(marginalized_states.end(),
+                               newly_marginalized.begin(),
+                               newly_marginalized.end());
+
+    if (!newly_marginalized.empty()) {
+      OdometryEstimationCallbacks::on_marginalized_frames(newly_marginalized);
+    }
+  }
+
   // Helper: Apply result struct to frame object
   void apply_result_to_frame(EstimationFrame::Ptr &frame,
                              const CachedResult &res) {
     frame->T_world_lidar = res.T_world_lidar;
     frame->T_world_imu = res.T_world_lidar * T_lidar_imu_;
     frame->v_world_imu = res.velocity;
-    frame->imu_bias.setZero();
+    frame->imu_bias << res.accel_bias, res.gyro_bias;
+    frame->frame_id = FrameID::LIDAR;
 
-    // If Pelorus returned a registered/deskewed cloud, attach it
+    // Keep the returned deskewed points in the LiDAR frame so the cloud and
+    // T_world_lidar use the same coordinates.
     if (res.cloud) {
-      frame->frame = res.cloud;
+      std::vector<Eigen::Vector4d> points_lidar(res.cloud->size());
+      for (std::size_t i = 0; i < res.cloud->size(); i++) {
+        points_lidar[i] = res.cloud->points[i];
+      }
+
+      auto cloud = std::make_shared<gtsam_points::PointCloudCPU>(points_lidar);
+      if (res.cloud->intensities_storage.size() == points_lidar.size()) {
+        cloud->add_intensities(res.cloud->intensities_storage);
+      }
+
+      if (!points_lidar.empty()) {
+        const int requested_neighbors =
+            frame->raw_frame ? frame->raw_frame->k_neighbors
+                             : kDefaultCovarianceNeighbors;
+        const std::vector<int> neighbors =
+            find_neighbors(points_lidar, requested_neighbors);
+
+        std::vector<Eigen::Vector4d> normals;
+        std::vector<Eigen::Matrix4d> covariances;
+        covariance_estimation_->estimate(points_lidar, neighbors, normals,
+                                         covariances);
+        cloud->add_normals(normals);
+        cloud->add_covs(covariances);
+      }
+
+      frame->frame = cloud;
     }
+  }
+
+  static std::vector<int>
+  find_neighbors(const std::vector<Eigen::Vector4d> &points,
+                 const int requested_neighbors) {
+    if (points.empty()) {
+      return {};
+    }
+
+    const int num_points = static_cast<int>(points.size());
+    const int k = std::clamp(requested_neighbors, 1, num_points);
+    const gtsam_points::KdTree tree(points.data(), num_points);
+    std::vector<int> neighbors(points.size() * static_cast<std::size_t>(k));
+
+    for (std::size_t i = 0; i < points.size(); i++) {
+      std::vector<std::size_t> indices(static_cast<std::size_t>(k), i);
+      std::vector<double> squared_distances(static_cast<std::size_t>(k));
+      tree.knn_search(points[i].data(), static_cast<std::size_t>(k),
+                      indices.data(), squared_distances.data());
+
+      const std::size_t offset = i * static_cast<std::size_t>(k);
+      std::transform(indices.begin(), indices.end(),
+                     neighbors.begin() + offset, [](const std::size_t index) {
+                       return static_cast<int>(index);
+                     });
+    }
+
+    return neighbors;
   }
 
   // Helper: Manual conversion from raw C struct to GTSAM cloud
@@ -509,7 +590,7 @@ private:
     const pelorus_point_xyzi *pts_ptr = odom->points;
     for (size_t i = 0; i < odom->num_points; ++i) {
       const auto &p = pts_ptr[i];
-      pts.emplace_back(p.x, p.y, p.z, 0.0);
+      pts.emplace_back(p.x, p.y, p.z, 1.0);
       ints.push_back(p.intensity);
     }
 
@@ -531,6 +612,7 @@ private:
 
 private:
   std::unique_ptr<pelorus::Pelorus> pelorus_;
+  std::unique_ptr<CloudCovarianceEstimation> covariance_estimation_;
   std::string generated_rl_path_;
 
   long next_id_{0};
@@ -542,6 +624,8 @@ private:
 
   // Shared State Data
   std::mutex data_mutex_;
+  std::condition_variable results_cv_;
+  std::uint64_t result_generation_{0};
 
   // Frames submitted to Pelorus but not yet returned
   std::unordered_map<uint64_t, EstimationFrame::Ptr> pending_frames_;
@@ -551,7 +635,13 @@ private:
 
   // Cache eviction management
   std::deque<uint64_t> cache_order_;
+  std::deque<EstimationFrame::ConstPtr> active_frames_;
+  std::deque<EstimationFrame::ConstPtr> marginalized_frames_;
+
+  static constexpr size_t kMaxActiveFrames = 10;
   static constexpr size_t kCacheMax = 64;
+  static constexpr int kDefaultCovarianceNeighbors = 8;
+  static constexpr std::chrono::seconds kResultStallTimeout{5};
 };
 
 extern "C" OdometryEstimationBase *create_odometry_estimation_module() {

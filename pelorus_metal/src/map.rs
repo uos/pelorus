@@ -236,7 +236,7 @@ pub fn init_map_impl(
     voxel_size: f32,
     sensitivity: f32,
     min_dist: f32,
-    _nbtype: NeighborType,
+    nbtype: NeighborType,
 ) {
     let capacity = capacity.next_power_of_two();
     let dist_cap = capacity as u32;
@@ -324,7 +324,7 @@ pub fn init_map_impl(
         sensitivity,
         min_dist,
         scan_number: 0,
-        nbtype: _nbtype.as_u32(),
+        nbtype: nbtype.as_u32(),
         add_cursor: 0,
         lru_cursor: 0,
         parity_trace_enabled: parity_trace_enabled(),

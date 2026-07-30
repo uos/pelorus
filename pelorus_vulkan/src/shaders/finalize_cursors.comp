@@ -1,8 +1,5 @@
 #version 450
 
-// Single-thread kernel to finalize cursors after deterministic slot assignment
-// Matches CUDA's finalize_cursors_kernel exactly
-
 layout(local_size_x = 1) in;
 
 layout(std430, set = 0, binding = 15) readonly buffer IsNew { uint is_new[]; };

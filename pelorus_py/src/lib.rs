@@ -1,9 +1,11 @@
-//! Python bindings for Pelorus Robot Odometry
+//! Python bindings for Pelorus.
 
 use numpy::{IntoPyArray, PyReadonlyArray2};
 use pyo3::exceptions::{PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
-use pyo3::types::{PyDict, PyList};
+use pyo3::types::{PyDict, PyList, PySequence};
+#[cfg(feature = "rayon")]
+use std::sync::OnceLock;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, mpsc};
 use std::thread;
@@ -13,20 +15,138 @@ use nalgebra::{Isometry3, Matrix3, SMatrix};
 
 use pelorus_core::config::ast_to_config;
 use pelorus_core::{ImuMsg, LidarVendor, LioConfig, OdomMsg, PrelioProcessedCloud};
-use pelorus_reg::Registration;
 use pelorus_reg::pipeline::{PelorusOutput, Pipeline};
 use prelio::Prelio;
-use ratslang;
 use ros_pointcloud2::prelude::*;
 use ros2_interfaces_jazzy_serde::sensor_msgs::msg::{PointCloud2, PointField};
 
 const DEFAULT_CONFIG_STR: &str = include_str!("../../default.rl");
+
+#[cfg(any(
+    all(feature = "cuda", feature = "metal"),
+    all(feature = "cuda", feature = "vulkan"),
+    all(feature = "metal", feature = "vulkan"),
+))]
+compile_error!("Select at most one Pelorus acceleration backend: Metal, CUDA, or Vulkan");
 
 impl_pointcloud2_for_ros2_interfaces_jazzy_serde!();
 
 /// Helper to convert sec/nanosec to f64 seconds
 fn sec_nanosec_to_timestamp(sec: i32, nanosec: u32) -> f64 {
     sec as f64 + (nanosec as f64 / 1e9)
+}
+
+trait NumpyPointScalar: Copy {
+    fn to_f64(self) -> f64;
+}
+
+impl NumpyPointScalar for f32 {
+    fn to_f64(self) -> f64 {
+        self as f64
+    }
+}
+
+impl NumpyPointScalar for f64 {
+    fn to_f64(self) -> f64 {
+        self
+    }
+}
+
+fn point_component_to_f32(value: f64, point_index: usize, field: &str) -> PyResult<f32> {
+    if !value.is_finite() || value < f32::MIN as f64 || value > f32::MAX as f64 {
+        return Err(PyValueError::new_err(format!(
+            "point {point_index} field '{field}' must be a finite float32 value"
+        )));
+    }
+    Ok(value as f32)
+}
+
+fn point_timestamp_to_u32(value: f64, point_index: usize) -> PyResult<u32> {
+    if !value.is_finite() || value < 0.0 || value > u32::MAX as f64 {
+        return Err(PyValueError::new_err(format!(
+            "point {point_index} field 't' must be a finite nanosecond offset in 0..={}",
+            u32::MAX
+        )));
+    }
+    let rounded = value.round();
+    if rounded > u32::MAX as f64 {
+        return Err(PyValueError::new_err(format!(
+            "point {point_index} field 't' must be a finite nanosecond offset in 0..={}",
+            u32::MAX
+        )));
+    }
+    Ok(rounded as u32)
+}
+
+fn validate_pointcloud_buffer(
+    height: u32,
+    width: u32,
+    point_step: u32,
+    row_step: u32,
+    data_len: usize,
+) -> PyResult<()> {
+    if height == 0 || width == 0 {
+        return Err(PyValueError::new_err(
+            "PointCloud2 height and width must be greater than zero",
+        ));
+    }
+    if point_step == 0 {
+        return Err(PyValueError::new_err(
+            "PointCloud2 point_step must be greater than zero",
+        ));
+    }
+
+    let minimum_row_step = width
+        .checked_mul(point_step)
+        .ok_or_else(|| PyValueError::new_err("PointCloud2 row size overflows u32"))?;
+    if row_step < minimum_row_step {
+        return Err(PyValueError::new_err(format!(
+            "PointCloud2 row_step ({row_step}) is smaller than width * point_step ({minimum_row_step})"
+        )));
+    }
+
+    let required_data_len = (height as usize)
+        .checked_mul(row_step as usize)
+        .ok_or_else(|| PyValueError::new_err("PointCloud2 data size overflows usize"))?;
+    if data_len < required_data_len {
+        return Err(PyValueError::new_err(format!(
+            "PointCloud2 data contains {data_len} bytes but at least {required_data_len} are required"
+        )));
+    }
+
+    Ok(())
+}
+
+#[cfg(feature = "rayon")]
+static RAYON_THREADS: OnceLock<usize> = OnceLock::new();
+
+fn configure_thread_pool(num_threads: usize) {
+    if num_threads == 0 {
+        return;
+    }
+    #[cfg(feature = "rayon")]
+    {
+        let configured_threads = RAYON_THREADS.get_or_init(|| {
+            if let Err(e) = rayon::ThreadPoolBuilder::new()
+                .num_threads(num_threads)
+                .build_global()
+            {
+                error!("Failed to configure rayon thread pool to {num_threads} threads: {e}");
+            }
+            num_threads
+        });
+        if *configured_threads != num_threads {
+            log::warn!(
+                "Rayon thread pool already configured with {} threads; ignoring request for {} threads (first Handle wins).",
+                configured_threads,
+                num_threads
+            );
+        }
+    }
+    #[cfg(not(feature = "rayon"))]
+    log::warn!(
+        "Ignoring num_threads={num_threads}; thread-pool configuration requires the rayon feature."
+    );
 }
 
 fn transform_pose_covariance(
@@ -107,6 +227,8 @@ struct ImuInitState {
     buffer: Option<Vec<ImuMsg>>,
 }
 
+type ImuInitCallback = Arc<Mutex<dyn FnMut(&[ImuMsg]) + Send + Sync>>;
+
 struct ProcessingThread {
     pipeline: Pipeline,
     prelio_receiver: mpsc::Receiver<PrelioProcessedCloud>,
@@ -114,24 +236,16 @@ struct ProcessingThread {
     ready_for_next: mpsc::Sender<()>,
     odom_callback: Arc<Mutex<Option<Py<PyAny>>>>,
     shutdown: Arc<AtomicBool>,
-    // Latest odometry produced (for synchronous retrieval during init)
-    last_output: Arc<Mutex<Option<PelorusOutput>>>,
 }
 
 fn dispatch_output(
     output: PelorusOutput,
     odom_callback: &Arc<Mutex<Option<Py<PyAny>>>>,
     result_sender: &mpsc::Sender<PelorusOutput>,
-    last_output: &Arc<Mutex<Option<PelorusOutput>>>,
     sent_count: &mut usize,
     ext_lidar_to_imu: &nalgebra::Isometry3<f64>,
     config: &LioConfig,
 ) {
-    // Store latest output for synchronous queries during IMU init
-    if let Ok(mut last) = last_output.lock() {
-        *last = Some(output.clone());
-    }
-
     // Check if callback is set
     let cb_opt = odom_callback.lock().ok().and_then(|guard| {
         guard
@@ -175,10 +289,6 @@ fn processing_thread_main(thread: ProcessingThread) {
             continue;
         }
 
-        let scan_id = processed.scan_id;
-        let timestamp = processed.end_of_frame_time;
-        let angular = processed.end_of_frame_twist.angular;
-
         let lidar_to_imu = nalgebra::Isometry3::from_parts(
             thread
                 .pipeline
@@ -205,45 +315,12 @@ fn processing_thread_main(thread: ProcessingThread) {
                     output,
                     &thread.odom_callback,
                     &thread.result_sender,
-                    &thread.last_output,
                     &mut sent_count,
                     &lidar_to_imu,
                     &thread.pipeline.config,
                 );
             }
-            Ok(None) => {
-                // Build fallback from current map state (no registered cloud available)
-                if let Ok(map_guard) = thread.pipeline.map().lock() {
-                    let state = map_guard.get_state();
-                    let pose_cov =
-                        map_guard.get_output_pose_covariance(&nalgebra::Isometry3::identity());
-                    let twist_cov = map_guard.get_output_twist_covariance(&state.pose);
-
-                    let fallback = PelorusOutput {
-                        scan_id,
-                        timestamp,
-                        pose: state.pose,
-                        pose_covariance: pose_cov,
-                        linear_velocity: state.linear_velocity,
-                        angular_velocity: angular,
-                        twist_covariance: twist_cov,
-                        cloud: Vec::new(),
-                        frame_id: String::new(),
-                        #[cfg(feature = "processing-time-export")]
-                        processing_time_ns: 0,
-                    };
-
-                    dispatch_output(
-                        fallback,
-                        &thread.odom_callback,
-                        &thread.result_sender,
-                        &thread.last_output,
-                        &mut sent_count,
-                        &lidar_to_imu,
-                        &thread.pipeline.config,
-                    );
-                }
-            }
+            Ok(None) => {}
             Err(e) => {
                 error!("fatal registration error; stopping processing thread: {e:#}");
                 break;
@@ -255,12 +332,12 @@ fn processing_thread_main(thread: ProcessingThread) {
 }
 
 /// Python wrapper for Pelorus handle
-#[pyclass(name = "Handle")]
+#[pyclass(name = "Handle", module = "pelorus")]
 struct PelorusHandle {
     prelio: Arc<Mutex<Option<Prelio>>>,
     result_receiver: Arc<Mutex<mpsc::Receiver<PelorusOutput>>>,
     odom_callback: Arc<Mutex<Option<Py<PyAny>>>>,
-    imu_init_cb: Option<Arc<Mutex<dyn FnMut(&[ImuMsg]) + Send + Sync>>>,
+    imu_init_cb: Option<ImuInitCallback>,
     imu_init_state: Arc<Mutex<ImuInitState>>,
     imu_predictor_init_time_sec: f64,
     _processing_thread: Option<thread::JoinHandle<()>>,
@@ -283,23 +360,7 @@ impl PelorusHandle {
         let mut config = load_pelorus_config(config_path)
             .map_err(|e| PyRuntimeError::new_err(format!("Failed to load configuration: {}", e)))?;
 
-        if config.num_threads > 0 {
-            #[cfg(feature = "rayon")]
-            if let Err(e) = rayon::ThreadPoolBuilder::new()
-                .num_threads(config.num_threads)
-                .build_global()
-            {
-                log::warn!(
-                    "Failed to configure rayon thread pool to {} threads: {e}",
-                    config.num_threads
-                );
-            }
-            #[cfg(not(feature = "rayon"))]
-            log::warn!(
-                "Ignoring num_threads={}; thread-pool configuration requires the rayon feature.",
-                config.num_threads
-            );
-        }
+        configure_thread_pool(config.num_threads);
 
         if !device_specific_pointcloud2 {
             // Select the generic parsing path (internally uses a vendor mode, but we keep the
@@ -331,18 +392,15 @@ impl PelorusHandle {
 
         let odom_callback: Arc<Mutex<Option<Py<PyAny>>>> = Arc::new(Mutex::new(None));
         let shutdown: Arc<AtomicBool> = Arc::new(AtomicBool::new(false));
-        let last_output: Arc<Mutex<Option<PelorusOutput>>> = Arc::new(Mutex::new(None));
-
         let keep_config = pipeline.config.clone();
 
         let processing_thread = ProcessingThread {
-            pipeline: pipeline,
+            pipeline,
             prelio_receiver,
             result_sender: result_tx,
             ready_for_next: ready_tx,
             odom_callback: Arc::clone(&odom_callback),
             shutdown: Arc::clone(&shutdown),
-            last_output: Arc::clone(&last_output),
         };
 
         let thread_handle = thread::spawn(move || {
@@ -396,6 +454,7 @@ impl PelorusHandle {
     }
 
     /// Add an IMU message
+    #[allow(clippy::too_many_arguments)]
     #[pyo3(signature = (timestamp_sec, timestamp_nanosec, orientation, orientation_covariance, angular_velocity, angular_velocity_covariance, linear_acceleration, linear_acceleration_covariance))]
     fn add_imu(
         &self,
@@ -597,11 +656,11 @@ impl PelorusHandle {
     ///
     /// Accepts multiple input formats:
     /// 1. PointCloud2 dict (ROS2 format)
-    /// 2. Numpy array (Nx3/Nx4/Nx5)
+    /// 2. NumPy float32/float64 array (Nx3/Nx4/Nx5)
     ///    - Nx3: [x, y, z]
     ///    - Nx4: [x, y, z, t] where `t` is `uint32` nanoseconds offset (relative to header timestamp)
     ///    - Nx5: [x, y, z, intensity, t]
-    /// 3. List of points with the same shapes as above
+    /// 3. Python sequence of point sequences with the same shapes as above
     ///
     /// Timestamp semantics:
     /// - For dict/ROS2 PointCloud2: uses `header.stamp` as the scan reference time.
@@ -617,7 +676,7 @@ impl PelorusHandle {
     ) -> PyResult<u64> {
         if let Ok(dict) = cloud.cast::<PyDict>() {
             let scan_id = self.add_pointcloud_from_dict(dict)?;
-            return Ok(scan_id);
+            Ok(scan_id)
         } else if let Ok(array) = cloud.extract::<PyReadonlyArray2<f32>>() {
             let sec = timestamp_sec.ok_or_else(|| {
                 PyValueError::new_err("timestamp_sec required for numpy array input")
@@ -625,20 +684,30 @@ impl PelorusHandle {
             let nanosec = timestamp_nanosec.ok_or_else(|| {
                 PyValueError::new_err("timestamp_nanosec required for numpy array input")
             })?;
-            let scan_id = self.add_pointcloud_from_numpy(array, sec, nanosec)?;
-            return Ok(scan_id);
-        } else if let Ok(list) = cloud.cast::<PyList>() {
-            let sec = timestamp_sec
-                .ok_or_else(|| PyValueError::new_err("timestamp_sec required for list input"))?;
-            let nanosec = timestamp_nanosec.ok_or_else(|| {
-                PyValueError::new_err("timestamp_nanosec required for list input")
+            let scan_id = self.add_pointcloud_from_numpy(array.as_array(), sec, nanosec)?;
+            Ok(scan_id)
+        } else if let Ok(array) = cloud.extract::<PyReadonlyArray2<f64>>() {
+            let sec = timestamp_sec.ok_or_else(|| {
+                PyValueError::new_err("timestamp_sec required for numpy array input")
             })?;
-            let scan_id = self.add_pointcloud_from_list(list, sec, nanosec)?;
-            return Ok(scan_id);
+            let nanosec = timestamp_nanosec.ok_or_else(|| {
+                PyValueError::new_err("timestamp_nanosec required for numpy array input")
+            })?;
+            let scan_id = self.add_pointcloud_from_numpy(array.as_array(), sec, nanosec)?;
+            Ok(scan_id)
+        } else if let Ok(sequence) = cloud.cast::<PySequence>() {
+            let sec = timestamp_sec.ok_or_else(|| {
+                PyValueError::new_err("timestamp_sec required for sequence input")
+            })?;
+            let nanosec = timestamp_nanosec.ok_or_else(|| {
+                PyValueError::new_err("timestamp_nanosec required for sequence input")
+            })?;
+            let scan_id = self.add_pointcloud_from_sequence(sequence, sec, nanosec)?;
+            Ok(scan_id)
         } else {
-            return Err(PyValueError::new_err(
-                "cloud must be a PointCloud2 dict, numpy array (Nx3/Nx4/Nx5), or list of points",
-            ));
+            Err(PyValueError::new_err(
+                "cloud must be a PointCloud2 dict, float32/float64 NumPy array (Nx3/Nx4/Nx5), or sequence of points",
+            ))
         }
     }
 
@@ -666,7 +735,7 @@ impl PelorusHandle {
                         .initial_translation_lidar_to_imu
                         .into(),
                     nalgebra::UnitQuaternion::from_matrix(
-                        &self.config.imu_params.initial_rotation_lidar_to_imu.into(),
+                        &self.config.imu_params.initial_rotation_lidar_to_imu,
                     ),
                 );
                 Self::fill_odom_dict(&dict, &odom, &self.config, &lidar_to_imu)?;
@@ -712,7 +781,7 @@ impl PelorusHandle {
                 .initial_translation_lidar_to_imu
                 .into(),
             nalgebra::UnitQuaternion::from_matrix(
-                &self.config.imu_params.initial_rotation_lidar_to_imu.into(),
+                &self.config.imu_params.initial_rotation_lidar_to_imu,
             ),
         );
 
@@ -806,6 +875,15 @@ impl PelorusHandle {
         let angular_velocity = vec![angvel.x, angvel.y, angvel.z];
         dict.set_item("angular_velocity", angular_velocity)?;
 
+        dict.set_item(
+            "accel_bias",
+            vec![odom.accel_bias.x, odom.accel_bias.y, odom.accel_bias.z],
+        )?;
+        dict.set_item(
+            "gyro_bias",
+            vec![odom.gyro_bias.x, odom.gyro_bias.y, odom.gyro_bias.z],
+        )?;
+
         dict.set_item("twist_covariance", twist_covariance.to_vec())?;
 
         let num_points = odom.cloud.len();
@@ -821,6 +899,8 @@ impl PelorusHandle {
         let points_array = array.into_pyarray(dict.py());
         dict.set_item("points", points_array)?;
         dict.set_item("scan_id", odom.scan_id)?;
+        #[cfg(feature = "processing-time-export")]
+        dict.set_item("processing_time_ns", odom.processing_time_ns)?;
 
         Ok(())
     }
@@ -835,7 +915,7 @@ impl PelorusHandle {
         let stamp = header.get_item("stamp")?;
         let sec: i32 = stamp.get_item("sec")?.extract()?;
         let nanosec: u32 = stamp.get_item("nanosec")?.extract()?;
-        let frame_id: String = String::new();
+        let frame_id: String = header.get_item("frame_id")?.extract()?;
 
         // Extract cloud data - PyDict.get_item returns PyResult<Option<Bound>>
         let height: u32 = cloud_dict
@@ -874,12 +954,12 @@ impl PelorusHandle {
             let name: String = field.get_item("name")?.extract()?;
             let offset: u32 = field.get_item("offset")?.extract()?;
             let datatype: u8 = field.get_item("datatype")?.extract()?;
-            // `count` is always 1 in the simplified C API
+            let count: u32 = field.get_item("count")?.extract()?;
             fields.push(PointField {
                 name,
                 offset,
                 datatype,
-                count: 1,
+                count,
             });
         }
 
@@ -888,6 +968,10 @@ impl PelorusHandle {
             .get_item("data")?
             .ok_or_else(|| PyValueError::new_err("Missing 'data' field"))?
             .extract()?;
+        if fields.is_empty() {
+            return Err(PyValueError::new_err("PointCloud2 fields cannot be empty"));
+        }
+        validate_pointcloud_buffer(height, width, point_step, row_step, data.len())?;
 
         // Create PointCloud2 message
         let cloud_msg = PointCloud2 {
@@ -935,17 +1019,21 @@ impl PelorusHandle {
             let name: String = field_any.getattr("name")?.extract()?;
             let offset: u32 = field_any.getattr("offset")?.extract()?;
             let datatype: u8 = field_any.getattr("datatype")?.extract()?;
-            // `count` is always 1 in the simplified C API
+            let count: u32 = field_any.getattr("count")?.extract()?;
             fields.push(PointField {
                 name,
                 offset,
                 datatype,
-                count: 1,
+                count,
             });
         }
 
         let data_any = cloud_msg.getattr("data")?;
         let data: Vec<u8> = data_any.extract()?;
+        if fields.is_empty() {
+            return Err(PyValueError::new_err("PointCloud2 fields cannot be empty"));
+        }
+        validate_pointcloud_buffer(height, width, point_step, row_step, data.len())?;
 
         let cloud_msg = PointCloud2 {
             header: ros2_interfaces_jazzy_serde::std_msgs::msg::Header {
@@ -972,14 +1060,13 @@ impl PelorusHandle {
         Ok(scan_id)
     }
 
-    /// Add point cloud from numpy array (Nx3 or Nx4: x, y, z, [t])
-    fn add_pointcloud_from_numpy(
+    /// Add point cloud from a NumPy array.
+    fn add_pointcloud_from_numpy<T: NumpyPointScalar>(
         &self,
-        array: PyReadonlyArray2<f32>,
+        array: ndarray::ArrayView2<'_, T>,
         timestamp_sec: i32,
         timestamp_nanosec: u32,
     ) -> PyResult<u64> {
-        let array = array.as_array();
         let shape = array.shape();
 
         if shape.len() != 2 {
@@ -989,6 +1076,9 @@ impl PelorusHandle {
         let num_points = shape[0];
         let num_fields = shape[1];
 
+        if num_points == 0 {
+            return Err(PyValueError::new_err("Point cloud cannot be empty"));
+        }
         if num_fields != 3 && num_fields != 4 && num_fields != 5 {
             return Err(PyValueError::new_err(
                 "Array must have 3, 4, or 5 columns: [x, y, z], [x, y, z, t], or [x, y, z, intensity, t]",
@@ -1006,17 +1096,23 @@ impl PelorusHandle {
         for i in 0..num_points {
             // x, y, z
             for j in 0..3 {
-                data.extend_from_slice(&array[[i, j]].to_le_bytes());
+                let field = ["x", "y", "z"][j];
+                let value = point_component_to_f32(array[[i, j]].to_f64(), i, field)?;
+                data.extend_from_slice(&value.to_le_bytes());
             }
 
             // intensity (f32)
-            let intensity: f32 = if has_intensity { array[[i, 3]] } else { 0.0 };
+            let intensity = if has_intensity {
+                point_component_to_f32(array[[i, 3]].to_f64(), i, "intensity")?
+            } else {
+                0.0
+            };
             data.extend_from_slice(&intensity.to_le_bytes());
 
             // t (u32)
             let t_val: u32 = if has_t {
                 let idx = if has_intensity { 4 } else { 3 };
-                array[[i, idx]] as u32
+                point_timestamp_to_u32(array[[i, idx]].to_f64(), i)?
             } else {
                 0
             };
@@ -1085,23 +1181,25 @@ impl PelorusHandle {
         Ok(scan_id)
     }
 
-    /// Add point cloud from list of points [[x, y, z, t], ...]
-    fn add_pointcloud_from_list(
+    /// Add point cloud from a sequence of point sequences.
+    fn add_pointcloud_from_sequence(
         &self,
-        points_list: &Bound<'_, PyList>,
+        points: &Bound<'_, PySequence>,
         timestamp_sec: i32,
         timestamp_nanosec: u32,
     ) -> PyResult<u64> {
-        let num_points = points_list.len();
+        let num_points = points.len()?;
 
         if num_points == 0 {
-            return Err(PyValueError::new_err("Point list cannot be empty"));
+            return Err(PyValueError::new_err("Point cloud cannot be empty"));
         }
 
         // Check first point to determine format
-        let first_point = points_list.get_item(0)?;
-        let first_point_list = first_point.cast::<PyList>()?;
-        let num_fields = first_point_list.len();
+        let first_point = points.get_item(0)?;
+        let first_point_sequence = first_point.cast::<PySequence>().map_err(|_| {
+            PyValueError::new_err("Each point must be a list, tuple, or other sequence")
+        })?;
+        let num_fields = first_point_sequence.len()?;
 
         if num_fields != 3 && num_fields != 4 && num_fields != 5 {
             return Err(PyValueError::new_err(
@@ -1114,10 +1212,13 @@ impl PelorusHandle {
         let point_step = 20;
         let mut data = Vec::with_capacity(num_points * point_step);
 
-        for point in points_list.iter() {
-            let point_list = point.cast::<PyList>()?;
+        for point_index in 0..num_points {
+            let point = points.get_item(point_index)?;
+            let point_sequence = point.cast::<PySequence>().map_err(|_| {
+                PyValueError::new_err("Each point must be a list, tuple, or other sequence")
+            })?;
 
-            if point_list.len() != num_fields {
+            if point_sequence.len()? != num_fields {
                 return Err(PyValueError::new_err(
                     "All points must have the same number of fields",
                 ));
@@ -1125,13 +1226,16 @@ impl PelorusHandle {
 
             // x, y, z
             for i in 0..3 {
-                let val: f32 = point_list.get_item(i)?.extract()?;
+                let value: f64 = point_sequence.get_item(i)?.extract()?;
+                let field = ["x", "y", "z"][i];
+                let val = point_component_to_f32(value, point_index, field)?;
                 data.extend_from_slice(&val.to_le_bytes());
             }
 
             // intensity
             let intensity: f32 = if has_intensity {
-                point_list.get_item(3)?.extract()?
+                let value: f64 = point_sequence.get_item(3)?.extract()?;
+                point_component_to_f32(value, point_index, "intensity")?
             } else {
                 0.0
             };
@@ -1140,10 +1244,8 @@ impl PelorusHandle {
             // t
             let t_val: u32 = if has_t {
                 let idx = if has_intensity { 4 } else { 3 };
-                point_list.get_item(idx)?.extract().or_else(|_| {
-                    let v: f64 = point_list.get_item(idx)?.extract()?;
-                    Ok::<u32, pyo3::PyErr>(v as u32)
-                })?
+                let value: f64 = point_sequence.get_item(idx)?.extract()?;
+                point_timestamp_to_u32(value, point_index)?
             } else {
                 0
             };

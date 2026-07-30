@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 import os
 import re
-import select
 import shutil
 import subprocess
 import sys
@@ -25,12 +24,6 @@ def run_cmd(cmd, env=None):
     return p.stdout.decode()
 
 
-def run_cmd_allow_fail(cmd, env=None):
-    """Run a command but don't sys.exit on non-zero return; return (stdout, stderr, returncode)"""
-    p = subprocess.run(cmd, shell=True, capture_output=True, env=env)
-    return (p.stdout.decode(), p.stderr.decode(), p.returncode)
-
-
 def maybe_line_buffered_cmd(cmd):
     """On Linux CI, force line-buffered child output if stdbuf is available."""
     if os.name == "posix" and shutil.which("stdbuf"):
@@ -38,102 +31,17 @@ def maybe_line_buffered_cmd(cmd):
     return cmd
 
 
-def run_and_collect_until(cmd, env=None, sentinels=None):
-    """Run command and stream stdout until one of the sentinel regexes appears.
-    Returns (stdout, stderr, returncode). Does not use timeouts; determinism relies on the example to emit sentinel and exit."""
+def run_and_collect(cmd, env=None):
+    """Run an example to completion and return stdout, stderr, and status."""
     cmd = maybe_line_buffered_cmd(cmd)
-    p = subprocess.Popen(
+    p = subprocess.run(
         cmd,
         shell=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
+        capture_output=True,
         env=env,
         text=True,
     )
-    out_lines = []
-    matched = False
-    should_stop_process = False
-    terminated_by_us = False
-
-    point_count = None
-    point_lines = 0
-
-    def handle_line(ln):
-        nonlocal matched, should_stop_process, point_count, point_lines
-        out_lines.append(ln)
-        if sentinels and not matched:
-            for s in sentinels:
-                if re.search(s, ln):
-                    matched = True
-                    break
-        if matched:
-            m_pc = re.search(r"Point cloud: (\d+) points", ln)
-            if m_pc:
-                try:
-                    point_count = int(m_pc.group(1))
-                except Exception:
-                    point_count = None
-            m_point = POINT_RE.match(ln)
-            if m_point:
-                point_lines += 1
-                if point_count is not None and point_lines >= point_count:
-                    should_stop_process = True
-
-    try:
-        buf = ""
-        while True:
-            if p.stdout is None:
-                break
-
-            rlist, _, _ = select.select([p.stdout], [], [], 0.2)
-            if not rlist:
-                if p.poll() is not None:
-                    break
-                continue
-
-            chunk = os.read(p.stdout.fileno(), 4096)
-            if not chunk:
-                break
-
-            buf += chunk.decode(errors="replace")
-            while "\n" in buf:
-                ln, buf = buf.split("\n", 1)
-                handle_line(ln + "\n")
-                if should_stop_process:
-                    break
-            if should_stop_process:
-                break
-
-        if buf:
-            handle_line(buf)
-
-        if should_stop_process and p.poll() is None:
-            terminated_by_us = True
-            p.terminate()
-            try:
-                rest_out, rest_err = p.communicate(timeout=5)
-            except subprocess.TimeoutExpired:
-                p.kill()
-                rest_out, rest_err = p.communicate()
-        else:
-            # capture any remaining output after process exits
-            try:
-                rest_out, rest_err = p.communicate(timeout=600)
-            except subprocess.TimeoutExpired:
-                p.kill()
-                rest_out, rest_err = p.communicate()
-        if rest_out:
-            out_lines.append(rest_out)
-        stderr = rest_err if rest_err else ""
-    finally:
-        # Ensure process always exits
-        if p.poll() is None:
-            p.kill()
-            p.wait()
-    rc = p.returncode
-    if terminated_by_us and rc is not None and rc < 0:
-        rc = 0
-    return ("".join(out_lines), stderr, rc)
+    return (p.stdout, p.stderr, p.returncode)
 
 
 def parse_points(output):
@@ -312,27 +220,26 @@ def main():
         sys.stderr.reconfigure(line_buffering=True)
 
     log("Running async_callback...")
-    out_async, err_async, rc_async = run_and_collect_until(
+    out_async, err_async, rc_async = run_and_collect(
         f"./async_callback {dataset_path}",
         env=env,
-        sentinels=[r"Callback invoked! Odometry #\d+ received \(scan_id=\d+\)"],
     )
 
     log("Running sync_blocking...")
-    out_sync, err_sync, rc_sync = run_and_collect_until(
+    out_sync, err_sync, rc_sync = run_and_collect(
         f"./sync_blocking {dataset_path}",
         env=env,
-        sentinels=[r"Point cloud: \d+ points"],
     )
 
     out_cpp = None
     try:
         subprocess.run("make cpp_wrapper", shell=True, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-        if subprocess.os.path.exists("build/cpp_wrapper"):
-            log("Running cpp_wrapper (build/cpp_wrapper)...")
-            out_cpp, err_cpp, rc_cpp = run_and_collect_until(
-                f"./build/cpp_wrapper {dataset_path}", env=env,
-                sentinels=[r"Point cloud: \d+ points", r"Callback invoked! Odometry #\d+ received "])
+        cpp_wrapper = "cmake-build/examples/cpp_wrapper"
+        if subprocess.os.path.exists(cpp_wrapper):
+            log(f"Running cpp_wrapper ({cpp_wrapper})...")
+            out_cpp, err_cpp, rc_cpp = run_and_collect(
+                f"./{cpp_wrapper} {dataset_path}", env=env
+            )
             if rc_cpp != 0:
                 print(f"Error: cpp_wrapper exited with code {rc_cpp}. stdout/stderr follow:\n{out_cpp}\n{err_cpp}")
                 sys.exit(1)
@@ -360,10 +267,9 @@ def main():
     py_stderr = None
     if can_run_py:
         try:
-            py_stdout, py_stderr, py_returncode = run_and_collect_until(
+            py_stdout, py_stderr, py_returncode = run_and_collect(
                 f"{python_exe} ../../pelorus_py/examples/async_callback.py {dataset_path}",
                 env=env,
-                sentinels=[r"Matched odom:", r"Callback invoked! Odometry #\d+ received \(scan_id=\d+\)"],
             )
             if py_stdout is None:
                 pts_py = None

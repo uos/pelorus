@@ -2,9 +2,11 @@
 icon: lucide/rocket
 ---
 
-# Installation
+# Binaries
 
-The Pelorus beta is currently available as precompiled binaries for Linux on x86_64 and aarch64 (ARM64).
+The Pelorus beta is currently available as precompiled binaries for Linux on x86_64 and aarch64 (ARM64) but highly experimental.
+
+Since the binaries may have problems during the current beta, we recommend building from source. Follow the related instructions from the other pages for that.
 
 You can [setup the UOS PPA](https://codeberg.org/uos-robotics/ppa/src/branch/pages/README.md) for the Ubuntu LTS versions to install Pelorus and get updates automatically.
 

@@ -6,13 +6,11 @@ icon: lucide/rocket
 
 # Introduction
 
-**Pelorus** is a high efficient *Lidar Inertial Odometry*, written in Rust and CUDA and developed by the Computer Engineering Group at the Osnabrück University.
+**Pelorus** is a resource-aware *Lidar-Inertial Odometry*, written in Rust, CUDA, Vulkan and Metal. It is developed by the Computer Engineering Group at the Osnabrück University.
 
 The online mode provides more than 20 Hz odometry on an Jetson Orin Nano with an 128-layer Ouster Lidar while keeping resource consumption to a minimum. Pelorus aims to *just run* in the background so the main application can use the resources for the actual task at hand.
 
-You can run Pelorus on embedded devices (like the NVIDIA Jetson series) as well as on desktop systems with or without GPUs.
-
-This first release is a public beta with binaries only. The source code will be published in the near future alongside the paper.
+You can run Pelorus on embedded devices (like the NVIDIA Jetson series) as well as on desktop systems with or without GPUs, supporting NVIDIA, AMD, Apple and Intel.
 
 ## First look
 

@@ -14,12 +14,8 @@ void main() {
 
     uint pt_count = voxels[i].point_count;
     uint last_scan = voxels[i].last_scan;
-    // Guard against underflow: if last_scan > scan_number, treat as 0
     uint temporal_dist = (pc.scan_number >= last_scan) ? (pc.scan_number - last_scan) : 0u;
 
-    // Match CUDA semantics:
-    // score = temporal_dist / point_count, empty voxels = huge score, then sort by score descending.
-    // Radix sort here is ascending, so invert bits to emulate descending order.
     float score = (pt_count == 0u) ? 1e20 : (float(temporal_dist) / float(pt_count));
     lru_keys[i] = ~floatBitsToUint(score);
     lru_vals[i] = i;

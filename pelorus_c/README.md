@@ -4,7 +4,7 @@ C library bindings for Pelorus.
 
 ## Building and Installation
 
-### Using CMake (Recommended)
+### CMake
 
 The library can be built and installed using CMake:
 
@@ -25,11 +25,19 @@ sudo make install
 
 #### Feature Flags
 
+- `PELORUS_FEATURE_RAYON` - Enable Rayon CPU parallelism (default: ON)
 - `PELORUS_FEATURE_METAL` - Enable Metal acceleration (default: OFF)
 - `PELORUS_FEATURE_CUDA` - Enable CUDA acceleration (default: OFF)
+- `PELORUS_FEATURE_VULKAN` - Enable Vulkan acceleration (default: OFF)
 - `PELORUS_FEATURE_NO_IMU_SYNC` - Disable IMU synchronization (default: OFF)
+- `PELORUS_FEATURE_LARGE_PROCESSING_QUEUE` - Use larger internal processing queues (default: OFF)
+
+Select at most one GPU backend. Metal is available on macOS; CUDA requires a
+supported NVIDIA CUDA installation; Vulkan requires a compatible Vulkan device
+and driver. If no GPU backend is selected, Pelorus uses the CPU backend.
 
 Example with CUDA:
+
 ```bash
 cmake .. -DPELORUS_FEATURE_CUDA=ON
 ```
@@ -37,8 +45,14 @@ cmake .. -DPELORUS_FEATURE_CUDA=ON
 ### Using Cargo (Direct)
 
 You can also build directly with Cargo:
+
 ```bash
 cargo build --package pelorus_c --release
+
+# Select one GPU backend when needed:
+cargo build --package pelorus_c --release --features cuda
+cargo build --package pelorus_c --release --features vulkan
+cargo build --package pelorus_c --release --features metal
 ```
 
 ## Using the Library
@@ -63,13 +77,14 @@ gcc my_app.c $(pkg-config --cflags --libs pelorus) -o my_app
 
 ### C++ Wrapper
 
-A modern C++ wrapper is available in `pelorus.hpp`:
+A modern C++ wrapper is available in `pelorus.hpp`.
 
 ```cpp
 #include <pelorus.hpp>
+#include <iostream>
 
 int main() {
-    pelorus::Pelorus pelorus;  // Automatic cleanup
+    pelorus::Pelorus pelorus;
     
     // Add measurements
     pelorus::ImuMsg imu;
@@ -84,7 +99,7 @@ int main() {
     }
     
     return 0;
-}  // Automatic cleanup
+}
 ```
 
 ### PCL Integration
@@ -93,24 +108,27 @@ For projects using the Point Cloud Library (PCL):
 
 ```cpp
 #include <pelorus.hpp>
-#include <pelorus_pcl.hpp>
 #include <pcl/point_cloud.h>
 #include <pcl/point_types.h>
 
-pcl::PointCloud<pcl::PointXYZI>::Ptr cloud = ...;
 pelorus::Pelorus pelorus;
 
-// Convert and add PCL cloud to Pelorus (per-point timestamps required)
-// Use pelorus::pcl::PointXYZIT so every point has a `t` field (ns offset).
-pcl::PointCloud<pelorus::pcl::PointXYZIT>::Ptr cloud = ...;
+// Convert and add PCL cloud to Pelorus
+pcl::PointCloud<pelorus::pcl::PointXYZIT>::Ptr cloud(
+    new pcl::PointCloud<pelorus::pcl::PointXYZIT>());
+// ... fill cloud ...
 pelorus::pcl::add_pointcloud(pelorus, cloud, timestamp_sec, timestamp_nsec);
 
-// Get result and extract just the point cloud (not entire odometry)
-auto odom = pelorus.recv();
-auto result_cloud = odom.get_cloud_pcl<pcl::PointCloud<pcl::PointXYZI>::Ptr>();
+// Get result
+auto result = pelorus.recv();
+if (result.status == pelorus::Pelorus::STATUS_OK) {
+    auto result_cloud =
+        result.odom.get_cloud_pcl<pcl::PointCloud<pcl::PointXYZI>::Ptr>();
 
-// Or use the standalone function
-auto result_cloud2 = pelorus::pcl::to_pcl_cloud(odom.points(), odom.num_points());
+    // Or use the standalone function
+    auto result_cloud2 = pelorus::pcl_helpers::to_pcl_cloud(
+        result.odom.points(), result.odom.num_points());
+}
 ```
 
 ### Eigen3 Integration
@@ -119,33 +137,40 @@ For projects using Eigen for transformations:
 
 ```cpp
 #include <pelorus.hpp>
-#include <pelorus_eigen.hpp>
+#include <iostream>
 
 pelorus::Pelorus pelorus;
-auto odom = pelorus.recv();
+auto result = pelorus.recv();
+if (result.status == pelorus::Pelorus::STATUS_OK) {
+    const auto &odom = result.odom;
 
-// Get odometry as transformation matrix
-Eigen::Isometry3d transform = pelorus::eigen::to_transform(odom);
-// Alternative: Eigen::Isometry3d transform = pelorus::eigen::to_transform(odom);
+    // Get odometry as a transformation matrix
+    Eigen::Isometry3d transform = pelorus::eigen::to_transform(odom);
 
-// Transform a point from sensor to world coordinates
-Eigen::Vector3d point_sensor(1.0, 0.0, 0.0);
-Eigen::Vector3d point_world = transform * point_sensor;
+    // Transform a point from sensor to world coordinates
+    Eigen::Vector3d point_sensor(1.0, 0.0, 0.0);
+    Eigen::Vector3d point_world = transform * point_sensor;
 
-// Get all odometry data as Eigen types
-auto state = pelorus::eigen::OdometryState::from_pelorus(odom);
-std::cout << "Position: " << state.transform.translation().transpose() << "\n";
-std::cout << "Velocity: " << state.linear_velocity.transpose() << "\n";
+    // Get all odometry data as Eigen types
+    auto state = pelorus::eigen::OdometryState::from_pelorus(odom);
+    std::cout << "Position: "
+              << state.transform.translation().transpose() << "\n";
+    std::cout << "Velocity: " << state.linear_velocity.transpose() << "\n";
+    std::cout << "Accelerometer bias: " << state.accel_bias.transpose() << "\n";
+    std::cout << "Gyroscope bias: " << state.gyro_bias.transpose() << "\n";
 
-// Extract components
-Eigen::Vector3d position = pelorus::eigen::to_position(odom.position());
-Eigen::Quaterniond orientation = pelorus::eigen::to_quaternion(odom.orientation());
-Eigen::Matrix<double, 6, 6> pose_cov = pelorus::eigen::get_pose_covariance(*odom.get());
+    // Extract individual components
+    Eigen::Vector3d position = pelorus::eigen::to_position(odom.position());
+    Eigen::Quaterniond orientation =
+        pelorus::eigen::to_quaternion(odom.orientation());
+    Eigen::Matrix<double, 6, 6> pose_cov =
+        pelorus::eigen::get_pose_covariance(*odom.get());
+}
 ```
 
 ## Configuration
 
-The library uses `.rl` configuration files (same format as the ROS2 version):
+The library uses `.rl` configuration files:
 
 ```c
 // Use custom configuration file to override defaults for your setup
@@ -159,8 +184,12 @@ struct PelorusHandle* pelorus2 = pelorus_create_with_options(&opts);
 ```
 
 You can generate a default config file with:
+
 ```bash
-pelorus config init > my_config.rl
+pelorus config generate recommended > my_config.rl
+
+# Or generate the complete default configuration:
+pelorus config generate full > my_config.rl
 ```
 
 All parameters (map resolution, IMU covariances, LiDAR vendor, filtering options, etc.) are configurable.
@@ -168,6 +197,13 @@ All parameters (map resolution, IMU covariances, LiDAR vendor, filtering options
 ## API Design
 
 Pelorus provides three ways to receive odometry results:
+
+Bias-aware callers can use `pelorus_try_recv_with_bias()`,
+`pelorus_recv_with_bias()`, or `pelorus_set_callback_with_bias()`. These
+additive APIs return `pelorus_imu_bias` without changing the layout of the
+existing `pelorus_odometry` structure. The C++ wrapper uses these APIs
+automatically and exposes `Odometry::accel_bias()` and
+`Odometry::gyro_bias()`.
 
 ### 1. Non-blocking (Polling)
 Use `pelorus_try_recv()` for non-blocking checks:
@@ -217,9 +253,11 @@ pelorus_set_callback(pelorus, NULL, NULL);
 ## Examples
 
 See the `examples/` directory for complete usage examples:
-- `basic_usage.c` - Simple polling example using `pelorus_try_recv()`
+
 - `async_callback.c` - Callback-based asynchronous example
 - `sync_blocking.c` - Synchronous blocking example
+- `sync_blocking_pcl_eigen.cpp` - C++ wrapper example with optional PCL/Eigen support
+- `eigen_example.cpp` - Eigen conversion example
 
 Build and run examples:
 ```bash
@@ -247,7 +285,6 @@ The API is designed to be simple from the caller's perspective:
 - `pelorus_try_recv()` is non-blocking and returns immediately
 - `pelorus_recv()` blocks until data is available
 - Callbacks are invoked from a background thread
-- All threading complexity is hidden from the user
 
 ## Memory Management
 
@@ -277,15 +314,7 @@ Interpretation of per-point timing depends on the parsing mode:
 - When Pelorus uses *device-specific* parsing (the default), field meanings — including any `t` field — are interpreted according to the vendor/device configuration and may vary.
 - When using the generic parsing path (`device_specific_pointcloud2 == false`), Pelorus expects `t` to be a **non-negative** (`uint32`) nanoseconds offset relative to the scan header timestamp.
 
-Provide points as a `pelorus_pointcloud2` with:
-
-- `x` (FLOAT32) offset 0
-- `y` (FLOAT32) offset 4
-- `z` (FLOAT32) offset 8
-- `intensity` (FLOAT32) offset 12 (optional; may be ignored depending on vendor)
-- `t` (UINT32) offset 16 (nanoseconds offset)
-
-This corresponds to `point_step = 20` and `height = 1`. The public C API expects a pointer to a single `pelorus_point_field` descriptor (the `fields` pointer must be non-NULL and describe the point layout above). Little-endian byte order is assumed.
+For generic point input, prefer `pelorus_add_points_xyzt_f32()` or `pelorus_add_points_xyzit_f32()`.
 
 ## License
 

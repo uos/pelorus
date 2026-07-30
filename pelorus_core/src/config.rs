@@ -45,10 +45,6 @@ macro_rules! resolve_angle_range {
     }};
 }
 
-//================================================================================
-//  Configuration Structs and Parsers
-//================================================================================
-
 /// A struct that holds the user and default configuration variable maps.
 pub struct Asts {
     user: VariableHistory,
@@ -91,10 +87,7 @@ pub fn ast_to_config_with_user_usage(
 /// Constructs an `LioConfig` by layering a user configuration over a default one.
 #[allow(unreachable_patterns, clippy::unnecessary_fallible_conversions)]
 pub fn ast_to_config(mut defaults: Evaluated, user: Evaluated) -> anyhow::Result<LioConfig> {
-    // Disable warnings for default config since we only care about user-provided config
     defaults.vars = defaults.vars.with_drop_warning(false);
-
-    // Usage info is printed by ratslang internally; we can ignore it here
     let (config, _default_usage, _user_usage) = ast_to_config_inner(defaults, user, false, true)?;
 
     Ok(config)
@@ -112,7 +105,6 @@ fn ast_to_config_inner(
 )> {
     let asts = Asts::new(defaults.vars, user.vars);
 
-    // --- Helper Functions for Enum Parsing ---
     fn reliablility_parse(src: &str) -> anyhow::Result<Qos> {
         Ok(match src.to_lowercase().as_str() {
             "besteffort" => Qos::Sensor(Reliability::BestEffort),
@@ -192,7 +184,6 @@ fn ast_to_config_inner(
                 Ok(KinematicModel::Ackermann { imu_to_rear_axle })
             }
             _ => {
-                // Mark ackermann config as "used" even though we didn't resolve it
                 if let Some(ack_ns) = ackermann_ns {
                     let _ = ack_ns.defaults.evaluate_stats_only("imu_to_rear_axle");
                     let _ = ack_ns.user.evaluate_stats_only("imu_to_rear_axle");
@@ -202,7 +193,6 @@ fn ast_to_config_inner(
         }
     }
 
-    // --- Registration Configuration ---
     let (
         neighbor_max_range,
         map_resolution,
@@ -247,7 +237,6 @@ fn ast_to_config_inner(
         )
     };
 
-    // --- Wheel Odometry Configuration ---
     let (
         wheel_src_topic,
         wheel_qos,
@@ -267,13 +256,11 @@ fn ast_to_config_inner(
         };
         let wheel_kinematic_constraint_std = resolve_var!(wheel, "kinematic_constraint_std", as f64, Rhs::Val(Val::NumVal(NumVal::Floating(f))) => {f})?;
 
-        // Parse kinematic model (may require additional namespace for Ackermann)
         let kinematic_model_str: String =
             resolve_var!(wheel, "kinematic_model", as String, Rhs::Val(Val::StringVal(s)) => {s})?;
         let ackermann_ns = if kinematic_model_str.to_lowercase() == "ackermann" {
             Some(wheel.filter_ns(&["ackermann"]))
         } else {
-            // Mark ackermann config as "used" even when not using ackermann model
             let ack_ns = wheel.filter_ns(&["ackermann"]);
             let _ = ack_ns.defaults.evaluate_stats_only("imu_to_rear_axle");
             let _ = ack_ns.user.evaluate_stats_only("imu_to_rear_axle");
@@ -308,7 +295,6 @@ fn ast_to_config_inner(
         )
     };
 
-    // --- IMU Configuration ---
     let (imu_params, imu_prelio_params, imu_node_params) = {
         let imu = asts.filter_ns(&["imu"]);
         let imu_src_topic = resolve_var!(imu, "topic", as String, Rhs::Val(Val::StringVal(s)) | Rhs::Path(s) => {s})?;
@@ -391,7 +377,6 @@ fn ast_to_config_inner(
         (imu_params, imu_prelio_params, imu_node_params)
     };
 
-    // --- Output Configuration ---
     let (
         imu_filtered_topic,
         show_tui,
@@ -517,7 +502,6 @@ fn ast_to_config_inner(
         )
     };
 
-    // --- Preprocessing Configuration ---
     let (
         initial_scan_accumulate,
         point_skip,

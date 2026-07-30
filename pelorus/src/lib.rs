@@ -1,6 +1,4 @@
-//! Rust API for Pelorus LiDAR-Inertial Odometry.
-//!
-//! Mirrors the interface of `pelorus_c` and `pelorus_py` without FFI overhead.
+//! High-level Rust Interface for Pelorus Lidar-Inertial Odometry.
 //!
 //! # Example
 //!
@@ -42,8 +40,6 @@ use ros2_interfaces_jazzy_serde::sensor_msgs::msg::{PointCloud2, PointField};
 const DEFAULT_CONFIG_STR: &str = include_str!("../../default.rl");
 
 impl_pointcloud2_for_ros2_interfaces_jazzy_serde!();
-
-// ---------- public types ----------
 
 /// Errors returned by [`Handle`] operations.
 #[derive(Debug, thiserror::Error)]
@@ -94,6 +90,10 @@ pub struct Odometry {
     pub linear_velocity: [f64; 3],
     /// Angular velocity `[wx, wy, wz]` in body frame (rad/s).
     pub angular_velocity: [f64; 3],
+    /// Accelerometer bias `[bx, by, bz]` in IMU frame (m/s²).
+    pub accel_bias: [f64; 3],
+    /// Gyroscope bias `[bx, by, bz]` in IMU frame (rad/s).
+    pub gyro_bias: [f64; 3],
     /// 6×6 twist covariance (row-major).
     pub twist_covariance: [f64; 36],
     /// Scan ID matching the input point cloud.
@@ -106,8 +106,6 @@ pub struct Odometry {
     #[cfg(feature = "processing-time-export")]
     pub processing_time_ns: u128,
 }
-
-// ---------- internal helpers ----------
 
 struct ImuInitState {
     start_time: Option<f64>,
@@ -164,6 +162,8 @@ fn to_odometry(raw: &PelorusOutput, config: &LioConfig, ext: &Isometry3<f64>) ->
         pose_covariance,
         linear_velocity: [linvel.x, linvel.y, linvel.z],
         angular_velocity: [angvel.x, angvel.y, angvel.z],
+        accel_bias: [raw.accel_bias.x, raw.accel_bias.y, raw.accel_bias.z],
+        gyro_bias: [raw.gyro_bias.x, raw.gyro_bias.y, raw.gyro_bias.z],
         twist_covariance,
         scan_id: raw.scan_id,
         points,
@@ -327,7 +327,6 @@ fn processing_thread_main(thread: ProcessingThread) {
 
         match registration {
             Ok(Some(output)) => {
-                // Clone the Arc while holding the lock, then call outside it to avoid deadlocks.
                 let cb_opt = thread
                     .callback
                     .lock()
@@ -355,8 +354,6 @@ fn processing_thread_main(thread: ProcessingThread) {
         }
     }
 }
-
-// ---------- thread pool ----------
 
 #[cfg(feature = "rayon")]
 static RAYON_THREADS: OnceLock<usize> = OnceLock::new();
@@ -407,9 +404,9 @@ fn configure_thread_pool(num_threads: usize) {
 /// # Callback vs polling
 ///
 /// Results can be consumed in two ways (mutually exclusive):
-/// - **Polling**: [`recv`](Handle::recv) (blocking) or [`try_recv`](Handle::try_recv)
+/// - Polling: [`recv`](Handle::recv) (blocking) or [`try_recv`](Handle::try_recv)
 ///   (non-blocking).
-/// - **Callback**: register a closure with [`set_callback`](Handle::set_callback);
+/// - Callback: register a closure with [`set_callback`](Handle::set_callback);
 ///   it is called from the processing thread for every result.  While a callback
 ///   is registered, `recv`/`try_recv` return [`Error::CallbackActive`].
 pub struct Handle {
@@ -525,7 +522,6 @@ impl Handle {
             linear_acceleration_covariance,
         };
 
-        // IMU initialisation buffering — identical logic to pelorus_c / pelorus_py.
         let mut init_buffer_to_apply: Option<Vec<ImuMsg>> = None;
         if let Some(_cb) = self.imu_init_cb.as_ref() {
             let mut init_state = self.imu_init_state.lock().unwrap();
@@ -666,7 +662,7 @@ impl Handle {
     /// For simpler input formats prefer [`add_points_xyzit`](Handle::add_points_xyzit)
     /// or [`add_points_xyzt`](Handle::add_points_xyzt).
     ///
-    /// Returns the scan ID assigned to this cloud, or `0` on failure.
+    /// Returns the scan ID assigned to this cloud or fails if Handle is closed.
     pub fn add_pointcloud_raw(
         &self,
         header_sec: i32,
@@ -757,7 +753,7 @@ impl Handle {
     ///
     /// The callback must not call back into this [`Handle`] as the processing
     /// thread holds no locks during the call, but the callback itself runs on
-    /// the processing thread — avoid blocking inside it.
+    /// the processing thread so avoid blocking inside it.
     pub fn set_callback<F>(&mut self, f: F)
     where
         F: Fn(Odometry) + Send + Sync + 'static,
@@ -769,7 +765,7 @@ impl Handle {
         *guard = Some(Arc::new(f));
     }
 
-    /// Remove the current callback.  Subsequent results are queued for polling.
+    /// Remove the current callback. Subsequent results are queued for polling.
     pub fn clear_callback(&mut self) {
         *self.callback.lock().unwrap() = None;
     }
@@ -782,10 +778,6 @@ impl Handle {
 
 impl Drop for Handle {
     fn drop(&mut self) {
-        // Two-phase shutdown (mirrors pelorus_c / pelorus_py):
-        // 1. Signal the processing thread to stop calling into pelorus_reg.
-        // 2. Drop Prelio to disconnect its producer thread.
-        // 3. Join the processing thread (it drains until the channel closes).
         self.shutdown.store(true, Ordering::Relaxed);
 
         if let Ok(mut guard) = self.prelio.lock() {
@@ -795,5 +787,35 @@ impl Drop for Handle {
         if let Some(handle) = self._processing_thread.take() {
             let _ = handle.join();
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use nalgebra::Vector3;
+
+    #[test]
+    fn odometry_preserves_imu_bias_estimates() {
+        let raw = PelorusOutput {
+            scan_id: 7,
+            timestamp: ros_pointcloud2::ros::TimeMsg { sec: 1, nanosec: 2 },
+            pose: Isometry3::identity(),
+            pose_covariance: [0.0; 36],
+            linear_velocity: Vector3::zeros(),
+            angular_velocity: Vector3::zeros(),
+            accel_bias: Vector3::new(0.1, -0.2, 0.3),
+            gyro_bias: Vector3::new(-0.01, 0.02, -0.03),
+            twist_covariance: [0.0; 36],
+            cloud: Vec::new(),
+            frame_id: "lidar".to_string(),
+            #[cfg(feature = "processing-time-export")]
+            processing_time_ns: 0,
+        };
+
+        let odometry = to_odometry(&raw, &LioConfig::default(), &Isometry3::identity());
+
+        assert_eq!(odometry.accel_bias, [0.1, -0.2, 0.3]);
+        assert_eq!(odometry.gyro_bias, [-0.01, 0.02, -0.03]);
     }
 }

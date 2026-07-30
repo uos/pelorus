@@ -50,6 +50,9 @@ def main():
     imu_count = 0
     lidar_count = 0
     odom_count = 0
+    received_scan_ids = set()
+    target_scan_id = None
+    previous_scan_id = None
 
     def print_odom(odom):
         print(
@@ -67,7 +70,9 @@ def main():
     print(f"Processing messages from topics: {imu_topic}, {lidar_topic}")
     print()
 
-    min_odoms = 24
+    # The final scan is a support scan: its preceding IMU messages allow the
+    # previous scan to finish before input stops.
+    max_lidar_scans = 50
 
     with open(bagfile_path, "rb") as f:
         for msg in read_ros2_messages(f):
@@ -80,7 +85,9 @@ def main():
             
             elif topic == lidar_topic:
                 cloud = msg.ros_msg
-                _ = lio.add_pointcloud2_ros(cloud)
+                scan_id = lio.add_pointcloud2_ros(cloud)
+                target_scan_id = previous_scan_id
+                previous_scan_id = scan_id
                 lidar_count += 1
                 
                 # Drain odometry as we go so we don't let the internal queue grow unbounded.
@@ -88,21 +95,22 @@ def main():
                     odom = lio.try_recv()
                     if odom is None:
                         break
-                    if odom_count < min_odoms:
-                        odom_count += 1
-                        print_odom(odom)
+                    odom_count += 1
+                    received_scan_ids.add(odom["scan_id"])
+                    print_odom(odom)
 
-                if odom_count >= min_odoms:
-                    break
-                
-                if lidar_count >= 50:
+                if lidar_count >= max_lidar_scans:
                     break
 
-    # Alternatively to inner-loop draining, we can synchronous receive here.
-    # This makes sense for producer-consumer scenarios.
-    while odom_count < min_odoms:
+    if target_scan_id is None:
+        raise RuntimeError("The bag must contain at least two LiDAR scans")
+
+    # Wait for a specific scan, rather than an arbitrary output count or wall
+    # clock timeout. The support scan above provides the data needed to finish it.
+    while target_scan_id not in received_scan_ids:
         odom = lio.recv()
         odom_count += 1
+        received_scan_ids.add(odom["scan_id"])
         print_odom(odom)
 
     print()

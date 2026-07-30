@@ -446,7 +446,7 @@ pub fn downsample_points_cuda(
     point_skip: usize,
     voxel_size: f32,
 ) -> (Vec<PointXYZIT>, CudaDownsampleTimings) {
-    let _ = const {
+    const {
         assert!(size_of::<ffi::Point>() == size_of::<PointXYZIT>());
     };
 
@@ -486,7 +486,7 @@ pub fn downsample_points_cuda_device(
     voxel_size: f32,
     out_gpu: &mut CudaBuffer,
 ) -> (usize, CudaDownsampleTimings) {
-    let _ = const {
+    const {
         assert!(size_of::<ffi::Point>() == size_of::<PointXYZIT>());
     };
 
@@ -564,7 +564,7 @@ pub fn planes_cuda(
         orientation: *ekf_pose_r,
     };
 
-    let _ = const {
+    const {
         assert!(size_of::<ffi::Point>() == size_of::<PointXYZIT>());
         assert!(size_of::<ffi::PointNormal>() == size_of::<PointXYZINormal>());
     };

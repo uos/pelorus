@@ -16,16 +16,13 @@ fn main() {
         return;
     }
 
-    // Keep symbols available when feature is enabled; runtime still performs authoritative probing.
     println!("cargo:rustc-cfg=vulkan_available");
 
-    // Link against system spirv-tools and glslang libraries for shaderc compatibility
     pkg_config::probe_library("SPIRV-Tools").ok();
     pkg_config::probe_library("glslang").ok();
     println!("cargo:rustc-link-lib=SPIRV-Tools");
     println!("cargo:rustc-link-lib=glslang");
 
-    // Compile Vulkan Radix Sort wrapper
     let mut build = cc::Build::new();
     build.cpp(true);
     build.warnings(false);

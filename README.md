@@ -1,37 +1,13 @@
 # Pelorus
 
-Ressource-aware 3D Lidar-based Odometry for robots.
+Resource-aware Lidar-Inertial Odometry.
 
-Supporting various 3D Lidar sensors, IMUs, odometry sources and kinematic models, Pelorus provides real-time performance on embedded hardware while exceeding State-of-the-Art accuracy.
+Supporting various 3D Lidar sensors, IMUs, odometry sources and kinematic models, Pelorus provides real-time performance on embedded hardware while pushing state-of-the-art accuracy.
 
 Scale your compute down to single-core CPU usage or up to full parallel compute on CPU and **GPU** supporting NVIDIA, AMD, Intel and Apple Silicon.
 
 
 ## ROS 2
-
-### Binary
-
-Use the UOS PPA:
-
-```sh
-curl -fsSL "https://uos-robotics.codeberg.page/ppa/ubuntu/key.gpg" | gpg --dearmor \
-  | sudo tee /usr/share/keyrings/uos-archive-keyring.gpg >/dev/null
-echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/uos-archive-keyring.gpg] https://uos-robotics.codeberg.page/ppa/ubuntu $(. /etc/os-release && echo $UBUNTU_CODENAME) main" \
-  | sudo tee /etc/apt/sources.list.d/uos.list
-sudo apt update
-```
-
-And install:
-
-```sh
-# Jazzy
-sudo apt install ros-jazzy-pelorus
-
-# Humble
-sudo apt install ros-humble-pelorus
-```
-
-### Source
 
 First, install **[Rust](https://www.rust-lang.org/tools/install)** if you haven't already.
 
@@ -45,88 +21,15 @@ cd ..
 rosdep install --from-paths src -y --ignore-src
 
 colcon build --packages-select pelorus
-```
 
-Building might take a while.
+source install/setup.bash
 
-> [!TIP]
-> Pelorus offers various configurations at compile time. You can set them with CMake arguments via uppercasing and setting the prefix `PELORUS_` like so:
-> ```sh
-> colcon build --packages-select pelorus --cmake-args -D PELORUS_CUDA=ON
-> ```
-
-Available flags for the ROS 2 version are:
-
-**Default flags** (enabled by default, disable all with `-D PELORUS_ALL_DEFAULTS=OFF`):
-- `rayon` use all available CPU cores
-- `rat` synchronize input/output for use with [Minot](https://codeberg.org/stelzo/minot) using the `-r` flag
-
-**Highlighted flags**:
-- `cuda` use all available CUDA accelerations; searches for your CUDA directory - if not found, please set the `CUDA_HOME` environment variable.
-- `metal` use Apple Metal acceleration on macOS (Apple Silicon)
-- `vulkan` use Vulkan acceleration
-- `rerun` visualization with timeline; set `RERUN_SERVER_ADDR` for remote instances, e.g. `127.0.0.1:9876`. Requires a recent Rust toolchain.
-
-After building and sourcing, you can use Pelorus as a ROS node.
-
-## Configuration
-
-Pelorus uses `ratslang` for proper configuration. The defaults are validated at compile time. Every change overwrites the default.
-
-Generate a minimal configuration with typical required parameters for robots or datasets with the `recommended` preset or a full configuration with all parameters and their defaults with the `full` preset.
-
-For basics of the configuration language itself visit the [Ratslang](https://github.com/stelzo/ratslang) project.
-
-## Run
-
-Online
-
-```sh
-# generate a config file with settings that are recommended to change for your use case
+# make a config and change the values to your needs, e.g. topic names, frame ids, sensor parameters etc.
 ros2 run pelorus pelorus config generate recommended > pelorus.rl
-# edit pelorus.rl to your needs, e.g. set the topic names, frame ids, sensor parameters etc.
 
-# (optional) verify the config file for correctness
-ros2 run pelorus pelorus config verify pelorus.rl
-
-# run Pelorus with the config file
-ros2 run pelorus pelorus online -c pelorus.rl
-
-# or with Launchfile
-ros2 launch pelorus pelorus.launch.py config_path:=/path/to/pelorus.rl
+# now launch
+ros2 launch pelorus pelorus.launch.py config_path:=pelorus.rl rviz:=false
 ```
 
-# GLIM
 
-Pelorus can be used as GLIM odometry for mapping.
-
-```sh
-sudo apt install libpelorus_glim_odometry
-
-ros2 run glim_ros glim_rosnode
-```
-
-Edit the config.json:
-```json
-  "config_odometry": "config_odometry_pelorus.json",
-  "config_sub_mapping": "config_sub_mapping_passthrough.json",
-  "config_global_mapping": "config_global_mapping_pose_graph.json"
-```
-
-Create the `config_odometry_pelorus.json`:
-```sh
-sh -c 'sudo tee "/opt/ros/$ROS_DISTRO/share/glim/config/config_odometry_pelorus.json" > /dev/null << "EOF"
-{
-  "odometry_estimation": {
-    "so_name": "libodometry_estimation_pelorus.so",
-    "use_glim_config": true,
-
-    // optional, overrides all glim configs
-    //"pelorus_rl_path": "path/to/your/pelorus.rl",
-
-    "map_resolution": 0.5
-  }
-}
-EOF'
-```
-
+Please see the [docs](https://stelzo.codeberg.page/pelorus/) for more info about ROS, standalone usage, libraries and other tooling or information.

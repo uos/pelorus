@@ -106,9 +106,17 @@ struct OdomMsg {
  */
 class Odometry {
 public:
-  Odometry() : valid_(false) { std::memset(&odom_, 0, sizeof(odom_)); }
+  Odometry() : valid_(false) {
+    std::memset(&odom_, 0, sizeof(odom_));
+    std::memset(&bias_, 0, sizeof(bias_));
+  }
 
-  explicit Odometry(const pelorus_odometry &odom) : odom_(odom), valid_(true) {}
+  explicit Odometry(const pelorus_odometry &odom) : odom_(odom), valid_(true) {
+    std::memset(&bias_, 0, sizeof(bias_));
+  }
+
+  Odometry(const pelorus_odometry &odom, const pelorus_imu_bias &bias)
+      : odom_(odom), bias_(bias), valid_(true) {}
 
   ~Odometry() {
     if (valid_) {
@@ -118,9 +126,10 @@ public:
 
   // Move semantics
   Odometry(Odometry &&other) noexcept
-      : odom_(other.odom_), valid_(other.valid_) {
+      : odom_(other.odom_), bias_(other.bias_), valid_(other.valid_) {
     other.valid_ = false;
     std::memset(&other.odom_, 0, sizeof(other.odom_));
+    std::memset(&other.bias_, 0, sizeof(other.bias_));
   }
 
   Odometry &operator=(Odometry &&other) noexcept {
@@ -129,9 +138,11 @@ public:
         pelorus_free_odometry(&odom_);
       }
       odom_ = other.odom_;
+      bias_ = other.bias_;
       valid_ = other.valid_;
       other.valid_ = false;
       std::memset(&other.odom_, 0, sizeof(other.odom_));
+      std::memset(&other.bias_, 0, sizeof(other.bias_));
     }
     return *this;
   }
@@ -194,6 +205,20 @@ public:
   }
 
   /**
+   * @brief Access accelerometer bias in the IMU frame
+   */
+  const double *accel_bias() const {
+    return valid_ ? bias_.accel_bias : nullptr;
+  }
+
+  /**
+   * @brief Access gyroscope bias in the IMU frame
+   */
+  const double *gyro_bias() const {
+    return valid_ ? bias_.gyro_bias : nullptr;
+  }
+
+  /**
    * @brief Get number of points in the cloud
    */
   size_t num_points() const { return valid_ ? odom_.num_points : 0; }
@@ -206,23 +231,25 @@ public:
   }
 
   /**
-   * @brief Get point cloud as PCL format (requires pelorus_pcl.hpp)
+   * @brief Get point cloud as PCL format (requires PCL headers)
    * This is a convenience method that extracts just the point cloud.
-   * For full PCL integration, include pelorus_pcl.hpp after pelorus.hpp.
+   * The optional PCL integration is provided directly by pelorus.hpp when PCL
+   * headers are available.
    *
    * Usage:
    *   auto cloud = odom.get_cloud_pcl<pcl::PointCloud<pcl::PointXYZI>::Ptr>();
    */
   template <typename PointCloudPtr> PointCloudPtr get_cloud_pcl() const;
 
-  // Note: Eigen3 transformation methods are available as free functions in
-  // pelorus_eigen.hpp Usage:
-  //   #include <pelorus_eigen.hpp>
+  // Note: Eigen3 transformation methods are available as free functions when
+  // Eigen headers are available. Usage:
+  //   #include <pelorus.hpp>
   //   auto transform = pelorus::eigen::to_transform(odom);
   //   auto state = pelorus::eigen::OdometryState::from_pelorus(odom);
 
 private:
   pelorus_odometry odom_;
+  pelorus_imu_bias bias_;
   bool valid_;
 };
 
@@ -235,6 +262,8 @@ public:
    * @brief Callback function type for asynchronous odometry
    */
   using OdometryCallback = std::function<void(const pelorus_odometry *)>;
+  using OdometryWithBiasCallback =
+      std::function<void(const pelorus_odometry *, const pelorus_imu_bias *)>;
 
   /**
    * @brief Create Pelorus instance with default configuration
@@ -247,7 +276,8 @@ public:
    */
   explicit Pelorus(const char *config_path)
       : handle_(pelorus_create(config_path), pelorus_destroy),
-        callback_wrapper_(nullptr) {
+        user_callback_(), callback_wrapper_(nullptr),
+        user_callback_with_bias_(), callback_with_bias_wrapper_(nullptr) {
     if (!handle_) {
       throw Exception("Failed to create Pelorus handle");
     }
@@ -259,7 +289,8 @@ public:
    */
   explicit Pelorus(const pelorus_create_options *opts)
       : handle_(pelorus_create_with_options(opts), pelorus_destroy),
-        callback_wrapper_(nullptr) {
+        user_callback_(), callback_wrapper_(nullptr),
+        user_callback_with_bias_(), callback_with_bias_wrapper_(nullptr) {
     if (!handle_) {
       throw Exception("Failed to create Pelorus handle with options");
     }
@@ -348,10 +379,13 @@ public:
    */
   RecvResult try_recv() {
     pelorus_odometry odom_raw;
+    pelorus_imu_bias bias_raw;
     std::memset(&odom_raw, 0, sizeof(odom_raw));
-    int status = pelorus_try_recv(handle_.get(), &odom_raw);
+    std::memset(&bias_raw, 0, sizeof(bias_raw));
+    int status =
+        pelorus_try_recv_with_bias(handle_.get(), &odom_raw, &bias_raw);
     if (status == STATUS_OK) {
-      return RecvResult{status, Odometry(odom_raw)};
+      return RecvResult{status, Odometry(odom_raw, bias_raw)};
     }
     return RecvResult{status, Odometry()};
   }
@@ -363,10 +397,12 @@ public:
    */
   RecvResult recv() {
     pelorus_odometry odom_raw;
+    pelorus_imu_bias bias_raw;
     std::memset(&odom_raw, 0, sizeof(odom_raw));
-    int status = pelorus_recv(handle_.get(), &odom_raw);
+    std::memset(&bias_raw, 0, sizeof(bias_raw));
+    int status = pelorus_recv_with_bias(handle_.get(), &odom_raw, &bias_raw);
     if (status == STATUS_OK) {
-      return RecvResult{status, Odometry(odom_raw)};
+      return RecvResult{status, Odometry(odom_raw, bias_raw)};
     }
     return RecvResult{status, Odometry()};
   }
@@ -409,10 +445,40 @@ public:
     }
   }
 
+  /**
+   * @brief Set a callback that also receives the associated IMU bias estimate
+   * @param callback Function to call when odometry is available (nullptr to
+   * disable)
+   * @return status code (0 on success, negative on error)
+   */
+  int set_callback_with_bias(OdometryWithBiasCallback callback) {
+    if (callback) {
+      user_callback_with_bias_ = callback;
+      callback_with_bias_wrapper_ =
+          [](const pelorus_odometry *odom, const pelorus_imu_bias *bias,
+             void *user_data) {
+            auto *self = static_cast<Pelorus *>(user_data);
+            if (self->user_callback_with_bias_) {
+              self->user_callback_with_bias_(odom, bias);
+            }
+          };
+
+      return pelorus_set_callback_with_bias(handle_.get(),
+                                            callback_with_bias_wrapper_, this);
+    }
+
+    user_callback_with_bias_ = nullptr;
+    callback_with_bias_wrapper_ = nullptr;
+    return pelorus_set_callback_with_bias(handle_.get(), nullptr, nullptr);
+  }
+
 private:
   std::unique_ptr<PelorusHandle, decltype(&pelorus_destroy)> handle_;
   OdometryCallback user_callback_;
   void (*callback_wrapper_)(const pelorus_odometry *, void *);
+  OdometryWithBiasCallback user_callback_with_bias_;
+  void (*callback_with_bias_wrapper_)(const pelorus_odometry *,
+                                      const pelorus_imu_bias *, void *);
 };
 
 } // namespace pelorus
@@ -439,6 +505,14 @@ inline Eigen::Vector3d to_linear_velocity(const double *vel) {
 
 inline Eigen::Vector3d to_angular_velocity(const double *vel) {
   return Eigen::Vector3d(vel[0], vel[1], vel[2]);
+}
+
+inline Eigen::Vector3d to_accel_bias(const double *bias) {
+  return Eigen::Vector3d(bias[0], bias[1], bias[2]);
+}
+
+inline Eigen::Vector3d to_gyro_bias(const double *bias) {
+  return Eigen::Vector3d(bias[0], bias[1], bias[2]);
 }
 
 inline Eigen::Isometry3d to_transform(const Odometry &odom) {
@@ -491,6 +565,8 @@ struct OdometryState {
   Eigen::Isometry3d transform;           ///< Pose as transformation matrix
   Eigen::Vector3d linear_velocity;       ///< Linear velocity
   Eigen::Vector3d angular_velocity;      ///< Angular velocity
+  Eigen::Vector3d accel_bias;             ///< Accelerometer bias in IMU frame
+  Eigen::Vector3d gyro_bias;              ///< Gyroscope bias in IMU frame
   Eigen::Matrix<double, 6, 6> pose_cov;  ///< Pose covariance
   Eigen::Matrix<double, 6, 6> twist_cov; ///< Twist covariance
   int32_t timestamp_sec;                 ///< Timestamp seconds
@@ -502,6 +578,8 @@ struct OdometryState {
       state.transform = Eigen::Isometry3d::Identity();
       state.linear_velocity = Eigen::Vector3d::Zero();
       state.angular_velocity = Eigen::Vector3d::Zero();
+      state.accel_bias = Eigen::Vector3d::Zero();
+      state.gyro_bias = Eigen::Vector3d::Zero();
       state.pose_cov = Eigen::Matrix<double, 6, 6>::Zero();
       state.twist_cov = Eigen::Matrix<double, 6, 6>::Zero();
       state.timestamp_sec = 0;
@@ -511,6 +589,8 @@ struct OdometryState {
     state.transform = to_transform(odom);
     state.linear_velocity = to_linear_velocity(odom.linear_velocity());
     state.angular_velocity = to_angular_velocity(odom.angular_velocity());
+    state.accel_bias = to_accel_bias(odom.accel_bias());
+    state.gyro_bias = to_gyro_bias(odom.gyro_bias());
     state.pose_cov = get_pose_covariance(*odom.get());
     state.twist_cov = get_twist_covariance(*odom.get());
     state.timestamp_sec = odom.timestamp_sec();

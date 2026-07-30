@@ -106,6 +106,11 @@ int main(int argc, char **argv)
         }
         fclose(f);
 
+        if (target_scan_id == 0) {
+            std::cerr << "Dataset did not contain a valid LiDAR scan\n";
+            return 1;
+        }
+
         while (true) {
             auto result = lio.recv();
             if (result.status == pelorus::Pelorus::STATUS_OK && result.odom.scan_id() == target_scan_id) {

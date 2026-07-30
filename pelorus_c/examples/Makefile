@@ -20,7 +20,7 @@ ifeq ($(UNAME_S),Darwin)
 endif
 
 EXAMPLES = async_callback sync_blocking cpp_wrapper
-CPP_BUILD_DIR ?= build
+CPP_BUILD_DIR ?= cmake-build
 
 all: $(EXAMPLES)
 
@@ -33,7 +33,10 @@ sync_blocking: sync_blocking.c synthetic_dataset.h ../pelorus.h
 # Build C++ example using CMake so it can find PCL/Eigen and use proper flags
 cpp_wrapper:
 	@echo "Configuring and building cpp_wrapper with CMake (build dir: $(CPP_BUILD_DIR))"
-	cmake -S . -B $(CPP_BUILD_DIR) -DPELORUS_BUILD_TYPE=$(BUILD_TYPE)
+	cmake -S .. -B $(CPP_BUILD_DIR) \
+		-DPELORUS_BUILD_EXAMPLES=ON \
+		-DPELORUS_INSTALL=OFF \
+		-DPELORUS_BUILD_TYPE=$(BUILD_TYPE)
 	cmake --build $(CPP_BUILD_DIR) --target cpp_wrapper -- -j
 
 clean:
