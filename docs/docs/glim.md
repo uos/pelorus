@@ -1,6 +1,6 @@
 # GLIM
 
-We assume [GLIM](https://koide3.github.io/glim/) is already installed on your system.
+We assume [GLIM](https://koide3.github.io/glim/) and [Rust](https://www.rust-lang.org/tools/install) are already installed on your system.
 
 First install the Pelorus C library.
 

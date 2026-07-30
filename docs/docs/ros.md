@@ -2,7 +2,7 @@
 
 We support ROS 2 for fast prototyping.
 
-First, install **[Rust](https://www.rust-lang.org/tools/install)** if you haven't already.
+First, install [Rust](https://www.rust-lang.org/tools/install) if you haven't already.
 
 Pelorus integrates seamlessly with your standard **ROS 2 CMake** build system.
 
@@ -18,11 +18,12 @@ colcon build --packages-select pelorus
 
 Building might take a while.
 
-> [!TIP]
-> Pelorus offers various configurations at compile time. You can set them with CMake arguments via uppercasing and setting the prefix `PELORUS_` like so:
-> ```sh
-> colcon build --packages-select pelorus --cmake-args -D PELORUS_CUDA=ON
-> ```
+!!! note "GPU Support"
+
+    Pelorus offers various configurations at compile time. You can set them with CMake arguments via uppercasing and setting the prefix `PELORUS_` like so:
+    ```sh
+    colcon build --packages-select pelorus --cmake-args -D PELORUS_CUDA=ON
+    ```
 
 Available flags for the ROS 2 version are:
 
@@ -37,7 +38,6 @@ Available flags for the ROS 2 version are:
 - `rerun` visualization with timeline; set `RERUN_SERVER_ADDR` for remote instances, e.g. `127.0.0.1:9876`. Requires a recent Rust toolchain.
 
 Now you can use the launch file to start the node but we need a configuration first. For basics of the configuration language itself visit the [Ratslang](https://github.com/stelzo/ratslang) project.
-
 
 ```sh
 # make a config and change the values to your needs, e.g. topic names, frame ids, sensor parameters etc.
