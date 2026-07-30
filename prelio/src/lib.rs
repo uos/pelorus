@@ -194,6 +194,34 @@ pub fn secs_to_timestamp(secs: f64) -> TimeMsg {
     TimeMsg { sec, nanosec }
 }
 
+fn update_imu_period_estimate(
+    last_timestamp: &mut Option<f64>,
+    period_estimate: &mut Option<f64>,
+    timestamp: f64,
+) {
+    if let Some(previous) = *last_timestamp {
+        let period = timestamp - previous;
+        if period > 0.0 {
+            *period_estimate = Some(match *period_estimate {
+                Some(estimate) if period < estimate * 4.0 => estimate * 0.9 + period * 0.1,
+                Some(estimate) => estimate,
+                None => period,
+            });
+        }
+    }
+    *last_timestamp = Some(timestamp);
+}
+
+fn paced_imu_interval_complete(
+    period_estimate: Option<f64>,
+    timestamp: f64,
+    interval_end: f64,
+) -> bool {
+    period_estimate
+        .map(|period| interval_end - timestamp <= period * 1.5)
+        .unwrap_or(false)
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct MeasureGroup {
     cloud: Vec<PointXYZIT>,
@@ -370,6 +398,30 @@ mod tests {
     use super::*;
     use ros_pointcloud2::ros::{HeaderMsg, PointFieldMsg, TimeMsg, make_field_name};
     use ros_pointcloud2::{Denseness, Endian, FieldDatatype, PointCloud2MsgBuilder};
+
+    #[test]
+    fn paced_imu_interval_waits_for_the_full_timestamp_span() {
+        let mut last_timestamp = None;
+        let mut period_estimate = None;
+        for timestamp in [0.01, 0.02, 0.03, 0.04] {
+            update_imu_period_estimate(&mut last_timestamp, &mut period_estimate, timestamp);
+        }
+
+        assert!(!paced_imu_interval_complete(period_estimate, 0.04, 0.1));
+        assert!(paced_imu_interval_complete(period_estimate, 0.09, 0.1));
+    }
+
+    #[test]
+    fn paced_imu_period_ignores_missing_sample_gaps() {
+        let mut last_timestamp = None;
+        let mut period_estimate = None;
+        for timestamp in [0.01, 0.02, 0.03, 0.08] {
+            update_imu_period_estimate(&mut last_timestamp, &mut period_estimate, timestamp);
+        }
+
+        assert!((period_estimate.unwrap() - 0.01).abs() < 1e-12);
+        assert!(!paced_imu_interval_complete(period_estimate, 0.04, 0.1));
+    }
 
     fn field(name: &'static str, offset: u32) -> PointFieldMsg {
         PointFieldMsg {
@@ -2297,6 +2349,8 @@ impl Prelio {
     ) {
         let mut eval = RuntimeEvaluator::new();
         let mut to_next: Option<ImuMsg> = None;
+        let mut last_observed_imu_time: Option<f64> = None;
+        let mut imu_period_estimate: Option<f64> = None;
         let mut cloud_count: usize = 0;
         while let Ok((
             (cloud_downsampled, cloud_output, lidar_begin_time, lidar_end_time, lidar_header),
@@ -2386,32 +2440,24 @@ impl Prelio {
             // Populate IMU with buffered
             if let Some(imu_receiver) = imu_receiver.as_ref() {
                 if signal_paced {
-                    let mut received_from_batch = false;
                     loop {
-                        let imu = if received_from_batch {
-                            match imu_receiver.try_recv() {
-                                Ok(imu) => imu,
-                                Err(std::sync::mpsc::TryRecvError::Empty) => break,
-                                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
-                                    error!("Imu receiver closed");
-                                    return;
-                                }
-                            }
-                        } else {
-                            match imu_receiver.recv() {
-                                Ok(imu) => imu,
-                                Err(e) => {
-                                    error!("Imu receiver closed: {e}");
-                                    return;
-                                }
+                        let imu = match imu_receiver.recv() {
+                            Ok(imu) => imu,
+                            Err(e) => {
+                                error!("Imu receiver closed: {e}");
+                                return;
                             }
                         };
                         let imu_time = timestamp_to_secs(&imu.stamp);
+                        update_imu_period_estimate(
+                            &mut last_observed_imu_time,
+                            &mut imu_period_estimate,
+                            imu_time,
+                        );
 
                         if imu_time < imu_span_start_time {
                             continue;
                         }
-                        received_from_batch = true;
 
                         if imu_time > imu_span_end_time {
                             to_next = Some(imu);
@@ -2419,6 +2465,13 @@ impl Prelio {
                         }
 
                         imu_data.push(imu);
+                        if paced_imu_interval_complete(
+                            imu_period_estimate,
+                            imu_time,
+                            imu_span_end_time,
+                        ) {
+                            break;
+                        }
                     }
                 } else if lidar_as_sync {
                     loop {

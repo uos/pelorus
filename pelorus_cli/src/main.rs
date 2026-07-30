@@ -98,7 +98,7 @@ const MCAP_PATH_MIN_PERIOD_NS: u64 = 1_000_000_000;
     feature = "hiroz"
 ))]
 static ONLINE_SIGNAL_SHUTDOWN: AtomicBool = AtomicBool::new(false);
-const DEFAULT_OFFLINE_PREFETCH_SCANS: usize = 1;
+const DEFAULT_OFFLINE_PREFETCH_SCANS: usize = 4;
 
 #[cfg(any(
     feature = "mt_pubsub",
@@ -304,8 +304,8 @@ pub struct OfflineArgs {
 
     /// Number of offline scans to request ahead from Minot.
     ///
-    /// Values above one allow preprocessing to run ahead using an older
-    /// registration state and can change odometry accuracy.
+    /// Registration and publishing remain gated one scan at a time; this only
+    /// keeps the preprocessing side fed while the current scan is registering.
     #[arg(long, default_value_t = DEFAULT_OFFLINE_PREFETCH_SCANS)]
     pub prefetch_scans: usize,
 }
