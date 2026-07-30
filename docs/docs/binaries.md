@@ -1,7 +1,3 @@
----
-icon: lucide/rocket
----
-
 # Binaries
 
 The Pelorus beta is currently available as precompiled binaries for Linux on x86_64 and aarch64 (ARM64) but highly experimental.

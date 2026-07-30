@@ -1,7 +1,3 @@
----
-icon: lucide/rocket
----
-
 # ROS
 
 We support ROS 2 for fast prototyping.

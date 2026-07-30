@@ -1,10 +1,6 @@
----
-icon: lucide/rocket
----
-
 # GLIM
 
-We assume GLIM is already installed on your system.
+We assume [GLIM](https://koide3.github.io/glim/) is already installed on your system.
 
 First install the Pelorus C library.
 
