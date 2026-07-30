@@ -16,6 +16,14 @@ layout(std430, set = 0, binding = 10) readonly buffer Counters {
 };
 layout(std430, set = 0, binding = 15) buffer Medoids { Point medoids[]; };
 
+bool point_lexicographically_less(Point lhs, Point rhs) {
+    if (lhs.t != rhs.t) return lhs.t < rhs.t;
+    if (lhs.x != rhs.x) return lhs.x < rhs.x;
+    if (lhs.y != rhs.y) return lhs.y < rhs.y;
+    if (lhs.z != rhs.z) return lhs.z < rhs.z;
+    return lhs.i < rhs.i;
+}
+
 void main() {
     uint idx = gl_GlobalInvocationID.x;
 
@@ -64,7 +72,7 @@ void main() {
         Point p = selected_points[indices[i]];
         vec3 delta = vec3(p.x, p.y, p.z) - center;
         float dist = dot(delta, delta);
-        if (dist < best_dist) {
+        if (dist < best_dist || (dist == best_dist && point_lexicographically_less(p, best))) {
             best_dist = dist;
             best = p;
         }
@@ -78,7 +86,21 @@ void main() {
         return;
     }
 
-    keys[idx] = int(floatBitsToUint(medoids[idx].t));
-    indices[idx] = idx;
+    Point p = selected_points[indices[idx]];
+    if (pc.j == 5u) {
+        ivec3 grid = grid_pos(pc.resolution, vec3(p.x, p.y, p.z));
+        keys[idx] = hash_grid(grid) ^ int(0x80000000u);
+        return;
+    }
+
+    float value = p.t;
+    if (pc.j == 1u) value = p.x;
+    if (pc.j == 2u) value = p.y;
+    if (pc.j == 3u) value = p.z;
+    if (pc.j == 4u) value = p.i;
+
+    // Match prelio::keyed_point_sort_key, which compares the raw f32 bit
+    // patterns of all secondary fields as unsigned integers.
+    keys[idx] = int(floatBitsToUint(value));
 #endif
 }

@@ -2337,6 +2337,15 @@ pub struct VulkanDownsampleTimings {
     pub download_ms: f64,
 }
 
+fn compare_downsample_points(a: &PointXYZIT, b: &PointXYZIT) -> std::cmp::Ordering {
+    let compare = |lhs: f32, rhs: f32| lhs.partial_cmp(&rhs).unwrap_or(std::cmp::Ordering::Equal);
+    compare(a.timestamp, b.timestamp)
+        .then_with(|| compare(a.x, b.x))
+        .then_with(|| compare(a.y, b.y))
+        .then_with(|| compare(a.z, b.z))
+        .then_with(|| compare(a.intensity, b.intensity))
+}
+
 pub fn downsample_points_vulkan(
     stream: &Stream,
     filtered_cloud: &[PointXYZIT],
@@ -2451,6 +2460,46 @@ pub fn downsample_points_vulkan(
     session.barrier();
     session.write_timestamp(state.timestamp_pool, 2);
 
+    // Match the CPU tuple ordering within each voxel. The radix sorter is
+    // stable, so sort secondary point fields from least to most significant,
+    // then sort by the signed voxel hash.
+    for component in [4u32, 3, 2, 1, 0] {
+        params.j = component;
+        session.dispatch(
+            &state.compute,
+            state.compute.downsample_timestamp_keys,
+            &all_buffers,
+            &params,
+            selected_size as u32,
+        );
+        session.barrier();
+        unsafe {
+            vrdxCmdSortKeyValue(
+                session.command_buffer(),
+                state.scratch.sorter,
+                selected_size as u32,
+                keys_b,
+                0,
+                indices_b,
+                0,
+                sorter_scratch,
+                0,
+                vk::QueryPool::null(),
+                0,
+            );
+        }
+        session.barrier();
+    }
+
+    params.j = 5;
+    session.dispatch(
+        &state.compute,
+        state.compute.downsample_timestamp_keys,
+        &all_buffers,
+        &params,
+        selected_size as u32,
+    );
+    session.barrier();
     unsafe {
         vrdxCmdSortKeyValue(
             session.command_buffer(),
@@ -2609,7 +2658,7 @@ pub fn downsample_points_vulkan(
     let download_ms = download_start.elapsed().as_secs_f64() * 1000.0;
 
     let sort_start = std::time::Instant::now();
-    out.sort_unstable_by(|a, b| a.timestamp.partial_cmp(&b.timestamp).unwrap());
+    out.sort_unstable_by(compare_downsample_points);
     let _timestamp_sort_ms = sort_start.elapsed().as_secs_f64() * 1000.0;
 
     (
@@ -2682,7 +2731,7 @@ fn downsample_points_host(
             .expect("voxel must not be empty");
         out.push(medoid);
     }
-    out.sort_unstable_by(|a, b| a.timestamp.partial_cmp(&b.timestamp).unwrap());
+    out.sort_unstable_by(compare_downsample_points);
 
     (
         out,

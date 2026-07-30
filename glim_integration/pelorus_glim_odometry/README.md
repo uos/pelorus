@@ -12,7 +12,7 @@ sudo -E make install
 
 ## Enable Pelorus odometry in GLIM
 
-> ½Note: Pelorus needs the ROS communication in `config_sensors` to be set to `reliable` in order to work correctly.
+> Note: Pelorus needs the ROS communication in `config_sensors` to be set to `reliable` in order to work correctly.
 
 In GLIM's `config.json`, set:
  - `"config_odometry": "config_odometry_pelorus.json"`

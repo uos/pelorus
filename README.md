@@ -95,3 +95,38 @@ ros2 run pelorus pelorus online -c pelorus.rl
 # or with Launchfile
 ros2 launch pelorus pelorus.launch.py config_path:=/path/to/pelorus.rl
 ```
+
+# GLIM
+
+Pelorus can be used as GLIM odometry for mapping.
+
+```sh
+sudo apt install libpelorus_glim_odometry
+
+ros2 run glim_ros glim_rosnode
+```
+
+Edit the config.json:
+```json
+  "config_odometry": "config_odometry_pelorus.json",
+  "config_sub_mapping": "config_sub_mapping_passthrough.json",
+  "config_global_mapping": "config_global_mapping_pose_graph.json"
+```
+
+Create the `config_odometry_pelorus.json`:
+```sh
+sh -c 'sudo tee "/opt/ros/$ROS_DISTRO/share/glim/config/config_odometry_pelorus.json" > /dev/null << "EOF"
+{
+  "odometry_estimation": {
+    "so_name": "libodometry_estimation_pelorus.so",
+    "use_glim_config": true,
+
+    // optional, overrides all glim configs
+    //"pelorus_rl_path": "path/to/your/pelorus.rl",
+
+    "map_resolution": 0.5
+  }
+}
+EOF'
+```
+

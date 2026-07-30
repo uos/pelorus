@@ -1,8 +1,3 @@
-//! `pelorus_metal` — Apple Metal port of `pelorus_cuda`.
-//!
-//! Gated on the `metal_available` cfg flag, which is emitted by `build.rs`
-//! when `--features metal_enable` is passed on macOS.
-
 #![cfg(metal_available)]
 
 mod buffer;
@@ -22,8 +17,6 @@ pub use types::{Matrix3, NeighborType, Point, PointNormal, Pose, Quaternion, Vec
 use pelorus_core::PointXYZIT;
 use ros_pointcloud2::points::PointXYZINormal;
 
-// ── Global Allocation Tracking ───────────────────────────────────────────────
-
 static ALLOCATED_BYTES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 pub(crate) fn increment_allocation(bytes: u64) {
@@ -34,15 +27,9 @@ pub(crate) fn decrement_allocation(bytes: u64) {
     ALLOCATED_BYTES.fetch_sub(bytes, std::sync::atomic::Ordering::Relaxed);
 }
 
-/// Return the total number of bytes currently allocated for Metal buffers by this process.
-///
-/// Note: This tracks process-local buffer allocations and does not include internal Metal
-/// overhead, pipeline state memory, or other system-level GPU resources.
 pub fn get_used_memory() -> u64 {
     ALLOCATED_BYTES.load(std::sync::atomic::Ordering::Relaxed)
 }
-
-// ── GPU Timing State ──────────────────────────────────────────────────────────
 
 static LAST_PLANES_GPU_MS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 static LAST_ADD_TO_MAP_GPU_MS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
@@ -55,9 +42,6 @@ pub(crate) fn record_add_to_map_gpu_time(ms: f64) {
     LAST_ADD_TO_MAP_GPU_MS.store(ms.to_bits(), std::sync::atomic::Ordering::Release);
 }
 
-/// Try to retrieve GPU timing measurements from previous operations.
-/// Returns (planes_ms, add_to_map_ms) if timing results are available.
-/// This is non-blocking - returns the most recently measured values.
 pub fn try_get_gpu_timings() -> Option<(f64, f64)> {
     let planes_bits = LAST_PLANES_GPU_MS.load(std::sync::atomic::Ordering::Acquire);
     let add_to_map_bits = LAST_ADD_TO_MAP_GPU_MS.load(std::sync::atomic::Ordering::Acquire);

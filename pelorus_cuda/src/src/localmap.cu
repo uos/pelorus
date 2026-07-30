@@ -191,13 +191,13 @@ __device__ float3 symmetric_eigen_3x3(const float* __restrict__ A) {
     const float bd = (2.0f*p*p*p - 9.0f*p*q + 27.0f*r) / 27.0f;
 
     float angle = 0.0f;
-    if (ad != 0.0f) {
+    if (ad < -1e-7f) {
         float arg = (-bd * 0.5f) / sqrtf(-ad * ad * ad / 27.0f);
         arg   = fmaxf(-1.0f, fminf(1.0f, arg));
         angle = acosf(arg);
     }
 
-    const float two_s = 2.0f * sqrtf(-ad / 3.0f);
+    const float two_s = 2.0f * sqrtf(fmaxf(0.0f, -ad / 3.0f));
     const float p3    = p / 3.0f;
     const float pi2   = 6.28318530718f;
     float3 ev;
@@ -434,23 +434,50 @@ __global__ void finalize_cursors_kernel(const uint32_t* n_unique_ptr,
     *d_lru_cursor = evictions;
 }
 
-__global__ void compute_scores_kernel(const GpuVoxelDist* dist_buf,
-                                      uint32_t*           d_lru_mapping,
-                                      float*              d_lru_scores,
-                                      uint32_t            dist_cap,
-                                      uint32_t            scan_number) {
+__global__ void initialize_lru_mapping_kernel(uint32_t* d_lru_mapping,
+                                              uint32_t  dist_cap) {
     uint32_t idx = blockIdx.x * blockDim.x + threadIdx.x;
     if (idx >= dist_cap) return;
 
-    const GpuVoxelDist& item = dist_buf[idx];
-    if (item.point_count == 0) {
-        d_lru_scores[idx] = 1e20f; // best for eviction
-    } else {
-        uint32_t td = (scan_number >= item.last_scan) ? (scan_number - item.last_scan) : 0u;
-        d_lru_scores[idx] = (float)td / (float)item.point_count;
-    }
     d_lru_mapping[idx] = idx;
 }
+
+// Match spole::Livodish's eviction ranking exactly. Comparing the rational
+// age/point_count scores by division loses ordering precision in f32 and causes
+// the CPU and CUDA maps to retain different voxels after reaching capacity.
+// CPU Livodish and Vulkan only build this order once the map is full, so empty
+// slots are never eviction candidates. CUDA invokes the sort eagerly; retain
+// identity order while the map is partial, then rank only after it reaches
+// capacity. This prevents a capacity-crossing scan from both filling and
+// evicting the same slot.
+struct LruIndexLess {
+    const GpuVoxelDist* dist_buf;
+    const uint32_t* d_add_cursor;
+    uint32_t dist_cap;
+    uint32_t scan_number;
+
+    __device__ bool operator()(uint32_t lhs_idx, uint32_t rhs_idx) const {
+        if (*d_add_cursor < dist_cap) return lhs_idx < rhs_idx;
+
+        const GpuVoxelDist& lhs = dist_buf[lhs_idx];
+        const GpuVoxelDist& rhs = dist_buf[rhs_idx];
+
+        if (lhs.point_count == 0 && rhs.point_count == 0) return false;
+        if (lhs.point_count == 0) return true;
+        if (rhs.point_count == 0) return false;
+
+        uint32_t lhs_age =
+            (scan_number >= lhs.last_scan) ? (scan_number - lhs.last_scan) : 0u;
+        uint32_t rhs_age =
+            (scan_number >= rhs.last_scan) ? (scan_number - rhs.last_scan) : 0u;
+
+        uint64_t lhs_ratio_numerator =
+            (uint64_t)lhs_age * (uint64_t)rhs.point_count;
+        uint64_t rhs_ratio_numerator =
+            (uint64_t)rhs_age * (uint64_t)lhs.point_count;
+        return lhs_ratio_numerator > rhs_ratio_numerator;
+    }
+};
 
 // localmap.metal: calculate_keys
 // unique_key_count is used here as cloud_size
@@ -683,6 +710,7 @@ __global__ void plane_kernel(const Point*        cloud,
     if (v1 > v2) { float tmp=v1; v1=v2; v2=tmp; }
     if (v0 > v1) { float tmp=v0; v0=v1; v1=tmp; }
 
+    if (!isfinite(v0) || !isfinite(v1) || !isfinite(v2)) return;
     if (v2 < 1e-9f) return;
     if (v0 / v2 > params.sphericity_threshold) return;
 
@@ -715,7 +743,7 @@ __global__ void plane_kernel(const Point*        cloud,
     else                              normal = v20;
 
     float mag = sqrtf(normal.x*normal.x + normal.y*normal.y + normal.z*normal.z);
-    if (mag < 1e-9f) return;
+    if (!isfinite(mag) || mag < 1e-9f) return;
     normal.x /= mag; normal.y /= mag; normal.z /= mag;
 
     float3 mean_p = make_float3(merged_mean[0], merged_mean[1], merged_mean[2]);
@@ -725,7 +753,7 @@ __global__ void plane_kernel(const Point*        cloud,
     float pd2   = normal.x*p_global.x + normal.y*p_global.y + normal.z*p_global.z + d_val;
     float l2_sq = p_local.x*p_local.x + p_local.y*p_local.y + p_local.z*p_local.z;
     float s     = 1.0f - 0.9f * fabsf(pd2) / sqrtf(sqrtf(fmaxf(l2_sq, 1e-9f)));
-    if (s <= 0.9f) return;
+    if (!isfinite(s) || s <= 0.9f) return;
 
     PointNormal pn;
     pn.x        = p_local.x;
@@ -776,9 +804,6 @@ struct CudaMapState {
 
     // LRU on GPU (device memory)
     uint32_t* d_lru_mapping;
-    uint32_t* d_lru_mapping_alt;
-    float*    d_lru_scores;
-    float*    d_lru_scores_alt;
 
     // CUB temp storage
     void*     d_cub_temp_storage;
@@ -808,8 +833,7 @@ struct CudaMapState {
           scratch_new_offset(nullptr), scratch_sorted_points(nullptr),
           scratch_plane_flags(nullptr), scratch_compacted_planes(nullptr),
           d_selected_planes(nullptr),
-          d_lru_mapping(nullptr), d_lru_mapping_alt(nullptr),
-          d_lru_scores(nullptr), d_lru_scores_alt(nullptr),
+          d_lru_mapping(nullptr),
           d_cub_temp_storage(nullptr), cub_temp_storage_bytes(0),
           dist_cap(0), table_cap(0), resolution(0), sensitivity(0),
           min_dist(0), scan_number(0), nbtype(26),
@@ -840,9 +864,6 @@ struct CudaMapState {
         if (scratch_compacted_planes) cudaFree(scratch_compacted_planes);
         if (d_selected_planes)      cudaFree(d_selected_planes);
         if (d_lru_mapping)          cudaFree(d_lru_mapping);
-        if (d_lru_mapping_alt)      cudaFree(d_lru_mapping_alt);
-        if (d_lru_scores)           cudaFree(d_lru_scores);
-        if (d_lru_scores_alt)       cudaFree(d_lru_scores_alt);
         if (d_cub_temp_storage)     cudaFree(d_cub_temp_storage);
     }
 };
@@ -921,10 +942,6 @@ void init_map_impl(cudaStream_t stream, uint32_t capacity, float voxel_size,
 
     // LRU buffers
     CUDA_CHECK(cudaMalloc(&s->d_lru_mapping,     dist_cap * sizeof(uint32_t)));
-    CUDA_CHECK(cudaMalloc(&s->d_lru_mapping_alt, dist_cap * sizeof(uint32_t)));
-    CUDA_CHECK(cudaMalloc(&s->d_lru_scores,      dist_cap * sizeof(float)));
-    CUDA_CHECK(cudaMalloc(&s->d_lru_scores_alt,  dist_cap * sizeof(float)));
-
     // Zero dist_buf; fill dist_keys with EMPTY_KEY
     CUDA_CHECK(cudaMemsetAsync(s->dist_buf, 0, dist_cap * sizeof(GpuVoxelDist), stream));
     std::vector<int> h_keys(dist_cap, EMPTY_KEY);
@@ -989,8 +1006,10 @@ void add_to_map_impl(cudaStream_t stream, Point* points, uint32_t n_points, Pose
     size_t scan_bytes = temp_storage_bytes;
 
     temp_storage_bytes = 0;
-    cub::DeviceRadixSort::SortPairsDescending(nullptr, temp_storage_bytes,
-        s->d_lru_scores, s->d_lru_scores_alt, s->d_lru_mapping, s->d_lru_mapping_alt, s->dist_cap);
+    LruIndexLess lru_less{
+        s->dist_buf, s->d_add_cursor, s->dist_cap, scan_number};
+    cub::DeviceMergeSort::SortKeys(nullptr, temp_storage_bytes,
+        s->d_lru_mapping, s->dist_cap, lru_less);
     size_t lru_bytes = temp_storage_bytes;
 
     size_t max_cub_bytes = std::max({sort_bytes, encode_bytes, scan_bytes, lru_bytes});
@@ -1068,13 +1087,12 @@ void add_to_map_impl(cudaStream_t stream, Point* points, uint32_t n_points, Pose
     rebuild_hashmap_keyed_kernel<<<grid_dim(s->dist_cap), 256, 0, stream>>>(
         s->table_keys, s->table_vals, s->dist_keys, s->dist_cap, s->table_cap);
 
-    // ── Step 9: LRU scores and sort ───────────────────────────────────────────
-    compute_scores_kernel<<<grid_dim(s->dist_cap), 256, 0, stream>>>(
-        s->dist_buf, s->d_lru_mapping, s->d_lru_scores, s->dist_cap, scan_number);
+    // ── Step 9: exact CPU-equivalent LRU ranking ──────────────────────────────
+    initialize_lru_mapping_kernel<<<grid_dim(s->dist_cap), 256, 0, stream>>>(
+        s->d_lru_mapping, s->dist_cap);
     temp_storage_bytes = s->cub_temp_storage_bytes;
-    cub::DeviceRadixSort::SortPairsDescending(s->d_cub_temp_storage, temp_storage_bytes,
-        s->d_lru_scores, s->d_lru_scores_alt, s->d_lru_mapping, s->d_lru_mapping_alt, s->dist_cap, 0, 32, stream);
-    CUDA_CHECK(cudaMemcpyAsync(s->d_lru_mapping, s->d_lru_mapping_alt, s->dist_cap * sizeof(uint32_t), cudaMemcpyDeviceToDevice, stream));
+    cub::DeviceMergeSort::SortKeys(s->d_cub_temp_storage, temp_storage_bytes,
+        s->d_lru_mapping, s->dist_cap, lru_less, stream);
 
     if (s->trace_map_debug && ((scan_number % 100u) == 0u)) {
         CUDA_CHECK(cudaStreamSynchronize(stream));

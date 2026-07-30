@@ -394,6 +394,10 @@ impl crate::Registration for RegistrationState {
                     let transl = &imu_transform.translation.vector.into();
                     let rot_quat: pelorus_cuda::Quaternion = imu_transform.rotation.into();
                     pelorus_cuda::add_to_map(stream, buffer, transl, &rot_quat, scan_id);
+                    // add_to_map is asynchronous. The next registration starts by
+                    // reading the device-side map size on the host, so make the
+                    // initial/map-only update visible before returning.
+                    stream.sync();
                 }
                 #[cfg(feature = "metal")]
                 ActiveBackend::Metal(stream) => {

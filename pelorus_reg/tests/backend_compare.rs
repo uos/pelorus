@@ -537,6 +537,144 @@ fn test_planes_after_voxel_update_cuda() {
     }
 }
 
+#[cfg(feature = "cuda")]
+#[test]
+fn test_lru_eviction_equivalency_cuda() {
+    let _lock = CUDA_MAP_MUTEX.lock().unwrap();
+    let resolution = 0.5_f32;
+    let capacity = 4;
+    let point = |x: f32| PointXYZIT {
+        x,
+        y: 0.0,
+        z: 0.0,
+        intensity: 1.0,
+        timestamp: 0.0,
+    };
+
+    // Fill the map with different point counts so the eviction ratios are
+    // distinct after updating only the first voxel.
+    let initial_cloud = vec![
+        point(0.0),
+        point(2.0),
+        point(2.0),
+        point(4.0),
+        point(4.0),
+        point(4.0),
+        point(6.0),
+        point(6.0),
+        point(6.0),
+        point(6.0),
+    ];
+    let update_cloud = vec![point(0.0)];
+    let eviction_cloud = vec![point(8.0)];
+
+    let mut cpu_map = spole::IVoxHashMap::new(resolution, capacity, IVoxNearbyType::Nearby26, 0.1);
+    cpu_map.add(&initial_cloud, &Isometry3::identity(), 1);
+    cpu_map.add(&update_cloud, &Isometry3::identity(), 2);
+    cpu_map.add(&eviction_cloud, &Isometry3::identity(), 3);
+    let mut cpu_map_points = cpu_map.get_entire_map();
+
+    let stream = pelorus_cuda::Stream::new();
+    pelorus_cuda::init_map(
+        &stream,
+        capacity,
+        resolution,
+        0.1,
+        resolution / 4.0,
+        pelorus_cuda::NeighborType::Neighbor26,
+    );
+    let zero_t = pelorus_cuda::Vector3::new(0.0, 0.0, 0.0);
+    let identity_q = pelorus_cuda::Quaternion::default();
+
+    for (scan_id, cloud) in [
+        (1, &initial_cloud),
+        (2, &update_cloud),
+        (3, &eviction_cloud),
+    ] {
+        let gpu_cloud: LocatedBufferView<PointXYZIT> =
+            LocatedBufferView::copy_from_slice_cuda(&stream, cloud);
+        let LocatedBufferView::Cuda { buffer } = &gpu_cloud else {
+            unreachable!()
+        };
+        pelorus_cuda::add_to_map(&stream, buffer, &zero_t, &identity_q, scan_id);
+        stream.sync();
+    }
+    let mut cuda_map_points = pelorus_cuda::get_map();
+    pelorus_cuda::cleanup_map();
+
+    cpu_map_points.sort_by(|a, b| a.x.total_cmp(&b.x));
+    cuda_map_points.sort_by(|a, b| a.x.total_cmp(&b.x));
+
+    assert_eq!(cpu_map_points.len(), cuda_map_points.len());
+    for (cpu, cuda) in cpu_map_points.iter().zip(cuda_map_points.iter()) {
+        assert!(
+            (cpu - cuda).norm() < 1e-6,
+            "LRU map mismatch: CPU={cpu:?}, CUDA={cuda:?}"
+        );
+    }
+}
+
+#[cfg(feature = "cuda")]
+#[test]
+fn test_capacity_crossing_does_not_reuse_empty_cuda_slot() {
+    let _lock = CUDA_MAP_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+    let resolution = 0.5_f32;
+    let capacity = 4;
+    let point = |x: f32| PointXYZIT {
+        x,
+        y: 0.0,
+        z: 0.0,
+        intensity: 1.0,
+        timestamp: 0.0,
+    };
+
+    // Start below capacity, then add enough new voxels in one scan to fill the
+    // remaining slots and require an eviction. Empty slots must not also occur
+    // at the front of the LRU victim order for that scan.
+    let partial_cloud = vec![point(0.0), point(2.0), point(2.0)];
+    let crossing_cloud = vec![point(4.0), point(6.0), point(8.0)];
+
+    let mut cpu_map = spole::IVoxHashMap::new(resolution, capacity, IVoxNearbyType::Nearby26, 0.1);
+    cpu_map.add(&partial_cloud, &Isometry3::identity(), 1);
+    cpu_map.add(&crossing_cloud, &Isometry3::identity(), 2);
+    let mut cpu_map_points = cpu_map.get_entire_map();
+
+    let stream = pelorus_cuda::Stream::new();
+    pelorus_cuda::init_map(
+        &stream,
+        capacity,
+        resolution,
+        0.1,
+        resolution / 4.0,
+        pelorus_cuda::NeighborType::Neighbor26,
+    );
+    let zero_t = pelorus_cuda::Vector3::new(0.0, 0.0, 0.0);
+    let identity_q = pelorus_cuda::Quaternion::default();
+
+    for (scan_id, cloud) in [(1, &partial_cloud), (2, &crossing_cloud)] {
+        let gpu_cloud: LocatedBufferView<PointXYZIT> =
+            LocatedBufferView::copy_from_slice_cuda(&stream, cloud);
+        let LocatedBufferView::Cuda { buffer } = &gpu_cloud else {
+            unreachable!()
+        };
+        pelorus_cuda::add_to_map(&stream, buffer, &zero_t, &identity_q, scan_id);
+        stream.sync();
+    }
+    let mut cuda_map_points = pelorus_cuda::get_map();
+    pelorus_cuda::cleanup_map();
+
+    cpu_map_points.sort_by(|a, b| a.x.total_cmp(&b.x));
+    cuda_map_points.sort_by(|a, b| a.x.total_cmp(&b.x));
+
+    assert_eq!(cpu_map_points.len(), cuda_map_points.len());
+    for (cpu, cuda) in cpu_map_points.iter().zip(cuda_map_points.iter()) {
+        assert!(
+            (cpu - cuda).norm() < 1e-6,
+            "capacity-crossing map mismatch: CPU={cpu:?}, CUDA={cuda:?}"
+        );
+    }
+}
+
 #[cfg(feature = "vulkan")]
 #[test]
 fn test_planes_direct_equivalency_vulkan() {

@@ -260,13 +260,34 @@ __device__ __forceinline__ uint32_t ordered_float_key(float value) {
     return (bits & 0x80000000u) != 0u ? ~bits : (bits ^ 0x80000000u);
 }
 
-__global__ void build_downsample_keys_kernel(const Point *__restrict__ input,
-                                             uint32_t cloud_size,
-                                             uint32_t point_skip,
-                                             float voxel_size,
-                                             int32_t *__restrict__ keys,
-                                             Point *__restrict__ selected,
-                                             uint32_t selected_size) {
+enum class PointComponent : uint32_t {
+    Timestamp = 0,
+    X,
+    Y,
+    Z,
+    Intensity,
+};
+
+__device__ __forceinline__ float point_component(const Point &point,
+                                                 PointComponent component) {
+    switch (component) {
+        case PointComponent::Timestamp:
+            return point.t;
+        case PointComponent::X:
+            return point.x;
+        case PointComponent::Y:
+            return point.y;
+        case PointComponent::Z:
+            return point.z;
+        case PointComponent::Intensity:
+            return point.i;
+    }
+    return 0.0f;
+}
+
+__global__ void select_downsample_points_kernel(
+    const Point *__restrict__ input, uint32_t cloud_size, uint32_t point_skip,
+    Point *__restrict__ selected, uint32_t selected_size) {
     const uint32_t tid = blockIdx.x * blockDim.x + threadIdx.x;
     if (tid >= selected_size) {
         return;
@@ -277,9 +298,64 @@ __global__ void build_downsample_keys_kernel(const Point *__restrict__ input,
         return;
     }
 
-    const Point point = input[src_idx];
-    keys[tid] = downsample_hash(point, voxel_size);
-    selected[tid] = point;
+    selected[tid] = input[src_idx];
+}
+
+__global__ void build_voxel_keys_kernel(const Point *__restrict__ points,
+                                        uint32_t n, float voxel_size,
+                                        int32_t *__restrict__ keys) {
+    const uint32_t tid = blockIdx.x * blockDim.x + threadIdx.x;
+    if (tid >= n) {
+        return;
+    }
+    keys[tid] = downsample_hash(points[tid], voxel_size);
+}
+
+__global__ void build_component_keys_kernel(
+    const Point *__restrict__ points, uint32_t n, PointComponent component,
+    bool numeric_order, uint32_t *__restrict__ keys) {
+    const uint32_t tid = blockIdx.x * blockDim.x + threadIdx.x;
+    if (tid >= n) {
+        return;
+    }
+
+    float value = point_component(points[tid], component);
+    if (numeric_order) {
+        // Rust's partial_cmp treats -0.0 and +0.0 as equal.
+        if (value == 0.0f) {
+            value = 0.0f;
+        }
+        keys[tid] = ordered_float_key(value);
+    } else {
+        // Match prelio::keyed_point_sort_key, which orders secondary fields by
+        // their raw f32 bit patterns.
+        keys[tid] = __float_as_uint(value);
+    }
+}
+
+__device__ __forceinline__ bool point_lexicographically_less(
+    const Point &lhs, const Point &rhs) {
+    if (lhs.t != rhs.t) return lhs.t < rhs.t;
+    if (lhs.x != rhs.x) return lhs.x < rhs.x;
+    if (lhs.y != rhs.y) return lhs.y < rhs.y;
+    if (lhs.z != rhs.z) return lhs.z < rhs.z;
+    return lhs.i < rhs.i;
+}
+
+// Rust evaluates the CPU medoid distance as separate f32 multiplies and adds.
+// NVCC contracts the same expression into FMAs at -O3, which breaks exact
+// distance ties (especially in two-point voxels) and selects a different
+// timestamp. Explicit round-to-nearest intrinsics preserve the CPU operation
+// boundaries and ordering.
+__device__ __forceinline__ float squared_distance_cpu_order(
+    const Point &point, float cx, float cy, float cz) {
+    const float dx = __fsub_rn(point.x, cx);
+    const float dy = __fsub_rn(point.y, cy);
+    const float dz = __fsub_rn(point.z, cz);
+    const float dx2 = __fmul_rn(dx, dx);
+    const float dy2 = __fmul_rn(dy, dy);
+    const float dz2 = __fmul_rn(dz, dz);
+    return __fadd_rn(__fadd_rn(dx2, dy2), dz2);
 }
 
 __global__ void medoid_runs_kernel(const Point *__restrict__ sorted_points,
@@ -305,43 +381,30 @@ __global__ void medoid_runs_kernel(const Point *__restrict__ sorted_points,
     float sum_z = 0.0f;
     for (uint32_t i = 0; i < count; ++i) {
         const Point p = sorted_points[start + i];
-        sum_x += p.x;
-        sum_y += p.y;
-        sum_z += p.z;
+        sum_x = __fadd_rn(sum_x, p.x);
+        sum_y = __fadd_rn(sum_y, p.y);
+        sum_z = __fadd_rn(sum_z, p.z);
     }
 
-    const float inv_count = 1.0f / static_cast<float>(count);
-    const float cx = sum_x * inv_count;
-    const float cy = sum_y * inv_count;
-    const float cz = sum_z * inv_count;
+    const float fn = static_cast<float>(count);
+    const float cx = __fdiv_rn(sum_x, fn);
+    const float cy = __fdiv_rn(sum_y, fn);
+    const float cz = __fdiv_rn(sum_z, fn);
 
     Point best = sorted_points[start];
-    float best_dist = (best.x - cx) * (best.x - cx)
-                    + (best.y - cy) * (best.y - cy)
-                    + (best.z - cz) * (best.z - cz);
+    float best_dist = squared_distance_cpu_order(best, cx, cy, cz);
 
     for (uint32_t i = 1; i < count; ++i) {
         const Point p = sorted_points[start + i];
-        const float dist = (p.x - cx) * (p.x - cx)
-                         + (p.y - cy) * (p.y - cy)
-                         + (p.z - cz) * (p.z - cz);
-        if (dist < best_dist) {
+        const float dist = squared_distance_cpu_order(p, cx, cy, cz);
+        if (dist < best_dist ||
+            (dist == best_dist && point_lexicographically_less(p, best))) {
             best_dist = dist;
             best = p;
         }
     }
 
     medoids[run] = best;
-}
-
-__global__ void build_timestamp_keys_kernel(const Point *__restrict__ points,
-                                            uint32_t n,
-                                            uint32_t *__restrict__ keys) {
-    const uint32_t tid = blockIdx.x * blockDim.x + threadIdx.x;
-    if (tid >= n) {
-        return;
-    }
-    keys[tid] = ordered_float_key(points[tid].t);
 }
 
 uint32_t grid_dim(uint32_t n) {
@@ -418,18 +481,46 @@ uint32_t downsample_points_impl(void *stream, const Point *points_cpu,
     });
 
     stage_timers.measure(DownsampleStage::KeyBuild, cuda_stream, [&]() {
-        build_downsample_keys_kernel<<<grid_dim(selected_size), THREADS, 0,
-                                       cuda_stream>>>(
-            g_scratch.input, cloud_size, point_skip, voxel_size, g_scratch.keys,
-            g_scratch.selected, selected_size);
+        select_downsample_points_kernel<<<grid_dim(selected_size), THREADS, 0,
+                                          cuda_stream>>>(
+            g_scratch.input, cloud_size, point_skip, g_scratch.selected,
+            selected_size);
     });
 
     size_t temp_bytes = g_scratch.cub_temp_bytes;
+    Point *sorted_points = nullptr;
     stage_timers.measure(DownsampleStage::KeyedSort, cuda_stream, [&]() {
+        // CPU preprocessing uses a full deterministic tuple key:
+        // (voxel_hash, timestamp_bits, x_bits, y_bits, z_bits,
+        // intensity_bits). CUB radix sort is stable, so sorting the secondary
+        // fields from least to most significant before the voxel hash exactly
+        // reproduces that lexicographic order.
+        constexpr PointComponent components[] = {
+            PointComponent::Intensity, PointComponent::Z, PointComponent::Y,
+            PointComponent::X, PointComponent::Timestamp};
+        Point *src = g_scratch.selected;
+        Point *dst = g_scratch.selected_alt;
+        for (PointComponent component : components) {
+            build_component_keys_kernel<<<grid_dim(selected_size), THREADS, 0,
+                                          cuda_stream>>>(
+                src, selected_size, component, false,
+                g_scratch.timestamp_keys);
+            temp_bytes = g_scratch.cub_temp_bytes;
+            cub::DeviceRadixSort::SortPairs(
+                g_scratch.cub_temp, temp_bytes, g_scratch.timestamp_keys,
+                g_scratch.timestamp_keys_alt, src, dst, selected_size, 0, 32,
+                cuda_stream);
+            std::swap(src, dst);
+        }
+
+        build_voxel_keys_kernel<<<grid_dim(selected_size), THREADS, 0,
+                                  cuda_stream>>>(
+            src, selected_size, voxel_size, g_scratch.keys);
+        temp_bytes = g_scratch.cub_temp_bytes;
         cub::DeviceRadixSort::SortPairs(
             g_scratch.cub_temp, temp_bytes, g_scratch.keys, g_scratch.keys_alt,
-            g_scratch.selected, g_scratch.selected_alt, selected_size, 0, 32,
-            cuda_stream);
+            src, dst, selected_size, 0, 32, cuda_stream);
+        sorted_points = dst;
     });
 
     stage_timers.measure(DownsampleStage::RunLengthEncode, cuda_stream, [&]() {
@@ -469,27 +560,42 @@ uint32_t downsample_points_impl(void *stream, const Point *points_cpu,
 
     stage_timers.measure(DownsampleStage::MedoidReduce, cuda_stream, [&]() {
         medoid_runs_kernel<<<grid_dim(unique_count), THREADS, 0, cuda_stream>>>(
-            g_scratch.selected_alt, g_scratch.run_starts, g_scratch.run_counts,
+            sorted_points, g_scratch.run_starts, g_scratch.run_counts,
             g_scratch.num_unique, g_scratch.medoids);
     });
 
     stage_timers.measure(DownsampleStage::TimestampKeyBuild, cuda_stream, [&]() {
-        build_timestamp_keys_kernel<<<grid_dim(unique_count), THREADS, 0,
-                                      cuda_stream>>>(
-            g_scratch.medoids, unique_count, g_scratch.timestamp_keys);
+        // The actual key construction is included in the stable multi-pass
+        // output sort below.
     });
 
+    Point *ordered_medoids = nullptr;
     stage_timers.measure(DownsampleStage::TimestampSort, cuda_stream, [&]() {
-        temp_bytes = g_scratch.cub_temp_bytes;
-        cub::DeviceRadixSort::SortPairs(
-            g_scratch.cub_temp, temp_bytes, g_scratch.timestamp_keys,
-            g_scratch.timestamp_keys_alt, g_scratch.medoids,
-            g_scratch.medoids_alt, unique_count, 0, 32, cuda_stream);
+        // Match compare_point_timestamp:
+        // (timestamp, x, y, z, intensity), all in numeric f32 order.
+        constexpr PointComponent components[] = {
+            PointComponent::Intensity, PointComponent::Z, PointComponent::Y,
+            PointComponent::X, PointComponent::Timestamp};
+        Point *src = g_scratch.medoids;
+        Point *dst = g_scratch.medoids_alt;
+        for (PointComponent component : components) {
+            build_component_keys_kernel<<<grid_dim(unique_count), THREADS, 0,
+                                          cuda_stream>>>(
+                src, unique_count, component, true,
+                g_scratch.timestamp_keys);
+            temp_bytes = g_scratch.cub_temp_bytes;
+            cub::DeviceRadixSort::SortPairs(
+                g_scratch.cub_temp, temp_bytes, g_scratch.timestamp_keys,
+                g_scratch.timestamp_keys_alt, src, dst, unique_count, 0, 32,
+                cuda_stream);
+            std::swap(src, dst);
+        }
+        ordered_medoids = src;
     });
 
     if (output_mode == DownsampleOutputMode::Host) {
         const auto download_start = std::chrono::steady_clock::now();
-        CUDA_CHECK(cudaMemcpyAsync(g_scratch.host_output, g_scratch.medoids_alt,
+        CUDA_CHECK(cudaMemcpyAsync(g_scratch.host_output, ordered_medoids,
                                    unique_count * sizeof(Point),
                                    cudaMemcpyDeviceToHost, cuda_stream));
         CUDA_CHECK(cudaStreamSynchronize(cuda_stream));
@@ -498,8 +604,8 @@ uint32_t downsample_points_impl(void *stream, const Point *points_cpu,
                                   std::chrono::steady_clock::now() - download_start)
                                   .count();
     } else {
-        if (out_points != g_scratch.medoids_alt) {
-            CUDA_CHECK(cudaMemcpyAsync(out_points, g_scratch.medoids_alt,
+        if (out_points != ordered_medoids) {
+            CUDA_CHECK(cudaMemcpyAsync(out_points, ordered_medoids,
                                        unique_count * sizeof(Point),
                                        cudaMemcpyDeviceToDevice, cuda_stream));
         }

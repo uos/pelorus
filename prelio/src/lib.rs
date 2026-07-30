@@ -434,6 +434,117 @@ mod tests {
             .unwrap()
     }
 
+    fn adversarial_downsample_cloud() -> Vec<PointXYZIT> {
+        vec![
+            PointXYZIT {
+                x: 0.25,
+                y: 0.5,
+                z: 0.5,
+                intensity: 30.0,
+                timestamp: 3.0,
+            },
+            PointXYZIT {
+                x: 1.75,
+                y: 0.5,
+                z: 0.5,
+                intensity: 20.0,
+                timestamp: 2.0,
+            },
+            PointXYZIT {
+                x: 0.75,
+                y: 0.5,
+                z: 0.5,
+                intensity: 10.0,
+                timestamp: 1.0,
+            },
+            PointXYZIT {
+                x: 1.25,
+                y: 0.5,
+                z: 0.5,
+                intensity: 40.0,
+                timestamp: 2.0,
+            },
+            PointXYZIT {
+                x: 2.25,
+                y: 0.5,
+                z: 0.5,
+                intensity: 50.0,
+                timestamp: 0.0,
+            },
+        ]
+    }
+
+    fn cpu_downsample_reference(points: &[PointXYZIT]) -> Vec<PointXYZIT> {
+        let mut eval = RuntimeEvaluator::new();
+        let mut keyed_points = Vec::new();
+        let mut downsampled = Vec::new();
+        cpu_downsample(
+            points,
+            1,
+            1.0,
+            &mut keyed_points,
+            &mut downsampled,
+            true,
+            &mut eval,
+            ExecutionMode::Sequential,
+        )
+        .unwrap();
+        downsampled
+    }
+
+    #[cfg(feature = "cuda")]
+    fn dense_downsample_cloud() -> Vec<PointXYZIT> {
+        let voxel_count = 4096usize;
+        let points_per_voxel = 16usize;
+        let mut points = Vec::with_capacity(voxel_count * points_per_voxel);
+        let mut state = 0x9e37_79b9u32;
+
+        for sample in 0..points_per_voxel {
+            for voxel in 0..voxel_count {
+                state = state.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+                let jitter_x = ((state & 0xff) as f32 / 255.0 - 0.5) * 0.4;
+                state = state.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+                let jitter_y = ((state & 0xff) as f32 / 255.0 - 0.5) * 0.4;
+                state = state.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+                let jitter_z = ((state & 0xff) as f32 / 255.0 - 0.5) * 0.4;
+
+                let vx = (voxel % 32) as i32 - 16;
+                let vy = ((voxel / 32) % 32) as i32 - 16;
+                let vz = (voxel / (32 * 32)) as i32 - 2;
+                points.push(PointXYZIT {
+                    x: vx as f32 + 0.5 + jitter_x,
+                    y: vy as f32 + 0.5 + jitter_y,
+                    z: vz as f32 + 0.5 + jitter_z,
+                    intensity: (state & 0xffff) as f32 / 65535.0,
+                    timestamp: (sample * voxel_count + voxel) as f32
+                        / (voxel_count * points_per_voxel) as f32,
+                });
+            }
+        }
+
+        points
+    }
+
+    #[cfg(feature = "cuda")]
+    fn rounding_sensitive_medoid_cloud() -> Vec<PointXYZIT> {
+        vec![
+            PointXYZIT {
+                x: -46.769,
+                y: 0.041,
+                z: -0.66800004,
+                intensity: 27.000002,
+                timestamp: 0.00058619,
+            },
+            PointXYZIT {
+                x: -46.989002,
+                y: 0.32900003,
+                z: -0.67200005,
+                intensity: 41.000004,
+                timestamp: 0.00068444,
+            },
+        ]
+    }
+
     #[test]
     fn timestamp_less_xyzi_cloud_uses_zero_scan_bounds() {
         let params = no_timestamp_params();
@@ -507,6 +618,65 @@ mod tests {
         };
 
         assert_eq!(run(ExecutionMode::Sequential), run(ExecutionMode::Rayon));
+    }
+
+    #[test]
+    fn cpu_downsample_resolves_medoid_ties_deterministically() {
+        let points = adversarial_downsample_cloud();
+        let actual = cpu_downsample_reference(&points);
+
+        assert_eq!(actual, vec![points[4], points[2], points[3]]);
+    }
+
+    #[cfg(feature = "cuda")]
+    #[test]
+    fn cuda_downsample_matches_cpu_ties_and_ordering() {
+        let points = adversarial_downsample_cloud();
+        let expected = cpu_downsample_reference(&points);
+        let stream = pelorus_cuda::Stream::new();
+        let (actual, _) = pelorus_cuda::downsample_points_cuda(&stream, &points, 1, 1.0);
+
+        assert_eq!(actual, expected);
+    }
+
+    #[cfg(feature = "cuda")]
+    #[test]
+    fn cuda_downsample_matches_cpu_at_realistic_density() {
+        let points = dense_downsample_cloud();
+        let expected = cpu_downsample_reference(&points);
+        let stream = pelorus_cuda::Stream::new();
+        let (actual, _) = pelorus_cuda::downsample_points_cuda(&stream, &points, 1, 1.0);
+
+        assert_eq!(actual.len(), expected.len());
+        for (index, (actual, expected)) in actual.iter().zip(&expected).enumerate() {
+            assert_eq!(
+                actual, expected,
+                "CUDA downsample differs from CPU at output point {index}"
+            );
+        }
+    }
+
+    #[cfg(feature = "cuda")]
+    #[test]
+    fn cuda_downsample_matches_cpu_for_rounding_sensitive_medoid() {
+        let points = rounding_sensitive_medoid_cloud();
+        let expected = cpu_downsample_reference(&points);
+        let stream = pelorus_cuda::Stream::new();
+        let (actual, _) = pelorus_cuda::downsample_points_cuda(&stream, &points, 1, 1.0);
+
+        assert_eq!(expected, vec![points[0]]);
+        assert_eq!(actual, expected);
+    }
+
+    #[cfg(feature = "vulkan")]
+    #[test]
+    fn vulkan_downsample_matches_cpu_ties_and_ordering() {
+        let points = adversarial_downsample_cloud();
+        let expected = cpu_downsample_reference(&points);
+        let stream = pelorus_vulkan::Stream::new();
+        let (actual, _) = pelorus_vulkan::downsample_points_vulkan(&stream, &points, 1, 1.0);
+
+        assert_eq!(actual, expected);
     }
 }
 
