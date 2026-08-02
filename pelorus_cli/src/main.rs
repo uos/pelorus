@@ -3882,10 +3882,16 @@ fn confirm_output_overwrite(
 }
 
 #[cfg(feature = "rat")]
-fn resolve_offline_bagfile_path(input: &std::path::Path) -> anyhow::Result<PathBuf> {
+fn resolve_offline_bagfile_path(input: &std::path::Path) -> anyhow::Result<(PathBuf, String)> {
     if input.exists() {
         if input.is_dir() || input.is_file() {
-            return canonicalize_bagfile_path(input);
+            let path = canonicalize_bagfile_path(input)?;
+            let label = path
+                .file_name()
+                .unwrap_or_default()
+                .to_string_lossy()
+                .into_owned();
+            return Ok((path, label));
         }
         return Err(anyhow!(
             "Bagfile path '{}' exists but is neither a regular file nor a directory.",
@@ -3952,7 +3958,10 @@ Please specify a local path or resolve/pull with an explicit registry.",
         }
     })?;
 
-    canonicalize_bagfile_path(resolved_path.as_path())
+    Ok((
+        canonicalize_bagfile_path(resolved_path.as_path())?,
+        input_ref,
+    ))
 }
 
 fn main() -> Result<(), Box<dyn CoreError>> {
@@ -4248,19 +4257,9 @@ fn main() -> Result<(), Box<dyn CoreError>> {
 
             let lidar_topic = &config.prelio_node_params.cloud_src_topic;
             let imu_topic = &config.prelio_node_params.imu_src_topic;
-            let bagfile_input = offline_args.bagfile_path.to_string_lossy().to_string();
-            let input_looks_like_tag = bagfile_input.contains(':');
-            let bagfile_path_canon = resolve_offline_bagfile_path(&offline_args.bagfile_path)?;
+            let (bagfile_path_canon, bagfile_label) =
+                resolve_offline_bagfile_path(&offline_args.bagfile_path)?;
             let bagfile_path = bagfile_path_canon.clone().to_string_lossy().to_string();
-            let bagfile_label = if !offline_args.bagfile_path.exists() && input_looks_like_tag {
-                bagfile_input
-            } else {
-                bagfile_path_canon
-                    .file_name()
-                    .unwrap_or_default()
-                    .to_string_lossy()
-                    .into_owned()
-            };
             shared_stats.set_bagfile(bagfile_label);
 
             let mt_content = format!(
