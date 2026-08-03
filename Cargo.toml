@@ -194,8 +194,9 @@ inherits = "release"
 opt-level = 3
 
 [patch.crates-io]
-# mt_pubsub = { path = "../minot/mt_pubsub" }
 transforms_io = { git = "ssh://git@git.steado.tech/transforms_io.git", tag = "v0.3.0-hiroz" }
 ros_pointcloud2 = { git = "ssh://git@git.steado.tech/ros_pointcloud2.git", tag = "v1.0.0-rc.3-hiroz" }
+# mt_pubsub = { path = "../minot/mt_pubsub" }
+# mt_rat = { path = "../minot/mt_rat" }
 mt_pubsub = { git = "ssh://git@git.steado.tech/minot.git", tag = "v0.9.0-hiroz" }
 mt_rat = { git = "ssh://git@git.steado.tech/minot.git", tag = "v0.9.0-hiroz" }

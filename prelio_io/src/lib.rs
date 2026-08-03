@@ -117,12 +117,35 @@ const MINOT_IMU_INIT_TICK: &str = "imu_init_tick";
 #[cfg(feature = "rat")]
 const MINOT_LIO_START_TICK: &str = "lio_start_tick";
 
-#[cfg(feature = "rat")]
+#[cfg(all(
+    feature = "rat",
+    any(feature = "ros2-client", feature = "mt_pubsub", feature = "r2r")
+))]
 fn publish_minot_trigger(synchronous_mode: bool, trigger: &str) {
     if synchronous_mode {
         let mut payload = String::new();
         rat::bacon(trigger, &mut payload, rat::VariableType::StaticOnly).unwrap();
     }
+}
+
+#[cfg(all(feature = "rat", feature = "hiroz"))]
+async fn publish_minot_trigger_async(synchronous_mode: bool, trigger: &str) {
+    if synchronous_mode {
+        let mut payload = String::new();
+        rat::bacon_async(trigger, &mut payload, rat::VariableType::StaticOnly)
+            .await
+            .unwrap();
+    }
+}
+
+#[cfg(feature = "rat")]
+fn minot_sd_start_timestamp() -> rat::NetArray<f64> {
+    static PRELIO_MONO_START: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
+    let now_ns = PRELIO_MONO_START
+        .get_or_init(std::time::Instant::now)
+        .elapsed()
+        .as_nanos() as f64;
+    rat::NetArray::from(nalgebra::DMatrix::<f64>::from_element(1, 1, now_ns))
 }
 
 pub struct State {
@@ -398,21 +421,9 @@ fn cloud_callback(
 
     #[cfg(feature = "rat")]
     {
-        static PRELIO_MONO_START: std::sync::OnceLock<std::time::Instant> =
-            std::sync::OnceLock::new();
-        let now_ns = PRELIO_MONO_START
-            .get_or_init(std::time::Instant::now)
-            .elapsed()
-            .as_nanos() as f64;
-        let mut ts = rat::NetArray::from(nalgebra::DMatrix::<f64>::from_element(1, 1, now_ns));
-        // block_in_place temporarily removes the thread from the Tokio scheduler,
-        // allowing mt_rat's internal current_thread runtime to call block_on without
-        // triggering "Cannot start a runtime from within a runtime".
-        #[cfg(feature = "mt_pubsub")]
-        tokio::task::block_in_place(|| {
-            rat::bacon("pelorus:sd_start", &mut ts, rat::VariableType::F64).ok();
-        });
-        #[cfg(not(feature = "mt_pubsub"))] // TODO not sure if this is actually correct
+        #[cfg(not(any(feature = "mt_pubsub", feature = "hiroz")))]
+        let mut ts = minot_sd_start_timestamp();
+        #[cfg(not(any(feature = "mt_pubsub", feature = "hiroz")))]
         rat::bacon("pelorus:sd_start", &mut ts, rat::VariableType::F64).ok();
     }
 
@@ -950,6 +961,14 @@ impl PrelioNode {
                         let imu_tf_frame_lidar_inner =
                             imu_tf_frame_lidar_inner.clone().lock().unwrap().clone();
 
+                        #[cfg(feature = "rat")]
+                        {
+                            let mut ts = minot_sd_start_timestamp();
+                            rat::bacon_async("pelorus:sd_start", &mut ts, rat::VariableType::F64)
+                                .await
+                                .ok();
+                        }
+
                         match cloud_callback(
                             state_clone.clone(),
                             tf_listener_clone.clone(),
@@ -985,6 +1004,14 @@ impl PrelioNode {
                     }
                     let imu_tf_frame_lidar_inner =
                         imu_tf_frame_lidar_inner.clone().lock().unwrap().clone();
+
+                    #[cfg(feature = "rat")]
+                    {
+                        let mut ts = minot_sd_start_timestamp();
+                        rat::bacon_async("pelorus:sd_start", &mut ts, rat::VariableType::F64)
+                            .await
+                            .ok();
+                    }
 
                     match cloud_callback(
                         state_clone.clone(),
@@ -1421,7 +1448,7 @@ impl PrelioNode {
                     let filtered = lifis.lock().unwrap().add_imu(imu_lifis);
                     #[cfg(feature = "rat")]
                     if let Some(trigger) = minot_bootstrap_trigger {
-                        publish_minot_trigger(synchronous_mode, trigger);
+                        publish_minot_trigger_async(synchronous_mode, trigger).await;
                     }
                     if let Some(filtered) = filtered {
                         if let Some(sender) = filtered_imu_sender_hiroz.as_ref() {

@@ -138,6 +138,9 @@ kdtree = ["pelorus_reg/nn_kdt"]
 # Enables synchronization with a bagfile using Minot (https://uos.github.io/minot/)
 offline = ["mt_pubsub", "rat"]
 
+# Enables offline processing while using Hiroz instead of mt_pubsub for IO.
+offline-hiroz = ["hiroz", "rat"]
+
 # Use Mimalloc as allocator. General speedup when using dynamic memory.
 mimalloc = ["dep:mimalloc"]
 

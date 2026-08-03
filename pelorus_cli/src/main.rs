@@ -1193,6 +1193,37 @@ mod replay_tick_debt_tests {
     feature = "r2r",
     feature = "hiroz"
 ))]
+#[cfg(any(feature = "mt_pubsub", feature = "hiroz"))]
+fn stats_message(stats: &SharedStats) -> RosString {
+    let snapshot = stats.get();
+    RosString {
+        data: format!(
+            "elapsed={:.2};lidar_hz={:.2};proc_hz={:.2};rt={:.2};cpu={:.1};ram={:.1};comp_ms={:.2};comp_avg={:.2};pos={:.3},{:.3},{:.3};ori={:.5},{:.5},{:.5},{:.5};vel={:.3},{:.3},{:.3};ang={:.4},{:.4},{:.4}",
+            snapshot.elapsed_secs,
+            snapshot.measured_sensor_rate_hz,
+            snapshot.processing_freq_hz,
+            snapshot.real_time_factor,
+            snapshot.cpu_percent,
+            snapshot.ram_mb,
+            snapshot.last_comp_time_ms,
+            snapshot.avg_comp_time_ms,
+            snapshot.position[0],
+            snapshot.position[1],
+            snapshot.position[2],
+            snapshot.orientation[0],
+            snapshot.orientation[1],
+            snapshot.orientation[2],
+            snapshot.orientation[3],
+            snapshot.linear_velocity[0],
+            snapshot.linear_velocity[1],
+            snapshot.linear_velocity[2],
+            snapshot.angular_velocity[0],
+            snapshot.angular_velocity[1],
+            snapshot.angular_velocity[2],
+        ),
+    }
+}
+
 fn lio_with_ready_signal(
     mut config: LioConfig,
     ready_signal: Option<std::sync::mpsc::Sender<()>>,
@@ -1642,6 +1673,33 @@ fn lio_with_ready_signal(
         .with_qos(prelio_io::qos_to_hiroz(pelorus_core::Qos::SystemDefault))
         .build()
         .map_err(|e| anyhow!("Failed to create Hiroz stats publisher: {e}"))?;
+    #[cfg(feature = "mt_pubsub")]
+    let _stats_publish_task = shared_stats.as_ref().map(|stats| {
+        let stats = Arc::clone(stats);
+        let publisher = stats_publisher.clone();
+        let shutdown = shutdown_flag.clone();
+        rt.as_ref()
+            .expect("rt always exists with mt_pubsub feat")
+            .handle()
+            .spawn(async move {
+                let mut interval = tokio::time::interval(Duration::from_millis(250));
+                interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+                loop {
+                    interval.tick().await;
+                    if shutdown
+                        .as_ref()
+                        .is_some_and(|flag| flag.load(Ordering::Relaxed))
+                    {
+                        return;
+                    }
+                    stats.update_system_stats();
+                    let msg = stats_message(&stats);
+                    if let Err(e) = publisher.publish(&msg).await {
+                        debug!("Failed to publish Pelorus stats: {e}");
+                    }
+                }
+            })
+    });
     // #[cfg(all(not(feature = "no-viz"), feature = "r2r"))]
     // let imu_path_publisher =
     //     node.create_publisher::<Path>("imu_path", config.imu_path_qos.into())?;
@@ -1665,7 +1723,7 @@ fn lio_with_ready_signal(
 
     let mut t_world = nalgebra::Isometry3::identity();
     let mut t_last_current = nalgebra::Isometry3::identity();
-    #[cfg(any(feature = "mt_pubsub", feature = "hiroz"))]
+    #[cfg(feature = "hiroz")]
     let mut last_stats_pub = std::time::Instant::now();
 
     // Use VecDeque for efficient removal from front (O(1) instead of O(n))
@@ -3071,42 +3129,12 @@ fn lio_with_ready_signal(
                 stats.record_comp_time(iteration_time_ms);
             }
 
-            #[cfg(any(feature = "mt_pubsub", feature = "hiroz"))]
+            #[cfg(feature = "hiroz")]
             if let Some(ref stats) = shared_stats {
                 if last_stats_pub.elapsed() >= Duration::from_millis(250) {
                     last_stats_pub = std::time::Instant::now();
-                    let snapshot = stats.get();
-                    let payload = format!(
-                        "elapsed={:.2};lidar_hz={:.2};proc_hz={:.2};rt={:.2};cpu={:.1};ram={:.1};comp_ms={:.2};comp_avg={:.2};pos={:.3},{:.3},{:.3};ori={:.5},{:.5},{:.5},{:.5};vel={:.3},{:.3},{:.3};ang={:.4},{:.4},{:.4}",
-                        snapshot.elapsed_secs,
-                        snapshot.measured_sensor_rate_hz,
-                        snapshot.processing_freq_hz,
-                        snapshot.real_time_factor,
-                        snapshot.cpu_percent,
-                        snapshot.ram_mb,
-                        snapshot.last_comp_time_ms,
-                        snapshot.avg_comp_time_ms,
-                        snapshot.position[0],
-                        snapshot.position[1],
-                        snapshot.position[2],
-                        snapshot.orientation[0],
-                        snapshot.orientation[1],
-                        snapshot.orientation[2],
-                        snapshot.orientation[3],
-                        snapshot.linear_velocity[0],
-                        snapshot.linear_velocity[1],
-                        snapshot.linear_velocity[2],
-                        snapshot.angular_velocity[0],
-                        snapshot.angular_velocity[1],
-                        snapshot.angular_velocity[2],
-                    );
-                    let msg = RosString { data: payload };
-                    #[cfg(feature = "mt_pubsub")]
-                    let _ = rt
-                        .as_ref()
-                        .expect("rt always exists with mt_pubsub feat")
-                        .block_on(async { stats_publisher.publish(&msg).await });
-                    #[cfg(feature = "hiroz")]
+                    stats.update_system_stats();
+                    let msg = stats_message(stats);
                     let _ = rt
                         .as_ref()
                         .expect("rt always exists with hiroz feat")
@@ -4326,6 +4354,28 @@ pf! i 1
             let run_offline_logic = || -> anyhow::Result<()> {
                 install_shutdown_signal_handlers();
 
+                // Minot is spawned before the LIO node is initialized, so bootstrap
+                // the shared coordinator here and keep it alive for the entire run.
+                // The child and the later Pelorus node both connect to this router.
+                #[cfg(feature = "mt_pubsub")]
+                let (_coordinator_runtime, _coordinator_node) = {
+                    let runtime = Arc::new(
+                        tokio::runtime::Builder::new_multi_thread()
+                            .enable_all()
+                            .build()
+                            .map_err(|e| anyhow!("Failed to create coordinator runtime: {e}"))?,
+                    );
+                    let node = runtime
+                        .block_on(Node::create(
+                            mt_pubsub::NodeConfig::new("pelorus_offline_coordinator")
+                                .mode(mt_pubsub::Qos::Reliable)
+                                .coord_mode(mt_pubsub::CoordMode::AutoStart)
+                                .local_only(offline_local_only),
+                        ))
+                        .map_err(|e| anyhow!("Failed to bootstrap offline coordinator: {e}"))?;
+                    (runtime, node)
+                };
+
                 let mt_file_path = std::env::temp_dir().join("pelorus_offline.mt");
                 fs::write(&mt_file_path, mt_content)
                     .map_err(|e| anyhow!("Failed to write .mt file: {}", e))?;
@@ -4343,7 +4393,11 @@ pf! i 1
                     .stdout(Stdio::piped())
                     .stderr(Stdio::piped());
                 if offline_local_only {
-                    minot_command.arg("--local-only");
+                    // The Pelorus mt_pubsub node has already started (or joined)
+                    // the in-process loopback coordinator. Point the child at it
+                    // explicitly instead of asking the child to discover or start
+                    // another router.
+                    minot_command.env("MINOT_COORD_ADDR", "tcp/127.0.0.1:7447");
                 }
 
                 #[cfg(unix)]
