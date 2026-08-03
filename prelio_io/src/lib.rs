@@ -607,7 +607,11 @@ impl PrelioNode {
         let tf_listener = Arc::new(tf_r2r::TfListener::new(node));
 
         #[cfg(feature = "mt_pubsub")]
-        let tf_listener = Arc::new(tf_lh::TfListener::new(node, rt.clone()));
+        let tf_listener = Arc::new(tf_lh::TfListener::new(
+            node,
+            rt.clone(),
+            mt_pubsub::Qos::BestEffort,
+        ));
 
         #[cfg(feature = "hiroz")]
         let tf_listener = Arc::new(

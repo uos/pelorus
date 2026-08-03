@@ -3454,10 +3454,27 @@ fn signal_process_group(pgid: u32, signal: libc::c_int) -> std::io::Result<()> {
 
     let err = std::io::Error::last_os_error();
     if err.raw_os_error() == Some(libc::ESRCH) {
-        Ok(())
-    } else {
-        Err(err)
+        return Ok(());
     }
+
+    #[cfg(target_os = "macos")]
+    if err.raw_os_error() == Some(libc::EPERM) {
+        // macOS can return EPERM for a process group whose leader is exiting or
+        // has already been reaped. Fall back to the Minot leader PID so an
+        // actually running child is still terminated. ESRCH means it has exited.
+        let leader_rc = unsafe { libc::kill(pgid as i32, signal) };
+        if leader_rc == 0 {
+            return Ok(());
+        }
+
+        let leader_err = std::io::Error::last_os_error();
+        if leader_err.raw_os_error() == Some(libc::ESRCH) {
+            return Ok(());
+        }
+        return Err(leader_err);
+    }
+
+    Err(err)
 }
 
 #[cfg(all(test, feature = "rat", target_os = "linux"))]
