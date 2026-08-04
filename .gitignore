@@ -5,7 +5,6 @@ glim_integration/glim
 wheels
 **/__pycache__/
 **/pelorus.rl
-**/lio*.toml
 **/.DS_Store
 pelorus_trajectory*
 pelorus_c/examples/basic_usage
