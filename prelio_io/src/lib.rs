@@ -98,9 +98,9 @@ use ros2_interfaces_jazzy_serde::{
     sensor_msgs::msg::{Imu, PointCloud2},
     std_msgs::msg::Header,
 };
-use std::sync::{Arc, Mutex};
 #[cfg(any(feature = "velodyne-driver", feature = "xsens-driver"))]
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 #[cfg(feature = "hiroz")]
 use zenoh_buffers::buffer::Buffer;
 
