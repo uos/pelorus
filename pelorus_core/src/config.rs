@@ -10,9 +10,11 @@ use ratslang::{
 };
 
 use crate::{
-    DownsampleParameters, ImuCalibrationParameters, ImuConfigParameter, ImuParameters,
-    KinematicModel, LidarVendor, LifisNodeParameters, LifisParameters, LioConfig, MadgwickSetting,
-    PassthroughFilterParameters, PreprocessingBackend, Qos, Reliability,
+    CoordinateSystem, DownsampleParameters, ImuCalibrationParameters, ImuConfigParameter,
+    ImuDriverConfig, ImuDriverType, ImuParameters, KinematicModel, LidarDriverConfig,
+    LidarDriverType, LidarVendor, LifisNodeParameters, LifisParameters, LioConfig, MadgwickSetting,
+    PassthroughFilterParameters, PreprocessingBackend, Qos, Reliability, SensorDriverConfig,
+    VelodyneConfig, VelodyneModel, VelodyneTimestampMode, XsensConfig, XsensTimestampMode,
     adaptive_execution::ExecutionPolicy,
 };
 
@@ -217,6 +219,89 @@ fn ast_to_config_inner(
             dist_update_sensitivity,
             ekf_max_iterations,
         )
+    };
+
+    let sensor_drivers = {
+        let lidar = asts.filter_ns(&["lidar", "driver"]);
+        let vel = lidar.filter_ns(&["velodyne"]);
+        let vel_ts = vel.filter_ns(&["timestamp"]);
+        let lidar_type = resolve_var!(lidar, "type", as LidarDriverType, Rhs::Val(Val::StringVal(s)) => { match s.to_lowercase().as_str() { "disabled" => LidarDriverType::Disabled, "velodyne" => LidarDriverType::Velodyne, _ => return Err(anyhow!("invalid lidar.driver.type '{s}'; expected Disabled or Velodyne")) } })?;
+        let model = resolve_var!(vel, "model", as VelodyneModel, Rhs::Val(Val::StringVal(s)) => { match s.to_lowercase().as_str() { "vlp16" => VelodyneModel::Vlp16, "vlp32c" => VelodyneModel::Vlp32c, "pucklite" => VelodyneModel::PuckLite, "puckhires" => VelodyneModel::PuckHiRes, _ => return Err(anyhow!("unsupported Velodyne model '{s}'")) } })?;
+        let bind_address: String =
+            resolve_var!(vel, "bind_address", as String, Rhs::Val(Val::StringVal(s)) => {s})?;
+        bind_address
+            .parse::<std::net::IpAddr>()
+            .map_err(|_| anyhow!("lidar.driver.velodyne.bind_address must be an IP address"))?;
+        let data_port = resolve_var!(vel, "data_port", as u16, Rhs::Val(Val::NumVal(NumVal::Integer(i))) => { u16::try_from(i).map_err(|_| anyhow!("Velodyne data_port must be in 1..=65535"))? })?;
+        let position_port = resolve_var!(vel, "position_port", as u16, Rhs::Val(Val::NumVal(NumVal::Integer(i))) => { u16::try_from(i).map_err(|_| anyhow!("Velodyne position_port must be in 1..=65535"))? })?;
+        if data_port == 0 || position_port == 0 || data_port == position_port {
+            return Err(anyhow!("Velodyne ports must be non-zero and distinct"));
+        }
+        let device_ip_raw: String =
+            resolve_var!(vel, "device_ip", as String, Rhs::Val(Val::StringVal(s)) => {s})?;
+        let device_ip = if device_ip_raw.is_empty() {
+            None
+        } else {
+            device_ip_raw
+                .parse::<std::net::IpAddr>()
+                .map_err(|_| anyhow!("lidar.driver.velodyne.device_ip must be an IP address"))?;
+            Some(device_ip_raw)
+        };
+        let v_max_skew = resolve_var!(vel_ts, "max_host_skew", as f64, Rhs::Val(Val::UnitedVal(UnitVal::TimeVal(v))) => {v.get::<second>()})?;
+        let v_timeout = resolve_var!(vel_ts, "startup_timeout", as f64, Rhs::Val(Val::UnitedVal(UnitVal::TimeVal(v))) => {v.get::<second>()})?;
+        let v_timestamp_mode = resolve_var!(vel_ts, "mode", as VelodyneTimestampMode, Rhs::Val(Val::StringVal(s)) => { match s.to_lowercase().as_str() { "sensor" => VelodyneTimestampMode::Sensor, "host" => VelodyneTimestampMode::Host, _ => return Err(anyhow!("Velodyne timestamp mode must be Sensor or Host")) } })?;
+        let imu = asts.filter_ns(&["imu", "driver"]);
+        let xs = imu.filter_ns(&["xsens"]);
+        let xs_ts = xs.filter_ns(&["timestamp"]);
+        let imu_type = resolve_var!(imu, "type", as ImuDriverType, Rhs::Val(Val::StringVal(s)) => { match s.to_lowercase().as_str() { "disabled" => ImuDriverType::Disabled, "xsens" => ImuDriverType::Xsens, _ => return Err(anyhow!("invalid imu.driver.type '{s}'; expected Disabled or Xsens")) } })?;
+        let baudrate = resolve_var!(xs, "baudrate", as u32, Rhs::Val(Val::NumVal(NumVal::Integer(i))) => {u32::try_from(i)?})?;
+        let output_rate = resolve_var!(xs, "output_rate", as u32, Rhs::Val(Val::NumVal(NumVal::Integer(i))) => {u32::try_from(i)?})?;
+        if baudrate == 0 || output_rate == 0 || output_rate > 2000 {
+            return Err(anyhow!(
+                "Xsens baudrate and output_rate must be positive; output_rate must not exceed 2000 Hz"
+            ));
+        }
+        let coordinate_system = resolve_var!(xs, "coordinate_system", as CoordinateSystem, Rhs::Val(Val::StringVal(s)) => {match s.to_lowercase().as_str(){"enu"=>CoordinateSystem::Enu,"ned"=>CoordinateSystem::Ned,"nwu"=>CoordinateSystem::Nwu,_=>return Err(anyhow!("invalid Xsens coordinate_system '{s}'"))}})?;
+        let x_max_skew = resolve_var!(xs_ts, "max_host_skew", as f64, Rhs::Val(Val::UnitedVal(UnitVal::TimeVal(v))) => {v.get::<second>()})?;
+        let x_timeout = resolve_var!(xs_ts, "startup_timeout", as f64, Rhs::Val(Val::UnitedVal(UnitVal::TimeVal(v))) => {v.get::<second>()})?;
+        let x_timestamp_mode = resolve_var!(xs_ts, "mode", as XsensTimestampMode, Rhs::Val(Val::StringVal(s)) => { match s.to_lowercase().as_str() { "utc" => XsensTimestampMode::Utc, "host" => XsensTimestampMode::Host, _ => return Err(anyhow!("Xsens timestamp mode must be Utc or Host")) } })?;
+        if v_max_skew <= 0.0 || v_timeout <= 0.0 || x_max_skew <= 0.0 || x_timeout <= 0.0 {
+            return Err(anyhow!(
+                "driver clock skew and startup timeout values must be positive"
+            ));
+        }
+        SensorDriverConfig {
+            lidar: LidarDriverConfig {
+                driver_type: lidar_type,
+                velodyne: VelodyneConfig {
+                    model,
+                    bind_address,
+                    data_port,
+                    position_port,
+                    device_ip,
+                    frame_id: resolve_var!(vel,"frame_id",as String,Rhs::Val(Val::StringVal(s))=>{s})?,
+                    cut_angle_rad: resolve_var!(vel,"cut_angle",as f64,Rhs::Val(Val::NumVal(NumVal::Floating(v)))=>{v})?,
+                    timestamp_mode: v_timestamp_mode,
+                    allow_host_hour_anchor: resolve_var!(vel_ts,"allow_host_hour_anchor",as bool,Rhs::Val(Val::BoolVal(b))=>{b})?,
+                    max_host_skew_secs: v_max_skew,
+                    startup_timeout_secs: v_timeout,
+                },
+            },
+            imu: ImuDriverConfig {
+                driver_type: imu_type,
+                xsens: XsensConfig {
+                    port: resolve_var!(xs,"port",as String,Rhs::Val(Val::StringVal(s))=>{s})?,
+                    baudrate,
+                    frame_id: resolve_var!(xs,"frame_id",as String,Rhs::Val(Val::StringVal(s))=>{s})?,
+                    output_rate,
+                    coordinate_system,
+                    configure_device: resolve_var!(xs,"configure_device",as bool,Rhs::Val(Val::BoolVal(b))=>{b})?,
+                    timestamp_mode: x_timestamp_mode,
+                    max_host_skew_secs: x_max_skew,
+                    startup_timeout_secs: x_timeout,
+                },
+            },
+        }
     };
 
     // --- Lidar Configuration ---
@@ -665,6 +750,7 @@ fn ast_to_config_inner(
     };
 
     let final_config = LioConfig {
+        sensor_drivers,
         rerun_undistorted_static_world: undistorted_static_world,
         neighbor_max_range,
         map_resolution,

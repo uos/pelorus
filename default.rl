@@ -103,6 +103,66 @@ preprocessing {
 }
 
 lidar {
+  driver {
+    # Disabled | Velodyne
+    # Disabled keeps the existing external point-cloud input configured by lidar.topic.
+    # Velodyne enables the in-process UDP driver and requires Pelorus to be built with
+    # the `velodyne-driver` feature (or the aggregate `sensor-drivers` feature).
+    type = Disabled
+
+    velodyne {
+      # Vlp16 | Vlp32c | PuckLite | PuckHiRes
+      # The configured model must match the product identifier in received packets.
+      model = Vlp32c
+
+      # Local IPv4 or IPv6 address on which to receive UDP packets. "0.0.0.0"
+      # listens on every IPv4 interface.
+      bind_address = "0.0.0.0"
+
+      # UDP data-packet port. Must be in 1..=65535 and differ from position_port.
+      data_port = 2368
+
+      # UDP position/NMEA packet port. Must be in 1..=65535 and differ from data_port.
+      position_port = 8308
+
+      # Optional sender-address filter. Empty accepts packets from any device;
+      # otherwise this must be an IPv4 or IPv6 address, for example "192.168.1.201".
+      device_ip = ""
+
+      # Frame assigned to native scans. Coordinates follow ROS REP-103:
+      # +X forward, +Y left, +Z up.
+      frame_id = "velodyne"
+
+      # Revolution boundary in radians, measured in the sensor azimuth convention.
+      # A scan is emitted whenever azimuth crosses this angle. Expected range is
+      # 0.0 (inclusive) to 2*pi (exclusive). Ratslang currently has no angle quantity type.
+      cut_angle = 0.0
+
+      timestamp {
+        # Sensor | Host
+        # Sensor prefers UTC reconstructed from valid position-packet NMEA. If no
+        # valid NMEA anchor is available and allow_host_hour_anchor is true, the
+        # packet's microseconds-since-hour are combined with the nearest host UTC hour.
+        # Host timestamps packets when they are received and stamps a scan from its
+        # first packet. Host is useful when sensor UTC is unavailable, but includes
+        # network and scheduling latency. Both modes keep per-point firing offsets.
+        mode = Sensor
+
+        # In Sensor mode, permit nearest-host-hour reconstruction when position/NMEA
+        # UTC is unavailable. The host clock must be synchronized to the sensor's
+        # time reference. This option has no effect in Host mode.
+        allow_host_hour_anchor = true
+
+        # Maximum accepted absolute difference between reconstructed sensor UTC and
+        # host UTC. Must be positive. Used by Sensor mode; Host mode already uses host time.
+        max_host_skew = 20ms
+
+        # Maximum positive duration to wait for usable packets/timestamps during
+        # startup. Pelorus fails startup instead of silently changing clock modes.
+        startup_timeout = 15s
+      }
+    }
+  }
   # @recommended
   topic = "/ouster/points"
 
@@ -124,6 +184,58 @@ lidar {
 
 
 imu {
+  driver {
+    # Disabled | Xsens
+    # Disabled keeps the existing external IMU input configured by imu.topic.
+    # Xsens enables the in-process serial MTData2 driver and requires Pelorus to be
+    # built with the `xsens-driver` feature (or the aggregate `sensor-drivers` feature).
+    type = Disabled
+
+    xsens {
+      # Serial device path. A stable /dev/serial/by-id/... path is recommended over
+      # /dev/ttyUSB0 because USB enumeration order can change between boots.
+      port = "/dev/ttyUSB0"
+
+      # Serial baud rate in bits per second. Must be positive and must match the device.
+      baudrate = 115200
+
+      # Frame assigned to native IMU measurements.
+      frame_id = "imu"
+
+      # Requested MTData2 output frequency in Hz when configure_device is true.
+      # Must be in 1..=2000 and supported by the connected Xsens model and baud rate.
+      output_rate = 400
+
+      # Enu | Ned | Nwu
+      # World-coordinate convention requested for orientation output:
+      # Enu = East-North-Up, Ned = North-East-Down, Nwu = North-West-Up.
+      # Acceleration and rate-of-turn remain expressed in the IMU body frame.
+      coordinate_system = Enu
+
+      # If true, put the device in configuration mode, request UTC, calibrated
+      # acceleration, rate-of-turn, and quaternion MTData2 fields at output_rate,
+      # then return it to measurement mode. If false, the device must already emit
+      # all required fields in compatible precision and coordinates.
+      configure_device = true
+
+      timestamp {
+        # Utc | Host
+        # Utc requires a present and valid MTData2 UTC field and rejects measurements
+        # whose clock differs from the host beyond max_host_skew. Host timestamps a
+        # complete decoded frame at receipt time and is useful before GNSS/UTC becomes
+        # valid, but includes serial transport and scheduling latency.
+        mode = Utc
+
+        # Maximum accepted absolute difference between Xsens UTC and host UTC.
+        # Must be positive. Used by Utc mode; Host mode already uses host time.
+        max_host_skew = 20ms
+
+        # Maximum positive duration to wait for usable MTData2 input during startup.
+        # Pelorus fails startup instead of silently changing from Utc to Host.
+        startup_timeout = 15s
+      }
+    }
+  }
 
   # @recommended
   topic = "/ouster/imu"

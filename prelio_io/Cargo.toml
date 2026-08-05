@@ -13,6 +13,7 @@ rust-version.workspace = true
 
 [dependencies]
 pelorus_core.workspace = true
+pelorus_drivers = { workspace = true, optional = true }
 ros_pointcloud2.workspace = true
 anyhow.workspace = true
 nalgebra.workspace = true
@@ -45,6 +46,9 @@ metal = ["prelio/metal"]
 vulkan = ["prelio/vulkan"]
 no-imu-sync = ["prelio/no-imu-sync"]
 large-processing-queue = ["prelio/large-processing-queue"]
+velodyne-driver = ["dep:pelorus_drivers", "pelorus_drivers/velodyne-driver"]
+xsens-driver = ["dep:pelorus_drivers", "pelorus_drivers/xsens-driver"]
+sensor-drivers = ["velodyne-driver", "xsens-driver"]
 rerun = ["dep:rerun"]
 mt_pubsub = [
     "dep:mt_pubsub",

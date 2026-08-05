@@ -1436,7 +1436,8 @@ fn lio_with_ready_signal(
         (None, None)
     };
 
-    let (lifis_node, synced_rx) = PrelioNode::new(
+    #[allow(unused_mut)]
+    let (mut lifis_node, synced_rx) = PrelioNode::new(
         #[cfg(any(feature = "ros2-client", feature = "r2r"))]
         &mut node,
         #[cfg(any(feature = "mt_pubsub", feature = "hiroz"))]
@@ -1453,9 +1454,11 @@ fn lio_with_ready_signal(
         #[cfg(feature = "rerun")]
         rec.clone(),
         Some(ready_for_next_rx),
-        filtered_imu_tx,
+        filtered_imu_tx.clone(),
         imu_sync_mode,
     )?;
+    #[cfg(any(feature = "velodyne-driver", feature = "xsens-driver"))]
+    lifis_node.start_native_drivers(&config.sensor_drivers, filtered_imu_tx.clone(), None)?;
     let lifis_node = Arc::new(lifis_node);
     let drain_on_shutdown = Arc::new(AtomicBool::new(false));
     if let Some(stop_rx) = shutdown_request_rx {

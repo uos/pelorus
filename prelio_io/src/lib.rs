@@ -11,6 +11,8 @@ pub mod tf_r2r;
 use futures_lite::{StreamExt, future};
 #[allow(unused_imports)]
 use log::{debug, error, info, warn};
+#[cfg(any(feature = "velodyne-driver", feature = "xsens-driver"))]
+use pelorus_core::{ImuDriverType, SensorDriverConfig, VelodynePoint, time_msg_from_secs};
 use pelorus_core::{
     ImuMsg, ImuPredictor, ImuPredictorUndistort, LidarVendor, LifisNodeParameters, LifisParameters,
     PointXYZIT, timing::RuntimeEvaluator,
@@ -22,6 +24,8 @@ use pelorus_core::{
     feature = "hiroz"
 ))]
 use pelorus_core::{OdomMsg, PrelioProcessedCloud};
+#[cfg(any(feature = "velodyne-driver", feature = "xsens-driver"))]
+use pelorus_drivers::{DriverError, DriverManager, RawLidarScan, SensorIngress, SensorOutputSink};
 pub use prelio;
 
 #[cfg(any(
@@ -35,7 +39,9 @@ use anyhow::anyhow;
     feature = "ros2-client",
     feature = "mt_pubsub",
     feature = "r2r",
-    feature = "hiroz"
+    feature = "hiroz",
+    feature = "velodyne-driver",
+    feature = "xsens-driver"
 ))]
 use prelio::timestamp_to_secs;
 
@@ -93,6 +99,8 @@ use ros2_interfaces_jazzy_serde::{
     std_msgs::msg::Header,
 };
 use std::sync::{Arc, Mutex};
+#[cfg(any(feature = "velodyne-driver", feature = "xsens-driver"))]
+use std::sync::atomic::{AtomicBool, Ordering};
 #[cfg(feature = "hiroz")]
 use zenoh_buffers::buffer::Buffer;
 
@@ -447,6 +455,98 @@ pub struct PrelioNode {
     #[cfg(feature = "hiroz")]
     pub tf_listener: Arc<tf_hiroz::TfListener>,
     pub logger: String,
+    #[cfg(any(feature = "velodyne-driver", feature = "xsens-driver"))]
+    native_drivers: Option<DriverManager>,
+    #[cfg(any(feature = "velodyne-driver", feature = "xsens-driver"))]
+    native_imu_init: Option<Arc<Mutex<dyn FnMut(&[ImuMsg]) + Send + Sync>>>,
+    #[cfg(any(feature = "velodyne-driver", feature = "xsens-driver"))]
+    native_imu_init_time: f64,
+}
+
+#[cfg(any(feature = "velodyne-driver", feature = "xsens-driver"))]
+#[derive(Default)]
+struct NativeImuInitState {
+    start_time: Option<f64>,
+    buffer: Option<Vec<ImuMsg>>,
+}
+
+#[cfg(any(feature = "velodyne-driver", feature = "xsens-driver"))]
+struct NativeIngress {
+    state: Arc<Mutex<State>>,
+    filtered_imu_sender: Option<std::sync::mpsc::Sender<ImuMsg>>,
+    imu_init: Option<Arc<Mutex<dyn FnMut(&[ImuMsg]) + Send + Sync>>>,
+    imu_init_time: f64,
+    imu_init_state: Mutex<NativeImuInitState>,
+    imu_initialized: AtomicBool,
+}
+#[cfg(any(feature = "velodyne-driver", feature = "xsens-driver"))]
+impl SensorIngress for NativeIngress {
+    fn push_lidar(&self, scan: RawLidarScan) -> Result<(), DriverError> {
+        if !self.imu_initialized.load(Ordering::Acquire) {
+            return Ok(());
+        }
+        let points: Vec<VelodynePoint> = scan
+            .points
+            .into_iter()
+            .map(|p| VelodynePoint {
+                x: p.xyz[0],
+                y: p.xyz[1],
+                z: p.xyz[2],
+                intensity: p.intensity * 255.0,
+                time: p.time_offset_secs as f32,
+            })
+            .collect();
+        let mut cloud = ros_pointcloud2::PointCloud2Msg::try_from_vec(points)
+            .map_err(|e| DriverError::Driver(format!("native cloud conversion: {e}")))?;
+        cloud.header.frame_id = scan.frame_id;
+        cloud.header.stamp = time_msg_from_secs(scan.stamp);
+        self.state
+            .lock()
+            .unwrap()
+            .lifis
+            .lock()
+            .unwrap()
+            .add_pointcloud(cloud);
+        Ok(())
+    }
+    fn push_imu(&self, imu: ImuMsg) -> Result<(), DriverError> {
+        if let Some(init) = self.imu_init.as_ref() {
+            let imu_time = timestamp_to_secs(&imu.stamp);
+            let mut state = self.imu_init_state.lock().unwrap();
+            let start = *state.start_time.get_or_insert(imu_time);
+            if imu_time - start < self.imu_init_time {
+                if let Some(buffer) = state.buffer.as_mut() {
+                    buffer.push(imu.clone());
+                }
+            } else if let Some(buffer) = state.buffer.take() {
+                if !buffer.is_empty() {
+                    init.lock().unwrap()(&buffer);
+                }
+                self.imu_initialized.store(true, Ordering::Release);
+            }
+        }
+        let filtered = self
+            .state
+            .lock()
+            .unwrap()
+            .lifis
+            .lock()
+            .unwrap()
+            .add_imu(imu);
+        if let (Some(v), Some(tx)) = (filtered, self.filtered_imu_sender.as_ref()) {
+            let _ = tx.send(v);
+        }
+        Ok(())
+    }
+
+    fn driver_failed(&self, error: &DriverError) {
+        log::error!("Native sensor driver failed; stopping Pelorus ingress: {error}");
+        if let Ok(state) = self.state.lock()
+            && let Ok(mut lifis) = state.lifis.lock()
+        {
+            lifis.shutdown();
+        }
+    }
 }
 
 #[cfg(feature = "mt_pubsub")]
@@ -573,6 +673,29 @@ fn split_namespace_topic(input: &str) -> (String, String) {
 }
 
 impl PrelioNode {
+    #[cfg(any(feature = "velodyne-driver", feature = "xsens-driver"))]
+    pub fn start_native_drivers(
+        &mut self,
+        config: &SensorDriverConfig,
+        filtered_imu_sender: Option<std::sync::mpsc::Sender<ImuMsg>>,
+        sink: Option<Arc<dyn SensorOutputSink>>,
+    ) -> anyhow::Result<()> {
+        let ingress = Arc::new(NativeIngress {
+            state: Arc::clone(&self.state),
+            filtered_imu_sender,
+            imu_init: self.native_imu_init.clone(),
+            imu_init_time: self.native_imu_init_time,
+            imu_init_state: Mutex::new(NativeImuInitState {
+                start_time: None,
+                buffer: Some(Vec::new()),
+            }),
+            imu_initialized: AtomicBool::new(
+                self.native_imu_init.is_none() || config.imu.driver_type == ImuDriverType::Disabled,
+            ),
+        });
+        self.native_drivers = Some(DriverManager::start(config, ingress, sink)?);
+        Ok(())
+    }
     pub fn new(
         #[cfg(feature = "ros2-client")] node: &mut ros2_client::Node,
         #[cfg(feature = "r2r")] node: &mut r2r::Node,
@@ -600,6 +723,8 @@ impl PrelioNode {
         filtered_imu_sender: Option<std::sync::mpsc::Sender<ImuMsg>>,
         imu_sync_mode: prelio::ImuSyncMode,
     ) -> anyhow::Result<(Self, std::sync::mpsc::Receiver<Tick>)> {
+        #[cfg(any(feature = "velodyne-driver", feature = "xsens-driver"))]
+        let native_imu_init = imu_pose_predictor_init.clone();
         #[cfg(feature = "ros2-client")]
         let tf_listener = Arc::new(tf::TfListener::new(node));
 
@@ -1480,6 +1605,12 @@ impl PrelioNode {
                 ))]
                 tf_listener,
                 logger: "".to_string(), // TODO rm logger prefix
+                #[cfg(any(feature = "velodyne-driver", feature = "xsens-driver"))]
+                native_drivers: None,
+                #[cfg(any(feature = "velodyne-driver", feature = "xsens-driver"))]
+                native_imu_init,
+                #[cfg(any(feature = "velodyne-driver", feature = "xsens-driver"))]
+                native_imu_init_time: node_params.imu_predictor_init_time_sec,
             },
             rx,
         ))

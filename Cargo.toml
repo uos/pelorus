@@ -12,6 +12,7 @@ members = [
   "pelorus_reg",
   "prelio",
   "prelio_io",
+  "pelorus_drivers",
   "spole",
   "glim_integration/pelorus_glim_odometry",
 ]
@@ -45,6 +46,7 @@ pelorus_cuda = { path = "pelorus_cuda", version = "0.0.6", default-features = fa
 transforms_io = "0.3"
 pelorus_metal = { path = "pelorus_metal", version = "0.0.6" }
 pelorus_vulkan = { path = "pelorus_vulkan", version = "0.0.6", default-features = false }
+pelorus_drivers = { path = "pelorus_drivers", version = "0.0.6", default-features = false }
 
 ros_pointcloud2 = { version = "1.0.0-rc.3", features = [
   "derive",
@@ -110,6 +112,10 @@ anyhow = "1.0"
 sophus_lie = "0.15"
 rayon = "1.11"
 thiserror = "2.0" # only used in tf implementations
+velodyne-lidar = "0.3.0"
+xsens-mti = "0.7.0"
+serialport = { version = "4.9.0", default-features = false }
+chrono = "0.4.45"
 imu-fusion = "0.2"
 futures-lite = "2.6"
 either = "1.15"

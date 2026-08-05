@@ -77,6 +77,11 @@ rayon = [
 
 # -#-#-#-#-#- Sensor Communication -#-#-#-#-#-
 
+# Native drivers are opt-in; Disabled in Ratslang preserves external subscriptions.
+velodyne-driver = ["prelio_io/velodyne-driver"]
+xsens-driver = ["prelio_io/xsens-driver"]
+sensor-drivers = ["velodyne-driver", "xsens-driver"]
+
 # Alias for default fallback
 ros2 = ["ros2c"]
 

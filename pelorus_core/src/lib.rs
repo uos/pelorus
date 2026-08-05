@@ -646,6 +646,7 @@ pub enum Qos {
 /// Top-level configuration used by both the binary and the FFI layer.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct LioConfig {
+    pub sensor_drivers: SensorDriverConfig,
     pub show_tui: bool,
     pub debug_fps: u32,
     pub registered_cloud_qos: Qos,
@@ -669,6 +670,142 @@ pub struct LioConfig {
     pub base_to_lidar_tf_override: bool,
     pub cpu_only: bool,
     pub num_threads: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct SensorDriverConfig {
+    pub lidar: LidarDriverConfig,
+    pub imu: ImuDriverConfig,
+}
+
+impl Default for SensorDriverConfig {
+    fn default() -> Self {
+        Self {
+            lidar: Default::default(),
+            imu: Default::default(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+pub enum LidarDriverType {
+    #[default]
+    Disabled,
+    Velodyne,
+}
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+pub enum ImuDriverType {
+    #[default]
+    Disabled,
+    Xsens,
+}
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub enum VelodyneModel {
+    Vlp16,
+    Vlp32c,
+    PuckLite,
+    PuckHiRes,
+}
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub enum VelodyneTimestampMode {
+    Sensor,
+    Host,
+}
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub enum XsensTimestampMode {
+    Utc,
+    Host,
+}
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub enum CoordinateSystem {
+    Enu,
+    Ned,
+    Nwu,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct LidarDriverConfig {
+    pub driver_type: LidarDriverType,
+    pub velodyne: VelodyneConfig,
+}
+impl Default for LidarDriverConfig {
+    fn default() -> Self {
+        Self {
+            driver_type: Default::default(),
+            velodyne: Default::default(),
+        }
+    }
+}
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ImuDriverConfig {
+    pub driver_type: ImuDriverType,
+    pub xsens: XsensConfig,
+}
+impl Default for ImuDriverConfig {
+    fn default() -> Self {
+        Self {
+            driver_type: Default::default(),
+            xsens: Default::default(),
+        }
+    }
+}
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct VelodyneConfig {
+    pub model: VelodyneModel,
+    pub bind_address: String,
+    pub data_port: u16,
+    pub position_port: u16,
+    pub device_ip: Option<String>,
+    pub frame_id: String,
+    pub cut_angle_rad: f64,
+    pub timestamp_mode: VelodyneTimestampMode,
+    pub allow_host_hour_anchor: bool,
+    pub max_host_skew_secs: f64,
+    pub startup_timeout_secs: f64,
+}
+impl Default for VelodyneConfig {
+    fn default() -> Self {
+        Self {
+            model: VelodyneModel::Vlp32c,
+            bind_address: "0.0.0.0".into(),
+            data_port: 2368,
+            position_port: 8308,
+            device_ip: None,
+            frame_id: "velodyne".into(),
+            cut_angle_rad: 0.0,
+            timestamp_mode: VelodyneTimestampMode::Sensor,
+            allow_host_hour_anchor: true,
+            max_host_skew_secs: 0.020,
+            startup_timeout_secs: 15.0,
+        }
+    }
+}
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct XsensConfig {
+    pub port: String,
+    pub baudrate: u32,
+    pub frame_id: String,
+    pub output_rate: u32,
+    pub coordinate_system: CoordinateSystem,
+    pub configure_device: bool,
+    pub timestamp_mode: XsensTimestampMode,
+    pub max_host_skew_secs: f64,
+    pub startup_timeout_secs: f64,
+}
+impl Default for XsensConfig {
+    fn default() -> Self {
+        Self {
+            port: "/dev/ttyUSB0".into(),
+            baudrate: 115200,
+            frame_id: "imu".into(),
+            output_rate: 400,
+            coordinate_system: CoordinateSystem::Enu,
+            configure_device: true,
+            timestamp_mode: XsensTimestampMode::Utc,
+            max_host_skew_secs: 0.020,
+            startup_timeout_secs: 15.0,
+        }
+    }
 }
 
 pub fn timestamp_to_secs(t: &TimeMsg) -> f64 {
