@@ -8,7 +8,7 @@ Since SeaKit is in active development, we will just build everything from source
 
 Install Marina for getting bags:
 ```sh
-cargo install --git git://git.steado.tech/marina
+cargo install --git git://git.steado.tech/marina --locked
 
 marina pull wachsbleiche/parking_25:hunter
 ```
@@ -16,7 +16,7 @@ We recommend also adding the [tab completions](https://stelzo.codeberg.page/mari
 
 Now install Minot, which is used by Pelorus to read bags and process synchronously.
 ```sh
-cargo install --git git://git.steado.tech/minot minot --tag v0.9.0-hiroz --locked
+cargo install --git git://git.steado.tech/minot minot --tag v0.9.1-hiroz --locked
 ```
 
 (Optional) Most people like fancy TUIs -- and we do as well. But we also offer good old GUIs for visualization. Install [Rerun](https://rerun.io/) via this command:
@@ -108,7 +108,7 @@ You can run Pelorus with ROS 2 Zenoh middleware compatibility as well. Minot and
 
 Install Minot with Hiroz.
 ```sh
-cargo install --git git://git.steado.tech/minot minot --tag v0.9.0-hiroz --no-default-features --features default-hiroz
+cargo install --git git://git.steado.tech/minot minot --tag v0.9.1-hiroz --no-default-features --features default-hiroz
 ```
 
 Install Pelorus with Hiroz.

@@ -294,6 +294,7 @@ pub struct SharedStats {
     cpu_percents: Arc<Mutex<Vec<f64>>>,
     last_comp_time: Arc<Mutex<Option<Instant>>>,
     scan_timestamps: Arc<Mutex<Vec<Instant>>>,
+    scan_data_timestamps: Arc<Mutex<Vec<f64>>>,
     trajectory: Arc<Mutex<Vec<[f64; 3]>>>,
 
     #[cfg(target_os = "linux")]
@@ -322,6 +323,7 @@ impl SharedStats {
             cpu_percents: Arc::new(Mutex::new(Vec::new())),
             last_comp_time: Arc::new(Mutex::new(None)),
             scan_timestamps: Arc::new(Mutex::new(Vec::new())),
+            scan_data_timestamps: Arc::new(Mutex::new(Vec::new())),
             trajectory: Arc::new(Mutex::new(Vec::with_capacity(MAX_TRAJECTORY_POINTS))),
             #[cfg(target_os = "linux")]
             last_cpu: Arc::new(Mutex::new(None)),
@@ -378,6 +380,42 @@ impl SharedStats {
             let oldest = timestamps.first().unwrap();
             let newest = timestamps.last().unwrap();
             let duration = newest.duration_since(*oldest).as_secs_f64();
+            if duration > 0.0 {
+                (timestamps.len() - 1) as f64 / duration
+            } else {
+                0.0
+            }
+        } else {
+            0.0
+        };
+
+        let mut stats = self.inner.lock().unwrap();
+        stats.measured_sensor_rate_hz = measured_rate;
+    }
+
+    pub fn record_scan_timestamp(&self, stamp_sec: f64) {
+        if stamp_sec <= 0.0 {
+            self.record_scan();
+            return;
+        }
+
+        let mut timestamps = self.scan_data_timestamps.lock().unwrap();
+        if let Some(&last) = timestamps.last() {
+            if stamp_sec <= last {
+                return;
+            }
+        }
+        timestamps.push(stamp_sec);
+
+        let len = timestamps.len();
+        if len > 100 {
+            timestamps.drain(0..len - 100);
+        }
+
+        let measured_rate = if timestamps.len() >= 2 {
+            let oldest = timestamps.first().unwrap();
+            let newest = timestamps.last().unwrap();
+            let duration = newest - oldest;
             if duration > 0.0 {
                 (timestamps.len() - 1) as f64 / duration
             } else {

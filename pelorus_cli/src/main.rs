@@ -305,7 +305,7 @@ pub struct OfflineArgs {
 
     /// Allow Minot and Pelorus pub/sub to use non-local networking in offline mode.
     #[arg(long, default_value_t = false)]
-    pub no_local_only: bool,
+    pub open_router: bool,
 
     #[command(flatten)]
     pub recording: RecordingArgs,
@@ -2008,7 +2008,11 @@ fn lio_with_ready_signal(
                 .map(|_| lifis_tick.received_at);
             // Record scan arrival for measuring actual sensor rate
             if let Some(ref stats) = shared_stats {
-                stats.record_scan();
+                let stamp_sec = {
+                    let s = timestamp_to_secs(&lifis_tick.cloud_header.stamp);
+                    if s > 0.0 { s } else { timestamp_to_secs(&lifis_tick.odom_time) }
+                };
+                stats.record_scan_timestamp(stamp_sec);
             }
 
             eval.merge(&lifis_tick.runtime_eval);
@@ -4370,7 +4374,7 @@ pf! i 1
             let export_trajectory_path_for_run = export_trajectory_path.clone();
             #[cfg(feature = "processing-time-export")]
             let export_processing_time_path_for_run = export_processing_time_path.clone();
-            let offline_local_only = !offline_args.no_local_only;
+            let offline_local_only = !offline_args.open_router;
             let run_offline_logic = || -> anyhow::Result<()> {
                 install_shutdown_signal_handlers();
 
@@ -4412,13 +4416,7 @@ pf! i 1
                     .stdin(Stdio::piped())
                     .stdout(Stdio::piped())
                     .stderr(Stdio::piped());
-                if offline_local_only {
-                    // The Pelorus mt_pubsub node has already started (or joined)
-                    // the in-process loopback coordinator. Point the child at it
-                    // explicitly instead of asking the child to discover or start
-                    // another router.
-                    minot_command.env("MINOT_COORD_ADDR", "tcp/127.0.0.1:7447");
-                }
+
 
                 #[cfg(unix)]
                 unsafe {
