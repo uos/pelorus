@@ -4376,11 +4376,12 @@ pf! i 1
             let export_processing_time_path_for_run = export_processing_time_path.clone();
             let offline_local_only = !offline_args.open_router;
             let run_offline_logic = || -> anyhow::Result<()> {
+                let startup_started = std::time::Instant::now();
                 install_shutdown_signal_handlers();
 
                 // Minot is spawned before the LIO node is initialized, so bootstrap
                 // the shared coordinator here and keep it alive for the entire run.
-                // The child and the later Pelorus node both connect to this router.
+                // Start mode avoids a discovery timeout when this process is the owner.
                 #[cfg(feature = "mt_pubsub")]
                 let (_coordinator_runtime, _coordinator_node) = {
                     let runtime = Arc::new(
@@ -4393,10 +4394,14 @@ pf! i 1
                         .block_on(Node::create(
                             mt_pubsub::NodeConfig::new("pelorus_offline_coordinator")
                                 .mode(mt_pubsub::Qos::Reliable)
-                                .coord_mode(mt_pubsub::CoordMode::AutoStart)
+                                .coord_mode(mt_pubsub::CoordMode::Start)
                                 .local_only(offline_local_only),
                         ))
                         .map_err(|e| anyhow!("Failed to bootstrap offline coordinator: {e}"))?;
+                    info!(
+                        "Offline coordinator ready after {:.3}s",
+                        startup_started.elapsed().as_secs_f64()
+                    );
                     (runtime, node)
                 };
 
@@ -4416,7 +4421,9 @@ pf! i 1
                     .stdin(Stdio::piped())
                     .stdout(Stdio::piped())
                     .stderr(Stdio::piped());
-
+                if offline_local_only {
+                    minot_command.arg("--local-only");
+                }
 
                 #[cfg(unix)]
                 unsafe {
@@ -4474,11 +4481,9 @@ pf! i 1
                                         runtime_tx_stdout.send(OfflineRuntimeEvent::MinotEndOfBag);
                                 }
 
-                                if line.contains("--sync")
-                                    || line.to_lowercase().contains("waiting for input")
-                                    || line.to_lowercase().contains("press enter")
-                                    || line.to_lowercase().contains("stdin")
-                                {
+                                if line.contains(
+                                    "Waiting for input on stdin before execution (--sync mode)",
+                                ) {
                                     if !ready_notified_stdout.swap(true, Ordering::SeqCst) {
                                         let _ =
                                             runtime_tx_stdout.send(OfflineRuntimeEvent::MinotReady);
@@ -4511,13 +4516,12 @@ pf! i 1
                                         runtime_tx_stderr.send(OfflineRuntimeEvent::MinotEndOfBag);
                                 }
 
-                                // detect readiness on stderr
+                                // Minot emits this only after its coordinator connection and
+                                // bagfile setup are complete. Keep this an exact protocol marker;
+                                // unrelated log messages mentioning stdin are not readiness.
                                 if line.contains(
                                     "Waiting for input on stdin before execution (--sync mode)",
-                                ) || line.to_lowercase().contains("waiting for input")
-                                    || line.to_lowercase().contains("press enter")
-                                    || line.to_lowercase().contains("stdin")
-                                {
+                                ) {
                                     if !ready_notified_stderr.swap(true, Ordering::SeqCst) {
                                         let _ =
                                             runtime_tx_stderr.send(OfflineRuntimeEvent::MinotReady);
@@ -4584,7 +4588,10 @@ pf! i 1
                     }
                 }
 
-                info!("Minot is ready, starting pelorus offline processing...");
+                info!(
+                    "Minot is ready after {:.3}s; starting pelorus offline processing...",
+                    startup_started.elapsed().as_secs_f64()
+                );
 
                 let (pelorus_ready_tx, pelorus_ready_rx) = std::sync::mpsc::channel();
 
@@ -4639,7 +4646,10 @@ pf! i 1
                 pelorus_ready_rx
                     .recv()
                     .map_err(|_| anyhow!("Failed to receive Pelorus readiness signal"))?;
-                info!("Pelorus is ready!");
+                info!(
+                    "Pelorus is ready after {:.3}s",
+                    startup_started.elapsed().as_secs_f64()
+                );
                 info!("Triggering minot to start processing...");
 
                 use std::io::Write;
