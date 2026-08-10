@@ -959,6 +959,8 @@ pub struct PrelioProcessedCloud {
     pub received_at: std::time::Instant,
     pub cloud: Vec<PointXYZIT>,
     pub passthrough: Option<Vec<PointXYZIT>>,
+    /// IMU measurements synchronized to this LiDAR frame.
+    pub imu_buffer: Vec<ImuMsg>,
     pub imu_frame: String,
     pub header: HeaderMsg,
     pub end_of_frame_guess: Isometry3<f64>,

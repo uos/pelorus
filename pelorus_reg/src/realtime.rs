@@ -51,6 +51,7 @@ struct CorrectedSnapshot {
 
 enum Command {
     Imu(ImuMsg),
+    PrepareExport(CorrectedSnapshot, Vec<ImuMsg>, SyncSender<()>),
     Corrected(CorrectedSnapshot, SyncSender<()>),
     SetBaseToLidar(Isometry3<f64>, SyncSender<()>),
     Shutdown,
@@ -115,16 +116,38 @@ impl RealtimePredictorHandle {
         })
     }
 
-    /// Install a coherent post-correction state. Buffered IMUs are replayed by
-    /// the worker before live publication resumes.
-    pub fn corrected(&self, registration: &RegistrationState) {
-        let snapshot = CorrectedSnapshot {
+    fn snapshot(registration: &RegistrationState) -> CorrectedSnapshot {
+        CorrectedSnapshot {
             state: registration.ekf.state,
             covariance: registration.ekf.cov.clone(),
             initialized: registration.ekf.initialized,
             last_time: registration.ekf.last_time,
             context: registration.imu_processing.prediction_context(),
-        };
+        }
+    }
+
+    /// Produce all prediction-only export samples preceding this correction.
+    pub fn prepare_export(&self, registration: &RegistrationState, imu_msgs: &[ImuMsg]) {
+        let snapshot = Self::snapshot(registration);
+        let (completed_tx, completed_rx) = std::sync::mpsc::sync_channel(0);
+        if self
+            .command_tx
+            .send(Command::PrepareExport(
+                snapshot,
+                imu_msgs.to_vec(),
+                completed_tx,
+            ))
+            .is_err()
+        {
+            return;
+        }
+        let _ = completed_rx.recv();
+    }
+
+    /// Install a coherent post-correction state. Buffered IMUs are replayed by
+    /// the worker before live publication resumes.
+    pub fn corrected(&self, registration: &RegistrationState) {
+        let snapshot = Self::snapshot(registration);
         let (completed_tx, completed_rx) = std::sync::mpsc::sync_channel(0);
         if self
             .command_tx
@@ -133,8 +156,7 @@ impl RealtimePredictorHandle {
         {
             return;
         }
-        // Ensure replay/export is complete before the registration loop can
-        // advance to the next corrected timestamp or close its output files.
+        // Ensure replay is complete before registration advances again.
         let _ = completed_rx.recv();
     }
 
@@ -164,7 +186,7 @@ struct WorkerState {
     history: VecDeque<ImuMsg>,
     params: ImuParameters,
     base_to_lidar: Isometry3<f64>,
-    covariance_in_base_frame: bool,
+    output_base: bool,
 }
 
 fn worker(
@@ -186,7 +208,7 @@ fn worker(
         history: VecDeque::new(),
         params: config.imu_params,
         base_to_lidar: config.base_to_lidar,
-        covariance_in_base_frame: config.base_link_frame.is_some(),
+        output_base: config.base_link_frame.is_some(),
     };
     let mut export_state = export_tx.as_ref().map(|_| WorkerState {
         ekf: Iekf::new(config.prelio_params.imu.gravity, config.base_to_lidar),
@@ -195,7 +217,7 @@ fn worker(
         history: VecDeque::new(),
         params: config.imu_params.clone(),
         base_to_lidar: config.base_to_lidar,
-        covariance_in_base_frame: config.base_link_frame.is_some(),
+        output_base: config.base_link_frame.is_some(),
     });
 
     while let Ok(command) = command_rx.recv() {
@@ -208,14 +230,13 @@ fn worker(
                     }
                 }
             }
-            Command::Corrected(snapshot, completed) => {
+            Command::PrepareExport(snapshot, imu_msgs, completed) => {
                 if let (Some(export_state), Some(export_tx)) =
                     (export_state.as_mut(), export_tx.as_ref())
                 {
                     if export_state.seeded {
                         let interval_end = snapshot.last_time;
-                        let interval: Vec<_> = state
-                            .history
+                        let interval: Vec<_> = imu_msgs
                             .iter()
                             .filter(|imu| {
                                 let stamp = pelorus_core::timestamp_to_secs(&imu.stamp);
@@ -231,7 +252,10 @@ fn worker(
                     }
                     export_state.install(snapshot.clone());
                 }
+                let _ = completed.send(());
+            }
 
+            Command::Corrected(snapshot, completed) => {
                 state.install(snapshot);
                 let previous_pending = pending_corrections
                     .fetch_update(Ordering::AcqRel, Ordering::Acquire, |pending| {
@@ -346,17 +370,22 @@ impl WorkerState {
             gyro_bias: self.ekf.state.bg,
         };
         let lidar_pose = state.pose * state.lidar_imu_extrinsic;
-        // The authoritative registration output currently publishes base_pose
-        // even when base_link.frame_id is empty. Match that convention so
-        // predictions and corrections remain numerically continuous.
-        let pose = lidar_pose * self.base_to_lidar.inverse();
-        let lidar_to_output = if self.covariance_in_base_frame {
+        let pose = if self.output_base {
+            lidar_pose * self.base_to_lidar.inverse()
+        } else {
+            lidar_pose
+        };
+        let lidar_to_output = if self.output_base {
             self.base_to_lidar.inverse()
         } else {
             Isometry3::identity()
         };
         let linear_velocity_body = pose.rotation.inverse() * state.linear_velocity;
-        let r_b_l = self.base_to_lidar.rotation.inverse();
+        let r_b_l = if self.output_base {
+            self.base_to_lidar.rotation.inverse()
+        } else {
+            UnitQuaternion::identity()
+        };
         let angular_velocity_body =
             (r_b_l * state.lidar_imu_extrinsic.rotation.inverse()) * state.angular_velocity;
         RealtimePrediction {
@@ -422,6 +451,7 @@ mod tests {
 
         {
             let registration = map.lock().unwrap();
+            predictor.prepare_export(&registration, &[]);
             predictor.corrected(&registration);
         }
         let caught_up = output.recv_timeout(Duration::from_secs(1)).unwrap();
@@ -460,6 +490,7 @@ mod tests {
             RealtimePredictorHandle::new_with_export(&config, Some(export_tx));
         {
             let registration = map.lock().unwrap();
+            predictor.prepare_export(&registration, &[]);
             predictor.corrected(&registration);
         }
 
@@ -470,6 +501,7 @@ mod tests {
         {
             let mut registration = map.lock().unwrap();
             registration.ekf.last_time = 0.04;
+            predictor.prepare_export(&registration, &[imu(0.02), imu(0.03), imu(0.04)]);
             predictor.corrected(&registration);
         }
 
@@ -481,7 +513,7 @@ mod tests {
     }
 
     #[test]
-    fn empty_base_frame_predictions_match_corrected_base_pose_convention() {
+    fn empty_base_frame_predictions_remain_in_lidar_frame() {
         let config = LioConfig::default();
         let lidar_to_imu = Isometry3::from_parts(
             Translation3::from(config.imu_params.initial_translation_lidar_to_imu),
@@ -494,7 +526,7 @@ mod tests {
             history: VecDeque::new(),
             params: config.imu_params,
             base_to_lidar: Isometry3::identity(),
-            covariance_in_base_frame: false,
+            output_base: false,
         };
         state.set_base_to_lidar(Isometry3::from_parts(
             Translation3::new(0.0, 0.0, 0.28),
@@ -502,7 +534,7 @@ mod tests {
         ));
 
         let prediction = state.output(time_msg_from_secs(1.0));
-        assert!((prediction.pose.translation.z + 0.28).abs() < 1e-12);
+        assert!(prediction.pose.translation.z.abs() < 1e-12);
     }
 
     #[test]

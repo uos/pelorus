@@ -2362,6 +2362,7 @@ impl Prelio {
                     received_at,
                     cloud: cloud_downsampled,
                     passthrough: cloud_output,
+                    imu_buffer: Vec::new(),
                     imu_frame: "".to_string(),
                     header: lidar_header,
                     end_of_frame_guess: Isometry3::identity(),
@@ -2538,6 +2539,7 @@ impl Prelio {
                     received_at,
                     cloud: cloud_downsampled,
                     passthrough: cloud_output,
+                    imu_buffer: Vec::new(),
                     imu_frame: "".to_string(),
                     header: lidar_header,
                     end_of_frame_guess: Isometry3::identity(),
@@ -2664,6 +2666,7 @@ impl Prelio {
                         runtime_eval: eval.clone(),
                         should_map_only: false,
                         lidar_end_time_abs: abs_lidar_end,
+                        imu_buffer: imu_data,
                     };
 
                     synced_sender.send(res).unwrap();

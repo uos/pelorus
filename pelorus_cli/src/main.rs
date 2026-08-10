@@ -2647,7 +2647,11 @@ fn lio_with_ready_signal(
                 static_tf_published = true;
             }
 
-            t_world = register_pose.base_pose;
+            t_world = if config.base_link_frame.is_some() {
+                register_pose.base_pose
+            } else {
+                register_pose.pose
+            };
 
             // transformation from the last pose to the current pose in the local frame
             t_last_current = old_t_world.inverse() * t_world;
@@ -2672,7 +2676,11 @@ fn lio_with_ready_signal(
             pelorus_odom.twist.twist.linear.y = lin_vel_body.y;
             pelorus_odom.twist.twist.linear.z = lin_vel_body.z;
 
-            let r_b_l = config.base_to_lidar.rotation.inverse();
+            let r_b_l = if config.base_link_frame.is_some() {
+                config.base_to_lidar.rotation.inverse()
+            } else {
+                UnitQuaternion::identity()
+            };
             let r_l_i = ekf_state.lidar_imu_extrinsic.rotation.inverse();
             let ang_vel_body = (r_b_l * r_l_i) * ekf_state.angular_velocity;
             pelorus_odom.twist.twist.angular.x = ang_vel_body.x;
@@ -2703,6 +2711,16 @@ fn lio_with_ready_signal(
                 {
                     pelorus_odom.pose.covariance = pose_cov_iekf.to_vec();
                     pelorus_odom.twist.covariance = twist_cov_iekf.to_vec();
+                }
+            }
+
+            // Generate prediction-only export samples before serializing this
+            // correction, keeping MCAP/TUM/Rerun timelines chronological.
+            if realtime_export_rx.is_some() {
+                if let Some(predictor) = realtime_predictor.as_ref() {
+                    let registration = pipeline.map();
+                    let registration = registration.lock().unwrap();
+                    predictor.prepare_export(&registration, &lifis_tick.imu_buffer);
                 }
             }
 
@@ -2944,7 +2962,11 @@ fn lio_with_ready_signal(
                 &mut trajectory_samples,
                 &mut mcap_writer,
                 #[cfg(feature = "rerun")]
-                rec.as_ref(),
+                if minot_replay_mode {
+                    rec.as_ref()
+                } else {
+                    None
+                },
                 &config.prelio_params.map_frame,
                 &child_frame,
             )?;
@@ -3525,7 +3547,11 @@ fn lio_with_ready_signal(
                 &mut trajectory_samples,
                 &mut mcap_writer,
                 #[cfg(feature = "rerun")]
-                rec.as_ref(),
+                if minot_replay_mode {
+                    rec.as_ref()
+                } else {
+                    None
+                },
                 &config.prelio_params.map_frame,
                 child_frame,
             )?;
