@@ -11,20 +11,35 @@ pub mod tf_r2r;
 use futures_lite::{StreamExt, future};
 #[allow(unused_imports)]
 use log::{debug, error, info, warn};
-#[cfg(any(feature = "velodyne-driver", feature = "xsens-driver"))]
-use pelorus_core::{ImuDriverType, SensorDriverConfig, VelodynePoint, time_msg_from_secs};
-use pelorus_core::{
-    ImuMsg, ImuPredictor, ImuPredictorUndistort, LidarVendor, LifisNodeParameters, LifisParameters,
-    PointXYZIT, timing::RuntimeEvaluator,
-};
+#[cfg(any(feature = "r2r", feature = "hiroz"))]
+use pelorus_core::OdomMsg;
+#[cfg(feature = "mt_pubsub")]
+use pelorus_core::PointCloudMode;
 #[cfg(any(
     feature = "ros2-client",
     feature = "mt_pubsub",
     feature = "r2r",
     feature = "hiroz"
 ))]
-use pelorus_core::{OdomMsg, PrelioProcessedCloud};
-#[cfg(any(feature = "velodyne-driver", feature = "xsens-driver"))]
+use pelorus_core::PrelioProcessedCloud;
+#[cfg(any(
+    feature = "velodyne-driver",
+    feature = "xsens-driver",
+    feature = "ouster-driver"
+))]
+use pelorus_core::{
+    ImuDriverType, LidarDriverType, OusterPoint, SensorDriverConfig, VelodynePoint,
+    time_msg_from_secs,
+};
+use pelorus_core::{
+    ImuMsg, ImuPredictor, ImuPredictorUndistort, LidarVendor, LifisNodeParameters, LifisParameters,
+    PointXYZIT, timing::RuntimeEvaluator,
+};
+#[cfg(any(
+    feature = "velodyne-driver",
+    feature = "xsens-driver",
+    feature = "ouster-driver"
+))]
 use pelorus_drivers::{DriverError, DriverManager, RawLidarScan, SensorIngress, SensorOutputSink};
 pub use prelio;
 
@@ -41,10 +56,13 @@ use anyhow::anyhow;
     feature = "r2r",
     feature = "hiroz",
     feature = "velodyne-driver",
-    feature = "xsens-driver"
+    feature = "xsens-driver",
+    feature = "ouster-driver"
 ))]
 use prelio::timestamp_to_secs;
 
+#[cfg(feature = "compressed-pointcloud")]
+use cloudini::ros::{CompressExt, CompressionConfig};
 #[cfg(feature = "hiroz")]
 use hiroz::Builder;
 #[cfg(feature = "hiroz")]
@@ -61,6 +79,13 @@ use hiroz_msgs::{
 };
 #[cfg(feature = "mt_pubsub")]
 use mt_pubsub::Node;
+#[cfg(any(
+    feature = "ros2-client",
+    feature = "mt_pubsub",
+    feature = "r2r",
+    feature = "hiroz"
+))]
+use prelio::PreprocessingPointCloud;
 #[cfg(feature = "r2r")]
 use r2r::{
     builtin_interfaces::msg::Time,
@@ -72,6 +97,232 @@ use r2r::{
     std_msgs::msg::Header,
 };
 use ros_pointcloud2::prelude::*;
+
+#[cfg(feature = "mt_pubsub")]
+struct ArchivedPointCloud {
+    message: mt_pubsub::ArchivedMessage<PointCloud2>,
+}
+
+/// Wire-compatible rkyv representation of Cloudini's ROS helper types.
+#[cfg(feature = "compressed-pointcloud")]
+#[derive(Clone, Debug, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
+pub struct CompressedTimeMsg {
+    pub sec: i32,
+    pub nanosec: u32,
+}
+
+#[cfg(feature = "compressed-pointcloud")]
+#[derive(Clone, Debug, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
+pub struct CompressedHeaderMsg {
+    pub seq: u32,
+    pub stamp: CompressedTimeMsg,
+    pub frame_id: String,
+}
+
+#[cfg(feature = "compressed-pointcloud")]
+#[derive(Clone, Debug, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
+pub struct CompressedPointFieldMsg {
+    pub name: String,
+    pub offset: u32,
+    pub datatype: u8,
+    pub count: u32,
+}
+
+/// Cloudini's compressed ROS message represented with mt_pubsub-compatible rkyv fields.
+#[cfg(feature = "compressed-pointcloud")]
+#[derive(Clone, Debug, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
+pub struct CompressedPointCloud2 {
+    pub header: CompressedHeaderMsg,
+    pub height: u32,
+    pub width: u32,
+    pub fields: Vec<CompressedPointFieldMsg>,
+    pub is_bigendian: bool,
+    pub point_step: u32,
+    pub row_step: u32,
+    pub compressed_data: Vec<u8>,
+    pub is_dense: bool,
+    pub format: String,
+}
+
+#[cfg(feature = "compressed-pointcloud")]
+impl CompressedPointCloud2 {
+    pub fn compress(msg: ros_pointcloud2::PointCloud2Msg) -> cloudini::Result<Self> {
+        let msg = msg.compress(CompressionConfig::default())?;
+        Ok(Self {
+            header: CompressedHeaderMsg {
+                seq: msg.header.seq,
+                stamp: CompressedTimeMsg {
+                    sec: msg.header.stamp.sec,
+                    nanosec: msg.header.stamp.nanosec,
+                },
+                frame_id: msg.header.frame_id,
+            },
+            height: msg.height,
+            width: msg.width,
+            fields: msg
+                .fields
+                .into_iter()
+                .map(|field| CompressedPointFieldMsg {
+                    name: field.name.as_str().to_owned(),
+                    offset: field.offset,
+                    datatype: field.datatype,
+                    count: field.count,
+                })
+                .collect(),
+            is_bigendian: msg.is_bigendian,
+            point_step: msg.point_step,
+            row_step: msg.row_step,
+            compressed_data: msg.compressed_data,
+            is_dense: msg.is_dense,
+            format: msg.format,
+        })
+    }
+
+    pub fn decompress(self) -> cloudini::Result<ros_pointcloud2::PointCloud2Msg> {
+        cloudini::ros::CompressedPointCloud2 {
+            header: ros_pointcloud2::ros::HeaderMsg {
+                seq: self.header.seq,
+                stamp: ros_pointcloud2::ros::TimeMsg {
+                    sec: self.header.stamp.sec,
+                    nanosec: self.header.stamp.nanosec,
+                },
+                frame_id: self.header.frame_id,
+            },
+            height: self.height,
+            width: self.width,
+            fields: self
+                .fields
+                .into_iter()
+                .map(|field| ros_pointcloud2::ros::PointFieldMsg {
+                    name: field.name.into(),
+                    offset: field.offset,
+                    datatype: field.datatype,
+                    count: field.count,
+                })
+                .collect(),
+            is_bigendian: self.is_bigendian,
+            point_step: self.point_step,
+            row_step: self.row_step,
+            compressed_data: self.compressed_data,
+            is_dense: self.is_dense,
+            format: self.format,
+        }
+        .decompress()
+    }
+}
+
+#[cfg(all(test, feature = "compressed-pointcloud"))]
+mod cloudini_tests {
+    use super::CompressedPointCloud2;
+    use cloudini::ros::{CompressExt, CompressionConfig};
+    use ros_pointcloud2::{PointCloud2Msg, points::PointXYZI};
+
+    #[test]
+    fn compressed_message_roundtrips() {
+        let points = vec![
+            PointXYZI::new(1.0, 2.0, 3.0, 4.0),
+            PointXYZI::new(-5.0, 6.0, 7.0, 8.0),
+        ];
+        let mut cloud = PointCloud2Msg::try_from_vec(points.clone()).unwrap();
+        cloud.header.frame_id = "lidar".to_owned();
+        cloud.header.stamp.sec = 42;
+        cloud.header.stamp.nanosec = 123;
+
+        let cloudini_message = cloud
+            .clone()
+            .compress(CompressionConfig::default())
+            .unwrap();
+        let compressed = CompressedPointCloud2::compress(cloud).unwrap();
+        assert_eq!(compressed.format, "cloudini/lossy/zstd");
+        let cloudini_bytes = rkyv::to_bytes::<rkyv::rancor::Error>(&cloudini_message).unwrap();
+        let transport_bytes = rkyv::to_bytes::<rkyv::rancor::Error>(&compressed).unwrap();
+        assert_eq!(cloudini_bytes.as_slice(), transport_bytes.as_slice());
+
+        let restored = compressed.decompress().unwrap();
+        assert_eq!(restored.header.frame_id, "lidar");
+        assert_eq!(restored.header.stamp.sec, 42);
+        assert_eq!(restored.header.stamp.nanosec, 123);
+
+        let restored_points: Vec<PointXYZI> = restored.try_into_iter().unwrap().collect();
+        for (expected, actual) in points.iter().zip(&restored_points) {
+            assert!((expected.x - actual.x).abs() <= 0.0005);
+            assert!((expected.y - actual.y).abs() <= 0.0005);
+            assert!((expected.z - actual.z).abs() <= 0.0005);
+            assert!((expected.intensity - actual.intensity).abs() <= 0.0005);
+        }
+    }
+}
+
+#[cfg(feature = "mt_pubsub")]
+impl ros_pointcloud2::PointCloud2Source for ArchivedPointCloud {
+    fn point_count(&self) -> usize {
+        let cloud = self.message.archived();
+        usize::try_from(u32::from(cloud.width)).expect("u32 fits usize")
+            * usize::try_from(u32::from(cloud.height)).expect("u32 fits usize")
+    }
+
+    fn field(&self, name: &str) -> Option<ros_pointcloud2::PointFieldDescription> {
+        self.message
+            .archived()
+            .fields
+            .iter()
+            .find(|field| field.name.as_str() == name)
+            .map(|field| ros_pointcloud2::PointFieldDescription {
+                offset: field.offset.into(),
+                datatype: field.datatype,
+            })
+    }
+
+    fn endian(&self) -> ros_pointcloud2::Endian {
+        if self.message.archived().is_bigendian {
+            ros_pointcloud2::Endian::Big
+        } else {
+            ros_pointcloud2::Endian::Little
+        }
+    }
+
+    fn point_step(&self) -> u32 {
+        self.message.archived().point_step.into()
+    }
+
+    fn data(&self) -> &[u8] {
+        self.message.archived().data.as_slice()
+    }
+}
+
+#[cfg(feature = "mt_pubsub")]
+impl PreprocessingPointCloud for ArchivedPointCloud {
+    fn header(&self) -> ros_pointcloud2::ros::HeaderMsg {
+        let header = &self.message.archived().header;
+        ros_pointcloud2::ros::HeaderMsg {
+            seq: 0,
+            stamp: ros_pointcloud2::ros::TimeMsg {
+                sec: header.stamp.sec.into(),
+                nanosec: header.stamp.nanosec.into(),
+            },
+            frame_id: header.frame_id.as_str().to_owned(),
+        }
+    }
+
+    fn source(&self) -> &dyn ros_pointcloud2::PointCloud2Source {
+        self
+    }
+}
+
+#[cfg(feature = "mt_pubsub")]
+enum IncomingMtPointCloud {
+    Owned(PointCloud2),
+    Archived(mt_pubsub::ArchivedMessage<PointCloud2>),
+    #[cfg(feature = "compressed-pointcloud")]
+    Compressed(CompressedPointCloud2),
+}
+
+#[cfg(feature = "mt_pubsub")]
+enum MtCloudSubscriber {
+    PointCloud2(mt_pubsub::Subscriber<PointCloud2>),
+    #[cfg(feature = "compressed-pointcloud")]
+    Compressed(mt_pubsub::Subscriber<CompressedPointCloud2>),
+}
 #[cfg(feature = "ros2-client")]
 use ros2_client::ros2;
 #[cfg(all(
@@ -98,9 +349,25 @@ use ros2_interfaces_jazzy_serde::{
     sensor_msgs::msg::{Imu, PointCloud2},
     std_msgs::msg::Header,
 };
-#[cfg(any(feature = "velodyne-driver", feature = "xsens-driver"))]
+#[cfg(any(
+    feature = "velodyne-driver",
+    feature = "xsens-driver",
+    feature = "ouster-driver"
+))]
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
+
+pub type ImuInitCallback = Arc<Mutex<dyn FnMut(&[ImuMsg]) + Send + Sync>>;
+
+pub struct PrelioNodeInputs<'a> {
+    pub node_params: &'a LifisNodeParameters,
+    pub imu_pose_predictor_init: Option<ImuInitCallback>,
+    pub imu_pose_prediction_undistort: Option<Box<ImuPredictorUndistort>>,
+    pub imu_pose_prediction_init_guess: Option<Box<ImuPredictor>>,
+    pub ready_for_next: Option<std::sync::mpsc::Receiver<()>>,
+    pub filtered_imu_sender: Option<std::sync::mpsc::Sender<ImuMsg>>,
+    pub imu_sync_mode: prelio::ImuSyncMode,
+}
 #[cfg(feature = "hiroz")]
 use zenoh_buffers::buffer::Buffer;
 
@@ -230,24 +497,66 @@ fn cloud_callback(
     #[cfg(feature = "mt_pubsub")] tf_listener: Arc<tf_lh::TfListener>,
     #[cfg(feature = "hiroz")] tf_listener: Arc<tf_hiroz::TfListener>,
     #[cfg(feature = "ros2-client")] msg: PointCloud2,
-    #[cfg(feature = "mt_pubsub")] msg: PointCloud2,
+    #[cfg(feature = "mt_pubsub")] msg: IncomingMtPointCloud,
     #[cfg(feature = "r2r")] msg: r2r::sensor_msgs::msg::PointCloud2,
     #[cfg(feature = "hiroz")] msg: PointCloud2,
     first_imu_tf: Option<String>,
 ) -> anyhow::Result<()> {
+    fn duplicate_timestamp<T: Clone>(timestamp: &T) -> T {
+        timestamp.clone()
+    }
+
     let callback_started = std::time::Instant::now();
+    #[cfg(not(feature = "mt_pubsub"))]
     let orig_header = msg.header.clone();
     #[cfg(feature = "ros2-client")]
     let in_msg = impl_ros2_interfaces_jazzy_serde::to_pointcloud2_msg(msg);
     #[cfg(feature = "mt_pubsub")]
-    let in_msg = impl_ros2_interfaces_jazzy_rkyv::to_pointcloud2_msg(msg);
+    let (orig_header, in_msg): (_, Box<dyn PreprocessingPointCloud>) = match msg {
+        IncomingMtPointCloud::Owned(msg) => {
+            let msg = impl_ros2_interfaces_jazzy_rkyv::to_pointcloud2_msg(msg);
+            let header = msg.header.clone();
+            (header, Box::new(msg))
+        }
+        IncomingMtPointCloud::Archived(message) => {
+            let header = {
+                let archived = message.archived();
+                ros_pointcloud2::ros::HeaderMsg {
+                    seq: 0,
+                    stamp: ros_pointcloud2::ros::TimeMsg {
+                        sec: archived.header.stamp.sec.into(),
+                        nanosec: archived.header.stamp.nanosec.into(),
+                    },
+                    frame_id: archived.header.frame_id.as_str().to_owned(),
+                }
+            };
+            (header, Box::new(ArchivedPointCloud { message }))
+        }
+        #[cfg(feature = "compressed-pointcloud")]
+        IncomingMtPointCloud::Compressed(message) => {
+            let msg = message
+                .decompress()
+                .map_err(|error| anyhow!("Failed to decompress Cloudini point cloud: {error}"))?;
+            let header = msg.header.clone();
+            (header, Box::new(msg))
+        }
+    };
     #[cfg(feature = "r2r")]
     let in_msg = impl_r2r::to_pointcloud2_msg(msg);
     #[cfg(feature = "hiroz")]
     let in_msg = impl_hiroz::to_pointcloud2_msg(msg);
 
+    #[cfg(not(feature = "mt_pubsub"))]
+    let in_msg: Box<dyn PreprocessingPointCloud> = Box::new(in_msg);
+
+    #[cfg(feature = "mt_pubsub")]
+    let in_stamp = Time {
+        sec: orig_header.stamp.sec,
+        nanosec: orig_header.stamp.nanosec,
+    };
+    #[cfg(not(feature = "mt_pubsub"))]
     let in_stamp = orig_header.stamp;
-    let points_n = (in_msg.dimensions.width * in_msg.dimensions.height) as usize;
+    let points_n = in_msg.source().point_count();
     if points_n == 0 {
         return Ok(());
     }
@@ -282,7 +591,7 @@ fn cloud_callback(
                             let tf = tf_listener.lookup_transform(
                                 orig_header.frame_id.clone().as_str(),
                                 global_zero_frame.clone().as_str(),
-                                in_stamp.clone(),
+                                duplicate_timestamp(&in_stamp),
                             )?;
                             nalgebra::geometry::Isometry3::from_parts(
                                 nalgebra::geometry::Translation3::new(
@@ -314,7 +623,7 @@ fn cloud_callback(
                             let tf = tf_listener.lookup_transform(
                                 &first_imu_tf_frame,
                                 &orig_header.frame_id,
-                                in_stamp.clone(),
+                                duplicate_timestamp(&in_stamp),
                             )?;
                             nalgebra::geometry::Isometry3::from_parts(
                                 nalgebra::geometry::Translation3::new(
@@ -349,10 +658,8 @@ fn cloud_callback(
 
         {
             let mut state = state.lock().unwrap();
-            let time = timestamp_to_secs(&prelio::TimeMsg {
-                sec: in_msg.header.stamp.sec,
-                nanosec: in_msg.header.stamp.nanosec,
-            });
+            let header = in_msg.header();
+            let time = timestamp_to_secs(&header.stamp);
             if let Some(last_lidar_time) = state.last_lidar_time {
                 if time < last_lidar_time {
                     // Skip out of order cloud
@@ -438,7 +745,7 @@ fn cloud_callback(
     {
         let lifis = state.lock().unwrap().lifis.clone();
         let mut lifis = lifis.lock().unwrap();
-        lifis.add_pointcloud_with_received_at(in_msg, callback_started);
+        lifis.add_pointcloud_source(in_msg, callback_started);
     }
 
     Ok(())
@@ -455,51 +762,155 @@ pub struct PrelioNode {
     #[cfg(feature = "hiroz")]
     pub tf_listener: Arc<tf_hiroz::TfListener>,
     pub logger: String,
-    #[cfg(any(feature = "velodyne-driver", feature = "xsens-driver"))]
+    #[cfg(any(
+        feature = "velodyne-driver",
+        feature = "xsens-driver",
+        feature = "ouster-driver"
+    ))]
     native_drivers: Option<DriverManager>,
-    #[cfg(any(feature = "velodyne-driver", feature = "xsens-driver"))]
-    native_imu_init: Option<Arc<Mutex<dyn FnMut(&[ImuMsg]) + Send + Sync>>>,
-    #[cfg(any(feature = "velodyne-driver", feature = "xsens-driver"))]
+    #[cfg(any(
+        feature = "velodyne-driver",
+        feature = "xsens-driver",
+        feature = "ouster-driver"
+    ))]
+    native_imu_init: Option<ImuInitCallback>,
+    #[cfg(any(
+        feature = "velodyne-driver",
+        feature = "xsens-driver",
+        feature = "ouster-driver"
+    ))]
     native_imu_init_time: f64,
 }
 
-#[cfg(any(feature = "velodyne-driver", feature = "xsens-driver"))]
+#[cfg(any(
+    feature = "velodyne-driver",
+    feature = "xsens-driver",
+    feature = "ouster-driver"
+))]
 #[derive(Default)]
 struct NativeImuInitState {
     start_time: Option<f64>,
     buffer: Option<Vec<ImuMsg>>,
 }
 
-#[cfg(any(feature = "velodyne-driver", feature = "xsens-driver"))]
+#[cfg(any(
+    feature = "velodyne-driver",
+    feature = "xsens-driver",
+    feature = "ouster-driver"
+))]
 struct NativeIngress {
     state: Arc<Mutex<State>>,
+    lidar_driver_type: LidarDriverType,
     filtered_imu_sender: Option<std::sync::mpsc::Sender<ImuMsg>>,
-    imu_init: Option<Arc<Mutex<dyn FnMut(&[ImuMsg]) + Send + Sync>>>,
+    imu_init: Option<ImuInitCallback>,
     imu_init_time: f64,
     imu_init_state: Mutex<NativeImuInitState>,
     imu_initialized: AtomicBool,
 }
-#[cfg(any(feature = "velodyne-driver", feature = "xsens-driver"))]
+
+#[cfg(any(
+    feature = "velodyne-driver",
+    feature = "xsens-driver",
+    feature = "ouster-driver"
+))]
+fn validate_native_lidar_vendor(
+    driver_type: &LidarDriverType,
+    lidar_vendor: LidarVendor,
+) -> Result<(), DriverError> {
+    if matches!(
+        (driver_type, lidar_vendor),
+        (&LidarDriverType::Disabled, _)
+            | (&LidarDriverType::Velodyne, LidarVendor::Velodyne)
+            | (&LidarDriverType::Ouster, LidarVendor::Ouster)
+    ) {
+        Ok(())
+    } else {
+        Err(DriverError::Driver(format!(
+            "native lidar driver {driver_type:?} is incompatible with lidar.vendor {lidar_vendor:?}"
+        )))
+    }
+}
+
+#[cfg(any(
+    feature = "velodyne-driver",
+    feature = "xsens-driver",
+    feature = "ouster-driver"
+))]
+fn ouster_offset_nanoseconds(seconds: f64) -> Result<u32, DriverError> {
+    let nanoseconds = seconds * 1e9;
+    if !nanoseconds.is_finite() || nanoseconds < 0.0 || nanoseconds > u32::MAX as f64 {
+        return Err(DriverError::Driver(format!(
+            "Ouster point time offset {seconds} seconds is outside the uint32 nanosecond range"
+        )));
+    }
+    Ok(nanoseconds.round() as u32)
+}
+
+#[cfg(any(
+    feature = "velodyne-driver",
+    feature = "xsens-driver",
+    feature = "ouster-driver"
+))]
+fn native_scan_to_cloud(
+    scan: RawLidarScan,
+    driver_type: &LidarDriverType,
+) -> Result<ros_pointcloud2::PointCloud2Msg, DriverError> {
+    let frame_id = scan.frame_id;
+    let stamp = scan.stamp;
+    let mut cloud = match driver_type {
+        LidarDriverType::Velodyne => {
+            let points = scan
+                .points
+                .into_iter()
+                .map(|point| VelodynePoint {
+                    x: point.xyz[0],
+                    y: point.xyz[1],
+                    z: point.xyz[2],
+                    intensity: point.intensity * 255.0,
+                    time: point.time_offset_secs as f32,
+                })
+                .collect();
+            ros_pointcloud2::PointCloud2Msg::try_from_vec(points)
+        }
+        LidarDriverType::Ouster => {
+            let points = scan
+                .points
+                .into_iter()
+                .map(|point| {
+                    Ok(OusterPoint {
+                        x: point.xyz[0],
+                        y: point.xyz[1],
+                        z: point.xyz[2],
+                        intensity: point.intensity * 255.0,
+                        t: ouster_offset_nanoseconds(point.time_offset_secs)?,
+                    })
+                })
+                .collect::<Result<Vec<_>, DriverError>>()?;
+            ros_pointcloud2::PointCloud2Msg::try_from_vec(points)
+        }
+        LidarDriverType::Disabled => {
+            return Err(DriverError::Driver(
+                "received a native lidar scan while the native lidar driver is disabled".into(),
+            ));
+        }
+    }
+    .map_err(|error| DriverError::Driver(format!("native cloud conversion: {error}")))?;
+    cloud.header.frame_id = frame_id;
+    cloud.header.stamp = time_msg_from_secs(stamp);
+    Ok(cloud)
+}
+
+#[cfg(any(
+    feature = "velodyne-driver",
+    feature = "xsens-driver",
+    feature = "ouster-driver"
+))]
 impl SensorIngress for NativeIngress {
     fn push_lidar(&self, scan: RawLidarScan) -> Result<(), DriverError> {
         if !self.imu_initialized.load(Ordering::Acquire) {
             return Ok(());
         }
-        let points: Vec<VelodynePoint> = scan
-            .points
-            .into_iter()
-            .map(|p| VelodynePoint {
-                x: p.xyz[0],
-                y: p.xyz[1],
-                z: p.xyz[2],
-                intensity: p.intensity * 255.0,
-                time: p.time_offset_secs as f32,
-            })
-            .collect();
-        let mut cloud = ros_pointcloud2::PointCloud2Msg::try_from_vec(points)
-            .map_err(|e| DriverError::Driver(format!("native cloud conversion: {e}")))?;
-        cloud.header.frame_id = scan.frame_id;
-        cloud.header.stamp = time_msg_from_secs(scan.stamp);
+        let cloud = native_scan_to_cloud(scan, &self.lidar_driver_type)?;
         self.state
             .lock()
             .unwrap()
@@ -673,15 +1084,22 @@ fn split_namespace_topic(input: &str) -> (String, String) {
 }
 
 impl PrelioNode {
-    #[cfg(any(feature = "velodyne-driver", feature = "xsens-driver"))]
+    #[cfg(any(
+        feature = "velodyne-driver",
+        feature = "xsens-driver",
+        feature = "ouster-driver"
+    ))]
     pub fn start_native_drivers(
         &mut self,
         config: &SensorDriverConfig,
         filtered_imu_sender: Option<std::sync::mpsc::Sender<ImuMsg>>,
         sink: Option<Arc<dyn SensorOutputSink>>,
     ) -> anyhow::Result<()> {
+        let lidar_vendor = self.state.lock().unwrap().lidar_vendor;
+        validate_native_lidar_vendor(&config.lidar.driver_type, lidar_vendor)?;
         let ingress = Arc::new(NativeIngress {
             state: Arc::clone(&self.state),
+            lidar_driver_type: config.lidar.driver_type.clone(),
             filtered_imu_sender,
             imu_init: self.native_imu_init.clone(),
             imu_init_time: self.native_imu_init_time,
@@ -702,29 +1120,42 @@ impl PrelioNode {
         #[cfg(feature = "mt_pubsub")] node: &Node,
         #[cfg(feature = "hiroz")] node: &ZNode,
         #[cfg(any(feature = "mt_pubsub", feature = "hiroz"))] rt: Arc<tokio::runtime::Runtime>,
+        #[cfg(feature = "mt_pubsub")] mt_pubsub_local_only: bool,
         params: &LifisParameters,
-        #[allow(unused_variables)] node_params: &LifisNodeParameters,
-        #[allow(unused_variables)] imu_pose_predictor_init: Option<
-            Arc<Mutex<dyn FnMut(&[ImuMsg]) + Send + Sync>>,
-        >,
-        imu_pose_prediction_undistort: Option<Box<ImuPredictorUndistort>>,
-        imu_pose_prediction_init_guess: Option<Box<ImuPredictor>>,
+        inputs: PrelioNodeInputs<'_>,
         #[cfg(feature = "rerun")] rec: Option<Arc<rerun::RecordingStream>>,
-        ready_for_next: Option<std::sync::mpsc::Receiver<()>>,
-        #[cfg_attr(
-            not(any(
-                feature = "ros2-client",
-                feature = "mt_pubsub",
-                feature = "r2r",
-                feature = "hiroz"
-            )),
-            allow(unused_variables)
-        )]
-        filtered_imu_sender: Option<std::sync::mpsc::Sender<ImuMsg>>,
-        imu_sync_mode: prelio::ImuSyncMode,
     ) -> anyhow::Result<(Self, std::sync::mpsc::Receiver<Tick>)> {
-        #[cfg(any(feature = "velodyne-driver", feature = "xsens-driver"))]
-        let native_imu_init = imu_pose_predictor_init.clone();
+        #[cfg(any(
+            feature = "rat",
+            feature = "ros2-client",
+            feature = "mt_pubsub",
+            feature = "r2r",
+            feature = "hiroz",
+            feature = "velodyne-driver",
+            feature = "xsens-driver",
+            feature = "ouster-driver"
+        ))]
+        let node_params = inputs.node_params;
+        #[cfg(any(
+            feature = "ros2-client",
+            feature = "mt_pubsub",
+            feature = "r2r",
+            feature = "hiroz"
+        ))]
+        let imu_pose_predictor_init = inputs.imu_pose_predictor_init.clone();
+        #[cfg(any(
+            feature = "ros2-client",
+            feature = "mt_pubsub",
+            feature = "r2r",
+            feature = "hiroz"
+        ))]
+        let filtered_imu_sender = inputs.filtered_imu_sender.clone();
+        #[cfg(any(
+            feature = "velodyne-driver",
+            feature = "xsens-driver",
+            feature = "ouster-driver"
+        ))]
+        let native_imu_init = inputs.imu_pose_predictor_init.clone();
         #[cfg(feature = "ros2-client")]
         let tf_listener = Arc::new(tf::TfListener::new(node));
 
@@ -749,12 +1180,12 @@ impl PrelioNode {
 
         let state = State::new(
             params,
-            imu_pose_prediction_undistort,
-            imu_pose_prediction_init_guess,
+            inputs.imu_pose_prediction_undistort,
+            inputs.imu_pose_prediction_init_guess,
             #[cfg(feature = "rerun")]
             rec.clone(),
-            ready_for_next,
-            imu_sync_mode,
+            inputs.ready_for_next,
+            inputs.imu_sync_mode,
         )?;
 
         #[cfg(any(
@@ -822,14 +1253,32 @@ impl PrelioNode {
 
         #[cfg(feature = "mt_pubsub")]
         let mut cloud_subscriber = rt.block_on(async {
-            node.create_subscriber::<PointCloud2>(
-                node_params.cloud_src_topic.clone(),
-                10,
-                qos_to_mt(node_params.cloud_qos),
-            )
-            .await
-            .unwrap()
-        });
+            match node_params.cloud_subscriber_mode {
+                PointCloudMode::PointCloud2 => {
+                    Ok::<_, anyhow::Error>(MtCloudSubscriber::PointCloud2(
+                        node.create_subscriber::<PointCloud2>(
+                            node_params.cloud_src_topic.clone(),
+                            10,
+                            qos_to_mt(node_params.cloud_qos),
+                        )
+                        .await?,
+                    ))
+                }
+                #[cfg(feature = "compressed-pointcloud")]
+                PointCloudMode::Compressed => Ok(MtCloudSubscriber::Compressed(
+                    node.create_subscriber::<CompressedPointCloud2>(
+                        node_params.cloud_src_topic.clone(),
+                        10,
+                        qos_to_mt(node_params.cloud_qos),
+                    )
+                    .await?,
+                )),
+                #[cfg(not(feature = "compressed-pointcloud"))]
+                PointCloudMode::Compressed => Err(anyhow!(
+                    "Compressed point-cloud input requires the 'compressed-pointcloud' feature"
+                )),
+            }
+        })?;
 
         #[cfg(feature = "hiroz")]
         let cloud_subscriber = {
@@ -1078,7 +1527,29 @@ impl PrelioNode {
             let cloud_sub_rt = Arc::clone(&rt);
             std::thread::spawn(move || {
                 cloud_sub_rt.block_on(async {
-                    while let Some(msg) = cloud_subscriber.next().await {
+                    loop {
+                        let msg = match &mut cloud_subscriber {
+                            MtCloudSubscriber::PointCloud2(subscriber) => {
+                                if mt_pubsub_local_only {
+                                    let Some(message) = subscriber.next_archived().await else {
+                                        break;
+                                    };
+                                    IncomingMtPointCloud::Archived(message)
+                                } else {
+                                    let Some(msg) = subscriber.next().await else {
+                                        break;
+                                    };
+                                    IncomingMtPointCloud::Owned(msg)
+                                }
+                            }
+                            #[cfg(feature = "compressed-pointcloud")]
+                            MtCloudSubscriber::Compressed(subscriber) => {
+                                let Some(msg) = subscriber.next().await else {
+                                    break;
+                                };
+                                IncomingMtPointCloud::Compressed(msg)
+                            }
+                        };
                         // #[cfg(not(feature = "no-imu-sync"))]
                         // {
                         //     let b = lidar_imu_init_buffer.lock().unwrap();
@@ -1201,7 +1672,7 @@ impl PrelioNode {
 
         // do not publish filtered imu if no topic is provided
         #[cfg(feature = "ros2-client")]
-        let imu_filtered_publisher = if node_params.imu_filtered_topic == "" {
+        let imu_filtered_publisher = if node_params.imu_filtered_topic.is_empty() {
             None
         } else {
             Some(Arc::new(Mutex::new(
@@ -1225,7 +1696,7 @@ impl PrelioNode {
             )))
         };
         #[cfg(feature = "r2r")]
-        let imu_filtered_publisher = if node_params.imu_filtered_topic == "" {
+        let imu_filtered_publisher = if node_params.imu_filtered_topic.is_empty() {
             None
         } else {
             Some(Arc::new(Mutex::new(node.create_publisher::<Imu>(
@@ -1234,7 +1705,7 @@ impl PrelioNode {
             )?)))
         };
         #[cfg(feature = "hiroz")]
-        let imu_filtered_publisher = if node_params.imu_filtered_topic == "" {
+        let imu_filtered_publisher = if node_params.imu_filtered_topic.is_empty() {
             None
         } else {
             Some(Arc::new(
@@ -1605,11 +2076,23 @@ impl PrelioNode {
                 ))]
                 tf_listener,
                 logger: "".to_string(), // TODO rm logger prefix
-                #[cfg(any(feature = "velodyne-driver", feature = "xsens-driver"))]
+                #[cfg(any(
+                    feature = "velodyne-driver",
+                    feature = "xsens-driver",
+                    feature = "ouster-driver"
+                ))]
                 native_drivers: None,
-                #[cfg(any(feature = "velodyne-driver", feature = "xsens-driver"))]
+                #[cfg(any(
+                    feature = "velodyne-driver",
+                    feature = "xsens-driver",
+                    feature = "ouster-driver"
+                ))]
                 native_imu_init,
-                #[cfg(any(feature = "velodyne-driver", feature = "xsens-driver"))]
+                #[cfg(any(
+                    feature = "velodyne-driver",
+                    feature = "xsens-driver",
+                    feature = "ouster-driver"
+                ))]
                 native_imu_init_time: node_params.imu_predictor_init_time_sec,
             },
             rx,
@@ -1700,7 +2183,7 @@ impl PrelioNode {
                 odom_time: synced_data.lidar_end_time_abs,
             };
 
-            if let Err(_) = sender.send(res) {
+            if sender.send(res).is_err() {
                 warn!("Closing transform thread.");
                 return;
             }
@@ -1715,15 +2198,9 @@ impl Drop for PrelioNode {
 }
 
 // only used with r2r
-#[cfg(any(
-    feature = "ros2-client",
-    feature = "mt_pubsub",
-    feature = "r2r",
-    feature = "hiroz"
-))]
-#[allow(dead_code)]
+#[cfg(any(feature = "r2r", feature = "hiroz"))]
 fn odom_to_lifis(msg: Odometry) -> OdomMsg {
-    let odom_msg = OdomMsg {
+    OdomMsg {
         twist_linear: nalgebra::Vector3::new(
             msg.twist.twist.linear.x,
             msg.twist.twist.linear.y,
@@ -1776,8 +2253,7 @@ fn odom_to_lifis(msg: Odometry) -> OdomMsg {
             sec: msg.header.stamp.sec,
             nanosec: msg.header.stamp.nanosec,
         },
-    };
-    odom_msg
+    }
 }
 
 #[cfg(any(
@@ -1845,13 +2321,84 @@ fn imu_to_lifis(msg: Imu) -> ImuMsg {
     }
 }
 
-#[cfg(any(
-    feature = "ros2-client",
-    feature = "mt_pubsub",
-    feature = "r2r",
-    feature = "hiroz"
+#[cfg(all(
+    test,
+    any(
+        feature = "velodyne-driver",
+        feature = "xsens-driver",
+        feature = "ouster-driver"
+    )
 ))]
-#[allow(dead_code)] // only used with ROS
+mod native_ingress_tests {
+    use super::*;
+    use pelorus_drivers::{RawLidarPoint, ReceiveMetadata};
+
+    fn scan(offset_seconds: f64) -> RawLidarScan {
+        RawLidarScan {
+            frame_id: "os_sensor".into(),
+            stamp: 1_700_000_000.25,
+            points: vec![RawLidarPoint {
+                xyz: [1.0, 2.0, 3.0],
+                intensity: 0.5,
+                time_offset_secs: offset_seconds,
+            }],
+            receive: ReceiveMetadata {
+                received_at: std::time::UNIX_EPOCH,
+                sender: None,
+                packets_received: 1,
+                packets_dropped: 0,
+            },
+        }
+    }
+
+    #[test]
+    fn ouster_scan_uses_uint32_nanosecond_timestamp_field() {
+        let cloud = native_scan_to_cloud(scan(0.012_345_678), &LidarDriverType::Ouster).unwrap();
+
+        assert_eq!(cloud.header.frame_id, "os_sensor");
+        assert_eq!(cloud.header.stamp.sec, 1_700_000_000);
+        assert_eq!(cloud.header.stamp.nanosec, 250_000_000);
+        assert!(cloud.fields.iter().any(|field| field.name == "t"));
+        assert!(!cloud.fields.iter().any(|field| field.name == "time"));
+
+        let points: Vec<OusterPoint> = cloud.try_into_iter().unwrap().collect();
+        assert_eq!(points.len(), 1);
+        assert_eq!(points[0].t, 12_345_678);
+        assert_eq!(points[0].intensity, 127.5);
+    }
+
+    #[test]
+    fn velodyne_scan_keeps_float_seconds_timestamp_field() {
+        let cloud = native_scan_to_cloud(scan(0.0125), &LidarDriverType::Velodyne).unwrap();
+
+        assert!(cloud.fields.iter().any(|field| field.name == "time"));
+        assert!(!cloud.fields.iter().any(|field| field.name == "t"));
+
+        let points: Vec<VelodynePoint> = cloud.try_into_iter().unwrap().collect();
+        assert!((points[0].time - 0.0125).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn incompatible_native_driver_and_vendor_are_rejected() {
+        assert!(
+            validate_native_lidar_vendor(&LidarDriverType::Ouster, LidarVendor::Velodyne).is_err()
+        );
+        assert!(
+            validate_native_lidar_vendor(&LidarDriverType::Velodyne, LidarVendor::Ouster).is_err()
+        );
+        assert!(
+            validate_native_lidar_vendor(&LidarDriverType::Ouster, LidarVendor::Ouster).is_ok()
+        );
+    }
+
+    #[test]
+    fn invalid_ouster_point_offset_is_rejected() {
+        assert!(native_scan_to_cloud(scan(-0.001), &LidarDriverType::Ouster).is_err());
+        assert!(native_scan_to_cloud(scan(5.0), &LidarDriverType::Ouster).is_err());
+    }
+}
+
+#[cfg(any(feature = "ros2-client", feature = "r2r", feature = "hiroz"))]
 fn lifis_to_imu(msg: ImuMsg) -> Imu {
     Imu {
         header: Header {

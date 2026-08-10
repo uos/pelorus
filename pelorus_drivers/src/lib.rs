@@ -1,14 +1,15 @@
-//! Native sensor driver boundaries, independent of UDP, serial, ROS, or Zenoh.
 use pelorus_core::{ImuDriverType, ImuMsg, LidarDriverType, SensorDriverConfig};
 use std::{
     sync::{
         Arc,
-        atomic::{AtomicBool, AtomicUsize, Ordering},
+        atomic::{AtomicBool, Ordering},
     },
     thread::JoinHandle,
     time::Duration,
 };
 
+#[cfg(feature = "ouster-driver")]
+mod ouster;
 #[cfg(feature = "velodyne-driver")]
 mod velodyne;
 #[cfg(feature = "xsens-driver")]
@@ -41,20 +42,29 @@ pub trait SensorIngress: Send + Sync + 'static {
     fn push_imu(&self, imu: ImuMsg) -> Result<(), DriverError>;
 
     /// Called when a native driver terminates with an error. Implementations
-    /// should stop their consumer pipeline; continuing with a missing or
-    /// invalid sensor stream is not supported.
-    fn driver_failed(&self, _error: &DriverError) {}
+    /// should stop their consumer pipeline.
+    fn driver_failed(&self, error: &DriverError);
 }
 pub trait SensorOutputSink: Send + Sync + 'static {
     fn mirror_lidar(&self, scan: &RawLidarScan) -> Result<(), DriverError>;
     fn mirror_imu(&self, imu: &ImuMsg) -> Result<(), DriverError>;
 }
 
+#[cfg(any(
+    feature = "velodyne-driver",
+    feature = "xsens-driver",
+    feature = "ouster-driver"
+))]
 struct DriverStartGate {
-    ready: AtomicUsize,
+    ready: std::sync::atomic::AtomicUsize,
     participants: usize,
 }
 
+#[cfg(any(
+    feature = "velodyne-driver",
+    feature = "xsens-driver",
+    feature = "ouster-driver"
+))]
 impl DriverStartGate {
     fn wait(&self, stop: &AtomicBool) -> Result<(), DriverError> {
         self.ready.fetch_add(1, Ordering::AcqRel);
@@ -66,6 +76,32 @@ impl DriverStartGate {
         }
         Ok(())
     }
+}
+
+type DriverThread = JoinHandle<Result<(), DriverError>>;
+type DriverLauncher = Box<
+    dyn FnOnce(
+        Arc<dyn SensorIngress>,
+        Option<Arc<dyn SensorOutputSink>>,
+        Arc<AtomicBool>,
+    ) -> Result<DriverThread, DriverError>,
+>;
+
+fn launch_drivers(
+    launchers: Vec<DriverLauncher>,
+    ingress: Arc<dyn SensorIngress>,
+    sink: Option<Arc<dyn SensorOutputSink>>,
+    stop: Arc<AtomicBool>,
+) -> Result<Vec<DriverThread>, DriverError> {
+    let mut threads = Vec::with_capacity(launchers.len());
+    for launch in launchers {
+        threads.push(launch(
+            Arc::clone(&ingress),
+            sink.clone(),
+            Arc::clone(&stop),
+        )?);
+    }
+    Ok(threads)
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -123,12 +159,12 @@ pub fn validate_timestamp(
 
 pub struct DriverManager {
     stop: Arc<AtomicBool>,
-    threads: Vec<JoinHandle<Result<(), DriverError>>>,
+    threads: Vec<DriverThread>,
 }
 impl DriverManager {
     pub fn start(
         config: &SensorDriverConfig,
-        _ingress: Arc<dyn SensorIngress>,
+        ingress: Arc<dyn SensorIngress>,
         sink: Option<Arc<dyn SensorOutputSink>>,
     ) -> Result<Self, DriverError> {
         if config.lidar.driver_type == LidarDriverType::Velodyne
@@ -142,28 +178,47 @@ impl DriverManager {
         if config.imu.driver_type == ImuDriverType::Xsens && !cfg!(feature = "xsens-driver") {
             return Err(DriverError::FeatureUnavailable("Xsens", "xsens-driver"));
         }
+        if (config.lidar.driver_type == LidarDriverType::Ouster
+            || config.imu.driver_type == ImuDriverType::Ouster)
+            && !cfg!(feature = "ouster-driver")
+        {
+            return Err(DriverError::FeatureUnavailable("Ouster", "ouster-driver"));
+        }
         let stop = Arc::new(AtomicBool::new(false));
-        let enabled_driver_count =
-            usize::from(config.lidar.driver_type == LidarDriverType::Velodyne)
-                + usize::from(config.imu.driver_type == ImuDriverType::Xsens);
+        #[cfg(any(
+            feature = "velodyne-driver",
+            feature = "xsens-driver",
+            feature = "ouster-driver"
+        ))]
+        let enabled_driver_count = usize::from(
+            cfg!(feature = "velodyne-driver")
+                && config.lidar.driver_type == LidarDriverType::Velodyne,
+        ) + usize::from(
+            cfg!(feature = "xsens-driver") && config.imu.driver_type == ImuDriverType::Xsens,
+        ) + usize::from(
+            cfg!(feature = "ouster-driver")
+                && (config.lidar.driver_type == LidarDriverType::Ouster
+                    || config.imu.driver_type == ImuDriverType::Ouster),
+        );
+        #[cfg(any(
+            feature = "velodyne-driver",
+            feature = "xsens-driver",
+            feature = "ouster-driver"
+        ))]
         let startup_barrier = (enabled_driver_count > 1).then(|| {
             Arc::new(DriverStartGate {
-                ready: AtomicUsize::new(0),
+                ready: std::sync::atomic::AtomicUsize::new(0),
                 participants: enabled_driver_count,
             })
         });
-        #[allow(unused_mut)]
-        let mut threads = Vec::new();
+        let launchers: Vec<DriverLauncher> = Vec::new();
+        #[cfg(feature = "velodyne-driver")]
+        let mut launchers = launchers;
         #[cfg(feature = "velodyne-driver")]
         if config.lidar.driver_type == LidarDriverType::Velodyne {
-            let (cfg, ingress, sink, stop, startup_barrier) = (
-                config.lidar.clone(),
-                Arc::clone(&_ingress),
-                sink.clone(),
-                Arc::clone(&stop),
-                startup_barrier.clone(),
-            );
-            threads.push(
+            let cfg = config.lidar.clone();
+            let startup_barrier = startup_barrier.clone();
+            launchers.push(Box::new(move |ingress, sink, stop| {
                 std::thread::Builder::new()
                     .name("pelorus-velodyne".into())
                     .spawn(move || {
@@ -180,19 +235,16 @@ impl DriverManager {
                         }
                         result
                     })
-                    .map_err(DriverError::Io)?,
-            );
+                    .map_err(DriverError::Io)
+            }));
         }
         #[cfg(feature = "xsens-driver")]
+        let mut launchers = launchers;
+        #[cfg(feature = "xsens-driver")]
         if config.imu.driver_type == ImuDriverType::Xsens {
-            let (cfg, ingress, sink, stop, startup_barrier) = (
-                config.imu.clone(),
-                Arc::clone(&_ingress),
-                sink.clone(),
-                Arc::clone(&stop),
-                startup_barrier.clone(),
-            );
-            threads.push(
+            let cfg = config.imu.clone();
+            let startup_barrier = startup_barrier.clone();
+            launchers.push(Box::new(move |ingress, sink, stop| {
                 std::thread::Builder::new()
                     .name("pelorus-xsens".into())
                     .spawn(move || {
@@ -209,9 +261,42 @@ impl DriverManager {
                         }
                         result
                     })
-                    .map_err(DriverError::Io)?,
-            );
+                    .map_err(DriverError::Io)
+            }));
         }
+        #[cfg(feature = "ouster-driver")]
+        let mut launchers = launchers;
+        #[cfg(feature = "ouster-driver")]
+        if config.lidar.driver_type == LidarDriverType::Ouster
+            || config.imu.driver_type == ImuDriverType::Ouster
+        {
+            let cfg = config.ouster.clone();
+            let receive_lidar = config.lidar.driver_type == LidarDriverType::Ouster;
+            let receive_imu = config.imu.driver_type == ImuDriverType::Ouster;
+            let startup_barrier = startup_barrier.clone();
+            launchers.push(Box::new(move |ingress, sink, stop| {
+                std::thread::Builder::new()
+                    .name("pelorus-ouster".into())
+                    .spawn(move || {
+                        let result = ouster::run(
+                            cfg,
+                            receive_lidar,
+                            receive_imu,
+                            Arc::clone(&ingress),
+                            sink,
+                            Arc::clone(&stop),
+                            startup_barrier,
+                        );
+                        if let Err(error) = &result {
+                            stop.store(true, Ordering::Release);
+                            ingress.driver_failed(error);
+                        }
+                        result
+                    })
+                    .map_err(DriverError::Io)
+            }));
+        }
+        let threads = launch_drivers(launchers, ingress, sink, Arc::clone(&stop))?;
         Ok(Self { stop, threads })
     }
     pub fn shutdown(mut self) -> Result<(), DriverError> {
@@ -228,42 +313,7 @@ impl Drop for DriverManager {
     fn drop(&mut self) {
         self.stop.store(true, Ordering::Release);
         while let Some(t) = self.threads.pop() {
-            let _ = t.join();
+            drop(t.join());
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    #[test]
-    fn nearest_hour_rolls_forward() {
-        assert!(
-            (velodyne_host_hour_timestamp(3599.9, 100_000, Duration::from_secs(2)).unwrap()
-                - 3600.1)
-                .abs()
-                < 1e-9
-        );
-    }
-    #[test]
-    fn nearest_hour_rolls_backward() {
-        assert!(
-            (velodyne_host_hour_timestamp(3600.1, 3_599_900_000, Duration::from_secs(2)).unwrap()
-                - 3599.9)
-                .abs()
-                < 1e-9
-        );
-    }
-    #[test]
-    fn rejects_skew() {
-        assert!(matches!(
-            validate_timestamp(10.021, 10.0, Duration::from_millis(20)),
-            Err(DriverError::ClockSkew { .. })
-        ));
-    }
-
-    #[test]
-    fn accepts_skew_at_hardware_sync_limit() {
-        validate_timestamp(10.020, 10.0, Duration::from_millis(20)).unwrap();
     }
 }

@@ -13,9 +13,9 @@ use crate::{
     CoordinateSystem, DownsampleParameters, ImuCalibrationParameters, ImuConfigParameter,
     ImuDriverConfig, ImuDriverType, ImuParameters, KinematicModel, LidarDriverConfig,
     LidarDriverType, LidarVendor, LifisNodeParameters, LifisParameters, LioConfig, MadgwickSetting,
-    PassthroughFilterParameters, PreprocessingBackend, Qos, Reliability, SensorDriverConfig,
-    VelodyneConfig, VelodyneModel, VelodyneTimestampMode, XsensConfig, XsensTimestampMode,
-    adaptive_execution::ExecutionPolicy,
+    OusterConfig, OusterTimestampMode, PassthroughFilterParameters, PointCloudMode,
+    PreprocessingBackend, Qos, Reliability, SensorDriverConfig, VelodyneConfig, VelodyneModel,
+    VelodyneTimestampMode, XsensConfig, XsensTimestampMode, adaptive_execution::ExecutionPolicy,
 };
 
 /// Resolves an angle range (e.g., for FOV).
@@ -86,6 +86,29 @@ pub fn ast_to_config_with_user_usage(
     Ok((config.0, config.2))
 }
 
+#[cfg(test)]
+mod tests {
+    use super::ast_to_config;
+    use crate::{OusterTimestampMode, SensorDriverConfig};
+
+    #[test]
+    fn default_sensor_driver_config_parses() {
+        let defaults = ratslang::compile_code(include_str!("../../default.rl")).unwrap();
+        let user = ratslang::compile_code("").unwrap();
+        let config = ast_to_config(defaults, user).unwrap();
+        assert_eq!(
+            config.sensor_drivers,
+            SensorDriverConfig {
+                ouster: crate::OusterConfig {
+                    timestamp_mode: OusterTimestampMode::Ptp,
+                    ..Default::default()
+                },
+                ..Default::default()
+            }
+        );
+    }
+}
+
 /// Constructs an `LioConfig` by layering a user configuration over a default one.
 #[allow(unreachable_patterns, clippy::unnecessary_fallible_conversions)]
 pub fn ast_to_config(mut defaults: Evaluated, user: Evaluated) -> anyhow::Result<LioConfig> {
@@ -114,6 +137,16 @@ fn ast_to_config_inner(
             "systemdefault" => Qos::SystemDefault,
             _ => return Err(anyhow!("Unknown reliability setting.")),
         })
+    }
+
+    fn pointcloud_mode_parse(src: &str) -> anyhow::Result<PointCloudMode> {
+        match src.to_lowercase().as_str() {
+            "compressed" => Ok(PointCloudMode::Compressed),
+            "pointcloud2" => Ok(PointCloudMode::PointCloud2),
+            _ => Err(anyhow!(
+                "Unknown point-cloud mode '{src}'; expected Compressed or PointCloud2."
+            )),
+        }
     }
 
     fn lidar_vendor_parse(src: &str) -> anyhow::Result<LidarVendor> {
@@ -225,7 +258,7 @@ fn ast_to_config_inner(
         let lidar = asts.filter_ns(&["lidar", "driver"]);
         let vel = lidar.filter_ns(&["velodyne"]);
         let vel_ts = vel.filter_ns(&["timestamp"]);
-        let lidar_type = resolve_var!(lidar, "type", as LidarDriverType, Rhs::Val(Val::StringVal(s)) => { match s.to_lowercase().as_str() { "disabled" => LidarDriverType::Disabled, "velodyne" => LidarDriverType::Velodyne, _ => return Err(anyhow!("invalid lidar.driver.type '{s}'; expected Disabled or Velodyne")) } })?;
+        let lidar_type = resolve_var!(lidar, "type", as LidarDriverType, Rhs::Val(Val::StringVal(s)) => { match s.to_lowercase().as_str() { "disabled" => LidarDriverType::Disabled, "velodyne" => LidarDriverType::Velodyne, "ouster" => LidarDriverType::Ouster, _ => return Err(anyhow!("invalid lidar.driver.type '{s}'; expected Disabled, Velodyne, or Ouster")) } })?;
         let model = resolve_var!(vel, "model", as VelodyneModel, Rhs::Val(Val::StringVal(s)) => { match s.to_lowercase().as_str() { "vlp16" => VelodyneModel::Vlp16, "vlp32c" => VelodyneModel::Vlp32c, "pucklite" => VelodyneModel::PuckLite, "puckhires" => VelodyneModel::PuckHiRes, _ => return Err(anyhow!("unsupported Velodyne model '{s}'")) } })?;
         let bind_address: String =
             resolve_var!(vel, "bind_address", as String, Rhs::Val(Val::StringVal(s)) => {s})?;
@@ -253,7 +286,7 @@ fn ast_to_config_inner(
         let imu = asts.filter_ns(&["imu", "driver"]);
         let xs = imu.filter_ns(&["xsens"]);
         let xs_ts = xs.filter_ns(&["timestamp"]);
-        let imu_type = resolve_var!(imu, "type", as ImuDriverType, Rhs::Val(Val::StringVal(s)) => { match s.to_lowercase().as_str() { "disabled" => ImuDriverType::Disabled, "xsens" => ImuDriverType::Xsens, _ => return Err(anyhow!("invalid imu.driver.type '{s}'; expected Disabled or Xsens")) } })?;
+        let imu_type = resolve_var!(imu, "type", as ImuDriverType, Rhs::Val(Val::StringVal(s)) => { match s.to_lowercase().as_str() { "disabled" => ImuDriverType::Disabled, "xsens" => ImuDriverType::Xsens, "ouster" => ImuDriverType::Ouster, _ => return Err(anyhow!("invalid imu.driver.type '{s}'; expected Disabled, Xsens, or Ouster")) } })?;
         let baudrate = resolve_var!(xs, "baudrate", as u32, Rhs::Val(Val::NumVal(NumVal::Integer(i))) => {u32::try_from(i)?})?;
         let output_rate = resolve_var!(xs, "output_rate", as u32, Rhs::Val(Val::NumVal(NumVal::Integer(i))) => {u32::try_from(i)?})?;
         if baudrate == 0 || output_rate == 0 || output_rate > 2000 {
@@ -270,6 +303,50 @@ fn ast_to_config_inner(
                 "driver clock skew and startup timeout values must be positive"
             ));
         }
+        let ouster = asts.filter_ns(&["sensor_drivers", "ouster"]);
+        let ouster_ts = ouster.filter_ns(&["timestamp"]);
+        let ouster_bind_address: String =
+            resolve_var!(ouster, "bind_address", as String, Rhs::Val(Val::StringVal(s)) => {s})?;
+        ouster_bind_address
+            .parse::<std::net::IpAddr>()
+            .map_err(|_| anyhow!("sensor_drivers.ouster.bind_address must be an IP address"))?;
+        let ouster_lidar_port = resolve_var!(ouster, "lidar_port", as u16, Rhs::Val(Val::NumVal(NumVal::Integer(i))) => { u16::try_from(i).map_err(|_| anyhow!("Ouster lidar_port must be in 1..=65535"))? })?;
+        let ouster_imu_port = resolve_var!(ouster, "imu_port", as u16, Rhs::Val(Val::NumVal(NumVal::Integer(i))) => { u16::try_from(i).map_err(|_| anyhow!("Ouster imu_port must be in 1..=65535"))? })?;
+        if ouster_lidar_port == 0 || ouster_imu_port == 0 || ouster_lidar_port == ouster_imu_port {
+            return Err(anyhow!("Ouster ports must be non-zero and distinct"));
+        }
+        let ouster_device_ip_raw: String =
+            resolve_var!(ouster, "device_ip", as String, Rhs::Val(Val::StringVal(s)) => {s})?;
+        let ouster_device_ip = if ouster_device_ip_raw.is_empty() {
+            None
+        } else {
+            ouster_device_ip_raw
+                .parse::<std::net::IpAddr>()
+                .map_err(|_| anyhow!("sensor_drivers.ouster.device_ip must be an IP address"))?;
+            Some(ouster_device_ip_raw)
+        };
+        let metadata_path: String =
+            resolve_var!(ouster, "metadata_path", as String, Rhs::Val(Val::StringVal(s)) => {s})?;
+        let metadata_path = (!metadata_path.is_empty()).then_some(metadata_path);
+        let ouster_max_skew = resolve_var!(ouster_ts, "max_host_skew", as f64, Rhs::Val(Val::UnitedVal(UnitVal::TimeVal(v))) => {v.get::<second>()})?;
+        let ouster_timeout = resolve_var!(ouster_ts, "startup_timeout", as f64, Rhs::Val(Val::UnitedVal(UnitVal::TimeVal(v))) => {v.get::<second>()})?;
+        if ouster_max_skew <= 0.0 || ouster_timeout <= 0.0 {
+            return Err(anyhow!(
+                "Ouster clock skew and startup timeout values must be positive"
+            ));
+        }
+        let ouster_timestamp_mode = resolve_var!(ouster_ts, "mode", as OusterTimestampMode, Rhs::Val(Val::StringVal(s)) => { match s.to_lowercase().as_str() { "ptp" => OusterTimestampMode::Ptp, "host" => OusterTimestampMode::Host, _ => return Err(anyhow!("Ouster timestamp mode must be Ptp or Host")) } })?;
+        let ouster_hostname: String =
+            resolve_var!(ouster, "hostname", as String, Rhs::Val(Val::StringVal(s)) => {s})?;
+        if (lidar_type == LidarDriverType::Ouster || imu_type == ImuDriverType::Ouster)
+            && metadata_path.is_none()
+            && ouster_hostname.is_empty()
+        {
+            return Err(anyhow!(
+                "Ouster hostname is required when metadata_path is empty"
+            ));
+        }
+
         SensorDriverConfig {
             lidar: LidarDriverConfig {
                 driver_type: lidar_type,
@@ -301,14 +378,35 @@ fn ast_to_config_inner(
                     startup_timeout_secs: x_timeout,
                 },
             },
+            ouster: OusterConfig {
+                hostname: ouster_hostname,
+                metadata_path,
+                bind_address: ouster_bind_address,
+                lidar_port: ouster_lidar_port,
+                imu_port: ouster_imu_port,
+                device_ip: ouster_device_ip,
+                lidar_frame_id: resolve_var!(ouster,"lidar_frame_id",as String,Rhs::Val(Val::StringVal(s))=>{s})?,
+                imu_frame_id: resolve_var!(ouster,"imu_frame_id",as String,Rhs::Val(Val::StringVal(s))=>{s})?,
+                timestamp_mode: ouster_timestamp_mode,
+                max_host_skew_secs: ouster_max_skew,
+                startup_timeout_secs: ouster_timeout,
+            },
         }
     };
 
     // --- Lidar Configuration ---
-    let (cloud_src_topic, cloud_qos, lidar_vendor, lidar_odom_cov, lidar_as_sync) = {
+    let (
+        cloud_src_topic,
+        cloud_qos,
+        cloud_subscriber_mode,
+        lidar_vendor,
+        lidar_odom_cov,
+        lidar_as_sync,
+    ) = {
         let lidar = asts.filter_ns(&["lidar"]);
         let cloud_src_topic = resolve_var!(lidar, "topic", as String, Rhs::Val(Val::StringVal(s)) | Rhs::Path(s) => {s})?;
         let cloud_qos = resolve_var!(lidar, "qos.reliability", as Qos, Rhs::Val(Val::StringVal(s)) | Rhs::Path(s) => {reliablility_parse(&s)?})?;
+        let cloud_subscriber_mode = resolve_var!(lidar, "subscriber_mode", as PointCloudMode, Rhs::Val(Val::StringVal(s)) | Rhs::Path(s) => {pointcloud_mode_parse(&s)?})?;
         let lidar_vendor = resolve_var!(lidar, "vendor", as LidarVendor, Rhs::Val(Val::StringVal(s)) => {lidar_vendor_parse(&s)?})?;
         let lidar_odom_cov = resolve_var!(lidar, "covariance", as f64, Rhs::Val(Val::NumVal(NumVal::Floating(f))) => {f})?;
         let lidar_as_sync =
@@ -316,6 +414,7 @@ fn ast_to_config_inner(
         (
             cloud_src_topic,
             cloud_qos,
+            cloud_subscriber_mode,
             lidar_vendor,
             lidar_odom_cov,
             lidar_as_sync,
@@ -478,6 +577,7 @@ fn ast_to_config_inner(
         base_link_frame,
         base_to_lidar,
         base_to_lidar_tf_override,
+        cloud_publisher_mode,
     ): (
         _,
         _,
@@ -494,6 +594,7 @@ fn ast_to_config_inner(
         Option<String>,
         nalgebra::Isometry3<f64>,
         bool,
+        PointCloudMode,
     ) = {
         let output_ns = asts.filter_ns(&["output"]);
         let terminal_ns = output_ns.filter_ns(&["terminal"]);
@@ -532,6 +633,7 @@ fn ast_to_config_inner(
         let imu_odom_qos = resolve_var!(output_ns, "imu_odometry_msg_qos", as Qos, Rhs::Val(Val::StringVal(s)) => {reliablility_parse(&s)?})?;
         let imu_path_qos = resolve_var!(output_ns, "imu_path_msg_qos", as Qos, Rhs::Val(Val::StringVal(s)) => {reliablility_parse(&s)?})?;
         let imu_filtered_qos = resolve_var!(output_ns, "imu_ahrs_filtered_msg_qos", as Qos, Rhs::Val(Val::StringVal(s)) => {reliablility_parse(&s)?})?;
+        let cloud_publisher_mode = resolve_var!(output_ns, "publisher_mode", as PointCloudMode, Rhs::Val(Val::StringVal(s)) | Rhs::Path(s) => {pointcloud_mode_parse(&s)?})?;
 
         let base_link_ns = output_ns.filter_ns(&["base_link"]);
         let base_link_frame = match resolve_var!(base_link_ns, "frame_id", as String, Rhs::Val(Val::StringVal(s)) | Rhs::Path(s) => {s})
@@ -584,6 +686,7 @@ fn ast_to_config_inner(
             base_link_frame,
             base_to_lidar,
             base_to_lidar_tf_override,
+            cloud_publisher_mode,
         )
     };
 
@@ -774,6 +877,7 @@ fn ast_to_config_inner(
             wheel_src_topic,
             cloud_src_topic,
             cloud_qos,
+            cloud_subscriber_mode,
             imu_src_topic: imu_node_params.0,
             imu_qos: imu_node_params.1,
             imu_predictor_init_time_sec: imu_node_params.2,
@@ -807,6 +911,7 @@ fn ast_to_config_inner(
         },
         // TODO currently hardcoded
         registered_cloud_qos: Qos::Sensor(Reliability::Reliable),
+        cloud_publisher_mode,
         enable_live_extrinsic_calibration: false,
         num_threads,
     };

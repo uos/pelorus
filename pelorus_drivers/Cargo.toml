@@ -14,9 +14,12 @@ velodyne-lidar = { workspace = true, optional = true }
 xsens-mti = { workspace = true, optional = true }
 serialport = { workspace = true, optional = true }
 chrono = { workspace = true, optional = true }
+serde = { workspace = true, optional = true }
+serde_json = { workspace = true, optional = true }
 
 [features]
 default = []
 velodyne-driver = ["dep:velodyne-lidar", "dep:chrono"]
 xsens-driver = ["dep:xsens-mti", "dep:serialport", "dep:chrono"]
-sensor-drivers = ["velodyne-driver", "xsens-driver"]
+ouster-driver = ["dep:serde", "dep:serde_json"]
+sensor-drivers = ["velodyne-driver", "xsens-driver", "ouster-driver"]

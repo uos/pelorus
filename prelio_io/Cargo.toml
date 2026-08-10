@@ -27,6 +27,7 @@ thiserror.workspace = true
 r2r = { workspace = true, optional = true }
 rerun = { workspace = true, optional = true }
 mt_pubsub = { workspace = true, optional = true }
+cloudini = { workspace = true, optional = true }
 hiroz = { workspace = true, optional = true }
 hiroz-msgs = { workspace = true, optional = true }
 hiroz-protocol = { workspace = true, optional = true }
@@ -34,10 +35,11 @@ zenoh-buffers = { workspace = true, optional = true }
 tokio = { workspace = true, optional = true, features = ["rt-multi-thread"] }
 mt_rat = { workspace = true, optional = true }
 ros2-interfaces-jazzy-rkyv = { workspace = true, optional = true }
+rkyv = { workspace = true, optional = true }
 transforms_io = { workspace = true }
 
 [features]
-default = ["rayon"]
+default = ["rayon", "compressed-pointcloud"]
 rayon = ["prelio/rayon", "ros_pointcloud2/rayon"]
 rat = ["dep:mt_rat"]
 downsample = ["prelio/downsample"]
@@ -48,8 +50,10 @@ no-imu-sync = ["prelio/no-imu-sync"]
 large-processing-queue = ["prelio/large-processing-queue"]
 velodyne-driver = ["dep:pelorus_drivers", "pelorus_drivers/velodyne-driver"]
 xsens-driver = ["dep:pelorus_drivers", "pelorus_drivers/xsens-driver"]
-sensor-drivers = ["velodyne-driver", "xsens-driver"]
+ouster-driver = ["dep:pelorus_drivers", "pelorus_drivers/ouster-driver"]
+sensor-drivers = ["velodyne-driver", "xsens-driver", "ouster-driver"]
 rerun = ["dep:rerun"]
+compressed-pointcloud = ["dep:cloudini", "dep:rkyv"]
 mt_pubsub = [
     "dep:mt_pubsub",
     "dep:tokio",

@@ -60,6 +60,7 @@ path = "src/main.rs"
 
 [features]
 default = [
+  "compressed-pointcloud",
   "offline",
   "processing-time-export",
   "rayon",
@@ -80,7 +81,8 @@ rayon = [
 # Native drivers are opt-in; Disabled in Ratslang preserves external subscriptions.
 velodyne-driver = ["prelio_io/velodyne-driver"]
 xsens-driver = ["prelio_io/xsens-driver"]
-sensor-drivers = ["velodyne-driver", "xsens-driver"]
+ouster-driver = ["prelio_io/ouster-driver"]
+sensor-drivers = ["velodyne-driver", "xsens-driver", "ouster-driver"]
 
 # Alias for default fallback
 ros2 = ["ros2c"]
@@ -98,6 +100,9 @@ mt_pubsub = [
   "dep:ros2-interfaces-jazzy-rkyv",
   "prelio_io/mt_pubsub",
 ]
+
+# Cloudini-compressed point-cloud transport for mt_pubsub. Uses the pure-Rust codec.
+compressed-pointcloud = ["mt_pubsub", "prelio_io/compressed-pointcloud"]
 
 # Pure Rust ROS 2-compatible communication over Zenoh via Hiroz.
 hiroz = [

@@ -34,6 +34,8 @@ use marina::{Marina, ProgressReporter, ResolveResult, WriterProgress};
 #[cfg(feature = "mimalloc")]
 use mimalloc::MiMalloc;
 use pelorus_core::LioConfig;
+#[cfg(feature = "mt_pubsub")]
+use pelorus_core::PointCloudMode;
 use pelorus_core::config::{ast_to_config, ast_to_config_with_user_usage};
 #[cfg(any(
     feature = "mt_pubsub",
@@ -175,6 +177,28 @@ use ros2_interfaces_jazzy_rkyv::{
 use std::io::IsTerminal;
 use std::io::Write;
 
+#[cfg(feature = "mt_pubsub")]
+enum MtCloudPublisher {
+    PointCloud2(mt_pubsub::Publisher<PointCloud2>),
+    #[cfg(feature = "compressed-pointcloud")]
+    Compressed(mt_pubsub::Publisher<prelio_io::CompressedPointCloud2>),
+}
+
+#[cfg(feature = "mt_pubsub")]
+impl MtCloudPublisher {
+    async fn publish(&self, cloud: &PointCloud2) -> anyhow::Result<()> {
+        match self {
+            Self::PointCloud2(publisher) => publisher.publish(cloud).await,
+            #[cfg(feature = "compressed-pointcloud")]
+            Self::Compressed(publisher) => {
+                let cloud = impl_ros2_interfaces_jazzy_rkyv::to_pointcloud2_msg(cloud.clone());
+                let compressed = prelio_io::CompressedPointCloud2::compress(cloud)?;
+                publisher.publish(&compressed).await
+            }
+        }
+    }
+}
+
 #[cfg(any(
     feature = "mt_pubsub",
     feature = "ros2-client",
@@ -204,7 +228,7 @@ use pelorus_reg::Registration;
     feature = "r2r",
     feature = "hiroz"
 ))]
-use prelio_io::PrelioNode;
+use prelio_io::{PrelioNode, PrelioNodeInputs};
 use std::path::PathBuf;
 
 use pelorus_cli::mcap_output::{McapOutputWriter, McapTopics};
@@ -1446,18 +1470,26 @@ fn lio_with_ready_signal(
         rt.as_ref()
             .expect("rt always exists with mt_pubsub/hiroz feat")
             .clone(),
+        #[cfg(feature = "mt_pubsub")]
+        mt_pubsub_local_only,
         &config.prelio_params,
-        &config.prelio_node_params,
-        Some(pipeline.build_init_callback()),
-        Some(pipeline.build_undistort()),
-        Some(pipeline.build_init_guess()),
+        PrelioNodeInputs {
+            node_params: &config.prelio_node_params,
+            imu_pose_predictor_init: Some(pipeline.build_init_callback()),
+            imu_pose_prediction_undistort: Some(pipeline.build_undistort()),
+            imu_pose_prediction_init_guess: Some(pipeline.build_init_guess()),
+            ready_for_next: Some(ready_for_next_rx),
+            filtered_imu_sender: filtered_imu_tx.clone(),
+            imu_sync_mode,
+        },
         #[cfg(feature = "rerun")]
         rec.clone(),
-        Some(ready_for_next_rx),
-        filtered_imu_tx.clone(),
-        imu_sync_mode,
     )?;
-    #[cfg(any(feature = "velodyne-driver", feature = "xsens-driver"))]
+    #[cfg(any(
+        feature = "velodyne-driver",
+        feature = "xsens-driver",
+        feature = "ouster-driver"
+    ))]
     lifis_node.start_native_drivers(&config.sensor_drivers, filtered_imu_tx.clone(), None)?;
     let lifis_node = Arc::new(lifis_node);
     let drain_on_shutdown = Arc::new(AtomicBool::new(false));
@@ -1599,10 +1631,30 @@ fn lio_with_ready_signal(
         .as_ref()
         .expect("rt always exists with mt_pubsub feat")
         .block_on(async {
-            node.create_publisher::<PointCloud2>("registered".to_owned(), mt_pubsub::Qos::Reliable)
-                .await
-                .unwrap()
-        });
+            match config.cloud_publisher_mode {
+                PointCloudMode::PointCloud2 => {
+                    Ok::<_, anyhow::Error>(MtCloudPublisher::PointCloud2(
+                        node.create_publisher::<PointCloud2>(
+                            "registered".to_owned(),
+                            mt_pubsub::Qos::Reliable,
+                        )
+                        .await?,
+                    ))
+                }
+                #[cfg(feature = "compressed-pointcloud")]
+                PointCloudMode::Compressed => Ok(MtCloudPublisher::Compressed(
+                    node.create_publisher::<prelio_io::CompressedPointCloud2>(
+                        "registered".to_owned(),
+                        mt_pubsub::Qos::Reliable,
+                    )
+                    .await?,
+                )),
+                #[cfg(not(feature = "compressed-pointcloud"))]
+                PointCloudMode::Compressed => Err(anyhow!(
+                    "Compressed point-cloud output requires the 'compressed-pointcloud' feature"
+                )),
+            }
+        })?;
     #[cfg(feature = "hiroz")]
     let cloud_publisher = node
         .create_pub::<PointCloud2>("registered")
@@ -2010,7 +2062,11 @@ fn lio_with_ready_signal(
             if let Some(ref stats) = shared_stats {
                 let stamp_sec = {
                     let s = timestamp_to_secs(&lifis_tick.cloud_header.stamp);
-                    if s > 0.0 { s } else { timestamp_to_secs(&lifis_tick.odom_time) }
+                    if s > 0.0 {
+                        s
+                    } else {
+                        timestamp_to_secs(&lifis_tick.odom_time)
+                    }
                 };
                 stats.record_scan_timestamp(stamp_sec);
             }

@@ -598,6 +598,7 @@ pub struct LifisNodeParameters {
     pub imu_filtered_topic: String,
     pub imu_predictor_init_time_sec: f64,
     pub cloud_qos: Qos,
+    pub cloud_subscriber_mode: PointCloudMode,
     pub wheel_qos: Qos,
     pub imu_qos: Qos,
     pub imu_filtered_qos: Qos,
@@ -643,6 +644,14 @@ pub enum Qos {
     SystemDefault,
 }
 
+/// Point-cloud message type used by the `mt_pubsub` backend.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum PointCloudMode {
+    Compressed,
+    #[default]
+    PointCloud2,
+}
+
 /// Top-level configuration used by both the binary and the FFI layer.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct LioConfig {
@@ -650,6 +659,7 @@ pub struct LioConfig {
     pub show_tui: bool,
     pub debug_fps: u32,
     pub registered_cloud_qos: Qos,
+    pub cloud_publisher_mode: PointCloudMode,
     pub odom_qos: Qos,
     pub imu_odom_qos: Qos,
     pub imu_path_qos: Qos,
@@ -676,6 +686,7 @@ pub struct LioConfig {
 pub struct SensorDriverConfig {
     pub lidar: LidarDriverConfig,
     pub imu: ImuDriverConfig,
+    pub ouster: OusterConfig,
 }
 
 impl Default for SensorDriverConfig {
@@ -683,6 +694,7 @@ impl Default for SensorDriverConfig {
         Self {
             lidar: Default::default(),
             imu: Default::default(),
+            ouster: Default::default(),
         }
     }
 }
@@ -692,12 +704,14 @@ pub enum LidarDriverType {
     #[default]
     Disabled,
     Velodyne,
+    Ouster,
 }
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
 pub enum ImuDriverType {
     #[default]
     Disabled,
     Xsens,
+    Ouster,
 }
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub enum VelodyneModel {
@@ -714,6 +728,11 @@ pub enum VelodyneTimestampMode {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub enum XsensTimestampMode {
     Utc,
+    Host,
+}
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub enum OusterTimestampMode {
+    Ptp,
     Host,
 }
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -802,6 +821,38 @@ impl Default for XsensConfig {
             coordinate_system: CoordinateSystem::Enu,
             configure_device: true,
             timestamp_mode: XsensTimestampMode::Utc,
+            max_host_skew_secs: 0.020,
+            startup_timeout_secs: 15.0,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct OusterConfig {
+    pub hostname: String,
+    pub metadata_path: Option<String>,
+    pub bind_address: String,
+    pub lidar_port: u16,
+    pub imu_port: u16,
+    pub device_ip: Option<String>,
+    pub lidar_frame_id: String,
+    pub imu_frame_id: String,
+    pub timestamp_mode: OusterTimestampMode,
+    pub max_host_skew_secs: f64,
+    pub startup_timeout_secs: f64,
+}
+impl Default for OusterConfig {
+    fn default() -> Self {
+        Self {
+            hostname: "os.local".into(),
+            metadata_path: None,
+            bind_address: "0.0.0.0".into(),
+            lidar_port: 7502,
+            imu_port: 7503,
+            device_ip: None,
+            lidar_frame_id: "os_sensor".into(),
+            imu_frame_id: "os_imu".into(),
+            timestamp_mode: OusterTimestampMode::Ptp,
             max_host_skew_secs: 0.020,
             startup_timeout_secs: 15.0,
         }

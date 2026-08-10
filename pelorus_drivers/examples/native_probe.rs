@@ -37,6 +37,10 @@ impl SensorIngress for Probe {
         }
         Ok(())
     }
+
+    fn driver_failed(&self, error: &DriverError) {
+        eprintln!("native sensor driver failed: {error}");
+    }
 }
 fn main() -> Result<(), DriverError> {
     let probe = Arc::new(Probe::default());

@@ -109,11 +109,26 @@ where
     slice.sort_unstable_by_key(f);
 }
 
-#[derive(Clone)]
 pub struct LabeledPointCloud2Msg {
     pub scan_id: u64,
     pub received_at: Instant,
-    pub cloud: PointCloud2Msg,
+    pub cloud: Box<dyn PreprocessingPointCloud>,
+}
+
+/// A queue-owned point cloud that exposes borrowed storage to preprocessing.
+pub trait PreprocessingPointCloud: Send {
+    fn header(&self) -> HeaderMsg;
+    fn source(&self) -> &dyn ros_pointcloud2::PointCloud2Source;
+}
+
+impl PreprocessingPointCloud for PointCloud2Msg {
+    fn header(&self) -> HeaderMsg {
+        self.header.clone()
+    }
+
+    fn source(&self) -> &dyn ros_pointcloud2::PointCloud2Source {
+        self
+    }
 }
 
 use imu::*;
@@ -589,7 +604,7 @@ mod tests {
 
         let (points, _, begin, end, _) =
             filter_downsample_without_timestamps_with_fallback::<4, 3, PointXYZI, PointXYZ>(
-                cloud,
+                &cloud,
                 &params,
                 &mut eval,
                 &mut buffers,
@@ -1086,7 +1101,7 @@ fn sort_bypass_cloud(
 #[inline]
 fn scan_time_bounds(
     downsampled: &[PointXYZIT],
-    raw_out: Option<&(Vec<PointXYZIT>, PointCloud2Msg)>,
+    raw_out: Option<&Vec<PointXYZIT>>,
     sort_by_timestamp: bool,
 ) -> Option<(f32, f32)> {
     if !sort_by_timestamp && !downsampled.is_empty() {
@@ -1097,7 +1112,7 @@ fn scan_time_bounds(
         (Some(first), Some(last)) if last.timestamp > 0.0 => {
             Some((first.timestamp, last.timestamp))
         }
-        _ => raw_out.and_then(|(bypass, _)| match (bypass.first(), bypass.last()) {
+        _ => raw_out.and_then(|bypass| match (bypass.first(), bypass.last()) {
             (Some(first), Some(last)) if last.timestamp > 0.0 => {
                 Some((first.timestamp, last.timestamp))
             }
@@ -1277,26 +1292,20 @@ fn filter_downsample_with_fallback<
     P: PointXYZITimestamp<N>,
     PFallback: PointXYZITimestamp<N_FALLBACK>,
 >(
-    cloud: PointCloud2Msg,
+    cloud: &dyn PreprocessingPointCloud,
     lifis_params: &LifisParameters,
     eval: &mut RuntimeEvaluator,
     buffers: &mut DownsampleBuffers,
     mode: ExecutionMode,
 ) -> Result<Option<DownsampleResult>> {
-    let result = filter_downsample::<N, P>(&cloud, lifis_params, eval, buffers, mode);
+    let result = filter_downsample::<N, P>(cloud, lifis_params, eval, buffers, mode);
 
     match result {
         Ok(data) => Ok(data),
         Err(e) => {
             let error_str = format!("{:?}", e);
             if error_str.contains("Some fields") && (error_str.contains("intensity")) {
-                filter_downsample::<N_FALLBACK, PFallback>(
-                    &cloud,
-                    lifis_params,
-                    eval,
-                    buffers,
-                    mode,
-                )
+                filter_downsample::<N_FALLBACK, PFallback>(cloud, lifis_params, eval, buffers, mode)
             } else {
                 Err(e)
             }
@@ -1305,18 +1314,18 @@ fn filter_downsample_with_fallback<
 }
 
 fn filter_downsample_livox(
-    cloud: PointCloud2Msg,
+    cloud: &dyn PreprocessingPointCloud,
     lifis_params: &LifisParameters,
     eval: &mut RuntimeEvaluator,
     buffers: &mut DownsampleBuffers,
     mode: ExecutionMode,
 ) -> Result<Option<DownsampleResult>> {
-    let result = filter_downsample::<5, LivoxPoint>(&cloud, lifis_params, eval, buffers, mode);
+    let result = filter_downsample::<5, LivoxPoint>(cloud, lifis_params, eval, buffers, mode);
     match result {
         Ok(data) => Ok(data),
         Err(t_error) => {
             let offset_time_result = filter_downsample::<5, LivoxPointOffsetTime>(
-                &cloud,
+                cloud,
                 lifis_params,
                 eval,
                 buffers,
@@ -1328,7 +1337,7 @@ fn filter_downsample_livox(
                     let error_str = format!("{offset_time_error:?}");
                     if error_str.contains("Some fields") && error_str.contains("intensity") {
                         filter_downsample::<4, LivoxPointOffsetTimeNoIntensity>(
-                            &cloud,
+                            cloud,
                             lifis_params,
                             eval,
                             buffers,
@@ -1339,7 +1348,7 @@ fn filter_downsample_livox(
                         if t_error_str.contains("Some fields") && t_error_str.contains("intensity")
                         {
                             filter_downsample::<4, LivoxPointNoIntensity>(
-                                &cloud,
+                                cloud,
                                 lifis_params,
                                 eval,
                                 buffers,
@@ -1356,13 +1365,14 @@ fn filter_downsample_livox(
 }
 
 fn filter_downsample<const N: usize, P: PointXYZITimestamp<N>>(
-    cloud: &PointCloud2Msg,
+    cloud: &dyn PreprocessingPointCloud,
     lifis_params: &LifisParameters,
     eval: &mut RuntimeEvaluator,
     buffers: &mut DownsampleBuffers,
     mode: ExecutionMode,
 ) -> Result<Option<DownsampleResult>> {
-    let scan_reference_time = lidar_scan_reference_time(lifis_params.lidar_vendor, &cloud.header);
+    let header = cloud.header();
+    let scan_reference_time = lidar_scan_reference_time(lifis_params.lidar_vendor, &header);
     filter_downsample_inner::<N, P>(
         cloud,
         lifis_params,
@@ -1382,7 +1392,7 @@ fn filter_downsample<const N: usize, P: PointXYZITimestamp<N>>(
 }
 
 fn filter_downsample_without_timestamps<const N: usize, P: PointXYZIntensity<N>>(
-    cloud: &PointCloud2Msg,
+    cloud: &dyn PreprocessingPointCloud,
     lifis_params: &LifisParameters,
     eval: &mut RuntimeEvaluator,
     buffers: &mut DownsampleBuffers,
@@ -1405,14 +1415,14 @@ fn filter_downsample_without_timestamps_with_fallback<
     P: PointXYZIntensity<N>,
     PFallback: PointXYZIntensity<N_FALLBACK>,
 >(
-    cloud: PointCloud2Msg,
+    cloud: &dyn PreprocessingPointCloud,
     lifis_params: &LifisParameters,
     eval: &mut RuntimeEvaluator,
     buffers: &mut DownsampleBuffers,
     mode: ExecutionMode,
 ) -> Result<Option<DownsampleResult>> {
     let result =
-        filter_downsample_without_timestamps::<N, P>(&cloud, lifis_params, eval, buffers, mode);
+        filter_downsample_without_timestamps::<N, P>(cloud, lifis_params, eval, buffers, mode);
 
     match result {
         Ok(data) => Ok(data),
@@ -1420,7 +1430,7 @@ fn filter_downsample_without_timestamps_with_fallback<
             let error_str = format!("{:?}", e);
             if error_str.contains("Some fields") && error_str.contains("intensity") {
                 filter_downsample_without_timestamps::<N_FALLBACK, PFallback>(
-                    &cloud,
+                    cloud,
                     lifis_params,
                     eval,
                     buffers,
@@ -1434,7 +1444,7 @@ fn filter_downsample_without_timestamps_with_fallback<
 }
 
 fn filter_downsample_inner<const N: usize, P: PointConvertible<N> + Send + Sync>(
-    cloud: &PointCloud2Msg,
+    cloud: &dyn PreprocessingPointCloud,
     lifis_params: &LifisParameters,
     eval: &mut RuntimeEvaluator,
     buffers: &mut DownsampleBuffers,
@@ -1443,12 +1453,13 @@ fn filter_downsample_inner<const N: usize, P: PointConvertible<N> + Send + Sync>
     mode: ExecutionMode,
 ) -> Result<Option<DownsampleResult>> {
     let bypass_output_downsample = lifis_params.downsample.bypass_output_downsample;
-    let header = cloud.header.clone();
+    let header = cloud.header();
+    let source = cloud.source();
     let voxel_size = lifis_params.downsample.voxel_size;
     let filter_map_point = |point| filter_point(point, lifis_params);
 
-    buffers.prepare(cloud.dimensions.len());
-    let mut downsampled: Vec<PointXYZIT> = Vec::with_capacity(cloud.dimensions.len());
+    buffers.prepare(source.point_count());
+    let mut downsampled: Vec<PointXYZIT> = Vec::with_capacity(source.point_count());
 
     let mut raw_out = None;
     let used_cpu_downsample;
@@ -1460,22 +1471,19 @@ fn filter_downsample_inner<const N: usize, P: PointConvertible<N> + Send + Sync>
         #[cfg(feature = "rayon")]
         match mode {
             ExecutionMode::Sequential => buffers.filtered_cloud.extend(
-                cloud
-                    .try_into_iter()?
+                ros_pointcloud2::try_into_iter(source)?
                     .filter_map(map_to_non_trait)
                     .filter_map(filter_map_point),
             ),
             ExecutionMode::Rayon => buffers.filtered_cloud.par_extend(
-                cloud
-                    .try_into_par_iter()?
+                ros_pointcloud2::try_into_par_iter(source)?
                     .filter_map(map_to_non_trait)
                     .filter_map(filter_map_point),
             ),
         }
         #[cfg(not(feature = "rayon"))]
         buffers.filtered_cloud.extend(
-            cloud
-                .try_into_iter()?
+            ros_pointcloud2::try_into_iter(source)?
                 .filter_map(map_to_non_trait)
                 .filter_map(filter_map_point),
         );
@@ -1521,7 +1529,7 @@ fn filter_downsample_inner<const N: usize, P: PointConvertible<N> + Send + Sync>
                 if sort_by_timestamp {
                     sort_bypass_cloud(&mut buffers.filtered_cloud, eval, mode)?;
                 }
-                raw_out = Some((std::mem::take(&mut buffers.filtered_cloud), cloud.clone()));
+                raw_out = Some(std::mem::take(&mut buffers.filtered_cloud));
             }
         } else if bypass_output_downsample {
             cpu_key_downsample(
@@ -1586,7 +1594,7 @@ fn filter_downsample_inner<const N: usize, P: PointConvertible<N> + Send + Sync>
                 }
             }
 
-            raw_out = Some((std::mem::take(&mut buffers.filtered_cloud), cloud.clone()));
+            raw_out = Some(std::mem::take(&mut buffers.filtered_cloud));
         } else {
             cpu_downsample(
                 &buffers.filtered_cloud,
@@ -1604,8 +1612,6 @@ fn filter_downsample_inner<const N: usize, P: PointConvertible<N> + Send + Sync>
     else {
         return Ok(None);
     };
-
-    let raw_out = raw_out.map(|r| r.0);
 
     // TODO back to keeping the timestamp f64, only testing right now because of artefacts
     Ok(Some((
@@ -1912,12 +1918,12 @@ impl Prelio {
                 #[cfg(feature = "rayon")]
                 let started = Instant::now();
                 #[cfg(feature = "rayon")]
-                let input_points = labeled.cloud.dimensions.len().max(1);
+                let input_points = labeled.cloud.source().point_count().max(1);
 
                 let result = match vendor {
                     LidarVendor::Ouster => {
                         filter_downsample_with_fallback::<5, 4, OusterPoint, OusterPointNoIntensity>(
-                            labeled.cloud,
+                            labeled.cloud.as_ref(),
                             &params_clone,
                             &mut eval,
                             &mut downsample_buffers,
@@ -1930,14 +1936,14 @@ impl Prelio {
                         VelodynePoint,
                         VelodynePointNoIntensity,
                     >(
-                        labeled.cloud,
+                        labeled.cloud.as_ref(),
                         &params_clone,
                         &mut eval,
                         &mut downsample_buffers,
                         mode,
                     ),
                     LidarVendor::Livox => filter_downsample_livox(
-                        labeled.cloud,
+                        labeled.cloud.as_ref(),
                         &params_clone,
                         &mut eval,
                         &mut downsample_buffers,
@@ -1949,7 +1955,7 @@ impl Prelio {
                         LivoxMid360Point,
                         LivoxMid360PointNoIntensity,
                     >(
-                        labeled.cloud,
+                        labeled.cloud.as_ref(),
                         &params_clone,
                         &mut eval,
                         &mut downsample_buffers,
@@ -1957,7 +1963,7 @@ impl Prelio {
                     ),
                     LidarVendor::Hesai => {
                         filter_downsample_with_fallback::<5, 4, HesaiPoint, HesaiPointNoIntensity>(
-                            labeled.cloud,
+                            labeled.cloud.as_ref(),
                             &params_clone,
                             &mut eval,
                             &mut downsample_buffers,
@@ -1970,7 +1976,7 @@ impl Prelio {
                         BlickfeldPoint,
                         BlickfeldPointNoIntensity,
                     >(
-                        labeled.cloud,
+                        labeled.cloud.as_ref(),
                         &params_clone,
                         &mut eval,
                         &mut downsample_buffers,
@@ -1982,7 +1988,7 @@ impl Prelio {
                         SickMultiScanPoint,
                         SickMultiScanPointNoIntensity,
                     >(
-                        labeled.cloud,
+                        labeled.cloud.as_ref(),
                         &params_clone,
                         &mut eval,
                         &mut downsample_buffers,
@@ -1994,7 +2000,7 @@ impl Prelio {
                         RobosensePoint,
                         RobosensePointNoIntensity,
                     >(
-                        labeled.cloud,
+                        labeled.cloud.as_ref(),
                         &params_clone,
                         &mut eval,
                         &mut downsample_buffers,
@@ -2007,7 +2013,7 @@ impl Prelio {
                             PointXYZI,
                             PointXYZ,
                         >(
-                            labeled.cloud,
+                            labeled.cloud.as_ref(),
                             &params_clone,
                             &mut eval,
                             &mut downsample_buffers,
@@ -2099,7 +2105,16 @@ impl Prelio {
         cloud: PointCloud2Msg,
         received_at: Instant,
     ) -> u64 {
-        let cloud_stamp = timestamp_to_secs(&cloud.header.stamp);
+        self.add_pointcloud_source(Box::new(cloud), received_at)
+    }
+
+    /// Enqueue an owned point-cloud source while borrowing its payload in preprocessing.
+    pub fn add_pointcloud_source(
+        &mut self,
+        cloud: Box<dyn PreprocessingPointCloud>,
+        received_at: Instant,
+    ) -> u64 {
+        let cloud_stamp = timestamp_to_secs(&cloud.header().stamp);
 
         // TODO handle time jumps in the past?
         // let buff_cloud = if cloud_stamp < self.last_cloud_time {

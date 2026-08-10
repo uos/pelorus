@@ -4684,7 +4684,6 @@ checksum = "96a1fe2275b68991faded2c80aa4a33dba398b77d276038b8f50701a22e55918"
 [[package]]
 name = "mt_coord"
 version = "0.9.0"
-source = "git+ssh://git@git.steado.tech/minot.git?tag=v0.9.0-hiroz#cb179a853cf634cbecf4e15b17209cdd6f4c5a3b"
 dependencies = [
  "anyhow",
  "fs2",
@@ -4699,7 +4698,6 @@ dependencies = [
 [[package]]
 name = "mt_net"
 version = "0.9.0"
-source = "git+ssh://git@git.steado.tech/minot.git?tag=v0.9.0-hiroz#cb179a853cf634cbecf4e15b17209cdd6f4c5a3b"
 dependencies = [
  "anyhow",
  "rkyv",
@@ -4710,7 +4708,6 @@ dependencies = [
 [[package]]
 name = "mt_pubsub"
 version = "0.9.0"
-source = "git+ssh://git@git.steado.tech/minot.git?tag=v0.9.0-hiroz#cb179a853cf634cbecf4e15b17209cdd6f4c5a3b"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -4729,7 +4726,6 @@ dependencies = [
 [[package]]
 name = "mt_rat"
 version = "0.9.0"
-source = "git+ssh://git@git.steado.tech/minot.git?tag=v0.9.0-hiroz#cb179a853cf634cbecf4e15b17209cdd6f4c5a3b"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -4745,7 +4741,6 @@ dependencies = [
 [[package]]
 name = "mt_scope"
 version = "0.9.0"
-source = "git+ssh://git@git.steado.tech/minot.git?tag=v0.9.0-hiroz#cb179a853cf634cbecf4e15b17209cdd6f4c5a3b"
 dependencies = [
  "anyhow",
  "env_logger",
@@ -4760,7 +4755,6 @@ dependencies = [
 [[package]]
 name = "mt_sea"
 version = "0.9.0"
-source = "git+ssh://git@git.steado.tech/minot.git?tag=v0.9.0-hiroz#cb179a853cf634cbecf4e15b17209cdd6f4c5a3b"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -5660,6 +5654,8 @@ version = "0.0.6"
 dependencies = [
  "chrono",
  "pelorus_core",
+ "serde",
+ "serde_json",
  "serialport",
  "thiserror 2.0.20",
  "velodyne-lidar",
@@ -6243,6 +6239,7 @@ name = "prelio_io"
 version = "0.0.6"
 dependencies = [
  "anyhow",
+ "cloudini",
  "env_logger",
  "futures-lite",
  "hiroz",
@@ -6257,6 +6254,7 @@ dependencies = [
  "prelio",
  "r2r",
  "rerun",
+ "rkyv",
  "ros2-client 0.8.2",
  "ros2-interfaces-jazzy-rkyv",
  "ros2-interfaces-jazzy-serde",
@@ -8057,8 +8055,7 @@ dependencies = [
 
 [[package]]
 name = "ros_pointcloud2"
-version = "1.0.0-rc.3"
-source = "git+ssh://git@git.steado.tech/ros_pointcloud2.git?tag=v1.0.0-rc.3-hiroz#1eb6dd34bf74905ef22b21619a193136fc39098f"
+version = "1.0.0-rc.4"
 dependencies = [
  "rayon",
  "rkyv",
@@ -8089,7 +8086,6 @@ dependencies = [
 [[package]]
 name = "rpcl2-derive"
 version = "1.0.0-rc.1"
-source = "git+ssh://git@git.steado.tech/ros_pointcloud2.git?tag=v1.0.0-rc.3-hiroz#1eb6dd34bf74905ef22b21619a193136fc39098f"
 dependencies = [
  "proc-macro2",
  "quote",

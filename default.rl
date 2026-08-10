@@ -102,12 +102,45 @@ preprocessing {
 
 }
 
+sensor_drivers {
+  ouster {
+    # Sensor hostname or address used only to read metadata over HTTP. The
+    # sensor must already be configured to send UDP data to this host.
+    hostname = "os.local"
+
+    # Optional Ouster metadata JSON file. Empty fetches live metadata from
+    # hostname; a file is useful for deterministic replay and offline testing.
+    metadata_path = ""
+
+    # Local receive address and the sensor's configured UDP destination ports.
+    bind_address = "0.0.0.0"
+    lidar_port = 7502
+    imu_port = 7503
+
+    # Optional sender filter. Empty accepts Ouster packets from any address.
+    device_ip = ""
+
+    # Ouster points are transformed into the forward-left-up Sensor frame.
+    lidar_frame_id = "os_sensor"
+    imu_frame_id = "os_imu"
+
+    timestamp {
+      # Ptp | Host. Ptp requires TIME_FROM_PTP_1588 sensor configuration and
+      # validates sensor timestamps against host UTC. Host preserves relative
+      # sensor timing while anchoring each scan or IMU packet at receive time.
+      mode = Ptp
+      max_host_skew = 20ms
+      startup_timeout = 15s
+    }
+  }
+}
+
 lidar {
   driver {
-    # Disabled | Velodyne
+    # Disabled | Velodyne | Ouster
     # Disabled keeps the existing external point-cloud input configured by lidar.topic.
-    # Velodyne enables the in-process UDP driver and requires Pelorus to be built with
-    # the `velodyne-driver` feature (or the aggregate `sensor-drivers` feature).
+    # Velodyne and Ouster enable in-process UDP drivers and require Pelorus to be
+    # built with their matching feature (or the aggregate `sensor-drivers` feature).
     type = Disabled
 
     velodyne {
@@ -166,6 +199,11 @@ lidar {
   # @recommended
   topic = "/ouster/points"
 
+  # PointCloud2 | Compressed. Selects the input message type when using mt_pubsub.
+  # Compressed requires the default-enabled `compressed-pointcloud` Cargo feature.
+  # Other communication backends always subscribe to PointCloud2.
+  subscriber_mode = PointCloud2
+
   # @recommended
   # Use the vendor specific cloud format timestamps for deskewing
   # Possible values: Velodyne | Ouster | Livox | Robosense | LivoxMid360 | Hesai | Blickfeld | SickMultiScan | NoTimestamp
@@ -185,10 +223,10 @@ lidar {
 
 imu {
   driver {
-    # Disabled | Xsens
+    # Disabled | Xsens | Ouster
     # Disabled keeps the existing external IMU input configured by imu.topic.
-    # Xsens enables the in-process serial MTData2 driver and requires Pelorus to be
-    # built with the `xsens-driver` feature (or the aggregate `sensor-drivers` feature).
+    # Xsens and Ouster enable in-process drivers and require Pelorus to be built with
+    # their matching feature (or the aggregate `sensor-drivers` feature).
     type = Disabled
 
     xsens {
@@ -317,6 +355,11 @@ wheel {
 }
 
 output {
+
+  # PointCloud2 | Compressed. Selects the registered-cloud message type when using mt_pubsub.
+  # Compressed requires the default-enabled `compressed-pointcloud` Cargo feature.
+  # The topic name stays "registered" in either mode.
+  publisher_mode = PointCloud2
 
   terminal {
     # @recommended

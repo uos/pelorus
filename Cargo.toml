@@ -48,7 +48,7 @@ pelorus_metal = { path = "pelorus_metal", version = "0.0.6" }
 pelorus_vulkan = { path = "pelorus_vulkan", version = "0.0.6", default-features = false }
 pelorus_drivers = { path = "pelorus_drivers", version = "0.0.6", default-features = false }
 
-ros_pointcloud2 = { version = "1.0.0-rc.3", features = [
+ros_pointcloud2 = { version = "1.0.0-rc.4", features = [
   "derive",
   "r2r",
   "ros2_interfaces_jazzy_serde",
@@ -57,6 +57,7 @@ ros_pointcloud2 = { version = "1.0.0-rc.3", features = [
 ] }
 ratslang = "0.4.1"
 mt_pubsub = "0.9.0"
+cloudini = { version = "0.3.2", default-features = false, features = ["ros"] }
 mt_rat = "0.9.0"
 imu-calib = "0.1" # TODO use noise calib
 marina = "0.2.9"
@@ -80,6 +81,7 @@ ros2-interfaces-jazzy-rkyv = { version = "0.0.5", features = [
   "tf2_msgs",
   "builtin_interfaces",
 ] }
+rkyv = "0.8"
 
 once_cell = "1.21"
 nalgebra = { version = "0.33", features = ["serde-serialize"] }
@@ -201,8 +203,8 @@ opt-level = 3
 
 [patch.crates-io]
 transforms_io = { git = "ssh://git@git.steado.tech/transforms_io.git", tag = "v0.3.0-hiroz" }
-ros_pointcloud2 = { git = "ssh://git@git.steado.tech/ros_pointcloud2.git", tag = "v1.0.0-rc.3-hiroz" }
-# mt_pubsub = { path = "../minot/mt_pubsub" }
-# mt_rat = { path = "../minot/mt_rat" }
-mt_pubsub = { git = "ssh://git@git.steado.tech/minot.git", tag = "v0.9.0-hiroz" }
-mt_rat = { git = "ssh://git@git.steado.tech/minot.git", tag = "v0.9.0-hiroz" }
+ros_pointcloud2 = { path = "../ros_pointcloud2/ros_pointcloud2" }
+mt_pubsub = { path = "../minot/mt_pubsub" }
+mt_rat = { path = "../minot/mt_rat" }
+# mt_pubsub = { git = "ssh://git@git.steado.tech/minot.git", tag = "v0.9.0-hiroz" }
+# mt_rat = { git = "ssh://git@git.steado.tech/minot.git", tag = "v0.9.0-hiroz" }

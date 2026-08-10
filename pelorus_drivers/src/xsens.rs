@@ -83,10 +83,8 @@ fn configure(
     let hz = u16::try_from(rate)
         .map_err(|_| DriverError::Driver("Xsens output rate is too high".into()))?;
     let mut payload = Vec::with_capacity(16);
-    for id in [0x1010u16] {
-        payload.extend_from_slice(&id.to_be_bytes());
-        payload.extend_from_slice(&hz.to_be_bytes());
-    }
+    payload.extend_from_slice(&0x1010u16.to_be_bytes());
+    payload.extend_from_slice(&hz.to_be_bytes());
     for base_id in [0x2010u16, 0x4020, 0x8020] {
         let id = base_id | coordinate_bits(coordinate_system);
         payload.extend_from_slice(&id.to_be_bytes());
