@@ -531,6 +531,8 @@ impl Pipeline {
             params.lidar_vendor,
             ready_for_next,
             imu_sync_mode,
+            None,
+            None,
         )?;
 
         let rx = prelio

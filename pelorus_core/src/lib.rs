@@ -652,6 +652,16 @@ pub enum PointCloudMode {
     PointCloud2,
 }
 
+/// Controls which estimator updates are published as odometry.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum OdometryRate {
+    /// Publish only LiDAR-corrected states (legacy behavior).
+    #[default]
+    Lidar,
+    /// Publish live IMU predictions and LiDAR-corrected states.
+    ImuAndLidar,
+}
+
 /// Top-level configuration used by both the binary and the FFI layer.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct LioConfig {
@@ -661,6 +671,7 @@ pub struct LioConfig {
     pub registered_cloud_qos: Qos,
     pub cloud_publisher_mode: PointCloudMode,
     pub odom_qos: Qos,
+    pub odometry_rate: OdometryRate,
     pub imu_odom_qos: Qos,
     pub imu_path_qos: Qos,
     pub path_qos: Qos,

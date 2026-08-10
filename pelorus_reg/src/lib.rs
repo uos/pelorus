@@ -10,6 +10,7 @@ pub use backend::ActiveBackend;
 pub mod iekf;
 pub mod imu;
 pub mod pipeline;
+pub mod realtime;
 pub mod registration;
 use anyhow::Result;
 pub use spole::*;

@@ -43,6 +43,14 @@ pub struct ImuProcessing {
     pub wheel_odom_cov_override: Option<f64>,
 }
 
+#[derive(Clone)]
+pub(crate) struct ImuPredictionContext {
+    pub last_imu: crate::ImuMsg,
+    pub mean_acc: Vector3<f64>,
+    pub angvel_last: Vector3<f64>,
+    pub ekf_inited: bool,
+}
+
 impl Default for ImuProcessing {
     fn default() -> Self {
         Self {
@@ -159,6 +167,36 @@ impl Pose6D {
 }
 
 impl ImuProcessing {
+    pub(crate) fn prediction_context(&self) -> ImuPredictionContext {
+        ImuPredictionContext {
+            last_imu: self.last_imu.clone(),
+            mean_acc: self.mean_acc,
+            angvel_last: self.angvel_last,
+            ekf_inited: self.ekf_inited,
+        }
+    }
+
+    pub(crate) fn restore_prediction_context(&mut self, context: &ImuPredictionContext) {
+        self.last_imu = context.last_imu.clone();
+        self.mean_acc = context.mean_acc;
+        self.angvel_last = context.angvel_last;
+        self.ekf_inited = context.ekf_inited;
+    }
+
+    pub(crate) fn update_realtime_tail(
+        &mut self,
+        tail: &crate::ImuMsg,
+        state: crate::iekf::StateIKFom,
+    ) {
+        self.last_imu = tail.clone();
+        self.imu_state = state;
+        self.angvel_last = Vector3::from(tail.angular_velocity) - state.bg;
+    }
+
+    pub(crate) fn mean_acc_norm(&self) -> f64 {
+        self.mean_acc.norm()
+    }
+
     pub fn new(
         params: &ImuParameters,
         lidar_to_imu: &Isometry3<f64>,

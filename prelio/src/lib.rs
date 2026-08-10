@@ -42,6 +42,11 @@ use anyhow::Result;
 use ros_pointcloud2::prelude::*;
 pub use ros_pointcloud2::ros::TimeMsg;
 
+/// Output-only hook invoked after calibration and AHRS filtering.
+pub type RealtimeImuCallback = Arc<dyn Fn(ImuMsg) + Send + Sync>;
+/// Output-only hook invoked as soon as a LiDAR scan enters preprocessing.
+pub type RealtimeLidarBarrierCallback = Arc<dyn Fn() + Send + Sync>;
+
 #[cfg(not(feature = "large-processing-queue"))]
 const PREPROC_QUEUE_CAP: usize = 4;
 #[cfg(feature = "large-processing-queue")]
@@ -1633,6 +1638,8 @@ pub struct Prelio {
     runtime_eval: RuntimeEvaluator,
     imu_calibration_apply: Option<imu_calib::CalibrationApplication>,
     madgwick_filter: MadgwickSetting,
+    realtime_imu_callback: Option<RealtimeImuCallback>,
+    realtime_lidar_barrier_callback: Option<RealtimeLidarBarrierCallback>,
 }
 
 // fn find_sort_boundaries() {
@@ -1802,6 +1809,8 @@ impl Prelio {
         lidar_vendor: LidarVendor,
         ready_for_next: Option<std::sync::mpsc::Receiver<()>>,
         imu_sync_mode: ImuSyncMode,
+        realtime_imu_callback: Option<RealtimeImuCallback>,
+        realtime_lidar_barrier_callback: Option<RealtimeLidarBarrierCallback>,
     ) -> anyhow::Result<Self> {
         #[cfg(not(feature = "rayon"))]
         if params.parallelism_execution_policy
@@ -2079,6 +2088,8 @@ impl Prelio {
             runtime_eval: RuntimeEvaluator::new(),
             imu_calibration_apply: imu_intrinsic_calibration,
             madgwick_filter,
+            realtime_imu_callback,
+            realtime_lidar_barrier_callback,
         })
     }
 
@@ -2114,6 +2125,9 @@ impl Prelio {
         cloud: Box<dyn PreprocessingPointCloud>,
         received_at: Instant,
     ) -> u64 {
+        if let Some(callback) = self.realtime_lidar_barrier_callback.as_ref() {
+            callback();
+        }
         let cloud_stamp = timestamp_to_secs(&cloud.header().stamp);
 
         // TODO handle time jumps in the past?
@@ -2266,6 +2280,10 @@ impl Prelio {
             }
         };
         self.runtime_eval.stop("imu_pre").unwrap();
+
+        if let Some(callback) = self.realtime_imu_callback.as_ref() {
+            callback(imu.clone());
+        }
 
         Some(imu)
     }

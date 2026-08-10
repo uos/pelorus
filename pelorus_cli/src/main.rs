@@ -33,7 +33,6 @@ use core::time::Duration;
 use marina::{Marina, ProgressReporter, ResolveResult, WriterProgress};
 #[cfg(feature = "mimalloc")]
 use mimalloc::MiMalloc;
-use pelorus_core::LioConfig;
 #[cfg(feature = "mt_pubsub")]
 use pelorus_core::PointCloudMode;
 use pelorus_core::config::{ast_to_config, ast_to_config_with_user_usage};
@@ -51,6 +50,7 @@ use pelorus_core::timestamp_to_secs;
     feature = "hiroz"
 ))]
 use pelorus_core::timing::RuntimeEvaluator;
+use pelorus_core::{LioConfig, OdometryRate};
 use pelorus_reg::ActiveBackend;
 #[cfg(any(
     feature = "mt_pubsub",
@@ -59,6 +59,13 @@ use pelorus_reg::ActiveBackend;
     feature = "hiroz"
 ))]
 use pelorus_reg::pipeline::Pipeline;
+#[cfg(any(
+    feature = "mt_pubsub",
+    feature = "ros2-client",
+    feature = "r2r",
+    feature = "hiroz"
+))]
+use pelorus_reg::realtime::{RealtimePrediction, RealtimePredictorHandle};
 #[cfg(feature = "hiroz")]
 use prelio_io::impl_hiroz;
 #[cfg(feature = "r2r")]
@@ -933,6 +940,195 @@ fn serde_odom(odom: &Odometry) -> ros2_interfaces_jazzy_serde::nav_msgs::msg::Od
     feature = "r2r",
     feature = "hiroz"
 ))]
+fn realtime_prediction_to_odom(
+    prediction: &RealtimePrediction,
+    map_frame: &str,
+    child_frame: &str,
+) -> Odometry {
+    let mut odom = Odometry::default();
+    odom.header.stamp = Time {
+        sec: prediction.stamp.sec,
+        nanosec: prediction.stamp.nanosec,
+    };
+    odom.header.frame_id = map_frame.to_owned();
+    odom.child_frame_id = child_frame.to_owned();
+    odom.pose.pose.position.x = prediction.pose.translation.x;
+    odom.pose.pose.position.y = prediction.pose.translation.y;
+    odom.pose.pose.position.z = prediction.pose.translation.z;
+    odom.pose.pose.orientation.x = prediction.pose.rotation.i;
+    odom.pose.pose.orientation.y = prediction.pose.rotation.j;
+    odom.pose.pose.orientation.z = prediction.pose.rotation.k;
+    odom.pose.pose.orientation.w = prediction.pose.rotation.w;
+    odom.twist.twist.linear.x = prediction.linear_velocity_body.x;
+    odom.twist.twist.linear.y = prediction.linear_velocity_body.y;
+    odom.twist.twist.linear.z = prediction.linear_velocity_body.z;
+    odom.twist.twist.angular.x = prediction.angular_velocity_body.x;
+    odom.twist.twist.angular.y = prediction.angular_velocity_body.y;
+    odom.twist.twist.angular.z = prediction.angular_velocity_body.z;
+    #[cfg(feature = "r2r")]
+    {
+        odom.pose.covariance = prediction.pose_covariance.to_vec();
+        odom.twist.covariance = prediction.twist_covariance.to_vec();
+    }
+    #[cfg(not(feature = "r2r"))]
+    {
+        odom.pose.covariance = prediction.pose_covariance;
+        odom.twist.covariance = prediction.twist_covariance;
+    }
+    odom
+}
+
+#[cfg(any(
+    feature = "mt_pubsub",
+    feature = "ros2-client",
+    feature = "r2r",
+    feature = "hiroz"
+))]
+fn realtime_prediction_to_tf(
+    prediction: &RealtimePrediction,
+    map_frame: &str,
+    child_frame: &str,
+) -> TransformStamped {
+    TransformStamped {
+        header: Header {
+            frame_id: map_frame.to_owned(),
+            stamp: Time {
+                sec: prediction.stamp.sec,
+                nanosec: prediction.stamp.nanosec,
+            },
+        },
+        child_frame_id: child_frame.to_owned(),
+        transform: Transform {
+            translation: Vector3 {
+                x: prediction.pose.translation.x,
+                y: prediction.pose.translation.y,
+                z: prediction.pose.translation.z,
+            },
+            rotation: Quaternion {
+                x: prediction.pose.rotation.i,
+                y: prediction.pose.rotation.j,
+                z: prediction.pose.rotation.k,
+                w: prediction.pose.rotation.w,
+            },
+        },
+    }
+}
+
+#[cfg(all(
+    feature = "rerun",
+    any(
+        feature = "mt_pubsub",
+        feature = "ros2-client",
+        feature = "r2r",
+        feature = "hiroz"
+    )
+))]
+fn log_realtime_prediction_to_rerun(rec: &rerun::RecordingStream, prediction: &RealtimePrediction) {
+    rec.set_timestamp_secs_since_epoch("sensor", timestamp_to_secs(&prediction.stamp));
+    let pose = &prediction.pose;
+    let transform = rerun::Transform3D::from_translation(glam::Vec3::new(
+        pose.translation.x as f32,
+        pose.translation.y as f32,
+        pose.translation.z as f32,
+    ))
+    .with_quaternion(glam::Quat::from_xyzw(
+        pose.rotation.i as f32,
+        pose.rotation.j as f32,
+        pose.rotation.k as f32,
+        pose.rotation.w as f32,
+    ));
+    if let Err(error) = rec.log("world/latest_odometry", &transform) {
+        debug!("Failed to log real-time odometry to Rerun: {error}");
+    }
+
+    let covariance = &prediction.pose_covariance;
+    let position_covariance_world = nalgebra::Matrix3::new(
+        covariance[0],
+        covariance[1],
+        covariance[2],
+        covariance[6],
+        covariance[7],
+        covariance[8],
+        covariance[12],
+        covariance[13],
+        covariance[14],
+    );
+    let pose_rotation = pose.rotation.to_rotation_matrix();
+    let position_covariance_local =
+        pose_rotation.matrix().transpose() * position_covariance_world * pose_rotation.matrix();
+    let eigen = position_covariance_local.symmetric_eigen();
+    let mut eigenvectors = eigen.eigenvectors;
+    if eigenvectors.determinant() < 0.0 {
+        eigenvectors.set_column(0, &(-eigenvectors.column(0)));
+    }
+    let half_sizes = glam::Vec3::new(
+        eigen.eigenvalues.x.max(0.0).sqrt() as f32,
+        eigen.eigenvalues.y.max(0.0).sqrt() as f32,
+        eigen.eigenvalues.z.max(0.0).sqrt() as f32,
+    );
+    let covariance_rotation = UnitQuaternion::from_matrix(&eigenvectors);
+    let covariance_quaternion = covariance_rotation.quaternion();
+    let ellipsoid = rerun::Ellipsoids3D::update_fields()
+        .with_half_sizes([half_sizes])
+        .with_quaternions([glam::Quat::from_xyzw(
+            covariance_quaternion.i as f32,
+            covariance_quaternion.j as f32,
+            covariance_quaternion.k as f32,
+            covariance_quaternion.w as f32,
+        )])
+        .with_colors([rerun::Color::from_unmultiplied_rgba(64, 180, 255, 96)])
+        .with_fill_mode(rerun::components::FillMode::TransparentFillMajorWireframe)
+        .with_line_radii([rerun::Radius::new_ui_points(1.0)]);
+    if let Err(error) = rec.log("world/latest_odometry/covariance", &ellipsoid) {
+        debug!("Failed to log real-time covariance to Rerun: {error}");
+    }
+}
+
+#[cfg(any(
+    feature = "mt_pubsub",
+    feature = "ros2-client",
+    feature = "r2r",
+    feature = "hiroz"
+))]
+fn drain_realtime_odometry_exports(
+    receiver: &Option<std::sync::mpsc::Receiver<RealtimePrediction>>,
+    trajectory_samples: &mut Option<Vec<(f64, Isometry3<f64>)>>,
+    mcap_writer: &mut Option<McapOutputWriter<std::io::BufWriter<std::fs::File>>>,
+    #[cfg(feature = "rerun")] rerun_rec: Option<&Arc<rerun::RecordingStream>>,
+    map_frame: &str,
+    child_frame: &str,
+) -> anyhow::Result<()> {
+    let Some(receiver) = receiver.as_ref() else {
+        return Ok(());
+    };
+
+    while let Ok(prediction) = receiver.try_recv() {
+        #[cfg(feature = "rerun")]
+        if let Some(rerun_rec) = rerun_rec {
+            log_realtime_prediction_to_rerun(rerun_rec, &prediction);
+        }
+        if let Some(samples) = trajectory_samples.as_mut() {
+            let stamp = timestamp_to_secs(&prediction.stamp);
+            samples.push((stamp, prediction.pose));
+        }
+
+        if let Some(writer) = mcap_writer.as_mut() {
+            let odom = realtime_prediction_to_odom(&prediction, map_frame, child_frame);
+            let tf = realtime_prediction_to_tf(&prediction, map_frame, child_frame);
+            writer.write_odom(&serde_odom(&odom))?;
+            writer.write_tf(&serde_tf_message(&tf))?;
+        }
+    }
+
+    Ok(())
+}
+
+#[cfg(any(
+    feature = "mt_pubsub",
+    feature = "ros2-client",
+    feature = "r2r",
+    feature = "hiroz"
+))]
 fn serde_pose_stamped(
     pose: &PoseStamped,
 ) -> ros2_interfaces_jazzy_serde::geometry_msgs::msg::PoseStamped {
@@ -1351,7 +1547,7 @@ fn lio_with_ready_signal(
     let mut node = r2r::Node::create(ctx, &ros_node_args.node_name, &ros_node_args.namespace)?;
 
     #[cfg(any(feature = "ros2-client", feature = "r2r"))]
-    let tf_broadcaster = TfBroadcaster::new(&mut node);
+    let tf_broadcaster = Arc::new(TfBroadcaster::new(&mut node));
     #[cfg(feature = "mt_pubsub")]
     let tf_broadcaster = Arc::new(TfBroadcaster::new(
         rt.as_ref()
@@ -1361,8 +1557,10 @@ fn lio_with_ready_signal(
         mt_pubsub::Qos::Reliable,
     ));
     #[cfg(feature = "hiroz")]
-    let tf_broadcaster = TfBroadcaster::new(&node)
-        .map_err(|e| anyhow!("Failed to create Hiroz TF broadcaster: {e}"))?;
+    let tf_broadcaster = Arc::new(
+        TfBroadcaster::new(&node)
+            .map_err(|e| anyhow!("Failed to create Hiroz TF broadcaster: {e}"))?,
+    );
 
     let mut pipeline = Pipeline::new(&config);
     let map = pipeline.map();
@@ -1460,6 +1658,34 @@ fn lio_with_ready_signal(
         (None, None)
     };
 
+    #[cfg(feature = "rerun")]
+    let rerun_prediction_export = minot_replay_mode && rec.is_some();
+    #[cfg(not(feature = "rerun"))]
+    let rerun_prediction_export = false;
+    let realtime_exports_enabled = config.odometry_rate == OdometryRate::ImuAndLidar
+        && (export_trajectory.is_some() || output_mcap.is_some() || rerun_prediction_export);
+    let (realtime_export_tx, realtime_export_rx) = if realtime_exports_enabled {
+        let (tx, rx) = std::sync::mpsc::channel();
+        (Some(tx), Some(rx))
+    } else {
+        (None, None)
+    };
+
+    let (realtime_predictor, realtime_prediction_rx) =
+        if config.odometry_rate == OdometryRate::ImuAndLidar {
+            let (handle, receiver) =
+                RealtimePredictorHandle::new_with_export(&config, realtime_export_tx);
+            (Some(handle), Some(receiver))
+        } else {
+            (None, None)
+        };
+    let realtime_imu_callback = realtime_predictor
+        .as_ref()
+        .map(RealtimePredictorHandle::imu_callback);
+    let realtime_lidar_barrier_callback = realtime_predictor
+        .as_ref()
+        .map(RealtimePredictorHandle::lidar_barrier_callback);
+
     #[allow(unused_mut)]
     let (mut lifis_node, synced_rx) = PrelioNode::new(
         #[cfg(any(feature = "ros2-client", feature = "r2r"))]
@@ -1481,6 +1707,8 @@ fn lio_with_ready_signal(
             ready_for_next: Some(ready_for_next_rx),
             filtered_imu_sender: filtered_imu_tx.clone(),
             imu_sync_mode,
+            realtime_imu_callback,
+            realtime_lidar_barrier_callback,
         },
         #[cfg(feature = "rerun")]
         rec.clone(),
@@ -1678,6 +1906,54 @@ fn lio_with_ready_signal(
         .with_qos(prelio_io::qos_to_hiroz(config.odom_qos))
         .build()
         .map_err(|e| anyhow!("Failed to create Hiroz odom publisher: {e}"))?;
+
+    let realtime_child_frame = Arc::new(std::sync::RwLock::new(None::<String>));
+    let _realtime_odom_publisher = realtime_prediction_rx.map(|receiver| {
+        let publisher = odom_publisher.clone();
+        let prediction_tf_broadcaster = Arc::clone(&tf_broadcaster);
+        let map_frame = config.prelio_params.map_frame.clone();
+        let child_frame = Arc::clone(&realtime_child_frame);
+        #[cfg(feature = "rerun")]
+        let prediction_rec = rec.clone();
+        #[cfg(feature = "mt_pubsub")]
+        let runtime = rt
+            .as_ref()
+            .expect("rt always exists with mt_pubsub feat")
+            .clone();
+        std::thread::spawn(move || {
+            while let Ok(prediction) = receiver.recv() {
+                let Some(child) = child_frame.read().ok().and_then(|value| value.clone()) else {
+                    continue;
+                };
+                let odom = realtime_prediction_to_odom(&prediction, &map_frame, &child);
+                let tf = realtime_prediction_to_tf(&prediction, &map_frame, &child);
+                #[cfg(feature = "rerun")]
+                if let Some(prediction_rec) = prediction_rec.as_ref() {
+                    log_realtime_prediction_to_rerun(prediction_rec, &prediction);
+                }
+                #[cfg(feature = "mt_pubsub")]
+                {
+                    if let Err(error) = runtime.block_on(publisher.publish(&odom)) {
+                        debug!("Failed to publish real-time odometry: {error}");
+                    }
+                    if let Err(error) =
+                        runtime.block_on(prediction_tf_broadcaster.send_transform(tf))
+                    {
+                        debug!("Failed to publish real-time transform: {error}");
+                    }
+                }
+                #[cfg(not(feature = "mt_pubsub"))]
+                {
+                    if let Err(error) = publisher.publish(&odom) {
+                        debug!("Failed to publish real-time odometry: {error}");
+                    }
+                    if let Err(error) = prediction_tf_broadcaster.send_transform(tf) {
+                        debug!("Failed to publish real-time transform: {error}");
+                    }
+                }
+            }
+        })
+    });
     #[cfg(all(not(feature = "no-viz"), feature = "r2r"))]
     let lidar_path_publisher = node.create_publisher::<Path>("path", config.path_qos.into())?;
     #[cfg(all(not(feature = "no-viz"), feature = "mt_pubsub"))]
@@ -1932,6 +2208,11 @@ fn lio_with_ready_signal(
                 None
             }
         };
+        let mut trajectory_samples = if config.odometry_rate == OdometryRate::ImuAndLidar {
+            trajectory_file.as_ref().map(|_| Vec::new())
+        } else {
+            None
+        };
         #[cfg(feature = "processing-time-export")]
         let mut processing_time_file = match export_processing_time_for_worker {
             Some(path_str) => {
@@ -1952,6 +2233,7 @@ fn lio_with_ready_signal(
         }
 
         let mut static_tf_published = false;
+        let mut realtime_export_child_frame: Option<String> = None;
 
         #[cfg(feature = "cuda")]
         let mut persistent_cuda_cloud_bufs: Option<
@@ -2315,6 +2597,10 @@ fn lio_with_ready_signal(
                 .as_deref()
                 .unwrap_or(&orig_frame)
                 .to_string();
+            realtime_export_child_frame = Some(child_frame.clone());
+            if let Ok(mut realtime_frame) = realtime_child_frame.write() {
+                *realtime_frame = Some(child_frame.clone());
+            }
 
             if !static_tf_published && config.base_link_frame.is_some() {
                 if config.base_to_lidar_tf_override {
@@ -2345,6 +2631,9 @@ fn lio_with_ready_signal(
                                 // Keep output conversion and registration on the same transform.
                                 config.base_to_lidar = iso;
                                 pipeline.set_base_to_lidar(iso);
+                                if let Some(predictor) = realtime_predictor.as_ref() {
+                                    predictor.set_base_to_lidar(iso);
+                                }
                             }
                             Err(e) => {
                                 error!(
@@ -2648,19 +2937,27 @@ fn lio_with_ready_signal(
 
                 std::io::Write::write_all(processing_time_file, content_to_write.as_bytes())?;
             }
-            if let Some(mut trajectory_file) = trajectory_file.as_mut() {
-                let t = &t_world.translation.vector;
+            // Predictions preceding this correction must be serialized first,
+            // preserving timestamp order in both trajectory export formats.
+            drain_realtime_odometry_exports(
+                &realtime_export_rx,
+                &mut trajectory_samples,
+                &mut mcap_writer,
+                #[cfg(feature = "rerun")]
+                rec.as_ref(),
+                &config.prelio_params.map_frame,
+                &child_frame,
+            )?;
+            if let Some(samples) = trajectory_samples.as_mut() {
+                samples.push((current_cloud_time, t_world));
+            } else if let Some(file) = trajectory_file.as_mut() {
+                let t = t_world.translation.vector;
                 let q = t_world.rotation.quaternion();
-
-                // <time in seconds> <translation_x> <translation_y> <translation_z> <quaternion_x> <quaternion_y> <quaternion_z> <quaternion_w>
-                // Format the string to write to the file
-                let content_to_write = format!(
+                let line = format!(
                     "{} {} {} {} {} {} {} {}\n",
                     current_cloud_time, t.x, t.y, t.z, q.i, q.j, q.k, q.w
                 );
-
-                std::io::Write::write_all(&mut trajectory_file, content_to_write.as_bytes())
-                    .unwrap();
+                std::io::Write::write_all(file, line.as_bytes())?;
             }
 
             #[cfg(all(feature = "map", all(feature = "rerun", feature = "mt_pubsub")))]
@@ -2852,44 +3149,9 @@ fn lio_with_ready_signal(
             // -- --
 
             if let Some(writer) = mcap_writer.as_mut() {
-                let lidar_pose = register_pose.pose;
-                let lidar_lin_vel_body = lidar_pose.rotation.inverse() * ekf_state.linear_velocity;
-                let lidar_ang_vel_body =
-                    ekf_state.lidar_imu_extrinsic.rotation.inverse() * ekf_state.angular_velocity;
-
-                let mut mcap_odom = pelorus_odom.clone();
-                mcap_odom.child_frame_id = orig_frame.clone();
-                mcap_odom.pose.pose.position.x = lidar_pose.translation.vector.x;
-                mcap_odom.pose.pose.position.y = lidar_pose.translation.vector.y;
-                mcap_odom.pose.pose.position.z = lidar_pose.translation.vector.z;
-                mcap_odom.pose.pose.orientation.x = lidar_pose.rotation.i;
-                mcap_odom.pose.pose.orientation.y = lidar_pose.rotation.j;
-                mcap_odom.pose.pose.orientation.z = lidar_pose.rotation.k;
-                mcap_odom.pose.pose.orientation.w = lidar_pose.rotation.w;
-                mcap_odom.twist.twist.linear.x = lidar_lin_vel_body.x;
-                mcap_odom.twist.twist.linear.y = lidar_lin_vel_body.y;
-                mcap_odom.twist.twist.linear.z = lidar_lin_vel_body.z;
-                mcap_odom.twist.twist.angular.x = lidar_ang_vel_body.x;
-                mcap_odom.twist.twist.angular.y = lidar_ang_vel_body.y;
-                mcap_odom.twist.twist.angular.z = lidar_ang_vel_body.z;
-                let (mcap_pose_cov, mcap_twist_cov) = {
-                    let map = pipeline.map();
-                    let guard = map.lock().unwrap();
-                    (
-                        guard.get_output_pose_covariance(&Isometry3::identity()),
-                        guard.get_output_twist_covariance(&lidar_pose),
-                    )
-                };
-                #[cfg(not(feature = "r2r"))]
-                {
-                    mcap_odom.pose.covariance = mcap_pose_cov;
-                    mcap_odom.twist.covariance = mcap_twist_cov;
-                }
-                #[cfg(feature = "r2r")]
-                {
-                    mcap_odom.pose.covariance = mcap_pose_cov.to_vec();
-                    mcap_odom.twist.covariance = mcap_twist_cov.to_vec();
-                }
+                // Record the exact corrected odometry message published on
+                // `odom`; high-rate predictions use the same frame and schema.
+                let mcap_odom = pelorus_odom.clone();
 
                 let mcap_tf = TransformStamped {
                     header: Header {
@@ -2899,18 +3161,18 @@ fn lio_with_ready_signal(
                             nanosec: lifis_tick.odom_time.nanosec,
                         },
                     },
-                    child_frame_id: orig_frame.clone(),
+                    child_frame_id: pelorus_odom.child_frame_id.clone(),
                     transform: Transform {
                         translation: Vector3 {
-                            x: lidar_pose.translation.vector.x as f64,
-                            y: lidar_pose.translation.vector.y as f64,
-                            z: lidar_pose.translation.vector.z as f64,
+                            x: t_world.translation.vector.x,
+                            y: t_world.translation.vector.y,
+                            z: t_world.translation.vector.z,
                         },
                         rotation: Quaternion {
-                            x: lidar_pose.rotation.quaternion().i as f64,
-                            y: lidar_pose.rotation.quaternion().j as f64,
-                            z: lidar_pose.rotation.quaternion().k as f64,
-                            w: lidar_pose.rotation.quaternion().w as f64,
+                            x: t_world.rotation.quaternion().i,
+                            y: t_world.rotation.quaternion().j,
+                            z: t_world.rotation.quaternion().k,
+                            w: t_world.rotation.quaternion().w,
                         },
                     },
                 };
@@ -3066,6 +3328,15 @@ fn lio_with_ready_signal(
                 odom_publisher
                     .publish(&pelorus_odom)
                     .expect("Failed to publish odom");
+            }
+
+            // Release the real-time barrier only after the authoritative
+            // corrected message has been published. The predictor then
+            // replays buffered IMUs and emits one caught-up state.
+            if let Some(predictor) = realtime_predictor.as_ref() {
+                let registration = pipeline.map();
+                let registration = registration.lock().unwrap();
+                predictor.corrected(&registration);
             }
 
             #[cfg(not(feature = "no-viz"))]
@@ -3248,6 +3519,30 @@ fn lio_with_ready_signal(
             ActiveBackend::Vulkan(_) => pelorus_vulkan::cleanup_map(),
         }
         drain_filtered_imu_mcap(&mut mcap_writer, &mut filtered_imu_rx)?;
+        if let Some(child_frame) = realtime_export_child_frame.as_deref() {
+            drain_realtime_odometry_exports(
+                &realtime_export_rx,
+                &mut trajectory_samples,
+                &mut mcap_writer,
+                #[cfg(feature = "rerun")]
+                rec.as_ref(),
+                &config.prelio_params.map_frame,
+                child_frame,
+            )?;
+        }
+        if let (Some(file), Some(samples)) = (trajectory_file.as_mut(), trajectory_samples.as_mut())
+        {
+            samples.sort_by(|left, right| left.0.total_cmp(&right.0));
+            for (stamp, pose) in samples.iter() {
+                let t = pose.translation.vector;
+                let q = pose.rotation.quaternion();
+                let line = format!(
+                    "{} {} {} {} {} {} {} {}\n",
+                    stamp, t.x, t.y, t.z, q.i, q.j, q.k, q.w
+                );
+                std::io::Write::write_all(file, line.as_bytes())?;
+            }
+        }
         if let Some(writer) = mcap_writer.take() {
             writer.finish()?;
         }
@@ -3809,6 +4104,35 @@ mod mcap_output_config_tests {
             mcap_tf_topic: "/tf".to_string(),
             mcap_filtered_imu_topic: None,
         }
+    }
+
+    #[test]
+    fn realtime_tf_matches_realtime_odometry() {
+        let prediction = RealtimePrediction {
+            stamp: pelorus_core::time_msg_from_secs(12.25),
+            pose: Isometry3::from_parts(
+                nalgebra::Translation3::new(1.0, 2.0, 3.0),
+                nalgebra::UnitQuaternion::from_euler_angles(0.1, -0.2, 0.3),
+            ),
+            linear_velocity_body: nalgebra::Vector3::new(4.0, 5.0, 6.0),
+            angular_velocity_body: nalgebra::Vector3::new(0.4, 0.5, 0.6),
+            pose_covariance: [0.0; 36],
+            twist_covariance: [0.0; 36],
+        };
+
+        let odom = realtime_prediction_to_odom(&prediction, "map", "base_link");
+        let tf = realtime_prediction_to_tf(&prediction, "map", "base_link");
+
+        assert_eq!(tf.header.stamp, odom.header.stamp);
+        assert_eq!(tf.header.frame_id, odom.header.frame_id);
+        assert_eq!(tf.child_frame_id, odom.child_frame_id);
+        assert_eq!(tf.transform.translation.x, odom.pose.pose.position.x);
+        assert_eq!(tf.transform.translation.y, odom.pose.pose.position.y);
+        assert_eq!(tf.transform.translation.z, odom.pose.pose.position.z);
+        assert_eq!(tf.transform.rotation.x, odom.pose.pose.orientation.x);
+        assert_eq!(tf.transform.rotation.y, odom.pose.pose.orientation.y);
+        assert_eq!(tf.transform.rotation.z, odom.pose.pose.orientation.z);
+        assert_eq!(tf.transform.rotation.w, odom.pose.pose.orientation.w);
     }
 
     #[test]

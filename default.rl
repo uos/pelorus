@@ -356,6 +356,10 @@ wheel {
 
 output {
 
+  # @recommended
+  # Lidar | ImuAndLidar. ImuAndLidar adds low-latency IMU predictions between LiDAR corrections.
+  odometry_rate = Lidar
+
   # PointCloud2 | Compressed. Selects the registered-cloud message type when using mt_pubsub.
   # Compressed requires the default-enabled `compressed-pointcloud` Cargo feature.
   # The topic name stays "registered" in either mode.

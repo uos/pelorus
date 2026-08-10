@@ -13,7 +13,7 @@ use crate::{
     CoordinateSystem, DownsampleParameters, ImuCalibrationParameters, ImuConfigParameter,
     ImuDriverConfig, ImuDriverType, ImuParameters, KinematicModel, LidarDriverConfig,
     LidarDriverType, LidarVendor, LifisNodeParameters, LifisParameters, LioConfig, MadgwickSetting,
-    OusterConfig, OusterTimestampMode, PassthroughFilterParameters, PointCloudMode,
+    OdometryRate, OusterConfig, OusterTimestampMode, PassthroughFilterParameters, PointCloudMode,
     PreprocessingBackend, Qos, Reliability, SensorDriverConfig, VelodyneConfig, VelodyneModel,
     VelodyneTimestampMode, XsensConfig, XsensTimestampMode, adaptive_execution::ExecutionPolicy,
 };
@@ -89,7 +89,7 @@ pub fn ast_to_config_with_user_usage(
 #[cfg(test)]
 mod tests {
     use super::ast_to_config;
-    use crate::{OusterTimestampMode, SensorDriverConfig};
+    use crate::{OdometryRate, OusterTimestampMode, SensorDriverConfig};
 
     #[test]
     fn default_sensor_driver_config_parses() {
@@ -106,6 +106,22 @@ mod tests {
                 ..Default::default()
             }
         );
+    }
+
+    #[test]
+    fn odometry_rate_defaults_to_lidar() {
+        let defaults = ratslang::compile_code(include_str!("../../default.rl")).unwrap();
+        let user = ratslang::compile_code("").unwrap();
+        let config = ast_to_config(defaults, user).unwrap();
+        assert_eq!(config.odometry_rate, OdometryRate::Lidar);
+    }
+
+    #[test]
+    fn imu_and_lidar_odometry_rate_parses() {
+        let defaults = ratslang::compile_code(include_str!("../../default.rl")).unwrap();
+        let user = ratslang::compile_code("output.odometry_rate = ImuAndLidar").unwrap();
+        let config = ast_to_config(defaults, user).unwrap();
+        assert_eq!(config.odometry_rate, OdometryRate::ImuAndLidar);
     }
 }
 
@@ -568,6 +584,7 @@ fn ast_to_config_inner(
         map_frame,
         logger_prefix,
         odom_qos,
+        odometry_rate,
         path_qos,
         imu_odom_qos,
         imu_path_qos,
@@ -585,6 +602,7 @@ fn ast_to_config_inner(
         _,
         _,
         _,
+        OdometryRate,
         _,
         _,
         _,
@@ -628,6 +646,13 @@ fn ast_to_config_inner(
         let map_frame = resolve_var!(output_ns, "global_frame", as String, Rhs::Val(Val::StringVal(s)) | Rhs::Path(s) => {s})?;
         let logger_prefix = resolve_var!(output_ns, "logger_prefix", as String, Rhs::Val(Val::StringVal(s)) | Rhs::Path(s) => {s})?;
         let odom_qos = resolve_var!(output_ns, "lio_odometry_msg_qos", as Qos, Rhs::Val(Val::StringVal(s)) => {reliablility_parse(&s)?})?;
+        let odometry_rate = resolve_var!(output_ns, "odometry_rate", as OdometryRate, Rhs::Val(Val::StringVal(s)) | Rhs::Path(s) => {
+            match s.to_lowercase().as_str() {
+                "lidar" => OdometryRate::Lidar,
+                "imuandlidar" | "imu_and_lidar" => OdometryRate::ImuAndLidar,
+                _ => return Err(anyhow!("invalid output.odometry_rate '{s}'; expected Lidar or ImuAndLidar")),
+            }
+        })?;
         let imu_filtered_topic = resolve_var!(output_ns, "imu_ahrs_filtered_topic", as String, Rhs::Val(Val::StringVal(s)) | Rhs::Path(s) => {s})?;
         let path_qos = resolve_var!(output_ns, "lio_path_msg_qos", as Qos, Rhs::Val(Val::StringVal(s)) => {reliablility_parse(&s)?})?;
         let imu_odom_qos = resolve_var!(output_ns, "imu_odometry_msg_qos", as Qos, Rhs::Val(Val::StringVal(s)) => {reliablility_parse(&s)?})?;
@@ -677,6 +702,7 @@ fn ast_to_config_inner(
             map_frame,
             logger_prefix,
             odom_qos,
+            odometry_rate,
             path_qos,
             imu_odom_qos,
             imu_path_qos,
@@ -864,6 +890,7 @@ fn ast_to_config_inner(
         show_tui,
         debug_fps,
         odom_qos,
+        odometry_rate,
         path_qos,
         imu_odom_qos,
         imu_path_qos,

@@ -367,6 +367,8 @@ pub struct PrelioNodeInputs<'a> {
     pub ready_for_next: Option<std::sync::mpsc::Receiver<()>>,
     pub filtered_imu_sender: Option<std::sync::mpsc::Sender<ImuMsg>>,
     pub imu_sync_mode: prelio::ImuSyncMode,
+    pub realtime_imu_callback: Option<prelio::RealtimeImuCallback>,
+    pub realtime_lidar_barrier_callback: Option<prelio::RealtimeLidarBarrierCallback>,
 }
 #[cfg(feature = "hiroz")]
 use zenoh_buffers::buffer::Buffer;
@@ -452,6 +454,8 @@ impl State {
         #[cfg(feature = "rerun")] rec: Option<Arc<rerun::RecordingStream>>,
         ready_for_next: Option<std::sync::mpsc::Receiver<()>>,
         imu_sync_mode: prelio::ImuSyncMode,
+        realtime_imu_callback: Option<prelio::RealtimeImuCallback>,
+        realtime_lidar_barrier_callback: Option<prelio::RealtimeLidarBarrierCallback>,
     ) -> anyhow::Result<Self> {
         Ok(State {
             #[cfg(feature = "rerun")]
@@ -469,6 +473,8 @@ impl State {
                 config.lidar_vendor,
                 ready_for_next,
                 imu_sync_mode,
+                realtime_imu_callback,
+                realtime_lidar_barrier_callback,
             )?)),
             lifis_params: config.clone(),
             #[cfg(any(
@@ -1186,6 +1192,8 @@ impl PrelioNode {
             rec.clone(),
             inputs.ready_for_next,
             inputs.imu_sync_mode,
+            inputs.realtime_imu_callback,
+            inputs.realtime_lidar_barrier_callback,
         )?;
 
         #[cfg(any(

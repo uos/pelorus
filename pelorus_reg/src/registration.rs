@@ -297,34 +297,7 @@ impl RegistrationState {
     }
 
     pub fn get_output_pose_covariance(&self, lidar_to_output: &Isometry3<f64>) -> [f64; 36] {
-        let r_wi = self.ekf.state.rot.matrix();
-        let r_il = self.ekf.state.offset_r_l_i.matrix();
-        let r_lo = lidar_to_output.rotation.to_rotation_matrix();
-        let t_lo = lidar_to_output.translation.vector;
-        let t_io = self.ekf.state.offset_t_l_i + r_il * t_lo;
-        let r_io = r_il * r_lo.matrix();
-
-        let mut jacobian = SMatrix::<f64, 6, 24>::zeros();
-        jacobian
-            .fixed_view_mut::<3, 3>(0, 0)
-            .copy_from(&Matrix3::identity());
-        jacobian
-            .fixed_view_mut::<3, 3>(0, 3)
-            .copy_from(&(-r_wi * skew_symmetric_na(&t_io)));
-        jacobian
-            .fixed_view_mut::<3, 3>(0, 6)
-            .copy_from(&(-r_wi * r_il * skew_symmetric_na(&t_lo)));
-        jacobian.fixed_view_mut::<3, 3>(0, 9).copy_from(&r_wi);
-        jacobian
-            .fixed_view_mut::<3, 3>(3, 3)
-            .copy_from(&r_io.transpose());
-        jacobian
-            .fixed_view_mut::<3, 3>(3, 6)
-            .copy_from(&r_lo.matrix().transpose());
-
-        let cov = SMatrix::<f64, 24, 24>::from_fn(|row, col| self.ekf.cov[(row, col)]);
-        let output_cov = jacobian * cov * jacobian.transpose();
-        matrix6_to_array(output_cov)
+        output_pose_covariance(&self.ekf, lidar_to_output)
     }
 
     pub fn get_twist_covariance_6x6(&self) -> [f64; 36] {
@@ -332,20 +305,54 @@ impl RegistrationState {
     }
 
     pub fn get_output_twist_covariance(&self, output_pose: &Isometry3<f64>) -> [f64; 36] {
-        let r_ow = output_pose.rotation.inverse().to_rotation_matrix();
-        let velocity_cov_world =
-            Matrix3::<f64>::from_fn(|row, col| self.ekf.cov[(row + 12, col + 12)]);
-        let velocity_cov_output = r_ow.matrix() * velocity_cov_world * r_ow.matrix().transpose();
-
-        let mut twist_cov = [0.0; 36];
-        for i in 0..3 {
-            for j in 0..3 {
-                twist_cov[i * 6 + j] = velocity_cov_output[(i, j)];
-                twist_cov[(i + 3) * 6 + (j + 3)] = 0.0001; // TODO
-            }
-        }
-        twist_cov
+        output_twist_covariance(&self.ekf, output_pose)
     }
+}
+
+pub(crate) fn output_pose_covariance(ekf: &Iekf, lidar_to_output: &Isometry3<f64>) -> [f64; 36] {
+    let r_wi = ekf.state.rot.matrix();
+    let r_il = ekf.state.offset_r_l_i.matrix();
+    let r_lo = lidar_to_output.rotation.to_rotation_matrix();
+    let t_lo = lidar_to_output.translation.vector;
+    let t_io = ekf.state.offset_t_l_i + r_il * t_lo;
+    let r_io = r_il * r_lo.matrix();
+
+    let mut jacobian = SMatrix::<f64, 6, 24>::zeros();
+    jacobian
+        .fixed_view_mut::<3, 3>(0, 0)
+        .copy_from(&Matrix3::identity());
+    jacobian
+        .fixed_view_mut::<3, 3>(0, 3)
+        .copy_from(&(-r_wi * skew_symmetric_na(&t_io)));
+    jacobian
+        .fixed_view_mut::<3, 3>(0, 6)
+        .copy_from(&(-r_wi * r_il * skew_symmetric_na(&t_lo)));
+    jacobian.fixed_view_mut::<3, 3>(0, 9).copy_from(&r_wi);
+    jacobian
+        .fixed_view_mut::<3, 3>(3, 3)
+        .copy_from(&r_io.transpose());
+    jacobian
+        .fixed_view_mut::<3, 3>(3, 6)
+        .copy_from(&r_lo.matrix().transpose());
+
+    let cov = SMatrix::<f64, 24, 24>::from_fn(|row, col| ekf.cov[(row, col)]);
+    let output_cov = jacobian * cov * jacobian.transpose();
+    matrix6_to_array(output_cov)
+}
+
+pub(crate) fn output_twist_covariance(ekf: &Iekf, output_pose: &Isometry3<f64>) -> [f64; 36] {
+    let r_ow = output_pose.rotation.inverse().to_rotation_matrix();
+    let velocity_cov_world = Matrix3::<f64>::from_fn(|row, col| ekf.cov[(row + 12, col + 12)]);
+    let velocity_cov_output = r_ow.matrix() * velocity_cov_world * r_ow.matrix().transpose();
+
+    let mut twist_cov = [0.0; 36];
+    for i in 0..3 {
+        for j in 0..3 {
+            twist_cov[i * 6 + j] = velocity_cov_output[(i, j)];
+            twist_cov[(i + 3) * 6 + (j + 3)] = 0.0001; // TODO
+        }
+    }
+    twist_cov
 }
 
 fn matrix6_to_array(matrix: SMatrix<f64, 6, 6>) -> [f64; 36] {
