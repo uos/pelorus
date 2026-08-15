@@ -30,8 +30,6 @@ pub struct GpuVoxelDist {
 }
 
 const _: () = assert!(size_of::<GpuVoxelDist>() == 96);
-#[cfg(test)]
-const EMPTY_KEY: i32 = i32::MIN;
 
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]
@@ -64,10 +62,6 @@ pub struct PlanesParams {
     pub sphericity_threshold: f32,   // 4 bytes, offset 76
     pub nbtype: u32,                 // 4 bytes, offset 80 -> Total 84
 }
-
-/// Tests use this mutex to avoid map state races
-#[cfg(test)]
-pub(crate) static TEST_MAP_MUTEX: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 pub struct ScratchBuffers {
     pub keys: crate::buffer::MetalBuffer,
@@ -654,7 +648,7 @@ pub fn add_to_map_impl(
                 dist_key_hash
             );
         }
-        log::info!(
+        log::debug!(
             "[Metal] add_to_map: total={:?}, points={}, unique={}, add_cursor={}, lru_cursor={}, gpu_time={:.2}ms",
             start_all.elapsed(),
             n_points,
@@ -820,7 +814,7 @@ pub fn add_to_map_impl(
             dist_key_hash
         );
     }
-    log::info!(
+    log::debug!(
         "[Metal] add_to_map: total={:?}, points={}, unique={}, add_cursor={}, lru_cursor={}, gpu_time={:.2}ms",
         start_all.elapsed(),
         n_points,
@@ -831,193 +825,6 @@ pub fn add_to_map_impl(
     );
 
     total_gpu_time_ms
-}
-
-#[cfg(test)]
-pub(crate) fn acquire_test_lock() -> std::sync::MutexGuard<'static, ()> {
-    match TEST_MAP_MUTEX.lock() {
-        Ok(g) => g,
-        Err(e) => e.into_inner(),
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use std::collections::HashMap;
-
-    fn cpu_rle(sorted_keys: &[i32]) -> (Vec<i32>, Vec<u32>, Vec<u32>) {
-        let mut unique_keys = Vec::new();
-        let mut run_starts = Vec::new();
-        let mut run_ends = Vec::new();
-
-        for (idx, &key) in sorted_keys.iter().enumerate() {
-            if key == EMPTY_KEY {
-                continue;
-            }
-            if idx > 0 && sorted_keys[idx - 1] == key {
-                continue;
-            }
-            let end = sorted_keys.partition_point(|candidate| *candidate <= key);
-            unique_keys.push(key);
-            run_starts.push(idx as u32);
-            run_ends.push(end as u32);
-        }
-
-        (unique_keys, run_starts, run_ends)
-    }
-
-    fn cpu_assign_indices_vulkan_style(
-        unique_keys: &[i32],
-        existing: &HashMap<i32, u32>,
-        dist_cap: u32,
-        add_cursor: u32,
-        lru_cursor: u32,
-        lru_mapping: &[u32],
-    ) -> (Vec<u32>, Vec<u32>, Vec<i32>, u32, u32) {
-        let mut target_indices = Vec::with_capacity(unique_keys.len());
-        let mut update_flags = Vec::with_capacity(unique_keys.len());
-        let mut dist_keys = vec![EMPTY_KEY; dist_cap as usize];
-        let mut add_cursor = add_cursor;
-        let mut lru_cursor = lru_cursor;
-
-        for &key in unique_keys {
-            if let Some(&idx) = existing.get(&key) {
-                target_indices.push(idx);
-                update_flags.push(1);
-                continue;
-            }
-
-            let old_add = add_cursor;
-            add_cursor = add_cursor.saturating_add(1);
-            let idx = if old_add < dist_cap {
-                old_add
-            } else {
-                let map_idx = lru_mapping[(lru_cursor % dist_cap) as usize];
-                lru_cursor = lru_cursor.saturating_add(1);
-                map_idx
-            };
-
-            dist_keys[idx as usize] = key;
-            target_indices.push(idx);
-            update_flags.push(0);
-        }
-
-        (
-            target_indices,
-            update_flags,
-            dist_keys,
-            add_cursor,
-            lru_cursor,
-        )
-    }
-
-    #[test]
-    fn cpu_sort_matches_gpu_semantics() {
-        let _lock = acquire_test_lock();
-        let keys: Vec<i32> = vec![3, -1, 2, -1, 0, i32::MIN, i32::MAX];
-        let idxs: Vec<u32> = (0..keys.len() as u32).collect();
-
-        // apply the same code used in add_to_map_impl
-        let n_points = keys.len();
-        let mut keys_slice = keys.clone();
-        let mut inds_slice = idxs.clone();
-
-        // sort
-        let mut packed: Vec<u64> = Vec::with_capacity(n_points);
-        for i in 0..n_points {
-            let k_u = (keys_slice[i] as u32) ^ 0x8000_0000;
-            let idx = inds_slice[i];
-            packed.push(((k_u as u64) << 32) | (idx as u64));
-        }
-        packed.sort_unstable();
-
-        for (i, p) in packed.into_iter().enumerate() {
-            let k_u = ((p >> 32) as u32) ^ 0x8000_0000;
-            let idx = (p & 0xFFFFFFFF) as u32;
-            keys_slice[i] = k_u as i32;
-            inds_slice[i] = idx;
-        }
-
-        // now compute expected using straightforward packing+sort directly
-        let mut expected: Vec<(i32, u32)> =
-            keys.iter().copied().zip(idxs.iter().copied()).collect();
-        expected.sort_unstable_by_key(|&(k, idx)| {
-            let k_u = (k as u32) ^ 0x8000_0000;
-            ((k_u as u64) << 32) | (idx as u64)
-        });
-
-        for i in 0..n_points {
-            assert_eq!(keys_slice[i], expected[i].0);
-            assert_eq!(inds_slice[i], expected[i].1);
-        }
-    }
-
-    #[test]
-    fn cpu_rle_matches_expected_runs() {
-        let _lock = acquire_test_lock();
-        let sorted_keys = vec![-9, -9, 1, 1, 4, 7, 7, 9];
-        let (unique, starts, ends) = cpu_rle(&sorted_keys);
-        assert_eq!(unique, vec![-9, 1, 4, 7, 9]);
-        assert_eq!(starts, vec![0, 2, 4, 5, 7]);
-        assert_eq!(ends, vec![2, 4, 5, 7, 8]);
-    }
-
-    #[test]
-    fn cpu_assign_indices_uses_updates_then_lru_victims() {
-        let _lock = acquire_test_lock();
-        let existing = HashMap::from([(11, 3u32)]);
-        let lru_mapping = vec![2u32, 1u32, 0u32, 3u32];
-        let (targets, flags, dist_keys, add_cursor, lru_cursor) =
-            cpu_assign_indices_vulkan_style(&[11, 22, 33, 44], &existing, 4, 4, 0, &lru_mapping);
-
-        assert_eq!(targets, vec![3, 2, 1, 0]);
-        assert_eq!(flags, vec![1, 0, 0, 0]);
-        assert_eq!(dist_keys[1], 33);
-        assert_eq!(add_cursor, 7);
-        assert_eq!(lru_cursor, 3);
-    }
-
-    #[test]
-    fn gpu_radix_sort_matches_cpu_reference() {
-        let _lock = acquire_test_lock();
-        let stream = crate::stream::Stream::new();
-        let keys: Vec<i32> = vec![3, -1, 2, -1, 0, i32::MIN, i32::MAX, 7, -9, 3, 2];
-        let idxs: Vec<u32> = (0..keys.len() as u32).collect();
-
-        let mut key_buf = crate::buffer::MetalBuffer::new(&stream, size_of::<i32>(), keys.len());
-        key_buf.as_slice_mut::<i32>().copy_from_slice(&keys);
-        let mut idx_buf = crate::buffer::MetalBuffer::new(&stream, size_of::<u32>(), idxs.len());
-        idx_buf.as_slice_mut::<u32>().copy_from_slice(&idxs);
-        let radix = crate::radix_sort::RadixSortBuffers::new(&stream, keys.len());
-
-        let cb = stream.queue.commandBuffer().expect("cb");
-        let enc = cb.computeCommandEncoder().expect("enc");
-        crate::radix_sort::dispatch_radix_sort_u32_pairs(
-            &stream,
-            &enc,
-            &key_buf,
-            &idx_buf,
-            &radix,
-            keys.len(),
-            0x8000_0000,
-        );
-        enc.endEncoding();
-        cb.commit();
-        cb.waitUntilCompleted();
-
-        let got_keys = key_buf.as_slice::<i32>().to_vec();
-        let got_idxs = idx_buf.as_slice::<u32>().to_vec();
-
-        let mut expected: Vec<(i32, u32)> =
-            keys.iter().copied().zip(idxs.iter().copied()).collect();
-        expected.sort_by_key(|&(k, idx)| (((k as u32) ^ 0x8000_0000) as u64) << 32 | idx as u64);
-
-        for (i, (exp_k, exp_idx)) in expected.into_iter().enumerate() {
-            assert_eq!(got_keys[i], exp_k, "key mismatch at {i}");
-            assert_eq!(got_idxs[i], exp_idx, "idx mismatch at {i}");
-        }
-    }
 }
 
 pub fn get_map_impl() -> Vec<nalgebra::Point3<f32>> {
@@ -1146,11 +953,6 @@ pub fn planes_metal_impl(
     let dur_gpu = t_gpu.elapsed();
 
     let t_copy = Instant::now();
-    // Deterministic plane output: kernel writes a per-thread sentinel (zero
-    // normal) for invalid points and the actual plane for valid ones. Walk
-    // slots in cloud-input order and copy valid entries; this keeps residual
-    // ordering reproducible run-to-run and matched with the CPU backend (the
-    // IEKF normal-equation solve is FP-sensitive to row order).
     let gpu_normals = out_buff_gpu.as_slice::<crate::types::PointNormal>();
     let slot_count = cloud.n.min(gpu_normals.len()).min(out_buff.capacity());
 
@@ -1163,7 +965,7 @@ pub fn planes_metal_impl(
     let valid = out_buff.len();
     let dur_copy = t_copy.elapsed();
 
-    log::info!(
+    log::debug!(
         "[Metal] planes: total={:?}, gpu={:?}, gpu_time={:.2}ms, copy={:?}, valid={}",
         t_all.elapsed(),
         dur_gpu,

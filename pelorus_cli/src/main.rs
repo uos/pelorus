@@ -184,25 +184,37 @@ use ros2_interfaces_jazzy_rkyv::{
 use std::io::IsTerminal;
 use std::io::Write;
 
+/// Publishes registered clouds on whichever encoding the session settled on.
+///
+/// Both publishers are created up front and one of them stays silent, because
+/// the encoding is not known when the publishers are built: under managed
+/// replay it is decided by the register handshake, which runs concurrently
+/// with this setup. Deferring publisher creation until after registration
+/// would deadlock — the consumer registers only once its own subscribers
+/// exist, and registration is what releases the bag.
 #[cfg(feature = "mt_pubsub")]
-enum MtCloudPublisher {
-    PointCloud2(mt_pubsub::Publisher<PointCloud2>),
+struct MtCloudPublisher {
+    plain: mt_pubsub::Publisher<PointCloud2>,
     #[cfg(feature = "compressed-pointcloud")]
-    Compressed(mt_pubsub::Publisher<prelio_io::CompressedPointCloud2>),
+    compressed: Option<mt_pubsub::Publisher<pelorus_protocol::CompressedPointCloud2>>,
+    /// Flipped by the register handshake, read once per frame.
+    #[cfg(feature = "compressed-pointcloud")]
+    use_compressed: Arc<AtomicBool>,
 }
 
 #[cfg(feature = "mt_pubsub")]
 impl MtCloudPublisher {
     async fn publish(&self, cloud: &PointCloud2) -> anyhow::Result<()> {
-        match self {
-            Self::PointCloud2(publisher) => publisher.publish(cloud).await,
-            #[cfg(feature = "compressed-pointcloud")]
-            Self::Compressed(publisher) => {
-                let cloud = impl_ros2_interfaces_jazzy_rkyv::to_pointcloud2_msg(cloud.clone());
-                let compressed = prelio_io::CompressedPointCloud2::compress(cloud)?;
-                publisher.publish(&compressed).await
-            }
+        #[cfg(feature = "compressed-pointcloud")]
+        if self.use_compressed.load(Ordering::Acquire) {
+            let publisher = self.compressed.as_ref().ok_or_else(|| {
+                anyhow!("compressed registered clouds were negotiated but no publisher exists")
+            })?;
+            let cloud = impl_ros2_interfaces_jazzy_rkyv::to_pointcloud2_msg(cloud.clone());
+            let compressed = prelio_io::compress_cloud(cloud)?;
+            return publisher.publish(&compressed).await;
         }
+        self.plain.publish(cloud).await
     }
 }
 
@@ -351,6 +363,11 @@ pub struct OfflineArgs {
     /// keeps the preprocessing side fed while the current scan is registering.
     #[arg(long, default_value_t = DEFAULT_OFFLINE_PREFETCH_SCANS)]
     pub prefetch_scans: usize,
+
+    /// Let Polarstern acknowledge each completed registered frame before the
+    /// next steady-state offline scan is released.
+    #[arg(long, default_value_t = false)]
+    pub polarstern: bool,
 }
 
 #[derive(Debug, Clone, Parser)]
@@ -1260,6 +1277,8 @@ fn lio(
         shutdown_flag,
         None,
         1,
+        ReplayTickOwner::Pelorus,
+        None,
         mt_pubsub_local_only,
         output_mcap,
     )
@@ -1315,6 +1334,27 @@ fn resolve_export_processing_time_path(export_processing_time: Option<String>) -
     }
 }
 
+/// Who releases the steady-state offline replay trigger.
+///
+/// Everything outside managed downstream replay uses [`ReplayTickOwner::Pelorus`],
+/// which is the unchanged standalone `pelorus offline` clock.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReplayTickOwner {
+    /// Pelorus advances Minot itself after every scan it consumes.
+    Pelorus,
+    /// A registered downstream consumer advances Minot after every frame
+    /// Pelorus publishes. Pelorus only advances for scans it consumes without
+    /// publishing an authoritative frame, plus the mid-frame input it needs to
+    /// close the current scan. Backpressure is structural: no trigger, no input.
+    Downstream,
+}
+
+impl ReplayTickOwner {
+    fn is_downstream(self) -> bool {
+        matches!(self, Self::Downstream)
+    }
+}
+
 #[cfg(any(
     feature = "mt_pubsub",
     feature = "ros2-client",
@@ -1348,21 +1388,30 @@ fn release_minot_ticks(
 
     #[cfg(feature = "rat")]
     if synchronous_mode {
-        static MINOT_MONO_START: std::sync::OnceLock<std::time::Instant> =
-            std::sync::OnceLock::new();
         for _ in 0..count {
-            let now_ns = MINOT_MONO_START
-                .get_or_init(std::time::Instant::now)
-                .elapsed()
-                .as_nanos() as f64;
-            let mut ts = rat::NetArray::from(nalgebra::DMatrix::<f64>::from_element(1, 1, now_ns));
-            rat::bacon("pelorus:sd_end", &mut ts, rat::VariableType::F64).unwrap();
+            // `tick_end` is the actual action in the generated offline Minot
+            // program. `pelorus:sd_end` has no matching rule there and can
+            // block forever after a long downstream pause, preventing this
+            // real replay action from ever being reached.
             let mut tick = String::new();
             rat::bacon("tick_end", &mut tick, rat::VariableType::StaticOnly).unwrap();
         }
     }
 }
 
+/// Settle a replay refill against triggers already pulled mid-frame.
+///
+/// Preprocessing releases its own Minot triggers when it needs more input to
+/// close a frame (see `ImuSyncMode::DemandDrivenReplay` below), each one
+/// recorded as debt. Those triggers already advanced the bag, so the next
+/// refill must ask for that many fewer scans or the bag runs ahead. Returns
+/// what still has to be requested after cancelling as much debt as `requested`
+/// covers. Leftover debt carries to later refills.
+///
+/// This is the [`ReplayTickOwner::Pelorus`] half of the accounting. Under
+/// downstream ownership the debt is handed to the consumer as
+/// `RegisteredFrameMarker::prepaid_replay_ticks`, since only
+/// the tick owner knows what it still owes.
 #[cfg(any(
     feature = "mt_pubsub",
     feature = "ros2-client",
@@ -1458,9 +1507,20 @@ fn lio_with_ready_signal(
     // Optional blocking shutdown signal for pipeline teardown mode.
     shutdown_request_rx: Option<std::sync::mpsc::Receiver<OfflineShutdownRequest>>,
     offline_prefetch_scans: usize,
+    replay_tick_owner: ReplayTickOwner,
+    // Fired once the downstream consumer has registered, so the offline runner
+    // can hold the bag until Polarstern's subscribers exist.
+    #[allow(unused_variables)] downstream_registered: Option<std::sync::mpsc::Sender<()>>,
     #[allow(unused_variables)] mt_pubsub_local_only: bool,
     output_mcap: Option<McapOutputConfig>,
 ) -> Result<(), Box<dyn CoreError>> {
+    let replay_tick_debt = Arc::new(AtomicUsize::new(0));
+    // Set from the register handshake before the bag is released, read by the
+    // cloud publisher on every frame. Under managed replay no frame can be
+    // published before registration, so the publisher never reads a stale
+    // value; without managed replay it is decided by configuration alone.
+    #[cfg(feature = "mt_pubsub")]
+    let publish_compressed_clouds = Arc::new(AtomicBool::new(false));
     let export_trajectory = resolve_export_trajectory_path(export_trajectory);
     if let Some(path) = export_trajectory.as_ref() {
         warn!("Trajectory export target: {}", path);
@@ -1509,6 +1569,120 @@ fn lio_with_ready_signal(
             })
             .map_err(|err| anyhow!("Failed to create mt_pubsub node: {err}"))?,
     );
+
+    // Handshake only: which consumer is attached and when the bag may start.
+    // Per-frame flow control lives in the consumer's replay trigger.
+    #[cfg(feature = "mt_pubsub")]
+    if replay_tick_owner.is_downstream() {
+        // What this build and configuration can offer. The consumer may not be
+        // able to decode it, in which case the gate downgrades to the baseline.
+        let preferred_cloud_encoding = match config.cloud_publisher_mode {
+            #[cfg(feature = "compressed-pointcloud")]
+            PointCloudMode::Compressed => pelorus_protocol::CloudEncoding::CompressedPointCloud2,
+            #[cfg(not(feature = "compressed-pointcloud"))]
+            PointCloudMode::Compressed => pelorus_protocol::CloudEncoding::BASELINE,
+            PointCloudMode::PointCloud2 => pelorus_protocol::CloudEncoding::PointCloud2,
+        };
+        let state = Arc::new(std::sync::Mutex::new(
+            pelorus_protocol::DownstreamGate::new(preferred_cloud_encoding),
+        ));
+        let service = rt
+            .as_ref()
+            .expect("rt always exists with mt_pubsub feat")
+            .block_on(mt_service::ServiceServer::<
+                pelorus_protocol::DownstreamRequest,
+                pelorus_protocol::DownstreamResponse,
+            >::new(
+                Arc::clone(&node),
+                pelorus_protocol::DOWNSTREAM_CONTROL_SERVICE.to_owned(),
+            ))?;
+        let ready_publisher = rt
+            .as_ref()
+            .expect("rt always exists with mt_pubsub feat")
+            .block_on(node.create_publisher::<pelorus_protocol::DownstreamReady>(
+                pelorus_protocol::DOWNSTREAM_READY_TOPIC.to_owned(),
+                mt_pubsub::Qos::Reliable,
+            ))?;
+        let callback_state = Arc::clone(&state);
+        let callback_shutdown = shutdown_flag.clone();
+        let callback_compressed = Arc::clone(&publish_compressed_clouds);
+        // Registering unlocks the bag exactly once. The offline runner holds
+        // Minot in `--sync` until then, so no frame can be produced before the
+        // consumer's subscribers exist.
+        let callback_registered = Arc::new(std::sync::Mutex::new(downstream_registered));
+        rt.as_ref()
+            .expect("rt always exists with mt_pubsub feat")
+            .spawn(mt_service::ServiceServer::start(
+                service,
+                Arc::new(move |request| {
+                    let state = Arc::clone(&callback_state);
+                    let shutdown = callback_shutdown.clone();
+                    let registered = Arc::clone(&callback_registered);
+                    let compressed = Arc::clone(&callback_compressed);
+                    async move {
+                        debug!("managed downstream request: {request:?}");
+                        let effect = state
+                            .lock()
+                            .map_err(|_| "Pelorus downstream control state is poisoned".to_owned())?
+                            .handle(request);
+                        debug!("managed downstream response: {:?}", effect.response);
+                        // Ordered before the replay unlock below so the very
+                        // first frame already goes out in the agreed encoding.
+                        if effect.response.accepted {
+                            compressed.store(
+                                effect.response.cloud_encoding
+                                    == pelorus_protocol::CloudEncoding::CompressedPointCloud2,
+                                Ordering::Release,
+                            );
+                        }
+                        if effect.unlock_replay {
+                            let sender = registered
+                                .lock()
+                                .map_err(|_| {
+                                    "Pelorus downstream registration channel is poisoned".to_owned()
+                                })?
+                                .take();
+                            if let Some(sender) = sender {
+                                sender.send(()).map_err(|_| {
+                                    "Pelorus offline runner stopped before replay was unlocked"
+                                        .to_owned()
+                                })?;
+                            }
+                        }
+                        if effect.request_shutdown {
+                            if let Some(shutdown) = shutdown.as_ref() {
+                                shutdown.store(true, Ordering::SeqCst);
+                            }
+                        }
+                        Ok(effect.response)
+                    }
+                }),
+            ));
+        let ready_state = Arc::clone(&state);
+        rt.as_ref()
+            .expect("rt always exists with mt_pubsub feat")
+            .spawn(async move {
+                let ready = pelorus_protocol::DownstreamReady {
+                    protocol_version: pelorus_protocol::PROTOCOL_VERSION,
+                    process_id: std::process::id(),
+                    control_service: pelorus_protocol::DOWNSTREAM_CONTROL_SERVICE.to_owned(),
+                };
+                let mut interval = tokio::time::interval(Duration::from_millis(100));
+                loop {
+                    interval.tick().await;
+                    if ready_state
+                        .lock()
+                        .map(|state| state.has_consumer())
+                        .unwrap_or(true)
+                    {
+                        break;
+                    }
+                    if let Err(error) = ready_publisher.publish(&ready).await {
+                        warn!("Failed to publish managed downstream readiness: {error}");
+                    }
+                }
+            });
+    }
 
     #[cfg(feature = "hiroz")]
     let node = {
@@ -1629,11 +1803,16 @@ fn lio_with_ready_signal(
 
     let (ready_for_next_tx, ready_for_next_rx) = std::sync::mpsc::channel();
     let minot_replay_mode = synchronous_mode && shutdown_request_rx.is_some();
-    let replay_tick_debt = Arc::new(AtomicUsize::new(0));
     let imu_sync_mode = if minot_replay_mode {
         let demand_tick_debt = Arc::clone(&replay_tick_debt);
         let demand_shutdown_flag = shutdown_flag.clone();
         ImuSyncMode::DemandDrivenReplay {
+            // Called when the current scan cannot be closed yet because the IMU
+            // buffer does not span it. The only way to get those samples is to
+            // advance the bag, so pull a trigger here and record the debt: the
+            // bag is now one scan ahead of the frame still being assembled.
+            // Whoever owns the replay clock settles it later, either against
+            // Pelorus's own refills or as prepaid ticks on the frame marker.
             request_next_scan: Box::new(move || {
                 if demand_shutdown_flag
                     .as_ref()
@@ -1687,7 +1866,7 @@ fn lio_with_ready_signal(
         .map(RealtimePredictorHandle::lidar_barrier_callback);
 
     #[allow(unused_mut)]
-    let (mut lifis_node, synced_rx) = PrelioNode::new(
+    let (mut prelio_node, synced_rx) = PrelioNode::new(
         #[cfg(any(feature = "ros2-client", feature = "r2r"))]
         &mut node,
         #[cfg(any(feature = "mt_pubsub", feature = "hiroz"))]
@@ -1718,11 +1897,11 @@ fn lio_with_ready_signal(
         feature = "xsens-driver",
         feature = "ouster-driver"
     ))]
-    lifis_node.start_native_drivers(&config.sensor_drivers, filtered_imu_tx.clone(), None)?;
-    let lifis_node = Arc::new(lifis_node);
+    prelio_node.start_native_drivers(&config.sensor_drivers, filtered_imu_tx.clone(), None)?;
+    let prelio_node = Arc::new(prelio_node);
     let drain_on_shutdown = Arc::new(AtomicBool::new(false));
     if let Some(stop_rx) = shutdown_request_rx {
-        let node_for_stop = Arc::clone(&lifis_node);
+        let node_for_stop = Arc::clone(&prelio_node);
         let drain_on_shutdown_for_stop = Arc::clone(&drain_on_shutdown);
         let shutdown_flag_for_stop = shutdown_flag.clone();
         std::thread::spawn(move || {
@@ -1859,29 +2038,56 @@ fn lio_with_ready_signal(
         .as_ref()
         .expect("rt always exists with mt_pubsub feat")
         .block_on(async {
-            match config.cloud_publisher_mode {
-                PointCloudMode::PointCloud2 => {
-                    Ok::<_, anyhow::Error>(MtCloudPublisher::PointCloud2(
-                        node.create_publisher::<PointCloud2>(
-                            "registered".to_owned(),
-                            mt_pubsub::Qos::Reliable,
-                        )
-                        .await?,
-                    ))
-                }
-                #[cfg(feature = "compressed-pointcloud")]
-                PointCloudMode::Compressed => Ok(MtCloudPublisher::Compressed(
-                    node.create_publisher::<prelio_io::CompressedPointCloud2>(
-                        "registered".to_owned(),
+            #[cfg(not(feature = "compressed-pointcloud"))]
+            if matches!(config.cloud_publisher_mode, PointCloudMode::Compressed) {
+                return Err(anyhow!(
+                    "Compressed point-cloud output requires the 'compressed-pointcloud' feature"
+                ));
+            }
+
+            // The baseline publisher always exists: it is what a consumer that
+            // cannot decode Cloudini gets downgraded to.
+            let plain = node
+                .create_publisher::<PointCloud2>(
+                    pelorus_protocol::REGISTERED_CLOUD_TOPIC.to_owned(),
+                    mt_pubsub::Qos::Reliable,
+                )
+                .await?;
+
+            #[cfg(feature = "compressed-pointcloud")]
+            let compressed = if matches!(config.cloud_publisher_mode, PointCloudMode::Compressed) {
+                // Its own topic, because a subscriber is typed and a
+                // compressed message on the plain topic would not decode.
+                Some(
+                    node.create_publisher::<pelorus_protocol::CompressedPointCloud2>(
+                        pelorus_protocol::compressed_cloud_topic(
+                            pelorus_protocol::REGISTERED_CLOUD_TOPIC,
+                        ),
                         mt_pubsub::Qos::Reliable,
                     )
                     .await?,
-                )),
-                #[cfg(not(feature = "compressed-pointcloud"))]
-                PointCloudMode::Compressed => Err(anyhow!(
-                    "Compressed point-cloud output requires the 'compressed-pointcloud' feature"
-                )),
+                )
+            } else {
+                None
+            };
+
+            // Without a handshake to defer to, configuration is the decision.
+            // Managed replay overwrites this from the register response before
+            // the bag is ever released.
+            if !replay_tick_owner.is_downstream() {
+                publish_compressed_clouds.store(
+                    matches!(config.cloud_publisher_mode, PointCloudMode::Compressed),
+                    Ordering::Release,
+                );
             }
+
+            Ok::<_, anyhow::Error>(MtCloudPublisher {
+                plain,
+                #[cfg(feature = "compressed-pointcloud")]
+                compressed,
+                #[cfg(feature = "compressed-pointcloud")]
+                use_compressed: Arc::clone(&publish_compressed_clouds),
+            })
         })?;
     #[cfg(feature = "hiroz")]
     let cloud_publisher = node
@@ -1900,6 +2106,17 @@ fn lio_with_ready_signal(
                 .await
                 .unwrap()
         });
+    #[cfg(feature = "mt_pubsub")]
+    let registered_frame_publisher = rt
+        .as_ref()
+        .expect("rt always exists with mt_pubsub feat")
+        .block_on(async {
+            node.create_publisher::<pelorus_protocol::RegisteredFrameMarker>(
+                pelorus_protocol::REGISTERED_FRAME_TOPIC.to_owned(),
+                mt_pubsub::Qos::Reliable,
+            )
+            .await
+        })?;
     #[cfg(feature = "hiroz")]
     let odom_publisher = node
         .create_pub::<Odometry>("odom")
@@ -2084,6 +2301,9 @@ fn lio_with_ready_signal(
     // Clone shutdown_flag for the processing thread; original is used for the spinner
     let processing_shutdown_flag = shutdown_flag.clone();
 
+    let processing_tick_debt = Arc::clone(&replay_tick_debt);
+    #[cfg(feature = "mt_pubsub")]
+    let marker_compressed_clouds = Arc::clone(&publish_compressed_clouds);
     let export_trajectory_for_worker = export_trajectory.clone();
     #[cfg(feature = "processing-time-export")]
     let export_processing_time_for_worker = export_processing_time.clone();
@@ -2097,7 +2317,9 @@ fn lio_with_ready_signal(
             )?),
             None => None,
         };
-        let gate_minot_replay_on_mcap = minot_replay_mode && mcap_writer.is_some();
+        let downstream_owns_replay = replay_tick_owner.is_downstream();
+        let gate_minot_replay_on_mcap =
+            minot_replay_mode && !downstream_owns_replay && mcap_writer.is_some();
         let relay_minot_replay_on_registration = minot_replay_mode && mcap_writer.is_none();
         let mut minot_prefill_requested = false;
         // Initialize Prelio prediction
@@ -2129,30 +2351,51 @@ fn lio_with_ready_signal(
                     {
                         continue;
                     }
-                    let desired_request_count = if requested_prefill {
-                        1
-                    } else {
-                        requested_prefill = true;
-                        prefetch_scans
-                    };
-                    let request_count =
-                        request_count_after_replay_debt(&relay_tick_debt, desired_request_count);
-                    if request_count > 0 {
-                        release_minot_ticks(
-                            relay_shutdown_flag.as_ref(),
-                            synchronous_mode,
-                            request_count,
+                    // Under downstream ownership the consumer's own trigger
+                    // pulls the next scan. This relay still releases Prelio's
+                    // registration barrier, but must not advance bag input.
+                    if !downstream_owns_replay {
+                        let desired_request_count = if requested_prefill {
+                            1
+                        } else {
+                            requested_prefill = true;
+                            prefetch_scans
+                        };
+                        let request_count = request_count_after_replay_debt(
+                            &relay_tick_debt,
+                            desired_request_count,
                         );
+                        if request_count > 0 {
+                            release_minot_ticks(
+                                relay_shutdown_flag.as_ref(),
+                                synchronous_mode,
+                                request_count,
+                            );
+                        }
                     }
                 }
             }));
         }
+        // A scan consumed without publishing an authoritative frame still owes
+        // Minot exactly one trigger: the downstream consumer only pays for
+        // frames it actually receives. Prelio's mid-frame demand may already
+        // have advanced the bag, so repay that debt before asking for more.
+        let release_unpublished_scan_tick = || {
+            let request_count = request_count_after_replay_debt(&processing_tick_debt, 1);
+            if request_count > 0 {
+                release_minot_ticks(
+                    processing_shutdown_flag.as_ref(),
+                    synchronous_mode,
+                    request_count,
+                );
+            }
+        };
         if let Some(ready) = ready_for_next_tx.as_ref() {
             if let Err(e) = ready.send(()) {
                 error!("failed to send initial prelio ready signal: {e}");
             }
         }
-        let mut lifis_node = Some(lifis_node);
+        let mut prelio_node = Some(prelio_node);
 
         let active_backend = ActiveBackend::detect(&config);
         log_active_backend(&config, &active_backend);
@@ -2278,7 +2521,7 @@ fn lio_with_ready_signal(
         // on recv() as before.
         let mut draining_after_end_of_bag = false;
         loop {
-            let lifis_tick = match processing_shutdown_flag.as_ref() {
+            let prelio_tick = match processing_shutdown_flag.as_ref() {
                 Some(flag) => {
                     let shutdown_requested = flag.load(std::sync::atomic::Ordering::Relaxed);
                     let drain_requested =
@@ -2295,13 +2538,13 @@ fn lio_with_ready_signal(
                                 Ok(t) => t,
                                 Err(std::sync::mpsc::RecvTimeoutError::Timeout)
                                 | Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
-                                    if let Some(ref lifis_node) = lifis_node {
-                                        lifis_node.request_shutdown();
+                                    if let Some(ref prelio_node) = prelio_node {
+                                        prelio_node.request_shutdown();
                                     }
                                     // Drop sync gate and node ownership so all producer chains can close.
                                     drop(registration_ready_tx.take());
                                     drop(ready_for_next_tx.take());
-                                    drop(lifis_node.take());
+                                    drop(prelio_node.take());
                                     info!(
                                         "Shutdown requested after end-of-bag hint, queue drained, exiting processing loop"
                                     );
@@ -2309,13 +2552,13 @@ fn lio_with_ready_signal(
                                 }
                             }
                         } else {
-                            if let Some(ref lifis_node) = lifis_node {
-                                lifis_node.request_shutdown();
+                            if let Some(ref prelio_node) = prelio_node {
+                                prelio_node.request_shutdown();
                             }
                             // Drop sync gate and node ownership so all producer chains can close.
                             drop(registration_ready_tx.take());
                             drop(ready_for_next_tx.take());
-                            drop(lifis_node.take());
+                            drop(prelio_node.take());
                             info!("Shutdown requested, exiting processing loop");
                             break;
                         }
@@ -2339,21 +2582,21 @@ fn lio_with_ready_signal(
             #[cfg(feature = "processing-time-export")]
             let processing_started = processing_time_file
                 .as_ref()
-                .map(|_| lifis_tick.received_at);
+                .map(|_| prelio_tick.received_at);
             // Record scan arrival for measuring actual sensor rate
             if let Some(ref stats) = shared_stats {
                 let stamp_sec = {
-                    let s = timestamp_to_secs(&lifis_tick.cloud_header.stamp);
+                    let s = timestamp_to_secs(&prelio_tick.cloud_header.stamp);
                     if s > 0.0 {
                         s
                     } else {
-                        timestamp_to_secs(&lifis_tick.odom_time)
+                        timestamp_to_secs(&prelio_tick.odom_time)
                     }
                 };
                 stats.record_scan_timestamp(stamp_sec);
             }
 
-            eval.merge(&lifis_tick.runtime_eval);
+            eval.merge(&prelio_tick.runtime_eval);
             drain_filtered_imu_mcap(&mut mcap_writer, &mut filtered_imu_rx)?;
 
             match &active_backend {
@@ -2370,25 +2613,26 @@ fn lio_with_ready_signal(
                     // Uploads and kernels are enqueued on the same stream, so ping-pong slots
                     // can be reused without forcing a host sync here.
                     let cuda_cloud = &mut cuda_cloud_bufs[current_slot];
-                    cuda_cloud.realloc_if_needed_cuda(stream, lifis_tick.deskewed_cloud.len());
-                    cuda_cloud.upload_from_slice_cuda(stream, lifis_tick.deskewed_cloud.as_slice());
+                    cuda_cloud.realloc_if_needed_cuda(stream, prelio_tick.deskewed_cloud.len());
+                    cuda_cloud
+                        .upload_from_slice_cuda(stream, prelio_tick.deskewed_cloud.as_slice());
                 }
                 #[cfg(feature = "metal")]
                 ActiveBackend::Metal(stream) => {
                     // Metal uses shared memory; sync before overwriting to avoid races.
                     stream.sync();
                     persistent_cloud_buf
-                        .realloc_if_needed_metal(stream, lifis_tick.deskewed_cloud.len());
+                        .realloc_if_needed_metal(stream, prelio_tick.deskewed_cloud.len());
                     persistent_cloud_buf
-                        .upload_from_slice_metal(stream, lifis_tick.deskewed_cloud.as_slice());
+                        .upload_from_slice_metal(stream, prelio_tick.deskewed_cloud.as_slice());
                 }
                 #[cfg(feature = "vulkan")]
                 ActiveBackend::Vulkan(stream) => {
                     stream.sync();
                     persistent_cloud_buf
-                        .realloc_if_needed_vulkan(stream, lifis_tick.deskewed_cloud.len());
+                        .realloc_if_needed_vulkan(stream, prelio_tick.deskewed_cloud.len());
                     persistent_cloud_buf
-                        .upload_from_slice_vulkan(stream, lifis_tick.deskewed_cloud.as_slice());
+                        .upload_from_slice_vulkan(stream, prelio_tick.deskewed_cloud.as_slice());
                 }
             }
 
@@ -2397,7 +2641,7 @@ fn lio_with_ready_signal(
             let cloud_for_reg: &LocatedBufferView<pelorus_core::PointXYZIT> = match &active_backend
             {
                 ActiveBackend::Cpu => {
-                    ram_cloud = LocatedBufferView::Ram(lifis_tick.deskewed_cloud);
+                    ram_cloud = LocatedBufferView::Ram(prelio_tick.deskewed_cloud);
                     &ram_cloud
                 }
                 #[cfg(feature = "cuda")]
@@ -2412,11 +2656,11 @@ fn lio_with_ready_signal(
                 _ => &persistent_cloud_buf,
             };
 
-            let cloud_out = lifis_tick.deskewed_cloud_passthrough;
+            let cloud_out = prelio_tick.deskewed_cloud_passthrough;
 
-            let orig_frame = lifis_tick.cloud_header.frame_id.clone();
-            let orig_time = lifis_tick.cloud_header.stamp;
-            let current_cloud_time = timestamp_to_secs(&lifis_tick.odom_time);
+            let orig_frame = prelio_tick.cloud_header.frame_id.clone();
+            let orig_time = prelio_tick.cloud_header.stamp;
+            let current_cloud_time = timestamp_to_secs(&prelio_tick.odom_time);
             if let Some(existing_last_scan_time) = last_scan_time {
                 if current_cloud_time < existing_last_scan_time {
                     let mut map = map.lock().unwrap();
@@ -2460,26 +2704,26 @@ fn lio_with_ready_signal(
 
             last_scan_time = Some(timestamp_to_secs(&orig_time));
 
-            // use the last difference if there is no odom from lifis
-            let init_guess_lidar = if lifis_tick.imu_odom.pose.pose.position.x == 0.0
-                && lifis_tick.imu_odom.pose.pose.position.y == 0.0
-                && lifis_tick.imu_odom.pose.pose.position.z == 0.0
+            // use the last difference if there is no odom from prelio
+            let init_guess_lidar = if prelio_tick.imu_odom.pose.pose.position.x == 0.0
+                && prelio_tick.imu_odom.pose.pose.position.y == 0.0
+                && prelio_tick.imu_odom.pose.pose.position.z == 0.0
             {
-                // lifis did not return a orientation (for example when not using IMU at all), use the last difference as guess
-                if lifis_tick.imu_odom.pose.pose.orientation.w == 1.0
-                    && lifis_tick.imu_odom.pose.pose.orientation.x == 0.0
-                    && lifis_tick.imu_odom.pose.pose.orientation.y == 0.0
-                    && lifis_tick.imu_odom.pose.pose.orientation.z == 0.0
+                // prelio did not return a orientation (for example when not using IMU at all), use the last difference as guess
+                if prelio_tick.imu_odom.pose.pose.orientation.w == 1.0
+                    && prelio_tick.imu_odom.pose.pose.orientation.x == 0.0
+                    && prelio_tick.imu_odom.pose.pose.orientation.y == 0.0
+                    && prelio_tick.imu_odom.pose.pose.orientation.z == 0.0
                 {
                     t_world * t_last_current
                 } else {
-                    // there is an orientation calculated by lifis for undeskewing the cloud, so we can use that
+                    // there is an orientation calculated by prelio for undeskewing the cloud, so we can use that
                     let initial_guess_rotation =
                         nalgebra::UnitQuaternion::from_quaternion(nalgebra::Quaternion::new(
-                            lifis_tick.imu_odom.pose.pose.orientation.w,
-                            lifis_tick.imu_odom.pose.pose.orientation.x,
-                            lifis_tick.imu_odom.pose.pose.orientation.y,
-                            lifis_tick.imu_odom.pose.pose.orientation.z,
+                            prelio_tick.imu_odom.pose.pose.orientation.w,
+                            prelio_tick.imu_odom.pose.pose.orientation.x,
+                            prelio_tick.imu_odom.pose.pose.orientation.y,
+                            prelio_tick.imu_odom.pose.pose.orientation.z,
                         ));
                     let initial_guess_lidar_local = nalgebra::Isometry3::from_parts(
                         t_last_current.translation,
@@ -2489,20 +2733,20 @@ fn lio_with_ready_signal(
                 }
             } else {
                 let initial_guess_translation = Translation3::new(
-                    lifis_tick.imu_odom.pose.pose.position.x,
-                    lifis_tick.imu_odom.pose.pose.position.y,
-                    lifis_tick.imu_odom.pose.pose.position.z,
+                    prelio_tick.imu_odom.pose.pose.position.x,
+                    prelio_tick.imu_odom.pose.pose.position.y,
+                    prelio_tick.imu_odom.pose.pose.position.z,
                 );
 
                 let initial_guess_rotation =
                     nalgebra::UnitQuaternion::from_quaternion(nalgebra::Quaternion::new(
-                        lifis_tick.imu_odom.pose.pose.orientation.w,
-                        lifis_tick.imu_odom.pose.pose.orientation.x,
-                        lifis_tick.imu_odom.pose.pose.orientation.y,
-                        lifis_tick.imu_odom.pose.pose.orientation.z,
+                        prelio_tick.imu_odom.pose.pose.orientation.w,
+                        prelio_tick.imu_odom.pose.pose.orientation.x,
+                        prelio_tick.imu_odom.pose.pose.orientation.y,
+                        prelio_tick.imu_odom.pose.pose.orientation.z,
                     ));
 
-                // init_guess from lifis is IMU pose T_W_I. Convert to LiDAR pose T_W_L.
+                // init_guess from prelio is IMU pose T_W_I. Convert to LiDAR pose T_W_L.
                 nalgebra::Isometry3::from_parts(initial_guess_translation, initial_guess_rotation)
                     * ext
             };
@@ -2517,11 +2761,11 @@ fn lio_with_ready_signal(
                     ready_for_next_tx.as_ref()
                 };
                 match map.register_and_map(
-                    lifis_tick.map_only,
+                    prelio_tick.map_only,
                     init_guess_lidar,
                     cloud_for_reg,
                     current_cloud_time,
-                    lifis_tick.scan_id as usize,
+                    prelio_tick.scan_id as usize,
                     ready_for_registration,
                     &mut eval,
                     &active_backend,
@@ -2536,22 +2780,31 @@ fn lio_with_ready_signal(
                 Ok(Some(result)) => result,
                 Ok(None) => {
                     drain_filtered_imu_mcap(&mut mcap_writer, &mut filtered_imu_rx)?;
-                    if gate_minot_replay_on_mcap {
+                    if gate_minot_replay_on_mcap || relay_minot_replay_on_registration {
                         if let Some(ready) = registration_ready_tx.as_ref() {
                             let _ = ready.send(());
                         }
-                    } else if !relay_minot_replay_on_registration && minot_replay_mode {
-                        let request_count = if minot_prefill_requested {
-                            1
+                        // The relay only advances Minot when Pelorus owns the
+                        // replay clock, so pay for this initialization scan here.
+                        if downstream_owns_replay {
+                            release_unpublished_scan_tick();
+                        }
+                    } else if minot_replay_mode {
+                        if downstream_owns_replay {
+                            release_unpublished_scan_tick();
                         } else {
-                            minot_prefill_requested = true;
-                            offline_prefetch_scans.max(1)
-                        };
-                        release_minot_ticks(
-                            processing_shutdown_flag.as_ref(),
-                            synchronous_mode,
-                            request_count,
-                        );
+                            let request_count = if minot_prefill_requested {
+                                1
+                            } else {
+                                minot_prefill_requested = true;
+                                offline_prefetch_scans.max(1)
+                            };
+                            release_minot_ticks(
+                                processing_shutdown_flag.as_ref(),
+                                synchronous_mode,
+                                request_count,
+                            );
+                        }
                     } else {
                         release_minot_tick(processing_shutdown_flag.as_ref(), synchronous_mode);
                     }
@@ -2565,7 +2818,7 @@ fn lio_with_ready_signal(
                             let _ = ready.send(());
                         }
                     } else {
-                        if minot_replay_mode && !lifis_tick.map_only {
+                        if minot_replay_mode && !prelio_tick.map_only {
                             if let Some(ready) = registration_ready_tx
                                 .as_ref()
                                 .or_else(|| ready_for_next_tx.as_ref())
@@ -2573,7 +2826,10 @@ fn lio_with_ready_signal(
                                 let _ = ready.send(());
                             }
                         }
-                        if !minot_replay_mode {
+                        if downstream_owns_replay {
+                            // The failed registration still consumed one scan.
+                            release_unpublished_scan_tick();
+                        } else if !minot_replay_mode {
                             release_minot_tick(processing_shutdown_flag.as_ref(), synchronous_mode);
                         }
                     }
@@ -2604,8 +2860,8 @@ fn lio_with_ready_signal(
 
             if !static_tf_published && config.base_link_frame.is_some() {
                 if config.base_to_lidar_tf_override {
-                    if let Some(ref lifis_node) = lifis_node {
-                        match lifis_node.tf_listener.lookup_transform(
+                    if let Some(ref prelio_node) = prelio_node {
+                        match prelio_node.tf_listener.lookup_transform(
                             &child_frame,
                             &orig_frame,
                             Time {
@@ -2658,8 +2914,8 @@ fn lio_with_ready_signal(
 
             let mut pelorus_odom = Odometry::default();
             pelorus_odom.header.stamp = Time {
-                sec: lifis_tick.odom_time.sec,
-                nanosec: lifis_tick.odom_time.nanosec,
+                sec: prelio_tick.odom_time.sec,
+                nanosec: prelio_tick.odom_time.nanosec,
             };
             pelorus_odom.header.frame_id = config.prelio_params.map_frame.clone();
             pelorus_odom.child_frame_id = child_frame.clone();
@@ -2720,7 +2976,7 @@ fn lio_with_ready_signal(
                 if let Some(predictor) = realtime_predictor.as_ref() {
                     let registration = pipeline.map();
                     let registration = registration.lock().unwrap();
-                    predictor.prepare_export(&registration, &lifis_tick.imu_buffer);
+                    predictor.prepare_export(&registration, &prelio_tick.imu_buffer);
                 }
             }
 
@@ -2943,8 +3199,8 @@ fn lio_with_ready_signal(
 
             cloud.header.frame_id = orig_frame.clone();
             cloud.header.stamp = Time {
-                sec: lifis_tick.odom_time.sec,
-                nanosec: lifis_tick.odom_time.nanosec,
+                sec: prelio_tick.odom_time.sec,
+                nanosec: prelio_tick.odom_time.nanosec,
             };
             #[cfg(feature = "processing-time-export")]
             if let (Some(processing_time_file), Some(processing_started)) =
@@ -3134,8 +3390,8 @@ fn lio_with_ready_signal(
                 header: Header {
                     frame_id: config.prelio_params.map_frame.clone(),
                     stamp: Time {
-                        sec: lifis_tick.odom_time.sec,
-                        nanosec: lifis_tick.odom_time.nanosec,
+                        sec: prelio_tick.odom_time.sec,
+                        nanosec: prelio_tick.odom_time.nanosec,
                     },
                 },
                 child_frame_id: child_frame,
@@ -3179,8 +3435,8 @@ fn lio_with_ready_signal(
                     header: Header {
                         frame_id: config.prelio_params.map_frame.clone(),
                         stamp: Time {
-                            sec: lifis_tick.odom_time.sec,
-                            nanosec: lifis_tick.odom_time.nanosec,
+                            sec: prelio_tick.odom_time.sec,
+                            nanosec: prelio_tick.odom_time.nanosec,
                         },
                     },
                     child_frame_id: pelorus_odom.child_frame_id.clone(),
@@ -3229,7 +3485,10 @@ fn lio_with_ready_signal(
                 if let Some(ready) = registration_ready_tx.as_ref() {
                     let _ = ready.send(());
                 }
-            } else if !relay_minot_replay_on_registration && minot_replay_mode {
+            } else if !relay_minot_replay_on_registration
+                && minot_replay_mode
+                && !downstream_owns_replay
+            {
                 let request_count = if minot_prefill_requested {
                     1
                 } else {
@@ -3327,6 +3586,23 @@ fn lio_with_ready_signal(
                 }
             }
 
+            // Triggers Prelio pulled mid-frame already advanced the bag past
+            // this scan. Hand that credit to the tick owner with the frame it
+            // belongs to instead of settling it inside Pelorus.
+            //
+            // `swap` and not `load`: the count must be handed over exactly
+            // once. It rides on this marker, and the next marker reports only
+            // what was pulled after this point — a consumer that deducted the
+            // same tick twice would stall the bag by permanently under-paying.
+            #[cfg(feature = "mt_pubsub")]
+            let prepaid_replay_ticks = if downstream_owns_replay {
+                processing_tick_debt.swap(0, Ordering::AcqRel) as u32
+            } else {
+                // Pelorus owns the clock, so the debt stays put and is netted
+                // out by `request_count_after_replay_debt` on the next refill.
+                0
+            };
+
             #[cfg(feature = "mt_pubsub")]
             rt.as_ref()
                 .expect("rt always exists with mt_pubsub feat")
@@ -3340,6 +3616,29 @@ fn lio_with_ready_signal(
                         .publish(&pelorus_odom)
                         .await
                         .expect("Failed to publish odom");
+
+                    let marker = pelorus_protocol::RegisteredFrameMarker {
+                        protocol_version: pelorus_protocol::PROTOCOL_VERSION,
+                        scan_id: prelio_tick.scan_id,
+                        timestamp_sec: pelorus_odom.header.stamp.sec,
+                        timestamp_nanosec: pelorus_odom.header.stamp.nanosec,
+                        // The negotiated encoding, not the configured one: a
+                        // consumer that could not decode Cloudini was
+                        // downgraded at registration, and the marker has to
+                        // describe the cloud that was actually published.
+                        cloud_encoding: if marker_compressed_clouds.load(Ordering::Acquire) {
+                            pelorus_protocol::CloudEncoding::CompressedPointCloud2
+                        } else {
+                            pelorus_protocol::CloudEncoding::PointCloud2
+                        },
+                        cloud_frame: cloud.header.frame_id.clone(),
+                        odometry_frame: pelorus_odom.header.frame_id.clone(),
+                        prepaid_replay_ticks,
+                    };
+                    registered_frame_publisher
+                        .publish(&marker)
+                        .await
+                        .expect("Failed to publish registered frame marker");
                 });
             #[cfg(not(feature = "mt_pubsub"))]
             {
@@ -3350,6 +3649,17 @@ fn lio_with_ready_signal(
                 odom_publisher
                     .publish(&pelorus_odom)
                     .expect("Failed to publish odom");
+            }
+
+            // Nothing is awaited here under downstream ownership: the consumer
+            // pulls the next scan by triggering Minot after it has processed
+            // this frame, so the absence of a trigger is the backpressure.
+            #[cfg(feature = "mt_pubsub")]
+            if downstream_owns_replay {
+                debug!(
+                    "published downstream frame {} ({prepaid_replay_ticks} prepaid replay ticks)",
+                    prelio_tick.scan_id
+                );
             }
 
             // Release the real-time barrier only after the authoritative
@@ -3572,7 +3882,7 @@ fn lio_with_ready_signal(
         if let Some(writer) = mcap_writer.take() {
             writer.finish()?;
         }
-        info!("--- END lifis tick ---");
+        info!("--- END prelio tick ---");
         Ok(())
     });
 
@@ -3716,6 +4026,8 @@ fn lio_with_ready_signal(
     _shutdown_flag: Option<Arc<AtomicBool>>,
     _shutdown_request_rx: Option<std::sync::mpsc::Receiver<OfflineShutdownRequest>>,
     _offline_prefetch_scans: usize,
+    _replay_tick_owner: ReplayTickOwner,
+    _downstream_registered: Option<std::sync::mpsc::Sender<()>>,
     _mt_pubsub_local_only: bool,
     _output_mcap: Option<McapOutputConfig>,
 ) -> Result<(), Box<dyn CoreError>> {
@@ -3763,19 +4075,34 @@ enum OfflineShutdownRequest {
 #[cfg(feature = "rat")]
 #[derive(Debug)]
 struct MinotProcessGuard {
-    pgid: u32,
+    pid: u32,
+    owns_process_group: bool,
 }
 
 #[cfg(feature = "rat")]
 impl MinotProcessGuard {
-    fn new(pgid: u32) -> Self {
+    fn new(pid: u32, owns_process_group: bool) -> Self {
         #[cfg(unix)]
-        ACTIVE_MINOT_PGID.store(pgid as i32, Ordering::SeqCst);
-        Self { pgid }
+        ACTIVE_MINOT_PGID.store(
+            if owns_process_group {
+                pid as i32
+            } else {
+                -(pid as i32)
+            },
+            Ordering::SeqCst,
+        );
+        Self {
+            pid,
+            owns_process_group,
+        }
     }
 
     fn kill(&self) -> std::io::Result<()> {
-        signal_process_group(self.pgid, libc::SIGKILL)
+        if self.owns_process_group {
+            signal_process_group(self.pid, libc::SIGKILL)
+        } else {
+            signal_process(self.pid, libc::SIGKILL)
+        }
     }
 }
 
@@ -3785,13 +4112,17 @@ impl Drop for MinotProcessGuard {
         if let Err(e) = self.kill() {
             warn!(
                 "Failed to kill Minot process group {} during cleanup: {}",
-                self.pgid, e
+                self.pid, e
             );
         }
         #[cfg(unix)]
         {
             let _ = ACTIVE_MINOT_PGID.compare_exchange(
-                self.pgid as i32,
+                if self.owns_process_group {
+                    self.pid as i32
+                } else {
+                    -(self.pid as i32)
+                },
                 0,
                 Ordering::SeqCst,
                 Ordering::SeqCst,
@@ -3861,6 +4192,20 @@ fn signal_process_group(pgid: u32, signal: libc::c_int) -> std::io::Result<()> {
     Err(err)
 }
 
+#[cfg(feature = "rat")]
+fn signal_process(pid: u32, signal: libc::c_int) -> std::io::Result<()> {
+    let rc = unsafe { libc::kill(pid as i32, signal) };
+    if rc == 0 {
+        return Ok(());
+    }
+    let error = std::io::Error::last_os_error();
+    if error.raw_os_error() == Some(libc::ESRCH) {
+        Ok(())
+    } else {
+        Err(error)
+    }
+}
+
 #[cfg(all(test, feature = "rat", target_os = "linux"))]
 mod minot_process_guard_tests {
     use std::io::{BufRead, BufReader};
@@ -3896,7 +4241,7 @@ mod minot_process_guard_tests {
         let mut leader = command
             .spawn()
             .expect("failed to spawn process-group leader");
-        let guard = MinotProcessGuard::new(leader.id());
+        let guard = MinotProcessGuard::new(leader.id(), true);
         let stdout = leader.stdout.take().expect("missing leader stdout");
         let mut child_pid = String::new();
         BufReader::new(stdout)
@@ -4570,6 +4915,8 @@ fn main() -> Result<(), Box<dyn CoreError>> {
                         Some(lio_shutdown_flag_for_thread),
                         None,
                         1,
+                        ReplayTickOwner::Pelorus,
+                        None,
                         lio_local_only,
                         lio_output_mcap,
                     )
@@ -4832,14 +5179,16 @@ pf! i 1
                 }
 
                 #[cfg(unix)]
-                unsafe {
-                    minot_command.pre_exec(|| {
-                        if libc::setpgid(0, 0) == 0 {
-                            Ok(())
-                        } else {
-                            Err(std::io::Error::last_os_error())
-                        }
-                    });
+                if !offline_args.polarstern {
+                    unsafe {
+                        minot_command.pre_exec(|| {
+                            if libc::setpgid(0, 0) == 0 {
+                                Ok(())
+                            } else {
+                                Err(std::io::Error::last_os_error())
+                            }
+                        });
+                    }
                 }
 
                 let mut minot_child = minot_command
@@ -4847,7 +5196,7 @@ pf! i 1
                     .map_err(|e| anyhow!("Failed to spawn minot: {}", e))?;
 
                 let minot_pid = minot_child.id();
-                let minot_guard = MinotProcessGuard::new(minot_pid);
+                let minot_guard = MinotProcessGuard::new(minot_pid, !offline_args.polarstern);
                 info!("Spawned minot process with PID: {}", minot_pid);
 
                 let mut minot_stdin = minot_child
@@ -5010,6 +5359,18 @@ pf! i 1
                 let shared_stats_for_lio = shared_stats.clone();
                 let runtime_tx_lio = runtime_tx.clone();
                 let offline_prefetch_scans = offline_args.prefetch_scans;
+                let replay_tick_owner = if offline_args.polarstern {
+                    ReplayTickOwner::Downstream
+                } else {
+                    ReplayTickOwner::Pelorus
+                };
+                let (downstream_registered_tx, downstream_registered_rx) =
+                    if replay_tick_owner.is_downstream() {
+                        let (tx, rx) = std::sync::mpsc::channel();
+                        (Some(tx), Some(rx))
+                    } else {
+                        (None, None)
+                    };
                 let output_mcap_config_for_run = output_mcap_config.clone();
                 let lio_local_only = offline_local_only;
 
@@ -5037,6 +5398,8 @@ pf! i 1
                             Some(lio_shutdown_flag_for_thread),
                             Some(lio_stop_rx),
                             offline_prefetch_scans,
+                            replay_tick_owner,
+                            downstream_registered_tx,
                             lio_local_only,
                             output_mcap_config_for_run,
                         )
@@ -5056,6 +5419,26 @@ pf! i 1
                     "Pelorus is ready after {:.3}s",
                     startup_started.elapsed().as_secs_f64()
                 );
+
+                // The downstream consumer owns the steady-state replay trigger,
+                // so the bag must not move before its subscribers exist. Holding
+                // Minot in `--sync` until registration removes the startup race
+                // instead of papering over it with a pipeline barrier. The LIO
+                // thread owns the sender, so its death releases this wait.
+                if let Some(registered) = downstream_registered_rx {
+                    info!("Waiting for the downstream consumer to register...");
+                    registered.recv().map_err(|_| {
+                        anyhow!(
+                            "Pelorus stopped before a downstream consumer registered on '{}'",
+                            pelorus_protocol::DOWNSTREAM_CONTROL_SERVICE
+                        )
+                    })?;
+                    info!(
+                        "Downstream consumer registered after {:.3}s",
+                        startup_started.elapsed().as_secs_f64()
+                    );
+                }
+
                 info!("Triggering minot to start processing...");
 
                 use std::io::Write;

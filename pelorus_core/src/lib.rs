@@ -514,7 +514,7 @@ pub enum KinematicModel {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct LifisParameters {
+pub struct PrelioParameters {
     pub imu: ImuConfigParameter,
     pub downsample: DownsampleParameters,
     pub passthrough_filter: PassthroughFilterParameters,
@@ -590,7 +590,7 @@ pub struct PassthroughFilterParameters {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct LifisNodeParameters {
+pub struct PrelioNodeParameters {
     pub wheel_src_topic: String,
     pub cloud_src_topic: String,
     pub imu_src_topic: String,
@@ -680,8 +680,8 @@ pub struct LioConfig {
     pub imu_params: ImuParameters,
     pub lidar_odom_cov: f64,
     pub enable_live_extrinsic_calibration: bool,
-    pub prelio_params: LifisParameters,
-    pub prelio_node_params: LifisNodeParameters,
+    pub prelio_params: PrelioParameters,
+    pub prelio_node_params: PrelioNodeParameters,
     pub neighbor_max_range: f64,
     pub ekf_max_iterations: usize,
     pub dist_update_sensitivity: f32,

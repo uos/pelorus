@@ -18,12 +18,11 @@ use nalgebra::*;
 use pelorus_core::log_debouncer::{set_default_debounce_secs, should_log_once_default};
 use pelorus_core::{
     ImuCalibrationParameters, ImuMsg, ImuPosePrediction, ImuPredictor, ImuPredictorUndistort,
-    LidarVendor, LifisParameters, LivoxMid360Point, LivoxMid360PointNoIntensity, LivoxPoint,
-    LivoxPointNoIntensity, LivoxPointOffsetTime, LivoxPointOffsetTimeNoIntensity, MadgwickSetting,
-    OdomMsg, OusterPoint, OusterPointNoIntensity, PointXYZ, PointXYZI, PointXYZIT,
-    PointXYZITimestamp, PointXYZIntensity, PrelioProcessedCloud, RobosensePoint,
-    RobosensePointNoIntensity, Twist, VelodynePoint, VelodynePointNoIntensity, time_msg_from_secs,
-    timing::RuntimeEvaluator,
+    LidarVendor, LivoxMid360Point, LivoxMid360PointNoIntensity, LivoxPoint, LivoxPointNoIntensity,
+    LivoxPointOffsetTime, LivoxPointOffsetTimeNoIntensity, MadgwickSetting, OdomMsg, OusterPoint,
+    OusterPointNoIntensity, PointXYZ, PointXYZI, PointXYZIT, PointXYZITimestamp, PointXYZIntensity,
+    PrelioParameters, PrelioProcessedCloud, RobosensePoint, RobosensePointNoIntensity, Twist,
+    VelodynePoint, VelodynePointNoIntensity, time_msg_from_secs, timing::RuntimeEvaluator,
 };
 
 #[cfg(any(feature = "cuda", feature = "metal", feature = "vulkan"))]
@@ -48,7 +47,11 @@ pub type RealtimeImuCallback = Arc<dyn Fn(ImuMsg) + Send + Sync>;
 pub type RealtimeLidarBarrierCallback = Arc<dyn Fn() + Send + Sync>;
 
 #[cfg(not(feature = "large-processing-queue"))]
-const PREPROC_QUEUE_CAP: usize = 4;
+// Keep bounded memory while leaving headroom above Pelorus's default four-scan
+// replay prefetch. A capacity equal to the prefetch window can deadlock when
+// Prelio needs the following scan's IMU to bracket the last queued cloud while
+// downstream processing is paused for a long loop closure.
+const PREPROC_QUEUE_CAP: usize = 8;
 #[cfg(feature = "large-processing-queue")]
 const PREPROC_QUEUE_CAP: usize = 1_024;
 
@@ -413,8 +416,8 @@ mod tests {
         }
     }
 
-    fn no_timestamp_params() -> LifisParameters {
-        let mut params = LifisParameters::default();
+    fn no_timestamp_params() -> PrelioParameters {
+        let mut params = PrelioParameters::default();
         params.lidar_vendor = LidarVendor::NoTimestamp;
         params.downsample.voxel_size = 0.01;
         params.downsample.point_skip = 1;
@@ -899,12 +902,12 @@ fn has_point_timestamps(lidar_vendor: LidarVendor) -> bool {
 }
 
 #[inline]
-fn passes_passthrough_filter(point: &PointXYZIT, lifis_params: &LifisParameters) -> bool {
+fn passes_passthrough_filter(point: &PointXYZIT, prelio_params: &PrelioParameters) -> bool {
     if !(point.x.is_finite() && point.y.is_finite() && point.z.is_finite()) {
         return false;
     }
 
-    let params = &lifis_params.passthrough_filter;
+    let params = &prelio_params.passthrough_filter;
     let p_t = params.filter_frame_transform * nalgebra::Point3::new(point.x, point.y, point.z);
 
     let dist = p_t.coords.norm_squared();
@@ -962,8 +965,8 @@ fn passes_passthrough_filter(point: &PointXYZIT, lifis_params: &LifisParameters)
 }
 
 #[inline]
-fn filter_point(mut point: PointXYZIT, lifis_params: &LifisParameters) -> Option<PointXYZIT> {
-    if !passes_passthrough_filter(&point, lifis_params) {
+fn filter_point(mut point: PointXYZIT, prelio_params: &PrelioParameters) -> Option<PointXYZIT> {
+    if !passes_passthrough_filter(&point, prelio_params) {
         return None;
     }
 
@@ -1298,19 +1301,25 @@ fn filter_downsample_with_fallback<
     PFallback: PointXYZITimestamp<N_FALLBACK>,
 >(
     cloud: &dyn PreprocessingPointCloud,
-    lifis_params: &LifisParameters,
+    prelio_params: &PrelioParameters,
     eval: &mut RuntimeEvaluator,
     buffers: &mut DownsampleBuffers,
     mode: ExecutionMode,
 ) -> Result<Option<DownsampleResult>> {
-    let result = filter_downsample::<N, P>(cloud, lifis_params, eval, buffers, mode);
+    let result = filter_downsample::<N, P>(cloud, prelio_params, eval, buffers, mode);
 
     match result {
         Ok(data) => Ok(data),
         Err(e) => {
             let error_str = format!("{:?}", e);
             if error_str.contains("Some fields") && (error_str.contains("intensity")) {
-                filter_downsample::<N_FALLBACK, PFallback>(cloud, lifis_params, eval, buffers, mode)
+                filter_downsample::<N_FALLBACK, PFallback>(
+                    cloud,
+                    prelio_params,
+                    eval,
+                    buffers,
+                    mode,
+                )
             } else {
                 Err(e)
             }
@@ -1320,18 +1329,18 @@ fn filter_downsample_with_fallback<
 
 fn filter_downsample_livox(
     cloud: &dyn PreprocessingPointCloud,
-    lifis_params: &LifisParameters,
+    prelio_params: &PrelioParameters,
     eval: &mut RuntimeEvaluator,
     buffers: &mut DownsampleBuffers,
     mode: ExecutionMode,
 ) -> Result<Option<DownsampleResult>> {
-    let result = filter_downsample::<5, LivoxPoint>(cloud, lifis_params, eval, buffers, mode);
+    let result = filter_downsample::<5, LivoxPoint>(cloud, prelio_params, eval, buffers, mode);
     match result {
         Ok(data) => Ok(data),
         Err(t_error) => {
             let offset_time_result = filter_downsample::<5, LivoxPointOffsetTime>(
                 cloud,
-                lifis_params,
+                prelio_params,
                 eval,
                 buffers,
                 mode,
@@ -1343,7 +1352,7 @@ fn filter_downsample_livox(
                     if error_str.contains("Some fields") && error_str.contains("intensity") {
                         filter_downsample::<4, LivoxPointOffsetTimeNoIntensity>(
                             cloud,
-                            lifis_params,
+                            prelio_params,
                             eval,
                             buffers,
                             mode,
@@ -1354,7 +1363,7 @@ fn filter_downsample_livox(
                         {
                             filter_downsample::<4, LivoxPointNoIntensity>(
                                 cloud,
-                                lifis_params,
+                                prelio_params,
                                 eval,
                                 buffers,
                                 mode,
@@ -1371,23 +1380,23 @@ fn filter_downsample_livox(
 
 fn filter_downsample<const N: usize, P: PointXYZITimestamp<N>>(
     cloud: &dyn PreprocessingPointCloud,
-    lifis_params: &LifisParameters,
+    prelio_params: &PrelioParameters,
     eval: &mut RuntimeEvaluator,
     buffers: &mut DownsampleBuffers,
     mode: ExecutionMode,
 ) -> Result<Option<DownsampleResult>> {
     let header = cloud.header();
-    let scan_reference_time = lidar_scan_reference_time(lifis_params.lidar_vendor, &header);
+    let scan_reference_time = lidar_scan_reference_time(prelio_params.lidar_vendor, &header);
     filter_downsample_inner::<N, P>(
         cloud,
-        lifis_params,
+        prelio_params,
         eval,
         buffers,
         true,
         |p| {
             internal_point_timestamp(
                 p.timestamp(),
-                lifis_params.lidar_vendor,
+                prelio_params.lidar_vendor,
                 scan_reference_time,
             )
             .map(|timestamp| PointXYZIT::from_p(p.xyz(), p.intensity(), timestamp as f32))
@@ -1398,14 +1407,14 @@ fn filter_downsample<const N: usize, P: PointXYZITimestamp<N>>(
 
 fn filter_downsample_without_timestamps<const N: usize, P: PointXYZIntensity<N>>(
     cloud: &dyn PreprocessingPointCloud,
-    lifis_params: &LifisParameters,
+    prelio_params: &PrelioParameters,
     eval: &mut RuntimeEvaluator,
     buffers: &mut DownsampleBuffers,
     mode: ExecutionMode,
 ) -> Result<Option<DownsampleResult>> {
     filter_downsample_inner::<N, P>(
         cloud,
-        lifis_params,
+        prelio_params,
         eval,
         buffers,
         false,
@@ -1421,13 +1430,13 @@ fn filter_downsample_without_timestamps_with_fallback<
     PFallback: PointXYZIntensity<N_FALLBACK>,
 >(
     cloud: &dyn PreprocessingPointCloud,
-    lifis_params: &LifisParameters,
+    prelio_params: &PrelioParameters,
     eval: &mut RuntimeEvaluator,
     buffers: &mut DownsampleBuffers,
     mode: ExecutionMode,
 ) -> Result<Option<DownsampleResult>> {
     let result =
-        filter_downsample_without_timestamps::<N, P>(cloud, lifis_params, eval, buffers, mode);
+        filter_downsample_without_timestamps::<N, P>(cloud, prelio_params, eval, buffers, mode);
 
     match result {
         Ok(data) => Ok(data),
@@ -1436,7 +1445,7 @@ fn filter_downsample_without_timestamps_with_fallback<
             if error_str.contains("Some fields") && error_str.contains("intensity") {
                 filter_downsample_without_timestamps::<N_FALLBACK, PFallback>(
                     cloud,
-                    lifis_params,
+                    prelio_params,
                     eval,
                     buffers,
                     mode,
@@ -1450,18 +1459,18 @@ fn filter_downsample_without_timestamps_with_fallback<
 
 fn filter_downsample_inner<const N: usize, P: PointConvertible<N> + Send + Sync>(
     cloud: &dyn PreprocessingPointCloud,
-    lifis_params: &LifisParameters,
+    prelio_params: &PrelioParameters,
     eval: &mut RuntimeEvaluator,
     buffers: &mut DownsampleBuffers,
     sort_by_timestamp: bool,
     map_to_non_trait: impl Fn(P) -> Option<PointXYZIT> + Send + Sync,
     mode: ExecutionMode,
 ) -> Result<Option<DownsampleResult>> {
-    let bypass_output_downsample = lifis_params.downsample.bypass_output_downsample;
+    let bypass_output_downsample = prelio_params.downsample.bypass_output_downsample;
     let header = cloud.header();
     let source = cloud.source();
-    let voxel_size = lifis_params.downsample.voxel_size;
-    let filter_map_point = |point| filter_point(point, lifis_params);
+    let voxel_size = prelio_params.downsample.voxel_size;
+    let filter_map_point = |point| filter_point(point, prelio_params);
 
     buffers.prepare(source.point_count());
     let mut downsampled: Vec<PointXYZIT> = Vec::with_capacity(source.point_count());
@@ -1470,7 +1479,7 @@ fn filter_downsample_inner<const N: usize, P: PointConvertible<N> + Send + Sync>
     let used_cpu_downsample;
 
     {
-        let point_skip = lifis_params.downsample.point_skip.max(1);
+        let point_skip = prelio_params.downsample.point_skip.max(1);
 
         eval.start("filter_downsample/bypass_filter_map")?;
         #[cfg(feature = "rayon")]
@@ -1496,7 +1505,7 @@ fn filter_downsample_inner<const N: usize, P: PointConvertible<N> + Send + Sync>
 
         #[cfg(any(feature = "cuda", feature = "metal", feature = "vulkan"))]
         let use_backend_preprocessing =
-            lifis_params.downsample.backend == PreprocessingBackend::Backend;
+            prelio_params.downsample.backend == PreprocessingBackend::Backend;
 
         #[cfg(feature = "cuda")]
         let gpu_downsample = use_backend_preprocessing
@@ -1803,7 +1812,7 @@ impl Prelio {
         gravity: f64,
         madgwick_filter: MadgwickSetting,
         imu_intrinsic_calibration_params: &ImuCalibrationParameters,
-        params: &LifisParameters,
+        params: &PrelioParameters,
         imu_pose_prediction_undistort: Option<Box<ImuPredictorUndistort>>,
         imu_pose_prediction_init_guess: Option<Box<ImuPredictor>>,
         lidar_vendor: LidarVendor,

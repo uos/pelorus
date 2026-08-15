@@ -12,10 +12,11 @@ use ratslang::{
 use crate::{
     CoordinateSystem, DownsampleParameters, ImuCalibrationParameters, ImuConfigParameter,
     ImuDriverConfig, ImuDriverType, ImuParameters, KinematicModel, LidarDriverConfig,
-    LidarDriverType, LidarVendor, LifisNodeParameters, LifisParameters, LioConfig, MadgwickSetting,
-    OdometryRate, OusterConfig, OusterTimestampMode, PassthroughFilterParameters, PointCloudMode,
-    PreprocessingBackend, Qos, Reliability, SensorDriverConfig, VelodyneConfig, VelodyneModel,
-    VelodyneTimestampMode, XsensConfig, XsensTimestampMode, adaptive_execution::ExecutionPolicy,
+    LidarDriverType, LidarVendor, LioConfig, MadgwickSetting, OdometryRate, OusterConfig,
+    OusterTimestampMode, PassthroughFilterParameters, PointCloudMode, PrelioNodeParameters,
+    PrelioParameters, PreprocessingBackend, Qos, Reliability, SensorDriverConfig, VelodyneConfig,
+    VelodyneModel, VelodyneTimestampMode, XsensConfig, XsensTimestampMode,
+    adaptive_execution::ExecutionPolicy,
 };
 
 /// Resolves an angle range (e.g., for FOV).
@@ -899,7 +900,7 @@ fn ast_to_config_inner(
         base_to_lidar,
         base_to_lidar_tf_override,
         cpu_only,
-        prelio_node_params: LifisNodeParameters {
+        prelio_node_params: PrelioNodeParameters {
             wheel_qos,
             wheel_src_topic,
             cloud_src_topic,
@@ -913,7 +914,7 @@ fn ast_to_config_inner(
             imu_filtered_topic,
             synchronous_mode: false,
         },
-        prelio_params: LifisParameters {
+        prelio_params: PrelioParameters {
             lidar_vendor,
             imu_lidar_tf_override: imu_node_params.3,
             map_frame,

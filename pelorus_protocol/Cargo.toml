@@ -1,0 +1,19 @@
+[package]
+name = "pelorus_protocol"
+description = "Types for Pelorus's downstream consumer interface."
+edition.workspace = true
+include.workspace = true
+keywords.workspace = true
+license.workspace = true
+repository.workspace = true
+version.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+# Wire types only. Adding Cloudini or ros_pointcloud2 here — even as optional
+# dependencies, which still take part in version resolution — imposes those
+# versions on every viewer that depends on this crate. Codec helpers belong in
+# the consumers, next to the Cloudini they already build with.
+rkyv.workspace = true
+serde.workspace = true

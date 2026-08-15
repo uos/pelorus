@@ -5,6 +5,7 @@ members = [
   "pelorus_metal",
   "pelorus_vulkan",
   "pelorus_cli",
+  "pelorus_protocol",
   "pelorus_c",
   "pelorus_c/deb-dev",
   "pelorus_py",
@@ -38,6 +39,7 @@ rust-version = "1.85"
 [workspace.dependencies]
 pelorus = { path = "pelorus", version = "0.0.6", default-features = false }
 pelorus_core = { path = "pelorus_core", version = "0.0.6" }
+pelorus_protocol = { path = "pelorus_protocol", version = "0.0.6" }
 pelorus_reg = { path = "pelorus_reg", version = "0.0.6", default-features = false }
 prelio = { path = "prelio", version = "0.0.6", default-features = false }
 prelio_io = { path = "prelio_io", version = "0.0.6", default-features = false }
@@ -57,6 +59,7 @@ ros_pointcloud2 = { version = "1.0.0-rc.4", features = [
 ] }
 ratslang = "0.4.1"
 mt_pubsub = "0.9.0"
+mt_service = "0.9.0"
 cloudini = { version = "0.3.2", default-features = false, features = ["ros"] }
 mt_rat = "0.9.0"
 imu-calib = "0.1" # TODO use noise calib
@@ -202,9 +205,12 @@ inherits = "release"
 opt-level = 3
 
 [patch.crates-io]
-transforms_io = { git = "ssh://git@git.steado.tech/transforms_io.git", tag = "v0.3.0-hiroz" }
-ros_pointcloud2 = { path = "../ros_pointcloud2/ros_pointcloud2" }
-mt_pubsub = { path = "../minot/mt_pubsub" }
-mt_rat = { path = "../minot/mt_rat" }
-# mt_pubsub = { git = "ssh://git@git.steado.tech/minot.git", tag = "v0.9.0-hiroz" }
-# mt_rat = { git = "ssh://git@git.steado.tech/minot.git", tag = "v0.9.0-hiroz" }
+# ros_pointcloud2 = { path = "../ros_pointcloud2/ros_pointcloud2" }
+# mt_pubsub = { path = "../minot/mt_pubsub" }
+# mt_service = { path = "../minot/mt_service" }
+# mt_rat = { path = "../minot/mt_rat" }
+transforms_io = { git = "ssh://git@git.steado.tech/transforms_io.git", branch = "main" }
+ros_pointcloud2 = { git = "ssh://git@git.steado.tech/ros_pointcloud2.git", branch = "main" }
+mt_pubsub = { git = "ssh://git@git.steado.tech/minot.git", branch = "hiroz" }
+mt_rat = { git = "ssh://git@git.steado.tech/minot.git", branch = "hiroz" }
+mt_service = { git = "ssh://git@git.steado.tech/minot.git", branch = "hiroz" }

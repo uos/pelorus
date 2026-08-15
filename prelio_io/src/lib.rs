@@ -32,8 +32,8 @@ use pelorus_core::{
     time_msg_from_secs,
 };
 use pelorus_core::{
-    ImuMsg, ImuPredictor, ImuPredictorUndistort, LidarVendor, LifisNodeParameters, LifisParameters,
-    PointXYZIT, timing::RuntimeEvaluator,
+    ImuMsg, ImuPredictor, ImuPredictorUndistort, LidarVendor, PointXYZIT, PrelioNodeParameters,
+    PrelioParameters, timing::RuntimeEvaluator,
 };
 #[cfg(any(
     feature = "velodyne-driver",
@@ -61,8 +61,6 @@ use anyhow::anyhow;
 ))]
 use prelio::timestamp_to_secs;
 
-#[cfg(feature = "compressed-pointcloud")]
-use cloudini::ros::{CompressExt, CompressionConfig};
 #[cfg(feature = "hiroz")]
 use hiroz::Builder;
 #[cfg(feature = "hiroz")]
@@ -104,153 +102,86 @@ struct ArchivedPointCloud {
 }
 
 /// Wire-compatible rkyv representation of Cloudini's ROS helper types.
+///
+/// These live in `pelorus_protocol` so producer and consumer share one
+/// definition.
 #[cfg(feature = "compressed-pointcloud")]
-#[derive(Clone, Debug, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
-pub struct CompressedTimeMsg {
-    pub sec: i32,
-    pub nanosec: u32,
-}
+pub use pelorus_protocol::{
+    CompressedHeaderMsg, CompressedPointCloud2, CompressedPointFieldMsg, CompressedTimeMsg,
+};
 
+/// Cloudini codec for the shared wire type.
 #[cfg(feature = "compressed-pointcloud")]
-#[derive(Clone, Debug, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
-pub struct CompressedHeaderMsg {
-    pub seq: u32,
-    pub stamp: CompressedTimeMsg,
-    pub frame_id: String,
-}
-
-#[cfg(feature = "compressed-pointcloud")]
-#[derive(Clone, Debug, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
-pub struct CompressedPointFieldMsg {
-    pub name: String,
-    pub offset: u32,
-    pub datatype: u8,
-    pub count: u32,
-}
-
-/// Cloudini's compressed ROS message represented with mt_pubsub-compatible rkyv fields.
-#[cfg(feature = "compressed-pointcloud")]
-#[derive(Clone, Debug, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
-pub struct CompressedPointCloud2 {
-    pub header: CompressedHeaderMsg,
-    pub height: u32,
-    pub width: u32,
-    pub fields: Vec<CompressedPointFieldMsg>,
-    pub is_bigendian: bool,
-    pub point_step: u32,
-    pub row_step: u32,
-    pub compressed_data: Vec<u8>,
-    pub is_dense: bool,
-    pub format: String,
-}
-
-#[cfg(feature = "compressed-pointcloud")]
-impl CompressedPointCloud2 {
-    pub fn compress(msg: ros_pointcloud2::PointCloud2Msg) -> cloudini::Result<Self> {
-        let msg = msg.compress(CompressionConfig::default())?;
-        Ok(Self {
-            header: CompressedHeaderMsg {
-                seq: msg.header.seq,
-                stamp: CompressedTimeMsg {
-                    sec: msg.header.stamp.sec,
-                    nanosec: msg.header.stamp.nanosec,
-                },
-                frame_id: msg.header.frame_id,
-            },
-            height: msg.height,
-            width: msg.width,
-            fields: msg
-                .fields
-                .into_iter()
-                .map(|field| CompressedPointFieldMsg {
-                    name: field.name.as_str().to_owned(),
-                    offset: field.offset,
-                    datatype: field.datatype,
-                    count: field.count,
-                })
-                .collect(),
-            is_bigendian: msg.is_bigendian,
-            point_step: msg.point_step,
-            row_step: msg.row_step,
-            compressed_data: msg.compressed_data,
-            is_dense: msg.is_dense,
-            format: msg.format,
-        })
-    }
-
-    pub fn decompress(self) -> cloudini::Result<ros_pointcloud2::PointCloud2Msg> {
-        cloudini::ros::CompressedPointCloud2 {
-            header: ros_pointcloud2::ros::HeaderMsg {
-                seq: self.header.seq,
-                stamp: ros_pointcloud2::ros::TimeMsg {
-                    sec: self.header.stamp.sec,
-                    nanosec: self.header.stamp.nanosec,
-                },
-                frame_id: self.header.frame_id,
-            },
-            height: self.height,
-            width: self.width,
-            fields: self
-                .fields
-                .into_iter()
-                .map(|field| ros_pointcloud2::ros::PointFieldMsg {
-                    name: field.name.into(),
-                    offset: field.offset,
-                    datatype: field.datatype,
-                    count: field.count,
-                })
-                .collect(),
-            is_bigendian: self.is_bigendian,
-            point_step: self.point_step,
-            row_step: self.row_step,
-            compressed_data: self.compressed_data,
-            is_dense: self.is_dense,
-            format: self.format,
-        }
-        .decompress()
-    }
-}
-
-#[cfg(all(test, feature = "compressed-pointcloud"))]
-mod cloudini_tests {
-    use super::CompressedPointCloud2;
+pub fn compress_cloud(
+    msg: ros_pointcloud2::PointCloud2Msg,
+) -> cloudini::Result<CompressedPointCloud2> {
     use cloudini::ros::{CompressExt, CompressionConfig};
-    use ros_pointcloud2::{PointCloud2Msg, points::PointXYZI};
 
-    #[test]
-    fn compressed_message_roundtrips() {
-        let points = vec![
-            PointXYZI::new(1.0, 2.0, 3.0, 4.0),
-            PointXYZI::new(-5.0, 6.0, 7.0, 8.0),
-        ];
-        let mut cloud = PointCloud2Msg::try_from_vec(points.clone()).unwrap();
-        cloud.header.frame_id = "lidar".to_owned();
-        cloud.header.stamp.sec = 42;
-        cloud.header.stamp.nanosec = 123;
+    // Cloudini's default 1 mm quantisation + ZSTD. TODO make configurable.
+    let msg = msg.compress(CompressionConfig::default())?;
+    Ok(CompressedPointCloud2 {
+        header: CompressedHeaderMsg {
+            seq: msg.header.seq,
+            stamp: CompressedTimeMsg {
+                sec: msg.header.stamp.sec,
+                nanosec: msg.header.stamp.nanosec,
+            },
+            frame_id: msg.header.frame_id,
+        },
+        height: msg.height,
+        width: msg.width,
+        fields: msg
+            .fields
+            .into_iter()
+            .map(|field| CompressedPointFieldMsg {
+                name: field.name.as_str().to_owned(),
+                offset: field.offset,
+                datatype: field.datatype,
+                count: field.count,
+            })
+            .collect(),
+        is_bigendian: msg.is_bigendian,
+        point_step: msg.point_step,
+        row_step: msg.row_step,
+        compressed_data: msg.compressed_data,
+        is_dense: msg.is_dense,
+        format: msg.format,
+    })
+}
 
-        let cloudini_message = cloud
-            .clone()
-            .compress(CompressionConfig::default())
-            .unwrap();
-        let compressed = CompressedPointCloud2::compress(cloud).unwrap();
-        assert_eq!(compressed.format, "cloudini/lossy/zstd");
-        let cloudini_bytes = rkyv::to_bytes::<rkyv::rancor::Error>(&cloudini_message).unwrap();
-        let transport_bytes = rkyv::to_bytes::<rkyv::rancor::Error>(&compressed).unwrap();
-        assert_eq!(cloudini_bytes.as_slice(), transport_bytes.as_slice());
-
-        let restored = compressed.decompress().unwrap();
-        assert_eq!(restored.header.frame_id, "lidar");
-        assert_eq!(restored.header.stamp.sec, 42);
-        assert_eq!(restored.header.stamp.nanosec, 123);
-
-        let restored_points: Vec<PointXYZI> = restored.try_into_iter().unwrap().collect();
-        for (expected, actual) in points.iter().zip(&restored_points) {
-            assert!((expected.x - actual.x).abs() <= 0.0005);
-            assert!((expected.y - actual.y).abs() <= 0.0005);
-            assert!((expected.z - actual.z).abs() <= 0.0005);
-            assert!((expected.intensity - actual.intensity).abs() <= 0.0005);
-        }
+#[cfg(feature = "compressed-pointcloud")]
+pub fn decompress_cloud(
+    cloud: CompressedPointCloud2,
+) -> cloudini::Result<ros_pointcloud2::PointCloud2Msg> {
+    cloudini::ros::CompressedPointCloud2 {
+        header: ros_pointcloud2::ros::HeaderMsg {
+            seq: cloud.header.seq,
+            stamp: ros_pointcloud2::ros::TimeMsg {
+                sec: cloud.header.stamp.sec,
+                nanosec: cloud.header.stamp.nanosec,
+            },
+            frame_id: cloud.header.frame_id,
+        },
+        height: cloud.height,
+        width: cloud.width,
+        fields: cloud
+            .fields
+            .into_iter()
+            .map(|field| ros_pointcloud2::ros::PointFieldMsg {
+                name: field.name.into(),
+                offset: field.offset,
+                datatype: field.datatype,
+                count: field.count,
+            })
+            .collect(),
+        is_bigendian: cloud.is_bigendian,
+        point_step: cloud.point_step,
+        row_step: cloud.row_step,
+        compressed_data: cloud.compressed_data,
+        is_dense: cloud.is_dense,
+        format: cloud.format,
     }
+    .decompress()
 }
 
 #[cfg(feature = "mt_pubsub")]
@@ -360,7 +291,7 @@ use std::sync::{Arc, Mutex};
 pub type ImuInitCallback = Arc<Mutex<dyn FnMut(&[ImuMsg]) + Send + Sync>>;
 
 pub struct PrelioNodeInputs<'a> {
-    pub node_params: &'a LifisNodeParameters,
+    pub node_params: &'a PrelioNodeParameters,
     pub imu_pose_predictor_init: Option<ImuInitCallback>,
     pub imu_pose_prediction_undistort: Option<Box<ImuPredictorUndistort>>,
     pub imu_pose_prediction_init_guess: Option<Box<ImuPredictor>>,
@@ -430,8 +361,8 @@ pub struct State {
     pub sensor_tf: Option<nalgebra::geometry::Isometry3<f32>>,
     pub imu_tf: Option<nalgebra::geometry::Isometry3<f64>>,
 
-    pub lifis: Arc<Mutex<prelio::Prelio>>,
-    pub lifis_params: LifisParameters,
+    pub prelio: Arc<Mutex<prelio::Prelio>>,
+    pub prelio_params: PrelioParameters,
     #[cfg(any(
         feature = "ros2-client",
         feature = "mt_pubsub",
@@ -448,7 +379,7 @@ pub struct State {
 
 impl State {
     pub fn new(
-        config: &LifisParameters,
+        config: &PrelioParameters,
         imu_pose_prediction_undistort: Option<Box<ImuPredictorUndistort>>,
         imu_pose_prediction_init_guess: Option<Box<ImuPredictor>>,
         #[cfg(feature = "rerun")] rec: Option<Arc<rerun::RecordingStream>>,
@@ -463,7 +394,7 @@ impl State {
             global_polygon: None,
             sensor_tf: None,
             imu_tf: None,
-            lifis: Arc::new(Mutex::new(prelio::Prelio::create(
+            prelio: Arc::new(Mutex::new(prelio::Prelio::create(
                 config.imu.gravity,
                 config.imu.madgwick_setting,
                 &config.imu.calibration,
@@ -476,7 +407,7 @@ impl State {
                 realtime_imu_callback,
                 realtime_lidar_barrier_callback,
             )?)),
-            lifis_params: config.clone(),
+            prelio_params: config.clone(),
             #[cfg(any(
                 feature = "ros2-client",
                 feature = "mt_pubsub",
@@ -540,8 +471,7 @@ fn cloud_callback(
         }
         #[cfg(feature = "compressed-pointcloud")]
         IncomingMtPointCloud::Compressed(message) => {
-            let msg = message
-                .decompress()
+            let msg = decompress_cloud(message)
                 .map_err(|error| anyhow!("Failed to decompress Cloudini point cloud: {error}"))?;
             let header = msg.header.clone();
             (header, Box::new(msg))
@@ -580,9 +510,9 @@ fn cloud_callback(
                 }
 
                 (
-                    state.lifis_params.imu_lidar_tf_override,
-                    state.lifis_params.global_zero_frame.clone(),
-                    state.lifis_params.map_frame.clone(),
+                    state.prelio_params.imu_lidar_tf_override,
+                    state.prelio_params.global_zero_frame.clone(),
+                    state.prelio_params.map_frame.clone(),
                     state.sensor_tf,
                 )
             };
@@ -683,10 +613,10 @@ fn cloud_callback(
 
                 (
                     state.global_polygon.clone(),
-                    state.lifis_params.passthrough_filter.invert_polygon,
-                    state.lifis_params.global_zero_frame.clone(),
-                    state.lifis_params.map_frame.clone(),
-                    state.lifis_params.clone(), // TODO overhead clone on every cloud but now params can not change anymore while runtime
+                    state.prelio_params.passthrough_filter.invert_polygon,
+                    state.prelio_params.global_zero_frame.clone(),
+                    state.prelio_params.map_frame.clone(),
+                    state.prelio_params.clone(), // TODO overhead clone on every cloud but now params can not change anymore while runtime
                 )
             };
 
@@ -736,7 +666,7 @@ fn cloud_callback(
 
         {
             let mut state = state.lock().unwrap();
-            state.lifis_params = params;
+            state.prelio_params = params;
         }
     };
 
@@ -749,9 +679,9 @@ fn cloud_callback(
     }
 
     {
-        let lifis = state.lock().unwrap().lifis.clone();
-        let mut lifis = lifis.lock().unwrap();
-        lifis.add_pointcloud_source(in_msg, callback_started);
+        let prelio = state.lock().unwrap().prelio.clone();
+        let mut prelio = prelio.lock().unwrap();
+        prelio.add_pointcloud_source(in_msg, callback_started);
     }
 
     Ok(())
@@ -920,7 +850,7 @@ impl SensorIngress for NativeIngress {
         self.state
             .lock()
             .unwrap()
-            .lifis
+            .prelio
             .lock()
             .unwrap()
             .add_pointcloud(cloud);
@@ -946,7 +876,7 @@ impl SensorIngress for NativeIngress {
             .state
             .lock()
             .unwrap()
-            .lifis
+            .prelio
             .lock()
             .unwrap()
             .add_imu(imu);
@@ -959,9 +889,9 @@ impl SensorIngress for NativeIngress {
     fn driver_failed(&self, error: &DriverError) {
         log::error!("Native sensor driver failed; stopping Pelorus ingress: {error}");
         if let Ok(state) = self.state.lock()
-            && let Ok(mut lifis) = state.lifis.lock()
+            && let Ok(mut prelio) = state.prelio.lock()
         {
-            lifis.shutdown();
+            prelio.shutdown();
         }
     }
 }
@@ -1128,7 +1058,7 @@ impl PrelioNode {
         #[cfg(feature = "hiroz")] node: &ZNode,
         #[cfg(any(feature = "mt_pubsub", feature = "hiroz"))] rt: Arc<tokio::runtime::Runtime>,
         #[cfg(feature = "mt_pubsub")] mt_pubsub_local_only: bool,
-        params: &LifisParameters,
+        params: &PrelioParameters,
         inputs: PrelioNodeInputs<'_>,
         #[cfg(feature = "rerun")] rec: Option<Arc<rerun::RecordingStream>>,
     ) -> anyhow::Result<(Self, std::sync::mpsc::Receiver<Tick>)> {
@@ -1204,8 +1134,8 @@ impl PrelioNode {
             feature = "hiroz"
         ))]
         let chan = {
-            let mut lifis = state.lifis.lock().unwrap();
-            lifis.get_chan().unwrap()
+            let mut prelio = state.prelio.lock().unwrap();
+            prelio.get_chan().unwrap()
         };
 
         let (tx, rx) = std::sync::mpsc::channel();
@@ -1479,7 +1409,7 @@ impl PrelioNode {
 
                         // Send to prelio's sync worker for synchronized lidar-imu-odom processing
                         let state_lock = state_wheel.lock().unwrap();
-                        state_lock.lifis.lock().unwrap().add_odom(odom_msg);
+                        state_lock.prelio.lock().unwrap().add_odom(odom_msg);
                     }
                 })
             });
@@ -1495,10 +1425,10 @@ impl PrelioNode {
                 future::block_on(async {
                     wheel_subscriber
                         .for_each(|msg| {
-                            let mut odom_msg = odom_to_lifis(msg);
+                            let mut odom_msg = odom_to_prelio(msg);
                             odom_msg.twist_linear = ext.transform_vector(&odom_msg.twist_linear);
                             let state_lock = state_wheel.lock().unwrap();
-                            state_lock.lifis.lock().unwrap().add_odom(odom_msg);
+                            state_lock.prelio.lock().unwrap().add_odom(odom_msg);
                         })
                         .await
                 })
@@ -1522,10 +1452,10 @@ impl PrelioNode {
                             msg.header.frame_id, msg.header.stamp.sec, msg.header.stamp.nanosec
                         );
                     }
-                    let mut odom_msg = odom_to_lifis(msg);
+                    let mut odom_msg = odom_to_prelio(msg);
                     odom_msg.twist_linear = ext.transform_vector(&odom_msg.twist_linear);
                     let state_lock = state_wheel.lock().unwrap();
-                    state_lock.lifis.lock().unwrap().add_odom(odom_msg);
+                    state_lock.prelio.lock().unwrap().add_odom(odom_msg);
                 }
             });
         }
@@ -1758,8 +1688,8 @@ impl PrelioNode {
                             .get_or_insert(msg.header.frame_id.clone());
                         let imu_init_state = imu_init_state.clone();
 
-                        let imu_lifis = imu_to_lifis(msg.clone());
-                        let curr_stamp = timestamp_to_secs(&imu_lifis.stamp);
+                        let imu_prelio = imu_to_prelio(msg.clone());
+                        let curr_stamp = timestamp_to_secs(&imu_prelio.stamp);
                         #[cfg(feature = "rat")]
                         let mut minot_bootstrap_trigger: Option<
                             &'static str,
@@ -1780,7 +1710,7 @@ impl PrelioNode {
                                     if let Some(ref mut buffer) = init_state.buffer {
                                         // Buffer IMU for EKF init callback, but still forward it
                                         // to prelio so scan/IMU sync is not backend-timing dependent.
-                                        buffer.push(imu_lifis.clone());
+                                        buffer.push(imu_prelio.clone());
 
                                         #[cfg(feature = "rat")]
                                         {
@@ -1801,8 +1731,8 @@ impl PrelioNode {
                             }
                         }
 
-                        let lifis = state_clone.lock().unwrap().lifis.clone();
-                        let filtered = lifis.lock().unwrap().add_imu(imu_lifis);
+                        let prelio = state_clone.lock().unwrap().prelio.clone();
+                        let filtered = prelio.lock().unwrap().add_imu(imu_prelio);
                         #[cfg(feature = "rat")]
                         if let Some(trigger) = minot_bootstrap_trigger {
                             publish_minot_trigger(synchronous_mode, trigger);
@@ -1816,7 +1746,7 @@ impl PrelioNode {
                                     .clone()
                                     .lock()
                                     .unwrap()
-                                    .publish(&lifis_to_imu(filtered))
+                                    .publish(&prelio_to_imu(filtered))
                                     .expect("could not publish filtered imu");
                             }
                         }
@@ -1847,19 +1777,19 @@ impl PrelioNode {
                 let imu_pose_predictor_init = imu_pose_predictor_init.clone();
                 while let Some(msg) = imu_sub_rt.block_on(imu_sub.next()) {
                     // debug!("received imu");
-                    let lifis = {
+                    let prelio = {
                         let state = state_clone.lock().unwrap();
                         imu_tf_frame_lidar_inner
                             .clone()
                             .lock()
                             .unwrap()
                             .get_or_insert(msg.header.frame_id.clone());
-                        state.lifis.clone()
+                        state.prelio.clone()
                     };
                     let imu_init_state = imu_imu_init_state.clone();
 
-                    let imu_lifis = imu_to_lifis(msg.clone());
-                    let curr_stamp = timestamp_to_secs(&imu_lifis.stamp);
+                    let imu_prelio = imu_to_prelio(msg.clone());
+                    let curr_stamp = timestamp_to_secs(&imu_prelio.stamp);
                     #[cfg(feature = "rat")]
                     let mut minot_bootstrap_trigger: Option<&'static str> = None;
 
@@ -1877,7 +1807,7 @@ impl PrelioNode {
                                 if let Some(ref mut buffer) = init_state.buffer {
                                     // Buffer IMU for EKF init callback, but still forward it
                                     // to prelio so scan/IMU sync is not backend-timing dependent.
-                                    buffer.push(imu_lifis.clone());
+                                    buffer.push(imu_prelio.clone());
 
                                     #[cfg(feature = "rat")]
                                     {
@@ -1898,7 +1828,7 @@ impl PrelioNode {
                         }
                     }
 
-                    let filtered = lifis.lock().unwrap().add_imu(imu_lifis);
+                    let filtered = prelio.lock().unwrap().add_imu(imu_prelio);
                     #[cfg(feature = "rat")]
                     if let Some(trigger) = minot_bootstrap_trigger {
                         publish_minot_trigger(synchronous_mode, trigger);
@@ -1920,19 +1850,19 @@ impl PrelioNode {
         std::thread::spawn(move || {
             let imu_pose_predictor_init = imu_pose_predictor_init.clone();
             while let Some(msg) = future::block_on(imu_subscription.next()) {
-                let lifis = {
+                let prelio = {
                     let state = state_clone.lock().unwrap();
                     imu_tf_frame_lidar_inner
                         .clone()
                         .lock()
                         .unwrap()
                         .get_or_insert(msg.header.frame_id.clone());
-                    state.lifis.clone()
+                    state.prelio.clone()
                 };
                 let imu_init_state = imu_init_state.clone();
 
-                let imu_lifis = imu_to_lifis(msg.clone());
-                let curr_stamp = timestamp_to_secs(&imu_lifis.stamp);
+                let imu_prelio = imu_to_prelio(msg.clone());
+                let curr_stamp = timestamp_to_secs(&imu_prelio.stamp);
                 #[cfg(feature = "rat")]
                 let mut minot_bootstrap_trigger: Option<&'static str> = None;
 
@@ -1950,7 +1880,7 @@ impl PrelioNode {
                             if let Some(ref mut buffer) = init_state.buffer {
                                 // Buffer IMU for EKF init callback, but still forward it
                                 // to prelio so scan/IMU sync is not backend-timing dependent.
-                                buffer.push(imu_lifis.clone());
+                                buffer.push(imu_prelio.clone());
 
                                 #[cfg(feature = "rat")]
                                 {
@@ -1971,7 +1901,7 @@ impl PrelioNode {
                     }
                 }
 
-                let filtered = lifis.lock().unwrap().add_imu(imu_lifis);
+                let filtered = prelio.lock().unwrap().add_imu(imu_prelio);
                 #[cfg(feature = "rat")]
                 if let Some(trigger) = minot_bootstrap_trigger {
                     publish_minot_trigger(synchronous_mode, trigger);
@@ -1985,7 +1915,7 @@ impl PrelioNode {
                             .clone()
                             .lock()
                             .unwrap()
-                            .publish(&lifis_to_imu(filtered))
+                            .publish(&prelio_to_imu(filtered))
                             .expect("could not publish filtered imu");
                     }
                 }
@@ -2008,19 +1938,19 @@ impl PrelioNode {
                             msg.header.frame_id, msg.header.stamp.sec, msg.header.stamp.nanosec
                         );
                     }
-                    let lifis = {
+                    let prelio = {
                         let state = state_clone.lock().unwrap();
                         imu_tf_frame_lidar_inner
                             .clone()
                             .lock()
                             .unwrap()
                             .get_or_insert(msg.header.frame_id.clone());
-                        state.lifis.clone()
+                        state.prelio.clone()
                     };
                     let imu_init_state = imu_imu_init_state.clone();
 
-                    let imu_lifis = imu_to_lifis(msg.clone());
-                    let curr_stamp = timestamp_to_secs(&imu_lifis.stamp);
+                    let imu_prelio = imu_to_prelio(msg.clone());
+                    let curr_stamp = timestamp_to_secs(&imu_prelio.stamp);
                     #[cfg(feature = "rat")]
                     let mut minot_bootstrap_trigger: Option<&'static str> = None;
 
@@ -2036,7 +1966,7 @@ impl PrelioNode {
                             let delta = curr_stamp - init_time;
                             if delta < init_imu_time {
                                 if let Some(ref mut buffer) = init_state.buffer {
-                                    buffer.push(imu_lifis.clone());
+                                    buffer.push(imu_prelio.clone());
 
                                     #[cfg(feature = "rat")]
                                     {
@@ -2054,7 +1984,7 @@ impl PrelioNode {
                         }
                     }
 
-                    let filtered = lifis.lock().unwrap().add_imu(imu_lifis);
+                    let filtered = prelio.lock().unwrap().add_imu(imu_prelio);
                     #[cfg(feature = "rat")]
                     if let Some(trigger) = minot_bootstrap_trigger {
                         publish_minot_trigger_async(synchronous_mode, trigger).await;
@@ -2065,7 +1995,7 @@ impl PrelioNode {
                         }
                         if let Some(imu_filtered_publisher) = imu_filtered_publisher.as_ref() {
                             imu_filtered_publisher
-                                .async_publish(&lifis_to_imu(filtered))
+                                .async_publish(&prelio_to_imu(filtered))
                                 .await
                                 .expect("could not publish filtered imu");
                         }
@@ -2110,8 +2040,8 @@ impl PrelioNode {
 
     pub fn request_shutdown(&self) {
         if let Ok(state) = self.state.lock() {
-            if let Ok(mut lifis) = state.lifis.lock() {
-                lifis.shutdown();
+            if let Ok(mut prelio) = state.prelio.lock() {
+                prelio.shutdown();
             }
         }
     }
@@ -2209,7 +2139,7 @@ impl Drop for PrelioNode {
 
 // only used with r2r
 #[cfg(any(feature = "r2r", feature = "hiroz"))]
-fn odom_to_lifis(msg: Odometry) -> OdomMsg {
+fn odom_to_prelio(msg: Odometry) -> OdomMsg {
     OdomMsg {
         twist_linear: nalgebra::Vector3::new(
             msg.twist.twist.linear.x,
@@ -2272,7 +2202,7 @@ fn odom_to_lifis(msg: Odometry) -> OdomMsg {
     feature = "r2r",
     feature = "hiroz"
 ))]
-fn imu_to_lifis(msg: Imu) -> ImuMsg {
+fn imu_to_prelio(msg: Imu) -> ImuMsg {
     ImuMsg {
         stamp: ros_pointcloud2::ros::TimeMsg {
             sec: msg.header.stamp.sec,
@@ -2409,7 +2339,7 @@ mod native_ingress_tests {
 }
 
 #[cfg(any(feature = "ros2-client", feature = "r2r", feature = "hiroz"))]
-fn lifis_to_imu(msg: ImuMsg) -> Imu {
+fn prelio_to_imu(msg: ImuMsg) -> Imu {
     Imu {
         header: Header {
             stamp: Time {

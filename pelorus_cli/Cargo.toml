@@ -35,6 +35,8 @@ mimalloc = { workspace = true, optional = true }
 clap.workspace = true
 r2r = { workspace = true, optional = true }
 mt_pubsub = { workspace = true, optional = true }
+mt_service = { workspace = true, optional = true }
+pelorus_protocol.workspace = true
 hiroz = { workspace = true, optional = true }
 hiroz-msgs = { workspace = true, optional = true }
 hiroz-protocol = { workspace = true, optional = true }
@@ -96,6 +98,7 @@ ros2-rust = ["ros2-client", "processing-time-export"]
 # Custom Rust-only pub/sub implementation used in my offline-mapping, development and debugging workflow (see https://uos.github.io/minot/#native-publishsubscribe).
 mt_pubsub = [
   "dep:mt_pubsub",
+  "dep:mt_service",
   "dep:tokio",
   "dep:ros2-interfaces-jazzy-rkyv",
   "prelio_io/mt_pubsub",

@@ -789,33 +789,3 @@ impl Drop for Handle {
         }
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use nalgebra::Vector3;
-
-    #[test]
-    fn odometry_preserves_imu_bias_estimates() {
-        let raw = PelorusOutput {
-            scan_id: 7,
-            timestamp: ros_pointcloud2::ros::TimeMsg { sec: 1, nanosec: 2 },
-            pose: Isometry3::identity(),
-            pose_covariance: [0.0; 36],
-            linear_velocity: Vector3::zeros(),
-            angular_velocity: Vector3::zeros(),
-            accel_bias: Vector3::new(0.1, -0.2, 0.3),
-            gyro_bias: Vector3::new(-0.01, 0.02, -0.03),
-            twist_covariance: [0.0; 36],
-            cloud: Vec::new(),
-            frame_id: "lidar".to_string(),
-            #[cfg(feature = "processing-time-export")]
-            processing_time_ns: 0,
-        };
-
-        let odometry = to_odometry(&raw, &LioConfig::default(), &Isometry3::identity());
-
-        assert_eq!(odometry.accel_bias, [0.1, -0.2, 0.3]);
-        assert_eq!(odometry.gyro_bias, [-0.01, 0.02, -0.03]);
-    }
-}

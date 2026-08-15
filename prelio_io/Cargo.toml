@@ -13,6 +13,7 @@ rust-version.workspace = true
 
 [dependencies]
 pelorus_core.workspace = true
+pelorus_protocol = { workspace = true, optional = true }
 pelorus_drivers = { workspace = true, optional = true }
 ros_pointcloud2.workspace = true
 anyhow.workspace = true
@@ -53,7 +54,7 @@ xsens-driver = ["dep:pelorus_drivers", "pelorus_drivers/xsens-driver"]
 ouster-driver = ["dep:pelorus_drivers", "pelorus_drivers/ouster-driver"]
 sensor-drivers = ["velodyne-driver", "xsens-driver", "ouster-driver"]
 rerun = ["dep:rerun"]
-compressed-pointcloud = ["dep:cloudini", "dep:rkyv"]
+compressed-pointcloud = ["dep:cloudini", "dep:rkyv", "dep:pelorus_protocol"]
 mt_pubsub = [
     "dep:mt_pubsub",
     "dep:tokio",
