@@ -1,7 +1,7 @@
 use rkyv::{Archive, Deserialize as RkyvDeserialize, Serialize as RkyvSerialize};
 use serde::{Deserialize, Serialize};
 
-pub const PROTOCOL_VERSION: u32 = 1;
+pub const PROTOCOL_VERSION: u32 = 2;
 pub const REGISTERED_FRAME_TOPIC: &str = "pelorus/registered_frame";
 pub const DOWNSTREAM_CONTROL_SERVICE: &str = "pelorus/downstream_control";
 pub const DOWNSTREAM_READY_TOPIC: &str = "pelorus/downstream_ready";
@@ -132,27 +132,6 @@ pub struct RegisteredFrameMarker {
     pub cloud_encoding: CloudEncoding,
     pub cloud_frame: String,
     pub odometry_frame: String,
-    /// Replay triggers Pelorus released on its own account since the previous
-    /// marker, because preprocessing needed more input to close this frame.
-    ///
-    /// Under [`TickOwner::Consumer`] the consumer is supposed to be the only
-    /// thing that moves the bag: one trigger per frame it completes. But a scan
-    /// cannot be deskewed until IMU samples spanning it have arrived, and those
-    /// samples only exist further into the bag. So Pelorus sometimes has to pull
-    /// the bag forward *itself*, mid-frame, just to finish the frame it is
-    /// holding — and by the time this marker is published the bag already sits
-    /// that many scans ahead of the frame described here.
-    ///
-    /// Those triggers are reported rather than settled internally, because only
-    /// the tick owner knows the true outstanding count: the consumer subtracts
-    /// them from what it owes so the bag still advances by exactly one scan per
-    /// completed frame. Left unreported, every extra pull would be spent twice
-    /// and the bag would race ahead of the consumer by a growing margin.
-    ///
-    /// Counted since the previous marker, so the credit is consumed exactly once.
-    /// Always zero when Pelorus owns the replay clock ([`TickOwner::Pelorus`]),
-    /// where it settles the same debt against its own refills instead.
-    pub prepaid_replay_ticks: u32,
 }
 
 /// Who releases the steady-state replay trigger once bootstrap is complete.
@@ -171,7 +150,7 @@ pub struct RegisteredFrameMarker {
 pub enum TickOwner {
     /// Pelorus keeps its normal offline replay clock.
     Pelorus,
-    /// The downstream consumer triggers Minot itself after every frame it completes.
+    /// The downstream consumer gates Minot by acknowledging each completed frame.
     Consumer,
 }
 #[derive(
@@ -190,8 +169,13 @@ pub enum DownstreamRequest {
         /// the choice in [`DownstreamResponse::cloud_encoding`]. Declaring
         /// support the consumer does not have strands it on a topic it cannot
         /// read: no cloud ever deserializes, every frame stays unpaired, and
-        /// under consumer tick ownership the bag simply stops.
+        /// under consumer-gated replay the bag simply stops.
         accepted_cloud_encodings: Vec<CloudEncoding>,
+    },
+    /// The registered consumer finished processing one authoritative frame.
+    CompleteFrame {
+        consumer: String,
+        scan_id: u64,
     },
     GetStatus,
     Shutdown {
@@ -259,6 +243,7 @@ pub struct DownstreamGate {
     /// to whatever the registered consumer can decode.
     preferred_cloud_encoding: CloudEncoding,
     negotiated_cloud_encoding: CloudEncoding,
+    last_completed_scan_id: Option<u64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -267,6 +252,8 @@ pub struct DownstreamEffect {
     /// Release the bag replay that was held until a consumer attached.
     pub unlock_replay: bool,
     pub request_shutdown: bool,
+    /// Grant one replay credit after validation.
+    pub completed_frame: Option<u64>,
 }
 
 impl Default for DownstreamGate {
@@ -288,6 +275,7 @@ impl DownstreamGate {
             // Nothing is agreed until someone registers, and the baseline is
             // the only encoding every consumer is required to understand.
             negotiated_cloud_encoding: CloudEncoding::BASELINE,
+            last_completed_scan_id: None,
         }
     }
 
@@ -318,6 +306,7 @@ impl DownstreamGate {
     pub fn handle(&mut self, request: DownstreamRequest) -> DownstreamEffect {
         let mut unlock_replay = false;
         let mut request_shutdown = false;
+        let mut completed_frame = None;
         // Before anyone registers there is nothing agreed, so advertise the
         // opening bid; afterwards report what the session actually settled on.
         let mut reported_cloud_encoding = if self.has_consumer() {
@@ -364,6 +353,22 @@ impl DownstreamGate {
                     (true, "consumer registered")
                 }
             }
+            DownstreamRequest::CompleteFrame { consumer, scan_id } => {
+                if self.consumer.as_deref() != Some(consumer.as_str()) {
+                    (false, "consumer is not registered")
+                } else if self.tick_owner != TickOwner::Consumer {
+                    (false, "consumer does not own frame acknowledgements")
+                } else if self
+                    .last_completed_scan_id
+                    .is_some_and(|last_scan_id| scan_id <= last_scan_id)
+                {
+                    (false, "frame completions must be strictly increasing")
+                } else {
+                    self.last_completed_scan_id = Some(scan_id);
+                    completed_frame = Some(scan_id);
+                    (true, "frame completion accepted")
+                }
+            }
             DownstreamRequest::GetStatus => (true, "status"),
             DownstreamRequest::Shutdown { consumer } => {
                 if self.consumer.as_deref() != Some(consumer.as_str()) {
@@ -388,6 +393,7 @@ impl DownstreamGate {
             },
             unlock_replay,
             request_shutdown,
+            completed_frame,
         }
     }
 }
@@ -460,5 +466,54 @@ mod cloud_encoding_tests {
         register(&mut gate, vec![CloudEncoding::PointCloud2]);
         let status = gate.handle(DownstreamRequest::GetStatus).response;
         assert_eq!(status.cloud_encoding, CloudEncoding::PointCloud2);
+    }
+
+    #[test]
+    fn registered_consumer_can_complete_a_frame() {
+        let mut gate = DownstreamGate::new(CloudEncoding::PointCloud2);
+        assert!(register(&mut gate, vec![CloudEncoding::PointCloud2]).accepted);
+
+        let effect = gate.handle(DownstreamRequest::CompleteFrame {
+            consumer: "downstream".to_owned(),
+            scan_id: 42,
+        });
+
+        assert!(effect.response.accepted);
+        assert_eq!(effect.completed_frame, Some(42));
+    }
+
+    #[test]
+    fn unregistered_consumer_cannot_complete_a_frame() {
+        let mut gate = DownstreamGate::new(CloudEncoding::PointCloud2);
+        let effect = gate.handle(DownstreamRequest::CompleteFrame {
+            consumer: "stranger".to_owned(),
+            scan_id: 42,
+        });
+
+        assert!(!effect.response.accepted);
+        assert_eq!(effect.completed_frame, None);
+    }
+
+    #[test]
+    fn frame_completions_must_be_strictly_increasing() {
+        let mut gate = DownstreamGate::new(CloudEncoding::PointCloud2);
+        assert!(register(&mut gate, vec![CloudEncoding::PointCloud2]).accepted);
+        assert!(
+            gate.handle(DownstreamRequest::CompleteFrame {
+                consumer: "downstream".to_owned(),
+                scan_id: 42,
+            })
+            .response
+            .accepted
+        );
+
+        for scan_id in [42, 41] {
+            let effect = gate.handle(DownstreamRequest::CompleteFrame {
+                consumer: "downstream".to_owned(),
+                scan_id,
+            });
+            assert!(!effect.response.accepted);
+            assert_eq!(effect.completed_frame, None);
+        }
     }
 }

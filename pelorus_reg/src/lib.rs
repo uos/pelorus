@@ -75,7 +75,7 @@ pub trait Registration {
         cloud: &LocatedBufferView<PointXYZIT>,
         lidar_timestamp: f64,
         scan_id: usize,
-        ready_for_next: Option<&std::sync::mpsc::Sender<()>>,
+        ready_for_next: Option<&std::sync::mpsc::Sender<u64>>,
         eval: &mut RuntimeEvaluator,
         backend: &ActiveBackend,
     ) -> Result<Option<CloudRegisterResult>>;

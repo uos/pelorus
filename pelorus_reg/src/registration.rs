@@ -373,7 +373,7 @@ impl crate::Registration for RegistrationState {
         cloud: &LocatedBufferView<PointXYZIT>,
         lidar_timestamp: f64,
         scan_id: usize,
-        ready_for_next: Option<&std::sync::mpsc::Sender<()>>,
+        ready_for_next: Option<&std::sync::mpsc::Sender<u64>>,
         eval: &mut RuntimeEvaluator,
         backend: &ActiveBackend,
     ) -> anyhow::Result<Option<crate::CloudRegisterResult>> {
@@ -916,10 +916,6 @@ impl crate::Registration for RegistrationState {
         let t_w_l = t_w_i * t_i_l;
         let t_w_b = t_w_l * self.base_to_lidar.inverse();
 
-        if let Some(ready) = ready_for_next {
-            let _ = ready.send(());
-        }
-
         {
             let mut eval_guard = eval_cb.write().unwrap();
             let eval_actual = &mut **eval_guard;
@@ -973,6 +969,10 @@ impl crate::Registration for RegistrationState {
             let mut eval_guard = eval_cb.write().unwrap();
             let eval_actual = &mut **eval_guard;
             eval_actual.stop("map_update").unwrap();
+        }
+
+        if let Some(ready) = ready_for_next {
+            let _ = ready.send(scan_id as u64);
         }
 
         Ok(Some(crate::CloudRegisterResult {

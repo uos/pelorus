@@ -15,7 +15,7 @@ use ratatui::{
     symbols::Marker,
     text::{Line, Span},
     widgets::{
-        Block, Borders, Clear, List, ListItem, Padding, Paragraph, Tabs,
+        Block, Borders, Clear, List, ListItem, Padding, Paragraph,
         canvas::{Canvas, Line as CanvasLine, Points},
     },
 };
@@ -768,7 +768,6 @@ fn get_nvidia_gpu_stats() -> (f64, f64, f64) {
 // TUI
 // ============================================================================
 
-const VERSION: &str = env!("CARGO_PKG_VERSION");
 const MERGED_TABS_MIN_WIDTH: u16 = 120;
 const MERGED_TABS_MIN_HEIGHT: u16 = 42;
 const HYBRID_MERGED_MIN_HEIGHT: u16 = 30;
@@ -946,11 +945,10 @@ impl StatsTui {
             .constraints([
                 Constraint::Length(1),
                 Constraint::Length(1),
-                Constraint::Length(1),
                 Constraint::Min(10),
                 Constraint::Length(1),
             ])
-            .split(size)[3]
+            .split(size)[2]
     }
 
     fn split_tabbed_layout(size: Rect, show_tabs_row: bool) -> TabbedLayout {
@@ -958,26 +956,17 @@ impl StatsTui {
             .direction(Direction::Vertical)
             .constraints([
                 Constraint::Length(1),
-                Constraint::Length(1),
                 Constraint::Length(if show_tabs_row { 1 } else { 0 }),
                 Constraint::Min(10),
                 Constraint::Length(1),
             ])
             .split(size);
 
-        let content_rows = Layout::default()
-            .direction(Direction::Vertical)
-            .constraints([
-                Constraint::Length(if show_tabs_row { 1 } else { 0 }),
-                Constraint::Min(10),
-            ])
-            .split(chunks[3]);
-
         TabbedLayout {
             header: chunks[0],
-            tabs: chunks[2],
-            content: content_rows[1],
-            help: chunks[4],
+            tabs: chunks[1],
+            content: chunks[2],
+            help: chunks[3],
         }
     }
 
@@ -1150,8 +1139,8 @@ impl StatsTui {
         } else {
             String::new()
         };
-        let header_line_1 = format!("⏱️  {}  │  📡 {}{}", elapsed, vendor, sensor_rate_str);
-        let mut header_line_2 = format!("💻 {}", stats.backend);
+        let header_line_1 = format!("{}  │  {}{}", elapsed, vendor, sensor_rate_str);
+        let mut header_line_2 = stats.backend.clone();
         if let Some(accel) = &stats.accelerator {
             header_line_2.push_str(" + ");
             header_line_2.push_str(accel);
@@ -1442,7 +1431,6 @@ impl StatsTui {
                 .direction(Direction::Vertical)
                 .constraints([
                     Constraint::Length(1), // Header
-                    Constraint::Length(1), // Top spacer
                     Constraint::Min(10),   // Content
                     Constraint::Length(1), // Help bar
                 ])
@@ -1453,15 +1441,15 @@ impl StatsTui {
             let content_chunks = Layout::default()
                 .direction(Direction::Horizontal)
                 .constraints([Constraint::Percentage(42), Constraint::Percentage(58)])
-                .split(chunks[2]);
+                .split(chunks[1]);
 
             self.render_stats_with_optional_logs(f, content_chunks[0], stats);
 
             self.render_trajectory_tab(f, content_chunks[1], stats, true, false);
-            self.render_help_bar_merged(f, chunks[3]);
+            self.render_help_bar_merged(f, chunks[2]);
             self.render_help_overlay(
                 f,
-                chunks[2],
+                chunks[1],
                 self.help_overlay_items(
                     Tab::Stats,
                     Self::stats_shows_logs(content_chunks[0]),
@@ -1705,24 +1693,52 @@ impl StatsTui {
 
     fn render_title_bar(&self, f: &mut ratatui::Frame, area: Rect, stats: &TuiStats) {
         let mode_text = if stats.mode.is_empty() {
-            format!("Pelorus v{}", VERSION)
+            "Pelorus".to_owned()
         } else {
-            format!("Pelorus v{} [{}]", VERSION, stats.mode)
+            format!("Pelorus {}", stats.mode)
         };
 
-        let mut spans = vec![Span::styled(
-            mode_text,
-            Style::default()
-                .add_modifier(Modifier::BOLD)
-                .fg(Color::Cyan),
-        )];
+        let mut spans = vec![
+            Span::styled(
+                format!(" {mode_text} "),
+                Style::default()
+                    .fg(Color::Black)
+                    .bg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled("  backend ", Style::default().fg(Color::DarkGray)),
+            Span::styled(
+                stats.backend.clone(),
+                Style::default()
+                    .fg(Color::White)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled("  rate ", Style::default().fg(Color::DarkGray)),
+            Span::styled(
+                format!("{:.1} Hz", stats.processing_freq_hz),
+                Style::default()
+                    .fg(Color::White)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled("  RT ", Style::default().fg(Color::DarkGray)),
+            Span::styled(
+                format!("{:.2}x", stats.real_time_factor),
+                Style::default()
+                    .fg(Color::White)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                format!("  {}", format_duration(stats.elapsed_secs)),
+                Style::default().fg(Color::DarkGray),
+            ),
+        ];
 
         if let Some(bag) = &stats.bagfile {
-            spans.push(Span::raw(" | Bag: "));
-            spans.push(Span::styled(bag, Style::default().fg(Color::Yellow)));
+            spans.push(Span::styled("  bag ", Style::default().fg(Color::DarkGray)));
+            spans.push(Span::styled(bag, Style::default().fg(Color::Gray)));
         }
 
-        let paragraph = Paragraph::new(Line::from(spans));
+        let paragraph = Paragraph::new(Line::from(spans)).style(Self::status_bar_style());
         f.render_widget(paragraph, area);
     }
 
@@ -1738,48 +1754,31 @@ impl StatsTui {
             return;
         }
 
-        let mut titles = vec![Line::from(" 1 Stats ")];
+        let mut tabs = vec![(1, Tab::Stats, "Stats")];
         if show_trajectory_tab {
-            titles.push(Line::from(" 2 Trajectory "));
+            tabs.push((2, Tab::Trajectory, "Trajectory"));
         }
         if show_logs_tab {
-            let label = if show_trajectory_tab {
-                " 3 Logs "
-            } else {
-                " 2 Logs "
-            };
-            titles.push(Line::from(label));
+            tabs.push((if show_trajectory_tab { 3 } else { 2 }, Tab::Logs, "Logs"));
         }
 
-        let selected = match selected_tab {
-            Tab::Stats => 0,
-            Tab::Trajectory => {
-                if show_trajectory_tab {
-                    1
-                } else {
-                    0
-                }
-            }
-            Tab::Logs => {
-                if show_logs_tab {
-                    if show_trajectory_tab { 2 } else { 1 }
-                } else {
-                    0
-                }
-            }
-        };
-
-        let tabs = Tabs::new(titles)
-            .block(Block::default().borders(Borders::NONE))
-            .select(selected)
-            .style(Style::default().fg(Color::DarkGray))
-            .highlight_style(
+        let mut spans = Vec::new();
+        for (number, tab, title) in tabs {
+            let style = if tab == selected_tab {
                 Style::default()
-                    .fg(Color::Cyan)
-                    .add_modifier(Modifier::BOLD),
-            );
-
-        f.render_widget(tabs, area);
+                    .fg(Color::Black)
+                    .bg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(Color::Gray)
+            };
+            spans.push(Span::styled(format!(" {number}:{title} "), style));
+            spans.push(Span::raw(" "));
+        }
+        f.render_widget(
+            Paragraph::new(Line::from(spans)).style(Self::status_bar_style()),
+            area,
+        );
     }
 
     fn render_stats_tab(&self, f: &mut ratatui::Frame, area: Rect, stats: &TuiStats) {
@@ -2247,7 +2246,7 @@ impl StatsTui {
         };
 
         let mut info_line = vec![
-            Span::raw("💻 "),
+            Span::styled("Backend     ", Style::default().fg(Color::DarkGray)),
             Span::styled(&stats.backend, Style::default().fg(Color::White)),
         ];
 
@@ -2274,9 +2273,9 @@ impl StatsTui {
 
         let lines = vec![
             Line::from(vec![
-                Span::raw("⏱️  "),
+                Span::styled("Elapsed     ", Style::default().fg(Color::DarkGray)),
                 Span::styled(elapsed, Style::default().fg(Color::White)),
-                Span::raw("  │  📡 "),
+                Span::styled("  sensor ", Style::default().fg(Color::DarkGray)),
                 Span::styled(vendor, Style::default().fg(Color::Cyan)),
                 Span::styled(sensor_rate_str, Style::default().fg(Color::Cyan)),
             ]),
@@ -2290,7 +2289,7 @@ impl StatsTui {
             .title(Span::styled(
                 " Info ",
                 Style::default()
-                    .fg(Color::Cyan)
+                    .fg(Color::Green)
                     .add_modifier(Modifier::BOLD),
             ));
         let paragraph = Paragraph::new(lines).block(block);
@@ -2358,7 +2357,7 @@ impl StatsTui {
             .title(Span::styled(
                 " State ",
                 Style::default()
-                    .fg(Color::Blue)
+                    .fg(Color::Green)
                     .add_modifier(Modifier::BOLD),
             ));
         let paragraph = Paragraph::new(lines).block(block);
@@ -2488,7 +2487,7 @@ impl StatsTui {
             .title(Span::styled(
                 " Performance ",
                 Style::default()
-                    .fg(Color::Yellow)
+                    .fg(Color::Green)
                     .add_modifier(Modifier::BOLD),
             ));
         let paragraph = Paragraph::new(lines).block(block);
@@ -3009,17 +3008,17 @@ impl StatsTui {
 
 fn get_realtime_color_and_status(rt_factor: f64) -> (Color, &'static str) {
     if rt_factor <= 0.0 {
-        (Color::Gray, "⏳ Initializing")
+        (Color::Gray, "initializing")
     } else if rt_factor < 0.8 {
-        (Color::Red, "🔴 CRITICAL")
+        (Color::Red, "critical")
     } else if rt_factor < 0.95 {
-        (Color::Yellow, "🟡 Warning")
+        (Color::Yellow, "warning")
     } else if rt_factor < 1.5 {
-        (Color::Green, "🟢 OK")
+        (Color::Green, "ok")
     } else if rt_factor < 3.0 {
-        (Color::Green, "🟢 Good")
+        (Color::Green, "good")
     } else {
-        (Color::Cyan, "⚡ Excellent")
+        (Color::Cyan, "excellent")
     }
 }
 
@@ -3041,5 +3040,32 @@ fn format_duration(secs: f64) -> String {
         format!("{:02}:{:02}:{:02}", hours, minutes, seconds)
     } else {
         format!("{:02}:{:02}", minutes, seconds)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn tabbed_layout_has_no_empty_spacer_rows() {
+        let area = Rect::new(0, 0, 100, 30);
+        let with_tabs = StatsTui::split_tabbed_layout(area, true);
+        assert_eq!(with_tabs.header, Rect::new(0, 0, 100, 1));
+        assert_eq!(with_tabs.tabs, Rect::new(0, 1, 100, 1));
+        assert_eq!(with_tabs.content.y, 2);
+        assert_eq!(with_tabs.help, Rect::new(0, 29, 100, 1));
+
+        let without_tabs = StatsTui::split_tabbed_layout(area, false);
+        assert_eq!(without_tabs.tabs.height, 0);
+        assert_eq!(without_tabs.content.y, 1);
+    }
+
+    #[test]
+    fn realtime_status_uses_plain_text() {
+        for factor in [0.0, 0.5, 0.9, 1.0, 2.0, 4.0] {
+            let (_, status) = get_realtime_color_and_status(factor);
+            assert!(status.is_ascii(), "status contains decoration: {status}");
+        }
     }
 }

@@ -1399,6 +1399,30 @@ fn release_minot_ticks(
     }
 }
 
+#[cfg(feature = "mt_pubsub")]
+async fn release_minot_ticks_async(
+    shutdown_flag: Option<&Arc<AtomicBool>>,
+    #[allow(unused_variables)] synchronous_mode: bool,
+    #[allow(unused_variables)] count: usize,
+) -> anyhow::Result<()> {
+    if shutdown_flag
+        .map(|flag| flag.load(Ordering::Relaxed))
+        .unwrap_or(false)
+    {
+        return Ok(());
+    }
+
+    #[cfg(feature = "rat")]
+    if synchronous_mode {
+        for _ in 0..count {
+            let mut tick = String::new();
+            rat::bacon_async("tick_end", &mut tick, rat::VariableType::StaticOnly).await?;
+        }
+    }
+
+    Ok(())
+}
+
 /// Settle a replay refill against triggers already pulled mid-frame.
 ///
 /// Preprocessing releases its own Minot triggers when it needs more input to
@@ -1407,11 +1431,6 @@ fn release_minot_ticks(
 /// refill must ask for that many fewer scans or the bag runs ahead. Returns
 /// what still has to be requested after cancelling as much debt as `requested`
 /// covers. Leftover debt carries to later refills.
-///
-/// This is the [`ReplayTickOwner::Pelorus`] half of the accounting. Under
-/// downstream ownership the debt is handed to the consumer as
-/// `RegisteredFrameMarker::prepaid_replay_ticks`, since only
-/// the tick owner knows what it still owes.
 #[cfg(any(
     feature = "mt_pubsub",
     feature = "ros2-client",
@@ -1570,8 +1589,7 @@ fn lio_with_ready_signal(
             .map_err(|err| anyhow!("Failed to create mt_pubsub node: {err}"))?,
     );
 
-    // Handshake only: which consumer is attached and when the bag may start.
-    // Per-frame flow control lives in the consumer's replay trigger.
+    // Gate replay on consumer attachment and per-frame completion.
     #[cfg(feature = "mt_pubsub")]
     if replay_tick_owner.is_downstream() {
         // What this build and configuration can offer. The consumer may not be
@@ -1606,6 +1624,7 @@ fn lio_with_ready_signal(
         let callback_state = Arc::clone(&state);
         let callback_shutdown = shutdown_flag.clone();
         let callback_compressed = Arc::clone(&publish_compressed_clouds);
+        let callback_replay_tick_debt = Arc::clone(&replay_tick_debt);
         // Registering unlocks the bag exactly once. The offline runner holds
         // Minot in `--sync` until then, so no frame can be produced before the
         // consumer's subscribers exist.
@@ -1619,6 +1638,7 @@ fn lio_with_ready_signal(
                     let shutdown = callback_shutdown.clone();
                     let registered = Arc::clone(&callback_registered);
                     let compressed = Arc::clone(&callback_compressed);
+                    let replay_tick_debt = Arc::clone(&callback_replay_tick_debt);
                     async move {
                         debug!("managed downstream request: {request:?}");
                         let effect = state
@@ -1652,6 +1672,21 @@ fn lio_with_ready_signal(
                         if effect.request_shutdown {
                             if let Some(shutdown) = shutdown.as_ref() {
                                 shutdown.store(true, Ordering::SeqCst);
+                            }
+                        }
+                        if effect.completed_frame.is_some() {
+                            let request_count =
+                                request_count_after_replay_debt(&replay_tick_debt, 1);
+                            if request_count > 0 {
+                                release_minot_ticks_async(
+                                    shutdown.as_ref(),
+                                    synchronous_mode,
+                                    request_count,
+                                )
+                                .await
+                                .map_err(|error| {
+                                    format!("Failed to advance managed Minot replay: {error:#}")
+                                })?;
                             }
                         }
                         Ok(effect.response)
@@ -2339,8 +2374,8 @@ fn lio_with_ready_signal(
             let prefetch_scans = offline_prefetch_scans.max(1);
             ready_relay_handle = Some(std::thread::spawn(move || {
                 let mut requested_prefill = false;
-                while relay_rx.recv().is_ok() {
-                    if prelio_ready_tx.send(()).is_err() {
+                while let Ok(scan_id) = relay_rx.recv() {
+                    if prelio_ready_tx.send(scan_id).is_err() {
                         break;
                     }
                     if relay_drain_on_shutdown.load(Ordering::SeqCst)
@@ -2390,11 +2425,6 @@ fn lio_with_ready_signal(
                 );
             }
         };
-        if let Some(ready) = ready_for_next_tx.as_ref() {
-            if let Err(e) = ready.send(()) {
-                error!("failed to send initial prelio ready signal: {e}");
-            }
-        }
         let mut prelio_node = Some(prelio_node);
 
         let active_backend = ActiveBackend::detect(&config);
@@ -2753,6 +2783,8 @@ fn lio_with_ready_signal(
 
             let registration_result = {
                 let mut map = map.lock().unwrap();
+                // This correction barrier orders Prelio prediction independently
+                // of downstream backpressure.
                 let ready_for_registration = if relay_minot_replay_on_registration {
                     registration_ready_tx.as_ref()
                 } else if gate_minot_replay_on_mcap {
@@ -2780,10 +2812,13 @@ fn lio_with_ready_signal(
                 Ok(Some(result)) => result,
                 Ok(None) => {
                     drain_filtered_imu_mcap(&mut mcap_writer, &mut filtered_imu_rx)?;
+                    if let Some(ready) = registration_ready_tx
+                        .as_ref()
+                        .or_else(|| ready_for_next_tx.as_ref())
+                    {
+                        let _ = ready.send(prelio_tick.scan_id);
+                    }
                     if gate_minot_replay_on_mcap || relay_minot_replay_on_registration {
-                        if let Some(ready) = registration_ready_tx.as_ref() {
-                            let _ = ready.send(());
-                        }
                         // The relay only advances Minot when Pelorus owns the
                         // replay clock, so pay for this initialization scan here.
                         if downstream_owns_replay {
@@ -2813,19 +2848,14 @@ fn lio_with_ready_signal(
                 Err(err) => {
                     error!("{err}");
                     drain_filtered_imu_mcap(&mut mcap_writer, &mut filtered_imu_rx)?;
+                    if let Some(ready) = registration_ready_tx
+                        .as_ref()
+                        .or_else(|| ready_for_next_tx.as_ref())
+                    {
+                        let _ = ready.send(prelio_tick.scan_id);
+                    }
                     if gate_minot_replay_on_mcap {
-                        if let Some(ready) = registration_ready_tx.as_ref() {
-                            let _ = ready.send(());
-                        }
                     } else {
-                        if minot_replay_mode && !prelio_tick.map_only {
-                            if let Some(ready) = registration_ready_tx
-                                .as_ref()
-                                .or_else(|| ready_for_next_tx.as_ref())
-                            {
-                                let _ = ready.send(());
-                            }
-                        }
                         if downstream_owns_replay {
                             // The failed registration still consumed one scan.
                             release_unpublished_scan_tick();
@@ -3483,7 +3513,7 @@ fn lio_with_ready_signal(
             drain_filtered_imu_mcap(&mut mcap_writer, &mut filtered_imu_rx)?;
             if gate_minot_replay_on_mcap {
                 if let Some(ready) = registration_ready_tx.as_ref() {
-                    let _ = ready.send(());
+                    let _ = ready.send(prelio_tick.scan_id);
                 }
             } else if !relay_minot_replay_on_registration
                 && minot_replay_mode
@@ -3586,23 +3616,6 @@ fn lio_with_ready_signal(
                 }
             }
 
-            // Triggers Prelio pulled mid-frame already advanced the bag past
-            // this scan. Hand that credit to the tick owner with the frame it
-            // belongs to instead of settling it inside Pelorus.
-            //
-            // `swap` and not `load`: the count must be handed over exactly
-            // once. It rides on this marker, and the next marker reports only
-            // what was pulled after this point — a consumer that deducted the
-            // same tick twice would stall the bag by permanently under-paying.
-            #[cfg(feature = "mt_pubsub")]
-            let prepaid_replay_ticks = if downstream_owns_replay {
-                processing_tick_debt.swap(0, Ordering::AcqRel) as u32
-            } else {
-                // Pelorus owns the clock, so the debt stays put and is netted
-                // out by `request_count_after_replay_debt` on the next refill.
-                0
-            };
-
             #[cfg(feature = "mt_pubsub")]
             rt.as_ref()
                 .expect("rt always exists with mt_pubsub feat")
@@ -3633,7 +3646,6 @@ fn lio_with_ready_signal(
                         },
                         cloud_frame: cloud.header.frame_id.clone(),
                         odometry_frame: pelorus_odom.header.frame_id.clone(),
-                        prepaid_replay_ticks,
                     };
                     registered_frame_publisher
                         .publish(&marker)
@@ -3651,15 +3663,9 @@ fn lio_with_ready_signal(
                     .expect("Failed to publish odom");
             }
 
-            // Nothing is awaited here under downstream ownership: the consumer
-            // pulls the next scan by triggering Minot after it has processed
-            // this frame, so the absence of a trigger is the backpressure.
             #[cfg(feature = "mt_pubsub")]
             if downstream_owns_replay {
-                debug!(
-                    "published downstream frame {} ({prepaid_replay_ticks} prepaid replay ticks)",
-                    prelio_tick.scan_id
-                );
+                debug!("published downstream frame {}", prelio_tick.scan_id);
             }
 
             // Release the real-time barrier only after the authoritative

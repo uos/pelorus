@@ -47,10 +47,6 @@ pub type RealtimeImuCallback = Arc<dyn Fn(ImuMsg) + Send + Sync>;
 pub type RealtimeLidarBarrierCallback = Arc<dyn Fn() + Send + Sync>;
 
 #[cfg(not(feature = "large-processing-queue"))]
-// Keep bounded memory while leaving headroom above Pelorus's default four-scan
-// replay prefetch. A capacity equal to the prefetch window can deadlock when
-// Prelio needs the following scan's IMU to bracket the last queued cloud while
-// downstream processing is paused for a long loop closure.
 const PREPROC_QUEUE_CAP: usize = 8;
 #[cfg(feature = "large-processing-queue")]
 const PREPROC_QUEUE_CAP: usize = 1_024;
@@ -1649,6 +1645,7 @@ pub struct Prelio {
     madgwick_filter: MadgwickSetting,
     realtime_imu_callback: Option<RealtimeImuCallback>,
     realtime_lidar_barrier_callback: Option<RealtimeLidarBarrierCallback>,
+    lossless_replay: bool,
 }
 
 // fn find_sort_boundaries() {
@@ -1816,11 +1813,12 @@ impl Prelio {
         imu_pose_prediction_undistort: Option<Box<ImuPredictorUndistort>>,
         imu_pose_prediction_init_guess: Option<Box<ImuPredictor>>,
         lidar_vendor: LidarVendor,
-        ready_for_next: Option<std::sync::mpsc::Receiver<()>>,
+        ready_for_next: Option<std::sync::mpsc::Receiver<u64>>,
         imu_sync_mode: ImuSyncMode,
         realtime_imu_callback: Option<RealtimeImuCallback>,
         realtime_lidar_barrier_callback: Option<RealtimeLidarBarrierCallback>,
     ) -> anyhow::Result<Self> {
+        let lossless_replay = matches!(&imu_sync_mode, ImuSyncMode::DemandDrivenReplay { .. });
         #[cfg(not(feature = "rayon"))]
         if params.parallelism_execution_policy
             == pelorus_core::adaptive_execution::ExecutionPolicy::Rayon
@@ -2099,6 +2097,7 @@ impl Prelio {
             madgwick_filter,
             realtime_imu_callback,
             realtime_lidar_barrier_callback,
+            lossless_replay,
         })
     }
 
@@ -2165,13 +2164,39 @@ impl Prelio {
             cloud,
         };
         match self.preproc_sender.as_ref() {
-            Some(sender) => match sender.try_send(labeled) {
-                Ok(_) => {
-                    let queue_depth = self.preproc_queue_depth.fetch_add(1, Ordering::Relaxed) + 1;
-                    if queue_depth * 4 > PREPROC_QUEUE_CAP * 3 {
+            Some(sender) => {
+                let enqueue_result = if self.lossless_replay {
+                    sender.send(labeled).map_err(|error| error.0)
+                } else {
+                    sender.try_send(labeled).map_err(|error| match error {
+                        std::sync::mpsc::TrySendError::Full(value)
+                        | std::sync::mpsc::TrySendError::Disconnected(value) => value,
+                    })
+                };
+                match enqueue_result {
+                    Ok(_) => {
+                        let queue_depth =
+                            self.preproc_queue_depth.fetch_add(1, Ordering::Relaxed) + 1;
+                        if queue_depth * 4 > PREPROC_QUEUE_CAP * 3 {
+                            let warning_message = format!(
+                                "Pointcloud preprocessing queue is more than 75% full ({}/{})",
+                                queue_depth, PREPROC_QUEUE_CAP
+                            );
+                            if self.last_preproc_warning_message.as_deref()
+                                != Some(warning_message.as_str())
+                                && should_log_once_default("pointcloud_preproc_queue_state_change")
+                            {
+                                warn!("{warning_message}");
+                                self.last_preproc_warning_message = Some(warning_message);
+                            }
+                        } else {
+                            self.last_preproc_warning_message = None;
+                        }
+                    }
+                    Err(_) if !self.lossless_replay => {
                         let warning_message = format!(
-                            "Pointcloud preprocessing queue is more than 75% full ({}/{})",
-                            queue_depth, PREPROC_QUEUE_CAP
+                            "Dropping pointcloud: preprocessing queue is full ({}/{})",
+                            PREPROC_QUEUE_CAP, PREPROC_QUEUE_CAP
                         );
                         if self.last_preproc_warning_message.as_deref()
                             != Some(warning_message.as_str())
@@ -2180,27 +2205,12 @@ impl Prelio {
                             warn!("{warning_message}");
                             self.last_preproc_warning_message = Some(warning_message);
                         }
-                    } else {
-                        self.last_preproc_warning_message = None;
+                    }
+                    Err(_) => {
+                        error!("Error sending pointcloud: preprocessing pipeline is disconnected");
                     }
                 }
-                Err(std::sync::mpsc::TrySendError::Full(_)) => {
-                    let warning_message = format!(
-                        "Dropping pointcloud: preprocessing queue is full ({}/{})",
-                        PREPROC_QUEUE_CAP, PREPROC_QUEUE_CAP
-                    );
-                    if self.last_preproc_warning_message.as_deref()
-                        != Some(warning_message.as_str())
-                        && should_log_once_default("pointcloud_preproc_queue_state_change")
-                    {
-                        warn!("{warning_message}");
-                        self.last_preproc_warning_message = Some(warning_message);
-                    }
-                }
-                Err(std::sync::mpsc::TrySendError::Disconnected(_)) => {
-                    error!("Error sending pointcloud: preprocessing pipeline is disconnected");
-                }
-            },
+            }
             None => {
                 debug!("Pointcloud ignored: pre-processing pipeline is shutting down");
             }
@@ -2269,6 +2279,13 @@ impl Prelio {
         // Add to buffer
         let imu_data = imu.clone();
         match self.imu_sender.as_ref() {
+            Some(sender) if self.lossless_replay => match sender.send(imu_data) {
+                Ok(_) => {}
+                Err(_) => {
+                    self.runtime_eval.stop("imu_pre").unwrap();
+                    return None;
+                }
+            },
             Some(sender) => match sender.try_send(imu_data) {
                 Ok(_) => {}
                 Err(std::sync::mpsc::TrySendError::Full(_)) => {
@@ -2300,6 +2317,11 @@ impl Prelio {
     /// Add an odometry message to the buffer for synchronization with lidar.
     pub fn add_odom(&mut self, odom: OdomMsg) {
         match self.odom_sender.as_ref() {
+            Some(sender) if self.lossless_replay => {
+                if sender.send(odom).is_err() {
+                    error!("Error while sending odom message to sync worker: disconnected");
+                }
+            }
             Some(sender) => match sender.try_send(odom) {
                 Ok(_) => {}
                 Err(std::sync::mpsc::TrySendError::Full(_)) => {
@@ -2343,11 +2365,13 @@ impl Prelio {
         imu_pose_prediction_undistort: Option<Box<ImuPredictorUndistort>>,
         imu_pose_prediction_init_guess: Option<Box<ImuPredictor>>,
         lidar_vendor: LidarVendor,
-        ready_for_next: Option<std::sync::mpsc::Receiver<()>>,
+        ready_for_next: Option<std::sync::mpsc::Receiver<u64>>,
         mut imu_sync_mode: ImuSyncMode,
     ) {
         let mut eval = RuntimeEvaluator::new();
         let mut to_next: Option<ImuMsg> = None;
+        let mut awaiting_correction: Option<u64> = None;
+        let mut last_received_scan_id: Option<u64> = None;
         let mut cloud_count: usize = 0;
         while let Ok((
             (cloud_downsampled, cloud_output, lidar_begin_time, lidar_end_time, lidar_header),
@@ -2356,12 +2380,44 @@ impl Prelio {
             prelio_eval,
         )) = lidar_receiver.recv()
         {
+            if let Some(previous_scan_id) = last_received_scan_id
+                && scan_id != previous_scan_id.wrapping_add(1)
+            {
+                error!(
+                    "Pointcloud preprocessing skipped scan IDs: expected {}, received {scan_id}",
+                    previous_scan_id.wrapping_add(1)
+                );
+                return;
+            }
+            last_received_scan_id = Some(scan_id);
+            let initializing = cloud_count < initial_scan_accumulate;
+            if !initializing
+                && let Some(expected_scan_id) = awaiting_correction.take()
+                && let Some(completed) = ready_for_next.as_ref()
+            {
+                loop {
+                    match completed.recv() {
+                        Ok(scan_id) if scan_id == expected_scan_id => break,
+                        Ok(scan_id) if scan_id < expected_scan_id => continue,
+                        Ok(scan_id) => {
+                            warn!(
+                                "Expected correction for scan {expected_scan_id}, received scan {scan_id}"
+                            );
+                            return;
+                        }
+                        Err(_) => {
+                            warn!("Could not wait for next sync");
+                            return;
+                        }
+                    }
+                }
+            }
             eval.merge(&prelio_eval);
             let lidar_time = timestamp_to_secs(&lidar_header.stamp);
             let abs_lidar_end =
                 secs_to_timestamp(timestamp_to_secs(&lidar_header.stamp) + lidar_end_time);
 
-            if cloud_count < initial_scan_accumulate {
+            if initializing {
                 cloud_count += 1;
                 if !has_point_timestamps(lidar_vendor) {
                     *prev_lidar_end_time = lidar_time;
@@ -2388,6 +2444,7 @@ impl Prelio {
                 };
 
                 synced_sender.send(res).unwrap();
+                awaiting_correction = Some(scan_id);
                 continue;
             }
 
@@ -2568,6 +2625,7 @@ impl Prelio {
                     lidar_end_time_abs: abs_lidar_end,
                 };
                 synced_sender.send(res).unwrap();
+                awaiting_correction = Some(scan_id);
             } else {
                 let meas_lidar_end_time = if use_point_timestamps_for_frame {
                     lidar_end_time
@@ -2583,14 +2641,6 @@ impl Prelio {
                     imu_buffer: imu_data.clone(),
                     odom_buffer: odom_data.clone(),
                 };
-
-                // Waiting for sync signal. Needed for cases where undistortion uses an EKF state that predicts forward and the correction must be made first before predicting further.
-                if let Some(wait_for_next) = ready_for_next.as_ref() {
-                    if let Err(_) = wait_for_next.recv() {
-                        warn!("Could not wait for next sync");
-                        return;
-                    }
-                }
 
                 let imu_frame = meas
                     .imu_buffer
@@ -2679,6 +2729,7 @@ impl Prelio {
                     };
 
                     synced_sender.send(res).unwrap();
+                    awaiting_correction = Some(scan_id);
                 }
             }
 

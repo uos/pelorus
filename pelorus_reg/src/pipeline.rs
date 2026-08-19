@@ -256,7 +256,7 @@ impl Pipeline {
     pub fn register_processed_cloud(
         &self,
         mut processed: PrelioProcessedCloud,
-        ready_for_next: Option<&std::sync::mpsc::Sender<()>>,
+        ready_for_next: Option<&std::sync::mpsc::Sender<u64>>,
     ) -> anyhow::Result<Option<PelorusOutput>> {
         #[cfg(feature = "processing-time-export")]
         let processing_started = Instant::now();
@@ -507,7 +507,7 @@ impl Pipeline {
 
     pub fn create_prelio(
         &self,
-        ready_for_next: Option<std::sync::mpsc::Receiver<()>>,
+        ready_for_next: Option<std::sync::mpsc::Receiver<u64>>,
     ) -> anyhow::Result<(Prelio, std::sync::mpsc::Receiver<PrelioProcessedCloud>)> {
         let params = &self.config.prelio_params;
         let gravity = params.imu.gravity;
