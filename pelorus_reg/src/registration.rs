@@ -328,7 +328,7 @@ pub(crate) fn output_pose_covariance(ekf: &Eqf, lidar_to_output: &Isometry3<f64>
         .copy_from(&Matrix3::identity());
     jacobian
         .fixed_view_mut::<3, 3>(0, 3)
-        .copy_from(&(-skew_symmetric_na(&p_out)));
+        .copy_from(&(-skew_symmetric_na(&(p_out - ekf.anchor))));
     jacobian
         .fixed_view_mut::<3, 3>(3, 3)
         .copy_from(&r_out.transpose());
@@ -566,6 +566,13 @@ impl crate::Registration for RegistrationState {
 
             let eval_cb_inner = eval_cb.clone();
             let extrinsic_est = self.ekf.extrinsic_est;
+            // Re-anchor before capturing: `correct` would otherwise move the anchor
+            // after this closure had already captured the old value, and the
+            // measurement Jacobian would be built about a different origin than the
+            // one the filter is using.
+            let anchor_pos = self.ekf.state.pos;
+            self.ekf.set_anchor(anchor_pos);
+            let anchor = self.ekf.anchor;
 
             self.ekf.correct(
                 self.laser_point_noise_cov,
@@ -914,11 +921,12 @@ impl crate::Registration for RegistrationState {
                         let p_world = ekf_state.pose().transform(p_imu);
                         let pd2 = norm.dot(&p_world) + plane_d;
 
-                        // Equivariant error frame: the point-to-plane residual is
-                        // differentiated against a global rotation error, so the
-                        // moment arm is the point in world coordinates rather than
-                        // in the IMU frame.
-                        let a_vec = skew_symmetric_na(&p_world) * norm;
+                        // Equivariant error frame: the residual is differentiated
+                        // against a global rotation error, so the moment arm is the
+                        // point's offset from the error's anchor. The anchor rides
+                        // with the robot, keeping this bounded by sensor range
+                        // instead of growing with distance travelled.
+                        let a_vec = skew_symmetric_na(&(p_world - anchor)) * norm;
 
                         h_x[(i, 0)] = norm.x;
                         h_x[(i, 1)] = norm.y;

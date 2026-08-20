@@ -202,8 +202,14 @@ where
 ///
 /// Returns the matrix WITHOUT the identity and the `dt` factor; both are applied
 /// in `predict()`.
-pub fn df_dx(s: &StateIKFom, inp: &InputIKFom, extrinsic_est: bool) -> Mat<f64> {
+pub fn df_dx(
+    s: &StateIKFom,
+    inp: &InputIKFom,
+    extrinsic_est: bool,
+    anchor: &Vector3<f64>,
+) -> Mat<f64> {
     let mut cov = Mat::<f64>::zeros(24, 24);
+    let pos_a = s.pos - anchor;
 
     let id3 = nalgebra::Matrix3::<f64>::identity();
     let rot_mat = s.rot.matrix();
@@ -222,12 +228,12 @@ pub fn df_dx(s: &StateIKFom, inp: &InputIKFom, extrinsic_est: bool) -> Mat<f64> 
     };
 
     copy_block(0, 12, &id3); // pos -- vel
-    copy_block(0, 15, &(-skew_symmetric_na(&s.pos))); // pos -- gyro bias
+    copy_block(0, 15, &(-skew_symmetric_na(&pos_a))); // pos -- gyro bias
     copy_block(3, 15, &(-id3)); // rot -- gyro bias
 
     if extrinsic_est {
         // Couples the lever arm to the extrinsic rotation error.
-        let z_blk = skew_symmetric_na(&(skew_symmetric_na(&s.pos) * omega_world + s.vel));
+        let z_blk = skew_symmetric_na(&(skew_symmetric_na(&pos_a) * omega_world + s.vel));
         copy_block(6, 6, &x_blk); // extrinsic rot -- extrinsic rot
         copy_block(9, 6, &z_blk); // lever arm -- extrinsic rot
         copy_block(9, 9, &x_blk); // lever arm -- lever arm
@@ -253,11 +259,11 @@ pub fn df_dx(s: &StateIKFom, inp: &InputIKFom, extrinsic_est: bool) -> Mat<f64> 
 ///
 /// Every block carries the world rotation because the noise enters in the body
 /// frame while the equivariant error state is expressed globally.
-pub fn df_dw(s: &StateIKFom, _inp: &InputIKFom) -> Mat<f64> {
+pub fn df_dw(s: &StateIKFom, _inp: &InputIKFom, anchor: &Vector3<f64>) -> Mat<f64> {
     let mut cov = Mat::<f64>::zeros(24, 12);
 
     let rot_mat = s.rot.matrix();
-    let pos_skew_rot = skew_symmetric_na(&s.pos) * rot_mat;
+    let pos_skew_rot = skew_symmetric_na(&(s.pos - anchor)) * rot_mat;
     let vel_skew_rot = skew_symmetric_na(&s.vel) * rot_mat;
 
     let mut copy_block = |row: usize, col: usize, src: &nalgebra::Matrix3<f64>| {
@@ -294,6 +300,11 @@ pub struct Eqf {
     pub cov_i_kh: Mat<f64>,      // 24x24 temporary for cov update in scalar constraint
     pub i_cov_i_kh: Mat<f64>,    // 24x24 temporary for cov update in scalar constraint
     pub initialized: bool,
+    /// Origin the equivariant error is measured about. The global rotation error
+    /// displaces a point by its distance from this anchor, so leaving it at the
+    /// world origin makes both the Jacobians and the covariance scale with distance
+    /// travelled and destroys the conditioning of the update. Kept near the robot.
+    pub anchor: Vector3<f64>,
     /// Estimate the LiDAR-to-IMU extrinsics online. Off by default; when on,
     /// the extrinsic blocks of the equivariant error dynamics and the
     /// corresponding measurement Jacobian columns become active.
@@ -339,7 +350,12 @@ fn propagate(x: &StateIKFom, f: &Mat<f64>) -> StateIKFom {
 /// The error lives in the global frame, so the rotation error acts on the left
 /// and drags position, velocity and both biases along with it. This is the
 /// inverse of [`box_minus`].
-fn compensate(x: &StateIKFom, f: &Mat<f64>, extrinsic_est: bool) -> StateIKFom {
+fn compensate(
+    x: &StateIKFom,
+    f: &Mat<f64>,
+    extrinsic_est: bool,
+    anchor: &Vector3<f64>,
+) -> StateIKFom {
     let delta = |i: usize| Vector3::new(f[(i, 0)], f[(i + 1, 0)], f[(i + 2, 0)]);
 
     let d_bg = delta(15);
@@ -349,7 +365,7 @@ fn compensate(x: &StateIKFom, f: &Mat<f64>, extrinsic_est: bool) -> StateIKFom {
 
     let mut x_r = *x;
     x_r.rot = rot_error.group_mul(x.rot);
-    x_r.pos = delta(0) + rot_error_mat * x.pos;
+    x_r.pos = anchor + delta(0) + rot_error_mat * (x.pos - anchor);
     x_r.vel = delta(12) + rot_error_mat * x.vel;
 
     if extrinsic_est {
@@ -363,7 +379,9 @@ fn compensate(x: &StateIKFom, f: &Mat<f64>, extrinsic_est: bool) -> StateIKFom {
         x_r.offset_t_l_i =
             x_r.offset_r_l_i.matrix() * x.offset_r_l_i.matrix().transpose() * x.offset_t_l_i
                 + rot_inv_mat * delta(9)
-                - rot_inv_mat * (nalgebra::Matrix3::identity() - offset_r_error.matrix()) * x.pos;
+                - rot_inv_mat
+                    * (nalgebra::Matrix3::identity() - offset_r_error.matrix())
+                    * (x.pos - anchor);
     }
 
     x_r.bg = x.bg + rot_inv_mat * d_bg;
@@ -374,7 +392,12 @@ fn compensate(x: &StateIKFom, f: &Mat<f64>, extrinsic_est: bool) -> StateIKFom {
 }
 
 /// Equivariant difference between two states, the inverse of [`compensate`].
-fn box_minus(x1: &StateIKFom, x2: &StateIKFom, extrinsic_est: bool) -> Mat<f64> {
+fn box_minus(
+    x1: &StateIKFom,
+    x2: &StateIKFom,
+    extrinsic_est: bool,
+    anchor: &Vector3<f64>,
+) -> Mat<f64> {
     let rot_err = x1.rot.group_mul(x2.rot.inverse());
     let rot_err_mat = rot_err.matrix();
     let rot2_mat = x2.rot.matrix();
@@ -387,7 +410,7 @@ fn box_minus(x1: &StateIKFom, x2: &StateIKFom, extrinsic_est: bool) -> Mat<f64> 
         x_r[(i + 2, 0)] = v.z;
     };
 
-    set(0, x1.pos - rot_err_mat * x2.pos);
+    set(0, (x1.pos - anchor) - rot_err_mat * (x2.pos - anchor));
     set(3, rot_err.log());
 
     if extrinsic_est {
@@ -405,7 +428,8 @@ fn box_minus(x1: &StateIKFom, x2: &StateIKFom, extrinsic_est: bool) -> Mat<f64> 
         set(6, ext_err.log());
         set(
             9,
-            (nalgebra::Matrix3::identity() - ext_err_mat) * x2.pos + rot2_mat * x1.offset_t_l_i
+            (nalgebra::Matrix3::identity() - ext_err_mat) * (x2.pos - anchor)
+                + rot2_mat * x1.offset_t_l_i
                 - ext_err_mat * rot2_mat * x2.offset_t_l_i,
         );
     } else {
@@ -433,6 +457,7 @@ impl Eqf {
             state: StateIKFom::new(g),
             cov: Mat::<f64>::identity(24, 24),
             initialized: false,
+            anchor: Vector3::zeros(),
             extrinsic_est: false,
             last_time: 0.0,
             h: Col::<f64>::zeros(0),
@@ -455,12 +480,31 @@ impl Eqf {
         }
     }
 
+    /// Move the anchor. Re-anchoring is a group action, so the covariance is
+    /// transformed by an exact congruence: `dp` measured about `a'` equals `dp`
+    /// about `a` minus `S(a' - a) dtheta`. No approximation is involved.
+    pub fn set_anchor(&mut self, new_anchor: Vector3<f64>) {
+        let shift = new_anchor - self.anchor;
+        if shift.norm_squared() == 0.0 {
+            return;
+        }
+        let s = skew_symmetric_na(&shift);
+        let mut ad = Mat::<f64>::identity(24, 24);
+        for i in 0..3 {
+            for j in 0..3 {
+                ad[(i, 3 + j)] = -s[(i, j)];
+            }
+        }
+        self.cov = &(&ad * &self.cov) * &ad.transpose();
+        self.anchor = new_anchor;
+    }
+
     pub fn predict(&mut self, dt: f64, q: &Mat<f64>, i_in: &InputIKFom) {
         self.last_time += dt;
 
         let f = get_f(&self.state, i_in);
-        let f_x_raw = df_dx(&self.state, i_in, self.extrinsic_est);
-        let f_w_raw = df_dw(&self.state, i_in);
+        let f_x_raw = df_dx(&self.state, i_in, self.extrinsic_est, &self.anchor);
+        let f_w_raw = df_dw(&self.state, i_in, &self.anchor);
 
         // State update: x = propagate(x, f * dt)
         let f_dt = &f * dt;
@@ -636,7 +680,7 @@ impl Eqf {
         for i in 0..24 {
             dx_mat[(i, 0)] = dx[i];
         }
-        self.state = compensate(&self.state, &dx_mat, self.extrinsic_est);
+        self.state = compensate(&self.state, &dx_mat, self.extrinsic_est, &self.anchor);
 
         // Update covariance: P = (I - K*h^T) * P * (I - K*h^T)^T + K * r_var * K^T
         for i in 0..24 {
@@ -823,6 +867,12 @@ impl Eqf {
     ) {
         self.last_time = measurement_time;
 
+        // Keep the error's origin on the robot. Without this the measurement
+        // Jacobian's moment arm is the point's distance from the world origin
+        // rather than from the sensor, and the information matrix loses precision
+        // in proportion to distance travelled.
+        self.set_anchor(self.state.pos);
+
         if measurement_noise_cov <= 0.0 {
             error!("EqF: Non‑positive measurement noise covariance, skipping update.");
             return;
@@ -873,7 +923,12 @@ impl Eqf {
             eval.start("ekf_correct/it/info_mat").unwrap();
 
             // dx_new = boxminus(x_, x_propagated) - equation (18): x^k - x^
-            let dx_new = box_minus(&self.state, &state_propagated, self.extrinsic_est);
+            let dx_new = box_minus(
+                &self.state,
+                &state_propagated,
+                self.extrinsic_est,
+                &self.anchor,
+            );
 
             // H is m x 12 (sparse - only first 12 columns non-zero)
             // We only use the first m rows of h_x (the actual measurements)
@@ -1005,7 +1060,7 @@ impl Eqf {
                 return;
             }
 
-            self.state = compensate(&self.state, &dx_, self.extrinsic_est);
+            self.state = compensate(&self.state, &dx_, self.extrinsic_est, &self.anchor);
 
             // Check convergence: if all |dx_[j]| < EPSI, converged
             converge_flag = true;
@@ -1079,6 +1134,11 @@ mod tests {
                 scale * (((i * 7) % 11) as f64 - 5.0) / 5.0
             }
         })
+    }
+
+    /// Deliberately off the world origin, so the anchored paths are exercised.
+    fn test_anchor() -> Vector3<f64> {
+        Vector3::new(120.0, -75.0, 8.0)
     }
 
     fn max_abs_diff(a: &Mat<f64>, b: &Mat<f64>) -> f64 {
@@ -1206,14 +1266,132 @@ mod tests {
         }
     }
 
+    /// The equivariant rotation error displaces a point by its distance from the
+    /// anchor. If the anchor is left at the world origin that distance grows with
+    /// the trajectory, the information matrix loses conditioning, and the
+    /// correction quietly degrades the further the robot travels -- which is a
+    /// drift that only shows up on long runs. The anchor must make this exactly
+    /// distance-invariant.
+    #[test]
+    fn correction_is_independent_of_distance_from_origin() {
+        use pelorus_core::timing::RuntimeEvaluator;
+
+        struct Plane {
+            local: Vector3<f64>,
+            normal: Vector3<f64>,
+            d: f64,
+        }
+
+        fn residual_error(dist: f64) -> (f64, f64) {
+            let mut truth = nominal_state();
+            truth.pos = Vector3::new(0.87, -0.44, 0.22).normalize() * dist;
+
+            // geometry fixed relative to the robot, so only |p| varies
+            let scene: Vec<Plane> = (0..400)
+                .map(|i| {
+                    let a = i as f64 * 2.399963;
+                    let r = 3.0 + ((i % 17) as f64) * 1.5;
+                    let local =
+                        Vector3::new(r * a.cos(), r * a.sin(), ((i % 7) as f64 - 3.0) * 0.8);
+                    let normal = Vector3::new(
+                        (a * 1.7).cos(),
+                        (a * 1.3).sin(),
+                        0.4 + 0.3 * (a * 0.9).cos(),
+                    )
+                    .normalize();
+                    let p_imu = truth.offset_r_l_i.matrix() * local + truth.offset_t_l_i;
+                    let p_w = truth.rot.matrix() * p_imu + truth.pos;
+                    let d = -normal.dot(&p_w);
+                    Plane { local, normal, d }
+                })
+                .collect();
+
+            let mut ekf = Eqf::new(9.81, nalgebra::Isometry3::identity());
+            ekf.initialized = true;
+            ekf.state = truth;
+            ekf.state.rot = SO3::exp(Vector3::new(0.3, -0.5, 0.81).normalize() * 3f64.to_radians())
+                .group_mul(truth.rot);
+            ekf.state.pos = truth.pos + Vector3::new(0.6, -0.5, 0.62).normalize() * 0.10;
+
+            // a fixed *physical* prior, expressed in equivariant coordinates
+            let mut phys = Mat::<f64>::zeros(24, 24);
+            for i in 0..3 {
+                phys[(i, i)] = 0.01;
+                phys[(3 + i, 3 + i)] = 0.01;
+                phys[(6 + i, 6 + i)] = 1e-6;
+                phys[(9 + i, 9 + i)] = 1e-6;
+                phys[(12 + i, 12 + i)] = 0.01;
+                phys[(15 + i, 15 + i)] = 1e-4;
+                phys[(18 + i, 18 + i)] = 1e-3;
+                phys[(21 + i, 21 + i)] = 1e-5;
+            }
+            let mut tmap = Mat::<f64>::identity(24, 24);
+            let s = skew_symmetric_na(&ekf.state.pos);
+            for i in 0..3 {
+                for j in 0..3 {
+                    tmap[(i, 3 + j)] = s[(i, j)];
+                }
+            }
+            ekf.cov = &(&tmap * &phys) * &tmap.transpose();
+
+            let anchor_pos = ekf.state.pos;
+            ekf.set_anchor(anchor_pos);
+            let anchor = ekf.anchor;
+
+            let mut eval = RuntimeEvaluator::new();
+            let eval_arc = std::sync::Arc::new(std::sync::RwLock::new(&mut eval));
+            ekf.correct(0.001, 1.0, 4, eval_arc, |s, valid, _c, h, h_x, num| {
+                if h.nrows() < scene.len() {
+                    *h = Col::<f64>::zeros(scene.len());
+                }
+                if h_x.nrows() < scene.len() {
+                    *h_x = Mat::<f64>::zeros(scene.len(), 12);
+                }
+                for (i, pl) in scene.iter().enumerate() {
+                    let p_imu = s.offset_r_l_i.matrix() * pl.local + s.offset_t_l_i;
+                    let p_w = s.rot.matrix() * p_imu + s.pos;
+                    let a_vec = skew_symmetric_na(&(p_w - anchor)) * pl.normal;
+                    h_x[(i, 0)] = pl.normal.x;
+                    h_x[(i, 1)] = pl.normal.y;
+                    h_x[(i, 2)] = pl.normal.z;
+                    h_x[(i, 3)] = a_vec.x;
+                    h_x[(i, 4)] = a_vec.y;
+                    h_x[(i, 5)] = a_vec.z;
+                    for c in 6..12 {
+                        h_x[(i, c)] = 0.0;
+                    }
+                    h[i] = -(pl.normal.dot(&p_w) + pl.d);
+                }
+                *num = scene.len();
+                *valid = true;
+            });
+
+            (
+                (ekf.state.pos - truth.pos).norm(),
+                truth.rot.inverse().group_mul(ekf.state.rot).log().norm(),
+            )
+        }
+
+        let (p0, a0) = residual_error(0.0);
+        for dist in [100.0, 1000.0, 5000.0] {
+            let (p, a) = residual_error(dist);
+            assert!(
+                (p - p0).abs() < 1e-9 && (a - a0).abs() < 1e-11,
+                "correction degrades {dist} m from the origin: \
+                 position {p:e} vs {p0:e}, attitude {a:e} vs {a0:e}"
+            );
+        }
+    }
+
     #[test]
     fn compensate_inverts_box_minus() {
         for extrinsic_est in [false, true] {
             let x = nominal_state();
             let e = error_vector(0.05, extrinsic_est);
 
-            let perturbed = compensate(&x, &e, extrinsic_est);
-            let recovered = box_minus(&perturbed, &x, extrinsic_est);
+            let a = test_anchor();
+            let perturbed = compensate(&x, &e, extrinsic_est, &a);
+            let recovered = box_minus(&perturbed, &x, extrinsic_est, &a);
 
             assert!(
                 max_abs_diff(&recovered, &e) < 1e-12,
@@ -1236,13 +1414,14 @@ mod tests {
             let x_hat = nominal_state();
             let inp = nominal_input();
             let e = error_vector(SCALE, extrinsic_est);
-            let x_true = compensate(&x_hat, &e, extrinsic_est);
+            let a = test_anchor();
+            let x_true = compensate(&x_hat, &e, extrinsic_est, &a);
 
             let step = |s: &StateIKFom| propagate(s, &(&get_f(s, &inp) * DT));
-            let e_next = box_minus(&step(&x_true), &step(&x_hat), extrinsic_est);
+            let e_next = box_minus(&step(&x_true), &step(&x_hat), extrinsic_est, &a);
 
             let measured = &(&e_next - &e) * (1.0 / DT);
-            let predicted = &df_dx(&x_hat, &inp, extrinsic_est) * &e;
+            let predicted = &df_dx(&x_hat, &inp, extrinsic_est, &a) * &e;
 
             let deviation = max_abs_diff(&measured, &predicted);
             assert!(
@@ -1268,9 +1447,10 @@ mod tests {
                 normal.dot(&(s.rot.matrix() * p_imu + s.pos))
             };
 
+            let anchor = test_anchor();
             let p_world =
                 x.rot.matrix() * (x.offset_r_l_i.matrix() * p_lidar + x.offset_t_l_i) + x.pos;
-            let a_vec = skew_symmetric_na(&p_world) * normal;
+            let a_vec = skew_symmetric_na(&(p_world - anchor)) * normal;
 
             let mut h = Mat::<f64>::zeros(1, 24);
             for j in 0..3 {
@@ -1282,9 +1462,9 @@ mod tests {
                 }
             }
 
-            let e = error_vector(1e-6, extrinsic_est);
+            let e = error_vector(1e-7, extrinsic_est);
             let predicted = (&h * &e)[(0, 0)];
-            let measured = residual(&compensate(&x, &e, extrinsic_est)) - residual(&x);
+            let measured = residual(&compensate(&x, &e, extrinsic_est, &anchor)) - residual(&x);
 
             assert!(
                 (measured - predicted).abs() < 1e-10,
