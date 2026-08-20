@@ -7,7 +7,7 @@ use ros_pointcloud2::prelude::*;
 
 pub mod backend;
 pub use backend::ActiveBackend;
-pub mod iekf;
+pub mod eqf;
 pub mod imu;
 pub mod pipeline;
 pub mod realtime;

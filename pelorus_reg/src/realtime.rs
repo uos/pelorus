@@ -1,6 +1,6 @@
 //! Low-latency, output-only IMU propagation.
 //!
-//! This predictor is deliberately separate from the registration IEKF.  LiDAR
+//! This predictor is deliberately separate from the registration EqF.  LiDAR
 //! corrections reseed it, so enabling high-rate output cannot perturb mapping
 //! or the corrected trajectory.
 
@@ -20,7 +20,7 @@ use ros_pointcloud2::prelude::TimeMsg;
 
 use crate::{
     ImuEkfPrediction,
-    iekf::Iekf,
+    eqf::Eqf,
     imu::{ImuPredictionContext, ImuProcessing},
     registration::{RegistrationState, output_pose_covariance, output_twist_covariance},
 };
@@ -42,7 +42,7 @@ pub struct RealtimePrediction {
 
 #[derive(Clone)]
 struct CorrectedSnapshot {
-    state: crate::iekf::StateIKFom,
+    state: crate::eqf::StateIKFom,
     covariance: faer::Mat<f64>,
     initialized: bool,
     last_time: f64,
@@ -180,7 +180,7 @@ impl Drop for RealtimePredictorHandle {
 }
 
 struct WorkerState {
-    ekf: Iekf,
+    ekf: Eqf,
     imu: ImuProcessing,
     seeded: bool,
     history: VecDeque<ImuMsg>,
@@ -202,7 +202,7 @@ fn worker(
         UnitQuaternion::from_matrix(&config.imu_params.initial_rotation_lidar_to_imu),
     );
     let mut state = WorkerState {
-        ekf: Iekf::new(config.prelio_params.imu.gravity, config.base_to_lidar),
+        ekf: Eqf::new(config.prelio_params.imu.gravity, config.base_to_lidar),
         imu: ImuProcessing::new(&config.imu_params, &lidar_to_imu, &config.base_to_lidar),
         seeded: false,
         history: VecDeque::new(),
@@ -211,7 +211,7 @@ fn worker(
         output_base: config.base_link_frame.is_some(),
     };
     let mut export_state = export_tx.as_ref().map(|_| WorkerState {
-        ekf: Iekf::new(config.prelio_params.imu.gravity, config.base_to_lidar),
+        ekf: Eqf::new(config.prelio_params.imu.gravity, config.base_to_lidar),
         imu: ImuProcessing::new(&config.imu_params, &lidar_to_imu, &config.base_to_lidar),
         seeded: false,
         history: VecDeque::new(),
@@ -408,7 +408,7 @@ mod tests {
     use pelorus_core::{ImuMsg, LioConfig, time_msg_from_secs};
 
     use super::{RealtimePredictorHandle, WorkerState};
-    use crate::{Registration, iekf::Iekf, imu::ImuProcessing, pipeline::Pipeline};
+    use crate::{Registration, eqf::Eqf, imu::ImuProcessing, pipeline::Pipeline};
 
     fn imu(timestamp: f64) -> ImuMsg {
         ImuMsg {
@@ -520,7 +520,7 @@ mod tests {
             UnitQuaternion::from_matrix(&config.imu_params.initial_rotation_lidar_to_imu),
         );
         let mut state = WorkerState {
-            ekf: Iekf::new(config.prelio_params.imu.gravity, Isometry3::identity()),
+            ekf: Eqf::new(config.prelio_params.imu.gravity, Isometry3::identity()),
             imu: ImuProcessing::new(&config.imu_params, &lidar_to_imu, &Isometry3::identity()),
             seeded: false,
             history: VecDeque::new(),

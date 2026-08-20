@@ -2974,7 +2974,7 @@ fn lio_with_ready_signal(
             pelorus_odom.twist.twist.angular.z = ang_vel_body.z;
 
             {
-                let (pose_cov_iekf, twist_cov_iekf) = {
+                let (pose_cov_eqf, twist_cov_eqf) = {
                     let map = pipeline.map();
                     let guard = map.lock().unwrap();
                     let lidar_to_child = if config.base_link_frame.is_some() {
@@ -2989,14 +2989,14 @@ fn lio_with_ready_signal(
 
                 #[cfg(not(feature = "r2r"))]
                 {
-                    pelorus_odom.pose.covariance = pose_cov_iekf;
-                    pelorus_odom.twist.covariance = twist_cov_iekf;
+                    pelorus_odom.pose.covariance = pose_cov_eqf;
+                    pelorus_odom.twist.covariance = twist_cov_eqf;
                 }
 
                 #[cfg(feature = "r2r")]
                 {
-                    pelorus_odom.pose.covariance = pose_cov_iekf.to_vec();
-                    pelorus_odom.twist.covariance = twist_cov_iekf.to_vec();
+                    pelorus_odom.pose.covariance = pose_cov_eqf.to_vec();
+                    pelorus_odom.twist.covariance = twist_cov_eqf.to_vec();
                 }
             }
 

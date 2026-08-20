@@ -1,3 +1,24 @@
+//! Iterated equivariant filter (EqF) for tightly coupled LiDAR-inertial odometry.
+//!
+//! Follows "Equivariant Filter for Tightly Coupled LiDAR-Inertial Odometry"
+//! (Xu et al., ICRA 2025, <https://arxiv.org/abs/2409.06948>) and its reference
+//! implementation <https://github.com/taoxiom/Eq-LIO>.
+//!
+//! The state and the measurement model are the same as in a FAST-LIO style
+//! iterated EKF; what changes is where the error lives. Instead of a body-frame
+//! perturbation, the error is a group element of the semi-direct product symmetry
+//! that couples navigation state, IMU biases and the LiDAR extrinsics. Concretely
+//! the correction acts on the left,
+//!
+//! ```text
+//! R <- exp(dtheta) R,   p <- dp + exp(dtheta) p,   v <- dv + exp(dtheta) v
+//! ```
+//!
+//! with the biases carried along by `R^T` (see [`compensate`]). Because the group
+//! action, not the raw IMU reading, drives the linearisation, the error dynamics
+//! depend on the state only through equivariant quantities, which is what reduces
+//! the linearisation error and keeps the filter consistent through abrupt motion.
+
 use faer::linalg::matmul::matmul;
 use faer::linalg::solvers::DenseSolveCore;
 use faer::prelude::{Reborrow, ReborrowMut};
@@ -23,6 +44,12 @@ fn mat3_to_faer(m: &nalgebra::Matrix3<f64>) -> Mat<f64> {
 // TODO use config, needs some refactor
 const GRAVITY_DEFAULT: f64 = 9.81;
 
+/// Gain cap for the non-holonomic kinematic constraints.
+const KINEMATIC_MAX_GAIN: f64 = 0.8;
+
+/// Filter state; the index ranges are the layout of the 24-dimensional error
+/// vector used by the covariance, the Jacobians, [`compensate`] and [`box_minus`].
+///
 /// - pos (0-2): position in world frame
 /// - rot (3-5): rotation SO3 (world to IMU)
 /// - offset_R_L_I (6-8): lidar-to-IMU rotation extrinsic
@@ -141,23 +168,12 @@ fn get_f(s: &StateIKFom, inp: &InputIKFom) -> Mat<f64> {
     res
 }
 
-// Given a vector `q = [x, y, z]`, the skew-symmetric matrix is:
-// ```
-// [  0, -z,  y ]
-// [  z,  0, -x ]
-// [ -y,  x,  0 ]
-// ```
-pub fn skew_symmetric(q: &Vector3<f64>) -> Mat<f64> {
-    let mut m = Mat::<f64>::zeros(3, 3);
-    m[(0, 1)] = -q[2];
-    m[(0, 2)] = q[1];
-    m[(1, 0)] = q[2];
-    m[(1, 2)] = -q[0];
-    m[(2, 0)] = -q[1];
-    m[(2, 1)] = q[0];
-    m
-}
-
+/// Given a vector `q = [x, y, z]`, the skew-symmetric matrix is:
+/// ```text
+/// [  0, -z,  y ]
+/// [  z,  0, -x ]
+/// [ -y,  x,  0 ]
+/// ```
 pub fn skew_symmetric_na<T>(q: &Vector3<T>) -> nalgebra::Matrix3<T>
 where
     T: nalgebra::Scalar + Copy + From<f64> + std::ops::Neg<Output = T>,
@@ -175,81 +191,95 @@ where
     )
 }
 
-/// Get the Jacobian of the state transition function f(x, u) with respect to x.
-/// Note: This returns the matrix WITHOUT the identity and dt multiplication
-/// (those are applied in predict())
-pub fn df_dx(s: &StateIKFom, inp: &InputIKFom) -> Mat<f64> {
+/// Jacobian of the error dynamics with respect to the error state (Eq-LIO eq. (7)).
+///
+/// The equivariant error lives in the global frame of the semi-direct product
+/// symmetry group rather than in the body frame used by a FAST-LIO style EKF, so
+/// the linearisation is driven by `X = hat(R (omega - bg))` instead of by the raw
+/// IMU measurements. That is what removes most of the linearisation error: the
+/// blocks below depend on the state only through quantities that transform
+/// covariantly with the group action.
+///
+/// Returns the matrix WITHOUT the identity and the `dt` factor; both are applied
+/// in `predict()`.
+pub fn df_dx(s: &StateIKFom, inp: &InputIKFom, extrinsic_est: bool) -> Mat<f64> {
     let mut cov = Mat::<f64>::zeros(24, 24);
 
-    let rot_mat = mat3_to_faer(&s.rot.matrix());
-    let acc_diff = inp.acc - s.ba;
-    let acc_skew = skew_symmetric(&acc_diff);
+    let id3 = nalgebra::Matrix3::<f64>::identity();
+    let rot_mat = s.rot.matrix();
 
-    // Helper to copy 3x3 block into larger matrix
-    let copy_block = |dest: &mut Mat<f64>, row: usize, col: usize, src: &Mat<f64>| {
+    // Generator of the equivariant error dynamics: the bias-corrected angular
+    // rate expressed in the world frame.
+    let omega_world = rot_mat * (inp.gyro - s.bg);
+    let x_blk = skew_symmetric_na(&omega_world);
+
+    let mut copy_block = |row: usize, col: usize, src: &nalgebra::Matrix3<f64>| {
         for i in 0..3 {
             for j in 0..3 {
-                dest[(row + i, col + j)] = src[(i, j)];
+                cov[(row + i, col + j)] = src[(i, j)];
             }
         }
     };
 
-    // d(pos)/d(vel) = I  -> (0, 12)
-    let id3 = Mat::<f64>::identity(3, 3);
-    copy_block(&mut cov, 0, 12, &id3);
+    copy_block(0, 12, &id3); // pos -- vel
+    copy_block(0, 15, &(-skew_symmetric_na(&s.pos))); // pos -- gyro bias
+    copy_block(3, 15, &(-id3)); // rot -- gyro bias
 
-    // d(vel)/d(rot) = -R * skew(acc - ba)  -> (12, 3)
-    let vel_rot_block = &rot_mat * &acc_skew * (-1.0);
-    copy_block(&mut cov, 12, 3, &vel_rot_block);
+    if extrinsic_est {
+        // Couples the lever arm to the extrinsic rotation error.
+        let z_blk = skew_symmetric_na(&(skew_symmetric_na(&s.pos) * omega_world + s.vel));
+        copy_block(6, 6, &x_blk); // extrinsic rot -- extrinsic rot
+        copy_block(9, 6, &z_blk); // lever arm -- extrinsic rot
+        copy_block(9, 9, &x_blk); // lever arm -- lever arm
+    }
 
-    // d(vel)/d(ba) = -R  -> (12, 18)
-    let vel_ba_block = &rot_mat * (-1.0);
-    copy_block(&mut cov, 12, 18, &vel_ba_block);
+    copy_block(12, 3, &skew_symmetric_na(&s.grav)); // vel -- rot
+    copy_block(12, 18, &(-id3)); // vel -- accel bias
+    copy_block(12, 21, &id3); // vel -- gravity
 
-    // d(vel)/d(grav) = I  -> (12, 21)
-    copy_block(&mut cov, 12, 21, &id3);
+    copy_block(15, 15, &x_blk); // gyro bias -- gyro bias
 
-    // d(rot)/d(bg) = -I  -> (3, 15)
-    let neg_id3 = &id3 * (-1.0);
-    copy_block(&mut cov, 3, 15, &neg_id3);
+    // Couples the accelerometer bias to the gyro bias error.
+    let y_blk = skew_symmetric_na(
+        &(rot_mat * (inp.acc - s.ba) + skew_symmetric_na(&s.vel) * omega_world + s.grav),
+    );
+    copy_block(18, 15, &y_blk); // accel bias -- gyro bias
+    copy_block(18, 18, &x_blk); // accel bias -- accel bias
 
     cov
 }
 
-/// Get the Jacobian of the state transition function f(x, u) with respect to w (noise).
+/// Jacobian of the error dynamics with respect to the IMU noise.
+///
+/// Every block carries the world rotation because the noise enters in the body
+/// frame while the equivariant error state is expressed globally.
 pub fn df_dw(s: &StateIKFom, _inp: &InputIKFom) -> Mat<f64> {
     let mut cov = Mat::<f64>::zeros(24, 12);
 
-    let rot_mat = mat3_to_faer(&s.rot.matrix());
-    let id3 = Mat::<f64>::identity(3, 3);
+    let rot_mat = s.rot.matrix();
+    let pos_skew_rot = skew_symmetric_na(&s.pos) * rot_mat;
+    let vel_skew_rot = skew_symmetric_na(&s.vel) * rot_mat;
 
-    // Helper to copy 3x3 block
-    let copy_block = |dest: &mut Mat<f64>, row: usize, col: usize, src: &Mat<f64>| {
+    let mut copy_block = |row: usize, col: usize, src: &nalgebra::Matrix3<f64>| {
         for i in 0..3 {
             for j in 0..3 {
-                dest[(row + i, col + j)] = src[(i, j)];
+                cov[(row + i, col + j)] = src[(i, j)];
             }
         }
     };
 
-    // d(vel)/d(n_a) = -R  -> (12, 3)
-    let vel_na_block = &rot_mat * (-1.0);
-    copy_block(&mut cov, 12, 3, &vel_na_block);
-
-    // d(rot)/d(n_g) = -I  -> (3, 0)
-    let neg_id3 = &id3 * (-1.0);
-    copy_block(&mut cov, 3, 0, &neg_id3);
-
-    // d(bg)/d(n_bg) = I  -> (15, 6)
-    copy_block(&mut cov, 15, 6, &id3);
-
-    // d(ba)/d(n_ba) = I  -> (18, 9)
-    copy_block(&mut cov, 18, 9, &id3);
+    copy_block(0, 0, &pos_skew_rot); // pos -- gyro noise
+    copy_block(3, 0, &rot_mat); // rot -- gyro noise
+    copy_block(12, 0, &vel_skew_rot); // vel -- gyro noise
+    copy_block(12, 3, &rot_mat); // vel -- accel noise
+    copy_block(15, 6, &(-rot_mat)); // gyro bias -- gyro bias noise
+    copy_block(18, 6, &(-vel_skew_rot)); // accel bias -- gyro bias noise
+    copy_block(18, 9, &(-rot_mat)); // accel bias -- accel bias noise
 
     cov
 }
 
-pub struct Iekf {
+pub struct Eqf {
     pub state: StateIKFom,
     pub cov: Mat<f64>,           // 24x24 covariance matrix in faer
     pub f_w_q_w_t_dt2: Mat<f64>, // 24x24 temporary for cov update in predict
@@ -264,6 +294,10 @@ pub struct Iekf {
     pub cov_i_kh: Mat<f64>,      // 24x24 temporary for cov update in scalar constraint
     pub i_cov_i_kh: Mat<f64>,    // 24x24 temporary for cov update in scalar constraint
     pub initialized: bool,
+    /// Estimate the LiDAR-to-IMU extrinsics online. Off by default; when on,
+    /// the extrinsic blocks of the equivariant error dynamics and the
+    /// corresponding measurement Jacobian columns become active.
+    pub extrinsic_est: bool,
     pub last_time: f64,
     pub h: Col<f64>,   // measurement residual vector
     pub h_x: Mat<f64>, // measurement Jacobian matrix (m x 12, sparse - only first 12 cols non-zero)
@@ -273,103 +307,133 @@ pub struct Iekf {
     pub base_to_lidar: nalgebra::Isometry3<f64>,
 }
 
-/// Adding the state and the perturbation, stay on the manifold
-/// pos(0-2), rot(3-5), offset_R_L_I(6-8), offset_T_L_I(9-11), vel(12-14), bg(15-17), ba(18-20), grav(21-23)
-fn box_plus(x: &StateIKFom, f: &Mat<f64>) -> StateIKFom {
+/// Forward propagation of the state along the IMU kinematics.
+///
+/// Ordering: pos(0-2), rot(3-5), offset_R_L_I(6-8), offset_T_L_I(9-11),
+/// vel(12-14), bg(15-17), ba(18-20), grav(21-23).
+///
+/// Propagation is unaffected by the choice of error frame, so this stays the
+/// plain right-multiplied manifold update; the equivariance shows up in
+/// `compensate` and `box_minus`.
+fn propagate(x: &StateIKFom, f: &Mat<f64>) -> StateIKFom {
     let mut x_r = *x;
 
-    // pos += delta_pos (rows 0-2)
-    let delta_pos = Vector3::new(f[(0, 0)], f[(1, 0)], f[(2, 0)]);
-    x_r.pos = x.pos + delta_pos;
-
-    // rot = rot * exp(delta_rot) (rows 3-5)
-    let delta_rot_vec = Vector3::new(f[(3, 0)], f[(4, 0)], f[(5, 0)]);
-    x_r.rot = x.rot.group_mul(SO3::exp(delta_rot_vec));
-
-    // offset_R_L_I = offset_R_L_I * exp(delta_offset_R) (rows 6-8)
-    let delta_offset_r = Vector3::new(f[(6, 0)], f[(7, 0)], f[(8, 0)]);
-    x_r.offset_r_l_i = x.offset_r_l_i.group_mul(SO3::exp(delta_offset_r));
-
-    // offset_T_L_I += delta_offset_T (rows 9-11)
-    let delta_offset_t = Vector3::new(f[(9, 0)], f[(10, 0)], f[(11, 0)]);
-    x_r.offset_t_l_i = x.offset_t_l_i + delta_offset_t;
-
-    // vel += delta_vel (rows 12-14)
+    x_r.pos = x.pos + Vector3::new(f[(0, 0)], f[(1, 0)], f[(2, 0)]);
+    x_r.rot = x
+        .rot
+        .group_mul(SO3::exp(Vector3::new(f[(3, 0)], f[(4, 0)], f[(5, 0)])));
+    x_r.offset_r_l_i =
+        x.offset_r_l_i
+            .group_mul(SO3::exp(Vector3::new(f[(6, 0)], f[(7, 0)], f[(8, 0)])));
+    x_r.offset_t_l_i = x.offset_t_l_i + Vector3::new(f[(9, 0)], f[(10, 0)], f[(11, 0)]);
     x_r.vel = x.vel + Vector3::new(f[(12, 0)], f[(13, 0)], f[(14, 0)]);
-
-    // bg += delta_bg (rows 15-17)
     x_r.bg = x.bg + Vector3::new(f[(15, 0)], f[(16, 0)], f[(17, 0)]);
-
-    // ba += delta_ba (rows 18-20)
     x_r.ba = x.ba + Vector3::new(f[(18, 0)], f[(19, 0)], f[(20, 0)]);
-
-    // grav += delta_grav (rows 21-23)
-    x_r.grav = x.grav + Vector3::new(f[(21, 0)], f[(22, 0)], f[(23, 0)]);
+    x_r.grav = x.grav;
 
     x_r
 }
 
-/// Difference between two states, stay on the manifold
-fn box_minus(x1: &StateIKFom, x2: &StateIKFom) -> Mat<f64> {
+/// Inject an equivariant error `f` into the state.
+///
+/// The error lives in the global frame, so the rotation error acts on the left
+/// and drags position, velocity and both biases along with it. This is the
+/// inverse of [`box_minus`].
+fn compensate(x: &StateIKFom, f: &Mat<f64>, extrinsic_est: bool) -> StateIKFom {
+    let delta = |i: usize| Vector3::new(f[(i, 0)], f[(i + 1, 0)], f[(i + 2, 0)]);
+
+    let d_bg = delta(15);
+    let rot_error = SO3::exp(delta(3));
+    let rot_error_mat = rot_error.matrix();
+    let rot_inv_mat = x.rot.matrix().transpose();
+
+    let mut x_r = *x;
+    x_r.rot = rot_error.group_mul(x.rot);
+    x_r.pos = delta(0) + rot_error_mat * x.pos;
+    x_r.vel = delta(12) + rot_error_mat * x.vel;
+
+    if extrinsic_est {
+        let offset_r_error = SO3::exp(delta(6));
+        x_r.offset_r_l_i = x
+            .rot
+            .inverse()
+            .group_mul(offset_r_error)
+            .group_mul(x.rot)
+            .group_mul(x.offset_r_l_i);
+        x_r.offset_t_l_i =
+            x_r.offset_r_l_i.matrix() * x.offset_r_l_i.matrix().transpose() * x.offset_t_l_i
+                + rot_inv_mat * delta(9)
+                - rot_inv_mat * (nalgebra::Matrix3::identity() - offset_r_error.matrix()) * x.pos;
+    }
+
+    x_r.bg = x.bg + rot_inv_mat * d_bg;
+    x_r.ba = x.ba + rot_inv_mat * (delta(18) - skew_symmetric_na(&x.vel) * d_bg);
+    x_r.grav = x.grav + delta(21);
+
+    x_r
+}
+
+/// Equivariant difference between two states, the inverse of [`compensate`].
+fn box_minus(x1: &StateIKFom, x2: &StateIKFom, extrinsic_est: bool) -> Mat<f64> {
+    let rot_err = x1.rot.group_mul(x2.rot.inverse());
+    let rot_err_mat = rot_err.matrix();
+    let rot2_mat = x2.rot.matrix();
+    let d_bg = rot2_mat * (x1.bg - x2.bg);
+
     let mut x_r = Mat::<f64>::zeros(24, 1);
+    let mut set = |i: usize, v: Vector3<f64>| {
+        x_r[(i, 0)] = v.x;
+        x_r[(i + 1, 0)] = v.y;
+        x_r[(i + 2, 0)] = v.z;
+    };
 
-    // pos difference (rows 0-2)
-    let pos_diff = x1.pos - x2.pos;
-    x_r[(0, 0)] = pos_diff.x;
-    x_r[(1, 0)] = pos_diff.y;
-    x_r[(2, 0)] = pos_diff.z;
+    set(0, x1.pos - rot_err_mat * x2.pos);
+    set(3, rot_err.log());
 
-    // rot difference: log(x2.rot^-1 * x1.rot) (rows 3-5)
-    let rot_diff = x2.rot.inverse().group_mul(x1.rot).log();
-    x_r[(3, 0)] = rot_diff.x;
-    x_r[(4, 0)] = rot_diff.y;
-    x_r[(5, 0)] = rot_diff.z;
+    if extrinsic_est {
+        // The extrinsic error is expressed in the same global frame as the rest
+        // of the correction, mirroring `compensate`. Eq-LIO derives this branch
+        // but then unconditionally overwrites it with the body-frame form below,
+        // which leaves its `compensate` and `boxminus` inconsistent whenever
+        // online extrinsic estimation is enabled.
+        let ext_err = x2
+            .rot
+            .group_mul(x1.offset_r_l_i)
+            .group_mul(x2.offset_r_l_i.inverse())
+            .group_mul(x2.rot.inverse());
+        let ext_err_mat = ext_err.matrix();
+        set(6, ext_err.log());
+        set(
+            9,
+            (nalgebra::Matrix3::identity() - ext_err_mat) * x2.pos + rot2_mat * x1.offset_t_l_i
+                - ext_err_mat * rot2_mat * x2.offset_t_l_i,
+        );
+    } else {
+        set(
+            6,
+            x2.offset_r_l_i.inverse().group_mul(x1.offset_r_l_i).log(),
+        );
+        set(9, x1.offset_t_l_i - x2.offset_t_l_i);
+    }
 
-    // offset_R_L_I difference (rows 6-8)
-    let offset_r_diff = x2.offset_r_l_i.inverse().group_mul(x1.offset_r_l_i).log();
-    x_r[(6, 0)] = offset_r_diff.x;
-    x_r[(7, 0)] = offset_r_diff.y;
-    x_r[(8, 0)] = offset_r_diff.z;
-
-    // offset_T_L_I difference (rows 9-11)
-    let offset_t_diff = x1.offset_t_l_i - x2.offset_t_l_i;
-    x_r[(9, 0)] = offset_t_diff.x;
-    x_r[(10, 0)] = offset_t_diff.y;
-    x_r[(11, 0)] = offset_t_diff.z;
-
-    // vel difference (rows 12-14)
-    let vel_diff = x1.vel - x2.vel;
-    x_r[(12, 0)] = vel_diff.x;
-    x_r[(13, 0)] = vel_diff.y;
-    x_r[(14, 0)] = vel_diff.z;
-
-    // bg difference (rows 15-17)
-    let bg_diff = x1.bg - x2.bg;
-    x_r[(15, 0)] = bg_diff.x;
-    x_r[(16, 0)] = bg_diff.y;
-    x_r[(17, 0)] = bg_diff.z;
-
-    // ba difference (rows 18-20)
-    let ba_diff = x1.ba - x2.ba;
-    x_r[(18, 0)] = ba_diff.x;
-    x_r[(19, 0)] = ba_diff.y;
-    x_r[(20, 0)] = ba_diff.z;
-
-    // grav difference (rows 21-23)
-    let grav_diff = x1.grav - x2.grav;
-    x_r[(21, 0)] = grav_diff.x;
-    x_r[(22, 0)] = grav_diff.y;
-    x_r[(23, 0)] = grav_diff.z;
+    set(12, x1.vel - rot_err_mat * x2.vel);
+    set(15, d_bg);
+    set(
+        18,
+        rot2_mat * (x1.ba - x2.ba) + skew_symmetric_na(&x2.vel) * d_bg,
+    );
+    set(21, x1.grav - x2.grav);
 
     x_r
 }
 
-impl Iekf {
+impl Eqf {
     pub fn new(g: f64, base_to_lidar: nalgebra::Isometry3<f64>) -> Self {
         Self {
             state: StateIKFom::new(g),
             cov: Mat::<f64>::identity(24, 24),
             initialized: false,
+            extrinsic_est: false,
             last_time: 0.0,
             h: Col::<f64>::zeros(0),
             h_x: Mat::<f64>::zeros(0, 12), // Sparse: only first 12 cols non-zero
@@ -395,12 +459,12 @@ impl Iekf {
         self.last_time += dt;
 
         let f = get_f(&self.state, i_in);
-        let f_x_raw = df_dx(&self.state, i_in);
+        let f_x_raw = df_dx(&self.state, i_in, self.extrinsic_est);
         let f_w_raw = df_dw(&self.state, i_in);
 
-        // State update: x = boxplus(x, f * dt)
+        // State update: x = propagate(x, f * dt)
         let f_dt = &f * dt;
-        self.state = box_plus(&self.state, &f_dt);
+        self.state = propagate(&self.state, &f_dt);
 
         let id24 = Mat::<f64>::identity(24, 24);
         let f_x = &id24 + &f_x_raw * dt;
@@ -514,7 +578,20 @@ impl Iekf {
         }
     }
 
-    fn apply_scalar_constraint(&mut self, h: Col<f64>, residual: f64, r_var: f64) {
+    /// Fuse one scalar measurement whose Jacobian is `h`.
+    ///
+    /// Position and rotation are deliberately never moved by these updates; they
+    /// are owned by the LiDAR correction. `max_gain` optionally caps the L2 norm
+    /// of the gain, which damps the non-holonomic constraints (whose residual is
+    /// a model assumption rather than a measurement) without throttling genuine
+    /// velocity measurements.
+    fn apply_scalar_constraint(
+        &mut self,
+        h: Col<f64>,
+        residual: f64,
+        r_var: f64,
+        max_gain: Option<f64>,
+    ) {
         // Compute innovation variance: h^T * P * h + r_var
         let h_t = h.transpose();
         let cov_h = &self.cov * &h;
@@ -544,22 +621,22 @@ impl Iekf {
         }
 
         // automatic damping - cap the norm of the gain (prevents gigantic jumps)
-        const K_MAX: f64 = 0.8;
-        let gain_norm = k.norm_l2();
-        if gain_norm > K_MAX {
-            let scale = K_MAX / gain_norm;
-            k = &k * scale;
+        if let Some(k_max) = max_gain {
+            let gain_norm = k.norm_l2();
+            if gain_norm > k_max {
+                k = &k * (k_max / gain_norm);
+            }
         }
 
         // Update state: dx = k * residual (k is 24x1, result is 24x1)
         let dx = &k * residual;
 
-        // Convert Col to Mat for box_plus
+        // Convert Col to Mat for compensate
         let mut dx_mat = Mat::<f64>::zeros(24, 1);
         for i in 0..24 {
             dx_mat[(i, 0)] = dx[i];
         }
-        self.state = box_plus(&self.state, &dx_mat);
+        self.state = compensate(&self.state, &dx_mat, self.extrinsic_est);
 
         // Update covariance: P = (I - K*h^T) * P * (I - K*h^T)^T + K * r_var * K^T
         for i in 0..24 {
@@ -605,6 +682,13 @@ impl Iekf {
         self.cov = &self.i_cov_i_kh + &self.k_k;
     }
 
+    /// Fuse one component of a world-frame velocity measurement.
+    ///
+    /// Under the equivariant error the world velocity perturbs as
+    /// `v <- dv + exp(dtheta) v`, so the measurement couples to the rotation
+    /// error through `-hat(v)` as well as to the velocity error itself. Routing
+    /// this through [`Self::apply_scalar_constraint`] keeps the injection in the
+    /// same frame as the rest of the filter.
     fn correct_velocity_component(
         &mut self,
         component: usize,
@@ -616,43 +700,19 @@ impl Iekf {
         }
 
         let residual = measured_value - self.state.vel[component];
-
-        // Velocity is at indices 12-14 in the 24-dim state
-        let vel_idx = 12 + component;
-        let p_comp = self.cov[(vel_idx, vel_idx)];
-        let innovation_var = p_comp + noise_cov;
-
-        if !innovation_var.is_finite() || innovation_var <= 0.0 {
-            warn!(
-                "Invalid innovation variance in velocity[{}] correction",
-                component
-            );
+        if !residual.is_finite() {
+            warn!("Non-finite residual in velocity[{component}] correction");
             return;
         }
 
-        let gain_scalar = p_comp / innovation_var;
-
-        let mut kalman_gain = Col::<f64>::zeros(24);
-        for i in 0..24 {
-            kalman_gain[i] = self.cov[(i, vel_idx)] * gain_scalar;
+        let vel_skew = skew_symmetric_na(&self.state.vel);
+        let mut h = Col::<f64>::zeros(24);
+        for j in 0..3 {
+            h[3 + j] = -vel_skew[(component, j)];
         }
-        let delta_v = gain_scalar * residual;
+        h[12 + component] = 1.0;
 
-        if !delta_v.is_finite() {
-            warn!("NaN in velocity[{}] update", component);
-            return;
-        }
-
-        self.state.vel[component] += delta_v;
-
-        // Update covariance
-        for i in 0..24 {
-            for j in 0..24 {
-                let old_val = self.cov[(i, j)];
-                let update = kalman_gain[i] * self.cov[(vel_idx, j)];
-                self.cov[(i, j)] = old_val - update;
-            }
-        }
+        self.apply_scalar_constraint(h, residual, noise_cov, None);
     }
 
     pub fn correct_kinematics(
@@ -711,7 +771,7 @@ impl Iekf {
                 for j in 0..3 {
                     h_lat[12 + j] = r_bw[(1, j)];
                 }
-                self.apply_scalar_constraint(h_lat, -v_ref_base.y, r_var);
+                self.apply_scalar_constraint(h_lat, -v_ref_base.y, r_var, Some(KINEMATIC_MAX_GAIN));
 
                 // vertical (z) constraint
                 let mut h_vert = Col::<f64>::zeros(24);
@@ -719,7 +779,12 @@ impl Iekf {
                 for j in 0..3 {
                     h_vert[12 + j] = r_bw[(2, j)];
                 }
-                self.apply_scalar_constraint(h_vert, -v_ref_base.z, r_var);
+                self.apply_scalar_constraint(
+                    h_vert,
+                    -v_ref_base.z,
+                    r_var,
+                    Some(KINEMATIC_MAX_GAIN),
+                );
             }
             KinematicModel::Holonomic2D => {
                 // Only vertical (z) constraint: robot stays on ground
@@ -727,7 +792,12 @@ impl Iekf {
                 for j in 0..3 {
                     h_vert[12 + j] = r_bw[(2, j)];
                 }
-                self.apply_scalar_constraint(h_vert, -v_ref_base.z, r_var);
+                self.apply_scalar_constraint(
+                    h_vert,
+                    -v_ref_base.z,
+                    r_var,
+                    Some(KINEMATIC_MAX_GAIN),
+                );
             }
 
             KinematicModel::Full3D => {}
@@ -754,7 +824,7 @@ impl Iekf {
         self.last_time = measurement_time;
 
         if measurement_noise_cov <= 0.0 {
-            error!("IEKF: Non‑positive measurement noise covariance, skipping update.");
+            error!("EqF: Non‑positive measurement noise covariance, skipping update.");
             return;
         }
 
@@ -803,7 +873,7 @@ impl Iekf {
             eval.start("ekf_correct/it/info_mat").unwrap();
 
             // dx_new = boxminus(x_, x_propagated) - equation (18): x^k - x^
-            let dx_new = box_minus(&self.state, &state_propagated);
+            let dx_new = box_minus(&self.state, &state_propagated, self.extrinsic_est);
 
             // H is m x 12 (sparse - only first 12 columns non-zero)
             // We only use the first m rows of h_x (the actual measurements)
@@ -927,7 +997,7 @@ impl Iekf {
                 }
             }
             if has_nan {
-                warn!("IEKF: NaN detected in iteration {}, aborting.", iter);
+                warn!("EqF: NaN detected in iteration {}, aborting.", iter);
                 self.state = state_propagated;
                 self.cov = p_propagated;
                 eval.stop("ekf_correct/it/state").unwrap();
@@ -935,7 +1005,7 @@ impl Iekf {
                 return;
             }
 
-            self.state = box_plus(&self.state, &dx_);
+            self.state = compensate(&self.state, &dx_, self.extrinsic_est);
 
             // Check convergence: if all |dx_[j]| < EPSI, converged
             converge_flag = true;
@@ -971,5 +1041,256 @@ impl Iekf {
         let i_kh = &id24 - &self.k_h;
         self.cov = &i_kh * &p_propagated;
         eval.stop("ekf_correct/cov").unwrap();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn nominal_state() -> StateIKFom {
+        StateIKFom {
+            pos: Vector3::new(1.7, -0.4, 0.9),
+            rot: SO3::exp(Vector3::new(0.15, -0.25, 0.35)),
+            offset_r_l_i: SO3::exp(Vector3::new(0.02, 0.03, -0.01)),
+            offset_t_l_i: Vector3::new(0.11, -0.05, 0.07),
+            vel: Vector3::new(0.6, -0.3, 0.12),
+            bg: Vector3::new(0.004, -0.002, 0.003),
+            ba: Vector3::new(0.02, 0.05, -0.03),
+            grav: Vector3::new(0.05, -0.02, -9.81),
+        }
+    }
+
+    fn nominal_input() -> InputIKFom {
+        InputIKFom::new(
+            Vector3::new(0.35, -0.8, 9.9),
+            Vector3::new(0.12, -0.22, 0.31),
+        )
+    }
+
+    /// Deterministic, non-degenerate error vector. The extrinsic block is left at
+    /// zero unless online extrinsic estimation is on, because `compensate` only
+    /// touches the extrinsics in that case.
+    fn error_vector(scale: f64, extrinsic_est: bool) -> Mat<f64> {
+        Mat::from_fn(24, 1, |i, _| {
+            if !extrinsic_est && (6..12).contains(&i) {
+                0.0
+            } else {
+                scale * (((i * 7) % 11) as f64 - 5.0) / 5.0
+            }
+        })
+    }
+
+    fn max_abs_diff(a: &Mat<f64>, b: &Mat<f64>) -> f64 {
+        (0..a.nrows()).fold(0.0f64, |acc, i| acc.max((a[(i, 0)] - b[(i, 0)]).abs()))
+    }
+
+    /// Covariance mirroring what `ImuProcessing::initialize` installs.
+    fn initialised_filter(vel: Vector3<f64>) -> Eqf {
+        let mut ekf = Eqf::new(9.81, nalgebra::Isometry3::identity());
+        ekf.initialized = true;
+        ekf.state = nominal_state();
+        ekf.state.vel = vel;
+        ekf.cov = Mat::<f64>::identity(24, 24);
+        for i in 15..18 {
+            ekf.cov[(i, i)] = 1e-4;
+        }
+        for i in 18..21 {
+            ekf.cov[(i, i)] = 1e-3;
+        }
+        for i in 21..24 {
+            ekf.cov[(i, i)] = 1e-5;
+        }
+        ekf
+    }
+
+    fn odom_msg(twist_linear: Vector3<f64>, variance: f64) -> OdomMsg {
+        let mut twist_cov = [0.0; 36];
+        for i in 0..3 {
+            twist_cov[i * 6 + i] = variance;
+        }
+        OdomMsg {
+            twist_linear,
+            twist_angular: Vector3::zeros(),
+            twist_cov,
+            stamp: ros_pointcloud2::ros::TimeMsg { sec: 0, nanosec: 0 },
+        }
+    }
+
+    /// A world-frame velocity measurement must pull the velocity estimate almost
+    /// all the way onto the measurement when the prior is loose and the
+    /// measurement is tight, and must leave pose alone.
+    #[test]
+    fn wheel_odometry_pulls_velocity_onto_the_measurement() {
+        let vel = Vector3::new(1.0, 0.0, 0.0);
+        let mut ekf = initialised_filter(vel);
+        let pos_before = ekf.state.pos;
+        let rot_before = ekf.state.rot.matrix();
+        let var = 1e-3;
+
+        // base_to_lidar is identity here, so the production path reduces to
+        // v_world = R_wi * R_il * twist_base; invert it to request a known
+        // world-frame velocity.
+        let target_world = Vector3::new(1.4, 0.0, 0.0);
+        let r_wb = ekf.state.rot.matrix() * ekf.state.offset_r_l_i.matrix();
+        let twist_base = r_wb.transpose() * target_world;
+
+        ekf.correct_with_body_velocities(odom_msg(twist_base, var), KinematicModel::Full3D, None);
+
+        // Optimal scalar gain for a unit prior variance against `var`.
+        let expected_gain = 1.0 / (1.0 + var);
+        let expected = vel + (target_world - vel) * expected_gain;
+
+        assert!(
+            (ekf.state.vel - expected).norm() < 1e-9,
+            "velocity {} did not track the measurement (expected {})",
+            ekf.state.vel,
+            expected
+        );
+        assert!(
+            (ekf.state.pos - pos_before).norm() < 1e-15,
+            "wheel odometry moved the position"
+        );
+        assert!(
+            (ekf.state.rot.matrix() - rot_before).norm() < 1e-15,
+            "wheel odometry moved the rotation"
+        );
+    }
+
+    /// The Joseph-form update must keep the covariance symmetric and positive
+    /// semi-definite, and must shrink the measured direction.
+    #[test]
+    fn wheel_odometry_keeps_covariance_well_formed() {
+        let mut ekf = initialised_filter(Vector3::new(1.0, -0.4, 0.2));
+        let var_before: Vec<f64> = (12..15).map(|i| ekf.cov[(i, i)]).collect();
+
+        for _ in 0..5 {
+            ekf.correct_with_body_velocities(
+                odom_msg(Vector3::new(1.4, -0.2, 0.1), 1e-3),
+                KinematicModel::Full3D,
+                None,
+            );
+        }
+
+        for i in 0..24 {
+            for j in 0..24 {
+                assert!(
+                    (ekf.cov[(i, j)] - ekf.cov[(j, i)]).abs() < 1e-12,
+                    "covariance lost symmetry at ({i},{j})"
+                );
+            }
+        }
+
+        // Positive semi-definite: every principal 2x2 minor and the diagonal.
+        for i in 0..24 {
+            assert!(
+                ekf.cov[(i, i)] >= -1e-12,
+                "negative variance at {i}: {}",
+                ekf.cov[(i, i)]
+            );
+            for j in 0..24 {
+                let minor = ekf.cov[(i, i)] * ekf.cov[(j, j)] - ekf.cov[(i, j)] * ekf.cov[(j, i)];
+                assert!(
+                    minor >= -1e-12,
+                    "indefinite 2x2 minor at ({i},{j}): {minor}"
+                );
+            }
+        }
+
+        for (offset, before) in var_before.iter().enumerate() {
+            let after = ekf.cov[(12 + offset, 12 + offset)];
+            assert!(
+                after < *before,
+                "velocity variance {offset} did not shrink: {before} -> {after}"
+            );
+        }
+    }
+
+    #[test]
+    fn compensate_inverts_box_minus() {
+        for extrinsic_est in [false, true] {
+            let x = nominal_state();
+            let e = error_vector(0.05, extrinsic_est);
+
+            let perturbed = compensate(&x, &e, extrinsic_est);
+            let recovered = box_minus(&perturbed, &x, extrinsic_est);
+
+            assert!(
+                max_abs_diff(&recovered, &e) < 1e-12,
+                "box_minus is not the inverse of compensate (extrinsic_est={extrinsic_est}), \
+                 max deviation {}",
+                max_abs_diff(&recovered, &e)
+            );
+        }
+    }
+
+    /// The equivariant error must obey `d/dt e = A e` with `A = df_dx`. Compare
+    /// the analytic `A e` against the error actually accumulated by propagating a
+    /// perturbed and an unperturbed state through one short step.
+    #[test]
+    fn df_dx_matches_error_propagation() {
+        const DT: f64 = 1e-5;
+        const SCALE: f64 = 1e-5;
+
+        for extrinsic_est in [false, true] {
+            let x_hat = nominal_state();
+            let inp = nominal_input();
+            let e = error_vector(SCALE, extrinsic_est);
+            let x_true = compensate(&x_hat, &e, extrinsic_est);
+
+            let step = |s: &StateIKFom| propagate(s, &(&get_f(s, &inp) * DT));
+            let e_next = box_minus(&step(&x_true), &step(&x_hat), extrinsic_est);
+
+            let measured = &(&e_next - &e) * (1.0 / DT);
+            let predicted = &df_dx(&x_hat, &inp, extrinsic_est) * &e;
+
+            let deviation = max_abs_diff(&measured, &predicted);
+            assert!(
+                deviation < 1e-6,
+                "df_dx disagrees with propagated error (extrinsic_est={extrinsic_est}), \
+                 max deviation {deviation:e}"
+            );
+        }
+    }
+
+    /// The point-to-plane row used by `RegistrationState` must differentiate the
+    /// residual with respect to the *global* rotation error, i.e. the moment arm
+    /// is the point in world coordinates.
+    #[test]
+    fn plane_jacobian_matches_equivariant_error() {
+        for extrinsic_est in [false, true] {
+            let x = nominal_state();
+            let p_lidar = Vector3::new(3.2, -1.4, 0.8);
+            let normal = Vector3::new(0.3, -0.6, 0.74).normalize();
+
+            let residual = |s: &StateIKFom| {
+                let p_imu = s.offset_r_l_i.matrix() * p_lidar + s.offset_t_l_i;
+                normal.dot(&(s.rot.matrix() * p_imu + s.pos))
+            };
+
+            let p_world =
+                x.rot.matrix() * (x.offset_r_l_i.matrix() * p_lidar + x.offset_t_l_i) + x.pos;
+            let a_vec = skew_symmetric_na(&p_world) * normal;
+
+            let mut h = Mat::<f64>::zeros(1, 24);
+            for j in 0..3 {
+                h[(0, j)] = normal[j];
+                h[(0, 3 + j)] = a_vec[j];
+                if extrinsic_est {
+                    h[(0, 6 + j)] = a_vec[j];
+                    h[(0, 9 + j)] = normal[j];
+                }
+            }
+
+            let e = error_vector(1e-6, extrinsic_est);
+            let predicted = (&h * &e)[(0, 0)];
+            let measured = residual(&compensate(&x, &e, extrinsic_est)) - residual(&x);
+
+            assert!(
+                (measured - predicted).abs() < 1e-10,
+                "plane jacobian disagrees with the equivariant error \
+                 (extrinsic_est={extrinsic_est}): measured {measured:e} vs predicted {predicted:e}"
+            );
+        }
     }
 }

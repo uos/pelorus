@@ -11,7 +11,7 @@ use pelorus_core::{
 use rayon::prelude::*;
 use sophus_lie::IsAffineGroup;
 
-use crate::iekf::Iekf;
+use crate::eqf::Eqf;
 
 pub type SE3 = sophus_lie::Isometry3F64;
 
@@ -35,7 +35,7 @@ pub struct ImuProcessing {
     lidar_to_base_r: Matrix3<f64>,
     pub angvel_last: Vector3<f64>,
     acc_s_last: Vector3<f64>,
-    imu_state: crate::iekf::StateIKFom,
+    imu_state: crate::eqf::StateIKFom,
     pub ekf_cov_gyr_bias: Matrix3<f64>,
     pub ekf_cov_acc_bias: Matrix3<f64>,
     pub ekf_cov_acc: Matrix3<f64>,
@@ -89,7 +89,7 @@ impl Default for ImuProcessing {
             ),
             angvel_last: Vector3::zeros(),
             acc_s_last: Vector3::zeros(),
-            imu_state: crate::iekf::StateIKFom::default(),
+            imu_state: crate::eqf::StateIKFom::default(),
         }
     }
 }
@@ -186,7 +186,7 @@ impl ImuProcessing {
     pub(crate) fn update_realtime_tail(
         &mut self,
         tail: &crate::ImuMsg,
-        state: crate::iekf::StateIKFom,
+        state: crate::eqf::StateIKFom,
     ) {
         self.last_imu = tail.clone();
         self.imu_state = state;
@@ -243,7 +243,7 @@ impl ImuProcessing {
         self.lidar_to_base_t = lidar_to_base.translation.vector;
     }
 
-    pub fn initialize(&mut self, msgs: &[ImuMsg], ekf: &mut crate::iekf::Iekf) -> Vector3<f64> {
+    pub fn initialize(&mut self, msgs: &[ImuMsg], ekf: &mut crate::eqf::Eqf) -> Vector3<f64> {
         let mut n = 1.0;
         self.last_imu = crate::ImuMsg::default();
         self.mean_acc = msgs[0].linear_acceleration.into();
@@ -317,7 +317,7 @@ impl ImuProcessing {
 
     pub fn undistort(
         &mut self,
-        ekf: &mut Iekf,
+        ekf: &mut Eqf,
         imu_msgs: &[crate::ImuMsg],
         odom_msgs: &[OdomMsg],
         kinematic: KinematicModel,
@@ -544,7 +544,7 @@ impl ImuProcessing {
                 let r_i = head
                     .pose
                     .rotation()
-                    .group_mul(crate::iekf::SO3::exp(tail.gyr * dt))
+                    .group_mul(crate::eqf::SO3::exp(tail.gyr * dt))
                     .matrix();
 
                 let t_ei = head.pose.translation() + head.vel * dt + 0.5 * tail.acc * dt * dt
@@ -598,12 +598,12 @@ impl ImuProcessing {
 
     pub fn predict(
         &self,
-        ekf: &mut Iekf,
+        ekf: &mut Eqf,
         acc: [f64; 3],
         gyro: [f64; 3],
         dt: f64,
     ) -> anyhow::Result<crate::ImuEkfPrediction> {
-        let inp = crate::iekf::InputIKFom {
+        let inp = crate::eqf::InputIKFom {
             acc: Vector3::new(acc[0], acc[1], acc[2]),
             gyro: Vector3::new(gyro[0], gyro[1], gyro[2]),
         };

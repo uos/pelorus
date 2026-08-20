@@ -1,6 +1,6 @@
 use crate::ActiveBackend;
 use crate::ImuEkfPrediction;
-use crate::iekf::{Iekf, SO3, skew_symmetric_na};
+use crate::eqf::{Eqf, SO3, skew_symmetric_na};
 use crate::imu::ImuProcessing;
 use nalgebra::*;
 #[cfg(not(feature = "rayon"))]
@@ -35,7 +35,7 @@ pub enum GpuPlanesBuffer {
 }
 
 pub struct RegistrationState {
-    pub ekf: Iekf,
+    pub ekf: Eqf,
     pub imu_processing: ImuProcessing,
     pub map: IVoxHashMap,
     pub laser_point_noise_cov: f64,
@@ -166,7 +166,7 @@ impl RegistrationState {
             parallelism_decision_samples_per_mode,
             parallelism_execution_policy,
         );
-        let mut ekf = Iekf::new(gravity, base_to_lidar.clone());
+        let mut ekf = Eqf::new(gravity, base_to_lidar.clone());
         if let Some(guess) = initial_guess {
             ekf.state.pos = guess.pose.translation.vector;
             ekf.state.rot =
@@ -309,7 +309,7 @@ impl RegistrationState {
     }
 }
 
-pub(crate) fn output_pose_covariance(ekf: &Iekf, lidar_to_output: &Isometry3<f64>) -> [f64; 36] {
+pub(crate) fn output_pose_covariance(ekf: &Eqf, lidar_to_output: &Isometry3<f64>) -> [f64; 36] {
     let r_wi = ekf.state.rot.matrix();
     let r_il = ekf.state.offset_r_l_i.matrix();
     let r_lo = lidar_to_output.rotation.to_rotation_matrix();
@@ -317,32 +317,66 @@ pub(crate) fn output_pose_covariance(ekf: &Iekf, lidar_to_output: &Isometry3<f64
     let t_io = ekf.state.offset_t_l_i + r_il * t_lo;
     let r_io = r_il * r_lo.matrix();
 
+    // Output pose in the world frame, needed as the moment arm of the global
+    // rotation error: p_out <- dp + exp(dtheta) p_out.
+    let p_out = ekf.state.pos + r_wi * t_io;
+    let r_out = r_wi * r_io;
+
     let mut jacobian = SMatrix::<f64, 6, 24>::zeros();
     jacobian
         .fixed_view_mut::<3, 3>(0, 0)
         .copy_from(&Matrix3::identity());
     jacobian
         .fixed_view_mut::<3, 3>(0, 3)
-        .copy_from(&(-r_wi * skew_symmetric_na(&t_io)));
-    jacobian
-        .fixed_view_mut::<3, 3>(0, 6)
-        .copy_from(&(-r_wi * r_il * skew_symmetric_na(&t_lo)));
-    jacobian.fixed_view_mut::<3, 3>(0, 9).copy_from(&r_wi);
+        .copy_from(&(-skew_symmetric_na(&p_out)));
     jacobian
         .fixed_view_mut::<3, 3>(3, 3)
-        .copy_from(&r_io.transpose());
-    jacobian
-        .fixed_view_mut::<3, 3>(3, 6)
-        .copy_from(&r_lo.matrix().transpose());
+        .copy_from(&r_out.transpose());
+
+    if ekf.extrinsic_est {
+        // The extrinsic error is global too, so it enters the output pose exactly
+        // like the navigation error: R_out <- exp(dtheta_ext) R_out.
+        jacobian
+            .fixed_view_mut::<3, 3>(0, 6)
+            .copy_from(&(-skew_symmetric_na(&p_out)));
+        jacobian
+            .fixed_view_mut::<3, 3>(0, 9)
+            .copy_from(&Matrix3::identity());
+        jacobian
+            .fixed_view_mut::<3, 3>(3, 6)
+            .copy_from(&r_out.transpose());
+    } else {
+        // Extrinsics are not corrected online, so their error keeps the plain
+        // body-frame form used by `box_minus`.
+        jacobian
+            .fixed_view_mut::<3, 3>(0, 6)
+            .copy_from(&(-r_wi * r_il * skew_symmetric_na(&t_lo)));
+        jacobian.fixed_view_mut::<3, 3>(0, 9).copy_from(&r_wi);
+        jacobian
+            .fixed_view_mut::<3, 3>(3, 6)
+            .copy_from(&r_lo.matrix().transpose());
+    }
 
     let cov = SMatrix::<f64, 24, 24>::from_fn(|row, col| ekf.cov[(row, col)]);
     let output_cov = jacobian * cov * jacobian.transpose();
     matrix6_to_array(output_cov)
 }
 
-pub(crate) fn output_twist_covariance(ekf: &Iekf, output_pose: &Isometry3<f64>) -> [f64; 36] {
+pub(crate) fn output_twist_covariance(ekf: &Eqf, output_pose: &Isometry3<f64>) -> [f64; 36] {
     let r_ow = output_pose.rotation.inverse().to_rotation_matrix();
-    let velocity_cov_world = Matrix3::<f64>::from_fn(|row, col| ekf.cov[(row + 12, col + 12)]);
+
+    // The equivariant velocity error is v <- dv + exp(dtheta) v, so the world
+    // velocity covariance picks up the rotation block through -hat(v).
+    let mut jacobian = SMatrix::<f64, 3, 24>::zeros();
+    jacobian
+        .fixed_view_mut::<3, 3>(0, 3)
+        .copy_from(&(-skew_symmetric_na(&ekf.state.vel)));
+    jacobian
+        .fixed_view_mut::<3, 3>(0, 12)
+        .copy_from(&Matrix3::identity());
+
+    let cov = SMatrix::<f64, 24, 24>::from_fn(|row, col| ekf.cov[(row, col)]);
+    let velocity_cov_world = jacobian * cov * jacobian.transpose();
     let velocity_cov_output = r_ow.matrix() * velocity_cov_world * r_ow.matrix().transpose();
 
     let mut twist_cov = [0.0; 36];
@@ -531,13 +565,14 @@ impl crate::Registration for RegistrationState {
             let _ = planes_gpu_buffer_ptr;
 
             let eval_cb_inner = eval_cb.clone();
+            let extrinsic_est = self.ekf.extrinsic_est;
 
             self.ekf.correct(
                 self.laser_point_noise_cov,
                 lidar_timestamp,
                 self.ekf_max_iterations,
                 eval_cb.clone(),
-                move |ekf_state: &crate::iekf::StateIKFom,
+                move |ekf_state: &crate::eqf::StateIKFom,
                       valid: &mut bool,
                       _converged: bool,
                       h: &mut faer::Col<f64>,
@@ -569,7 +604,7 @@ impl crate::Registration for RegistrationState {
                         }
                     }
 
-                    // Recompute planes on every IEKF iteration - correspondence must be
+                    // Recompute planes on every EqF iteration - correspondence must be
                     // updated as the state estimate changes.
                     let planes: &mut Vec<PointXYZINormal> = match backend {
                         ActiveBackend::Cpu => {
@@ -879,9 +914,11 @@ impl crate::Registration for RegistrationState {
                         let p_world = ekf_state.pose().transform(p_imu);
                         let pd2 = norm.dot(&p_world) + plane_d;
 
-                        let point_imu_skew = skew_symmetric_na(&p_imu);
-                        let c = ekf_state.pose().rotation().matrix().transpose() * norm;
-                        let a_vec = point_imu_skew * c;
+                        // Equivariant error frame: the point-to-plane residual is
+                        // differentiated against a global rotation error, so the
+                        // moment arm is the point in world coordinates rather than
+                        // in the IMU frame.
+                        let a_vec = skew_symmetric_na(&p_world) * norm;
 
                         h_x[(i, 0)] = norm.x;
                         h_x[(i, 1)] = norm.y;
@@ -890,6 +927,20 @@ impl crate::Registration for RegistrationState {
                         h_x[(i, 3)] = a_vec.x;
                         h_x[(i, 4)] = a_vec.y;
                         h_x[(i, 5)] = a_vec.z;
+
+                        if extrinsic_est {
+                            h_x[(i, 6)] = a_vec.x;
+                            h_x[(i, 7)] = a_vec.y;
+                            h_x[(i, 8)] = a_vec.z;
+
+                            h_x[(i, 9)] = norm.x;
+                            h_x[(i, 10)] = norm.y;
+                            h_x[(i, 11)] = norm.z;
+                        } else {
+                            for col in 6..12 {
+                                h_x[(i, col)] = 0.0;
+                            }
+                        }
 
                         h[i] = -pd2;
                     }
