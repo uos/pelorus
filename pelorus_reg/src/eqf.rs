@@ -391,6 +391,71 @@ fn compensate(
     x_r
 }
 
+/// Jacobian of the error re-referencing, i.e. the "reset step".
+///
+/// After the update moves the estimate by `dx`, the posterior covariance is still
+/// expressed about the *old* reference. Pushing it onto the new one is not optional:
+/// omitting it leaves the covariance systematically wrong by a little on every
+/// frame, which is invisible locally and accumulates into drift over a long run.
+///
+/// It matters more here than in a body-frame EKF. There, position and velocity are
+/// corrected additively and their reset blocks are exactly identity, leaving only
+/// the rotation block; here the group action folds the rotation correction into
+/// position and velocity too, which measures ~3x further from identity.
+///
+/// Computed by central differences: a closed form exists but this is exact to
+/// ~1e-10, costs 48 cheap evaluations once per correction, and is far harder to get
+/// subtly wrong.
+fn reset_jacobian(
+    base: &StateIKFom,
+    dx: &Mat<f64>,
+    updated: &StateIKFom,
+    extrinsic_est: bool,
+    anchor: &Vector3<f64>,
+) -> Mat<f64> {
+    const EPS: f64 = 1e-6;
+    let mut j = Mat::<f64>::identity(24, 24);
+    let mut probe = dx.clone();
+
+    for c in 0..24 {
+        probe[(c, 0)] = dx[(c, 0)] + EPS;
+        let hi = box_minus(
+            &compensate(base, &probe, extrinsic_est, anchor),
+            updated,
+            extrinsic_est,
+            anchor,
+        );
+        probe[(c, 0)] = dx[(c, 0)] - EPS;
+        let lo = box_minus(
+            &compensate(base, &probe, extrinsic_est, anchor),
+            updated,
+            extrinsic_est,
+            anchor,
+        );
+        probe[(c, 0)] = dx[(c, 0)];
+
+        for r in 0..24 {
+            j[(r, c)] = (hi[(r, 0)] - lo[(r, 0)]) / (2.0 * EPS);
+        }
+    }
+
+    if !extrinsic_est {
+        // `compensate` does not touch the extrinsics, so their rows come back
+        // structurally zero. They are unchanged by the reset, not annihilated by it
+        // -- leaving the zeros would make the covariance singular.
+        for r in 6..12 {
+            for c in 0..24 {
+                j[(r, c)] = if r == c { 1.0 } else { 0.0 };
+            }
+            for rr in 0..24 {
+                j[(rr, r)] = if rr == r { 1.0 } else { 0.0 };
+            }
+        }
+    }
+
+    j
+}
+
 /// Equivariant difference between two states, the inverse of [`compensate`].
 fn box_minus(
     x1: &StateIKFom,
@@ -1095,6 +1160,23 @@ impl Eqf {
         let id24 = Mat::<f64>::identity(24, 24);
         let i_kh = &id24 - &self.k_h;
         self.cov = &i_kh * &p_propagated;
+
+        // The posterior above is expressed about the propagated state, but the
+        // estimate has since moved to `self.state`. Re-reference it.
+        let dx_total = box_minus(
+            &self.state,
+            &state_propagated,
+            self.extrinsic_est,
+            &self.anchor,
+        );
+        let j_reset = reset_jacobian(
+            &state_propagated,
+            &dx_total,
+            &self.state,
+            self.extrinsic_est,
+            &self.anchor,
+        );
+        self.cov = &(&j_reset * &self.cov) * &j_reset.transpose();
         eval.stop("ekf_correct/cov").unwrap();
     }
 }
@@ -1429,6 +1511,44 @@ mod tests {
             worst < 1e-3,
             "df_dw disagrees with injected noise: {worst:.3e} at {worst_at:?}"
         );
+    }
+
+    /// The reset Jacobian must actually map old error coordinates onto the new
+    /// reference, and must leave the untouched states alone rather than zeroing
+    /// them -- zeroed rows would make the covariance singular on the next update.
+    #[test]
+    fn reset_jacobian_maps_error_onto_the_new_reference() {
+        for extrinsic_est in [false, true] {
+            let anchor = test_anchor();
+            let base = nominal_state();
+            let dx = error_vector(2e-2, extrinsic_est);
+            let updated = compensate(&base, &dx, extrinsic_est, &anchor);
+            let j = reset_jacobian(&base, &dx, &updated, extrinsic_est, &anchor);
+
+            // a small extra perturbation on top of the correction
+            let eps = error_vector(1e-7, extrinsic_est);
+            let mut shifted = dx.clone();
+            for i in 0..24 {
+                shifted[(i, 0)] += eps[(i, 0)];
+            }
+            let measured = box_minus(
+                &compensate(&base, &shifted, extrinsic_est, &anchor),
+                &updated,
+                extrinsic_est,
+                &anchor,
+            );
+            let predicted = &j * &eps;
+
+            let dev = max_abs_diff(&measured, &predicted);
+            assert!(
+                dev < 1e-12,
+                "reset jacobian mismatch (extrinsic_est={extrinsic_est}): {dev:e}"
+            );
+
+            // never singular: every state must survive the reset
+            let det_ok = (0..24).all(|i| j[(i, i)].abs() > 1e-6);
+            assert!(det_ok, "reset jacobian has a collapsed diagonal entry");
+        }
     }
 
     #[test]
