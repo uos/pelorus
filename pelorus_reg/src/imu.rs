@@ -289,6 +289,10 @@ impl ImuProcessing {
         let g_imu = -self.mean_acc / self.mean_acc.norm() * 9.81; // TODO PARAM
         ekf.state.grav = ekf.state.rot.matrix() * g_imu;
 
+        // This covariance is being written fresh, so it is expressed about whatever
+        // origin we declare here. Anchor on the robot so it means what the diagonal
+        // below says it means.
+        ekf.anchor = ekf.state.pos;
         ekf.cov = faer::Mat::<f64>::identity(24, 24);
 
         // 24-dim state: pos(0-2), rot(3-5), offset_R(6-8), offset_T(9-11), vel(12-14), bg(15-17), ba(18-20), grav(21-23)

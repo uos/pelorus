@@ -1383,6 +1383,54 @@ mod tests {
         }
     }
 
+    /// The noise Jacobian decides how much process noise reaches each state, so a
+    /// wrong one corrupts the covariance and mis-weights every gain afterwards --
+    /// with no symptom except slow drift. Finite-difference it: a noise realisation
+    /// perturbs the measurement the truth experiences, or random-walks its biases,
+    /// and the resulting error must match `-G n dt`.
+    #[test]
+    fn df_dw_matches_injected_noise() {
+        const DT: f64 = 1e-5;
+        const EPS: f64 = 1e-3;
+        let anchor = test_anchor();
+        let x = nominal_state();
+        let inp = nominal_input();
+
+        let g = df_dw(&x, &inp, &anchor);
+        let x_hat_next = propagate(&x, &(&get_f(&x, &inp) * DT));
+
+        let mut worst = 0.0f64;
+        let mut worst_at = (0usize, 0usize);
+        for col in 0..12 {
+            let mut n = [0.0f64; 12];
+            n[col] = EPS;
+            let n_g = Vector3::new(n[0], n[1], n[2]);
+            let n_a = Vector3::new(n[3], n[4], n[5]);
+
+            let inp_true = InputIKFom::new(inp.acc - n_a, inp.gyro - n_g);
+            let mut x_true_next = propagate(&x, &(&get_f(&x, &inp_true) * DT));
+            x_true_next.bg += Vector3::new(n[6], n[7], n[8]) * DT;
+            x_true_next.ba += Vector3::new(n[9], n[10], n[11]) * DT;
+
+            let e = box_minus(&x_true_next, &x_hat_next, false, &anchor);
+            for row in 0..24 {
+                let predicted = -g[(row, col)] * EPS * DT;
+                let diff = (e[(row, 0)] - predicted).abs();
+                if diff > 1e-16 {
+                    let rel = diff / predicted.abs().max(1e-12);
+                    if rel > worst {
+                        worst = rel;
+                        worst_at = (row, col);
+                    }
+                }
+            }
+        }
+        assert!(
+            worst < 1e-3,
+            "df_dw disagrees with injected noise: {worst:.3e} at {worst_at:?}"
+        );
+    }
+
     #[test]
     fn compensate_inverts_box_minus() {
         for extrinsic_est in [false, true] {

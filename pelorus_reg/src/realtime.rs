@@ -44,6 +44,10 @@ pub struct RealtimePrediction {
 struct CorrectedSnapshot {
     state: crate::eqf::StateIKFom,
     covariance: faer::Mat<f64>,
+    /// The covariance is only meaningful together with the origin its error is
+    /// measured about. Shipping one without the other silently misinterprets every
+    /// entry, by more the further the robot is from the world origin.
+    anchor: nalgebra::Vector3<f64>,
     initialized: bool,
     last_time: f64,
     context: ImuPredictionContext,
@@ -120,6 +124,7 @@ impl RealtimePredictorHandle {
         CorrectedSnapshot {
             state: registration.ekf.state,
             covariance: registration.ekf.cov.clone(),
+            anchor: registration.ekf.anchor,
             initialized: registration.ekf.initialized,
             last_time: registration.ekf.last_time,
             context: registration.imu_processing.prediction_context(),
@@ -313,6 +318,7 @@ impl WorkerState {
     fn install(&mut self, snapshot: CorrectedSnapshot) {
         self.ekf.state = snapshot.state;
         self.ekf.cov = snapshot.covariance;
+        self.ekf.anchor = snapshot.anchor;
         self.ekf.initialized = snapshot.initialized;
         self.ekf.last_time = snapshot.last_time;
         self.imu.restore_prediction_context(&snapshot.context);
