@@ -15,7 +15,7 @@ use ratatui::{
     symbols::Marker,
     text::{Line, Span},
     widgets::{
-        Block, Borders, Clear, List, ListItem, Padding, Paragraph,
+        Block, Borders, Clear, Padding, Paragraph,
         canvas::{Canvas, Line as CanvasLine, Points},
     },
 };
@@ -23,176 +23,57 @@ use std::io::{self, IsTerminal};
 use std::sync::Mutex;
 use std::time::Instant;
 
+use mt_log::{LogBuffer, LogEntry, LogLevel, Logger};
 use pelorus_core::LidarVendor;
 
 const MAX_TRAJECTORY_POINTS: usize = 10000;
-const MAX_LOG_ENTRIES: usize = 10000;
 const FOLLOW_VIEW_RANGE_STEP_M: f64 = 5.0;
 const FOLLOW_VIEW_RANGE_MIN_M: f64 = 5.0;
 const FOLLOW_VIEW_RANGE_MAX_M: f64 = 200.0;
 const STATS_LEFT_PADDING: u16 = 2;
 
-/// Log level for TUI display
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum LogLevel {
-    Trace,
-    Debug,
-    Info,
-    Warn,
-    Error,
-}
+/// The log buffer the pane draws, filled by the logger installed below.
+static LOG_BUFFER: std::sync::OnceLock<Arc<LogBuffer>> = std::sync::OnceLock::new();
+/// Set while the TUI owns the terminal, so records go to the pane instead of
+/// over the top of it. Shared with the logger, which reads it per record.
+static TUI_ACTIVE: std::sync::OnceLock<Arc<AtomicBool>> = std::sync::OnceLock::new();
+/// Kept so the filter can be replaced once the config has been read.
+static LOGGER: std::sync::OnceLock<&'static Logger> = std::sync::OnceLock::new();
 
-impl LogLevel {
-    fn color(&self) -> Color {
-        match self {
-            LogLevel::Trace => Color::DarkGray,
-            LogLevel::Debug => Color::Gray,
-            LogLevel::Info => Color::Cyan,
-            LogLevel::Warn => Color::Yellow,
-            LogLevel::Error => Color::Red,
-        }
-    }
-
-    fn prefix(&self) -> &'static str {
-        match self {
-            LogLevel::Trace => "TRACE",
-            LogLevel::Debug => "DEBUG",
-            LogLevel::Info => "INFO ",
-            LogLevel::Warn => "WARN ",
-            LogLevel::Error => "ERROR",
-        }
-    }
-}
-
-impl From<log::Level> for LogLevel {
-    fn from(level: log::Level) -> Self {
-        match level {
-            log::Level::Trace => LogLevel::Trace,
-            log::Level::Debug => LogLevel::Debug,
-            log::Level::Info => LogLevel::Info,
-            log::Level::Warn => LogLevel::Warn,
-            log::Level::Error => LogLevel::Error,
-        }
-    }
-}
-
-/// A single log entry
-#[derive(Debug, Clone)]
-pub struct LogEntry {
-    pub timestamp: f64,
-    pub level: LogLevel,
-    pub target: String,
-    pub message: String,
-}
-
-/// Global log buffer accessible from anywhere
-static LOG_BUFFER: std::sync::OnceLock<Arc<Mutex<LogBuffer>>> = std::sync::OnceLock::new();
-static TUI_ACTIVE: AtomicBool = AtomicBool::new(false);
-static LOG_START_TIME: std::sync::OnceLock<Instant> = std::sync::OnceLock::new();
-
-pub struct LogBuffer {
-    entries: Vec<LogEntry>,
-}
-
-impl LogBuffer {
-    fn new() -> Self {
-        Self {
-            entries: Vec::with_capacity(MAX_LOG_ENTRIES),
-        }
-    }
-
-    pub fn push(&mut self, level: LogLevel, target: String, message: String) {
-        let start = LOG_START_TIME.get_or_init(Instant::now);
-        let timestamp = start.elapsed().as_secs_f64();
-        self.entries.push(LogEntry {
-            timestamp,
-            level,
-            target,
-            message,
-        });
-        if self.entries.len() > MAX_LOG_ENTRIES {
-            self.entries.remove(0);
-        }
-    }
-
-    pub fn entries(&self) -> &[LogEntry] {
-        &self.entries
-    }
-
-    pub fn len(&self) -> usize {
-        self.entries.len()
-    }
-}
-
-/// Get or initialize the global log buffer
-pub fn get_log_buffer() -> Arc<Mutex<LogBuffer>> {
+/// Get or initialize the global log buffer.
+pub fn get_log_buffer() -> Arc<LogBuffer> {
     LOG_BUFFER
-        .get_or_init(|| Arc::new(Mutex::new(LogBuffer::new())))
+        .get_or_init(|| Arc::new(LogBuffer::new("pelorus")))
         .clone()
 }
 
-/// Custom logger that captures to TUI buffer and also prints to console
-pub struct TuiLogger;
-
-fn is_noisy_hiroz_info(message: &str) -> bool {
-    message.starts_with("pub_build;")
-        || message.starts_with("[SRV] Declaring queryable on key expression:")
+fn tui_active() -> Arc<AtomicBool> {
+    TUI_ACTIVE
+        .get_or_init(|| Arc::new(AtomicBool::new(false)))
+        .clone()
 }
 
-impl log::Log for TuiLogger {
-    fn enabled(&self, metadata: &log::Metadata) -> bool {
-        // Use the max level set by init_logger
-        metadata.level() <= log::max_level()
-    }
-
-    fn log(&self, record: &log::Record) {
-        if !self.enabled(record.metadata()) {
-            return;
-        }
-
-        let message = format!("{}", record.args());
-        if record.level() == log::Level::Info && is_noisy_hiroz_info(&message) {
-            return;
-        }
-
-        let level = LogLevel::from(record.level());
-        let target = record.target().to_string();
-
-        // Always capture to buffer for TUI
-        if let Some(buffer) = LOG_BUFFER.get() {
-            if let Ok(mut buf) = buffer.lock() {
-                buf.push(level, target.clone(), message.clone());
-            }
-        }
-
-        // Only print to console if TUI is NOT active
-        if !TUI_ACTIVE.load(Ordering::Relaxed) {
-            let prefix = match record.level() {
-                log::Level::Error => "\x1b[31mERROR\x1b[0m",
-                log::Level::Warn => "\x1b[33mWARN\x1b[0m",
-                log::Level::Info => "\x1b[36mINFO\x1b[0m",
-                log::Level::Debug => "\x1b[90mDEBUG\x1b[0m",
-                log::Level::Trace => "\x1b[90mTRACE\x1b[0m",
-            };
-            eprintln!("[{}] {}", prefix, message);
-        }
-    }
-
-    fn flush(&self) {}
+/// Chatter from the Hiroz backend that no reader has ever wanted.
+fn is_noisy(level: LogLevel, _target: &str, message: &str) -> bool {
+    level == LogLevel::Info
+        && (message.starts_with("pub_build;")
+            || message.starts_with("[SRV] Declaring queryable on key expression:"))
 }
 
-static LOGGER: TuiLogger = TuiLogger;
-
-/// Initialize the TUI-aware logger. Call this early in main().
-/// Starts with Info level, can be reconfigured later with update_log_level().
+/// Install the TUI-aware logger. Call this early in main().
+///
+/// Starts at the level `RUST_LOG` says, or info; [`update_log_level`] applies
+/// whatever the config asks for once it has been read.
 pub fn init_logger() {
-    // Initialize the log buffer first
-    let _ = get_log_buffer();
-    let _ = LOG_START_TIME.get_or_init(Instant::now);
-
-    if log::set_logger(&LOGGER).is_ok() {
-        // Start with Info, will be updated after config is loaded
-        log::set_max_level(log::LevelFilter::Info);
+    let spec = log_spec();
+    if let Ok(logger) = Logger::install_with(
+        "Pelorus",
+        &spec,
+        get_log_buffer(),
+        tui_active(),
+        Some(is_noisy),
+    ) {
+        let _ = LOGGER.set(logger);
     }
 
     // Suppress console output immediately when running in a terminal. Any log
@@ -204,27 +85,43 @@ pub fn init_logger() {
     }
 }
 
-/// Update the log level after configuration is loaded.
-/// Call this after config has set RUST_LOG environment variable.
+/// Update the log filter after configuration is loaded.
 pub fn update_log_level() {
-    let level = std::env::var("RUST_LOG")
-        .ok()
-        .and_then(|s| match s.to_lowercase().as_str() {
-            "trace" => Some(log::LevelFilter::Trace),
-            "debug" => Some(log::LevelFilter::Debug),
-            "info" => Some(log::LevelFilter::Info),
-            "warn" | "warning" => Some(log::LevelFilter::Warn),
-            "error" => Some(log::LevelFilter::Error),
-            "off" => Some(log::LevelFilter::Off),
-            _ => None,
-        })
-        .unwrap_or(log::LevelFilter::Info);
+    if let Some(logger) = LOGGER.get() {
+        logger.set_spec(&log_spec());
+    }
+}
 
-    log::set_max_level(level);
+/// What to filter by, with the transport held out of it.
+///
+/// The configured level arrives here through `RUST_LOG` as a bare level, which
+/// on its own lets Zenoh narrate every expired query at warn -- and a
+/// best-effort peer walking away makes every publisher a source of that at
+/// once. Whatever the spec says otherwise is left alone.
+fn log_spec() -> String {
+    mt_log::quieted(&std::env::var("RUST_LOG").unwrap_or_else(|_| "info".to_owned()))
 }
 
 pub fn set_tui_active(active: bool) {
-    TUI_ACTIVE.store(active, Ordering::Relaxed);
+    tui_active().store(active, Ordering::Relaxed);
+}
+
+/// Re-emit one line of a child's output as a record of ours.
+///
+/// The child tags its own lines, so nothing here is guessed: the level
+/// survives instead of being recovered from the text, and a line the child
+/// relayed from further down keeps the name of the process that wrote it.
+/// It goes back through the `log` facade rather than straight to the buffer,
+/// so `RUST_LOG` governs a child's chatter the same as our own — the target
+/// makes `pelorus_cli::minot=warn` a thing a reader can ask for.
+pub fn relay_child_line(line: &str, source: &str) {
+    let record = mt_log::parse(line).or_source(source);
+    log::log!(
+        target: "pelorus_cli::minot",
+        record.level.into(),
+        "{}",
+        record.pane_message()
+    );
 }
 
 /// Shared statistics for the TUI
@@ -827,8 +724,8 @@ pub struct StatsTui {
     view_mode: ViewMode,
     follow_view_range_m: f64,
     trajectory_pane_mode: TrajectoryPaneMode,
-    log_scroll: Option<usize>, // None = auto-follow (show latest), Some(n) = manual scroll position
-    log_buffer: Arc<Mutex<LogBuffer>>,
+    log_view: mt_log::LogView,
+    log_buffer: Arc<LogBuffer>,
     show_minot_logs: bool,
     show_help_overlay: bool,
     merged_layout_min_width: u16,
@@ -1057,12 +954,12 @@ impl StatsTui {
             }
             KeyCode::Home => {
                 if self.logs_controls_active(visibility) {
-                    self.log_scroll = Some(0);
+                    self.log_view.to_start();
                 }
             }
             KeyCode::End => {
                 if self.logs_controls_active(visibility) {
-                    self.log_scroll = None;
+                    self.log_view.to_end();
                 }
             }
             KeyCode::Char('m') => {
@@ -1323,7 +1220,7 @@ impl StatsTui {
             view_mode: ViewMode::FollowCurrent,
             follow_view_range_m: 20.0,
             trajectory_pane_mode: TrajectoryPaneMode::Split,
-            log_scroll: None, // Auto-follow by default
+            log_view: mt_log::LogView::default(),
             log_buffer: get_log_buffer(),
             show_minot_logs: true,
             show_help_overlay: false,
@@ -1343,32 +1240,11 @@ impl StatsTui {
     }
 
     fn scroll_logs_up(&mut self) {
-        match self.log_scroll {
-            None => {
-                // Switch from auto-follow to manual, start near bottom
-                let total = self.log_buffer.lock().map(|b| b.len()).unwrap_or(0);
-                if total > 1 {
-                    self.log_scroll = Some(total.saturating_sub(2));
-                }
-            }
-            Some(scroll) if scroll > 0 => {
-                self.log_scroll = Some(scroll - 1);
-            }
-            _ => {}
-        }
+        self.log_view.scroll_up(self.log_buffer.len());
     }
 
     fn scroll_logs_down(&mut self) {
-        if let Some(scroll) = self.log_scroll {
-            let total = self.log_buffer.lock().map(|b| b.len()).unwrap_or(0);
-            if scroll + 1 >= total.saturating_sub(1) {
-                // At or near bottom, switch back to auto-follow
-                self.log_scroll = None;
-            } else {
-                self.log_scroll = Some(scroll + 1);
-            }
-        }
-        // If already auto-follow (None), do nothing
+        self.log_view.scroll_down(self.log_buffer.len());
     }
 
     pub fn run(&mut self) -> io::Result<()> {
@@ -2499,207 +2375,18 @@ impl StatsTui {
     }
 
     fn render_logs_tab(&self, f: &mut ratatui::Frame, area: Rect) {
-        let entries = self.log_buffer.lock().ok();
-        let entries = entries.as_ref().map(|b| b.entries()).unwrap_or(&[]);
-
-        let filtered_entries: Vec<(usize, &LogEntry)> = entries
+        let entries = self.log_buffer.snapshot();
+        let visible: Vec<(usize, &LogEntry)> = entries
             .iter()
             .enumerate()
             .filter(|(_, e)| self.show_minot_logs || !Self::is_minot_log(e))
             .collect();
-
-        let visible_height = area.height.saturating_sub(1) as usize; // top separator only
-        let content_width = area.width as usize; // no left/right separators
-        let total_entries = filtered_entries.len();
-
-        let time_width = filtered_entries
-            .iter()
-            .map(|(_, e)| format!("{:.2}s", e.timestamp).len())
-            .max()
-            .unwrap_or(8)
-            .max(8);
-        let left_gutter_width = STATS_LEFT_PADDING.saturating_sub(1) as usize;
-        let left_gutter = " ".repeat(left_gutter_width);
-        let level_width = 5; // "TRACE"/"DEBUG"/"INFO "/"WARN "/"ERROR"
-        let prefix_len = time_width + 1 + level_width + 1; // "<time> <level> "
-        let selector_width = 1; // " " or "▶" marker rendered in ListItem mapping
-        let msg_width =
-            content_width.saturating_sub(selector_width + left_gutter_width + prefix_len);
-        let continuation_indent = " ".repeat(prefix_len);
-
-        // Build wrapped lines with entry indices
-        let mut wrapped_lines: Vec<(usize, Line)> = Vec::new();
-
-        for (entry_idx, entry) in filtered_entries.iter() {
-            let raw_time_str = format!("{:.2}s", entry.timestamp);
-            let time_str = format!("{raw_time_str:>time_width$}");
-            let msg = &entry.message;
-            let msg_color = if entry.level == LogLevel::Error || entry.level == LogLevel::Warn {
-                entry.level.color()
-            } else {
-                Color::White
-            };
-
-            if msg.len() <= msg_width || msg_width == 0 {
-                // Single line
-                wrapped_lines.push((
-                    *entry_idx,
-                    Line::from(vec![
-                        Span::raw(left_gutter.clone()),
-                        Span::styled(time_str, Style::default().fg(Color::DarkGray)),
-                        Span::raw(" "),
-                        Span::styled(
-                            entry.level.prefix(),
-                            Style::default()
-                                .fg(entry.level.color())
-                                .add_modifier(Modifier::BOLD),
-                        ),
-                        Span::raw(" "),
-                        Span::styled(msg.as_str(), Style::default().fg(msg_color)),
-                    ]),
-                ));
-            } else {
-                // Wrap long messages
-                let mut remaining = msg.as_str();
-                let mut first_line = true;
-
-                while !remaining.is_empty() {
-                    let take_len = remaining.len().min(if first_line {
-                        msg_width
-                    } else {
-                        msg_width.saturating_sub(2)
-                    });
-                    let (chunk, rest) = remaining.split_at(take_len);
-                    remaining = rest;
-
-                    if first_line {
-                        wrapped_lines.push((
-                            *entry_idx,
-                            Line::from(vec![
-                                Span::raw(left_gutter.clone()),
-                                Span::styled(
-                                    time_str.clone(),
-                                    Style::default().fg(Color::DarkGray),
-                                ),
-                                Span::raw(" "),
-                                Span::styled(
-                                    entry.level.prefix(),
-                                    Style::default()
-                                        .fg(entry.level.color())
-                                        .add_modifier(Modifier::BOLD),
-                                ),
-                                Span::raw(" "),
-                                Span::styled(chunk.to_string(), Style::default().fg(msg_color)),
-                            ]),
-                        ));
-                        first_line = false;
-                    } else {
-                        wrapped_lines.push((
-                            *entry_idx,
-                            Line::from(vec![
-                                Span::raw(left_gutter.clone()),
-                                Span::styled(
-                                    continuation_indent.as_str(),
-                                    Style::default().fg(Color::DarkGray),
-                                ),
-                                Span::styled("↳ ", Style::default().fg(Color::DarkGray)),
-                                Span::styled(chunk.to_string(), Style::default().fg(msg_color)),
-                            ]),
-                        ));
-                    }
-                }
-            }
-        }
-
-        let total_lines = wrapped_lines.len();
-
-        // Calculate scroll position (in lines, not entries)
-        let (start_line, is_auto_follow, selected_entry) = match self.log_scroll {
-            None => {
-                // Auto-follow: show the latest lines
-                (total_lines.saturating_sub(visible_height), true, None)
-            }
-            Some(scroll) => {
-                // Manual scroll - scroll is in entry indices, convert to line index
-                // Find first line of the scrolled-to entry
-                let line_idx = wrapped_lines
-                    .iter()
-                    .position(|(idx, _)| *idx >= scroll)
-                    .unwrap_or(0);
-                let max_scroll = total_lines.saturating_sub(visible_height);
-                (line_idx.min(max_scroll), false, Some(scroll))
-            }
-        };
-
-        let end_line = (start_line + visible_height).min(total_lines);
-
-        let items: Vec<ListItem> = wrapped_lines
-            .get(start_line..end_line)
-            .unwrap_or(&[])
-            .iter()
-            .map(|(entry_idx, line)| {
-                // Highlight the selected entry with a marker
-                let is_selected = selected_entry.map(|s| *entry_idx == s).unwrap_or(false);
-                if is_selected {
-                    let mut spans = vec![Span::styled(
-                        "▶",
-                        Style::default()
-                            .fg(Color::Cyan)
-                            .add_modifier(Modifier::BOLD),
-                    )];
-                    spans.extend(line.spans.iter().cloned());
-                    ListItem::new(Line::from(spans)).style(Style::default().bg(Color::DarkGray))
-                } else {
-                    let mut spans = vec![Span::raw(" ")];
-                    spans.extend(line.spans.iter().cloned());
-                    ListItem::new(Line::from(spans))
-                }
-            })
-            .collect();
-
-        let scroll_info = if is_auto_follow {
-            format!(" [AUTO {} entries] ", total_entries)
-        } else {
-            let percent = if total_lines > visible_height {
-                let max_scroll = total_lines.saturating_sub(visible_height);
-                (start_line as f64 / max_scroll as f64) * 100.0
-            } else {
-                100.0
-            };
-            format!(
-                " [line {}/{} {:.0}%] ",
-                start_line + 1,
-                total_lines,
-                percent
-            )
-        };
-
-        let logs_title = if self.show_minot_logs {
+        let title = if self.show_minot_logs {
             " Logs "
         } else {
             " Logs [minot hidden] "
         };
-
-        let block = Block::default()
-            .borders(Borders::NONE)
-            .border_style(Style::default().fg(Color::DarkGray))
-            .title(Span::styled(
-                logs_title,
-                Style::default()
-                    .fg(Color::Green)
-                    .add_modifier(Modifier::BOLD),
-            ))
-            .title_bottom(Span::styled(
-                scroll_info,
-                Style::default().fg(if is_auto_follow {
-                    Color::Cyan
-                } else {
-                    Color::Yellow
-                }),
-            ));
-
-        let list = List::new(items).block(block);
-        f.render_widget(list, area);
+        mt_log::pane::render(f, area, &visible, &self.log_view, title);
     }
 
     fn render_help_bar_context(

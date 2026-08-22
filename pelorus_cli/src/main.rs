@@ -149,7 +149,7 @@ use hiroz_msgs::{
     sensor_msgs::PointCloud2,
     std_msgs::{Header, String as RosString},
 };
-use log::{debug, error, info, trace, warn};
+use log::{debug, error, info, warn};
 #[cfg(feature = "mt_pubsub")]
 use mt_pubsub::Node;
 #[cfg(any(
@@ -255,7 +255,7 @@ use std::path::PathBuf;
 
 use pelorus_cli::mcap_output::{McapOutputWriter, McapTopics};
 use pelorus_cli::stats_tui::{
-    SharedStats, StatsTui, init_logger, set_tui_active, update_log_level,
+    SharedStats, StatsTui, init_logger, relay_child_line, set_tui_active, update_log_level,
 };
 #[cfg(any(
     feature = "mt_pubsub",
@@ -290,7 +290,12 @@ struct Args {
     /// Unlike a configuration file, an unrecognized key is an error rather
     /// than a warning: an override exists to change this run, so a typo that
     /// silently did nothing would give a result you should not trust.
-    #[arg(short = 'o', long = "override", global = true, value_name = "KEY=VALUE")]
+    #[arg(
+        short = 'o',
+        long = "override",
+        global = true,
+        value_name = "KEY=VALUE"
+    )]
     pub overrides: Vec<String>,
 }
 
@@ -4058,23 +4063,6 @@ fn lio_with_ready_signal(
     .into())
 }
 
-#[allow(dead_code)]
-fn log_minot_line(line: &str) {
-    if let Some(rest) = line.strip_prefix("[ERROR] ") {
-        error!("[Minot] {}", rest.trim());
-    } else if let Some(rest) = line.strip_prefix("[WARN] ") {
-        warn!("[Minot] {}", rest.trim());
-    } else if let Some(rest) = line.strip_prefix("[DEBUG] ") {
-        debug!("[Minot] {}", rest.trim());
-    } else if let Some(rest) = line.strip_prefix("[TRACE] ") {
-        trace!("[Minot] {}", rest.trim());
-    } else if let Some(rest) = line.strip_prefix("[INFO] ") {
-        info!("[Minot] {}", rest.trim());
-    } else {
-        info!("[Minot] {}", line);
-    }
-}
-
 #[cfg(feature = "rat")]
 #[derive(Debug)]
 enum OfflineRuntimeEvent {
@@ -5197,6 +5185,11 @@ pf! i 1
                     .stdin(Stdio::piped())
                     .stdout(Stdio::piped())
                     .stderr(Stdio::piped());
+                // Ask Minot for records rather than prose: level, source and
+                // target come back intact instead of being guessed at.
+                for (key, value) in mt_log::child_env("Minot") {
+                    minot_command.env(key, value);
+                }
                 if offline_local_only {
                     minot_command.arg("--local-only");
                 }
@@ -5251,7 +5244,7 @@ pf! i 1
                             Ok(line) => {
                                 let trimmed = line.trim();
                                 if !trimmed.is_empty() {
-                                    log_minot_line(trimmed);
+                                    relay_child_line(trimmed, "Minot");
                                 }
 
                                 if line.to_lowercase().contains("end of bagfile") {
@@ -5286,7 +5279,7 @@ pf! i 1
                             Ok(line) => {
                                 let trimmed = line.trim();
                                 if !trimmed.is_empty() {
-                                    log_minot_line(trimmed);
+                                    relay_child_line(trimmed, "Minot");
                                 }
 
                                 if line.to_lowercase().contains("end of bagfile") {

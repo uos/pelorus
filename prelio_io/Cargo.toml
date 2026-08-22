@@ -38,6 +38,7 @@ mt_rat = { workspace = true, optional = true }
 ros2-interfaces-jazzy-rkyv = { workspace = true, optional = true }
 rkyv = { workspace = true, optional = true }
 transforms_io = { workspace = true }
+transforms_io_hiroz = { workspace = true, optional = true }
 
 [features]
 default = ["rayon", "compressed-pointcloud"]
@@ -74,5 +75,5 @@ hiroz = [
     "dep:tokio",
     "dep:zenoh-buffers",
     "ros_pointcloud2/hiroz",
-    "transforms_io/hiroz",
+    "dep:transforms_io_hiroz",
 ]

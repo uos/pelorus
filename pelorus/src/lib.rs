@@ -116,7 +116,7 @@ struct ProcessingThread {
     pipeline: Pipeline,
     prelio_receiver: mpsc::Receiver<PrelioProcessedCloud>,
     result_sender: mpsc::Sender<PelorusOutput>,
-    ready_for_next: mpsc::Sender<()>,
+    ready_for_next: mpsc::Sender<u64>,
     callback: Arc<Mutex<Option<Arc<dyn Fn(Odometry) + Send + Sync>>>>,
     shutdown: Arc<AtomicBool>,
     config: LioConfig,
@@ -310,17 +310,12 @@ fn load_config(config_path: Option<&str>) -> anyhow::Result<LioConfig> {
 fn processing_thread_main(thread: ProcessingThread) {
     let mut sent_count: usize = 0;
 
-    if !thread.shutdown.load(Ordering::Relaxed) {
-        if let Err(e) = thread.ready_for_next.send(()) {
-            error!("failed to send initial ready signal: {e}");
-        }
-    }
-
     while let Ok(processed) = thread.prelio_receiver.recv() {
         if thread.shutdown.load(Ordering::Relaxed) {
             continue;
         }
 
+        let scan_id = processed.scan_id;
         let registration = thread
             .pipeline
             .register_processed_cloud(processed, Some(&thread.ready_for_next));
@@ -346,7 +341,14 @@ fn processing_thread_main(thread: ProcessingThread) {
                     }
                 }
             }
-            Ok(None) => {}
+            Ok(None) => {
+                // Map-only scans return before the registration barrier, so the
+                // correction ack for this scan id has to come from here or
+                // Prelio waits on it forever.
+                if let Err(e) = thread.ready_for_next.send(scan_id) {
+                    error!("failed to acknowledge map-only scan #{scan_id}: {e}");
+                }
+            }
             Err(e) => {
                 error!("fatal registration error; stopping processing thread: {e:#}");
                 break;
@@ -457,7 +459,7 @@ impl Handle {
             buffer: Some(Vec::new()),
         }));
 
-        let (ready_tx, ready_rx) = mpsc::channel::<()>();
+        let (ready_tx, ready_rx) = mpsc::channel::<u64>();
         let (prelio, prelio_receiver) = pipeline.create_prelio(Some(ready_rx))?;
         let (result_tx, result_rx) = mpsc::channel();
 
