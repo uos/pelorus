@@ -65,6 +65,150 @@ impl Asts {
     }
 }
 
+/// One `KEY=VALUE` override, already normalized into a Ratslang assignment.
+#[derive(Debug, Clone)]
+pub struct ConfigOverride {
+    /// Fully qualified variable name, e.g. `output.odometry_rate`.
+    pub key: String,
+    statement: String,
+}
+
+/// Parse `KEY=VALUE` pairs from the command line into Ratslang assignments.
+///
+/// The value is passed through untouched, so it carries its own Ratslang
+/// syntax -- units (`0.5m`, `2s`), booleans, enums and quoted strings all work
+/// exactly as they do in a configuration file.
+pub fn parse_overrides(overrides: &[String]) -> anyhow::Result<Vec<ConfigOverride>> {
+    overrides
+        .iter()
+        .map(|raw| {
+            let (key, value) = raw
+                .split_once('=')
+                .ok_or_else(|| anyhow!("override '{raw}' is not KEY=VALUE"))?;
+            let key = key.trim();
+            let value = value.trim();
+            if key.is_empty() {
+                return Err(anyhow!("override '{raw}' has an empty key"));
+            }
+            if value.is_empty() {
+                return Err(anyhow!("override '{raw}' has an empty value"));
+            }
+            let statement = format!("{key} = {value}");
+            // Compile the assignment on its own first. Layered into the file's
+            // text a syntax error surfaces as a failure to compile *the file*,
+            // which points the user at something that is not wrong.
+            ratslang::compile_code(&statement).map_err(|error| {
+                anyhow!("override '{raw}' is not valid Ratslang: {error}")
+            })?;
+            Ok(ConfigOverride {
+                key: key.to_owned(),
+                statement,
+            })
+        })
+        .collect()
+}
+
+/// Build the user configuration layer from an optional file plus overrides.
+///
+/// Ratslang assigns sequentially and the last assignment wins, so the
+/// overrides are appended after the file's own text and compiled as one unit.
+/// Seeding them as prior variable state would not work: resolution consults
+/// that state before the statement list, so the file would win over the
+/// override rather than the other way round.
+///
+/// Includes inside the file keep resolving against the directory it lives in,
+/// which is why the parent directory is passed through explicitly.
+pub fn user_config_with_overrides(
+    path: Option<&std::path::Path>,
+    overrides: &[ConfigOverride],
+) -> anyhow::Result<Evaluated> {
+    let source = match path {
+        Some(path) => std::fs::read_to_string(path)
+            .map_err(|error| anyhow!("failed to read '{}': {error}", path.display()))?,
+        None => String::new(),
+    };
+    let parent = path
+        .and_then(|path| path.parent())
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .map(|parent| parent.to_path_buf())
+        .unwrap_or_else(|| std::path::PathBuf::from("."));
+    layer_overrides(&source, &parent, overrides).map_err(|error| match path {
+        Some(path) => anyhow!("failed to compile '{}': {error}", path.display()),
+        None => anyhow!("failed to compile the command-line overrides: {error}"),
+    })
+}
+
+/// Same layering for a configuration that did not come from a path, such as
+/// one read from stdin. `parent` is what relative includes resolve against.
+pub fn layer_overrides(
+    source: &str,
+    parent: &std::path::Path,
+    overrides: &[ConfigOverride],
+) -> anyhow::Result<Evaluated> {
+    let mut source = source.to_owned();
+    for entry in overrides {
+        // A leading newline on every statement also avoids Ratslang's one-line
+        // token edge case when the base source was empty.
+        source.push('\n');
+        source.push_str(&entry.statement);
+    }
+    source.push('\n');
+    ratslang::compile_code_with_state(&source, parent, None, std::io::stderr(), true)
+        .map_err(|error| anyhow!("{error}"))
+}
+
+/// Reject overrides naming a variable the configuration never reads.
+///
+/// A file's unrecognized variables only warn, because a config carried between
+/// versions legitimately outlives a setting. An override is typed for one run
+/// and its whole purpose is to change behaviour, so a typo that silently did
+/// nothing would hand back a result the user would wrongly trust.
+pub fn reject_unknown_overrides(
+    overrides: &[ConfigOverride],
+    evaluated_variables: &[String],
+) -> anyhow::Result<()> {
+    let unknown = overrides
+        .iter()
+        .filter(|entry| !evaluated_variables.contains(&entry.key))
+        .map(|entry| format!("'{}'", entry.key))
+        .collect::<Vec<_>>();
+    if !unknown.is_empty() {
+        return Err(anyhow!(
+            "override{} {} not recognized; run 'config generate full' to see every setting",
+            if unknown.len() == 1 { "" } else { "s" },
+            unknown.join(", ")
+        ));
+    }
+    Ok(())
+}
+
+/// Build the user layer with overrides applied, and reject any override that
+/// names a setting the configuration never reads.
+///
+/// The check costs a second parse, so it is skipped entirely when no override
+/// was given -- the normal path pays nothing for it.
+pub fn user_config_with_checked_overrides(
+    defaults_source: &str,
+    path: Option<&std::path::Path>,
+    overrides: &[ConfigOverride],
+) -> anyhow::Result<Evaluated> {
+    let user = user_config_with_overrides(path, overrides)?;
+    if overrides.is_empty() {
+        return Ok(user);
+    }
+    let mut defaults = ratslang::compile_code(defaults_source)
+        .map_err(|error| anyhow!("failed to compile embedded default config: {error}"))?;
+    // Both sides are dropped inside this function after being consumed for the
+    // usage report alone, and warning about every variable that report did not
+    // reach would bury the one message the user needs.
+    defaults.vars = defaults.vars.with_drop_warning(false);
+    let mut probe = user_config_with_overrides(path, overrides)?;
+    probe.vars = probe.vars.with_drop_warning(false);
+    let (_, (_, evaluated)) = ast_to_config_with_user_usage(defaults, probe)?;
+    reject_unknown_overrides(overrides, &evaluated)?;
+    Ok(user)
+}
+
 /// Validates configuration and returns usage statistics for the defaults.
 /// This is primarily intended for build-time validation.
 ///
@@ -85,6 +229,139 @@ pub fn ast_to_config_with_user_usage(
 ) -> anyhow::Result<(LioConfig, (Vec<String>, Vec<String>))> {
     let config = ast_to_config_inner(defaults, user, false, true)?;
     Ok((config.0, config.2))
+}
+
+#[cfg(test)]
+mod override_tests {
+    use super::*;
+
+    const DEFAULTS: &str = include_str!("../../default.rl");
+
+    /// The point of an override is to win. Ratslang resolution consults prior
+    /// variable state before the statement list, so the obvious implementation
+    /// -- seeding the file's variables and compiling the override on top --
+    /// silently does the opposite. This pins the direction that matters.
+    #[test]
+    fn an_override_beats_the_same_setting_in_the_config_file() {
+        let directory =
+            std::env::temp_dir().join(format!("pelorus-override-{}", std::process::id()));
+        std::fs::create_dir_all(&directory).unwrap();
+        let path = directory.join("user.rl");
+        std::fs::write(&path, "output.odometry_rate = ImuAndLidar\n").unwrap();
+
+        let overrides = parse_overrides(&["output.odometry_rate=Lidar".to_owned()]).unwrap();
+        let user = user_config_with_overrides(Some(&path), &overrides).unwrap();
+        let defaults = ratslang::compile_code(DEFAULTS).unwrap();
+        let config = ast_to_config(defaults, user).unwrap();
+
+        assert_eq!(config.odometry_rate, crate::OdometryRate::Lidar);
+        std::fs::remove_dir_all(&directory).unwrap();
+    }
+
+    /// Overrides have to work with no file at all -- that is the quick-probe
+    /// case they exist for.
+    #[test]
+    fn overrides_apply_without_any_config_file() {
+        let overrides = parse_overrides(&["output.odometry_rate=ImuAndLidar".to_owned()]).unwrap();
+        let user = user_config_with_overrides(None, &overrides).unwrap();
+        let defaults = ratslang::compile_code(DEFAULTS).unwrap();
+        let config = ast_to_config(defaults, user).unwrap();
+
+        assert_eq!(config.odometry_rate, crate::OdometryRate::ImuAndLidar);
+    }
+
+    /// Repeating a key is how someone corrects themselves mid-command line, so
+    /// the rightmost has to win -- and it does only because the statements are
+    /// appended in order into a language that assigns sequentially.
+    #[test]
+    fn the_last_of_several_overrides_for_one_key_wins() {
+        let overrides = parse_overrides(&[
+            "output.odometry_rate=ImuAndLidar".to_owned(),
+            "output.odometry_rate=Lidar".to_owned(),
+        ])
+        .unwrap();
+        let user = user_config_with_overrides(None, &overrides).unwrap();
+        let defaults = ratslang::compile_code(DEFAULTS).unwrap();
+        let config = ast_to_config(defaults, user).unwrap();
+
+        assert_eq!(
+            config.odometry_rate,
+            crate::OdometryRate::Lidar,
+            "the rightmost -o must win"
+        );
+    }
+
+    /// A comma-separated pair looks plausible but is not supported, and it used
+    /// to surface as "failed to compile <your config file>" -- blaming a file
+    /// that is perfectly fine.
+    #[test]
+    fn a_syntactically_invalid_override_names_itself_not_the_config_file() {
+        let error =
+            parse_overrides(&["output.odometry_rate=Lidar,imu.gyro_bias_std=0.1".to_owned()])
+                .unwrap_err();
+        let message = error.to_string();
+        assert!(
+            message.contains("output.odometry_rate=Lidar,imu.gyro_bias_std=0.1"),
+            "the error must quote the offending override: {message}"
+        );
+        assert!(
+            !message.contains("default.rl"),
+            "the error must not blame a config file: {message}"
+        );
+    }
+
+    /// Several independent overrides must all land, not just the last one.
+    /// Parsing cleanly is not the same claim as every value reaching the
+    /// config, so this checks the values themselves.
+    #[test]
+    fn independent_overrides_all_apply_together() {
+        let overrides = parse_overrides(&[
+            "output.odometry_rate=ImuAndLidar".to_owned(),
+            "registration.max_iter=23".to_owned(),
+        ])
+        .unwrap();
+        let user = user_config_with_overrides(None, &overrides).unwrap();
+        let defaults = ratslang::compile_code(DEFAULTS).unwrap();
+        let config = ast_to_config(defaults, user).unwrap();
+
+        assert_eq!(config.odometry_rate, crate::OdometryRate::ImuAndLidar);
+        assert_eq!(config.ekf_max_iterations, 23);
+    }
+
+    #[test]
+    fn malformed_overrides_are_rejected_before_anything_runs() {
+        for bad in ["output.odometry_rate", "=Lidar", "output.odometry_rate="] {
+            assert!(
+                parse_overrides(&[bad.to_owned()]).is_err(),
+                "'{bad}' must be rejected"
+            );
+        }
+    }
+
+    /// A typo'd override that quietly did nothing would hand back a run whose
+    /// result the user would wrongly trust.
+    #[test]
+    fn an_override_naming_an_unknown_setting_is_an_error() {
+        let overrides = parse_overrides(&["output.odometry_rat=Lidar".to_owned()]).unwrap();
+        let error = user_config_with_checked_overrides(DEFAULTS, None, &overrides).unwrap_err();
+        assert!(
+            error.to_string().contains("output.odometry_rat"),
+            "the error must name the typo: {error}"
+        );
+
+        // ... and a correctly spelled one passes the same gate.
+        let good = parse_overrides(&["output.odometry_rate=Lidar".to_owned()]).unwrap();
+        assert!(user_config_with_checked_overrides(DEFAULTS, None, &good).is_ok());
+    }
+
+    /// No overrides means no second parse and no new failure mode on the path
+    /// every existing run takes.
+    #[test]
+    fn no_overrides_leaves_the_ordinary_path_untouched() {
+        let user = user_config_with_checked_overrides(DEFAULTS, None, &[]).unwrap();
+        let defaults = ratslang::compile_code(DEFAULTS).unwrap();
+        assert!(ast_to_config(defaults, user).is_ok());
+    }
 }
 
 #[cfg(test)]

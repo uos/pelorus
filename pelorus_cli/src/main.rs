@@ -35,7 +35,10 @@ use marina::{Marina, ProgressReporter, ResolveResult, WriterProgress};
 use mimalloc::MiMalloc;
 #[cfg(feature = "mt_pubsub")]
 use pelorus_core::PointCloudMode;
-use pelorus_core::config::{ast_to_config, ast_to_config_with_user_usage};
+use pelorus_core::config::{
+    ast_to_config, ast_to_config_with_user_usage, layer_overrides, parse_overrides,
+    reject_unknown_overrides, user_config_with_checked_overrides,
+};
 #[cfg(any(
     feature = "mt_pubsub",
     feature = "ros2-client",
@@ -277,6 +280,18 @@ fn lerp_color(c1: (f32, f32, f32), c2: (f32, f32, f32), t: f32) -> (f32, f32, f3
 struct Args {
     #[command(subcommand)]
     pub command: Command,
+
+    /// Override one setting, as KEY=VALUE. Repeatable.
+    ///
+    /// Applied after any --config-path file, so it wins over both the file and
+    /// the embedded defaults. Values use Ratslang syntax, units included:
+    /// -o mapping.voxel_size=0.5m -o output.odometry_rate=ImuAndLidar
+    ///
+    /// Unlike a configuration file, an unrecognized key is an error rather
+    /// than a warning: an override exists to change this run, so a typo that
+    /// silently did nothing would give a result you should not trust.
+    #[arg(short = 'o', long = "override", global = true, value_name = "KEY=VALUE")]
+    pub overrides: Vec<String>,
 }
 
 #[derive(Debug, Clone, Subcommand)]
@@ -4784,6 +4799,10 @@ fn main() -> Result<(), Box<dyn CoreError>> {
 
     const DEFAULT_CONFIG_STR: &str = include_str!("../../default.rl");
 
+    // Parsed before anything is spawned: a malformed --override should fail on
+    // the command line, not partway into a run.
+    let cli_overrides = parse_overrides(&args.overrides)?;
+
     match args.command {
         Command::Completions { shell } => {
             let mut cmd = Args::command();
@@ -4800,24 +4819,23 @@ fn main() -> Result<(), Box<dyn CoreError>> {
             let default_ast = ratslang::compile_code(DEFAULT_CONFIG_STR)
                 .map_err(|e| anyhow!("Failed to compile embedded default config: {}", e))?;
 
-            let user_ast = if let Some(config_path) = config_args.config_path {
-                let path = std::path::Path::new(&config_path);
-                if !path.exists() {
-                    return Err(anyhow!(
-                        "Error: Configuration file not found at '{}'",
-                        config_path.to_string_lossy()
-                    )
-                    .into());
+            let user_ast = {
+                let path = config_args.config_path;
+                if let Some(path) = path.as_ref() {
+                    let path = std::path::Path::new(path);
+                    if !path.exists() {
+                        return Err(anyhow!(
+                            "Error: Configuration file not found at '{}'",
+                            path.to_string_lossy()
+                        )
+                        .into());
+                    }
                 }
-                ratslang::compile_file(&path.to_path_buf(), None, None).map_err(|e| {
-                    anyhow!(
-                        "Failed to compile user config '{}': {}",
-                        config_path.to_string_lossy(),
-                        e
-                    )
-                })?
-            } else {
-                ratslang::compile_code("")?
+                user_config_with_checked_overrides(
+                    DEFAULT_CONFIG_STR,
+                    path.as_ref().map(std::path::Path::new),
+                    &cli_overrides,
+                )?
             };
 
             let mut config = ast_to_config(default_ast, user_ast)?;
@@ -4998,24 +5016,23 @@ fn main() -> Result<(), Box<dyn CoreError>> {
             let default_ast = ratslang::compile_code(DEFAULT_CONFIG_STR)
                 .map_err(|e| anyhow!("Failed to compile embedded default config: {}", e))?;
 
-            let user_ast = if let Some(config_path) = offline_args.config_path {
-                let path = std::path::Path::new(&config_path);
-                if !path.exists() {
-                    return Err(anyhow!(
-                        "Error: Configuration file not found at '{}'",
-                        config_path.to_string_lossy()
-                    )
-                    .into());
+            let user_ast = {
+                let path = offline_args.config_path;
+                if let Some(path) = path.as_ref() {
+                    let path = std::path::Path::new(path);
+                    if !path.exists() {
+                        return Err(anyhow!(
+                            "Error: Configuration file not found at '{}'",
+                            path.to_string_lossy()
+                        )
+                        .into());
+                    }
                 }
-                ratslang::compile_file(&path.to_path_buf(), None, None).map_err(|e| {
-                    anyhow!(
-                        "Failed to compile user config '{}': {}",
-                        config_path.to_string_lossy(),
-                        e
-                    )
-                })?
-            } else {
-                ratslang::compile_code("")?
+                user_config_with_checked_overrides(
+                    DEFAULT_CONFIG_STR,
+                    path.as_ref().map(std::path::Path::new),
+                    &cli_overrides,
+                )?
             };
 
             let config = {
@@ -5594,13 +5611,17 @@ pf! i 1
                 let default_ast = ratslang::compile_code(DEFAULT_CONFIG_STR)
                     .map_err(|e| anyhow!("Failed to compile embedded default config: {}", e))?;
 
+                // `--override` is global, so it reaches `config verify` too and
+                // is checked here rather than quietly ignored: verifying a file
+                // plus the overrides you intend to run it with is the useful
+                // question.
                 let user_ast = if args.config_path.to_str() == Some("-") {
                     use std::io::Read;
                     let mut buffer = String::new();
                     std::io::stdin()
                         .read_to_string(&mut buffer)
                         .map_err(|e| anyhow!("Failed to read from stdin: {}", e))?;
-                    ratslang::compile_code(&buffer)
+                    layer_overrides(&buffer, std::path::Path::new("."), &cli_overrides)
                         .map_err(|e| anyhow!("Failed to compile config from stdin: {}", e))?
                 } else {
                     let path = std::path::Path::new(&args.config_path);
@@ -5611,17 +5632,16 @@ pf! i 1
                         )
                         .into());
                     }
-                    ratslang::compile_file(&path.to_path_buf(), None, None).map_err(|e| {
-                        anyhow!(
-                            "Failed to compile user config '{}': {}",
-                            args.config_path.to_string_lossy(),
-                            e
-                        )
-                    })?
+                    user_config_with_checked_overrides(
+                        DEFAULT_CONFIG_STR,
+                        Some(path),
+                        &cli_overrides,
+                    )?
                 };
 
                 let (_, (assigned_vars, evaluated_vars)) =
                     ast_to_config_with_user_usage(default_ast, user_ast)?;
+                reject_unknown_overrides(&cli_overrides, &evaluated_vars)?;
 
                 // Check for unused variables in user config
                 let mut has_warnings = false;
@@ -5645,24 +5665,22 @@ pf! i 1
 
                 let default_ast = ratslang::compile_code(DEFAULT_CONFIG_STR)
                     .map_err(|e| anyhow!("Failed to compile embedded default config: {}", e))?;
-                let user_ast = if let Some(ref config_path) = args.config_path {
-                    let path = std::path::Path::new(config_path);
-                    if !path.exists() {
-                        return Err(anyhow!(
-                            "Error: Configuration file not found at '{}'",
-                            config_path.to_string_lossy()
-                        )
-                        .into());
+                let user_ast = {
+                    if let Some(ref config_path) = args.config_path {
+                        let path = std::path::Path::new(config_path);
+                        if !path.exists() {
+                            return Err(anyhow!(
+                                "Error: Configuration file not found at '{}'",
+                                config_path.to_string_lossy()
+                            )
+                            .into());
+                        }
                     }
-                    ratslang::compile_file(&path.to_path_buf(), None, None).map_err(|e| {
-                        anyhow!(
-                            "Failed to compile user config '{}': {}",
-                            config_path.to_string_lossy(),
-                            e
-                        )
-                    })?
-                } else {
-                    ratslang::compile_code("")?
+                    user_config_with_checked_overrides(
+                        DEFAULT_CONFIG_STR,
+                        args.config_path.as_deref(),
+                        &cli_overrides,
+                    )?
                 };
                 let lio_config = ast_to_config(default_ast, user_ast)?;
                 let lidar_topic = &lio_config.prelio_node_params.cloud_src_topic;
