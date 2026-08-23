@@ -6,9 +6,12 @@ use serde::{Deserialize, Serialize};
 
 pub mod adaptive_execution;
 pub mod config;
+pub mod lie;
 pub mod timing;
 
 pub mod log_debouncer;
+
+pub use lie::{SE3, SO3};
 
 #[derive(Debug, Clone, Default, PointConvertible, Copy)]
 pub struct RobosensePoint {

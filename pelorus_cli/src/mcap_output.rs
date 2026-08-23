@@ -181,41 +181,66 @@ float64 y
 float64 z
 "#;
 
-#[derive(Debug, Clone)]
-pub struct McapTopics {
-    pub cloud: String,
-    pub odom: String,
-    pub path: String,
-    pub tf: String,
-    pub filtered_imu: String,
+/// A ROS 2 message type together with the concatenated `.msg` definition that
+/// MCAP consumers need in order to decode it.
+#[derive(Debug, Clone, Copy)]
+pub struct MsgSchema {
+    pub name: &'static str,
+    pub definition: &'static str,
 }
 
-pub struct McapOutputWriter<W: Write + Seek> {
+pub const POINTCLOUD2_MSG: MsgSchema = MsgSchema {
+    name: "sensor_msgs/msg/PointCloud2",
+    definition: POINTCLOUD2_SCHEMA,
+};
+pub const ODOMETRY_MSG: MsgSchema = MsgSchema {
+    name: "nav_msgs/msg/Odometry",
+    definition: ODOMETRY_SCHEMA,
+};
+pub const PATH_MSG: MsgSchema = MsgSchema {
+    name: "nav_msgs/msg/Path",
+    definition: PATH_SCHEMA,
+};
+pub const TF_MSG: MsgSchema = MsgSchema {
+    name: "tf2_msgs/msg/TFMessage",
+    definition: TF_SCHEMA,
+};
+pub const IMU_MSG: MsgSchema = MsgSchema {
+    name: "sensor_msgs/msg/Imu",
+    definition: IMU_SCHEMA,
+};
+
+/// Handle for a topic registered with [`McapWriter::add_topic`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TopicId(usize);
+
+struct TopicEntry {
+    name: String,
+    ros_type: &'static str,
+    channel: u16,
+    sequence: u32,
+    message_count: u64,
+}
+
+/// Writes CDR-encoded ROS 2 messages to an MCAP file, optionally accompanied by
+/// `metadata.yaml` so the result opens as a ROS 2 bag directory.
+///
+/// Topics are registered up front rather than discovered from traffic: a bag
+/// whose channel set depends on which messages happened to arrive is not
+/// reproducible, and rosbag tooling expects every offered topic to appear in the
+/// metadata even when it carried no messages.
+pub struct McapWriter<W: Write + Seek> {
     writer: mcap::Writer<W>,
     mcap_path: Option<PathBuf>,
     rosbag_metadata_path: Option<PathBuf>,
-    topics: McapTopics,
-    message_counts: BTreeMap<String, u64>,
+    topics: Vec<TopicEntry>,
+    schemas: BTreeMap<&'static str, u16>,
     start_time: Option<u64>,
     end_time: Option<u64>,
-    cloud_channel: u16,
-    odom_channel: u16,
-    path_channel: u16,
-    tf_channel: u16,
-    filtered_imu_channel: u16,
-    cloud_seq: u32,
-    odom_seq: u32,
-    path_seq: u32,
-    tf_seq: u32,
-    filtered_imu_seq: u32,
 }
 
-impl McapOutputWriter<BufWriter<File>> {
-    pub fn create(
-        path: &Path,
-        topics: &McapTopics,
-        rosbag_metadata_path: Option<PathBuf>,
-    ) -> Result<Self> {
+impl McapWriter<BufWriter<File>> {
+    pub fn create(path: &Path, rosbag_metadata_path: Option<PathBuf>) -> Result<Self> {
         if let Some(parent) = path
             .parent()
             .filter(|parent| !parent.as_os_str().is_empty())
@@ -229,131 +254,84 @@ impl McapOutputWriter<BufWriter<File>> {
         }
         let file = File::create(path)
             .with_context(|| format!("Failed to create MCAP output '{}'", path.display()))?;
-        let mut writer = Self::new(BufWriter::new(file), topics)?;
+        let mut writer = Self::new(BufWriter::new(file))?;
         writer.mcap_path = Some(path.to_path_buf());
         writer.rosbag_metadata_path = rosbag_metadata_path;
         Ok(writer)
     }
 }
 
-impl<W: Write + Seek> McapOutputWriter<W> {
-    pub fn new(writer: W, topics: &McapTopics) -> Result<Self> {
-        let mut writer = mcap::WriteOptions::new()
+impl<W: Write + Seek> McapWriter<W> {
+    pub fn new(writer: W) -> Result<Self> {
+        let writer = mcap::WriteOptions::new()
             .profile("ros2")
             .library("pelorus")
             .create(writer)?;
-
-        let cloud_schema = writer.add_schema(
-            "sensor_msgs/msg/PointCloud2",
-            "ros2msg",
-            POINTCLOUD2_SCHEMA.as_bytes(),
-        )?;
-        let odom_schema = writer.add_schema(
-            "nav_msgs/msg/Odometry",
-            "ros2msg",
-            ODOMETRY_SCHEMA.as_bytes(),
-        )?;
-        let path_schema =
-            writer.add_schema("nav_msgs/msg/Path", "ros2msg", PATH_SCHEMA.as_bytes())?;
-        let tf_schema =
-            writer.add_schema("tf2_msgs/msg/TFMessage", "ros2msg", TF_SCHEMA.as_bytes())?;
-        let imu_schema =
-            writer.add_schema("sensor_msgs/msg/Imu", "ros2msg", IMU_SCHEMA.as_bytes())?;
-
-        let metadata = BTreeMap::new();
-        let cloud_channel = writer.add_channel(cloud_schema, &topics.cloud, "cdr", &metadata)?;
-        let odom_channel = writer.add_channel(odom_schema, &topics.odom, "cdr", &metadata)?;
-        let path_channel = writer.add_channel(path_schema, &topics.path, "cdr", &metadata)?;
-        let tf_channel = writer.add_channel(tf_schema, &topics.tf, "cdr", &metadata)?;
-        let filtered_imu_channel =
-            writer.add_channel(imu_schema, &topics.filtered_imu, "cdr", &metadata)?;
-
         Ok(Self {
             writer,
             mcap_path: None,
             rosbag_metadata_path: None,
-            topics: topics.clone(),
-            message_counts: BTreeMap::new(),
+            topics: Vec::new(),
+            schemas: BTreeMap::new(),
             start_time: None,
             end_time: None,
-            cloud_channel,
-            odom_channel,
-            path_channel,
-            tf_channel,
-            filtered_imu_channel,
-            cloud_seq: 0,
-            odom_seq: 0,
-            path_seq: 0,
-            tf_seq: 0,
-            filtered_imu_seq: 0,
         })
     }
 
-    pub fn write_cloud(&mut self, msg: &PointCloud2) -> Result<()> {
-        self.cloud_seq = self.cloud_seq.wrapping_add(1);
-        let time = stamp_to_nanos(&msg.header.stamp);
-        write_msg(
-            &mut self.writer,
-            self.cloud_channel,
-            self.cloud_seq,
-            time,
-            msg,
-        )?;
-        self.record_message(&self.topics.cloud.clone(), time);
-        Ok(())
+    /// Registers a topic and returns the handle used to write to it.
+    ///
+    /// Registration order is the order topics appear in `metadata.yaml`.
+    pub fn add_topic(&mut self, topic: &str, schema: MsgSchema) -> Result<TopicId> {
+        let schema_id = match self.schemas.get(schema.name) {
+            Some(id) => *id,
+            None => {
+                let id =
+                    self.writer
+                        .add_schema(schema.name, "ros2msg", schema.definition.as_bytes())?;
+                self.schemas.insert(schema.name, id);
+                id
+            }
+        };
+        let channel = self
+            .writer
+            .add_channel(schema_id, topic, "cdr", &BTreeMap::new())?;
+        self.topics.push(TopicEntry {
+            name: topic.to_string(),
+            ros_type: schema.name,
+            channel,
+            sequence: 0,
+            message_count: 0,
+        });
+        Ok(TopicId(self.topics.len() - 1))
     }
 
-    pub fn write_odom(&mut self, msg: &Odometry) -> Result<()> {
-        self.odom_seq = self.odom_seq.wrapping_add(1);
-        let time = stamp_to_nanos(&msg.header.stamp);
-        write_msg(
-            &mut self.writer,
-            self.odom_channel,
-            self.odom_seq,
-            time,
-            msg,
+    pub fn write<T: serde::Serialize>(
+        &mut self,
+        topic: TopicId,
+        msg: &T,
+        log_time: u64,
+    ) -> Result<()> {
+        let entry = self
+            .topics
+            .get_mut(topic.0)
+            .context("MCAP topic handle does not belong to this writer")?;
+        entry.sequence = entry.sequence.wrapping_add(1);
+        entry.message_count += 1;
+        let bytes = cdr::serialize::<_, _, cdr::CdrLe>(msg, cdr::Infinite)?;
+        self.writer.write_to_known_channel(
+            &MessageHeader {
+                channel_id: entry.channel,
+                sequence: entry.sequence,
+                log_time,
+                publish_time: log_time,
+            },
+            &bytes,
         )?;
-        self.record_message(&self.topics.odom.clone(), time);
-        Ok(())
-    }
-
-    pub fn write_path(&mut self, msg: &NavPath) -> Result<()> {
-        self.path_seq = self.path_seq.wrapping_add(1);
-        let time = stamp_to_nanos(&msg.header.stamp);
-        write_msg(
-            &mut self.writer,
-            self.path_channel,
-            self.path_seq,
-            time,
-            msg,
-        )?;
-        self.record_message(&self.topics.path.clone(), time);
-        Ok(())
-    }
-
-    pub fn write_tf(&mut self, msg: &TFMessage) -> Result<()> {
-        self.tf_seq = self.tf_seq.wrapping_add(1);
-        let time = msg
-            .transforms
-            .first()
-            .map(|tf| stamp_to_nanos(&tf.header.stamp))
-            .unwrap_or(0);
-        write_msg(&mut self.writer, self.tf_channel, self.tf_seq, time, msg)?;
-        self.record_message(&self.topics.tf.clone(), time);
-        Ok(())
-    }
-
-    pub fn write_filtered_imu(&mut self, msg: &Imu) -> Result<()> {
-        self.filtered_imu_seq = self.filtered_imu_seq.wrapping_add(1);
-        let time = stamp_to_nanos(&msg.header.stamp);
-        write_msg(
-            &mut self.writer,
-            self.filtered_imu_channel,
-            self.filtered_imu_seq,
-            time,
-            msg,
-        )?;
-        self.record_message(&self.topics.filtered_imu.clone(), time);
+        self.start_time = Some(
+            self.start_time
+                .map_or(log_time, |start| start.min(log_time)),
+        );
+        self.end_time = Some(self.end_time.map_or(log_time, |end| end.max(log_time)));
         Ok(())
     }
 
@@ -368,39 +346,167 @@ impl<W: Write + Seek> McapOutputWriter<W> {
         }
         Ok(())
     }
+}
 
-    fn record_message(&mut self, topic: &str, time: u64) {
-        *self.message_counts.entry(topic.to_string()).or_default() += 1;
-        self.start_time = Some(self.start_time.map_or(time, |start| start.min(time)));
-        self.end_time = Some(self.end_time.map_or(time, |end| end.max(time)));
+#[derive(Debug, Clone)]
+pub struct McapTopics {
+    pub cloud: String,
+    pub odom: String,
+    pub path: String,
+    pub tf: String,
+    pub filtered_imu: String,
+}
+
+/// The Pelorus odometry output bag: registered clouds, odometry, path, TF, and
+/// the filtered IMU stream.
+pub struct McapOutputWriter<W: Write + Seek> {
+    inner: McapWriter<W>,
+    cloud: TopicId,
+    odom: TopicId,
+    path: TopicId,
+    tf: TopicId,
+    filtered_imu: TopicId,
+}
+
+impl McapOutputWriter<BufWriter<File>> {
+    pub fn create(
+        path: &Path,
+        topics: &McapTopics,
+        rosbag_metadata_path: Option<PathBuf>,
+    ) -> Result<Self> {
+        Self::from_writer(McapWriter::create(path, rosbag_metadata_path)?, topics)
     }
 }
 
-fn write_msg<W, T>(
-    writer: &mut mcap::Writer<W>,
-    channel_id: u16,
-    sequence: u32,
-    time: u64,
-    msg: &T,
-) -> Result<()>
-where
-    W: Write + Seek,
-    T: serde::Serialize,
-{
-    let bytes = cdr::serialize::<_, _, cdr::CdrLe>(msg, cdr::Infinite)?;
-    writer.write_to_known_channel(
-        &MessageHeader {
-            channel_id,
-            sequence,
-            log_time: time,
-            publish_time: time,
-        },
-        &bytes,
-    )?;
-    Ok(())
+impl<W: Write + Seek> McapOutputWriter<W> {
+    pub fn new(writer: W, topics: &McapTopics) -> Result<Self> {
+        Self::from_writer(McapWriter::new(writer)?, topics)
+    }
+
+    fn from_writer(mut inner: McapWriter<W>, topics: &McapTopics) -> Result<Self> {
+        let cloud = inner.add_topic(&topics.cloud, POINTCLOUD2_MSG)?;
+        let odom = inner.add_topic(&topics.odom, ODOMETRY_MSG)?;
+        let path = inner.add_topic(&topics.path, PATH_MSG)?;
+        let tf = inner.add_topic(&topics.tf, TF_MSG)?;
+        let filtered_imu = inner.add_topic(&topics.filtered_imu, IMU_MSG)?;
+        Ok(Self {
+            inner,
+            cloud,
+            odom,
+            path,
+            tf,
+            filtered_imu,
+        })
+    }
+
+    pub fn write_cloud(&mut self, msg: &PointCloud2) -> Result<()> {
+        let time = stamp_to_nanos(&msg.header.stamp);
+        self.inner.write(self.cloud, msg, time)
+    }
+
+    pub fn write_odom(&mut self, msg: &Odometry) -> Result<()> {
+        let time = stamp_to_nanos(&msg.header.stamp);
+        self.inner.write(self.odom, msg, time)
+    }
+
+    pub fn write_path(&mut self, msg: &NavPath) -> Result<()> {
+        let time = stamp_to_nanos(&msg.header.stamp);
+        self.inner.write(self.path, msg, time)
+    }
+
+    pub fn write_tf(&mut self, msg: &TFMessage) -> Result<()> {
+        let time = msg
+            .transforms
+            .first()
+            .map(|tf| stamp_to_nanos(&tf.header.stamp))
+            .unwrap_or(0);
+        self.inner.write(self.tf, msg, time)
+    }
+
+    pub fn write_filtered_imu(&mut self, msg: &Imu) -> Result<()> {
+        let time = stamp_to_nanos(&msg.header.stamp);
+        self.inner.write(self.filtered_imu, msg, time)
+    }
+
+    pub fn finish(self) -> Result<()> {
+        self.inner.finish()
+    }
 }
 
-fn stamp_to_nanos(stamp: &Time) -> u64 {
+/// Converts a backend-neutral point cloud into the CDR-serializable ROS message
+/// this writer stores.
+///
+/// Taking `PointCloud2Msg` rather than one of the transport types keeps the
+/// recording path independent of which pub/sub backend the build uses.
+pub fn cloud_msg_to_ros(cloud: ros_pointcloud2::PointCloud2Msg) -> PointCloud2 {
+    use ros2_interfaces_jazzy_serde::sensor_msgs::msg::PointField;
+    use ros2_interfaces_jazzy_serde::std_msgs::msg::Header;
+
+    PointCloud2 {
+        header: Header {
+            stamp: Time {
+                sec: cloud.header.stamp.sec,
+                nanosec: cloud.header.stamp.nanosec,
+            },
+            frame_id: cloud.header.frame_id,
+        },
+        height: cloud.dimensions.height,
+        width: cloud.dimensions.width,
+        fields: cloud
+            .fields
+            .iter()
+            .map(|field| PointField {
+                name: field.name.to_string(),
+                offset: field.offset,
+                datatype: field.datatype,
+                count: field.count,
+            })
+            .collect(),
+        is_bigendian: matches!(cloud.endian, ros_pointcloud2::Endian::Big),
+        point_step: cloud.point_step,
+        row_step: cloud.row_step,
+        data: cloud.data,
+        is_dense: matches!(cloud.dense, ros_pointcloud2::Denseness::Dense),
+    }
+}
+
+/// Converts a Pelorus IMU sample into the CDR-serializable ROS message this
+/// writer stores.
+pub fn imu_msg_to_ros(msg: &pelorus_core::ImuMsg) -> Imu {
+    use ros2_interfaces_jazzy_serde::geometry_msgs::msg::{Quaternion, Vector3};
+    use ros2_interfaces_jazzy_serde::std_msgs::msg::Header;
+
+    Imu {
+        header: Header {
+            stamp: Time {
+                sec: msg.stamp.sec,
+                nanosec: msg.stamp.nanosec,
+            },
+            frame_id: msg.frame_id.clone(),
+        },
+        orientation: Quaternion {
+            x: msg.orientation[1],
+            y: msg.orientation[2],
+            z: msg.orientation[3],
+            w: msg.orientation[0],
+        },
+        orientation_covariance: msg.orientation_covariance,
+        angular_velocity: Vector3 {
+            x: msg.angular_velocity[0],
+            y: msg.angular_velocity[1],
+            z: msg.angular_velocity[2],
+        },
+        angular_velocity_covariance: msg.angular_velocity_covariance,
+        linear_acceleration: Vector3 {
+            x: msg.linear_acceleration[0],
+            y: msg.linear_acceleration[1],
+            z: msg.linear_acceleration[2],
+        },
+        linear_acceleration_covariance: msg.linear_acceleration_covariance,
+    }
+}
+
+pub fn stamp_to_nanos(stamp: &Time) -> u64 {
     let sec = stamp.sec.max(0) as u64;
     sec.saturating_mul(1_000_000_000)
         .saturating_add(stamp.nanosec as u64)
@@ -409,7 +515,7 @@ fn stamp_to_nanos(stamp: &Time) -> u64 {
 fn write_rosbag_metadata<W: Write + Seek>(
     metadata_path: &Path,
     mcap_path: &Path,
-    writer: &McapOutputWriter<W>,
+    writer: &McapWriter<W>,
 ) -> Result<()> {
     let relative_mcap_path = metadata_path
         .parent()
@@ -422,7 +528,7 @@ fn write_rosbag_metadata<W: Write + Seek>(
         .zip(writer.start_time)
         .map(|(end, start)| end.saturating_sub(start))
         .unwrap_or(0);
-    let message_count: u64 = writer.message_counts.values().sum();
+    let message_count: u64 = writer.topics.iter().map(|topic| topic.message_count).sum();
 
     let mut metadata = String::new();
     metadata.push_str("rosbag2_bagfile_information:\n");
@@ -434,42 +540,14 @@ fn write_rosbag_metadata<W: Write + Seek>(
     ));
     metadata.push_str(&format!("  message_count: {message_count}\n"));
     metadata.push_str("  topics_with_message_count:\n");
-    append_topic_metadata(
-        &mut metadata,
-        &writer.topics.cloud,
-        "sensor_msgs/msg/PointCloud2",
-        *writer
-            .message_counts
-            .get(&writer.topics.cloud)
-            .unwrap_or(&0),
-    );
-    append_topic_metadata(
-        &mut metadata,
-        &writer.topics.odom,
-        "nav_msgs/msg/Odometry",
-        *writer.message_counts.get(&writer.topics.odom).unwrap_or(&0),
-    );
-    append_topic_metadata(
-        &mut metadata,
-        &writer.topics.path,
-        "nav_msgs/msg/Path",
-        *writer.message_counts.get(&writer.topics.path).unwrap_or(&0),
-    );
-    append_topic_metadata(
-        &mut metadata,
-        &writer.topics.tf,
-        "tf2_msgs/msg/TFMessage",
-        *writer.message_counts.get(&writer.topics.tf).unwrap_or(&0),
-    );
-    append_topic_metadata(
-        &mut metadata,
-        &writer.topics.filtered_imu,
-        "sensor_msgs/msg/Imu",
-        *writer
-            .message_counts
-            .get(&writer.topics.filtered_imu)
-            .unwrap_or(&0),
-    );
+    for topic in &writer.topics {
+        append_topic_metadata(
+            &mut metadata,
+            &topic.name,
+            topic.ros_type,
+            topic.message_count,
+        );
+    }
     metadata.push_str("  compression_format: \"\"\n");
     metadata.push_str("  compression_mode: \"\"\n");
     metadata.push_str("  relative_file_paths:\n");
@@ -598,6 +676,124 @@ mod tests {
         assert_eq!(seen.get("/imu_out"), Some(&expected_time));
 
         Ok(())
+    }
+
+    /// The odometry bag must keep advertising all five topics even when some
+    /// carried no messages: rosbag tooling reads the offered topic set from
+    /// here, and the generalized writer must not have narrowed it.
+    #[test]
+    fn odometry_metadata_still_lists_every_offered_topic() -> Result<()> {
+        let nonce = nonce()?;
+        let path = std::env::temp_dir().join(format!("pelorus_mcap_offered_{nonce}.mcap"));
+        let metadata_path = std::env::temp_dir().join(format!("pelorus_mcap_offered_{nonce}.yaml"));
+
+        let topics = McapTopics {
+            cloud: "/cloud_out".to_string(),
+            odom: "/odom_out".to_string(),
+            path: "/path_out".to_string(),
+            tf: "/tf_out".to_string(),
+            filtered_imu: "/imu_out".to_string(),
+        };
+        let mut writer = McapOutputWriter::create(&path, &topics, Some(metadata_path.clone()))?;
+        // Only one topic carries traffic.
+        let mut odom = Odometry::default();
+        odom.header.stamp = Time { sec: 5, nanosec: 0 };
+        writer.write_odom(&odom)?;
+        writer.finish()?;
+
+        let metadata = std::fs::read_to_string(&metadata_path)?;
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_file(&metadata_path);
+
+        for topic in [
+            "/cloud_out",
+            "/odom_out",
+            "/path_out",
+            "/tf_out",
+            "/imu_out",
+        ] {
+            assert!(
+                metadata.contains(&format!("name: '{topic}'")),
+                "metadata dropped {topic}"
+            );
+        }
+        // Registration order decides the listing order.
+        let cloud_at = metadata.find("name: '/cloud_out'").expect("cloud");
+        let imu_at = metadata.find("name: '/imu_out'").expect("imu");
+        assert!(cloud_at < imu_at);
+        Ok(())
+    }
+
+    /// A raw run records only the sensors it drives.
+    #[test]
+    fn a_raw_bag_holds_only_the_topics_it_registered() -> Result<()> {
+        let nonce = nonce()?;
+        let path = std::env::temp_dir().join(format!("pelorus_mcap_raw_{nonce}.mcap"));
+        let metadata_path = std::env::temp_dir().join(format!("pelorus_mcap_raw_{nonce}.yaml"));
+
+        let mut writer = McapWriter::create(&path, Some(metadata_path.clone()))?;
+        let imu_topic = writer.add_topic("/ouster/imu", IMU_MSG)?;
+
+        let sample = pelorus_core::ImuMsg {
+            stamp: ros_pointcloud2::ros::TimeMsg {
+                sec: 7,
+                nanosec: 500,
+            },
+            frame_id: "os_imu".to_string(),
+            orientation: [1.0, 0.0, 0.0, 0.0],
+            angular_velocity: [0.1, 0.2, 0.3],
+            linear_acceleration: [0.0, 0.0, 9.81],
+            ..Default::default()
+        };
+        let msg = imu_msg_to_ros(&sample);
+        let time = stamp_to_nanos(&msg.header.stamp);
+        writer.write(imu_topic, &msg, time)?;
+        writer.finish()?;
+
+        let data = std::fs::read(&path)?;
+        let metadata = std::fs::read_to_string(&metadata_path)?;
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_file(&metadata_path);
+
+        let topics: Vec<String> = mcap::MessageStream::new(&data)?
+            .map(|message| message.map(|message| message.channel.topic.clone()))
+            .collect::<std::result::Result<_, _>>()?;
+        assert_eq!(topics, vec!["/ouster/imu".to_string()]);
+
+        assert!(metadata.contains("name: '/ouster/imu'"));
+        assert!(metadata.contains("type: 'sensor_msgs/msg/Imu'"));
+        // No point-cloud channel was registered, so none may be advertised.
+        assert!(!metadata.contains("sensor_msgs/msg/PointCloud2"));
+        assert!(metadata.contains("message_count: 1"));
+
+        // The bag is stamped from the sensor clock, not the wall clock.
+        assert!(metadata.contains("nanoseconds_since_epoch: 7000000500"));
+        Ok(())
+    }
+
+    /// The IMU reaches the bag exactly as the driver reported it. `ImuMsg`
+    /// stores the quaternion `wxyz`; the ROS message stores it `xyzw`.
+    #[test]
+    fn imu_conversion_preserves_quaternion_order() {
+        let sample = pelorus_core::ImuMsg {
+            orientation: [0.1, 0.2, 0.3, 0.4],
+            ..Default::default()
+        };
+        let msg = imu_msg_to_ros(&sample);
+        assert_eq!(msg.orientation.w, 0.1);
+        assert_eq!(msg.orientation.x, 0.2);
+        assert_eq!(msg.orientation.y, 0.3);
+        assert_eq!(msg.orientation.z, 0.4);
+    }
+
+    fn nonce() -> Result<String> {
+        Ok(format!(
+            "{}_{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)?
+                .as_nanos()
+        ))
     }
 
     #[test]

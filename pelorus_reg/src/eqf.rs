@@ -30,10 +30,7 @@ use pelorus_core::{
 };
 use prelio::timestamp_to_secs;
 
-use sophus_lie::prelude::*;
-
-pub type SO3 = sophus_lie::Rotation3F64;
-pub type SE3 = sophus_lie::Isometry3F64;
+pub use pelorus_core::{SE3, SO3};
 
 // Helper to convert nalgebra Matrix3 from sophus to faer
 #[inline]
@@ -1498,12 +1495,11 @@ mod tests {
             for row in 0..24 {
                 let predicted = -g[(row, col)] * EPS * DT;
                 let diff = (e[(row, 0)] - predicted).abs();
-                if diff > 1e-16 {
-                    let rel = diff / predicted.abs().max(1e-12);
-                    if rel > worst {
-                        worst = rel;
-                        worst_at = (row, col);
-                    }
+                let scale = predicted.abs().max(EPS * DT);
+                let rel = diff / scale;
+                if rel > worst {
+                    worst = rel;
+                    worst_at = (row, col);
                 }
             }
         }

@@ -20,7 +20,6 @@ ros_pointcloud2.workspace = true
 log.workspace = true
 anyhow.workspace = true
 nalgebra.workspace = true
-sophus_lie.workspace = true
 rayon = { workspace = true, optional = true }
 either.workspace = true
 rand.workspace = true

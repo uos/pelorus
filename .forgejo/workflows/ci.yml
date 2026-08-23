@@ -88,3 +88,16 @@ jobs:
       - name: Run API regression tests
         run: |
           ./scripts/api-regression-tests.bash
+
+  musl-build:
+    runs-on: ubuntu-dev-resolute
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check static musl targets
+        run: |
+          rustup default stable
+          rustup target add x86_64-unknown-linux-musl
+          cargo check --target x86_64-unknown-linux-musl -p pelorus_cli
+          cargo check --target x86_64-unknown-linux-musl -p pelorus_cli --no-default-features --features ros2-client,processing-time-export,rayon
+          cargo check --target x86_64-unknown-linux-musl -p pelorus_cli --no-default-features --features offline-hiroz,processing-time-export,rayon
+

@@ -232,7 +232,7 @@ impl RegistrationState {
                 .unwrap()
                 .record(phase, mode, normalized_duration)
         {
-            log::warn!(
+            log::info!(
                 "{}: using {} ({:.2}x faster)",
                 phase.name(),
                 decision.mode.name(),
@@ -709,7 +709,7 @@ impl crate::Registration for RegistrationState {
                                 mode,
                                 started.elapsed().as_nanos() as f64 / cloud_pts.len().max(1) as f64,
                             ) {
-                                log::warn!(
+                                log::info!(
                                     "{}: using {} ({:.2}x faster)",
                                     HeavyPhase::PlaneCorrespondence.name(),
                                     decision.mode.name(),

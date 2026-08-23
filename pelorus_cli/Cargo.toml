@@ -36,6 +36,7 @@ clap.workspace = true
 r2r = { workspace = true, optional = true }
 mt_pubsub = { workspace = true, optional = true }
 mt_service = { workspace = true, optional = true }
+mt_log.workspace = true
 pelorus_protocol.workspace = true
 hiroz = { workspace = true, optional = true }
 hiroz-msgs = { workspace = true, optional = true }

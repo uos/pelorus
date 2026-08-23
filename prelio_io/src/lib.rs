@@ -43,6 +43,15 @@ use pelorus_core::{
 use pelorus_drivers::{DriverError, DriverManager, RawLidarScan, SensorIngress, SensorOutputSink};
 pub use prelio;
 
+/// Re-exported so consumers can implement `SensorIngress` without taking their
+/// own dependency on the optional driver crate.
+#[cfg(any(
+    feature = "velodyne-driver",
+    feature = "xsens-driver",
+    feature = "ouster-driver"
+))]
+pub use pelorus_drivers;
+
 #[cfg(any(
     feature = "ros2-client",
     feature = "mt_pubsub",
@@ -749,7 +758,7 @@ struct NativeIngress {
     feature = "xsens-driver",
     feature = "ouster-driver"
 ))]
-fn validate_native_lidar_vendor(
+pub fn validate_native_lidar_vendor(
     driver_type: &LidarDriverType,
     lidar_vendor: LidarVendor,
 ) -> Result<(), DriverError> {
@@ -772,7 +781,7 @@ fn validate_native_lidar_vendor(
     feature = "xsens-driver",
     feature = "ouster-driver"
 ))]
-fn ouster_offset_nanoseconds(seconds: f64) -> Result<u32, DriverError> {
+pub fn ouster_offset_nanoseconds(seconds: f64) -> Result<u32, DriverError> {
     let nanoseconds = seconds * 1e9;
     if !nanoseconds.is_finite() || nanoseconds < 0.0 || nanoseconds > u32::MAX as f64 {
         return Err(DriverError::Driver(format!(
@@ -787,7 +796,7 @@ fn ouster_offset_nanoseconds(seconds: f64) -> Result<u32, DriverError> {
     feature = "xsens-driver",
     feature = "ouster-driver"
 ))]
-fn native_scan_to_cloud(
+pub fn native_scan_to_cloud(
     scan: RawLidarScan,
     driver_type: &LidarDriverType,
 ) -> Result<ros_pointcloud2::PointCloud2Msg, DriverError> {
@@ -897,7 +906,7 @@ impl SensorIngress for NativeIngress {
 }
 
 #[cfg(feature = "mt_pubsub")]
-fn qos_to_mt(qos: pelorus_core::Qos) -> mt_pubsub::Qos {
+pub fn qos_to_mt(qos: pelorus_core::Qos) -> mt_pubsub::Qos {
     match qos {
         pelorus_core::Qos::Sensor(pelorus_core::Reliability::Reliable) => mt_pubsub::Qos::Reliable,
         pelorus_core::Qos::Sensor(pelorus_core::Reliability::BestEffort)
@@ -2338,8 +2347,13 @@ mod native_ingress_tests {
     }
 }
 
-#[cfg(any(feature = "ros2-client", feature = "r2r", feature = "hiroz"))]
-fn prelio_to_imu(msg: ImuMsg) -> Imu {
+#[cfg(any(
+    feature = "ros2-client",
+    feature = "r2r",
+    feature = "hiroz",
+    feature = "mt_pubsub"
+))]
+pub fn prelio_to_imu(msg: ImuMsg) -> Imu {
     Imu {
         header: Header {
             stamp: Time {

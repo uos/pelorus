@@ -459,6 +459,12 @@ jobs:
           cargo zigbuild -p pelorus_cli --release --target $TARGET
           mv target/$TARGET/release/pelorus dist/${ARCH}/
 
+          cargo zigbuild -p pelorus_cli --release --target $TARGET --no-default-features --features ros2-client,processing-time-export,rayon
+          mv target/$TARGET/release/pelorus dist/${ARCH}/pelorus-dds
+
+          cargo zigbuild -p pelorus_cli --release --target $TARGET --no-default-features --features offline-hiroz,processing-time-export,rayon
+          mv target/$TARGET/release/pelorus dist/${ARCH}/pelorus-hiroz
+
       - name: Upload
         uses: actions/upload-artifact@v3
         with:
@@ -885,6 +891,10 @@ jobs:
           for arch in amd64 arm64; do
             make_tarball "pelorus-${VERSION}-linux-musl-${arch}" \
               "dl/artifacts-cli-musl/${arch}/pelorus"
+            make_tarball "pelorus-${VERSION}-linux-musl-dds-${arch}" \
+              "dl/artifacts-cli-musl/${arch}/pelorus-dds"
+            make_tarball "pelorus-${VERSION}-linux-musl-hiroz-${arch}" \
+              "dl/artifacts-cli-musl/${arch}/pelorus-hiroz"
           done
 
           echo "=== macOS ==="
@@ -977,7 +987,7 @@ jobs:
           See the documentation for installation instructions.
 
           ### Artifacts
-          - **tar.gz** archives for Linux (resolute, noble, jammy, musl) and macOS (amd64, arm64)
+          - **tar.gz** archives for Linux (resolute, noble, jammy, musl, musl-dds, musl-hiroz) and macOS (amd64, arm64)
           - **CUDA** variants
           - **.deb** packages published to [PPA](https://codeberg.org/uos-robotics/ppa)
           - **Python wheels** on PyPI and custom index for CUDA variants" \

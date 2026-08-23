@@ -233,7 +233,7 @@ struct ProcessingThread {
     pipeline: Pipeline,
     prelio_receiver: mpsc::Receiver<PrelioProcessedCloud>,
     result_sender: mpsc::Sender<PelorusOutput>,
-    ready_for_next: mpsc::Sender<()>,
+    ready_for_next: mpsc::Sender<u64>,
     odom_callback: Arc<Mutex<Option<Py<PyAny>>>>,
     shutdown: Arc<AtomicBool>,
 }
@@ -278,7 +278,7 @@ fn dispatch_output(
 fn processing_thread_main(thread: ProcessingThread) {
     let mut sent_count: usize = 0;
 
-    if let Err(e) = thread.ready_for_next.send(()) {
+    if let Err(e) = thread.ready_for_next.send(0) {
         error!("failed to send initial ready signal: {e}");
     }
 
@@ -381,7 +381,7 @@ impl PelorusHandle {
         }));
 
         // Create the ready_for_next channel for synchronization with Prelio
-        let (ready_tx, ready_rx) = mpsc::channel::<()>();
+        let (ready_tx, ready_rx) = mpsc::channel::<u64>();
 
         // Pass the receiver to Prelio for proper synchronization
         let (prelio, prelio_receiver) = pipeline

@@ -21,7 +21,6 @@ ros_pointcloud2.workspace = true
 anyhow.workspace = true
 nalgebra.workspace = true
 faer.workspace = true
-sophus_lie.workspace = true
 rayon = { workspace = true, optional = true }
 spole = { workspace = true, default-features = false }
 log.workspace = true

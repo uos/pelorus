@@ -9,11 +9,10 @@ use pelorus_core::{
 };
 #[cfg(feature = "rayon")]
 use rayon::prelude::*;
-use sophus_lie::IsAffineGroup;
 
 use crate::eqf::Eqf;
-
-pub type SE3 = sophus_lie::Isometry3F64;
+pub type SE3 = crate::eqf::SE3;
+pub type SO3 = crate::eqf::SO3;
 
 // Initial state covariance. Changes with prediction (increase) and correction (decrease)
 const COV1: f64 = 0.00001;
@@ -268,7 +267,7 @@ impl ImuProcessing {
 
         ekf.state.bg = self.mean_gyr;
         ekf.state.offset_t_l_i = self.lidar_to_imu_t;
-        ekf.state.offset_r_l_i = sophus_lie::Rotation3::try_from_mat(&self.lidar_to_imu_r).unwrap();
+        ekf.state.offset_r_l_i = SO3::try_from_mat(&self.lidar_to_imu_r).unwrap();
 
         // Initialize R_W_I so the world frame aligns with the base frame (not the IMU or LiDAR frame).
         // R_W_B = R_W_I * R_I_L * R_L_B = I  =>  R_W_I = (R_I_L * R_L_B)^{-1} = R_B_L * R_L_I
@@ -276,7 +275,7 @@ impl ImuProcessing {
         let r_b_l = self.lidar_to_base_r;
         let r_l_i = self.lidar_to_imu_r.transpose();
         let r_w_i_mat = r_b_l * r_l_i;
-        ekf.state.rot = sophus_lie::Rotation3::try_from_mat(&r_w_i_mat).unwrap();
+        ekf.state.rot = SO3::try_from_mat(&r_w_i_mat).unwrap();
 
         // Initialize position such that the Base starts at the World origin.
         // p_W_B = R_W_I * (R_I_L * p_L_B + t_I_L) + p_W_I = 0

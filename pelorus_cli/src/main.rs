@@ -185,6 +185,8 @@ use ros2_interfaces_jazzy_rkyv::{
     visualization_msgs::msg::Marker,
 };
 use std::io::IsTerminal;
+// Only the Marina pull prompt still flushes stdout directly from here.
+#[cfg(feature = "rat")]
 use std::io::Write;
 
 /// Publishes registered clouds on whichever encoding the session settled on.
@@ -254,8 +256,12 @@ use prelio_io::{PrelioNode, PrelioNodeInputs};
 use std::path::PathBuf;
 
 use pelorus_cli::mcap_output::{McapOutputWriter, McapTopics};
+use pelorus_cli::output_target::{normalize_mcap_topic, prepare_output_targets, rosbag_mcap_path};
+use pelorus_cli::raw::RawSensor;
+#[cfg(feature = "rat")]
+use pelorus_cli::stats_tui::relay_child_line;
 use pelorus_cli::stats_tui::{
-    SharedStats, StatsTui, init_logger, relay_child_line, set_tui_active, update_log_level,
+    SharedStats, StatsTui, init_logger, set_tui_active, update_log_level,
 };
 #[cfg(any(
     feature = "mt_pubsub",
@@ -303,7 +309,7 @@ struct Args {
 #[command()]
 pub enum Command {
     /// Spawn the server process and wait for input using the compiled data provider
-    Online(ConfigArgs),
+    Online(OnlineArgs),
 
     /// Use a Bagfile directly and run synchronously
     #[cfg(feature = "rat")]
@@ -320,6 +326,87 @@ pub enum Command {
         #[arg(value_enum)]
         shell: Shell,
     },
+}
+
+/// `pelorus online`, either as the full odometry pipeline or as one of its
+/// sub-modes.
+///
+/// The pipeline flags and the sub-modes are mutually exclusive: a raw run
+/// shares neither the outputs nor the recording topics of a full run, so
+/// accepting `--export-trajectory` next to `raw imu` could only mislead.
+#[derive(Debug, Clone, Parser)]
+#[command(args_conflicts_with_subcommands = true)]
+pub struct OnlineArgs {
+    #[command(subcommand)]
+    pub mode: Option<OnlineMode>,
+
+    #[command(flatten)]
+    pub pipeline: ConfigArgs,
+}
+
+#[derive(Debug, Clone, Subcommand)]
+pub enum OnlineMode {
+    /// Publish the native sensor drivers onto the configured input topics
+    /// without running any processing.
+    ///
+    /// Pelorus acts as a plain driver here: scans and IMU samples go out
+    /// exactly as the device reported them, on `lidar.topic` and `imu.topic`.
+    /// The IMU is never filtered, whatever `imu.ahrs_filtering.method` says.
+    #[cfg(feature = "mt_pubsub")]
+    Raw(RawArgs),
+}
+
+#[derive(Debug, Clone, Parser)]
+pub struct RawArgs {
+    /// Which sensor to publish. Defaults to every configured native driver.
+    #[arg(value_enum, default_value_t = RawSensor::All)]
+    pub sensor: RawSensor,
+
+    /// Optional path to a custom '.rl' configuration file to overwrite defaults.
+    /// If not provided, only the default configuration will be used
+    #[arg(short, long)]
+    pub config_path: Option<PathBuf>,
+
+    /// Restrict Pelorus pub/sub communication to this host.
+    #[arg(long, default_value_t = false)]
+    pub local_only: bool,
+
+    #[command(flatten)]
+    pub recording: RawRecordingArgs,
+
+    /// Answer yes to overwrite prompts.
+    #[arg(short = 'y', long, default_value_t = false)]
+    pub yes: bool,
+}
+
+/// Recording targets for a raw run.
+///
+/// Separate from [`RecordingArgs`] because a raw bag has no odometry, path, or
+/// TF topics, and because its defaults are the configured *input* topics rather
+/// than the Pelorus output topics.
+#[derive(Debug, Clone, Parser)]
+pub struct RawRecordingArgs {
+    /// Write the raw sensor output to this MCAP bagfile.
+    #[arg(long, value_name = "PATH", conflicts_with = "output_rosbag")]
+    pub output_mcap: Option<PathBuf>,
+
+    /// Also write ROS 2 bag metadata.yaml for the MCAP output.
+    #[arg(long, value_name = "PATH", requires = "output_mcap")]
+    pub output_rosbag_metadata: Option<PathBuf>,
+
+    /// Write the raw sensor output as a ROS 2 MCAP bag directory.
+    #[arg(long, value_name = "DIR", conflicts_with_all = ["output_mcap", "output_rosbag_metadata"])]
+    pub output_rosbag: Option<PathBuf>,
+
+    /// MCAP topic for the raw PointCloud2 output. Defaults to the configured
+    /// `lidar.topic`.
+    #[arg(long)]
+    pub mcap_cloud_topic: Option<String>,
+
+    /// MCAP topic for the raw IMU output. Defaults to the configured
+    /// `imu.topic`.
+    #[arg(long)]
+    pub mcap_imu_topic: Option<String>,
 }
 
 #[derive(Debug, Clone, Parser)]
@@ -606,24 +693,6 @@ struct McapOutputConfig {
     topics: McapTopics,
 }
 
-fn normalize_mcap_topic(topic: impl Into<String>) -> String {
-    let topic = topic.into();
-    if topic.starts_with('/') {
-        topic
-    } else {
-        format!("/{topic}")
-    }
-}
-
-fn rosbag_mcap_path(rosbag_path: &std::path::Path) -> PathBuf {
-    let bag_name = rosbag_path
-        .file_name()
-        .and_then(|name| name.to_str())
-        .filter(|name| !name.is_empty())
-        .unwrap_or("output");
-    rosbag_path.join(format!("{bag_name}.mcap"))
-}
-
 fn build_mcap_output_config(args: &RecordingArgs, config: &LioConfig) -> Option<McapOutputConfig> {
     build_mcap_output_config_with_filtered_topic(
         args,
@@ -673,54 +742,12 @@ fn prepare_mcap_output_targets(
     output_mcap: Option<&McapOutputConfig>,
     assume_yes: bool,
 ) -> anyhow::Result<bool> {
-    let mut rosbag_overwrite_confirmed = false;
-    if let Some(rosbag_path) = args.output_rosbag.as_ref() {
-        if !confirm_output_overwrite("ROS bag output directory", rosbag_path, assume_yes)? {
-            info!(
-                "ROS bag output directory '{}' was not overwritten; exiting.",
-                rosbag_path.display()
-            );
-            return Ok(false);
-        }
-        rosbag_overwrite_confirmed = rosbag_path.exists();
-        std::fs::create_dir_all(rosbag_path).map_err(|e| {
-            anyhow!(
-                "Failed to create ROS bag output directory '{}': {}",
-                rosbag_path.display(),
-                e
-            )
-        })?;
-        info!("ROS bag output directory: {}", rosbag_path.display());
-    }
-    if let Some(output_mcap) = output_mcap {
-        if !confirm_output_overwrite(
-            "MCAP output",
-            &output_mcap.path,
-            assume_yes || rosbag_overwrite_confirmed,
-        )? {
-            info!(
-                "MCAP output '{}' was not overwritten; exiting.",
-                output_mcap.path.display()
-            );
-            return Ok(false);
-        }
-        info!("MCAP output target: {}", output_mcap.path.display());
-        if let Some(metadata_path) = output_mcap.rosbag_metadata_path.as_ref() {
-            if !confirm_output_overwrite(
-                "ROS bag metadata",
-                metadata_path,
-                assume_yes || rosbag_overwrite_confirmed,
-            )? {
-                info!(
-                    "ROS bag metadata '{}' was not overwritten; exiting.",
-                    metadata_path.display()
-                );
-                return Ok(false);
-            }
-            info!("ROS bag metadata target: {}", metadata_path.display());
-        }
-    }
-    Ok(true)
+    prepare_output_targets(
+        args.output_rosbag.as_deref(),
+        output_mcap.map(|output| output.path.as_path()),
+        output_mcap.and_then(|output| output.rosbag_metadata_path.as_deref()),
+        assume_yes,
+    )
 }
 
 #[cfg(any(
@@ -1220,43 +1247,6 @@ fn serde_tf_message(
     feature = "r2r",
     feature = "hiroz"
 ))]
-fn serde_imu_msg(msg: &pelorus_core::ImuMsg) -> ros2_interfaces_jazzy_serde::sensor_msgs::msg::Imu {
-    ros2_interfaces_jazzy_serde::sensor_msgs::msg::Imu {
-        header: ros2_interfaces_jazzy_serde::std_msgs::msg::Header {
-            stamp: ros2_interfaces_jazzy_serde::builtin_interfaces::msg::Time {
-                sec: msg.stamp.sec,
-                nanosec: msg.stamp.nanosec,
-            },
-            frame_id: msg.frame_id.clone(),
-        },
-        orientation: ros2_interfaces_jazzy_serde::geometry_msgs::msg::Quaternion {
-            x: msg.orientation[1],
-            y: msg.orientation[2],
-            z: msg.orientation[3],
-            w: msg.orientation[0],
-        },
-        orientation_covariance: msg.orientation_covariance,
-        angular_velocity: ros2_interfaces_jazzy_serde::geometry_msgs::msg::Vector3 {
-            x: msg.angular_velocity[0],
-            y: msg.angular_velocity[1],
-            z: msg.angular_velocity[2],
-        },
-        angular_velocity_covariance: msg.angular_velocity_covariance,
-        linear_acceleration: ros2_interfaces_jazzy_serde::geometry_msgs::msg::Vector3 {
-            x: msg.linear_acceleration[0],
-            y: msg.linear_acceleration[1],
-            z: msg.linear_acceleration[2],
-        },
-        linear_acceleration_covariance: msg.linear_acceleration_covariance,
-    }
-}
-
-#[cfg(any(
-    feature = "mt_pubsub",
-    feature = "ros2-client",
-    feature = "r2r",
-    feature = "hiroz"
-))]
 fn drain_filtered_imu_mcap(
     writer: &mut Option<McapOutputWriter<std::io::BufWriter<std::fs::File>>>,
     rx: &mut Option<std::sync::mpsc::Receiver<pelorus_core::ImuMsg>>,
@@ -1266,7 +1256,7 @@ fn drain_filtered_imu_mcap(
     };
 
     while let Ok(msg) = rx.try_recv() {
-        writer.write_filtered_imu(&serde_imu_msg(&msg))?;
+        writer.write_filtered_imu(&pelorus_cli::mcap_output::imu_msg_to_ros(&msg))?;
     }
     Ok(())
 }
@@ -2178,10 +2168,11 @@ fn lio_with_ready_signal(
         .with_qos(prelio_io::qos_to_hiroz(config.odom_qos))
         .build()
         .map_err(|e| anyhow!("Failed to create Hiroz odom publisher: {e}"))?;
+    let odom_publisher = Arc::new(odom_publisher);
 
     let realtime_child_frame = Arc::new(std::sync::RwLock::new(None::<String>));
     let _realtime_odom_publisher = realtime_prediction_rx.map(|receiver| {
-        let publisher = odom_publisher.clone();
+        let publisher = Arc::clone(&odom_publisher);
         let prediction_tf_broadcaster = Arc::clone(&tf_broadcaster);
         let map_frame = config.prelio_params.map_frame.clone();
         let child_frame = Arc::clone(&realtime_child_frame);
@@ -4515,6 +4506,86 @@ mod mcap_output_config_tests {
         assert_eq!(tf.transform.rotation.w, odom.pose.pose.orientation.w);
     }
 
+    /// `pelorus online` keeps its own flags; the raw sub-mode is additive.
+    #[test]
+    fn plain_online_still_parses_its_pipeline_flags() {
+        let args = Args::parse_from(["pelorus", "online", "--output-rosbag", "/tmp/bag"]);
+        let Command::Online(online) = args.command else {
+            panic!("expected online");
+        };
+        assert!(online.mode.is_none());
+        assert_eq!(
+            online.pipeline.recording.output_rosbag,
+            Some(PathBuf::from("/tmp/bag"))
+        );
+    }
+
+    #[cfg(feature = "mt_pubsub")]
+    #[test]
+    fn raw_takes_the_sensor_and_its_own_recording_flags() {
+        let args = Args::parse_from([
+            "pelorus",
+            "online",
+            "raw",
+            "imu",
+            "--output-rosbag",
+            "/tmp/imu_bag",
+        ]);
+        let Command::Online(online) = args.command else {
+            panic!("expected online");
+        };
+        let Some(OnlineMode::Raw(raw)) = online.mode else {
+            panic!("expected raw");
+        };
+        assert_eq!(raw.sensor, RawSensor::Imu);
+        assert_eq!(
+            raw.recording.output_rosbag,
+            Some(PathBuf::from("/tmp/imu_bag"))
+        );
+        // Raw bags default to the configured input topics, not to a flag value.
+        assert!(raw.recording.mcap_cloud_topic.is_none());
+        assert!(raw.recording.mcap_imu_topic.is_none());
+    }
+
+    #[cfg(feature = "mt_pubsub")]
+    #[test]
+    fn raw_without_a_sensor_means_every_driver() {
+        let args = Args::parse_from(["pelorus", "online", "raw"]);
+        let Command::Online(online) = args.command else {
+            panic!("expected online");
+        };
+        let Some(OnlineMode::Raw(raw)) = online.mode else {
+            panic!("expected raw");
+        };
+        assert_eq!(raw.sensor, RawSensor::All);
+    }
+
+    /// `-o` is global, so it still applies after the sub-mode.
+    #[cfg(feature = "mt_pubsub")]
+    #[test]
+    fn overrides_still_apply_after_the_raw_subcommand() {
+        let args = Args::parse_from([
+            "pelorus",
+            "online",
+            "raw",
+            "lidar",
+            "-o",
+            "lidar.driver.type=Velodyne",
+        ]);
+        assert_eq!(args.overrides, vec!["lidar.driver.type=Velodyne"]);
+    }
+
+    /// Pipeline flags and the raw sub-mode describe different runs, so mixing
+    /// them is rejected rather than silently ignored.
+    #[cfg(feature = "mt_pubsub")]
+    #[test]
+    fn pipeline_flags_cannot_be_combined_with_raw() {
+        assert!(
+            Args::try_parse_from(["pelorus", "online", "--export-trajectory", "raw", "imu"])
+                .is_err()
+        );
+    }
+
     #[test]
     fn builds_direct_mcap_output_without_metadata_by_default() {
         let mut args = recording_args();
@@ -4649,50 +4720,6 @@ This command is non-interactive, so pull it first with `marina pull {}` and retr
     }
 }
 
-fn confirm_output_overwrite(
-    label: &str,
-    path: &std::path::Path,
-    assume_yes: bool,
-) -> anyhow::Result<bool> {
-    if !path.exists() {
-        return Ok(true);
-    }
-    if assume_yes {
-        return Ok(true);
-    }
-
-    if !std::io::stdin().is_terminal() || !std::io::stdout().is_terminal() {
-        return Err(anyhow!(
-            "{} '{}' already exists. This command is non-interactive, so refusing to overwrite it.",
-            label,
-            path.display()
-        ));
-    }
-
-    print!(
-        "{} '{}' already exists. Overwrite it? [y/N]: ",
-        label,
-        path.display()
-    );
-    std::io::stdout()
-        .flush()
-        .map_err(|e| anyhow!("Failed to flush prompt output: {}", e))?;
-
-    let mut answer = String::new();
-    std::io::stdin()
-        .read_line(&mut answer)
-        .map_err(|e| anyhow!("Failed to read overwrite confirmation: {}", e))?;
-
-    match answer.trim().to_ascii_lowercase().as_str() {
-        "y" | "yes" => Ok(true),
-        "" | "n" | "no" => Ok(false),
-        _ => Err(anyhow!(
-            "Invalid response '{}'. Please answer with 'y' or 'n'.",
-            answer.trim()
-        )),
-    }
-}
-
 #[cfg(feature = "rat")]
 fn resolve_offline_bagfile_path(input: &std::path::Path) -> anyhow::Result<(PathBuf, String)> {
     if input.exists() {
@@ -4776,6 +4803,73 @@ Please specify a local path or resolve/pull with an explicit registry.",
     ))
 }
 
+/// Loads configuration the same way `pelorus online` does, then hands over to
+/// the raw driver runner.
+#[cfg(feature = "mt_pubsub")]
+fn run_raw(
+    default_config: &str,
+    args: RawArgs,
+    cli_overrides: &[pelorus_core::config::ConfigOverride],
+) -> Result<(), Box<dyn CoreError>> {
+    let default_ast = ratslang::compile_code(default_config)
+        .map_err(|e| anyhow!("Failed to compile embedded default config: {}", e))?;
+
+    if let Some(path) = args.config_path.as_ref()
+        && !path.exists()
+    {
+        return Err(anyhow!(
+            "Error: Configuration file not found at '{}'",
+            path.to_string_lossy()
+        )
+        .into());
+    }
+    let user_ast = user_config_with_checked_overrides(
+        default_config,
+        args.config_path.as_deref(),
+        cli_overrides,
+    )?;
+    let config = ast_to_config(default_ast, user_ast)?;
+
+    update_log_level();
+    // A raw run produces no odometry, so the stats TUI has nothing to show and
+    // would only take the terminal away from the driver's own logging.
+    set_tui_active(false);
+
+    let options = pelorus_cli::raw::RawOptions {
+        sensor: args.sensor,
+        output_mcap: args.recording.output_mcap,
+        output_rosbag: args.recording.output_rosbag,
+        output_rosbag_metadata: args.recording.output_rosbag_metadata,
+        mcap_cloud_topic: args.recording.mcap_cloud_topic,
+        mcap_imu_topic: args.recording.mcap_imu_topic,
+        local_only: args.local_only,
+        yes: args.yes,
+    };
+
+    let shutdown = Arc::new(AtomicBool::new(false));
+    install_online_shutdown_signal_handler(Arc::clone(&shutdown));
+
+    #[cfg(any(
+        feature = "velodyne-driver",
+        feature = "xsens-driver",
+        feature = "ouster-driver"
+    ))]
+    return pelorus_cli::raw::run(config, options, shutdown).map_err(Into::into);
+
+    #[cfg(not(any(
+        feature = "velodyne-driver",
+        feature = "xsens-driver",
+        feature = "ouster-driver"
+    )))]
+    {
+        let _ = (config, options, shutdown);
+        Err(anyhow!(
+            "`pelorus online raw` needs a native sensor driver. Rebuild with the `sensor-drivers` feature (or one of `velodyne-driver`, `xsens-driver`, `ouster-driver`)."
+        )
+        .into())
+    }
+}
+
 fn main() -> Result<(), Box<dyn CoreError>> {
     // Initialize our custom logger that works with both TUI and console
     init_logger();
@@ -4803,7 +4897,12 @@ fn main() -> Result<(), Box<dyn CoreError>> {
             Ok(())
         }
         /* `run` wrapper removed; `online`/`offline` are top-level commands */
-        Command::Online(config_args) => {
+        Command::Online(online_args) => {
+            #[cfg(feature = "mt_pubsub")]
+            if let Some(OnlineMode::Raw(raw_args)) = online_args.mode {
+                return run_raw(DEFAULT_CONFIG_STR, raw_args, &cli_overrides);
+            }
+            let config_args = online_args.pipeline;
             let default_ast = ratslang::compile_code(DEFAULT_CONFIG_STR)
                 .map_err(|e| anyhow!("Failed to compile embedded default config: {}", e))?;
 

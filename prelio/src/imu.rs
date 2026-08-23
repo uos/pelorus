@@ -7,16 +7,12 @@ use pelorus_core::{
 #[cfg(feature = "rayon")]
 use rayon::iter::{IntoParallelIterator, ParallelIterator};
 
-use sophus_lie::prelude::*;
-
 use nalgebra::*;
 
 use crate::{MeasureGroup, timestamp_to_secs};
 
+use pelorus_core::{SE3, SO3};
 use ros_pointcloud2::ros::TimeMsg;
-
-type SO3 = sophus_lie::Rotation3F64;
-type SE3 = sophus_lie::Isometry3F64;
 
 pub struct ImuMadgwick {
     fusion: imu_fusion::FusionAhrs,
@@ -231,20 +227,8 @@ pub struct ImuProcess {
     pub gravity: f64,
 }
 
-fn quaternion_to_rotation_vector(q: &UnitQuaternion<f64>) -> Vector3<f64> {
-    let angle = 2.0 * q.w.acos();
-    let sin_half_angle = (1.0 - q.w * q.w).sqrt();
-
-    // If sin_half_angle is too small, treat as zero for numerical stability
-    if sin_half_angle.abs() < 1e-8 {
-        Vector3::new(q.i, q.j, q.k)
-    } else {
-        Vector3::new(q.i, q.j, q.k) * (angle / sin_half_angle)
-    }
-}
-
 fn quaternion_to_so3_exp(q: &UnitQuaternion<f64>) -> SO3 {
-    SO3::exp(quaternion_to_rotation_vector(q))
+    SO3(*q)
 }
 
 #[derive(Debug)]

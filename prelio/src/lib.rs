@@ -2050,7 +2050,7 @@ impl Prelio {
                                 mode,
                                 nanos_per_point,
                             ) {
-                                warn!(
+                                info!(
                                     "{}: using {} ({:.2}x faster)",
                                     HeavyPhase::Preprocessing.name(),
                                     decision.mode.name(),

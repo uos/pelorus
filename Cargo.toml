@@ -34,7 +34,7 @@ license = "MIT OR Apache-2.0"
 repository = "https://codeberg.org/stelzo/pelorus/"
 version = "0.0.6"
 authors = ["Christopher Sieh <stelzo@steado.de>"]
-rust-version = "1.89.0"
+rust-version = "1.95.0"
 
 [workspace.dependencies]
 pelorus = { path = "pelorus", version = "0.0.6", default-features = false }
@@ -45,12 +45,12 @@ prelio = { path = "prelio", version = "0.0.6", default-features = false }
 prelio_io = { path = "prelio_io", version = "0.0.6", default-features = false }
 spole = { path = "spole", version = "0.0.6", default-features = false }
 pelorus_cuda = { path = "pelorus_cuda", version = "0.0.6", default-features = false }
-transforms_io = { version = "0.3", default-features = false }
-transforms_io_hiroz = { version = "0.3", git = "ssh://git@git.steado.tech/transforms_io.git", tag = "v0.3.0" }
 pelorus_metal = { path = "pelorus_metal", version = "0.0.6" }
 pelorus_vulkan = { path = "pelorus_vulkan", version = "0.0.6", default-features = false }
 pelorus_drivers = { path = "pelorus_drivers", version = "0.0.6", default-features = false }
 
+transforms_io = { version = "0.4", default-features = false }
+transforms_io_hiroz = { version = "0.4", git = "ssh://git@git.steado.tech/transforms_io.git", tag = "v0.4.0" }
 ros_pointcloud2 = { version = "1.0.0-rc.4", features = [
   "derive",
   "r2r",
@@ -58,16 +58,15 @@ ros_pointcloud2 = { version = "1.0.0-rc.4", features = [
   "ros2_interfaces_jazzy_rkyv",
   "nalgebra",
 ] }
-ratslang = "0.4.1"
+ratslang = "0.4.3"
 mt_pubsub = "0.9.0"
 mt_service = "0.9.0"
+mt_log = { version = "0.9.0", features = ["tui", "env"] }
 cloudini = { version = "0.3.2", default-features = false, features = ["ros"] }
 mt_rat = "0.9.0"
-imu-calib = "0.1" # TODO use noise calib
-marina = "0.2.9"
-mcap = "0.24.0"
-cdr = "0.2.4"
-ros2-interfaces-jazzy-serde = { version = "0.0.4", features = [
+imu-calib = "0.2" # TODO use noise calib
+marina = "0.3.1"
+ros2-interfaces-jazzy-serde = { version = "0.0.5", features = [
   "std_msgs",
   "geometry_msgs",
   "nav_msgs",
@@ -85,16 +84,18 @@ ros2-interfaces-jazzy-rkyv = { version = "0.0.5", features = [
   "tf2_msgs",
   "builtin_interfaces",
 ] }
-rkyv = "0.8"
 
+rkyv = "0.8"
+mcap = "0.24.0"
+cdr = "0.2.4"
 once_cell = "1.21"
-nalgebra = { version = "0.33", features = ["serde-serialize"] }
+nalgebra = { version = "0.35", features = ["serde-serialize"] }
 faer = { version = "0.24", default-features = false, features = [
   "std",
   "sparse-linalg",
 ] }
 r2r = { version = "0.9.5" }
-ros2-client = { version = "0.8" }
+ros2-client = { version = "0.10" }
 hiroz = { version = "0.2.0", git = "https://github.com/ZettaScaleLabs/hiroz.git", tag = "v0.2.0", default-features = false, features = [
   "rmw-zenoh",
   "jazzy",
@@ -110,12 +111,11 @@ hiroz-msgs = { version = "0.2.0", git = "https://github.com/ZettaScaleLabs/hiroz
 hiroz-protocol = { version = "0.2.0", git = "https://github.com/ZettaScaleLabs/hiroz.git", tag = "v0.2.0", default-features = false }
 zenoh-buffers = "1.9.0"
 tokio = { version = "1.49", default-features = false }
-rerun = { version = "0.31", default-features = false, features = [
+rerun = { version = "0.36", default-features = false, features = [
   "sdk",
   "glam",
 ] }
 anyhow = "1.0"
-sophus_lie = "0.15"
 rayon = "1.11"
 thiserror = "2.0"
 velodyne-lidar = "0.3.0"
@@ -171,8 +171,8 @@ serde_json = "1.0.149"
 clap = { version = "4.5.53", features = ["derive"] }
 mimalloc = { version = "0.1.48", default-features = false }
 colorous = "1.0"
-ratatui = "0.29"
-crossterm = "0.28"
+ratatui = "0.30"
+crossterm = "0.29"
 num_cpus = "1.16"
 ndarray = "0.17"
 pyo3 = { version = "0.27", features = ["extension-module", "abi3-py38"] }
