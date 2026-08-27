@@ -167,6 +167,9 @@ impl RegistrationState {
             parallelism_execution_policy,
         );
         let mut ekf = Eqf::new(gravity, base_to_lidar.clone());
+        // The configured extrinsic is the starting point either way; this only
+        // decides whether the filter is allowed to move it afterwards.
+        ekf.extrinsic_est = imu_params.estimate_extrinsic_online;
         if let Some(guess) = initial_guess {
             ekf.state.pos = guess.pose.translation.vector;
             ekf.state.rot =

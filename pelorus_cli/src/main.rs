@@ -29,8 +29,6 @@ use core::sync::atomic::AtomicI32;
 use core::sync::atomic::AtomicUsize;
 use core::sync::atomic::{AtomicBool, Ordering};
 use core::time::Duration;
-#[cfg(feature = "rat")]
-use marina::{Marina, ProgressReporter, ResolveResult, WriterProgress};
 #[cfg(feature = "mimalloc")]
 use mimalloc::MiMalloc;
 #[cfg(feature = "mt_pubsub")]
@@ -185,9 +183,6 @@ use ros2_interfaces_jazzy_rkyv::{
     visualization_msgs::msg::Marker,
 };
 use std::io::IsTerminal;
-// Only the Marina pull prompt still flushes stdout directly from here.
-#[cfg(feature = "rat")]
-use std::io::Write;
 
 /// Publishes registered clouds on whichever encoding the session settled on.
 ///
@@ -375,8 +370,33 @@ pub struct RawArgs {
     pub recording: RawRecordingArgs,
 
     /// Answer yes to overwrite prompts.
-    #[arg(short = 'y', long, default_value_t = false)]
+    #[arg(short = 'y', long, global = true, default_value_t = false)]
     pub yes: bool,
+
+    #[command(subcommand)]
+    pub mode: Option<RawMode>,
+}
+
+/// What a raw run does beyond publishing and recording.
+#[derive(Debug, Clone, Subcommand)]
+pub enum RawMode {
+    /// Walk through the orientations an IMU intrinsic calibration needs.
+    ///
+    /// Prompts for each static pose while recording, then offers to fit the
+    /// parameters with `dedrunk` if it is installed. The bag is the artefact:
+    /// the fit can be repeated from it at any time with
+    /// `dedrunk intrinsics <bag>`.
+    Intrinsics(IntrinsicsArgs),
+}
+
+#[derive(Debug, Clone, Parser)]
+pub struct IntrinsicsArgs {
+    /// How many static orientations to walk through.
+    ///
+    /// Nine is the minimum for the full scale-and-misalignment model. More,
+    /// spread over all octants, is better.
+    #[arg(long, default_value_t = 12)]
+    pub poses: usize,
 }
 
 /// Recording targets for a raw run.
@@ -386,26 +406,47 @@ pub struct RawArgs {
 /// than the Pelorus output topics.
 #[derive(Debug, Clone, Parser)]
 pub struct RawRecordingArgs {
+    // These carry their own ids: the long names match the pipeline's
+    // `RecordingArgs`, and a global arg is keyed by id, so sharing one would
+    // let that struct's defaults bleed into a raw run.
     /// Write the raw sensor output to this MCAP bagfile.
-    #[arg(long, value_name = "PATH", conflicts_with = "output_rosbag")]
+    #[arg(
+        id = "raw_output_mcap",
+        long = "output-mcap",
+        global = true,
+        value_name = "PATH",
+        conflicts_with = "raw_output_rosbag"
+    )]
     pub output_mcap: Option<PathBuf>,
 
     /// Also write ROS 2 bag metadata.yaml for the MCAP output.
-    #[arg(long, value_name = "PATH", requires = "output_mcap")]
+    #[arg(
+        id = "raw_output_rosbag_metadata",
+        long = "output-rosbag-metadata",
+        global = true,
+        value_name = "PATH",
+        requires = "raw_output_mcap"
+    )]
     pub output_rosbag_metadata: Option<PathBuf>,
 
     /// Write the raw sensor output as a ROS 2 MCAP bag directory.
-    #[arg(long, value_name = "DIR", conflicts_with_all = ["output_mcap", "output_rosbag_metadata"])]
+    #[arg(
+        id = "raw_output_rosbag",
+        long = "output-rosbag",
+        global = true,
+        value_name = "DIR",
+        conflicts_with_all = ["raw_output_mcap", "raw_output_rosbag_metadata"]
+    )]
     pub output_rosbag: Option<PathBuf>,
 
     /// MCAP topic for the raw PointCloud2 output. Defaults to the configured
     /// `lidar.topic`.
-    #[arg(long)]
+    #[arg(id = "raw_mcap_cloud_topic", long = "mcap-cloud-topic", global = true)]
     pub mcap_cloud_topic: Option<String>,
 
     /// MCAP topic for the raw IMU output. Defaults to the configured
     /// `imu.topic`.
-    #[arg(long)]
+    #[arg(id = "raw_mcap_imu_topic", long = "mcap-imu-topic", global = true)]
     pub mcap_imu_topic: Option<String>,
 }
 
@@ -416,8 +457,16 @@ pub struct OfflineArgs {
     #[arg(short, long)]
     pub config_path: Option<PathBuf>,
 
-    /// Local bagfile path (file or directory), or a marina tag to resolve and optionally pull.
+    /// Local bagfile path (file or directory), or a Marina dataset reference for Minot to stream.
     pub bagfile_path: PathBuf,
+
+    /// Marina registry to use when BAGFILE_PATH is a remote dataset reference.
+    #[arg(long)]
+    pub registry: Option<String>,
+
+    /// Stream a remote dataset without caching blocks or promoting it locally.
+    #[arg(long)]
+    pub no_cache_stream: bool,
 
     /// Path to the Minot binary
     #[arg(short, long, default_value = "minot")]
@@ -4543,8 +4592,80 @@ mod mcap_output_config_tests {
             Some(PathBuf::from("/tmp/imu_bag"))
         );
         // Raw bags default to the configured input topics, not to a flag value.
-        assert!(raw.recording.mcap_cloud_topic.is_none());
-        assert!(raw.recording.mcap_imu_topic.is_none());
+        assert_eq!(raw.recording.mcap_cloud_topic, None);
+        assert_eq!(raw.recording.mcap_imu_topic, None);
+    }
+
+    #[cfg(feature = "mt_pubsub")]
+    #[test]
+    fn raw_imu_takes_the_intrinsics_sub_mode() {
+        let args = Args::parse_from([
+            "pelorus",
+            "online",
+            "raw",
+            "imu",
+            "intrinsics",
+            "--output-rosbag",
+            "/tmp/imu_poses",
+        ]);
+        let Command::Online(online) = args.command else {
+            panic!("expected online");
+        };
+        let Some(OnlineMode::Raw(raw)) = online.mode else {
+            panic!("expected raw");
+        };
+        assert_eq!(raw.sensor, RawSensor::Imu);
+        let Some(RawMode::Intrinsics(intrinsics)) = raw.mode else {
+            panic!("expected the intrinsics sub-mode");
+        };
+        assert_eq!(intrinsics.poses, 12);
+        // The recording flags are global, so they still land after the
+        // sub-mode name, which is where anyone would type them.
+        assert_eq!(
+            raw.recording.output_rosbag,
+            Some(PathBuf::from("/tmp/imu_poses"))
+        );
+    }
+
+    #[cfg(feature = "mt_pubsub")]
+    #[test]
+    fn the_intrinsics_pose_count_is_settable() {
+        let args = Args::parse_from([
+            "pelorus",
+            "online",
+            "raw",
+            "imu",
+            "intrinsics",
+            "--poses",
+            "16",
+            "--output-rosbag",
+            "/tmp/imu_poses",
+        ]);
+        let Command::Online(online) = args.command else {
+            panic!("expected online");
+        };
+        let Some(OnlineMode::Raw(raw)) = online.mode else {
+            panic!("expected raw");
+        };
+        let Some(RawMode::Intrinsics(intrinsics)) = raw.mode else {
+            panic!("expected the intrinsics sub-mode");
+        };
+        assert_eq!(intrinsics.poses, 16);
+    }
+
+    /// A plain raw run must keep working now that a sub-mode exists.
+    #[cfg(feature = "mt_pubsub")]
+    #[test]
+    fn raw_without_a_sub_mode_is_still_a_plain_recording() {
+        let args = Args::parse_from(["pelorus", "online", "raw", "imu"]);
+        let Command::Online(online) = args.command else {
+            panic!("expected online");
+        };
+        let Some(OnlineMode::Raw(raw)) = online.mode else {
+            panic!("expected raw");
+        };
+        assert_eq!(raw.sensor, RawSensor::Imu);
+        assert!(raw.mode.is_none());
     }
 
     #[cfg(feature = "mt_pubsub")]
@@ -4684,125 +4805,6 @@ fn canonicalize_bagfile_path(path: &std::path::Path) -> anyhow::Result<PathBuf> 
     })
 }
 
-#[cfg(feature = "rat")]
-fn confirm_marina_pull(input: &str, bag: &str, registry: &str) -> anyhow::Result<bool> {
-    if !std::io::stdin().is_terminal() || !std::io::stdout().is_terminal() {
-        return Err(anyhow!(
-            "Bagfile input '{}' is only available remotely as '{}' in registry '{}'. \
-This command is non-interactive, so pull it first with `marina pull {}` and retry.",
-            input,
-            bag,
-            registry,
-            bag
-        ));
-    }
-
-    print!(
-        "Bagfile input '{}' is not local. Pull '{}' from registry '{}' now? [y/N]: ",
-        input, bag, registry
-    );
-    std::io::stdout()
-        .flush()
-        .map_err(|e| anyhow!("Failed to flush prompt output: {}", e))?;
-
-    let mut answer = String::new();
-    std::io::stdin()
-        .read_line(&mut answer)
-        .map_err(|e| anyhow!("Failed to read pull confirmation: {}", e))?;
-
-    match answer.trim().to_ascii_lowercase().as_str() {
-        "y" | "yes" => Ok(true),
-        "" | "n" | "no" => Ok(false),
-        _ => Err(anyhow!(
-            "Invalid response '{}'. Please answer with 'y' or 'n'.",
-            answer.trim()
-        )),
-    }
-}
-
-#[cfg(feature = "rat")]
-fn resolve_offline_bagfile_path(input: &std::path::Path) -> anyhow::Result<(PathBuf, String)> {
-    if input.exists() {
-        if input.is_dir() || input.is_file() {
-            let path = canonicalize_bagfile_path(input)?;
-            let label = path
-                .file_name()
-                .unwrap_or_default()
-                .to_string_lossy()
-                .into_owned();
-            return Ok((path, label));
-        }
-        return Err(anyhow!(
-            "Bagfile path '{}' exists but is neither a regular file nor a directory.",
-            input.display()
-        ));
-    }
-
-    let input_ref = input.to_string_lossy().to_string();
-    let rt = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .map_err(|e| anyhow!("Failed to initialize async runtime for marina: {}", e))?;
-
-    let resolved_path = rt.block_on(async {
-        let mut marina =
-            Marina::load().map_err(|e| anyhow!("Failed to initialize marina: {}", e))?;
-        let resolved = marina.resolve_target(&input_ref, None).await.map_err(|e| {
-            anyhow!(
-                "Requested path or marina tag '{}' does not exist locally and could not be resolved \
-with the current marina registries: {}",
-                input_ref,
-                e
-            )
-        })?;
-
-        match resolved {
-            ResolveResult::LocalPath(path) | ResolveResult::Cached(path) => Ok(path),
-            ResolveResult::RemoteAvailable { bag, registry, .. } => {
-                let bag_display = bag.to_string();
-                let registry_name = registry.to_string();
-
-                if !confirm_marina_pull(&input_ref, &bag_display, &registry_name)? {
-                    return Err(anyhow!(
-                        "Bagfile input '{}' is remote-only ('{}' in '{}'). Pull it first with \
-`marina pull {}` and retry.",
-                        input_ref,
-                        bag_display,
-                        registry_name,
-                        bag_display
-                    ));
-                }
-
-                let mut stdout = std::io::stdout();
-                let mut sink = WriterProgress::new(&mut stdout);
-                let mut reporter = ProgressReporter::new(&mut sink);
-                marina
-                    .pull_exact_with_progress(&bag, Some(registry_name.as_str()), &mut reporter)
-                    .await
-                    .map_err(|e| {
-                        anyhow!(
-                            "Failed to pull marina tag '{}' from registry '{}': {}",
-                            bag_display,
-                            registry_name,
-                            e
-                        )
-                    })
-            }
-            ResolveResult::Ambiguous { candidates } => Err(anyhow!(
-                "Requested path or marina tag '{}' is ambiguous across {} registries. \
-Please specify a local path or resolve/pull with an explicit registry.",
-                input_ref,
-                candidates.len()
-            )),
-        }
-    })?;
-
-    Ok((
-        canonicalize_bagfile_path(resolved_path.as_path())?,
-        input_ref,
-    ))
-}
-
 /// Loads configuration the same way `pelorus online` does, then hands over to
 /// the raw driver runner.
 #[cfg(feature = "mt_pubsub")]
@@ -4835,8 +4837,36 @@ fn run_raw(
     // would only take the terminal away from the driver's own logging.
     set_tui_active(false);
 
+    let intrinsics = match &args.mode {
+        Some(RawMode::Intrinsics(intrinsics)) => {
+            // The guidance is about holding the IMU still in many attitudes, so
+            // it makes no sense while a lidar is also being recorded.
+            if args.sensor != RawSensor::Imu {
+                return Err(anyhow::anyhow!(
+                    "`raw ... intrinsics` guides an IMU calibration, so it only applies to \
+                     `pelorus online raw imu`."
+                )
+                .into());
+            }
+            // Finding out at the end of a five-minute guided session that
+            // nothing was kept would be a waste of the operator's time.
+            if args.recording.output_rosbag.is_none() && args.recording.output_mcap.is_none() {
+                return Err(anyhow::anyhow!(
+                    "`raw imu intrinsics` needs somewhere to put the recording. \
+                     Pass --output-rosbag <DIR>."
+                )
+                .into());
+            }
+            Some(pelorus_cli::raw::IntrinsicsOptions {
+                poses: intrinsics.poses,
+            })
+        }
+        None => None,
+    };
+
     let options = pelorus_cli::raw::RawOptions {
         sensor: args.sensor,
+        intrinsics,
         output_mcap: args.recording.output_mcap,
         output_rosbag: args.recording.output_rosbag,
         output_rosbag_metadata: args.recording.output_rosbag_metadata,
@@ -5172,9 +5202,23 @@ fn main() -> Result<(), Box<dyn CoreError>> {
 
             let lidar_topic = &config.prelio_node_params.cloud_src_topic;
             let imu_topic = &config.prelio_node_params.imu_src_topic;
-            let (bagfile_path_canon, bagfile_label) =
-                resolve_offline_bagfile_path(&offline_args.bagfile_path)?;
-            let bagfile_path = bagfile_path_canon.clone().to_string_lossy().to_string();
+            // Local paths are made absolute because the generated .mt file is
+            // written into the system temp directory. A non-local value is a
+            // Marina dataset reference and is intentionally passed through:
+            // Minot owns local-first resolution, streaming, and promotion.
+            let bagfile_path = if offline_args.bagfile_path.exists() {
+                canonicalize_bagfile_path(&offline_args.bagfile_path)?
+                    .to_string_lossy()
+                    .into_owned()
+            } else {
+                offline_args.bagfile_path.to_string_lossy().into_owned()
+            };
+            if bagfile_path.contains('"') {
+                return Err(
+                    anyhow!("Bagfile paths and Marina tags cannot contain a double quote").into(),
+                );
+            }
+            let bagfile_label = bagfile_path.clone();
             shared_stats.set_bagfile(bagfile_label);
 
             let mt_content = format!(
@@ -5205,7 +5249,7 @@ pf! i, l 1 lio_start_tick
 pf! l 1 tick_end
 pf! i, l 1 tick_end
 
-reset! {bagfile_path}
+reset! "{bagfile_path}"
 
 # Starting the feedback loop by playing the first IMU message (first step is IMU init)
 pf! i 1
@@ -5284,6 +5328,12 @@ pf! i 1
                     .stdin(Stdio::piped())
                     .stdout(Stdio::piped())
                     .stderr(Stdio::piped());
+                if let Some(registry) = &offline_args.registry {
+                    minot_command.arg("--registry").arg(registry);
+                }
+                if offline_args.no_cache_stream {
+                    minot_command.arg("--no-cache-stream");
+                }
                 // Ask Minot for records rather than prose: level, source and
                 // target come back intact instead of being guessed at.
                 for (key, value) in mt_log::child_env("Minot") {

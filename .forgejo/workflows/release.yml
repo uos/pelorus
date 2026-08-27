@@ -1271,10 +1271,10 @@ jobs:
           git config --global user.email "$(git log -1 --pretty=format:'%ae')"
           git config --global user.name "$(git log -1 --pretty=format:'%an')"
 
-          git clone git@github.com:uos/homebrew-pelorus.git homebrew-pelorus
-          mkdir -p homebrew-pelorus/Formula
-          cp /tmp/pelorus.rb homebrew-pelorus/Formula/pelorus.rb
-          cd homebrew-pelorus
+          git clone git@github.com:uos/homebrew-tools.git homebrew-tools
+          mkdir -p homebrew-tools/Formula
+          cp /tmp/pelorus.rb homebrew-tools/Formula/pelorus.rb
+          cd homebrew-tools
           git add Formula/pelorus.rb
           git commit -m "pelorus ${VERSION}"
           git push origin

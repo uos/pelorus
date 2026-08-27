@@ -13,6 +13,10 @@ use pelorus_core::{
 use prelio::{ImuSyncMode, LocatedBufferView, Prelio};
 use spole::{IVoxHashMap, IVoxNearbyType};
 
+/// How densely the constant-twist model is sampled into IMU messages. It only
+/// has to be fine enough that the rotation between two samples stays small.
+const IMU_SYNTHESIS_RATE: f64 = 200.0;
+
 #[cfg(feature = "cuda")]
 const CUDA_CLOUD_BUFFER_PIPELINE_DEPTH: usize = 2;
 
@@ -200,8 +204,18 @@ impl Pipeline {
 
     pub fn build_init_callback(&self) -> Arc<Mutex<dyn FnMut(&[ImuMsg]) + Send + Sync>> {
         let map = self.map();
+        let lidar_only = self.config.imu_params.lidar_only;
+        let gravity = self.config.prelio_params.imu.gravity;
         Arc::new(Mutex::new(move |msg: &[ImuMsg]| {
             let mut map = map.lock().unwrap();
+            if lidar_only {
+                // Initialization reads gravity and the starting attitude off
+                // the IMU. There is none, so it is handed a level, stationary
+                // sensor and every pose afterwards is relative to that.
+                let synthetic = crate::lidar_only::SyntheticImu::new(gravity, IMU_SYNTHESIS_RATE);
+                let _ = map.init_imu_ekf(&synthetic.initialization_buffer(msg.len().max(2)));
+                return;
+            }
             let _ = map.init_imu_ekf(&msg);
         }))
     }
@@ -211,6 +225,11 @@ impl Pipeline {
         let kinematic_model = self.config.imu_params.kinematic_model;
         let constraint_std = self.config.imu_params.kinematic_constraint_std;
         let lidar_vendor = self.config.prelio_params.lidar_vendor;
+        let lidar_only = self.config.imu_params.lidar_only;
+        let synthetic = Mutex::new(crate::lidar_only::SyntheticImu::new(
+            self.config.prelio_params.imu.gravity,
+            IMU_SYNTHESIS_RATE,
+        ));
 
         Box::new(
             move |imu_msgs: &[ImuMsg],
@@ -221,6 +240,21 @@ impl Pipeline {
                   cloud,
                   cloud_passthrough| {
                 let mut map = map.lock().unwrap();
+                // Substituting the stream here rather than further up means
+                // undistortion, propagation and correction all stay untouched:
+                // they cannot tell where the samples came from.
+                let generated;
+                let imu_msgs: &[ImuMsg] = if lidar_only {
+                    let pose = map.get_state().pose;
+                    generated = synthetic.lock().unwrap().generate(
+                        &pose,
+                        last_cloud_end_time,
+                        cloud_end_time,
+                    );
+                    &generated
+                } else {
+                    imu_msgs
+                };
                 map.undistort(
                     &imu_msgs,
                     odom_msgs,

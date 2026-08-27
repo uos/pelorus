@@ -108,12 +108,8 @@ pub fn set_tui_active(active: bool) {
 
 /// Re-emit one line of a child's output as a record of ours.
 ///
-/// The child tags its own lines, so nothing here is guessed: the level
-/// survives instead of being recovered from the text, and a line the child
-/// relayed from further down keeps the name of the process that wrote it.
-/// It goes back through the `log` facade rather than straight to the buffer,
-/// so `RUST_LOG` governs a child's chatter the same as our own — the target
-/// makes `pelorus_cli::minot=warn` a thing a reader can ask for.
+/// Parsed child records keep their original level, source, and target. Records
+/// pass through the `log` facade so configured filtering applies.
 pub fn relay_child_line(line: &str, source: &str) {
     let record = mt_log::parse(line).or_source(source);
     log::log!(

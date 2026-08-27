@@ -1,4 +1,6 @@
-use nalgebra::{Isometry3, Matrix3, Matrix4, Point3, Translation3, UnitQuaternion, Vector3, Vector6};
+use nalgebra::{
+    Isometry3, Matrix3, Matrix4, Point3, Translation3, UnitQuaternion, Vector3, Vector6,
+};
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
@@ -106,10 +108,7 @@ impl SE3 {
 
     #[inline]
     pub fn from_rotation_and_translation(rot: SO3, trans: Vector3<f64>) -> Self {
-        Self(Isometry3::from_parts(
-            Translation3::from(trans),
-            rot.0,
-        ))
+        Self(Isometry3::from_parts(Translation3::from(trans), rot.0))
     }
 
     #[inline]

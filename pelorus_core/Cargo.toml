@@ -12,6 +12,7 @@ rust-version.workspace = true
 
 [dependencies]
 anyhow.workspace = true
+imu-calib.workspace = true
 nalgebra.workspace = true
 faer.workspace = true
 ratslang.workspace = true

@@ -97,9 +97,8 @@ pub fn parse_overrides(overrides: &[String]) -> anyhow::Result<Vec<ConfigOverrid
             // Compile the assignment on its own first. Layered into the file's
             // text a syntax error surfaces as a failure to compile *the file*,
             // which points the user at something that is not wrong.
-            ratslang::compile_code(&statement).map_err(|error| {
-                anyhow!("override '{raw}' is not valid Ratslang: {error}")
-            })?;
+            ratslang::compile_code(&statement)
+                .map_err(|error| anyhow!("override '{raw}' is not valid Ratslang: {error}"))?;
             Ok(ConfigOverride {
                 key: key.to_owned(),
                 statement,
@@ -214,6 +213,68 @@ pub fn user_config_with_checked_overrides(
 ///
 /// Returns (config, (assigned_vars, evaluated_vars))
 #[allow(unreachable_patterns, clippy::unnecessary_fallible_conversions)]
+/// The four process-noise variances implied by an IMU calibration file.
+struct DerivedNoise {
+    gyr: f64,
+    acc: f64,
+    gyr_bias: f64,
+    acc_bias: f64,
+}
+
+/// Turn the stochastic half of a Kalibr calibration into filter covariances.
+///
+/// The filter propagates `P += F_w Q F_w^T` with `F_w = f_w * dt`
+/// (`pelorus_reg::eqf::predict`), so every entry of `Q` picks up a `dt^2`. For
+/// the covariance of a white-noise-driven state to grow as `sigma^2 * t`, `Q`
+/// therefore has to hold *discrete-time* variances rather than the
+/// continuous-time densities the file stores:
+///
+/// ```text
+/// Q = (density * inflation)^2 * update_rate
+/// ```
+///
+/// The inflation is not derivable and has to be chosen. Allan variance is
+/// measured on a completely still sensor at constant temperature; a moving
+/// robot has vibration, thermal drift and timing jitter on top, and those
+/// dominate. Feeding the bench figures in raw makes the filter trust the IMU
+/// far more than it deserves.
+fn derive_noise_covariances(path: &str, inflation: f64) -> anyhow::Result<DerivedNoise> {
+    anyhow::ensure!(
+        inflation > 0.0 && inflation.is_finite(),
+        "imu.calibration.noise_inflation must be a positive, finite value"
+    );
+
+    let intrinsics = imu_calib::ImuIntrinsics::from_kalibr_yaml(path)
+        .map_err(|error| anyhow::anyhow!("Failed to read the IMU calibration '{path}': {error}"))?;
+    let noise = intrinsics.noise;
+
+    // `dedrunk intrinsics` writes zeros here; only a file that also carries a
+    // noise run has them. Falling back to the constants would quietly run with
+    // numbers the operator did not choose.
+    anyhow::ensure!(
+        noise.accel_noise_density > 0.0
+            && noise.gyro_noise_density > 0.0
+            && noise.accel_random_walk > 0.0
+            && noise.gyro_random_walk > 0.0,
+        "'{path}' carries no noise parameters, so imu.calibration.noise_from_file has \
+         nothing to derive from. Record a few hours of stationary data, run \
+         `dedrunk noise` on it, and `dedrunk merge` the result with the intrinsics."
+    );
+    anyhow::ensure!(
+        noise.update_rate > 0.0,
+        "'{path}' has a non-positive update_rate, which the covariances scale with"
+    );
+
+    let variance = |density: f64| (density * inflation).powi(2) * noise.update_rate;
+
+    Ok(DerivedNoise {
+        gyr: variance(noise.gyro_noise_density),
+        acc: variance(noise.accel_noise_density),
+        gyr_bias: variance(noise.gyro_random_walk),
+        acc_bias: variance(noise.accel_random_walk),
+    })
+}
+
 pub fn ast_to_config_with_usage(
     defaults: Evaluated,
     user: Evaluated,
@@ -256,6 +317,203 @@ mod override_tests {
 
         assert_eq!(config.odometry_rate, crate::OdometryRate::Lidar);
         std::fs::remove_dir_all(&directory).unwrap();
+    }
+
+    /// A merged calibration, i.e. what `dedrunk merge` produces: the
+    /// deterministic half plus the four noise values.
+    fn write_calibration(directory: &std::path::Path, with_noise: bool) -> std::path::PathBuf {
+        let (accel_density, accel_walk, gyro_density, gyro_walk) = if with_noise {
+            (0.002, 0.0004, 0.0003, 2.0e-5)
+        } else {
+            // What `dedrunk intrinsics` writes on its own.
+            (0.0, 0.0, 0.0, 0.0)
+        };
+
+        let mut contents = String::from("imu0:\n");
+        contents.push_str("  model: scale-misalignment\n");
+        contents.push_str("  update_rate: 200.0\n");
+        contents.push_str(&format!("  accelerometer_noise_density: {accel_density}\n"));
+        contents.push_str(&format!("  accelerometer_random_walk: {accel_walk}\n"));
+        contents.push_str(&format!("  gyroscope_noise_density: {gyro_density}\n"));
+        contents.push_str(&format!("  gyroscope_random_walk: {gyro_walk}\n"));
+        contents.push_str("  accelerometers:\n");
+        contents.push_str("    M:\n");
+        contents.push_str("    - [1.0, 0.0, 0.0]\n");
+        contents.push_str("    - [0.0, 1.0, 0.0]\n");
+        contents.push_str("    - [0.0, 0.0, 1.0]\n");
+
+        let path = directory.join("imu.yaml");
+        std::fs::write(&path, contents).unwrap();
+        path
+    }
+
+    fn config_with(source: &str) -> crate::LioConfig {
+        let user = ratslang::compile_code(source).unwrap();
+        let defaults = ratslang::compile_code(DEFAULTS).unwrap();
+        ast_to_config(defaults, user).unwrap()
+    }
+
+    /// The offset is a calibration result pasted verbatim from dedrunk, so
+    /// the sign convention has to survive the trip: it is subtracted from IMU
+    /// timestamps, and getting that backwards would double the skew instead of
+    /// removing it.
+    #[test]
+    fn the_imu_time_offset_is_read_in_seconds() {
+        assert_eq!(
+            config_with("").prelio_params.imu.calibration.time_offset,
+            0.0
+        );
+
+        let shifted = config_with("imu.calibration.time_offset = -5.9ms\n");
+        assert!(
+            (shifted.prelio_params.imu.calibration.time_offset + 0.0059).abs() < 1e-12,
+            "{}",
+            shifted.prelio_params.imu.calibration.time_offset
+        );
+
+        let seconds = config_with("imu.calibration.time_offset = 0.25s\n");
+        assert!((seconds.prelio_params.imu.calibration.time_offset - 0.25).abs() < 1e-12);
+    }
+
+    /// LiDAR-only mode has no IMU for an extrinsic to point at, so a
+    /// configured one has to be dropped rather than silently shifting the
+    /// trajectory the mode exists to produce.
+    #[test]
+    fn lidar_only_forces_the_extrinsic_to_identity() {
+        let source = "imu.from_lidar_transform.translation = [1.0m, 2.0m, 3.0m]\n";
+        let with_imu = config_with(source);
+        assert_eq!(
+            with_imu.imu_params.initial_translation_lidar_to_imu,
+            Vector3::new(1.0, 2.0, 3.0)
+        );
+
+        let lidar_only = config_with(&format!("{source}imu.lidar_only = true\n"));
+        assert!(lidar_only.imu_params.lidar_only);
+        assert_eq!(
+            lidar_only.imu_params.initial_translation_lidar_to_imu,
+            Vector3::zeros()
+        );
+        assert_eq!(
+            lidar_only.imu_params.initial_rotation_lidar_to_imu,
+            Matrix3::identity()
+        );
+    }
+
+    /// The filter holds the configured extrinsic unless told otherwise, so an
+    /// existing configuration keeps behaving the way it was tuned.
+    #[test]
+    fn the_extrinsic_is_held_fixed_by_default() {
+        assert!(!config_with("").imu_params.estimate_extrinsic_online);
+        assert!(
+            config_with("imu.from_lidar_transform.estimate_online = true\n")
+                .imu_params
+                .estimate_extrinsic_online
+        );
+    }
+
+    /// Off by default, so nothing changes for an existing configuration.
+    #[test]
+    fn the_tuned_covariances_are_kept_unless_asked_otherwise() {
+        let config = config_with("");
+        assert_eq!(config.imu_params.cov_gyr[0], 0.1);
+        assert_eq!(config.imu_params.cov_acc[0], 0.1);
+        assert_eq!(config.imu_params.cov_gyr_bias[0], 0.0001);
+        assert_eq!(config.imu_params.cov_acc_bias[0], 0.0001);
+    }
+
+    /// `Q` is sandwiched with `dt^2` in the propagation, so it holds discrete
+    /// variances: `(density * inflation)^2 * rate`.
+    #[test]
+    fn covariances_can_be_derived_from_the_calibration_file() {
+        let directory = std::env::temp_dir().join(format!("pelorus-noise-{}", std::process::id()));
+        std::fs::create_dir_all(&directory).unwrap();
+        let path = write_calibration(&directory, true);
+
+        let config = config_with(&format!(
+            "imu.calibration.parameter_file = \"{}\"\n\
+             imu.calibration.noise_from_file = true\n\
+             imu.calibration.noise_inflation = 1.0\n",
+            path.display()
+        ));
+
+        let close = |actual: f64, expected: f64| {
+            assert!(
+                (actual / expected - 1.0).abs() < 1e-9,
+                "{actual:e} vs expected {expected:e}"
+            );
+        };
+        // density^2 * update_rate, with the rate 200 Hz.
+        close(config.imu_params.cov_gyr[0], 0.0003_f64.powi(2) * 200.0);
+        close(config.imu_params.cov_acc[0], 0.002_f64.powi(2) * 200.0);
+        close(
+            config.imu_params.cov_gyr_bias[0],
+            2.0e-5_f64.powi(2) * 200.0,
+        );
+        close(
+            config.imu_params.cov_acc_bias[0],
+            0.0004_f64.powi(2) * 200.0,
+        );
+
+        // Worth seeing next to the tuned default of 0.1: the bench figure is
+        // far smaller, which is what the inflation exists to bridge.
+        assert!(config.imu_params.cov_gyr[0] < 0.1);
+
+        std::fs::remove_dir_all(&directory).unwrap();
+    }
+
+    /// The inflation is a squared multiplier, which is easy to get wrong.
+    #[test]
+    fn the_inflation_applies_before_squaring() {
+        let directory =
+            std::env::temp_dir().join(format!("pelorus-inflation-{}", std::process::id()));
+        std::fs::create_dir_all(&directory).unwrap();
+        let path = write_calibration(&directory, true);
+
+        let config = config_with(&format!(
+            "imu.calibration.parameter_file = \"{}\"\n\
+             imu.calibration.noise_from_file = true\n\
+             imu.calibration.noise_inflation = 10.0\n",
+            path.display()
+        ));
+
+        // Ten times the density is a hundred times the variance.
+        let expected = (0.0003_f64 * 10.0).powi(2) * 200.0;
+        assert!(
+            (config.imu_params.cov_gyr[0] / expected - 1.0).abs() < 1e-9,
+            "{:e} vs expected {expected:e}",
+            config.imu_params.cov_gyr[0]
+        );
+        std::fs::remove_dir_all(&directory).unwrap();
+    }
+
+    /// `dedrunk intrinsics` alone writes zeros there, and silently running on
+    /// numbers nobody chose is worse than refusing.
+    #[test]
+    fn a_calibration_without_noise_parameters_is_refused() {
+        let directory =
+            std::env::temp_dir().join(format!("pelorus-nonoise-{}", std::process::id()));
+        std::fs::create_dir_all(&directory).unwrap();
+        let path = write_calibration(&directory, false);
+
+        let user = ratslang::compile_code(&format!(
+            "imu.calibration.parameter_file = \"{}\"\n\
+             imu.calibration.noise_from_file = true\n",
+            path.display()
+        ))
+        .unwrap();
+        let defaults = ratslang::compile_code(DEFAULTS).unwrap();
+        let error = ast_to_config(defaults, user).unwrap_err().to_string();
+        assert!(error.contains("dedrunk noise"), "{error}");
+
+        std::fs::remove_dir_all(&directory).unwrap();
+    }
+
+    #[test]
+    fn deriving_without_a_calibration_file_is_refused() {
+        let user = ratslang::compile_code("imu.calibration.noise_from_file = true\n").unwrap();
+        let defaults = ratslang::compile_code(DEFAULTS).unwrap();
+        let error = ast_to_config(defaults, user).unwrap_err().to_string();
+        assert!(error.contains("parameter_file"), "{error}");
     }
 
     /// Overrides have to work with no file at all -- that is the quick-probe
@@ -817,15 +1075,86 @@ fn ast_to_config_inner(
         let cov_acc_bias_val = resolve_var!(imu, "covariance_acceleration_bias", as f64, Rhs::Val(Val::NumVal(NumVal::Floating(f))) => {f})?;
         let cov_acc_bias = Vector3::new(cov_acc_bias_val, cov_acc_bias_val, cov_acc_bias_val);
 
+        let from_lidar = imu.filter_ns(&["from_lidar_transform"]);
+        let estimate_extrinsic_online =
+            resolve_var!(from_lidar, "estimate_online", as bool, Rhs::Val(Val::BoolVal(b)) => {b})?;
+        let lidar_only =
+            resolve_var!(imu, "lidar_only", as bool, Rhs::Val(Val::BoolVal(b)) => {b})?;
+
         let calib = imu.filter_ns(&["calibration"]);
         let imu_calibrate_gyros =
             resolve_var!(calib, "gyroscope", as bool, Rhs::Val(Val::BoolVal(b)) => {b})?;
         let gyro_calibration_samples = resolve_var!(calib, "samples", as usize, Rhs::Val(Val::NumVal(NumVal::Integer(i))) => {i})?;
-        let imu_intrinsics_calib_file_path = resolve_var!(calib, "parameter_file", as Option<String>, Rhs::Val(Val::StringVal(s)) | Rhs::Path(s) => { if s.is_empty() { None } else { Some(s) } })?;
+        let imu_intrinsics_calib_file_path: Option<String> = resolve_var!(calib, "parameter_file", as Option<String>, Rhs::Val(Val::StringVal(s)) | Rhs::Path(s) => { if s.is_empty() { None } else { Some(s) } })?;
+        let imu_time_offset = resolve_var!(calib, "time_offset", as f64, Rhs::Val(Val::UnitedVal(UnitVal::TimeVal(v))) => { v.get::<second>() })?;
+
+        let noise_from_file =
+            resolve_var!(calib, "noise_from_file", as bool, Rhs::Val(Val::BoolVal(b)) => {b})?;
+        let noise_inflation = resolve_var!(calib, "noise_inflation", as f64, Rhs::Val(Val::NumVal(nv)) => {
+            match nv {
+                NumVal::Floating(f) => f,
+                NumVal::Integer(i) => i as f64,
+            }
+        })?;
+
+        // Replacing the tuned constants is opt-in, so this only runs when it
+        // was asked for, and says which numbers it swapped.
+        let (cov_gyr, cov_acc, cov_gyr_bias, cov_acc_bias) = if noise_from_file {
+            let path = imu_intrinsics_calib_file_path.as_deref().ok_or_else(|| {
+                anyhow::anyhow!(
+                    "imu.calibration.noise_from_file is on but imu.calibration.parameter_file \
+                     is empty, so there is no file to take the noise parameters from"
+                )
+            })?;
+            let derived = derive_noise_covariances(path, noise_inflation)?;
+            log::info!(
+                "IMU covariances from {path} (inflation {noise_inflation}x): \
+                 gyroscope {:.3e} (was {:.3e}), acceleration {:.3e} (was {:.3e}), \
+                 gyroscope bias {:.3e} (was {:.3e}), acceleration bias {:.3e} (was {:.3e})",
+                derived.gyr,
+                cov_gyr_val,
+                derived.acc,
+                cov_acc_val,
+                derived.gyr_bias,
+                cov_gyr_bias_val,
+                derived.acc_bias,
+                cov_acc_bias_val,
+            );
+            (
+                Vector3::new(derived.gyr, derived.gyr, derived.gyr),
+                Vector3::new(derived.acc, derived.acc, derived.acc),
+                Vector3::new(derived.gyr_bias, derived.gyr_bias, derived.gyr_bias),
+                Vector3::new(derived.acc_bias, derived.acc_bias, derived.acc_bias),
+            )
+        } else {
+            (cov_gyr, cov_acc, cov_gyr_bias, cov_acc_bias)
+        };
+
+        // Without an IMU there is nothing for an extrinsic to point at, and the
+        // trajectory this mode exists to produce has to be the LiDAR's own.
+        // Leaving a configured transform in place would silently shift it.
+        let (initial_translation_lidar_to_imu, initial_rotation_lidar_to_imu) = if lidar_only {
+            if initial_translation_lidar_to_imu != Vector3::zeros()
+                || initial_rotation_lidar_to_imu != Matrix3::identity()
+            {
+                log::info!(
+                    "imu.lidar_only is on, so imu.from_lidar_transform is ignored and the \
+                     trajectory is the LiDAR's own."
+                );
+            }
+            (Vector3::zeros(), Matrix3::identity())
+        } else {
+            (
+                initial_translation_lidar_to_imu,
+                initial_rotation_lidar_to_imu,
+            )
+        };
 
         let imu_params = ImuParameters {
             initial_translation_lidar_to_imu,
             initial_rotation_lidar_to_imu,
+            estimate_extrinsic_online,
+            lidar_only,
             cov_gyr,
             cov_gyr_bias,
             cov_acc,
@@ -841,6 +1170,7 @@ fn ast_to_config_inner(
                 imu_calibrate_gyros,
                 gyro_calibration_samples,
                 imu_intrinsics_calib_file_path,
+                time_offset: imu_time_offset,
                 ..Default::default()
             },
             ..Default::default()

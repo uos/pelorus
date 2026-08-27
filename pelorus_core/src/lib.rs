@@ -470,6 +470,11 @@ pub struct ImuParameters {
     pub kinematic_constraint_std: f64,
     pub kinematic_model: KinematicModel,
     pub wheel_odom_cov_override: Option<f64>,
+    /// Keep refining the LiDAR-to-IMU extrinsic in the filter instead of
+    /// holding it at the configured value.
+    pub estimate_extrinsic_online: bool,
+    /// Ignore the IMU and propagate at a constant twist instead.
+    pub lidar_only: bool,
 }
 
 impl Default for ImuParameters {
@@ -497,6 +502,8 @@ impl Default for ImuParameters {
             ),
             initial_translation_lidar_to_imu: Vector3::default(),
             initial_rotation_lidar_to_imu: Matrix3::identity(),
+            estimate_extrinsic_online: false,
+            lidar_only: false,
             kinematic_constraint_std: 0.05,
             kinematic_model: KinematicModel::Differential,
             wheel_odom_cov_override: None,
@@ -541,6 +548,9 @@ pub struct ImuCalibrationParameters {
     pub imu_intrinsics_calib_file_path: Option<String>,
     pub imu_calibrate_gyros: bool,
     pub gyro_calibration_samples: usize,
+    /// Seconds the IMU clock runs ahead of the LiDAR clock. Subtracted from
+    /// every IMU timestamp to put both sensors on one clock.
+    pub time_offset: f64,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]

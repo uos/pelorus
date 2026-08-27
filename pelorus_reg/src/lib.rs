@@ -6,6 +6,7 @@ use prelio::LocatedBufferView;
 use ros_pointcloud2::prelude::*;
 
 pub mod backend;
+pub mod lidar_only;
 pub use backend::ActiveBackend;
 pub mod eqf;
 pub mod imu;

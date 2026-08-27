@@ -15,6 +15,18 @@ use anyhow::{Result, bail};
 
 use pelorus_core::{ImuDriverType, LidarDriverType, LioConfig, PointCloudMode, SensorDriverConfig};
 
+pub mod dedrunk;
+
+#[cfg(all(
+    feature = "mt_pubsub",
+    any(
+        feature = "velodyne-driver",
+        feature = "xsens-driver",
+        feature = "ouster-driver"
+    )
+))]
+mod guide;
+
 #[cfg(all(
     feature = "mt_pubsub",
     any(
@@ -66,6 +78,8 @@ impl RawSensor {
 #[derive(Debug, Clone)]
 pub struct RawOptions {
     pub sensor: RawSensor,
+    /// Guided intrinsic-calibration recording, when that mode was selected.
+    pub intrinsics: Option<IntrinsicsOptions>,
     pub output_mcap: Option<PathBuf>,
     pub output_rosbag: Option<PathBuf>,
     pub output_rosbag_metadata: Option<PathBuf>,
@@ -73,6 +87,13 @@ pub struct RawOptions {
     pub mcap_imu_topic: Option<String>,
     pub local_only: bool,
     pub yes: bool,
+}
+
+/// Settings for a guided `raw imu intrinsics` recording.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct IntrinsicsOptions {
+    /// How many static orientations to walk the operator through.
+    pub poses: usize,
 }
 
 /// What a raw run publishes, once configuration and the selected sensor have

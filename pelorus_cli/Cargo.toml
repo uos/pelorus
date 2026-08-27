@@ -11,6 +11,7 @@ authors.workspace = true
 rust-version.workspace = true
 
 [dependencies]
+imu-calib.workspace = true
 pelorus_core.workspace = true
 prelio_io = { workspace = true, default-features = false }
 pelorus_cuda = { optional = true, workspace = true }
@@ -53,7 +54,6 @@ crossterm.workspace = true
 num_cpus.workspace = true
 libc.workspace = true
 rayon = { workspace = true, optional = true }
-marina = { workspace = true, optional = true }
 clap_complete.workspace = true
 serde.workspace = true
 
@@ -188,7 +188,7 @@ no-viz = []
 dev = ["offline", "rerun", "map"]
 
 # Use variable syncing for triggers
-rat = ["dep:marina", "dep:mt_rat", "dep:tokio", "prelio_io/rat"]
+rat = ["dep:mt_rat", "dep:tokio", "prelio_io/rat"]
 
 # Use native ROS2 as pub/sub system
 ros2-client = ["dep:ros2-client", "prelio_io/ros2-client"]

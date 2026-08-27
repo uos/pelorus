@@ -295,7 +295,30 @@ imu {
     rotation = [  [1.0, 0.0, 0.0],
                   [0.0, 1.0, 0.0],
                   [0.0, 0.0, 1.0] ]
+
+    # Keep refining the extrinsic in the filter instead of holding it at the
+    # values above, which then serve as the starting point.
+    #
+    # This is refinement, not calibration: the filter needs a starting guess
+    # close enough to converge, and the extrinsic is only observable while the
+    # platform is actually being excited. On a robot that mostly drives
+    # straight it will drift on the unobservable directions rather than
+    # improve. Leave it off unless you know the motion excites all axes, and
+    # check the result against what you started with.
+    estimate_online = false
   }
+
+  # Ignore the IMU entirely and run the odometry on the LiDAR alone, with the
+  # filter propagating at a constant twist between scans.
+  #
+  # This exists to produce a trajectory for calibrating the IMU against, which
+  # is circular if the IMU helped produce it. It is not a navigation mode: with
+  # no IMU the gravity direction is unobservable, so roll and pitch are
+  # relative to wherever the sensor started rather than to level, and there is
+  # nothing to carry the estimate through a stretch where the geometry is
+  # degenerate. The covariances below stop describing sensor noise and start
+  # describing how much the constant-twist model can be trusted, so raise them.
+  lidar_only = false
 
   # CreateOrientationOnly | FilterAccelerationAndCreateOrientation | FilterAccelerationOnly | Disable (recommended when using on-device filtering in the driver)
   ahrs_filtering.method = FilterAccelerationAndCreateOrientation
@@ -316,8 +339,42 @@ imu {
     # Use this many measurements for the gyroscope
     samples = 100
 
-    # Filter out static bias. Relative path "./<path>" from this config file or absolute path "/<path>" to a calibration file created by https://github.com/stelzo/imu-calib-ros.
+    # Kalibr-format IMU calibration to apply to every sample: scale factors,
+    # axis misalignment and biases. Relative path "./<path>" from this config
+    # file, or absolute "/<path>".
+    #
+    # Produced by https://github.com/stelzo/dedrunk, or by Kalibr itself with
+    # --imu-models scale-misalignment. Record the bag for it with
+    # `pelorus online raw imu intrinsics --output-rosbag <dir>`.
     parameter_file = ""
+
+    # Take the four covariances above from parameter_file instead of the
+    # constants, deriving them from its measured noise densities and bias
+    # random walks. Needs a file that carries the stochastic half too, i.e.
+    # one from `dedrunk merge`; `dedrunk intrinsics` alone does not.
+    #
+    # Off by default because it moves numbers the odometry is tuned around.
+    # Both the derived and the configured values are logged at startup, so the
+    # ratio for this sensor is visible before you commit to it.
+    noise_from_file = false
+
+    # Seconds the IMU clock runs ahead of the LiDAR clock, as reported by
+    # `dedrunk extrinsics`. Pelorus subtracts it from every IMU timestamp, so
+    # paste the number exactly as dedrunk prints it, sign included.
+    #
+    # This is a constant skew between the two sensors' clocks, not jitter. It
+    # matters most while turning: at 1 rad/s, 10 ms of skew smears the scan by
+    # about half a degree, which the registration then has to absorb.
+    time_offset = 0s
+
+    # Multiplier on the measured densities before they become covariances.
+    #
+    # Allan variance is measured on a completely still sensor at constant
+    # temperature. A moving robot has vibration, thermal drift and timing
+    # jitter that dominate it, so the honest noise level in operation is
+    # higher than the one on the bench, and no amount of measuring will tell
+    # you by how much. The Kalibr wiki suggests 10x or more for MEMS parts.
+    noise_inflation = 10.0
   }
 
 }

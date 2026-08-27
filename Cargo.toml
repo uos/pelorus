@@ -49,8 +49,8 @@ pelorus_metal = { path = "pelorus_metal", version = "0.0.6" }
 pelorus_vulkan = { path = "pelorus_vulkan", version = "0.0.6", default-features = false }
 pelorus_drivers = { path = "pelorus_drivers", version = "0.0.6", default-features = false }
 
-transforms_io = { version = "0.4", default-features = false }
-transforms_io_hiroz = { version = "0.4", git = "ssh://git@git.steado.tech/transforms_io.git", tag = "v0.4.0" }
+transforms_io = { version = "0.5", default-features = false }
+transforms_io_hiroz = { version = "0.5", git = "ssh://git@git.steado.tech/transforms_io.git", tag = "v0.5.0" }
 ros_pointcloud2 = { version = "1.0.0-rc.4", features = [
   "derive",
   "r2r",
@@ -59,13 +59,12 @@ ros_pointcloud2 = { version = "1.0.0-rc.4", features = [
   "nalgebra",
 ] }
 ratslang = "0.4.3"
-mt_pubsub = "0.9.0"
-mt_service = "0.9.0"
-mt_log = { version = "0.9.0", features = ["tui", "env"] }
+mt_pubsub = "0.10.0"
+mt_service = "0.10.0"
+mt_log = { version = "0.10.0", features = ["tui", "env"] }
 cloudini = { version = "0.3.2", default-features = false, features = ["ros"] }
-mt_rat = "0.9.0"
-imu-calib = "0.2" # TODO use noise calib
-marina = "0.3.1"
+mt_rat = "0.10.0"
+imu-calib = "0.3"
 ros2-interfaces-jazzy-serde = { version = "0.0.5", features = [
   "std_msgs",
   "geometry_msgs",
@@ -206,11 +205,14 @@ inherits = "release"
 opt-level = 3
 
 # [patch.crates-io]
+# imu-calib 0.4 is not published yet; drop this once it is.
+# imu-calib = { path = "../imu-calib" }
 # ros_pointcloud2 = { path = "../ros_pointcloud2/ros_pointcloud2" }
 # mt_pubsub = { path = "../minot/mt_pubsub" }
 # mt_service = { path = "../minot/mt_service" }
 # mt_rat = { path = "../minot/mt_rat" }
-# transforms_io = { git = "ssh://git@git.steado.tech/transforms_io.git", branch = "main" }
+# mt_log = { path = "../minot/mt_log" }
+# transforms_io = { path = "../transforms_io" }
 # ros_pointcloud2 = { git = "ssh://git@git.steado.tech/ros_pointcloud2.git", branch = "main" }
 # mt_pubsub = { git = "ssh://git@git.steado.tech/minot.git", branch = "hiroz" }
 # mt_rat = { git = "ssh://git@git.steado.tech/minot.git", branch = "hiroz" }

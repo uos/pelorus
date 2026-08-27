@@ -1630,6 +1630,95 @@ fn filter_downsample_inner<const N: usize, P: PointConvertible<N> + Send + Sync>
     )))
 }
 
+/// Applies the stored IMU intrinsics to every incoming sample.
+///
+/// The parameters are Kalibr's, so `imu_calib::ImuCorrector` holds the inverted
+/// matrices and correcting one sample is two matrix-vector products.
+///
+/// Bias is the least durable part of a calibration — it moves with temperature
+/// and between power cycles — so `imu.calibration.gyroscope` re-measures the
+/// gyroscope bias from the first stationary samples rather than trusting the
+/// stored one. Those samples are dropped rather than published, because they
+/// carry the very bias being measured.
+struct ImuIntrinsicCorrection {
+    corrector: imu_calib::ImuCorrector,
+    intrinsics: imu_calib::ImuIntrinsics,
+    warmup: Option<GyroBiasWarmup>,
+    announced: bool,
+}
+
+/// Running mean of the first stationary samples.
+struct GyroBiasWarmup {
+    remaining: usize,
+    accel_sum: [f64; 3],
+    gyro_sum: [f64; 3],
+    count: usize,
+}
+
+impl ImuIntrinsicCorrection {
+    fn load(path: &str, recalibrate_gyro: bool, gyro_samples: usize) -> anyhow::Result<Self> {
+        let intrinsics = imu_calib::ImuIntrinsics::from_kalibr_yaml(path)?;
+        let corrector = intrinsics.corrector()?;
+        Ok(Self {
+            corrector,
+            intrinsics,
+            warmup: (recalibrate_gyro && gyro_samples > 0).then(|| GyroBiasWarmup {
+                remaining: gyro_samples,
+                accel_sum: [0.0; 3],
+                gyro_sum: [0.0; 3],
+                count: 0,
+            }),
+            announced: false,
+        })
+    }
+
+    /// Correct one sample, or `None` while the gyroscope bias is being measured.
+    fn correct(&mut self, accel: [f64; 3], gyro: [f64; 3]) -> Option<([f64; 3], [f64; 3])> {
+        if let Some(warmup) = self.warmup.as_mut() {
+            if !self.announced {
+                log::info!("Calibrating gyros - Do not move the IMU");
+                self.announced = true;
+            }
+
+            for (sum, value) in warmup.accel_sum.iter_mut().zip(accel.iter()) {
+                *sum += value;
+            }
+            for (sum, value) in warmup.gyro_sum.iter_mut().zip(gyro.iter()) {
+                *sum += value;
+            }
+            warmup.count += 1;
+            warmup.remaining -= 1;
+
+            if warmup.remaining > 0 {
+                return None;
+            }
+
+            let n = warmup.count as f64;
+            let mean_accel = warmup.accel_sum.map(|sum| sum / n);
+            let mean_gyro = warmup.gyro_sum.map(|sum| sum / n);
+            // Solving for the bias rather than averaging the raw rate also
+            // removes whatever gravity couples in through the g-sensitivity.
+            let bias = self.corrector.gyro_bias_from_static(mean_accel, mean_gyro);
+            log::info!(
+                "Gyro calibration complete! (bias = [{}, {}, {}])",
+                bias[0],
+                bias[1],
+                bias[2]
+            );
+
+            self.intrinsics.gyro_bias = bias;
+            match self.intrinsics.corrector() {
+                Ok(corrector) => self.corrector = corrector,
+                Err(error) => log::error!("Keeping the stored gyroscope bias: {error}"),
+            }
+            self.warmup = None;
+            return None;
+        }
+
+        Some(self.corrector.correct(accel, gyro))
+    }
+}
+
 pub struct Prelio {
     preproc_sender: Option<std::sync::mpsc::SyncSender<LabeledPointCloud2Msg>>,
     preproc_queue_depth: Arc<AtomicUsize>,
@@ -1641,7 +1730,9 @@ pub struct Prelio {
     imu_filter_fusion: ImuMadgwick,
     last_imu_time: f64,
     runtime_eval: RuntimeEvaluator,
-    imu_calibration_apply: Option<imu_calib::CalibrationApplication>,
+    imu_calibration_apply: Option<ImuIntrinsicCorrection>,
+    /// Seconds the IMU clock runs ahead of the LiDAR clock.
+    imu_time_offset: f64,
     madgwick_filter: MadgwickSetting,
     realtime_imu_callback: Option<RealtimeImuCallback>,
     realtime_lidar_barrier_callback: Option<RealtimeLidarBarrierCallback>,
@@ -1829,15 +1920,11 @@ impl Prelio {
             .imu_intrinsics_calib_file_path
             .as_ref()
         {
-            Some(imu_intrinsic_calibration_path) => {
-                let imu_calib = imu_calib::CalibrationApplication::create(
-                    imu_intrinsic_calibration_params.imu_calibrate_gyros,
-                    imu_intrinsic_calibration_params.gyro_calibration_samples,
-                    imu_intrinsic_calibration_path.clone(),
-                    gravity,
-                )?;
-                Some(imu_calib)
-            }
+            Some(imu_intrinsic_calibration_path) => Some(ImuIntrinsicCorrection::load(
+                imu_intrinsic_calibration_path,
+                imu_intrinsic_calibration_params.imu_calibrate_gyros,
+                imu_intrinsic_calibration_params.gyro_calibration_samples,
+            )?),
             None => None,
         };
 
@@ -2094,6 +2181,7 @@ impl Prelio {
             last_imu_time: 0.0,
             runtime_eval: RuntimeEvaluator::new(),
             imu_calibration_apply: imu_intrinsic_calibration,
+            imu_time_offset: imu_intrinsic_calibration_params.time_offset,
             madgwick_filter,
             realtime_imu_callback,
             realtime_lidar_barrier_callback,
@@ -2221,6 +2309,16 @@ impl Prelio {
     /// Filter raw IMU message and add to the buffer for synchronization and integration.
     /// Returns the filtered IMU message for republishing.
     pub fn add_imu(&mut self, mut imu: ImuMsg) -> Option<ImuMsg> {
+        // Put the sample on the LiDAR's clock before anything reads its time.
+        // Everything downstream — the integration step, the undistortion
+        // window, the scan pairing — keys off this stamp, so correcting it
+        // here is the whole of the fix and correcting it anywhere else would
+        // leave some of those disagreeing.
+        if self.imu_time_offset != 0.0 {
+            imu.stamp = pelorus_core::time_msg_from_secs(
+                timestamp_to_secs(&imu.stamp) - self.imu_time_offset,
+            );
+        }
         let imu_time = timestamp_to_secs(&imu.stamp);
 
         self.runtime_eval.start("imu_pre").unwrap();
@@ -2242,9 +2340,9 @@ impl Prelio {
 
         // apply calibration if available
         if let Some(imu_calib) = &mut self.imu_calibration_apply {
-            let calibrated = imu_calib.imu_callback(imu_calib::ImuMsg::new(&accel, &gyro))?;
-            accel = calibrated.linear_acceleration;
-            gyro = calibrated.angular_velocity;
+            let (corrected_accel, corrected_gyro) = imu_calib.correct(accel, gyro)?;
+            accel = corrected_accel;
+            gyro = corrected_gyro;
         }
 
         // Madgwick filter for global orientation
