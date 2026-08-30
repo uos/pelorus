@@ -46,6 +46,7 @@ struct CorrectedSnapshot {
     covariance: faer::Mat<f64>,
     /// Origin used to interpret the covariance error coordinates.
     anchor: nalgebra::Vector3<f64>,
+    extrinsic_est: bool,
     initialized: bool,
     last_time: f64,
     context: ImuPredictionContext,
@@ -123,6 +124,7 @@ impl RealtimePredictorHandle {
             state: registration.ekf.state,
             covariance: registration.ekf.cov.clone(),
             anchor: registration.ekf.anchor,
+            extrinsic_est: registration.ekf.extrinsic_est,
             initialized: registration.ekf.initialized,
             last_time: registration.ekf.last_time,
             context: registration.imu_processing.prediction_context(),
@@ -317,6 +319,7 @@ impl WorkerState {
         self.ekf.state = snapshot.state;
         self.ekf.cov = snapshot.covariance;
         self.ekf.anchor = snapshot.anchor;
+        self.ekf.extrinsic_est = snapshot.extrinsic_est;
         self.ekf.initialized = snapshot.initialized;
         self.ekf.last_time = snapshot.last_time;
         self.imu.restore_prediction_context(&snapshot.context);
