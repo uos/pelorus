@@ -257,7 +257,7 @@ pub fn init_map_impl(
     }
 
     // Initial scratch buffers with capacity 1; these will be resized on demand in add_to_map_impl.
-    // We just need valid buffers to pass to the GPU during init.
+    // Initialization requires valid GPU buffers.
     let scratch_cap = 1;
     let scratch = ScratchBuffers {
         keys: crate::buffer::MetalBuffer::new(stream, size_of::<i32>(), scratch_cap),
@@ -349,7 +349,7 @@ pub fn add_to_map_impl(
     let dist_cap = state.dist_cap;
     let table_cap = state.table_cap;
 
-    // rotation already provided as quaternion; just convert into nalgebra type
+    // Convert the supplied quaternion to nalgebra's representation.
     let q: UnitQuaternion<f64> = (*pose_r).into();
     let pose_quat = [q.i as f32, q.j as f32, q.k as f32, q.w as f32];
     let pose_trans = [pose_t.x as f32, pose_t.y as f32, pose_t.z as f32];

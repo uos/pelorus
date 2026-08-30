@@ -240,9 +240,7 @@ impl Pipeline {
                   cloud,
                   cloud_passthrough| {
                 let mut map = map.lock().unwrap();
-                // Substituting the stream here rather than further up means
-                // undistortion, propagation and correction all stay untouched:
-                // they cannot tell where the samples came from.
+                // Feed synthetic samples through the normal estimation path.
                 let generated;
                 let imu_msgs: &[ImuMsg] = if lidar_only {
                     let pose = map.get_state().pose;

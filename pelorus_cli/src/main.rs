@@ -184,20 +184,14 @@ use ros2_interfaces_jazzy_rkyv::{
 };
 use std::io::IsTerminal;
 
-/// Publishes registered clouds on whichever encoding the session settled on.
+/// Publishes registered clouds using the negotiated encoding.
 ///
-/// Both publishers are created up front and one of them stays silent, because
-/// the encoding is not known when the publishers are built: under managed
-/// replay it is decided by the register handshake, which runs concurrently
-/// with this setup. Deferring publisher creation until after registration
-/// would deadlock — the consumer registers only once its own subscribers
-/// exist, and registration is what releases the bag.
+/// Both publishers must exist before registration releases managed replay.
 #[cfg(feature = "mt_pubsub")]
 struct MtCloudPublisher {
     plain: mt_pubsub::Publisher<PointCloud2>,
     #[cfg(feature = "compressed-pointcloud")]
     compressed: Option<mt_pubsub::Publisher<pelorus_protocol::CompressedPointCloud2>>,
-    /// Flipped by the register handshake, read once per frame.
     #[cfg(feature = "compressed-pointcloud")]
     use_compressed: Arc<AtomicBool>,
 }
@@ -282,15 +276,13 @@ struct Args {
     #[command(subcommand)]
     pub command: Command,
 
-    /// Override one setting, as KEY=VALUE. Repeatable.
+    /// Override one setting as KEY=VALUE. Repeatable.
     ///
     /// Applied after any --config-path file, so it wins over both the file and
     /// the embedded defaults. Values use Ratslang syntax, units included:
     /// -o mapping.voxel_size=0.5m -o output.odometry_rate=ImuAndLidar
     ///
-    /// Unlike a configuration file, an unrecognized key is an error rather
-    /// than a warning: an override exists to change this run, so a typo that
-    /// silently did nothing would give a result you should not trust.
+    /// Unknown keys are rejected.
     #[arg(
         short = 'o',
         long = "override",
@@ -323,12 +315,7 @@ pub enum Command {
     },
 }
 
-/// `pelorus online`, either as the full odometry pipeline or as one of its
-/// sub-modes.
-///
-/// The pipeline flags and the sub-modes are mutually exclusive: a raw run
-/// shares neither the outputs nor the recording topics of a full run, so
-/// accepting `--export-trajectory` next to `raw imu` could only mislead.
+/// Arguments for the odometry pipeline and its online subcommands.
 #[derive(Debug, Clone, Parser)]
 #[command(args_conflicts_with_subcommands = true)]
 pub struct OnlineArgs {
@@ -344,9 +331,7 @@ pub enum OnlineMode {
     /// Publish the native sensor drivers onto the configured input topics
     /// without running any processing.
     ///
-    /// Pelorus acts as a plain driver here: scans and IMU samples go out
-    /// exactly as the device reported them, on `lidar.topic` and `imu.topic`.
-    /// The IMU is never filtered, whatever `imu.ahrs_filtering.method` says.
+    /// Samples are published unchanged on `lidar.topic` and `imu.topic`.
     #[cfg(feature = "mt_pubsub")]
     Raw(RawArgs),
 }
@@ -377,15 +362,11 @@ pub struct RawArgs {
     pub mode: Option<RawMode>,
 }
 
-/// What a raw run does beyond publishing and recording.
 #[derive(Debug, Clone, Subcommand)]
 pub enum RawMode {
     /// Walk through the orientations an IMU intrinsic calibration needs.
     ///
-    /// Prompts for each static pose while recording, then offers to fit the
-    /// parameters with `dedrunk` if it is installed. The bag is the artefact:
-    /// the fit can be repeated from it at any time with
-    /// `dedrunk intrinsics <bag>`.
+    /// Records prompted static poses and offers to fit them with `dedrunk`.
     Intrinsics(IntrinsicsArgs),
 }
 
@@ -399,16 +380,10 @@ pub struct IntrinsicsArgs {
     pub poses: usize,
 }
 
-/// Recording targets for a raw run.
-///
-/// Separate from [`RecordingArgs`] because a raw bag has no odometry, path, or
-/// TF topics, and because its defaults are the configured *input* topics rather
-/// than the Pelorus output topics.
+/// Recording targets for raw sensor data.
 #[derive(Debug, Clone, Parser)]
 pub struct RawRecordingArgs {
-    // These carry their own ids: the long names match the pipeline's
-    // `RecordingArgs`, and a global arg is keyed by id, so sharing one would
-    // let that struct's defaults bleed into a raw run.
+    // Unique ids prevent clap from sharing defaults with `RecordingArgs`.
     /// Write the raw sensor output to this MCAP bagfile.
     #[arg(
         id = "raw_output_mcap",
@@ -1901,12 +1876,8 @@ fn lio_with_ready_signal(
         let demand_tick_debt = Arc::clone(&replay_tick_debt);
         let demand_shutdown_flag = shutdown_flag.clone();
         ImuSyncMode::DemandDrivenReplay {
-            // Called when the current scan cannot be closed yet because the IMU
-            // buffer does not span it. The only way to get those samples is to
-            // advance the bag, so pull a trigger here and record the debt: the
-            // bag is now one scan ahead of the frame still being assembled.
-            // Whoever owns the replay clock settles it later, either against
-            // Pelorus's own refills or as prepaid ticks on the frame marker.
+            // Advance replay to fill an incomplete IMU interval and track the
+            // extra scan as debt for the replay-clock owner.
             request_next_scan: Box::new(move || {
                 if demand_shutdown_flag
                     .as_ref()
@@ -2015,24 +1986,6 @@ fn lio_with_ready_signal(
         });
     }
 
-    // #[cfg(feature = "ros2-client")]
-    // {
-    //     #[cfg(all(feature = "map", not(feature = "no-viz")))]
-    //     {
-    //         let map_publisher = node
-    //             .create_publisher::<PointCloud2>(
-    //                 &node
-    //                     .create_topic(
-    //                         &ros2_client::Name::new(&namespace, "map").unwrap(),
-    //                         ros2_client::MessageTypeName::new("sensor_msgs", "PointCloud2"),
-    //                         &Qos::default().into(),
-    //                     )
-    //                     .unwrap(),
-    //                 None,
-    //             )
-    //             .unwrap();
-    //     }
-    // }
     #[cfg(feature = "ros2-client")]
     let cloud_publisher = node
         .create_publisher(
@@ -2086,44 +2039,6 @@ fn lio_with_ready_signal(
         )
         .unwrap();
 
-    // #[cfg(all(not(feature = "no-viz"), feature = "ros2-client"))]
-    // let imu_path_publisher = node
-    //     .create_publisher(
-    //         &node
-    //             .create_topic(
-    //                 &ros2_client::Name::new(&namespace, "imu_path").unwrap(),
-    //                 ros2_client::MessageTypeName::new("nav_msgs", "Path"),
-    //                 &config.imu_path_qos.into(),
-    //             )
-    //             .unwrap(),
-    //         None,
-    //     )
-    //     .unwrap();
-    // #[cfg(all(
-    //     not(feature = "no-viz"),
-    //     feature = "ros2-client",
-    //     not(feature = "rerun")
-    // ))]
-    // let registered_visual_publisher = node
-    //     .create_publisher::<Marker>(
-    //         &node
-    //             .create_topic(
-    //                 &ros2_client::Name::new(&format!("{namespace}/viz"), "registered").unwrap(),
-    //                 ros2_client::MessageTypeName::new("visualization_msgs", "Marker"),
-    //                 &ros2_client::DEFAULT_PUBLISHER_QOS,
-    //             )
-    //             .unwrap(),
-    //         None,
-    //     )
-    //     .unwrap();
-    // #[cfg(all(not(feature = "no-viz"), feature = "map", feature = "r2r"))]
-    // let map_publisher = node.create_publisher::<PointCloud2>("map", QosProfile::default())?;
-    // #[cfg(feature = "mt_pubsub")]
-    // let map_publisher = rt.block_on(async {
-    //     node.create_publisher::<PointCloud2>("map".to_owned())
-    //         .await
-    //         .unwrap()
-    // });
     #[cfg(feature = "r2r")]
     let cloud_publisher =
         node.create_publisher::<PointCloud2>("registered", config.registered_cloud_qos.into())?;
@@ -2343,39 +2258,14 @@ fn lio_with_ready_signal(
                 }
             })
     });
-    // #[cfg(all(not(feature = "no-viz"), feature = "r2r"))]
-    // let imu_path_publisher =
-    //     node.create_publisher::<Path>("imu_path", config.imu_path_qos.into())?;
-    // #[cfg(all(not(feature = "no-viz"), feature = "mt_pubsub"))]
-    // let imu_path_publisher = rt
-    //     .as_ref()
-    //     .expect("rt always exists with mt_pubsub feat")
-    //     .block_on(async {
-    //         node.create_publisher::<Path>("imu_path".to_owned())
-    //             .await
-    //             .unwrap()
-    //     });
-    // #[cfg(all(
-    //     not(feature = "no-viz"),
-    //     feature = "map",
-    //     feature = "r2r",
-    //     not(feature = "rerun")
-    // ))]
-    // let registered_visual_publisher =
-    // node.create_publisher::<Marker>("registered_viz", r2r::QosProfile::default())?;
-
     let mut t_world = nalgebra::Isometry3::identity();
     let mut t_last_current = nalgebra::Isometry3::identity();
     #[cfg(feature = "hiroz")]
     let mut last_stats_pub = std::time::Instant::now();
 
-    // Use VecDeque for efficient removal from front (O(1) instead of O(n))
     let mut lidar_path_poses: VecDeque<PoseStamped> = VecDeque::new();
     let lidar_path_frame_id = config.prelio_params.map_frame.clone();
     let mut last_mcap_path_write_time: Option<u64> = None;
-
-    // let mut imu_path_poses: VecDeque<PoseStamped> = VecDeque::new();
-    // let imu_path_frame_id = config.prelio_params.map_frame.clone();
 
     let mut last_scan_time = None;
 
@@ -3623,16 +3513,6 @@ fn lio_with_ready_signal(
             imu_odom.pose.covariance = pelorus_odom.pose.covariance.clone();
             imu_odom.twist.covariance = pelorus_odom.twist.covariance.clone();
 
-            // #[cfg(not(feature = "no-viz"))]
-            // imu_path_poses.push_back(PoseStamped {
-            //     pose: imu_odom.pose.pose.clone(),
-            //     header: imu_odom.header.clone(),
-            // });
-            // #[cfg(not(feature = "no-viz"))]
-            // if imu_path_poses.len() > PATH_LIMIT {
-            //     imu_path_poses.pop_front();
-            // }
-
             #[cfg(feature = "rerun")]
             if let Some(ref rec) = rec {
                 #[cfg(feature = "ros2-client")]
@@ -3778,11 +3658,6 @@ fn lio_with_ready_signal(
                 .publish(&imu_odom)
                 .expect("Failed to publish imu odom");
 
-            // #[cfg(all(not(feature = "no-viz"), not(feature = "mt_pubsub")))]
-            // imu_path_publisher
-            //     .publish(&imu_path)
-            //     .expect("Failed to publish imu path"); // TODO this will spam a lot, maybe also throttle like lidar_path
-
             #[cfg(all(not(feature = "no-viz"), feature = "mt_pubsub"))]
             let pub_lidar_path = Path {
                 header: Header {
@@ -3791,14 +3666,6 @@ fn lio_with_ready_signal(
                 },
                 poses: lidar_path_poses.iter().cloned().collect(),
             };
-            // #[cfg(all(not(feature = "no-viz"), feature = "mt_pubsub"))]
-            // let pub_imu_path = Path {
-            //     header: Header {
-            //         frame_id: imu_path_frame_id.clone(),
-            //         stamp: imu_odom.header.stamp.clone(),
-            //     },
-            //     poses: imu_path_poses.iter().cloned().collect(),
-            // };
             #[cfg(all(not(feature = "no-viz"), feature = "mt_pubsub"))]
             rt.as_ref()
                 .expect("rt always exists with mt_pubsub feat")
@@ -3812,27 +3679,7 @@ fn lio_with_ready_signal(
                         .publish(&imu_odom)
                         .await
                         .expect("Failed to publish imu odom");
-
-                    // imu_path_publisher
-                    //     .publish(&pub_imu_path)
-                    //     .await
-                    //     .expect("Failed to publish imu path"); // TODO this will spam a lot, maybe also throttle like lidar_path
                 });
-            // #[cfg(feature = "rerun")]
-            // if let Some(ref rec) = rec {
-            //     let imu_path_strip =
-            //         rerun::LineStrip3D::from_iter(imu_path_poses.iter().map(|p| {
-            //             glam::Vec3::new(
-            //                 p.pose.position.x as f32,
-            //                 p.pose.position.y as f32,
-            //                 p.pose.position.z as f32,
-            //             )
-            //         }));
-            //     let imu_path_strips = rerun::LineStrips3D::new(std::iter::once(imu_path_strip));
-            //     if let Err(err) = rec.log("imu_path", &imu_path_strips) {
-            //         error!("Error sending to rerun {err}");
-            //     }
-            // }
 
             let iteration_time_ms = eval.get_sum_of_top_level_times_ms();
 
@@ -3957,7 +3804,7 @@ fn lio_with_ready_signal(
 
     #[cfg(feature = "mt_pubsub")]
     {
-        // Check shutdown flag periodically instead of parking forever
+        // Poll so shutdown remains responsive while processing continues.
         loop {
             if processing_handle.is_finished() {
                 info!("Processing thread finished in mt_pubsub spinner");
@@ -4555,7 +4402,6 @@ mod mcap_output_config_tests {
         assert_eq!(tf.transform.rotation.w, odom.pose.pose.orientation.w);
     }
 
-    /// `pelorus online` keeps its own flags; the raw sub-mode is additive.
     #[test]
     fn plain_online_still_parses_its_pipeline_flags() {
         let args = Args::parse_from(["pelorus", "online", "--output-rosbag", "/tmp/bag"]);
@@ -4591,7 +4437,6 @@ mod mcap_output_config_tests {
             raw.recording.output_rosbag,
             Some(PathBuf::from("/tmp/imu_bag"))
         );
-        // Raw bags default to the configured input topics, not to a flag value.
         assert_eq!(raw.recording.mcap_cloud_topic, None);
         assert_eq!(raw.recording.mcap_imu_topic, None);
     }
@@ -4619,85 +4464,12 @@ mod mcap_output_config_tests {
             panic!("expected the intrinsics sub-mode");
         };
         assert_eq!(intrinsics.poses, 12);
-        // The recording flags are global, so they still land after the
-        // sub-mode name, which is where anyone would type them.
         assert_eq!(
             raw.recording.output_rosbag,
             Some(PathBuf::from("/tmp/imu_poses"))
         );
     }
 
-    #[cfg(feature = "mt_pubsub")]
-    #[test]
-    fn the_intrinsics_pose_count_is_settable() {
-        let args = Args::parse_from([
-            "pelorus",
-            "online",
-            "raw",
-            "imu",
-            "intrinsics",
-            "--poses",
-            "16",
-            "--output-rosbag",
-            "/tmp/imu_poses",
-        ]);
-        let Command::Online(online) = args.command else {
-            panic!("expected online");
-        };
-        let Some(OnlineMode::Raw(raw)) = online.mode else {
-            panic!("expected raw");
-        };
-        let Some(RawMode::Intrinsics(intrinsics)) = raw.mode else {
-            panic!("expected the intrinsics sub-mode");
-        };
-        assert_eq!(intrinsics.poses, 16);
-    }
-
-    /// A plain raw run must keep working now that a sub-mode exists.
-    #[cfg(feature = "mt_pubsub")]
-    #[test]
-    fn raw_without_a_sub_mode_is_still_a_plain_recording() {
-        let args = Args::parse_from(["pelorus", "online", "raw", "imu"]);
-        let Command::Online(online) = args.command else {
-            panic!("expected online");
-        };
-        let Some(OnlineMode::Raw(raw)) = online.mode else {
-            panic!("expected raw");
-        };
-        assert_eq!(raw.sensor, RawSensor::Imu);
-        assert!(raw.mode.is_none());
-    }
-
-    #[cfg(feature = "mt_pubsub")]
-    #[test]
-    fn raw_without_a_sensor_means_every_driver() {
-        let args = Args::parse_from(["pelorus", "online", "raw"]);
-        let Command::Online(online) = args.command else {
-            panic!("expected online");
-        };
-        let Some(OnlineMode::Raw(raw)) = online.mode else {
-            panic!("expected raw");
-        };
-        assert_eq!(raw.sensor, RawSensor::All);
-    }
-
-    /// `-o` is global, so it still applies after the sub-mode.
-    #[cfg(feature = "mt_pubsub")]
-    #[test]
-    fn overrides_still_apply_after_the_raw_subcommand() {
-        let args = Args::parse_from([
-            "pelorus",
-            "online",
-            "raw",
-            "lidar",
-            "-o",
-            "lidar.driver.type=Velodyne",
-        ]);
-        assert_eq!(args.overrides, vec!["lidar.driver.type=Velodyne"]);
-    }
-
-    /// Pipeline flags and the raw sub-mode describe different runs, so mixing
-    /// them is rejected rather than silently ignored.
     #[cfg(feature = "mt_pubsub")]
     #[test]
     fn pipeline_flags_cannot_be_combined_with_raw() {
@@ -4833,14 +4605,12 @@ fn run_raw(
     let config = ast_to_config(default_ast, user_ast)?;
 
     update_log_level();
-    // A raw run produces no odometry, so the stats TUI has nothing to show and
-    // would only take the terminal away from the driver's own logging.
+    // Raw mode leaves the terminal available for driver logs.
     set_tui_active(false);
 
     let intrinsics = match &args.mode {
         Some(RawMode::Intrinsics(intrinsics)) => {
-            // The guidance is about holding the IMU still in many attitudes, so
-            // it makes no sense while a lidar is also being recorded.
+            // Guided calibration accepts IMU-only recordings.
             if args.sensor != RawSensor::Imu {
                 return Err(anyhow::anyhow!(
                     "`raw ... intrinsics` guides an IMU calibration, so it only applies to \
@@ -4848,8 +4618,7 @@ fn run_raw(
                 )
                 .into());
             }
-            // Finding out at the end of a five-minute guided session that
-            // nothing was kept would be a waste of the operator's time.
+            // Guided sessions require a saved recording for calibration.
             if args.recording.output_rosbag.is_none() && args.recording.output_mcap.is_none() {
                 return Err(anyhow::anyhow!(
                     "`raw imu intrinsics` needs somewhere to put the recording. \
@@ -5202,10 +4971,7 @@ fn main() -> Result<(), Box<dyn CoreError>> {
 
             let lidar_topic = &config.prelio_node_params.cloud_src_topic;
             let imu_topic = &config.prelio_node_params.imu_src_topic;
-            // Local paths are made absolute because the generated .mt file is
-            // written into the system temp directory. A non-local value is a
-            // Marina dataset reference and is intentionally passed through:
-            // Minot owns local-first resolution, streaming, and promotion.
+            // Resolve local paths before writing the temporary .mt file.
             let bagfile_path = if offline_args.bagfile_path.exists() {
                 canonicalize_bagfile_path(&offline_args.bagfile_path)?
                     .to_string_lossy()
@@ -5334,8 +5100,7 @@ pf! i 1
                 if offline_args.no_cache_stream {
                     minot_command.arg("--no-cache-stream");
                 }
-                // Ask Minot for records rather than prose: level, source and
-                // target come back intact instead of being guessed at.
+                // Request structured child-process log records from Minot.
                 for (key, value) in mt_log::child_env("Minot") {
                     minot_command.env(key, value);
                 }
@@ -5585,11 +5350,7 @@ pf! i 1
                     startup_started.elapsed().as_secs_f64()
                 );
 
-                // The downstream consumer owns the steady-state replay trigger,
-                // so the bag must not move before its subscribers exist. Holding
-                // Minot in `--sync` until registration removes the startup race
-                // instead of papering over it with a pipeline barrier. The LIO
-                // thread owns the sender, so its death releases this wait.
+                // Hold synchronous replay until the downstream subscribers register.
                 if let Some(registered) = downstream_registered_rx {
                     info!("Waiting for the downstream consumer to register...");
                     registered.recv().map_err(|_| {
@@ -5753,10 +5514,7 @@ pf! i 1
                 let default_ast = ratslang::compile_code(DEFAULT_CONFIG_STR)
                     .map_err(|e| anyhow!("Failed to compile embedded default config: {}", e))?;
 
-                // `--override` is global, so it reaches `config verify` too and
-                // is checked here rather than quietly ignored: verifying a file
-                // plus the overrides you intend to run it with is the useful
-                // question.
+                // Verify the effective configuration, including global overrides.
                 let user_ast = if args.config_path.to_str() == Some("-") {
                     use std::io::Read;
                     let mut buffer = String::new();

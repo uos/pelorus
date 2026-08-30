@@ -69,7 +69,6 @@ fn main() {
             let cuda_bin_path = cuda_path.join("bin");
             let nvcc_bin = cuda_bin_path.join("nvcc");
 
-            // let gencode = format!("arch={},code={}", compute, arch);
             let gencode_args = if env::var("PELORUS_CUDA_NATIVE").is_ok() {
                 vec!["-arch=native".to_string()]
             } else {

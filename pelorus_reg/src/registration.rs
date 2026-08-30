@@ -924,11 +924,8 @@ impl crate::Registration for RegistrationState {
                         let p_world = ekf_state.pose().transform(p_imu);
                         let pd2 = norm.dot(&p_world) + plane_d;
 
-                        // Equivariant error frame: the residual is differentiated
-                        // against a global rotation error, so the moment arm is the
-                        // point's offset from the error's anchor. The anchor rides
-                        // with the robot, keeping this bounded by sensor range
-                        // instead of growing with distance travelled.
+                        // Anchor the global rotation error near the robot to keep
+                        // the moment arm bounded by sensor range.
                         let a_vec = skew_symmetric_na(&(p_world - anchor)) * norm;
 
                         h_x[(i, 0)] = norm.x;

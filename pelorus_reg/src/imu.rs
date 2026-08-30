@@ -93,51 +93,6 @@ impl Default for ImuProcessing {
     }
 }
 
-// #[derive(Clone, Debug, Copy, Serialize, Deserialize)]
-// pub struct ImuParameters {
-//     pub cov_acc: Vector3<f64>,
-//     pub cov_gyr: Vector3<f64>,
-//     pub cov_gyr_bias: Vector3<f64>,
-//     pub cov_acc_bias: Vector3<f64>,
-//     pub initial_translation_lidar_to_imu: Vector3<f64>,
-//     pub initial_rotation_lidar_to_imu: Matrix3<f64>,
-//     pub kinematic_constraint_std: f64,
-//     pub kinematic_model: KinematicModel,
-//     pub wheel_odom_cov_override: Option<f64>,
-// }
-
-// impl Default for ImuParameters {
-//     fn default() -> Self {
-//         Self {
-//             cov_acc: Vector3::new(
-//                 COV_IMU_RAW_DEFAULT,
-//                 COV_IMU_RAW_DEFAULT,
-//                 COV_IMU_RAW_DEFAULT,
-//             ),
-//             cov_gyr: Vector3::new(
-//                 COV_IMU_RAW_DEFAULT,
-//                 COV_IMU_RAW_DEFAULT,
-//                 COV_IMU_RAW_DEFAULT,
-//             ),
-//             cov_gyr_bias: Vector3::new(
-//                 COV_IMU_BIAS_DEFAULT,
-//                 COV_IMU_BIAS_DEFAULT,
-//                 COV_IMU_BIAS_DEFAULT,
-//             ),
-//             cov_acc_bias: Vector3::new(
-//                 COV_IMU_BIAS_DEFAULT,
-//                 COV_IMU_BIAS_DEFAULT,
-//                 COV_IMU_BIAS_DEFAULT,
-//             ),
-//             initial_translation_lidar_to_imu: Vector3::default(),
-//             initial_rotation_lidar_to_imu: Matrix3::identity(),
-//             kinematic_constraint_std: 0.05,
-//             kinematic_model: KinematicModel::Differential,
-//             wheel_odom_cov_override: None,
-//         }
-//     }
-// }
-
 #[derive(Clone, Debug, Copy)]
 struct Pose6D {
     offset_time: f64,
@@ -457,7 +412,7 @@ impl ImuProcessing {
                 * ((tail_lin_acc * GRAVITY / mean_acc) - self.imu_state.ba)
                 + self.imu_state.grav;
 
-            // this could become NaN when the mean_acc becomes 0.0. this could just be the case in space when you are far away from all gravity sources that your sensor is too inaccurate and somehow measures perfect 0.0... or by forgetting the imu initialization if you are on a planet with gravity :)
+            // A zero acceleration mean indicates missing initialization data.
             debug_assert!(!self.acc_s_last.iter().any(|a| a.is_nan()));
 
             let offs_t = tail_stamp - cloud_begin_time;

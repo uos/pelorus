@@ -1,6 +1,6 @@
 //! Low-latency, output-only IMU propagation.
 //!
-//! This predictor is deliberately separate from the registration EqF.  LiDAR
+//! This predictor is separate from the registration EqF. LiDAR
 //! corrections reseed it, so enabling high-rate output cannot perturb mapping
 //! or the corrected trajectory.
 
@@ -44,9 +44,7 @@ pub struct RealtimePrediction {
 struct CorrectedSnapshot {
     state: crate::eqf::StateIKFom,
     covariance: faer::Mat<f64>,
-    /// The covariance is only meaningful together with the origin its error is
-    /// measured about. Shipping one without the other silently misinterprets every
-    /// entry, by more the further the robot is from the world origin.
+    /// Origin used to interpret the covariance error coordinates.
     anchor: nalgebra::Vector3<f64>,
     initialized: bool,
     last_time: f64,

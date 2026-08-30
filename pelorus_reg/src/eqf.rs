@@ -4,11 +4,10 @@
 //! (Xu et al., ICRA 2025, <https://arxiv.org/abs/2409.06948>) and its reference
 //! implementation <https://github.com/taoxiom/Eq-LIO>.
 //!
-//! The state and the measurement model are the same as in a FAST-LIO style
-//! iterated EKF; what changes is where the error lives. Instead of a body-frame
-//! perturbation, the error is a group element of the semi-direct product symmetry
-//! that couples navigation state, IMU biases and the LiDAR extrinsics. Concretely
-//! the correction acts on the left,
+//! The state and measurement model follow a FAST-LIO style iterated EKF. The
+//! error is a group element of the semi-direct product symmetry coupling the
+//! navigation state, IMU biases, and LiDAR extrinsics. The correction acts on
+//! the left:
 //!
 //! ```text
 //! R <- exp(dtheta) R,   p <- dp + exp(dtheta) p,   v <- dv + exp(dtheta) v
@@ -190,12 +189,9 @@ where
 
 /// Jacobian of the error dynamics with respect to the error state (Eq-LIO eq. (7)).
 ///
-/// The equivariant error lives in the global frame of the semi-direct product
-/// symmetry group rather than in the body frame used by a FAST-LIO style EKF, so
-/// the linearisation is driven by `X = hat(R (omega - bg))` instead of by the raw
-/// IMU measurements. That is what removes most of the linearisation error: the
-/// blocks below depend on the state only through quantities that transform
-/// covariantly with the group action.
+/// The equivariant error uses the global frame of the semi-direct product. Its
+/// linearisation is driven by `X = hat(R (omega - bg))`; the blocks below depend
+/// on quantities that transform covariantly with the group action.
 ///
 /// Returns the matrix WITHOUT the identity and the `dt` factor; both are applied
 /// in `predict()`.
@@ -437,9 +433,7 @@ fn reset_jacobian(
     }
 
     if !extrinsic_est {
-        // `compensate` does not touch the extrinsics, so their rows come back
-        // structurally zero. They are unchanged by the reset, not annihilated by it
-        // -- leaving the zeros would make the covariance singular.
+        // Preserve fixed extrinsics across the reset to keep covariance nonsingular.
         for r in 6..12 {
             for c in 0..24 {
                 j[(r, c)] = if r == c { 1.0 } else { 0.0 };
@@ -686,11 +680,8 @@ impl Eqf {
 
     /// Fuse one scalar measurement whose Jacobian is `h`.
     ///
-    /// Position and rotation are deliberately never moved by these updates; they
-    /// are owned by the LiDAR correction. `max_gain` optionally caps the L2 norm
-    /// of the gain, which damps the non-holonomic constraints (whose residual is
-    /// a model assumption rather than a measurement) without throttling genuine
-    /// velocity measurements.
+    /// LiDAR correction owns position and rotation. `max_gain` can damp the
+    /// model-based non-holonomic constraints.
     fn apply_scalar_constraint(
         &mut self,
         h: Col<f64>,
@@ -929,10 +920,7 @@ impl Eqf {
     ) {
         self.last_time = measurement_time;
 
-        // Keep the error's origin on the robot. Without this the measurement
-        // Jacobian's moment arm is the point's distance from the world origin
-        // rather than from the sensor, and the information matrix loses precision
-        // in proportion to distance travelled.
+        // Keep Jacobian moment arms local to the robot for numerical precision.
         self.set_anchor(self.state.pos);
 
         if measurement_noise_cov <= 0.0 {
@@ -953,7 +941,7 @@ impl Eqf {
         let mut converge_count = 0;
         let mut converge_flag = true;
 
-        // -1 iteration is just to compute the first Jacobian
+        // The initial iteration computes the first Jacobian.
         for iter in 0..=max_iter {
             let mut valid = true;
             let mut num_measurements = 0usize;
@@ -1137,8 +1125,7 @@ impl Eqf {
             if converge_flag {
                 converge_count += 1;
             }
-            // If not converged yet and this is second-to-last iteration, force converge
-            // to re-search correspondences
+            // Force a final correspondence search when convergence has stalled.
             if converge_count == 0 && iter == max_iter - 1 {
                 converge_flag = true;
             }
@@ -1202,9 +1189,6 @@ mod tests {
         )
     }
 
-    /// Deterministic, non-degenerate error vector. The extrinsic block is left at
-    /// zero unless online extrinsic estimation is on, because `compensate` only
-    /// touches the extrinsics in that case.
     fn error_vector(scale: f64, extrinsic_est: bool) -> Mat<f64> {
         Mat::from_fn(24, 1, |i, _| {
             if !extrinsic_est && (6..12).contains(&i) {
@@ -1215,7 +1199,6 @@ mod tests {
         })
     }
 
-    /// Deliberately off the world origin, so the anchored paths are exercised.
     fn test_anchor() -> Vector3<f64> {
         Vector3::new(120.0, -75.0, 8.0)
     }
@@ -1224,7 +1207,6 @@ mod tests {
         (0..a.nrows()).fold(0.0f64, |acc, i| acc.max((a[(i, 0)] - b[(i, 0)]).abs()))
     }
 
-    /// Covariance mirroring what `ImuProcessing::initialize` installs.
     fn initialised_filter(vel: Vector3<f64>) -> Eqf {
         let mut ekf = Eqf::new(9.81, nalgebra::Isometry3::identity());
         ekf.initialized = true;
@@ -1256,9 +1238,6 @@ mod tests {
         }
     }
 
-    /// A world-frame velocity measurement must pull the velocity estimate almost
-    /// all the way onto the measurement when the prior is loose and the
-    /// measurement is tight, and must leave pose alone.
     #[test]
     fn wheel_odometry_pulls_velocity_onto_the_measurement() {
         let vel = Vector3::new(1.0, 0.0, 0.0);
@@ -1267,16 +1246,13 @@ mod tests {
         let rot_before = ekf.state.rot.matrix();
         let var = 1e-3;
 
-        // base_to_lidar is identity here, so the production path reduces to
-        // v_world = R_wi * R_il * twist_base; invert it to request a known
-        // world-frame velocity.
+        // With identity base_to_lidar: v_world = R_wi * R_il * twist_base.
         let target_world = Vector3::new(1.4, 0.0, 0.0);
         let r_wb = ekf.state.rot.matrix() * ekf.state.offset_r_l_i.matrix();
         let twist_base = r_wb.transpose() * target_world;
 
         ekf.correct_with_body_velocities(odom_msg(twist_base, var), KinematicModel::Full3D, None);
 
-        // Optimal scalar gain for a unit prior variance against `var`.
         let expected_gain = 1.0 / (1.0 + var);
         let expected = vel + (target_world - vel) * expected_gain;
 
@@ -1296,8 +1272,6 @@ mod tests {
         );
     }
 
-    /// The Joseph-form update must keep the covariance symmetric and positive
-    /// semi-definite, and must shrink the measured direction.
     #[test]
     fn wheel_odometry_keeps_covariance_well_formed() {
         let mut ekf = initialised_filter(Vector3::new(1.0, -0.4, 0.2));
@@ -1320,7 +1294,7 @@ mod tests {
             }
         }
 
-        // Positive semi-definite: every principal 2x2 minor and the diagonal.
+        // Check the diagonal and every principal 2x2 minor.
         for i in 0..24 {
             assert!(
                 ekf.cov[(i, i)] >= -1e-12,
@@ -1345,12 +1319,7 @@ mod tests {
         }
     }
 
-    /// The equivariant rotation error displaces a point by its distance from the
-    /// anchor. If the anchor is left at the world origin that distance grows with
-    /// the trajectory, the information matrix loses conditioning, and the
-    /// correction quietly degrades the further the robot travels -- which is a
-    /// drift that only shows up on long runs. The anchor must make this exactly
-    /// distance-invariant.
+    /// Guards numerical invariance under large translations of the scene.
     #[test]
     fn correction_is_independent_of_distance_from_origin() {
         use pelorus_core::timing::RuntimeEvaluator;
@@ -1365,7 +1334,7 @@ mod tests {
             let mut truth = nominal_state();
             truth.pos = Vector3::new(0.87, -0.44, 0.22).normalize() * dist;
 
-            // geometry fixed relative to the robot, so only |p| varies
+            // Keep scene geometry fixed relative to the robot.
             let scene: Vec<Plane> = (0..400)
                 .map(|i| {
                     let a = i as f64 * 2.399963;
@@ -1392,7 +1361,7 @@ mod tests {
                 .group_mul(truth.rot);
             ekf.state.pos = truth.pos + Vector3::new(0.6, -0.5, 0.62).normalize() * 0.10;
 
-            // a fixed *physical* prior, expressed in equivariant coordinates
+            // Express a fixed physical prior in equivariant coordinates.
             let mut phys = Mat::<f64>::zeros(24, 24);
             for i in 0..3 {
                 phys[(i, i)] = 0.01;
@@ -1462,11 +1431,7 @@ mod tests {
         }
     }
 
-    /// The noise Jacobian decides how much process noise reaches each state, so a
-    /// wrong one corrupts the covariance and mis-weights every gain afterwards --
-    /// with no symptom except slow drift. Finite-difference it: a noise realisation
-    /// perturbs the measurement the truth experiences, or random-walks its biases,
-    /// and the resulting error must match `-G n dt`.
+    /// Finite-differences the process-noise Jacobian against `-G n dt`.
     #[test]
     fn df_dw_matches_injected_noise() {
         const DT: f64 = 1e-5;
@@ -1509,9 +1474,7 @@ mod tests {
         );
     }
 
-    /// The reset Jacobian must actually map old error coordinates onto the new
-    /// reference, and must leave the untouched states alone rather than zeroing
-    /// them -- zeroed rows would make the covariance singular on the next update.
+    /// Checks the reset Jacobian in both fixed and estimated extrinsic modes.
     #[test]
     fn reset_jacobian_maps_error_onto_the_new_reference() {
         for extrinsic_est in [false, true] {
@@ -1521,7 +1484,6 @@ mod tests {
             let updated = compensate(&base, &dx, extrinsic_est, &anchor);
             let j = reset_jacobian(&base, &dx, &updated, extrinsic_est, &anchor);
 
-            // a small extra perturbation on top of the correction
             let eps = error_vector(1e-7, extrinsic_est);
             let mut shifted = dx.clone();
             for i in 0..24 {
@@ -1541,7 +1503,6 @@ mod tests {
                 "reset jacobian mismatch (extrinsic_est={extrinsic_est}): {dev:e}"
             );
 
-            // never singular: every state must survive the reset
             let det_ok = (0..24).all(|i| j[(i, i)].abs() > 1e-6);
             assert!(det_ok, "reset jacobian has a collapsed diagonal entry");
         }
@@ -1566,9 +1527,7 @@ mod tests {
         }
     }
 
-    /// The equivariant error must obey `d/dt e = A e` with `A = df_dx`. Compare
-    /// the analytic `A e` against the error actually accumulated by propagating a
-    /// perturbed and an unperturbed state through one short step.
+    /// Compares `A e` with the propagated error derivative.
     #[test]
     fn df_dx_matches_error_propagation() {
         const DT: f64 = 1e-5;
@@ -1596,9 +1555,7 @@ mod tests {
         }
     }
 
-    /// The point-to-plane row used by `RegistrationState` must differentiate the
-    /// residual with respect to the *global* rotation error, i.e. the moment arm
-    /// is the point in world coordinates.
+    /// Finite-differences the point-to-plane residual in equivariant coordinates.
     #[test]
     fn plane_jacobian_matches_equivariant_error() {
         for extrinsic_est in [false, true] {

@@ -34,8 +34,7 @@ const STATS_LEFT_PADDING: u16 = 2;
 
 /// The log buffer the pane draws, filled by the logger installed below.
 static LOG_BUFFER: std::sync::OnceLock<Arc<LogBuffer>> = std::sync::OnceLock::new();
-/// Set while the TUI owns the terminal, so records go to the pane instead of
-/// over the top of it. Shared with the logger, which reads it per record.
+/// Routes log records to the pane while the TUI owns the terminal.
 static TUI_ACTIVE: std::sync::OnceLock<Arc<AtomicBool>> = std::sync::OnceLock::new();
 /// Kept so the filter can be replaced once the config has been read.
 static LOGGER: std::sync::OnceLock<&'static Logger> = std::sync::OnceLock::new();

@@ -65,7 +65,7 @@ impl Asts {
     }
 }
 
-/// One `KEY=VALUE` override, already normalized into a Ratslang assignment.
+/// A parsed `KEY=VALUE` override.
 #[derive(Debug, Clone)]
 pub struct ConfigOverride {
     /// Fully qualified variable name, e.g. `output.odometry_rate`.
@@ -73,11 +73,11 @@ pub struct ConfigOverride {
     statement: String,
 }
 
-/// Parse `KEY=VALUE` pairs from the command line into Ratslang assignments.
+/// Parses command-line `KEY=VALUE` pairs as Ratslang assignments.
 ///
 /// The value is passed through untouched, so it carries its own Ratslang
 /// syntax -- units (`0.5m`, `2s`), booleans, enums and quoted strings all work
-/// exactly as they do in a configuration file.
+/// as they do in a configuration file.
 pub fn parse_overrides(overrides: &[String]) -> anyhow::Result<Vec<ConfigOverride>> {
     overrides
         .iter()
@@ -94,9 +94,7 @@ pub fn parse_overrides(overrides: &[String]) -> anyhow::Result<Vec<ConfigOverrid
                 return Err(anyhow!("override '{raw}' has an empty value"));
             }
             let statement = format!("{key} = {value}");
-            // Compile the assignment on its own first. Layered into the file's
-            // text a syntax error surfaces as a failure to compile *the file*,
-            // which points the user at something that is not wrong.
+            // Compile separately so syntax errors identify the override.
             ratslang::compile_code(&statement)
                 .map_err(|error| anyhow!("override '{raw}' is not valid Ratslang: {error}"))?;
             Ok(ConfigOverride {
@@ -107,16 +105,14 @@ pub fn parse_overrides(overrides: &[String]) -> anyhow::Result<Vec<ConfigOverrid
         .collect()
 }
 
-/// Build the user configuration layer from an optional file plus overrides.
+/// Builds a user configuration from an optional file and command-line overrides.
 ///
 /// Ratslang assigns sequentially and the last assignment wins, so the
 /// overrides are appended after the file's own text and compiled as one unit.
-/// Seeding them as prior variable state would not work: resolution consults
-/// that state before the statement list, so the file would win over the
-/// override rather than the other way round.
+/// Ratslang consults prior variable state before evaluating statements, so the
+/// overrides must be appended to the source to take precedence.
 ///
-/// Includes inside the file keep resolving against the directory it lives in,
-/// which is why the parent directory is passed through explicitly.
+/// Relative includes resolve from the configuration file's directory.
 pub fn user_config_with_overrides(
     path: Option<&std::path::Path>,
     overrides: &[ConfigOverride],
@@ -137,8 +133,7 @@ pub fn user_config_with_overrides(
     })
 }
 
-/// Same layering for a configuration that did not come from a path, such as
-/// one read from stdin. `parent` is what relative includes resolve against.
+/// Applies overrides to source text. Relative includes resolve from `parent`.
 pub fn layer_overrides(
     source: &str,
     parent: &std::path::Path,
@@ -146,8 +141,7 @@ pub fn layer_overrides(
 ) -> anyhow::Result<Evaluated> {
     let mut source = source.to_owned();
     for entry in overrides {
-        // A leading newline on every statement also avoids Ratslang's one-line
-        // token edge case when the base source was empty.
+        // The leading newline handles Ratslang's empty-source token edge case.
         source.push('\n');
         source.push_str(&entry.statement);
     }
@@ -156,12 +150,10 @@ pub fn layer_overrides(
         .map_err(|error| anyhow!("{error}"))
 }
 
-/// Reject overrides naming a variable the configuration never reads.
+/// Rejects overrides for variables the configuration never reads.
 ///
-/// A file's unrecognized variables only warn, because a config carried between
-/// versions legitimately outlives a setting. An override is typed for one run
-/// and its whole purpose is to change behaviour, so a typo that silently did
-/// nothing would hand back a result the user would wrongly trust.
+/// Unknown variables in configuration files remain warnings for compatibility.
+/// Command-line overrides are strict because they apply to a single run.
 pub fn reject_unknown_overrides(
     overrides: &[ConfigOverride],
     evaluated_variables: &[String],
@@ -181,11 +173,10 @@ pub fn reject_unknown_overrides(
     Ok(())
 }
 
-/// Build the user layer with overrides applied, and reject any override that
+/// Builds the user layer and rejects any override that
 /// names a setting the configuration never reads.
 ///
-/// The check costs a second parse, so it is skipped entirely when no override
-/// was given -- the normal path pays nothing for it.
+/// Validation requires a second parse and is skipped when no overrides exist.
 pub fn user_config_with_checked_overrides(
     defaults_source: &str,
     path: Option<&std::path::Path>,
@@ -197,9 +188,7 @@ pub fn user_config_with_checked_overrides(
     }
     let mut defaults = ratslang::compile_code(defaults_source)
         .map_err(|error| anyhow!("failed to compile embedded default config: {error}"))?;
-    // Both sides are dropped inside this function after being consumed for the
-    // usage report alone, and warning about every variable that report did not
-    // reach would bury the one message the user needs.
+    // These temporary layers exist only to collect the usage report.
     defaults.vars = defaults.vars.with_drop_warning(false);
     let mut probe = user_config_with_overrides(path, overrides)?;
     probe.vars = probe.vars.with_drop_warning(false);
@@ -226,8 +215,8 @@ struct DerivedNoise {
 /// The filter propagates `P += F_w Q F_w^T` with `F_w = f_w * dt`
 /// (`pelorus_reg::eqf::predict`), so every entry of `Q` picks up a `dt^2`. For
 /// the covariance of a white-noise-driven state to grow as `sigma^2 * t`, `Q`
-/// therefore has to hold *discrete-time* variances rather than the
-/// continuous-time densities the file stores:
+/// `Q` therefore holds *discrete-time* variances converted from the
+/// continuous-time densities in the file:
 ///
 /// ```text
 /// Q = (density * inflation)^2 * update_rate
@@ -248,9 +237,7 @@ fn derive_noise_covariances(path: &str, inflation: f64) -> anyhow::Result<Derive
         .map_err(|error| anyhow::anyhow!("Failed to read the IMU calibration '{path}': {error}"))?;
     let noise = intrinsics.noise;
 
-    // `dedrunk intrinsics` writes zeros here; only a file that also carries a
-    // noise run has them. Falling back to the constants would quietly run with
-    // numbers the operator did not choose.
+    // Zero densities mean the calibration file has no noise run.
     anyhow::ensure!(
         noise.accel_noise_density > 0.0
             && noise.gyro_noise_density > 0.0
@@ -298,10 +285,6 @@ mod override_tests {
 
     const DEFAULTS: &str = include_str!("../../default.rl");
 
-    /// The point of an override is to win. Ratslang resolution consults prior
-    /// variable state before the statement list, so the obvious implementation
-    /// -- seeding the file's variables and compiling the override on top --
-    /// silently does the opposite. This pins the direction that matters.
     #[test]
     fn an_override_beats_the_same_setting_in_the_config_file() {
         let directory =
@@ -319,13 +302,11 @@ mod override_tests {
         std::fs::remove_dir_all(&directory).unwrap();
     }
 
-    /// A merged calibration, i.e. what `dedrunk merge` produces: the
-    /// deterministic half plus the four noise values.
+    /// Writes the merged calibration format produced by `dedrunk merge`.
     fn write_calibration(directory: &std::path::Path, with_noise: bool) -> std::path::PathBuf {
         let (accel_density, accel_walk, gyro_density, gyro_walk) = if with_noise {
             (0.002, 0.0004, 0.0003, 2.0e-5)
         } else {
-            // What `dedrunk intrinsics` writes on its own.
             (0.0, 0.0, 0.0, 0.0)
         };
 
@@ -353,10 +334,6 @@ mod override_tests {
         ast_to_config(defaults, user).unwrap()
     }
 
-    /// The offset is a calibration result pasted verbatim from dedrunk, so
-    /// the sign convention has to survive the trip: it is subtracted from IMU
-    /// timestamps, and getting that backwards would double the skew instead of
-    /// removing it.
     #[test]
     fn the_imu_time_offset_is_read_in_seconds() {
         assert_eq!(
@@ -375,9 +352,6 @@ mod override_tests {
         assert!((seconds.prelio_params.imu.calibration.time_offset - 0.25).abs() < 1e-12);
     }
 
-    /// LiDAR-only mode has no IMU for an extrinsic to point at, so a
-    /// configured one has to be dropped rather than silently shifting the
-    /// trajectory the mode exists to produce.
     #[test]
     fn lidar_only_forces_the_extrinsic_to_identity() {
         let source = "imu.from_lidar_transform.translation = [1.0m, 2.0m, 3.0m]\n";
@@ -399,8 +373,6 @@ mod override_tests {
         );
     }
 
-    /// The filter holds the configured extrinsic unless told otherwise, so an
-    /// existing configuration keeps behaving the way it was tuned.
     #[test]
     fn the_extrinsic_is_held_fixed_by_default() {
         assert!(!config_with("").imu_params.estimate_extrinsic_online);
@@ -411,7 +383,6 @@ mod override_tests {
         );
     }
 
-    /// Off by default, so nothing changes for an existing configuration.
     #[test]
     fn the_tuned_covariances_are_kept_unless_asked_otherwise() {
         let config = config_with("");
@@ -454,14 +425,11 @@ mod override_tests {
             0.0004_f64.powi(2) * 200.0,
         );
 
-        // Worth seeing next to the tuned default of 0.1: the bench figure is
-        // far smaller, which is what the inflation exists to bridge.
         assert!(config.imu_params.cov_gyr[0] < 0.1);
 
         std::fs::remove_dir_all(&directory).unwrap();
     }
 
-    /// The inflation is a squared multiplier, which is easy to get wrong.
     #[test]
     fn the_inflation_applies_before_squaring() {
         let directory =
@@ -476,7 +444,6 @@ mod override_tests {
             path.display()
         ));
 
-        // Ten times the density is a hundred times the variance.
         let expected = (0.0003_f64 * 10.0).powi(2) * 200.0;
         assert!(
             (config.imu_params.cov_gyr[0] / expected - 1.0).abs() < 1e-9,
@@ -486,8 +453,6 @@ mod override_tests {
         std::fs::remove_dir_all(&directory).unwrap();
     }
 
-    /// `dedrunk intrinsics` alone writes zeros there, and silently running on
-    /// numbers nobody chose is worse than refusing.
     #[test]
     fn a_calibration_without_noise_parameters_is_refused() {
         let directory =
@@ -516,8 +481,6 @@ mod override_tests {
         assert!(error.contains("parameter_file"), "{error}");
     }
 
-    /// Overrides have to work with no file at all -- that is the quick-probe
-    /// case they exist for.
     #[test]
     fn overrides_apply_without_any_config_file() {
         let overrides = parse_overrides(&["output.odometry_rate=ImuAndLidar".to_owned()]).unwrap();
@@ -528,9 +491,6 @@ mod override_tests {
         assert_eq!(config.odometry_rate, crate::OdometryRate::ImuAndLidar);
     }
 
-    /// Repeating a key is how someone corrects themselves mid-command line, so
-    /// the rightmost has to win -- and it does only because the statements are
-    /// appended in order into a language that assigns sequentially.
     #[test]
     fn the_last_of_several_overrides_for_one_key_wins() {
         let overrides = parse_overrides(&[
@@ -549,9 +509,6 @@ mod override_tests {
         );
     }
 
-    /// A comma-separated pair looks plausible but is not supported, and it used
-    /// to surface as "failed to compile <your config file>" -- blaming a file
-    /// that is perfectly fine.
     #[test]
     fn a_syntactically_invalid_override_names_itself_not_the_config_file() {
         let error =
@@ -568,9 +525,6 @@ mod override_tests {
         );
     }
 
-    /// Several independent overrides must all land, not just the last one.
-    /// Parsing cleanly is not the same claim as every value reaching the
-    /// config, so this checks the values themselves.
     #[test]
     fn independent_overrides_all_apply_together() {
         let overrides = parse_overrides(&[
@@ -596,8 +550,6 @@ mod override_tests {
         }
     }
 
-    /// A typo'd override that quietly did nothing would hand back a run whose
-    /// result the user would wrongly trust.
     #[test]
     fn an_override_naming_an_unknown_setting_is_an_error() {
         let overrides = parse_overrides(&["output.odometry_rat=Lidar".to_owned()]).unwrap();
@@ -607,13 +559,10 @@ mod override_tests {
             "the error must name the typo: {error}"
         );
 
-        // ... and a correctly spelled one passes the same gate.
         let good = parse_overrides(&["output.odometry_rate=Lidar".to_owned()]).unwrap();
         assert!(user_config_with_checked_overrides(DEFAULTS, None, &good).is_ok());
     }
 
-    /// No overrides means no second parse and no new failure mode on the path
-    /// every existing run takes.
     #[test]
     fn no_overrides_leaves_the_ordinary_path_untouched() {
         let user = user_config_with_checked_overrides(DEFAULTS, None, &[]).unwrap();
@@ -1130,9 +1079,7 @@ fn ast_to_config_inner(
             (cov_gyr, cov_acc, cov_gyr_bias, cov_acc_bias)
         };
 
-        // Without an IMU there is nothing for an extrinsic to point at, and the
-        // trajectory this mode exists to produce has to be the LiDAR's own.
-        // Leaving a configured transform in place would silently shift it.
+        // LiDAR-only trajectories use the LiDAR frame directly.
         let (initial_translation_lidar_to_imu, initial_rotation_lidar_to_imu) = if lidar_only {
             if initial_translation_lidar_to_imu != Vector3::zeros()
                 || initial_rotation_lidar_to_imu != Matrix3::identity()

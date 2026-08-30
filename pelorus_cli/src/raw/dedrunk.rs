@@ -1,9 +1,4 @@
-//! Optional hand-off to `dedrunk` once a guided recording is finished.
-//!
-//! Pelorus records the bag, `dedrunk intrinsics` fits the parameters.
-//!
-//! The hand-off is best-effort. `dedrunk` is a separate tool that
-//! may not be installed, so its absence is a hint rather than a failure.
+//! Optional `dedrunk` calibration after a guided recording.
 
 use std::io::{IsTerminal, Write};
 use std::path::Path;
@@ -26,11 +21,9 @@ fn is_installed() -> bool {
         .unwrap_or(false)
 }
 
-/// Offer to fit the calibration from the bag that was just recorded.
+/// Offers to fit calibration parameters from a recorded bag.
 ///
-/// Does nothing when `dedrunk` is missing, when there is no bag to hand it, or
-/// when the session is not interactive — an unattended recording should not
-/// block on a prompt nobody will answer.
+/// Missing bags, unavailable `dedrunk`, and non-interactive sessions are skipped.
 pub fn offer_fit(bag: Option<&Path>, assume_yes: bool) -> Result<()> {
     let Some(bag) = bag else {
         info!(
@@ -65,8 +58,7 @@ pub fn offer_fit(bag: Option<&Path>, assume_yes: bool) -> Result<()> {
         .map_err(|error| anyhow::anyhow!("Failed to run {DEDRUNK}: {error}"))?;
 
     if !status.success() {
-        // The recording itself is fine and is still on disk, so a failed fit
-        // must not look like a failed run.
+        // Calibration failure does not invalidate the saved recording.
         warn!(
             "dedrunk exited with {status}. The recording is unharmed; re-run:\n    \
              dedrunk intrinsics {}",

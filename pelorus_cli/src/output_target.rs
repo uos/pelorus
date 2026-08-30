@@ -1,9 +1,4 @@
-//! Shared handling of on-disk recording targets: path derivation, topic
-//! normalization, and the overwrite prompt.
-//!
-//! Both the odometry outputs of `pelorus online`/`offline` and the sensor
-//! outputs of `pelorus online raw` land in the same kind of MCAP file or ROS 2
-//! bag directory, so they answer the same questions the same way.
+//! Paths, topic normalization, and overwrite handling for recording outputs.
 
 use std::io::{IsTerminal, Write};
 use std::path::{Path, PathBuf};
@@ -11,8 +6,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{Result, anyhow};
 use log::info;
 
-/// ROS topics are absolute; a bare name from the command line is still meant as
-/// one.
+/// Normalizes a ROS topic to an absolute name.
 pub fn normalize_mcap_topic(topic: impl Into<String>) -> String {
     let topic = topic.into();
     if topic.starts_with('/') {
@@ -74,8 +68,7 @@ pub fn confirm_output_overwrite(label: &str, path: &Path, assume_yes: bool) -> R
 
 /// Creates the bag directory and confirms every file that would be replaced.
 ///
-/// Returns `false` when the user declined, which callers treat as a clean exit
-/// rather than an error: nothing has been written yet at this point.
+/// Returns `false` when the user declines the overwrite.
 pub fn prepare_output_targets(
     rosbag_dir: Option<&Path>,
     mcap_path: Option<&Path>,
@@ -91,8 +84,7 @@ pub fn prepare_output_targets(
             );
             return Ok(false);
         }
-        // Confirming the directory covers the files inside it, which are about
-        // to be listed again individually.
+        // Directory confirmation covers its existing child files.
         rosbag_overwrite_confirmed = rosbag_path.exists();
         std::fs::create_dir_all(rosbag_path).map_err(|e| {
             anyhow!(

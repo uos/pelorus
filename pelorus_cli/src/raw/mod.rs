@@ -1,13 +1,8 @@
 //! `pelorus online raw` — run the native sensor drivers as a plain driver for
 //! the Minot pub/sub network.
 //!
-//! Nothing from the odometry pipeline is involved. Measurements go from the
-//! driver thread onto the very topics `pelorus online` subscribes to, so a raw
-//! process on the sensor host and a full Pelorus elsewhere compose without any
-//! extra configuration. In particular the IMU is published exactly as the
-//! device reported it: `imu.ahrs_filtering.method` describes what the consumer
-//! wants to do with the samples, and applying it here would hand every consumer
-//! pre-filtered data it cannot undo.
+//! Measurements are published unchanged on the input topics used by
+//! `pelorus online`. The odometry pipeline is not involved.
 
 use std::path::PathBuf;
 
@@ -108,13 +103,7 @@ pub struct RawPlan {
     pub cloud_mode: PointCloudMode,
 }
 
-/// Narrows the configured drivers down to the selected sensor.
-///
-/// The unselected driver is switched off rather than merely ignored, because
-/// `DriverManager` decides what to launch from these fields alone: leaving one
-/// set would open that sensor's socket and then publish nothing from it. On a
-/// combined device such as the Ouster this is the difference between reading
-/// one UDP stream and both of them.
+/// Builds the driver plan for the selected sensors.
 pub fn plan_raw_run(config: &LioConfig, sensor: RawSensor) -> Result<RawPlan> {
     let mut drivers = config.sensor_drivers.clone();
 
@@ -144,9 +133,7 @@ pub fn plan_raw_run(config: &LioConfig, sensor: RawSensor) -> Result<RawPlan> {
         drivers.imu.driver_type = ImuDriverType::Disabled;
     }
 
-    // The published point layout follows the driver type, so a consumer that
-    // deskews by `lidar.vendor` only gets usable per-point timestamps when the
-    // two agree. Catch the mismatch here rather than after a recording.
+    // Point timestamp decoding requires a matching driver and vendor.
     #[cfg(any(
         feature = "velodyne-driver",
         feature = "xsens-driver",

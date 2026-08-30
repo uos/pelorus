@@ -322,23 +322,9 @@ impl ImuProcess {
                 let rot = Rotation3::from_matrix(pose.pose.rotation.to_rotation_matrix().matrix());
                 let quat = UnitQuaternion::from_rotation_matrix(&rot);
                 let iso = Isometry3::from_parts(pose.pose.translation, quat);
-                // let sophus = SE3::from_rotation_and_translation(
-                //     quaternion_to_so3_exp(&quat),
-                //     pose.pose.translation.vector,
-                // );
-                // let deskewed_cloud = self.undistort_cloud_livox(
-                //     meas.cloud,
-                //     meas.lidar_end_stamp - meas.lidar_start_stamp,
-                //     sophus,
-                // );
                 iso
             }
             Some(Right(pose)) => pose,
-            /*None => self.integrate_imu_for_undistortion(
-                &meas.imu_buffer,
-                meas.lidar_start_stamp,
-                Some(&config),
-            ),*/
             None => Isometry3::identity(),
         };
 
@@ -346,9 +332,6 @@ impl ImuProcess {
         let deskewed_cloud_output = meas.cloud_passthrough;
 
         let n_last_imu = meas.imu_buffer.last().unwrap().clone();
-
-        /*let my_integration =
-        naive_preint::integrate_imu_up_to(sensor_data, &config.imu_preint_options);*/
 
         self.runtime_eval.stop("deskew").unwrap();
 

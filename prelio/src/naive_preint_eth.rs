@@ -65,9 +65,5 @@ pub fn integrate_imu(
         kum_linear_velocity += delta_linear_velocity;
     }
 
-    // let final_angular_velocity = kum_angular_velocity;
-    // let final_linear_velocity = kum_linear_velocity;
-
-    //(init, final_angular_velocity, final_linear_velocity)
     init
 }

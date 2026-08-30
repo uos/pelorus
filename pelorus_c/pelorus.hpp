@@ -232,7 +232,7 @@ public:
 
   /**
    * @brief Get point cloud as PCL format (requires PCL headers)
-   * This is a convenience method that extracts just the point cloud.
+   * Convenience method that extracts the point cloud.
    * The optional PCL integration is provided directly by pelorus.hpp when PCL
    * headers are available.
    *

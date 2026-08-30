@@ -25,10 +25,8 @@ use crate::output_target::{normalize_mcap_topic, prepare_output_targets, rosbag_
 
 /// Queue depth between the driver threads and the sink thread.
 ///
-/// A driver thread must never block: it is draining a socket or a serial port,
-/// and a stall there costs dropped packets rather than delayed ones. A backlog
-/// this deep already means the sink cannot keep up, so shedding the newest
-/// sample is the honest outcome — and it is counted and reported.
+/// Driver threads use bounded non-blocking queues to protect socket and serial
+/// input. Full queues drop and count the newest sample.
 const LIDAR_QUEUE_DEPTH: usize = 8;
 const IMU_QUEUE_DEPTH: usize = 512;
 
@@ -37,9 +35,7 @@ const REPORT_INTERVAL: Duration = Duration::from_secs(5);
 
 /// One measurement on its way from a driver thread to the sink thread.
 ///
-/// Conversion to a ROS message happens on the sink side: for a full scan it
-/// costs real time, and that time belongs anywhere but on the thread reading
-/// the socket.
+/// ROS conversion runs on the sink thread to keep driver reads responsive.
 enum RawSample {
     Lidar(Box<RawLidarScan>),
     Imu(Box<ImuMsg>),
@@ -57,10 +53,7 @@ struct RawCounters {
 
 /// The driver-facing end of the raw pipeline.
 ///
-/// It deliberately does nothing but hand the sample on. Every check the normal
-/// ingress performs — IMU initialization gating, AHRS filtering, buffering for
-/// the estimator — exists to serve the odometry pipeline, and a driver has no
-/// business applying any of it.
+/// Passes raw samples to the sink without odometry preprocessing.
 struct RawIngress {
     tx: SyncSender<RawSample>,
     counters: Arc<RawCounters>,
@@ -75,7 +68,6 @@ impl RawIngress {
                 dropped.fetch_add(1, Ordering::Relaxed);
                 Ok(())
             }
-            // The sink is gone, which only happens once shutdown is under way.
             Err(TrySendError::Disconnected(_)) => {
                 self.stop.store(true, Ordering::Release);
                 Err(DriverError::Driver("raw output pipeline closed".into()))
@@ -104,8 +96,7 @@ impl SensorIngress for RawIngress {
 }
 
 impl RawIngress {
-    /// The driver reports cumulative packet statistics, so the latest value is
-    /// the total rather than an increment.
+    /// Stores the driver's cumulative packet counters.
     fn record_receive(&self, receive: &ReceiveMetadata) {
         self.counters
             .packets_received
@@ -198,9 +189,7 @@ pub fn run(config: LioConfig, options: RawOptions, shutdown: Arc<AtomicBool>) ->
         return Ok(());
     }
 
-    // Raw output mirrors the input side of Pelorus, so the cloud encoding
-    // follows `lidar.subscriber_mode` rather than the registered-cloud
-    // publisher mode: that subscriber is exactly who reads this process.
+    // Raw output uses the encoding expected by the configured input subscriber.
     let compressed = matches!(plan.cloud_mode, PointCloudMode::Compressed);
     #[cfg(not(feature = "compressed-pointcloud"))]
     if compressed {
@@ -315,17 +304,12 @@ pub fn run(config: LioConfig, options: RawOptions, shutdown: Arc<AtomicBool>) ->
     // during teardown is not attributed to the sink.
     let driver_result = drivers.shutdown();
 
-    // Nothing is left to publish, so retire the transport before the runtime.
-    // Dropping a runtime out from under mt_pubsub's still-live background tasks
-    // makes them panic on a timer that is already shutting down, which would
-    // print an alarming trace after a perfectly clean run.
+    // Stop transport tasks before shutting down their runtime.
     drop(sink);
     drop(node);
     rt.shutdown_background();
 
-    // A driver that died is the run's outcome, not a footnote to it: exiting 0
-    // after "no such device" would tell a supervisor the recording succeeded.
-    // The sink's own error wins, because it happened first.
+    // Report the sink error first when both the sink and a driver failed.
     result?;
     driver_result.map_err(|error| anyhow!("Native sensor driver failed: {error}"))?;
 
@@ -353,8 +337,6 @@ fn drain(
         match rx.recv_timeout(Duration::from_millis(100)) {
             Ok(sample) => {
                 if handle_sample(sample, sink, recording.as_mut(), guide.as_mut())? {
-                    // Every orientation is captured, so the run is over on its
-                    // own terms rather than on Ctrl-C.
                     break;
                 }
             }

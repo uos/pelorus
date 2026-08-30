@@ -225,10 +225,8 @@ struct TopicEntry {
 /// Writes CDR-encoded ROS 2 messages to an MCAP file, optionally accompanied by
 /// `metadata.yaml` so the result opens as a ROS 2 bag directory.
 ///
-/// Topics are registered up front rather than discovered from traffic: a bag
-/// whose channel set depends on which messages happened to arrive is not
-/// reproducible, and rosbag tooling expects every offered topic to appear in the
-/// metadata even when it carried no messages.
+/// Topics are registered up front so metadata includes idle channels and remains
+/// reproducible.
 pub struct McapWriter<W: Write + Seek> {
     writer: mcap::Writer<W>,
     mcap_path: Option<PathBuf>,
@@ -436,8 +434,7 @@ impl<W: Write + Seek> McapOutputWriter<W> {
 /// Converts a backend-neutral point cloud into the CDR-serializable ROS message
 /// this writer stores.
 ///
-/// Taking `PointCloud2Msg` rather than one of the transport types keeps the
-/// recording path independent of which pub/sub backend the build uses.
+/// `PointCloud2Msg` keeps recording independent of the pub/sub backend.
 pub fn cloud_msg_to_ros(cloud: ros_pointcloud2::PointCloud2Msg) -> PointCloud2 {
     use ros2_interfaces_jazzy_serde::sensor_msgs::msg::PointField;
     use ros2_interfaces_jazzy_serde::std_msgs::msg::Header;
@@ -678,9 +675,6 @@ mod tests {
         Ok(())
     }
 
-    /// The odometry bag must keep advertising all five topics even when some
-    /// carried no messages: rosbag tooling reads the offered topic set from
-    /// here, and the generalized writer must not have narrowed it.
     #[test]
     fn odometry_metadata_still_lists_every_offered_topic() -> Result<()> {
         let nonce = nonce()?;

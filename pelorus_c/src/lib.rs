@@ -616,8 +616,7 @@ pub type PelorusOdometryWithBiasCallback =
 
 /// Set a callback for asynchronous odometry reception
 ///
-/// When a callback is set, odometry results will be delivered via the callback
-/// instead of being queued for pelorus_try_recv() or pelorus_recv().
+/// Callback delivery bypasses the pelorus_try_recv() and pelorus_recv() queue.
 /// The callback is invoked from a background thread.
 ///
 /// # Safety

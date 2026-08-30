@@ -470,8 +470,7 @@ pub struct ImuParameters {
     pub kinematic_constraint_std: f64,
     pub kinematic_model: KinematicModel,
     pub wheel_odom_cov_override: Option<f64>,
-    /// Keep refining the LiDAR-to-IMU extrinsic in the filter instead of
-    /// holding it at the configured value.
+    /// Refine the configured LiDAR-to-IMU extrinsic during filtering.
     pub estimate_extrinsic_online: bool,
     /// Ignore the IMU and propagate at a constant twist instead.
     pub lidar_only: bool,

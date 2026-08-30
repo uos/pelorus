@@ -125,9 +125,8 @@ pub fn cleanup_map() {
 /// Plane-fitting kernel that operates on a point cloud in the map frame.
 ///
 /// Both the lidar pose (`ekf_pose_r`) and the imu offset (`ekf_imu_offset_r`)
-/// are now supplied as unit quaternions rather than rotation matrices.  This
-/// mirrors the change made to [`add_to_map`] and avoids an extra matrix
-/// conversion when dispatching the compute kernel.
+/// are supplied as unit quaternions to match [`add_to_map`] and avoid a matrix
+/// conversion during dispatch.
 pub fn planes_metal(
     stream: &Stream,
     cloud: &MetalBuffer,
@@ -231,7 +230,7 @@ mod tests {
         ];
 
         let gpu = MetalBuffer::from_cloud(&stream, &cloud);
-        // No GPU work — just verify that shared-memory roundtrip works.
+        // Verify the shared-memory round trip without dispatching GPU work.
         stream.sync();
         let cpu = gpu.into_cloud(&stream);
 

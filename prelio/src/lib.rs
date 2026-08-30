@@ -1630,16 +1630,13 @@ fn filter_downsample_inner<const N: usize, P: PointConvertible<N> + Send + Sync>
     )))
 }
 
-/// Applies the stored IMU intrinsics to every incoming sample.
+/// Applies the configured IMU calibration to incoming samples.
 ///
 /// The parameters are Kalibr's, so `imu_calib::ImuCorrector` holds the inverted
 /// matrices and correcting one sample is two matrix-vector products.
 ///
-/// Bias is the least durable part of a calibration — it moves with temperature
-/// and between power cycles — so `imu.calibration.gyroscope` re-measures the
-/// gyroscope bias from the first stationary samples rather than trusting the
-/// stored one. Those samples are dropped rather than published, because they
-/// carry the very bias being measured.
+/// With `imu.calibration.gyroscope` enabled, startup samples are used to update
+/// the gyroscope bias and are withheld until calibration completes.
 struct ImuIntrinsicCorrection {
     corrector: imu_calib::ImuCorrector,
     intrinsics: imu_calib::ImuIntrinsics,
@@ -1696,8 +1693,7 @@ impl ImuIntrinsicCorrection {
             let n = warmup.count as f64;
             let mean_accel = warmup.accel_sum.map(|sum| sum / n);
             let mean_gyro = warmup.gyro_sum.map(|sum| sum / n);
-            // Solving for the bias rather than averaging the raw rate also
-            // removes whatever gravity couples in through the g-sensitivity.
+            // Include g-sensitivity when estimating the gyroscope bias.
             let bias = self.corrector.gyro_bias_from_static(mean_accel, mean_gyro);
             log::info!(
                 "Gyro calibration complete! (bias = [{}, {}, {}])",
@@ -1738,162 +1734,6 @@ pub struct Prelio {
     realtime_lidar_barrier_callback: Option<RealtimeLidarBarrierCallback>,
     lossless_replay: bool,
 }
-
-// fn find_sort_boundaries() {
-//     let sizes = [
-//         10_000, 20_000, 40_000, 60_000, 80_000, 100_000, 120_000, 150_000, 170_000, 200_000,
-//         500_000,
-//     ];
-//     let max_size = *sizes.iter().max().unwrap_or(&1_000_000);
-
-//     println!(
-//         "{:<12} | {:<20} | {:<20} | {}",
-//         "Vec Size", "Sequential Sort", "Parallel Sort", "Winner"
-//     );
-//     println!("{:-<13}|{:-<22}|{:-<22}|{:-<10}", "", "", "", "");
-
-//     let mut rng = rand::rng();
-//     let master_points: Vec<nalgebra::Point3<f32>> = (0..max_size)
-//         .map(|_| {
-//             nalgebra::Point3::new(
-//                 rng.random_range(-1.0..1.0),
-//                 rng.random_range(-1.0..1.0),
-//                 rng.random_range(-1.0..1.0),
-//             )
-//         })
-//         .collect();
-
-//     for &size in &sizes {
-//         let points = master_points[..size].to_vec();
-
-//         let mut seq_points = points.clone();
-//         let start_seq = std::time::Instant::now();
-//         seq_points.sort_unstable_by(|a, b| {
-//             a.coords
-//                 .norm_squared()
-//                 .partial_cmp(&b.coords.norm_squared())
-//                 .unwrap()
-//         });
-//         let seq_duration = start_seq.elapsed();
-
-//         let mut par_points = points.clone();
-//         let start_par = std::time::Instant::now();
-//         par_points.par_sort_unstable_by(|a, b| {
-//             a.coords
-//                 .norm_squared()
-//                 .partial_cmp(&b.coords.norm_squared())
-//                 .unwrap()
-//         });
-//         let par_duration = start_par.elapsed();
-
-//         // --- 4. Report Results ---
-//         let winner = if par_duration < seq_duration {
-//             "Parallel"
-//         } else {
-//             "Sequential"
-//         };
-//         println!(
-//             "{:<12} | {:<20.2?} | {:<20.2?} | {}",
-//             size, seq_duration, par_duration, winner
-//         );
-//     }
-// }
-
-// /// Runs the benchmark to compare sequential vs parallel chunk iteration.
-// fn find_chunking_boundaries() {
-//     // The total vector sizes we want to test.
-//     let sizes = [
-//         1_000, 10_000, 20_000, 40_000, 60_000, 80_000, 100_000, 200_000, 500_000, 1_000_000,
-//         5_000_000,
-//     ];
-//     let max_size = *sizes.iter().max().unwrap_or(&1_000_000);
-
-//     // The size of each chunk we will process.
-//     let chunk_size = 24;
-
-//     println!(
-//         "This benchmark compares iterating over data with `chunks_exact` vs. `par_chunks_exact`."
-//     );
-//     println!("We will process the data by summing the squared distances of all points.");
-//     println!("Chunk Size for all tests: {}", chunk_size);
-//     println!();
-//     println!(
-//         "{:<12} | {:<25} | {:<25} | {}",
-//         "Vec Size", "Sequential Chunks (sum)", "Parallel Chunks (sum)", "Winner"
-//     );
-//     println!("{:-<13}|{:-<27}|{:-<27}|{:-<10}", "", "", "", "");
-
-//     // --- 1. Data Generation ---
-//     println!(
-//         "Generating {} master points for consistent benchmarking...",
-//         max_size
-//     );
-//     let mut rng = rand::rng();
-//     let master_points: Vec<nalgebra::Point3<f32>> = (0..max_size)
-//         .map(|_| {
-//             nalgebra::Point3::new(
-//                 rng.random_range(-1.0..1.0),
-//                 rng.random_range(-1.0..1.0),
-//                 rng.random_range(-1.0..1.0),
-//             )
-//         })
-//         .collect();
-//     println!("Generation complete. Starting benchmarks.\n");
-
-//     for &size in &sizes {
-//         if size < chunk_size {
-//             continue; // Skip sizes smaller than one chunk.
-//         }
-//         let points = &master_points[..size];
-
-//         // --- 2. Sequential Chunking Benchmark ---
-//         let start_seq = std::time::Instant::now();
-//         // Iterate over chunks sequentially, map each chunk to its sum, and sum the results.
-//         let mut seq_total: f32 = points
-//             .chunks_exact(chunk_size)
-//             .map(|chunk| chunk.iter().map(|p| p.coords.norm_squared()).sum::<f32>())
-//             .sum();
-//         // Don't forget to process the remainder!
-//         seq_total += points
-//             .chunks_exact(chunk_size)
-//             .remainder()
-//             .iter()
-//             .map(|p| p.coords.norm_squared())
-//             .sum::<f32>();
-//         let seq_duration = start_seq.elapsed();
-
-//         // --- 3. Parallel Chunking Benchmark ---
-//         let start_par = std::time::Instant::now();
-//         // Iterate over chunks in parallel, map each chunk to its sum in parallel, and sum the results.
-//         let mut par_total: f32 = points
-//             .par_chunks_exact(chunk_size)
-//             .map(|chunk| chunk.iter().map(|p| p.coords.norm_squared()).sum::<f32>())
-//             .sum();
-//         // Process the remainder in parallel as well.
-//         par_total += points
-//             .par_chunks_exact(chunk_size)
-//             .remainder()
-//             .par_iter()
-//             .map(|p| p.coords.norm_squared())
-//             .sum::<f32>();
-//         let par_duration = start_par.elapsed();
-
-//         // --- 4. Report Results ---
-//         // We can assert that the results are the same (within a small float tolerance)
-//         // to ensure both methods are doing the same work.
-//         // assert!((seq_total - par_total).abs() < 1e-6);
-
-//         let winner = if par_duration < seq_duration {
-//             "Parallel"
-//         } else {
-//             "Sequential"
-//         };
-//         println!(
-//             "{:<12} | {:<25.2?} | {:<25.2?} | {}",
-//             size, seq_duration, par_duration, winner
-//         );
-//     }
-// }
 
 impl Prelio {
     pub fn create(
@@ -1952,13 +1792,6 @@ impl Prelio {
         )>(FILTERED_CLOUD_QUEUE_CAP);
         let (synced_cloud_imu_tx, synced_cloud_imu_rx) =
             std::sync::mpsc::sync_channel(SYNCED_CLOUD_QUEUE_CAP);
-
-        // test parallel boundaries
-        // #[cfg(feature = "parallel")]
-        // {
-        // find_sort_boundaries();
-        // find_chunking_boundaries();
-        // }
 
         // sync and imu integration worker
         // TODO move to main processing, since else predict and correct is async
@@ -2226,22 +2059,6 @@ impl Prelio {
         }
         let cloud_stamp = timestamp_to_secs(&cloud.header().stamp);
 
-        // TODO handle time jumps in the past?
-        // let buff_cloud = if cloud_stamp < self.last_cloud_time {
-        //    None
-        // } else {
-        //     Some(cloud)
-        // };
-
-        // self.imu_buffer.clear();
-        // {
-        //     let mut pointcloud_buffer = self.preproc_sender.
-        //     pointcloud_buffer.clear();
-        // }
-        // self.last_cloud_time = 0.0;
-        // self.last_imu_time = 0.0;
-        // self.undistort.reset();
-        // to_buffer.clear();
         self.last_cloud_time = cloud_stamp;
         // Generate a unique scan id and send a labeled cloud into preprocessing.
         static SCAN_ID_COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
@@ -2309,11 +2126,7 @@ impl Prelio {
     /// Filter raw IMU message and add to the buffer for synchronization and integration.
     /// Returns the filtered IMU message for republishing.
     pub fn add_imu(&mut self, mut imu: ImuMsg) -> Option<ImuMsg> {
-        // Put the sample on the LiDAR's clock before anything reads its time.
-        // Everything downstream — the integration step, the undistortion
-        // window, the scan pairing — keys off this stamp, so correcting it
-        // here is the whole of the fix and correcting it anywhere else would
-        // leave some of those disagreeing.
+        // Integration, undistortion, and pairing all use the corrected clock.
         if self.imu_time_offset != 0.0 {
             imu.stamp = pelorus_core::time_msg_from_secs(
                 timestamp_to_secs(&imu.stamp) - self.imu_time_offset,
@@ -2584,12 +2397,6 @@ impl Prelio {
                 }
             }
 
-            // dbg!(
-            //     imu_span_start_time,
-            //     imu_span_end_time,
-            //     lidar_begin_time,
-            //     lidar_end_time
-            // );
             // Populate IMU with buffered
             if let Some(imu_receiver) = imu_receiver.as_ref() {
                 let mut requested_next_replay_scan = false;

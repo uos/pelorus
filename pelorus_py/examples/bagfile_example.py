@@ -105,8 +105,7 @@ def main():
     if target_scan_id is None:
         raise RuntimeError("The bag must contain at least two LiDAR scans")
 
-    # Wait for a specific scan, rather than an arbitrary output count or wall
-    # clock timeout. The support scan above provides the data needed to finish it.
+    # The support scan above lets this specific target complete deterministically.
     while target_scan_id not in received_scan_ids:
         odom = lio.recv()
         odom_count += 1

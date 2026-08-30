@@ -25,15 +25,13 @@ fn rotation_increment(from: &Rotation3<f64>, to: &Rotation3<f64>) -> Vector3<f64
     vector * (2.0 * sine.atan2(scalar) / sine)
 }
 
-/// Longest interval treated as real. Scans arrive around 10 Hz, so anything
-/// beyond this is a stale or uninitialized timestamp rather than a gap.
+/// Longest plausible interval for a roughly 10 Hz scan stream.
 const MAX_INTERVAL: f64 = 1.0;
 
 /// Interval assumed when the one on offer makes no sense.
 const NOMINAL_INTERVAL: f64 = 0.1;
 
-/// Upper bound on generated samples, so a surprising timestamp costs a wasted
-/// buffer rather than all of memory.
+/// Caps allocation when timestamps are invalid.
 const MAX_STEPS: usize = 4096;
 
 /// Generates the IMU stream a rigidly-moving body would have produced under a
@@ -59,12 +57,7 @@ impl SyntheticImu {
         }
     }
 
-    /// A stationary, level buffer for the filter's initialization.
-    ///
-    /// Initialization derives gravity and the initial attitude from the IMU. It
-    /// has nothing real to work from here, so it is handed the answer for a
-    /// sensor sitting level and still: gravity straight down, attitude
-    /// identity. Every pose afterwards is relative to that.
+    /// A stationary, level buffer used to initialize gravity and attitude.
     pub fn initialization_buffer(&self, samples: usize) -> Vec<ImuMsg> {
         (0..samples.max(2))
             .map(|i| {
@@ -92,10 +85,7 @@ impl SyntheticImu {
         };
         self.previous = Some((rotation, from));
 
-        // The consumer treats the stream the way it treats a real one and
-        // indexes its last element, so an empty buffer is not an option. The
-        // first interval has no previous scan to measure from, and a stale or
-        // zeroed `from` would otherwise ask for billions of samples.
+        // Guarantee one sample and cap bad timestamp intervals.
         let span = match to - from {
             span if span.is_finite() && span > 0.0 && span <= MAX_INTERVAL => span,
             _ => NOMINAL_INTERVAL,
@@ -106,10 +96,7 @@ impl SyntheticImu {
         (0..=steps)
             .map(|k| {
                 let tau = span * k as f64 / steps as f64;
-                // Rotating the gravity vector along with the predicted attitude
-                // is what keeps the modelled acceleration at exactly zero; a
-                // fixed value would leak a spurious acceleration proportional
-                // to how far the body turned during the interval.
+                // Rotate gravity with attitude to keep modelled acceleration zero.
                 let attitude = rotation * Rotation3::from_scaled_axis(omega * tau);
                 self.message(from + tau, omega, &attitude)
             })

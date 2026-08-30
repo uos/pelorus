@@ -10,13 +10,8 @@ pub const REGISTERED_CLOUD_TOPIC: &str = "registered";
 
 /// Companion topic carrying the same clouds Cloudini-compressed.
 ///
-/// Compressed clouds ride a *separate* topic rather than sharing one with the
-/// raw form, because a subscriber is typed: a compressed message arriving on
-/// the plain topic does not deserialize. Both sides publish and subscribe both
-/// topics and let the handshake decide which one actually carries traffic —
-/// the alternative, choosing the topic from the negotiated encoding, cannot
-/// work. The consumer's subscribers must exist *before* it registers (that is
-/// what holds the bag), and registering is what tells it the encoding.
+/// The handshake selects which typed topic carries traffic. Consumers subscribe
+/// to both topics before registering because registration releases bag replay.
 pub fn compressed_cloud_topic(base: &str) -> String {
     format!("{base}/compressed")
 }
@@ -39,24 +34,17 @@ pub enum CloudEncoding {
 }
 
 impl CloudEncoding {
-    /// Every participant must be able to fall back to this, so a handshake can
-    /// always succeed even when the two sides share no compressed support.
+    /// Required fallback for protocol participants.
     pub const BASELINE: Self = Self::PointCloud2;
 }
 
 /// Cloudini's compressed ROS message with mt_pubsub-compatible rkyv fields.
 ///
-/// Defined here rather than in the preprocessing crates so producer and
-/// consumer deserialize against one definition instead of two hand-kept
-/// copies.
+/// Shared by producers and consumers to keep the wire representation identical.
 ///
-/// This crate deliberately stays free of Cloudini and `ros_pointcloud2`: it is
-/// depended on by viewers that pin their own versions of those, and a version
-/// requirement here would either conflict with theirs or quietly give them a
-/// second copy of the point-cloud types. Each side therefore converts between
-/// this struct and `cloudini::ros::CompressedPointCloud2` locally, against
-/// whatever Cloudini it already builds with. Being a plain field-for-field
-/// mirror is what makes that safe.
+/// This crate avoids Cloudini and `ros_pointcloud2` dependencies so viewers can
+/// select compatible versions. Each endpoint converts this field-for-field
+/// representation locally.
 #[derive(
     Archive, RkyvSerialize, RkyvDeserialize, Serialize, Deserialize, Debug, Clone, PartialEq,
 )]
@@ -164,12 +152,8 @@ pub enum DownstreamRequest {
         tick_owner: TickOwner,
         /// Cloud encodings this consumer can actually decode, best first.
         ///
-        /// Pelorus picks its own preferred encoding if it appears here and
-        /// falls back to [`CloudEncoding::BASELINE`] otherwise, answering with
-        /// the choice in [`DownstreamResponse::cloud_encoding`]. Declaring
-        /// support the consumer does not have strands it on a topic it cannot
-        /// read: no cloud ever deserializes, every frame stays unpaired, and
-        /// under consumer-gated replay the bag simply stops.
+        /// Pelorus selects the first compatible encoding and reports it in
+        /// [`DownstreamResponse::cloud_encoding`]. Baseline support is required.
         accepted_cloud_encodings: Vec<CloudEncoding>,
     },
     /// The registered consumer finished processing one authoritative frame.
@@ -263,17 +247,13 @@ impl Default for DownstreamGate {
 }
 
 impl DownstreamGate {
-    /// `preferred_cloud_encoding` is what this Pelorus build and configuration
-    /// can publish. It is an opening bid, not a guarantee: a consumer that
-    /// cannot decode it gets the baseline instead.
+    /// Creates a gate with this build's preferred cloud encoding.
     pub fn new(preferred_cloud_encoding: CloudEncoding) -> Self {
         Self {
             consumer: None,
             tick_owner: TickOwner::Pelorus,
             replay_state: ReplayState::WaitingForConsumer,
             preferred_cloud_encoding,
-            // Nothing is agreed until someone registers, and the baseline is
-            // the only encoding every consumer is required to understand.
             negotiated_cloud_encoding: CloudEncoding::BASELINE,
             last_completed_scan_id: None,
         }
@@ -307,8 +287,6 @@ impl DownstreamGate {
         let mut unlock_replay = false;
         let mut request_shutdown = false;
         let mut completed_frame = None;
-        // Before anyone registers there is nothing agreed, so advertise the
-        // opening bid; afterwards report what the session actually settled on.
         let mut reported_cloud_encoding = if self.has_consumer() {
             self.negotiated_cloud_encoding
         } else {
@@ -325,9 +303,7 @@ impl DownstreamGate {
                 if protocol_version != PROTOCOL_VERSION {
                     (false, "protocol version mismatch")
                 } else if !accepted_cloud_encodings.contains(&CloudEncoding::BASELINE) {
-                    // Without the baseline there is no guaranteed common
-                    // ground, so refuse here rather than agree on an encoding
-                    // and discover mid-run that nothing can be decoded.
+                    // Baseline support guarantees a compatible encoding.
                     (false, "consumer must accept the baseline cloud encoding")
                 } else if self
                     .consumer
@@ -341,13 +317,9 @@ impl DownstreamGate {
                     let first_registration = self.consumer.is_none();
                     self.consumer = Some(consumer);
                     self.tick_owner = tick_owner;
-                    // Re-registration is idempotent, so this recomputes to the
-                    // same answer rather than moving an agreed encoding.
                     self.negotiated_cloud_encoding = self.negotiate(&accepted_cloud_encodings);
                     self.replay_state = ReplayState::Running;
-                    // The bag is held until the consumer's subscribers exist,
-                    // so no frame can be produced before anyone is listening.
-                    // Re-registering the same consumer is idempotent.
+                    // Registration releases replay after subscribers are ready.
                     unlock_replay = first_registration;
                     reported_cloud_encoding = self.negotiated_cloud_encoding;
                     (true, "consumer registered")
@@ -462,7 +434,6 @@ mod cloud_encoding_tests {
             CloudEncoding::CompressedPointCloud2
         );
 
-        // ...but a downgraded session reports what was actually agreed.
         register(&mut gate, vec![CloudEncoding::PointCloud2]);
         let status = gate.handle(DownstreamRequest::GetStatus).response;
         assert_eq!(status.cloud_encoding, CloudEncoding::PointCloud2);

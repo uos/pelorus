@@ -36,9 +36,8 @@ cd pelorus-src
 bloom-generate rosdebian
 
 if [ "${PELORUS_CUDA:-}" = 1 ]; then
-    # ignore fancy dependency things that break CUDA, just yolo it, the user is responsible for having the correct libcuda.so
+    # CUDA packages rely on the host's compatible libcuda.so.
     perl -pi -e 's/^(\s*dh_shlibdeps\b[^\n]*)/$1 || true/' debian/rules
 fi
 
 dpkg-buildpackage -us -uc
-
