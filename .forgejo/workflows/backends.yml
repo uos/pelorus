@@ -73,6 +73,10 @@ jobs:
           rustup toolchain install stable
           rustup default stable
           rustup update
+      - name: Install Vulkan build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake
       - name: Install SeaKit
         run: |
           python3 -m venv .venv
