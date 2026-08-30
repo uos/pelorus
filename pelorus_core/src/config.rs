@@ -124,6 +124,18 @@ mod tests {
         let config = ast_to_config(defaults, user).unwrap();
         assert_eq!(config.odometry_rate, OdometryRate::ImuAndLidar);
     }
+
+    #[test]
+    fn extrinsic_optimization_defaults_off_and_can_be_enabled() {
+        let defaults = ratslang::compile_code(include_str!("../../default.rl")).unwrap();
+        let empty = ratslang::compile_code("").unwrap();
+        let config = ast_to_config(defaults.clone(), empty).unwrap();
+        assert!(!config.enable_live_extrinsic_calibration);
+
+        let user = ratslang::compile_code("registration.optimize_extrinsics = true").unwrap();
+        let config = ast_to_config(defaults, user).unwrap();
+        assert!(config.enable_live_extrinsic_calibration);
+    }
 }
 
 /// Constructs an `LioConfig` by layering a user configuration over a default one.
@@ -251,11 +263,13 @@ fn ast_to_config_inner(
         map_capacity,
         dist_update_sensitivity,
         ekf_max_iterations,
+        enable_live_extrinsic_calibration,
     ) = {
         let registration = asts.filter_ns(&["registration"]);
         let neighbor_max_range = resolve_var!(registration, "neighbors_max_range", as f64, Rhs::Val(Val::UnitedVal(UnitVal::LengthVal(v))) => { v.get::<meter>() })?;
 
         let ekf_max_iterations = resolve_var!(registration, "max_iter", as usize, Rhs::Val(Val::NumVal(NumVal::Integer(i))) => { i })?;
+        let enable_live_extrinsic_calibration = resolve_var!(registration, "optimize_extrinsics", as bool, Rhs::Val(Val::BoolVal(b)) => { b })?;
 
         let map = registration.filter_ns(&["map"]);
         let map_resolution = resolve_var!(map, "resolution", as f64, Rhs::Val(Val::UnitedVal(UnitVal::LengthVal(v))) => { v.get::<meter>() })?;
@@ -268,6 +282,7 @@ fn ast_to_config_inner(
             map_capacity,
             dist_update_sensitivity,
             ekf_max_iterations,
+            enable_live_extrinsic_calibration,
         )
     };
 
@@ -937,10 +952,9 @@ fn ast_to_config_inner(
             parallelism_decision_samples_per_mode,
             parallelism_execution_policy,
         },
-        // TODO currently hardcoded
         registered_cloud_qos: Qos::Sensor(Reliability::Reliable),
         cloud_publisher_mode,
-        enable_live_extrinsic_calibration: false,
+        enable_live_extrinsic_calibration,
         num_threads,
     };
 

@@ -619,6 +619,13 @@ impl Eqf {
         self.cov = self.fxcov.rb() + self.f_w_q_w_t_dt2.rb();
     }
 
+    /// Move a posterior covariance from error coordinates about `base` into
+    /// error coordinates about the current state after injecting `dx`.
+    fn reset_covariance_after_update(&mut self, base: &StateIKFom, dx: &Mat<f64>) {
+        let j_reset = reset_jacobian(base, dx, &self.state, self.extrinsic_est, &self.anchor);
+        self.cov = &(&j_reset * &self.cov) * &j_reset.transpose();
+    }
+
     pub fn correct_with_body_velocities(
         &mut self,
         odom: OdomMsg,
@@ -745,7 +752,8 @@ impl Eqf {
         for i in 0..24 {
             dx_mat[(i, 0)] = dx[i];
         }
-        self.state = compensate(&self.state, &dx_mat, self.extrinsic_est, &self.anchor);
+        let state_before = self.state;
+        self.state = compensate(&state_before, &dx_mat, self.extrinsic_est, &self.anchor);
 
         // Update covariance: P = (I - K*h^T) * P * (I - K*h^T)^T + K * r_var * K^T
         for i in 0..24 {
@@ -789,6 +797,7 @@ impl Eqf {
         );
         // self.cov = i_kh * self.cov * i_kh.transpose() + k * r_var * k.transpose();
         self.cov = &self.i_cov_i_kh + &self.k_k;
+        self.reset_covariance_after_update(&state_before, &dx_mat);
     }
 
     /// Fuse one component of a world-frame velocity measurement.
@@ -1169,14 +1178,7 @@ impl Eqf {
             self.extrinsic_est,
             &self.anchor,
         );
-        let j_reset = reset_jacobian(
-            &state_propagated,
-            &dx_total,
-            &self.state,
-            self.extrinsic_est,
-            &self.anchor,
-        );
-        self.cov = &(&j_reset * &self.cov) * &j_reset.transpose();
+        self.reset_covariance_after_update(&state_propagated, &dx_total);
         eval.stop("ekf_correct/cov").unwrap();
     }
 }
@@ -1346,6 +1348,108 @@ mod tests {
                 "velocity variance {offset} did not shrink: {before} -> {after}"
             );
         }
+    }
+
+    /// Scalar corrections inject an equivariant error just like the LiDAR
+    /// correction. Their posterior must therefore be moved from coordinates
+    /// about the old state to coordinates about the corrected state as well.
+    #[test]
+    fn scalar_update_resets_covariance_about_the_corrected_state() {
+        let mut ekf = initialised_filter(Vector3::new(1.0, -0.4, 0.2));
+        ekf.cov[(15, 12)] = 0.25;
+        ekf.cov[(12, 15)] = 0.25;
+        ekf.cov[(18, 12)] = -0.15;
+        ekf.cov[(12, 18)] = -0.15;
+
+        let state_before = ekf.state;
+        let cov_before = ekf.cov.clone();
+        let component = 0;
+        let measured = 1.4;
+        let variance = 1e-3;
+
+        let vel_skew = skew_symmetric_na(&state_before.vel);
+        let mut h = Col::<f64>::zeros(24);
+        for j in 0..3 {
+            h[3 + j] = -vel_skew[(component, j)];
+        }
+        h[12 + component] = 1.0;
+
+        let cov_h = &cov_before * &h;
+        let innovation_variance = h.transpose() * &cov_h + variance;
+        let mut k = &cov_h / innovation_variance;
+        for i in 0..6 {
+            k[i] = 0.0;
+        }
+        let dx = &k * (measured - state_before.vel[component]);
+        let dx_mat = Mat::from_fn(24, 1, |i, _| dx[i]);
+        let corrected = compensate(&state_before, &dx_mat, false, &ekf.anchor);
+
+        let kh = &k * h.transpose();
+        let i_kh = Mat::<f64>::identity(24, 24) - kh;
+        let posterior_old =
+            &(&i_kh * &cov_before) * &i_kh.transpose() + &(&k * k.transpose()) * variance;
+        let j_reset = reset_jacobian(&state_before, &dx_mat, &corrected, false, &ekf.anchor);
+        let expected = &(&j_reset * &posterior_old) * &j_reset.transpose();
+
+        ekf.correct_velocity_component(component, measured, variance);
+
+        let mut worst = 0.0f64;
+        for row in 0..24 {
+            for col in 0..24 {
+                worst = worst.max((ekf.cov[(row, col)] - expected[(row, col)]).abs());
+            }
+        }
+        assert!(worst < 1e-9, "scalar covariance reset mismatch: {worst:e}");
+        assert!(
+            (&expected - &posterior_old).norm_l2() > 1e-5,
+            "test did not produce a meaningful change of error coordinates"
+        );
+    }
+
+    #[test]
+    fn enabled_extrinsic_estimation_updates_the_calibration() {
+        use pelorus_core::timing::RuntimeEvaluator;
+
+        let mut ekf = initialised_filter(Vector3::zeros());
+        ekf.extrinsic_est = true;
+        ekf.anchor = ekf.state.pos;
+        let initial_rotation = ekf.state.offset_r_l_i.matrix();
+        let initial_translation = ekf.state.offset_t_l_i;
+        let point = Vector3::new(2.0, -1.0, 0.5);
+        let normal = Vector3::new(0.4, -0.3, 0.8).normalize();
+        let desired_residual = 0.2;
+
+        let mut eval = RuntimeEvaluator::new();
+        let eval = std::sync::Arc::new(std::sync::RwLock::new(&mut eval));
+        let anchor = ekf.anchor;
+        ekf.correct(1e-3, 1.0, 1, eval, |state, valid, _, h, h_x, count| {
+            if h.nrows() < 1 {
+                *h = Col::<f64>::zeros(1);
+            }
+            if h_x.nrows() < 1 {
+                *h_x = Mat::<f64>::zeros(1, 12);
+            }
+
+            let p_imu = state.offset_r_l_i.matrix() * point + state.offset_t_l_i;
+            let p_world = state.rot.matrix() * p_imu + state.pos;
+            let moment = skew_symmetric_na(&(p_world - anchor)) * normal;
+            for j in 0..3 {
+                h_x[(0, j)] = normal[j];
+                h_x[(0, 3 + j)] = moment[j];
+                h_x[(0, 6 + j)] = moment[j];
+                h_x[(0, 9 + j)] = normal[j];
+            }
+            h[0] = desired_residual;
+            *count = 1;
+            *valid = true;
+        });
+
+        let rotation_change = (ekf.state.offset_r_l_i.matrix() - initial_rotation).norm();
+        let translation_change = (ekf.state.offset_t_l_i - initial_translation).norm();
+        assert!(
+            rotation_change > 1e-6 && translation_change > 1e-6,
+            "enabled calibration did not update both extrinsic components: rotation={rotation_change:e}, translation={translation_change:e}"
+        );
     }
 
     /// The equivariant rotation error displaces a point by its distance from the

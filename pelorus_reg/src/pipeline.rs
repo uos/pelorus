@@ -149,7 +149,7 @@ impl Pipeline {
             config.dist_update_sensitivity as f32,
         );
 
-        let map = RegistrationState::new_with_execution_config(
+        let mut map = RegistrationState::new_with_execution_config(
             ivox,
             &config.imu_params,
             &ext_lidar_to_imu,
@@ -162,6 +162,7 @@ impl Pipeline {
             config.prelio_params.parallelism_decision_samples_per_mode,
             config.prelio_params.parallelism_execution_policy,
         );
+        map.ekf.extrinsic_est = config.enable_live_extrinsic_calibration;
 
         Self {
             map: Arc::new(Mutex::new(map)),
@@ -540,5 +541,23 @@ impl Pipeline {
             .ok_or_else(|| anyhow!("Prelio channel is not available"))?;
 
         Ok((prelio, rx))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Pipeline;
+    use pelorus_core::LioConfig;
+
+    #[test]
+    fn config_enables_extrinsic_estimation_in_registration() {
+        let config = LioConfig {
+            enable_live_extrinsic_calibration: true,
+            cpu_only: true,
+            ..Default::default()
+        };
+        let pipeline = Pipeline::new(&config);
+
+        assert!(pipeline.map().lock().unwrap().ekf.extrinsic_est);
     }
 }

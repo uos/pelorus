@@ -13,8 +13,13 @@ registration {
     distribution_update_sensitivity = 10.0
   }
 
-  # Maximum IEKF correction iterations per scan.
+  # Maximum EqF correction iterations per scan.
   max_iter = 4
+
+  # Refine the configured LiDAR-to-IMU rotation and translation online.
+  # Leave disabled when the extrinsics are already well calibrated or the
+  # trajectory does not sufficiently excite all six calibration directions.
+  optimize_extrinsics = false
 
   # Maximum distance to any neighbor. Default is mostly ok if you do not drastically reduce the map resolution.
   neighbors_max_range = 5m

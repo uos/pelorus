@@ -338,7 +338,7 @@ pub(crate) fn output_pose_covariance(ekf: &Eqf, lidar_to_output: &Isometry3<f64>
         // like the navigation error: R_out <- exp(dtheta_ext) R_out.
         jacobian
             .fixed_view_mut::<3, 3>(0, 6)
-            .copy_from(&(-skew_symmetric_na(&p_out)));
+            .copy_from(&(-skew_symmetric_na(&(p_out - ekf.anchor))));
         jacobian
             .fixed_view_mut::<3, 3>(0, 9)
             .copy_from(&Matrix3::identity());
@@ -387,6 +387,36 @@ pub(crate) fn output_twist_covariance(ekf: &Eqf, output_pose: &Isometry3<f64>) -
         }
     }
     twist_cov
+}
+
+#[cfg(test)]
+mod covariance_tests {
+    use super::*;
+
+    #[test]
+    fn enabled_extrinsic_pose_covariance_uses_the_eqf_anchor() {
+        let mut ekf = Eqf::new(9.81, Isometry3::identity());
+        ekf.extrinsic_est = true;
+        ekf.anchor = Vector3::new(90.0, -40.0, 7.0);
+        ekf.state.pos = Vector3::new(100.0, -35.0, 8.0);
+        ekf.state.offset_t_l_i = Vector3::new(0.2, -0.1, 0.05);
+        ekf.cov = faer::Mat::<f64>::zeros(24, 24);
+        ekf.cov[(6, 6)] = 1.0;
+
+        let covariance = output_pose_covariance(&ekf, &Isometry3::identity());
+        let p_out = ekf.state.pos + ekf.state.rot.matrix() * ekf.state.offset_t_l_i;
+        let jacobian_column = -skew_symmetric_na(&(p_out - ekf.anchor)).column(0);
+        let expected = jacobian_column * jacobian_column.transpose();
+
+        for row in 0..3 {
+            for col in 0..3 {
+                assert!(
+                    (covariance[row * 6 + col] - expected[(row, col)]).abs() < 1e-12,
+                    "anchored extrinsic covariance mismatch at ({row}, {col})"
+                );
+            }
+        }
+    }
 }
 
 fn matrix6_to_array(matrix: SMatrix<f64, 6, 6>) -> [f64; 36] {
