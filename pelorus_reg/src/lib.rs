@@ -100,3 +100,21 @@ pub trait Registration {
         lidar_vendor: Option<LidarVendor>,
     );
 }
+
+/// Register a session that may use a GPU backend.
+///
+/// Pair with [`backend_session_release`] around the lifetime of an embedder handle.
+/// Without it the process can exit with a live Vulkan instance, and the driver then
+/// tears itself down from an `atexit` handler while its own worker threads are still
+/// running. A no-op for backends that do not need it.
+pub fn backend_session_retain() {
+    #[cfg(feature = "vulkan")]
+    pelorus_vulkan::session_retain();
+}
+
+/// End a session registered with [`backend_session_retain`], releasing process-wide
+/// GPU resources once the last session is gone.
+pub fn backend_session_release() {
+    #[cfg(feature = "vulkan")]
+    pelorus_vulkan::session_release();
+}

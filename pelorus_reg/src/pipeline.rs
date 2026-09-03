@@ -194,6 +194,26 @@ impl Pipeline {
         self.ext_lidar_to_imu
     }
 
+    /// Drop the GPU-resident buffers this pipeline and its registration state own.
+    ///
+    /// Backend teardown destroys the device, and every child object has to be gone
+    /// before that. These two buffers outlive the map and downsample state, so they
+    /// have to be released explicitly. Safe to call more than once; the pipeline
+    /// reallocates them on the next scan.
+    pub fn release_gpu_buffers(&mut self) {
+        #[cfg(feature = "vulkan")]
+        {
+            *self
+                .vulkan_cloud_buffer
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
+        }
+        self.map
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .planes_gpu_buffer = None;
+    }
+
     pub fn lidar_vendor(&self) -> LidarVendor {
         self.config.prelio_params.lidar_vendor
     }

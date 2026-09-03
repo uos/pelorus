@@ -510,15 +510,25 @@ impl crate::Registration for RegistrationState {
             match backend {
                 ActiveBackend::Cpu => {
                     if self.planes_cpu_buffer.capacity() < cloud.len() {
-                        self.planes_cpu_buffer
-                            .reserve(cloud_len_alloc - self.planes_cpu_buffer.capacity());
+                        // `reserve` counts from `len`, not `capacity`. Passing the
+                        // capacity-relative amount can leave the buffer with less than
+                        // `cloud.len()` capacity, which the `set_len(cloud.len())` in the
+                        // GPU branches below would then overrun.
+                        let additional =
+                            cloud_len_alloc.saturating_sub(self.planes_cpu_buffer.len());
+                        self.planes_cpu_buffer.reserve(additional);
                     }
                 }
                 #[cfg(feature = "cuda")]
                 ActiveBackend::Cuda(stream) => {
                     if self.planes_cpu_buffer.capacity() < cloud.len() {
-                        self.planes_cpu_buffer
-                            .reserve(cloud_len_alloc - self.planes_cpu_buffer.capacity());
+                        // `reserve` counts from `len`, not `capacity`. Passing the
+                        // capacity-relative amount can leave the buffer with less than
+                        // `cloud.len()` capacity, which the `set_len(cloud.len())` in the
+                        // GPU branches below would then overrun.
+                        let additional =
+                            cloud_len_alloc.saturating_sub(self.planes_cpu_buffer.len());
+                        self.planes_cpu_buffer.reserve(additional);
                     }
                     let needs_alloc = match &self.planes_gpu_buffer {
                         Some(GpuPlanesBuffer::Cuda(buf)) => buf.n < cloud.len(),
@@ -535,8 +545,13 @@ impl crate::Registration for RegistrationState {
                 #[cfg(feature = "metal")]
                 ActiveBackend::Metal(stream) => {
                     if self.planes_cpu_buffer.capacity() < cloud.len() {
-                        self.planes_cpu_buffer
-                            .reserve(cloud_len_alloc - self.planes_cpu_buffer.capacity());
+                        // `reserve` counts from `len`, not `capacity`. Passing the
+                        // capacity-relative amount can leave the buffer with less than
+                        // `cloud.len()` capacity, which the `set_len(cloud.len())` in the
+                        // GPU branches below would then overrun.
+                        let additional =
+                            cloud_len_alloc.saturating_sub(self.planes_cpu_buffer.len());
+                        self.planes_cpu_buffer.reserve(additional);
                     }
                     let needs_alloc = match &self.planes_gpu_buffer {
                         Some(GpuPlanesBuffer::Metal(buf)) => buf.n < cloud.len(),
@@ -553,13 +568,18 @@ impl crate::Registration for RegistrationState {
                 #[cfg(feature = "vulkan")]
                 ActiveBackend::Vulkan(stream) => {
                     if self.planes_cpu_buffer.capacity() < cloud.len() {
-                        self.planes_cpu_buffer
-                            .reserve(cloud_len_alloc - self.planes_cpu_buffer.capacity());
+                        // `reserve` counts from `len`, not `capacity`. Passing the
+                        // capacity-relative amount can leave the buffer with less than
+                        // `cloud.len()` capacity, which the `set_len(cloud.len())` in the
+                        // GPU branches below would then overrun.
+                        let additional =
+                            cloud_len_alloc.saturating_sub(self.planes_cpu_buffer.len());
+                        self.planes_cpu_buffer.reserve(additional);
                     }
                     if self.planes_vulkan_download_buffer.capacity() < cloud.len() {
-                        self.planes_vulkan_download_buffer.reserve(
-                            cloud_len_alloc - self.planes_vulkan_download_buffer.capacity(),
-                        );
+                        let additional = cloud_len_alloc
+                            .saturating_sub(self.planes_vulkan_download_buffer.len());
+                        self.planes_vulkan_download_buffer.reserve(additional);
                     }
                     if self.planes_vulkan_download_buffer.len() < cloud.len() {
                         self.planes_vulkan_download_buffer

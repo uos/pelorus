@@ -59,10 +59,10 @@ ros_pointcloud2 = { version = "1.0.0-rc.4", features = [
   "nalgebra",
 ] }
 ratslang = "0.4.3"
-mt_pubsub = "0.10.1"
-mt_service = "0.10.1"
-mt_log = { version = "0.10.1", features = ["tui", "env"] }
-mt_rat = "0.10.1"
+mt_pubsub = "0.10.2"
+mt_service = "0.10.2"
+mt_log = { version = "0.10.2", features = ["tui", "env"] }
+mt_rat = "0.10.2"
 cloudini = { version = "0.3.2", default-features = false, features = ["ros"] }
 imu-calib = "0.3"
 ros2-interfaces-jazzy-serde = { version = "0.0.5", features = [
@@ -162,7 +162,7 @@ bytemuck = { version = "1", features = ["derive"] }
 ash = "0.38"
 cc = "1.0"
 pkg-config = "0.3"
-shaderc = "0.8"
+shaderc = "0.10"
 bindgen = "0.72"
 walkdir = "2"
 cbindgen = "0.29"

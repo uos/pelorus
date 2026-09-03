@@ -52,3 +52,13 @@ uv tool install "pelorus[all]" --extra-index-url https://uos-robotics.codeberg.p
 # Without uv (not recommended)
 pip install "pelorus[all]"
 ```
+
+## Vulkan
+
+When building from source, install Vulkan first and update your graphics driver. 
+
+Here are example packages for Ubuntu.
+
+```sh
+sudo apt install libshaderc-dev libvulkan-dev
+```

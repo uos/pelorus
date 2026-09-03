@@ -1,6 +1,6 @@
 [package]
 name = "pelorus"
-description = "Rust API for Pelorus LiDAR-Inertial Odometry."
+description = "Rust API for Pelorus Lidar-Inertial Odometry."
 edition.workspace = true
 include.workspace = true
 keywords.workspace = true

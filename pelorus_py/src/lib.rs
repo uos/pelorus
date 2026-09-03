@@ -289,6 +289,7 @@ fn processing_thread_main(thread: ProcessingThread) {
             continue;
         }
 
+        let scan_id = processed.scan_id;
         let lidar_to_imu = nalgebra::Isometry3::from_parts(
             thread
                 .pipeline
@@ -320,7 +321,11 @@ fn processing_thread_main(thread: ProcessingThread) {
                     &thread.pipeline.config,
                 );
             }
-            Ok(None) => {}
+            Ok(None) => {
+                if let Err(e) = thread.ready_for_next.send(scan_id) {
+                    error!("failed to acknowledge map-only scan #{scan_id}: {e}");
+                }
+            }
             Err(e) => {
                 error!("fatal registration error; stopping processing thread: {e:#}");
                 break;
@@ -406,6 +411,10 @@ impl PelorusHandle {
         let thread_handle = thread::spawn(move || {
             processing_thread_main(processing_thread);
         });
+
+        // Paired with the release in `Drop`, so process-wide GPU resources are torn
+        // down when the last handle goes away rather than at `exit()`.
+        pelorus_reg::backend_session_retain();
 
         Ok(PelorusHandle {
             prelio: Arc::new(Mutex::new(Some(prelio))),
@@ -812,6 +821,9 @@ impl Drop for PelorusHandle {
         if let Some(handle) = self._processing_thread.take() {
             let _ = handle.join();
         }
+
+        // After the worker is joined, so its GPU buffers are gone first.
+        pelorus_reg::backend_session_release();
     }
 }
 

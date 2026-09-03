@@ -33,7 +33,11 @@ struct VrdxSorterStorageRequirements {
 
 #[link(name = "vk_radix_sort", kind = "static")]
 unsafe extern "C" {
-    fn vrdxCreateSorter(p_create_info: *const VrdxSorterCreateInfo, p_sorter: *mut VrdxSorter);
+    fn vrdxCreateSorter(
+        p_create_info: *const VrdxSorterCreateInfo,
+        p_sorter: *mut VrdxSorter,
+    ) -> i32;
+    fn vrdxDestroySorter(sorter: VrdxSorter);
     fn vrdxGetSorterKeyValueStorageRequirements(
         sorter: VrdxSorter,
         max_element_count: u32,
@@ -64,6 +68,13 @@ struct VulkanContext {
     command_pool: vk::CommandPool,
     memory_properties: vk::PhysicalDeviceMemoryProperties,
     submit_lock: Mutex<()>,
+    /// Set by `shutdown`. Teardown cannot wait for the `Arc` refcount to reach
+    /// zero: background threads can still hold `Stream`s and `VulkanBuffer`s when
+    /// `main` returns, so the device would outlive the process and the driver
+    /// would tear itself down from `atexit` while its worker threads still run.
+    /// Once this is set the device is gone and every remaining `Drop` skips its
+    /// Vulkan calls.
+    destroyed: std::sync::atomic::AtomicBool,
 }
 
 impl VulkanContext {
@@ -108,7 +119,8 @@ impl VulkanContext {
             let mut feat = vk::PhysicalDeviceFeatures2::default().push_next(&mut feat12);
             unsafe { instance.get_physical_device_features2(physical, &mut feat) };
 
-            if feat12.buffer_device_address == vk::FALSE {
+            if feat12.buffer_device_address == vk::FALSE || feat12.scalar_block_layout == vk::FALSE
+            {
                 continue;
             }
 
@@ -167,7 +179,7 @@ impl VulkanContext {
         let Some((physical_device, queue_family_index, _)) = selected else {
             unsafe { instance.destroy_instance(None) };
             return Err(
-                "no Vulkan device with compute + bufferDeviceAddress + VK_KHR_push_descriptor support available"
+                "no Vulkan device with compute + bufferDeviceAddress + scalarBlockLayout + VK_KHR_push_descriptor support available"
                     .to_string(),
             );
         };
@@ -222,7 +234,31 @@ impl VulkanContext {
             command_pool,
             memory_properties,
             submit_lock: Mutex::new(()),
+            destroyed: std::sync::atomic::AtomicBool::new(false),
         })
+    }
+
+    /// False once `shutdown` has destroyed the device.
+    fn is_alive(&self) -> bool {
+        !self.destroyed.load(std::sync::atomic::Ordering::Acquire)
+    }
+
+    /// Destroy the device and instance now, regardless of the `Arc` refcount.
+    /// Returns false if another caller already did it.
+    fn destroy_now(&self) -> bool {
+        if self
+            .destroyed
+            .swap(true, std::sync::atomic::Ordering::AcqRel)
+        {
+            return false;
+        }
+        unsafe {
+            let _ = self.device.device_wait_idle();
+            self.device.destroy_command_pool(self.command_pool, None);
+            self.device.destroy_device(None);
+            self.instance.destroy_instance(None);
+        }
+        true
     }
 
     fn sync(&self) {
@@ -240,11 +276,10 @@ impl VulkanContext {
 
 impl Drop for VulkanContext {
     fn drop(&mut self) {
-        unsafe {
-            let _ = self.device.device_wait_idle();
-            self.device.destroy_command_pool(self.command_pool, None);
-            self.device.destroy_device(None);
-            self.instance.destroy_instance(None);
+        // Normally `shutdown` already did this; this only covers contexts that
+        // were never handed to `shutdown` (tests, probing, host fallback paths).
+        if self.destroy_now() {
+            log::debug!("Vulkan device destroyed without an explicit shutdown");
         }
     }
 }
@@ -284,8 +319,58 @@ impl Clone for StreamBackend {
     }
 }
 
-static GLOBAL_VULKAN_CONTEXT: OnceLock<Result<Arc<VulkanContext>, String>> = OnceLock::new();
+/// The process-wide Vulkan context, behind a `Mutex<Option<..>>` so `shutdown` can
+/// release it. A plain `OnceLock<Arc<..>>` would pin the refcount above zero for the
+/// life of the process (Rust never drops statics), so `VulkanContext::drop` could
+/// never run and the process would reach `exit()` with a live `VkInstance`.
+///
+/// The slot is refilled on demand, so `shutdown` is not permanent: an embedder that
+/// tears down one session and starts another gets a fresh device.
+static GLOBAL_VULKAN_CONTEXT: OnceLock<Mutex<Option<Arc<VulkanContext>>>> = OnceLock::new();
+/// Set once if the device could never be created, so a permanent failure is not
+/// retried (device enumeration is expensive) on every `Stream::new`.
+static VULKAN_UNAVAILABLE: OnceLock<String> = OnceLock::new();
 static GLOBAL_HOST_CONTEXT: OnceLock<Arc<HostContext>> = OnceLock::new();
+
+#[cfg(feature = "vulkan_enable")]
+fn global_vulkan_slot() -> &'static Mutex<Option<Arc<VulkanContext>>> {
+    GLOBAL_VULKAN_CONTEXT.get_or_init(|| Mutex::new(None))
+}
+
+/// The shared context, creating or re-creating it if needed.
+#[cfg(feature = "vulkan_enable")]
+fn global_vulkan_context() -> Result<Arc<VulkanContext>, &'static str> {
+    if let Some(e) = VULKAN_UNAVAILABLE.get() {
+        return Err(e.as_str());
+    }
+
+    let mut guard = global_vulkan_slot()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+
+    if let Some(ctx) = guard.as_ref() {
+        if ctx.is_alive() {
+            return Ok(Arc::clone(ctx));
+        }
+        // Released by `shutdown`; the handles are dead, so build a new device.
+        *guard = None;
+    }
+
+    match VulkanContext::try_new() {
+        Ok(ctx) => {
+            let ctx = Arc::new(ctx);
+            *guard = Some(Arc::clone(&ctx));
+            Ok(ctx)
+        }
+        Err(e) => {
+            let _ = VULKAN_UNAVAILABLE.set(e);
+            Err(VULKAN_UNAVAILABLE
+                .get()
+                .map(String::as_str)
+                .unwrap_or("Vulkan unavailable"))
+        }
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct VulkanVersion {
@@ -325,16 +410,11 @@ pub fn is_available() -> bool {
     }
 
     #[cfg(feature = "vulkan_enable")]
-    GLOBAL_VULKAN_CONTEXT
-        .get_or_init(|| VulkanContext::try_new().map(Arc::new))
-        .is_ok()
+    global_vulkan_context().is_ok()
 }
 
 pub fn get_vulkan_metadata() -> Option<VulkanMetadata> {
-    let context = GLOBAL_VULKAN_CONTEXT
-        .get_or_init(|| VulkanContext::try_new().map(Arc::new))
-        .as_ref()
-        .ok()?;
+    let context = global_vulkan_context().ok()?;
 
     let properties = unsafe {
         context
@@ -356,12 +436,9 @@ pub fn get_vulkan_metadata() -> Option<VulkanMetadata> {
 impl Stream {
     #[cfg(feature = "vulkan_enable")]
     pub fn new() -> Self {
-        let vulkan_res =
-            GLOBAL_VULKAN_CONTEXT.get_or_init(|| VulkanContext::try_new().map(Arc::new));
-
-        match vulkan_res {
+        match global_vulkan_context() {
             Ok(ctx) => Self {
-                backend: StreamBackend::Vulkan(Arc::clone(ctx)),
+                backend: StreamBackend::Vulkan(ctx),
             },
             Err(e) => {
                 log::warn!(
@@ -572,10 +649,7 @@ fn allocate_download_staging_buffer(
         context,
         size.max(1),
         vk::BufferUsageFlags::TRANSFER_DST,
-        &[
-            vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT,
-            vk::MemoryPropertyFlags::HOST_VISIBLE,
-        ],
+        &HOST_READBACK_PREFERENCES,
     )
 }
 
@@ -923,6 +997,17 @@ impl VulkanBuffer {
         )
     }
 
+    /// Host-visible buffer the CPU mainly *reads*.
+    ///
+    /// `find_memory_type` returns the lowest matching index, and on NVIDIA that is
+    /// the plain `HOST_VISIBLE|HOST_COHERENT` type, which is write-combined: fine to
+    /// write, but host reads from it run at a few hundred MB/s because they are
+    /// uncached. Asking for `HOST_CACHED` picks the cached system-memory type
+    /// instead, which reads at normal RAM speed.
+    pub fn new_host_readback(stream: &Stream, element_size: usize, n: usize) -> Self {
+        Self::new_with_policy(stream, element_size, n, BufferMemoryPolicy::HostReadback)
+    }
+
     fn new_with_policy(
         stream: &Stream,
         element_size: usize,
@@ -957,6 +1042,12 @@ impl VulkanBuffer {
                             vk::MemoryPropertyFlags::HOST_VISIBLE,
                             vk::MemoryPropertyFlags::DEVICE_LOCAL,
                         ],
+                    ),
+                    BufferMemoryPolicy::HostReadback => allocate_buffer(
+                        context,
+                        (requested as vk::DeviceSize).max(1),
+                        usage,
+                        &HOST_READBACK_PREFERENCES,
                     ),
                 };
                 let mapped_ptr = unsafe {
@@ -1175,12 +1266,35 @@ impl VulkanBuffer {
 enum BufferMemoryPolicy {
     DeviceLocalRequired,
     HostVisiblePreferred,
+    HostReadback,
 }
+
+/// Memory preferences for buffers the host reads, best first. `HOST_CACHED` is what
+/// makes the read fast; everything after it is a correctness fallback.
+const HOST_READBACK_PREFERENCES: [vk::MemoryPropertyFlags; 4] = [
+    vk::MemoryPropertyFlags::from_raw(
+        vk::MemoryPropertyFlags::HOST_VISIBLE.as_raw()
+            | vk::MemoryPropertyFlags::HOST_COHERENT.as_raw()
+            | vk::MemoryPropertyFlags::HOST_CACHED.as_raw(),
+    ),
+    vk::MemoryPropertyFlags::from_raw(
+        vk::MemoryPropertyFlags::HOST_VISIBLE.as_raw()
+            | vk::MemoryPropertyFlags::HOST_CACHED.as_raw(),
+    ),
+    vk::MemoryPropertyFlags::from_raw(
+        vk::MemoryPropertyFlags::HOST_VISIBLE.as_raw()
+            | vk::MemoryPropertyFlags::HOST_COHERENT.as_raw(),
+    ),
+    vk::MemoryPropertyFlags::HOST_VISIBLE,
+];
 
 const EMPTY_KEY: i32 = i32::MIN;
 const THREADS_PER_GROUP: u32 = 256;
 const DESCRIPTOR_BINDING_COUNT: u32 = 18;
 const MAX_DISPATCHES_PER_SESSION: u32 = 1024;
+/// How long `submit` polls the completion fence before blocking. Sized so a typical
+/// submission is caught by the poll, without burning a core when one runs long.
+const SUBMIT_SPIN_ITERATIONS: u32 = 20_000;
 
 #[repr(C)]
 #[derive(Clone, Copy, Default, Pod, Zeroable)]
@@ -1276,6 +1390,9 @@ struct VulkanComputePipelines {
 
 impl Drop for VulkanComputePipelines {
     fn drop(&mut self) {
+        if !self.context.is_alive() {
+            return;
+        }
         unsafe {
             let device = &self.context.device;
             device.destroy_pipeline(self.hashmap_init, None);
@@ -1326,6 +1443,8 @@ struct ScratchBuffers {
     block_sums: VulkanBuffer,
     plane_compact: VulkanBuffer,
     plane_readback: VulkanBuffer,
+    // Keep the native sorter process-lifetime. Some NVIDIA drivers crash when
+    // its pipelines are explicitly destroyed during coordinated shutdown.
     sorter: VrdxSorter,
     capacity: usize,
 }
@@ -1348,6 +1467,7 @@ struct DownsampleScratchBuffers {
     counter: VulkanBuffer,
     counter_download: VulkanBuffer,
     sorter_scratch: VulkanBuffer,
+    // See ScratchBuffers::sorter: the driver reclaims this at process exit.
     sorter: VrdxSorter,
     capacity: usize,
 }
@@ -1364,6 +1484,9 @@ struct VulkanDownsampleState {
 
 impl Drop for VulkanDownsampleState {
     fn drop(&mut self) {
+        if !self.context.is_alive() {
+            return;
+        }
         unsafe {
             self.context
                 .device
@@ -1401,6 +1524,9 @@ struct VulkanGpuMapState {
 
 impl Drop for VulkanGpuMapState {
     fn drop(&mut self) {
+        if !self.context.is_alive() {
+            return;
+        }
         unsafe {
             self.context
                 .device
@@ -1640,6 +1766,16 @@ fn build_pipelines(_context: Arc<VulkanContext>) -> Arc<VulkanComputePipelines> 
     panic!("vulkan pipeline initialization requires feature `vulkan_enable`")
 }
 
+/// Work-item count for the two-elements-per-thread scan passes.
+///
+/// `exclusive_scan` and `add_block_prefix` each cover `2 * THREADS_PER_GROUP`
+/// elements per workgroup, but `dispatch` sizes the grid at one element per thread.
+/// Passing the raw element count therefore launches twice the workgroups needed, and
+/// the upper half does nothing but write zero block sums.
+fn scan_work_items(elements: u32) -> u32 {
+    elements.div_ceil(2)
+}
+
 fn div_ceil_u32(v: u32, d: u32) -> u32 {
     if v == 0 { 0 } else { 1 + (v - 1) / d }
 }
@@ -1649,6 +1785,9 @@ struct ComputeCommandResources {
     command_buffer: vk::CommandBuffer,
     descriptor_pool: vk::DescriptorPool,
     descriptor_sets: Vec<vk::DescriptorSet>,
+    /// Signalled by each submission, so `submit` can wait on just that submission
+    /// instead of idling the whole queue.
+    fence: vk::Fence,
 }
 
 impl ComputeCommandResources {
@@ -1657,12 +1796,20 @@ impl ComputeCommandResources {
             .command_pool(context.command_pool)
             .level(vk::CommandBufferLevel::PRIMARY)
             .command_buffer_count(1);
+
+        // VkCommandPool is externally synchronized. All Vulkan streams share this
+        // pool, so allocation must use the same lock as reset, submission, and free.
+        let command_pool_lock = context
+            .submit_lock
+            .lock()
+            .expect("Vulkan submission lock poisoned");
         let command_buffer = unsafe {
             context
                 .device
                 .allocate_command_buffers(&alloc)
                 .expect("failed to allocate command buffer")[0]
         };
+        drop(command_pool_lock);
 
         let pool_sizes = [vk::DescriptorPoolSize {
             ty: vk::DescriptorType::STORAGE_BUFFER,
@@ -1689,22 +1836,45 @@ impl ComputeCommandResources {
                 .expect("failed allocating descriptor sets")
         };
 
+        let fence = unsafe {
+            context
+                .device
+                .create_fence(&vk::FenceCreateInfo::default(), None)
+                .expect("failed creating compute fence")
+        };
+
         Self {
             context: Arc::clone(context),
             command_buffer,
             descriptor_pool,
             descriptor_sets,
+            fence,
         }
     }
 }
 
 impl Drop for ComputeCommandResources {
     fn drop(&mut self) {
+        if !self.context.is_alive() {
+            return;
+        }
+        // VkCommandPool is shared across streams and requires externally
+        // synchronized host access, including command-buffer deallocation.
+        let command_pool_lock = self
+            .context
+            .submit_lock
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         unsafe {
             self.context.device.free_command_buffers(
                 self.context.command_pool,
                 std::slice::from_ref(&self.command_buffer),
             );
+        }
+        drop(command_pool_lock);
+
+        unsafe {
+            self.context.device.destroy_fence(self.fence, None);
             self.context
                 .device
                 .destroy_descriptor_pool(self.descriptor_pool, None);
@@ -1789,26 +1959,21 @@ impl<'a> ComputeCommandSession<'a> {
         }
         let descriptor_set = self.resources.descriptor_sets[set_idx];
 
-        let infos: Vec<_> = (0..DESCRIPTOR_BINDING_COUNT as usize)
-            .map(|idx| {
-                let buffer = buffers.get(idx).copied().unwrap_or(self.dummy_buffer);
+        let infos: [vk::DescriptorBufferInfo; DESCRIPTOR_BINDING_COUNT as usize] =
+            std::array::from_fn(|idx| {
                 vk::DescriptorBufferInfo::default()
-                    .buffer(buffer)
+                    .buffer(buffers.get(idx).copied().unwrap_or(self.dummy_buffer))
                     .offset(0)
                     .range(vk::WHOLE_SIZE)
-            })
-            .collect();
-        let writes: Vec<_> = infos
-            .iter()
-            .enumerate()
-            .map(|(i, info)| {
+            });
+        let writes: [vk::WriteDescriptorSet; DESCRIPTOR_BINDING_COUNT as usize] =
+            std::array::from_fn(|idx| {
                 vk::WriteDescriptorSet::default()
                     .dst_set(descriptor_set)
-                    .dst_binding(i as u32)
+                    .dst_binding(idx as u32)
                     .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
-                    .buffer_info(std::slice::from_ref(info))
-            })
-            .collect();
+                    .buffer_info(std::slice::from_ref(&infos[idx]))
+            });
         unsafe {
             self.context.device.update_descriptor_sets(&writes, &[]);
 
@@ -1850,6 +2015,41 @@ impl<'a> ComputeCommandSession<'a> {
                 self.resources.command_buffer,
                 vk::PipelineStageFlags::COMPUTE_SHADER,
                 vk::PipelineStageFlags::COMPUTE_SHADER,
+                vk::DependencyFlags::empty(),
+                std::slice::from_ref(&barrier),
+                &[],
+                &[],
+            );
+        }
+    }
+
+    /// Full compute<->transfer barrier.
+    ///
+    /// `vrdxCmdSortKeyValue` starts by writing its scratch buffer with
+    /// `vkCmdUpdateBuffer`/`vkCmdFillBuffer` (transfer writes) and ends with
+    /// compute dispatches. The plain `barrier()` only covers
+    /// COMPUTE_SHADER -> COMPUTE_SHADER, so back-to-back sorts recorded into the
+    /// same command buffer race: the next sort's transfer writes to the shared
+    /// scratch buffer overlap the previous sort's still-running shaders.
+    fn sort_barrier(&self) {
+        let barrier = vk::MemoryBarrier::default()
+            .src_access_mask(
+                vk::AccessFlags::SHADER_WRITE
+                    | vk::AccessFlags::SHADER_READ
+                    | vk::AccessFlags::TRANSFER_WRITE
+                    | vk::AccessFlags::TRANSFER_READ,
+            )
+            .dst_access_mask(
+                vk::AccessFlags::SHADER_WRITE
+                    | vk::AccessFlags::SHADER_READ
+                    | vk::AccessFlags::TRANSFER_WRITE
+                    | vk::AccessFlags::TRANSFER_READ,
+            );
+        unsafe {
+            self.context.device.cmd_pipeline_barrier(
+                self.resources.command_buffer,
+                vk::PipelineStageFlags::COMPUTE_SHADER | vk::PipelineStageFlags::TRANSFER,
+                vk::PipelineStageFlags::COMPUTE_SHADER | vk::PipelineStageFlags::TRANSFER,
                 vk::DependencyFlags::empty(),
                 std::slice::from_ref(&barrier),
                 &[],
@@ -1947,18 +2147,37 @@ impl<'a> ComputeCommandSession<'a> {
                 .expect("failed to end command buffer");
             let submit = vk::SubmitInfo::default()
                 .command_buffers(std::slice::from_ref(&self.resources.command_buffer));
+            let fence = self.resources.fence;
             self.context
                 .device
-                .queue_submit(
-                    self.context.queue,
-                    std::slice::from_ref(&submit),
-                    vk::Fence::null(),
-                )
+                .reset_fences(std::slice::from_ref(&fence))
+                .expect("failed resetting compute fence");
+            self.context
+                .device
+                .queue_submit(self.context.queue, std::slice::from_ref(&submit), fence)
                 .expect("failed submitting compute work");
-            self.context
-                .device
-                .queue_wait_idle(self.context.queue)
-                .expect("failed waiting for compute queue");
+
+            // The EKF blocks on this result, so the submit round-trip is on the
+            // critical path once per iteration. `vkWaitForFences` parks in the
+            // kernel and pays a wake-up; these submissions finish in ~100us, so poll
+            // briefly first and only block if the work turns out to be long.
+            let mut signalled = false;
+            for _ in 0..SUBMIT_SPIN_ITERATIONS {
+                match self.context.device.get_fence_status(fence) {
+                    Ok(true) => {
+                        signalled = true;
+                        break;
+                    }
+                    Ok(false) => std::hint::spin_loop(),
+                    Err(e) => panic!("failed querying compute fence: {e}"),
+                }
+            }
+            if !signalled {
+                self.context
+                    .device
+                    .wait_for_fences(std::slice::from_ref(&fence), true, u64::MAX)
+                    .expect("failed waiting for compute fence");
+            }
         }
     }
 }
@@ -2020,11 +2239,15 @@ pub fn init_map(
         );
     }
 
-    {
-        let guard = global_state().lock().expect("vulkan map mutex poisoned");
-        if guard.is_some() {
-            return;
-        }
+    // Hold the map lock for the whole initialization. Releasing it between the
+    // emptiness check and the store lets two callers both observe an empty map
+    // and build a full state each; the loser's state is then dropped out from
+    // under whoever already looked it up, and the winner can be stored over a
+    // state that is mid-use. `ensure_downsample_state` already holds its guard
+    // across construction; this path was the odd one out.
+    let mut guard = global_state().lock().expect("vulkan map mutex poisoned");
+    if guard.is_some() {
+        return;
     }
 
     let backend = match &stream.backend {
@@ -2053,11 +2276,12 @@ pub fn init_map(
                 pipeline_cache: vk::PipelineCache::null(),
             };
             let mut sorter = VrdxSorter(0);
-            unsafe { vrdxCreateSorter(&sorter_ci, &mut sorter) };
+            let sorter_result = unsafe { vrdxCreateSorter(&sorter_ci, &mut sorter) };
             assert!(
-                sorter.0 != 0,
-                "vk_radix_sort initialization failed: sorter handle is null. \
-                 This backend requires VK_KHR_push_descriptor support and a compatible Vulkan implementation."
+                sorter_result == vk::Result::SUCCESS.as_raw() && sorter.0 != 0,
+                "vk_radix_sort initialization failed with {}. \
+                 This backend requires VK_KHR_push_descriptor support and a compatible Vulkan implementation.",
+                vk::Result::from_raw(sorter_result)
             );
 
             let mut requirements = VrdxSorterStorageRequirements {
@@ -2067,13 +2291,17 @@ pub fn init_map(
             unsafe {
                 vrdxGetSorterKeyValueStorageRequirements(sorter, dist_cap, &mut requirements)
             };
+            // The key/value layout is two element-sized in/out regions plus a
+            // histogram, so anything at or below `dist_cap * 4` bytes means the
+            // sorter did not report real requirements.
             assert!(
-                requirements.size > 0
+                requirements.size > u64::from(dist_cap) * 4
                     && requirements
                         .usage
                         .contains(vk::BufferUsageFlags::STORAGE_BUFFER),
-                "vk_radix_sort reported invalid storage requirements. \
-                 Refusing to continue to avoid undefined behavior."
+                "vk_radix_sort reported invalid storage requirements ({} bytes for {dist_cap} elements). \
+                 Refusing to continue to avoid undefined behavior.",
+                requirements.size
             );
 
             let mut scratch = ScratchBuffers {
@@ -2087,7 +2315,7 @@ pub fn init_map(
                 update_flags: VulkanBuffer::new(stream, size_of::<u32>(), 1),
                 sorted_points: VulkanBuffer::new(stream, size_of::<crate::types::Point>(), 1),
                 // Keep tiny counters host-visible for frequent scalar readback/writes.
-                counter: VulkanBuffer::new_host_visible(stream, size_of::<u32>(), 3),
+                counter: VulkanBuffer::new_host_readback(stream, size_of::<u32>(), 3),
                 sorter_scratch: VulkanBuffer::new(stream, 1, requirements.size as usize),
                 // This buffer is hot in map-full replacement and LRU sort; keep it device-local.
                 lru_mapping: VulkanBuffer::new(
@@ -2104,7 +2332,7 @@ pub fn init_map(
                 new_offset: VulkanBuffer::new(stream, size_of::<u32>(), 1),
                 block_sums: VulkanBuffer::new(stream, size_of::<u32>(), 1),
                 plane_compact: VulkanBuffer::new(stream, size_of::<crate::types::PointNormal>(), 1),
-                plane_readback: VulkanBuffer::new_host_visible(
+                plane_readback: VulkanBuffer::new_host_readback(
                     stream,
                     size_of::<crate::types::PointNormal>(),
                     1,
@@ -2201,7 +2429,7 @@ pub fn init_map(
         }
     };
 
-    *global_state().lock().expect("vulkan map mutex poisoned") = Some(VulkanMapState { backend });
+    *guard = Some(VulkanMapState { backend });
 }
 
 fn vk_buffer_handle(buf: &VulkanBuffer) -> vk::Buffer {
@@ -2250,10 +2478,11 @@ fn ensure_downsample_state(stream: &Stream, capacity: usize) {
         pipeline_cache: vk::PipelineCache::null(),
     };
     let mut sorter = VrdxSorter(0);
-    unsafe { vrdxCreateSorter(&sorter_ci, &mut sorter) };
+    let sorter_result = unsafe { vrdxCreateSorter(&sorter_ci, &mut sorter) };
     assert!(
-        sorter.0 != 0,
-        "vk_radix_sort initialization failed for Vulkan downsampling"
+        sorter_result == vk::Result::SUCCESS.as_raw() && sorter.0 != 0,
+        "vk_radix_sort initialization failed for Vulkan downsampling with {}",
+        vk::Result::from_raw(sorter_result)
     );
 
     let mut requirements = VrdxSorterStorageRequirements {
@@ -2270,7 +2499,7 @@ fn ensure_downsample_state(stream: &Stream, capacity: usize) {
         indices: VulkanBuffer::new(stream, size_of::<u32>(), new_cap),
         selected: VulkanBuffer::new(stream, size_of::<PointXYZIT>(), new_cap),
         medoids: VulkanBuffer::new(stream, size_of::<PointXYZIT>(), new_cap),
-        output_download: VulkanBuffer::new_host_visible(stream, size_of::<PointXYZIT>(), new_cap),
+        output_download: VulkanBuffer::new_host_readback(stream, size_of::<PointXYZIT>(), new_cap),
         run_starts: VulkanBuffer::new(stream, size_of::<u32>(), new_cap),
         run_ends: VulkanBuffer::new(stream, size_of::<u32>(), new_cap),
         unique_keys: VulkanBuffer::new(stream, size_of::<i32>(), new_cap),
@@ -2279,7 +2508,7 @@ fn ensure_downsample_state(stream: &Stream, capacity: usize) {
         block_sums: VulkanBuffer::new(stream, size_of::<u32>(), block_sums_cap),
         counter_upload: VulkanBuffer::new_host_visible(stream, size_of::<u32>(), 3),
         counter: VulkanBuffer::new(stream, size_of::<u32>(), 3),
-        counter_download: VulkanBuffer::new_host_visible(stream, size_of::<u32>(), 3),
+        counter_download: VulkanBuffer::new_host_readback(stream, size_of::<u32>(), 3),
         sorter_scratch: VulkanBuffer::new(stream, 1, requirements.size as usize),
         sorter,
         capacity: new_cap,
@@ -2461,7 +2690,7 @@ pub fn downsample_points_vulkan(
             &params,
             selected_size as u32,
         );
-        session.barrier();
+        session.sort_barrier();
         unsafe {
             vrdxCmdSortKeyValue(
                 session.command_buffer(),
@@ -2477,7 +2706,7 @@ pub fn downsample_points_vulkan(
                 0,
             );
         }
-        session.barrier();
+        session.sort_barrier();
     }
 
     params.j = 5;
@@ -2488,7 +2717,7 @@ pub fn downsample_points_vulkan(
         &params,
         selected_size as u32,
     );
-    session.barrier();
+    session.sort_barrier();
     unsafe {
         vrdxCmdSortKeyValue(
             session.command_buffer(),
@@ -2504,7 +2733,7 @@ pub fn downsample_points_vulkan(
             0,
         );
     }
-    session.barrier();
+    session.sort_barrier();
     session.write_timestamp(state.timestamp_pool, 3);
     session.write_timestamp(state.timestamp_pool, 4);
 
@@ -2543,7 +2772,7 @@ pub fn downsample_points_vulkan(
         state.compute.exclusive_scan,
         &rle_buffers,
         &params,
-        selected_size as u32,
+        scan_work_items(selected_size as u32),
     );
     session.barrier();
     session.dispatch(
@@ -2559,7 +2788,7 @@ pub fn downsample_points_vulkan(
         state.compute.add_block_prefix,
         &rle_buffers,
         &params,
-        selected_size as u32,
+        scan_work_items(selected_size as u32),
     );
     session.barrier();
     session.write_timestamp(state.timestamp_pool, 6);
@@ -2754,7 +2983,7 @@ fn ensure_scratch_capacity(state: &mut VulkanGpuMapState, stream: &Stream, n_poi
     state.scratch.plane_compact =
         VulkanBuffer::new(stream, size_of::<crate::types::PointNormal>(), new_cap);
     state.scratch.plane_readback =
-        VulkanBuffer::new_host_visible(stream, size_of::<crate::types::PointNormal>(), new_cap);
+        VulkanBuffer::new_host_readback(stream, size_of::<crate::types::PointNormal>(), new_cap);
     // block_sums needs ceil(new_cap / 512) elements, round up to next power of 2 for safety
     let block_sums_cap = (new_cap / 512 + 1).next_power_of_two().max(1024);
     state.scratch.block_sums = VulkanBuffer::new(stream, size_of::<u32>(), block_sums_cap);
@@ -2764,6 +2993,10 @@ fn ensure_scratch_capacity(state: &mut VulkanGpuMapState, stream: &Stream, n_poi
         usage: vk::BufferUsageFlags::empty(),
     };
     let sort_capacity = new_cap.max(state.dist_cap as usize);
+    assert!(
+        state.scratch.sorter.0 != 0,
+        "Vulkan map scratch has a null radix sorter; the map state was not initialized by init_map"
+    );
     unsafe {
         vrdxGetSorterKeyValueStorageRequirements(
             state.scratch.sorter,
@@ -2829,6 +3062,7 @@ fn rebuild_gpu_lru_order(
             scratch.lru_keys.capacity() as u32,
         );
     } else {
+        session.sort_barrier();
         unsafe {
             vrdxCmdSortKeyValue(
                 session.command_buffer(),
@@ -2844,7 +3078,7 @@ fn rebuild_gpu_lru_order(
                 0,
             );
         }
-        session.barrier();
+        session.sort_barrier();
     }
 }
 
@@ -2977,6 +3211,7 @@ pub fn add_to_map(
                 );
             } else {
                 let sorter_scratch = vk_buffer_handle(&state.scratch.sorter_scratch);
+                session.sort_barrier();
                 unsafe {
                     vrdxCmdSortKeyValue(
                         session.command_buffer(),
@@ -2992,7 +3227,7 @@ pub fn add_to_map(
                         0,
                     );
                 }
-                session.barrier();
+                session.sort_barrier();
             }
 
             let counters_host = [n_points as u32, state.add_cursor, 0u32];
@@ -3013,7 +3248,7 @@ pub fn add_to_map(
                 state.compute.exclusive_scan,
                 &all_buffers,
                 &params,
-                n_points as u32,
+                scan_work_items(n_points as u32),
             );
             session.barrier();
 
@@ -3031,7 +3266,7 @@ pub fn add_to_map(
                 state.compute.add_block_prefix,
                 &all_buffers,
                 &params,
-                n_points as u32,
+                scan_work_items(n_points as u32),
             );
             session.barrier();
 
@@ -3059,7 +3294,7 @@ pub fn add_to_map(
                 state.compute.exclusive_scan,
                 &all_buffers,
                 &params,
-                n_points as u32,
+                scan_work_items(n_points as u32),
             );
             session.barrier();
 
@@ -3077,7 +3312,7 @@ pub fn add_to_map(
                 state.compute.add_block_prefix,
                 &all_buffers,
                 &params,
-                n_points as u32,
+                scan_work_items(n_points as u32),
             );
             session.barrier();
 
@@ -3205,6 +3440,104 @@ pub fn get_map_size() -> u32 {
 
 pub fn cleanup_map() {
     *global_state().lock().expect("vulkan map mutex poisoned") = None;
+}
+
+/// Live embedder sessions, so `session_release` only tears down at the last one.
+static LIVE_SESSIONS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+/// Register a session that is using the Vulkan backend.
+///
+/// Embedders that create and drop handles (the C API, the Python module) pair this
+/// with [`session_release`], so that dropping one handle cannot destroy the device
+/// out from under another that is still running.
+pub fn session_retain() {
+    LIVE_SESSIONS.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+}
+
+/// End a session registered with [`session_retain`], running [`shutdown`] when the
+/// last one ends.
+pub fn session_release() {
+    if LIVE_SESSIONS
+        .fetch_sub(1, std::sync::atomic::Ordering::AcqRel)
+        .saturating_sub(1)
+        == 0
+    {
+        shutdown();
+    }
+}
+
+/// Release every Vulkan object this crate owns, in order, before the process exits.
+///
+/// `MAP_STATE` and `DOWNSAMPLE_STATE` are `OnceLock` statics, and Rust never drops
+/// statics. Each holds an `Arc<VulkanContext>`, so without this the refcount never
+/// reaches zero, `VulkanContext::drop` never runs, and the process reaches `exit()`
+/// with a live `VkInstance`. The NVIDIA driver then tears itself down from an
+/// `atexit` handler while its own worker threads are still parked in the driver,
+/// and one of them faults on state the handler already freed.
+///
+/// Call this once, at the end of the run, after backend work has been quiesced.
+/// Any Vulkan call afterwards will panic; the map has to be re-initialized with
+/// `init_map` first.
+pub fn shutdown() {
+    let map = global_state()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .take();
+    let downsample = downsample_state()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .take();
+
+    let context = match (&map, &downsample) {
+        (Some(VulkanMapState { backend: MapBackendState::Vulkan(gpu) }), _) => {
+            Some(Arc::clone(&gpu.context))
+        }
+        (_, Some(state)) => Some(Arc::clone(&state.context)),
+        // Neither state exists, but a context may still be live: `Stream`s are handed
+        // out for downsampling before any map is initialized.
+        _ => global_vulkan_slot()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone(),
+    };
+
+    let Some(context) = context else {
+        return;
+    };
+
+    // The sorters own device pipelines and layouts, so they have to go while the
+    // device is still alive, and only once the GPU is finished with them.
+    unsafe {
+        let _ = context.device.device_wait_idle();
+    }
+
+    let mut map = map;
+    if let Some(VulkanMapState { backend: MapBackendState::Vulkan(gpu) }) = &mut map {
+        unsafe { vrdxDestroySorter(gpu.scratch.sorter) };
+        gpu.scratch.sorter = VrdxSorter(0);
+    }
+    let mut downsample = downsample;
+    if let Some(state) = &mut downsample {
+        unsafe { vrdxDestroySorter(state.scratch.sorter) };
+        state.scratch.sorter = VrdxSorter(0);
+    }
+
+    // Buffers, pipelines, descriptor pools and query pools go here, while the
+    // device is still alive.
+    drop(map);
+    drop(downsample);
+
+    global_vulkan_slot()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .take();
+
+    // Destroy the device explicitly rather than waiting for the refcount: other
+    // threads may still hold `Stream`s or `VulkanBuffer`s when `main` returns, and
+    // those objects would otherwise keep the instance alive past `exit()`. Their
+    // `Drop` impls check `VulkanContext::is_alive` and become no-ops from here on.
+    context.destroy_now();
+    drop(context);
 }
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -3442,7 +3775,7 @@ pub fn planes_vulkan(
                 state.compute.exclusive_scan,
                 &scan_buffers,
                 &params,
-                cloud.n as u32,
+                scan_work_items(cloud.n as u32),
             );
             session.barrier();
             session.dispatch(
@@ -3458,7 +3791,7 @@ pub fn planes_vulkan(
                 state.compute.add_block_prefix,
                 &scan_buffers,
                 &params,
-                cloud.n as u32,
+                scan_work_items(cloud.n as u32),
             );
             session.barrier();
             session.dispatch(
@@ -3621,12 +3954,15 @@ impl Drop for VulkanBuffer {
                 allocation_size,
                 ..
             } => {
-                unsafe {
-                    if mapped_ptr.is_some() {
-                        context.device.unmap_memory(*memory);
+                // After `shutdown` the device is gone and these handles died with it.
+                if context.is_alive() {
+                    unsafe {
+                        if mapped_ptr.is_some() {
+                            context.device.unmap_memory(*memory);
+                        }
+                        context.device.destroy_buffer(*buffer, None);
+                        context.device.free_memory(*memory, None);
                     }
-                    context.device.destroy_buffer(*buffer, None);
-                    context.device.free_memory(*memory, None);
                 }
                 decrement_allocation(*allocation_size);
             }

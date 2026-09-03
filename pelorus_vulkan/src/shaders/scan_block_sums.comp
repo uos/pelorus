@@ -6,58 +6,83 @@
 layout(local_size_x = 256) in;
 
 layout(std430, set = 0, binding = 17) buffer BlockSums { uint block_sums[]; };
+layout(std430, set = 0, binding = 10) readonly buffer Counters { uint unique_count; };
 
 shared uint shared_data[512];
+// Running total across chunks, so this single workgroup can scan a block_sums array
+// of any length. It previously covered one chunk only, which silently produced wrong
+// prefixes above 512 blocks, i.e. above 262144 elements in a scan.
+shared uint carry;
 
 void main() {
     uint lid = gl_LocalInvocationID.x;
     uint group_size = gl_WorkGroupSize.x;
+    uint chunk = 2u * group_size;
 
-    uint idx1 = lid;
-    uint idx2 = lid + group_size;
+    // exclusive_scan.comp covers `chunk` elements per workgroup, so this many of its
+    // block sums are meaningful. Entries past that are never read by
+    // add_block_prefix.comp: those workgroups fall entirely beyond `unique_count`.
+    uint block_count = (unique_count + chunk - 1u) / chunk;
 
-    // Load block sums into shared memory
-    // Note: we treat block_sums as both input and output
-    shared_data[lid] = block_sums[idx1];
-    shared_data[lid + group_size] = (idx2 < 1024u) ? block_sums[idx2] : 0u;
-
-    barrier();
-
-    // Upsweep
-    uint offset = 1u;
-    for (uint d = group_size; d > 0u; d >>= 1u) {
-        if (lid < d) {
-            uint ai = offset * (2u * lid + 1u) - 1u;
-            uint bi = offset * (2u * lid + 2u) - 1u;
-            shared_data[bi] += shared_data[ai];
-        }
-        barrier();
-        offset *= 2u;
-    }
-
-    // Clear last element
     if (lid == 0u) {
-        shared_data[2u * group_size - 1u] = 0u;
+        carry = 0u;
     }
-
     barrier();
 
-    // Downsweep
-    for (uint d = 1u; d < 2u * group_size; d *= 2u) {
-        offset >>= 1u;
+    for (uint base = 0u; base < block_count; base += chunk) {
+        uint idx1 = base + lid;
+        uint idx2 = base + lid + group_size;
+
+        shared_data[lid] = (idx1 < block_count) ? block_sums[idx1] : 0u;
+        shared_data[lid + group_size] = (idx2 < block_count) ? block_sums[idx2] : 0u;
+
         barrier();
-        if (lid < d) {
-            uint ai = offset * (2u * lid + 1u) - 1u;
-            uint bi = offset * (2u * lid + 2u) - 1u;
-            uint t = shared_data[ai];
-            shared_data[ai] = shared_data[bi];
-            shared_data[bi] += t;
+
+        // Upsweep
+        uint offset = 1u;
+        for (uint d = group_size; d > 0u; d >>= 1u) {
+            if (lid < d) {
+                uint ai = offset * (2u * lid + 1u) - 1u;
+                uint bi = offset * (2u * lid + 2u) - 1u;
+                shared_data[bi] += shared_data[ai];
+            }
+            barrier();
+            offset *= 2u;
         }
+
+        // Total for this chunk, then clear the last element
+        uint chunk_total = 0u;
+        if (lid == 0u) {
+            chunk_total = shared_data[chunk - 1u];
+            shared_data[chunk - 1u] = 0u;
+        }
+
+        barrier();
+
+        // Downsweep
+        for (uint d = 1u; d < chunk; d *= 2u) {
+            offset >>= 1u;
+            barrier();
+            if (lid < d) {
+                uint ai = offset * (2u * lid + 1u) - 1u;
+                uint bi = offset * (2u * lid + 2u) - 1u;
+                uint t = shared_data[ai];
+                shared_data[ai] = shared_data[bi];
+                shared_data[bi] += t;
+            }
+        }
+
+        barrier();
+
+        uint chunk_base = carry;
+        if (idx1 < block_count) block_sums[idx1] = shared_data[lid] + chunk_base;
+        if (idx2 < block_count) block_sums[idx2] = shared_data[lid + group_size] + chunk_base;
+
+        barrier();
+
+        if (lid == 0u) {
+            carry = chunk_base + chunk_total;
+        }
+        barrier();
     }
-
-    barrier();
-
-    // Write results back to block_sums
-    block_sums[idx1] = shared_data[lid];
-    if (idx2 < 1024u) block_sums[idx2] = shared_data[lid + group_size];
 }

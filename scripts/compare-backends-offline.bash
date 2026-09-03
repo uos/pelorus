@@ -263,6 +263,33 @@ setup_output_dir() {
     log_info "Output directory: $OUTPUT_DIR"
 }
 
+capture_core_backtrace() {
+    local backend_name="$1"
+    local run_started="$2"
+
+    if [[ "${PELORUS_CAPTURE_CORES:-0}" != "1" ]]; then
+        return
+    fi
+    if ! command -v coredumpctl &> /dev/null || ! command -v gdb &> /dev/null; then
+        log_warn "Cannot capture $backend_name backtrace: coredumpctl and gdb are required"
+        return
+    fi
+
+    local executable core_file
+    executable="$(readlink -f target/release/pelorus)"
+    core_file="${OUTPUT_DIR}/pelorus_${backend_name,,}.core"
+    log_info "Extracting $backend_name core dump for native backtrace..."
+    if coredumpctl --quiet --since "$run_started" -1 --output "$core_file" dump "$executable"; then
+        gdb -q -batch \
+            -ex "set debuginfod enabled off" \
+            -ex "set pagination off" \
+            -ex "thread apply all backtrace full" \
+            "$executable" "$core_file" || true
+    else
+        log_warn "No core dump for $executable was available through coredumpctl"
+    fi
+}
+
 run_backend_test() {
     local backend_name="$1"
     local feature_flag="$2"
@@ -299,6 +326,9 @@ run_backend_test() {
     local backend_lower
     backend_lower="$(echo "$backend_name" | tr '[:upper:]' '[:lower:]')"
     local run_log="${OUTPUT_DIR}/${backend_lower}_run.log"
+    local run_started
+    # `date --iso-8601` is GNU-only; this format works on GNU and BSD date alike.
+    run_started="$(date +"%Y-%m-%d %H:%M:%S")"
     : > "$run_log"
     if [[ -n "$timeout_cmd" ]]; then
         # Pipe through tee so pelorus sees non-interactive stdout and skips TUI mode.
@@ -310,6 +340,9 @@ run_backend_test() {
     # Check for timeout exit code (124 from timeout/gtimeout)
     if [[ $exit_code -eq 124 ]]; then
         fail "$backend_name run timed out after 900 seconds"
+    elif [[ $exit_code -eq 139 ]]; then
+        capture_core_backtrace "$backend_name" "$run_started"
+        fail "$backend_name run failed with SIGSEGV (exit code 139)"
     elif [[ $exit_code -ne 0 ]]; then
         fail "$backend_name run failed with exit code $exit_code"
     fi

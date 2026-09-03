@@ -481,6 +481,10 @@ impl Handle {
 
         let thread_handle = thread::spawn(move || processing_thread_main(processing_thread));
 
+        // Paired with the release in `Drop`, so process-wide GPU resources are torn
+        // down when the last handle goes away rather than at `exit()`.
+        pelorus_reg::backend_session_retain();
+
         Ok(Handle {
             prelio: Arc::new(Mutex::new(Some(prelio))),
             result_receiver: result_rx,
@@ -789,5 +793,8 @@ impl Drop for Handle {
         if let Some(handle) = self._processing_thread.take() {
             let _ = handle.join();
         }
+
+        // After the worker is joined, so its GPU buffers are gone first.
+        pelorus_reg::backend_session_release();
     }
 }

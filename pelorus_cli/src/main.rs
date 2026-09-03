@@ -3754,6 +3754,16 @@ fn lio_with_ready_signal(
         // Ensure backend work is quiesced and map state is released before GPU
         // buffers/contexts in this thread are dropped.
         active_backend.stream_sync();
+        // Release GPU buffers before the backend tears the device down; every
+        // child object has to be gone before the device is destroyed.
+        pipeline.release_gpu_buffers();
+        #[cfg(feature = "vulkan")]
+        if matches!(active_backend, ActiveBackend::Vulkan(_)) {
+            drop(std::mem::replace(
+                &mut persistent_cloud_buf,
+                LocatedBufferView::Ram(Vec::new()),
+            ));
+        }
         match &active_backend {
             ActiveBackend::Cpu => {}
             #[cfg(feature = "cuda")]
@@ -3761,7 +3771,11 @@ fn lio_with_ready_signal(
             #[cfg(feature = "metal")]
             ActiveBackend::Metal(_) => pelorus_metal::cleanup_map(),
             #[cfg(feature = "vulkan")]
-            ActiveBackend::Vulkan(_) => pelorus_vulkan::cleanup_map(),
+            // Releases the map *and* the downsample state, so the device and
+            // instance are destroyed when `active_backend` drops rather than
+            // being left alive for the NVIDIA driver's atexit handler to race
+            // against its own worker threads.
+            ActiveBackend::Vulkan(_) => pelorus_vulkan::shutdown(),
         }
         drain_filtered_imu_mcap(&mut mcap_writer, &mut filtered_imu_rx)?;
         if let Some(child_frame) = realtime_export_child_frame.as_deref() {
