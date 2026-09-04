@@ -46,18 +46,19 @@ jobs:
   #         rustup default stable
   #         cargo build --features vulkan --jobs 2
 
-  lyrical-build:
-    runs-on: ubuntu-dev-resolute
-    container:
-      image: docker.io/stelzo/ubuntu-dev:lyrical
-    steps:
-      - run: |
-          apt-get update -y
-          apt-get install -y nodejs npm cargo git
-      - uses: actions/checkout@v4
-      - name: Build lyrical target
-        run: |
-          cargo build
+  # Lyrical is on hold: humble and jazzy are the supported targets for now.
+  # lyrical-build:
+  #   runs-on: ubuntu-dev-resolute
+  #   container:
+  #     image: docker.io/stelzo/ubuntu-dev:lyrical
+  #   steps:
+  #     - run: |
+  #         apt-get update -y
+  #         apt-get install -y nodejs npm cargo git
+  #     - uses: actions/checkout@v4
+  #     - name: Build lyrical target
+  #       run: |
+  #         cargo build
 
   glim-build:
     runs-on: ubuntu-dev-resolute
@@ -106,3 +107,147 @@ jobs:
           cargo check --target x86_64-unknown-linux-musl -p pelorus_cli --no-default-features --features ros2-client,processing-time-export,rayon
           cargo check --target x86_64-unknown-linux-musl -p pelorus_cli --no-default-features --features offline-hiroz,processing-time-export,rayon
 
+  ros-debs-build:
+    # Mirrors what the release `ros-debs` job ends up compiling: the deb is built
+    # via CMakeLists.txt -> r2r_cargo.cmake, which invokes cargo with exactly the
+    # feature set below (see r2r_cargo.cmake). Checking it here catches ROS/r2r
+    # build breakage on every push instead of only when a release tag is pushed.
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Lyrical is on hold; re-enabling it needs r2r > 0.9.5, which is not
+          # on crates.io yet (tag 0.9.6 of sequenceplanner/r2r has the support),
+          # so it also needs the patch step described below.
+          # - image: docker.io/stelzo/ubuntu-dev:lyrical
+          #   distro: lyrical
+          - image: docker.io/stelzo/ubuntu-dev:jazzy
+            distro: jazzy
+          - image: docker.io/stelzo/ubuntu-dev:humble
+            distro: humble
+    runs-on: ubuntu-dev-resolute
+    container:
+      image: ${{ matrix.image }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check package version consistency
+        run: |
+          set -euo pipefail
+          cargo_ver=$(grep -Po '^\s*version\s*=\s*"\K[^"]+' Cargo.toml)
+          xml_ver=$(grep -Po '<\s*version\s*>\K[^<]+' package.xml)
+          if [[ "$cargo_ver" != "$xml_ver" ]]; then
+            echo "Versions differ! Cargo.toml: $cargo_ver, package.xml: $xml_ver" >&2
+            exit 1
+          fi
+      - name: Check ROS deb build
+        env:
+          DISTRO: ${{ matrix.distro }}
+        run: |
+          set -euo pipefail
+          ulimit -n 65536
+          apt-get update -y
+          apt-get install -y libclang-dev
+          # These images pin an older stable than the workspace's rust-version,
+          # and `rustup default` would happily keep it, so force a fresh one -
+          # same dance as the release `ros-debs` job.
+          rustup toolchain uninstall stable
+          rustup toolchain install stable
+          rustup default stable
+
+          if [ ! -f "/opt/ros/$DISTRO/setup.bash" ]; then
+            echo "No ROS install for $DISTRO in this image" >&2
+            exit 1
+          fi
+          # The ROS setup scripts read unset variables (AMENT_TRACE_SETUP_FILES
+          # and friends), so errexit/nounset have to come off while sourcing.
+          set +eu
+          . "/opt/ros/$DISTRO/setup.bash"
+          set -eu
+          export ROS_DISTRO="$DISTRO"
+
+          # When lyrical comes back, r2r 0.9.5 on crates.io predates its support
+          # and has to be patched in from git here (the tag has no "v" prefix).
+          # `cargo update -p r2r` is required: without it the lockfile keeps
+          # 0.9.5 and cargo only warns that the patch went unused. Drop the
+          # `--locked` below when doing so, or run the update before it.
+          # if [ "$DISTRO" = "lyrical" ]; then
+          #   {
+          #     echo ""
+          #     echo "[patch.crates-io]"
+          #     echo 'r2r = { version = "0.9.6", git = "https://github.com/sequenceplanner/r2r", tag = "0.9.6" }'
+          #   } >> Cargo.toml
+          #   cargo update -p r2r
+          # fi
+
+          cargo check -p pelorus_cli --no-default-features --features ros2c,rat,rayon --locked
+
+  root-cmake-glim:
+    # Additional coverage for the optional GLIM block in the root CMakeLists,
+    # i.e. the ament/colcon entry point. `glim-build` already compiles and links
+    # the plugin standalone and stays the job that proves it builds; this one
+    # only checks that the ament path wires it up - the dependency probe, the
+    # add_subdirectory, the install rules and the install prefix - so it stops
+    # after `cmake` configure instead of repeating that build.
+    #
+    # Only the "GLIM absent" half runs today: configuring the root CMakeLists
+    # needs ament_cmake plus the message packages, and no image has both ROS and
+    # GLIM - the ROS images have no GLIM, and glim-noble has no /opt/ros (which
+    # is why `glim-build` above never sources a setup.bash). Enabling the row
+    # below needs an image carrying both.
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # - image: docker.io/stelzo/ubuntu-dev:glim-noble
+          #   glim: expected
+          - image: docker.io/stelzo/ubuntu-dev:jazzy
+            glim: absent
+    runs-on: ubuntu-dev-resolute
+    container:
+      image: ${{ matrix.image }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Configure the ament package
+        env:
+          GLIM: ${{ matrix.glim }}
+        run: |
+          set -euo pipefail
+          ulimit -n 65536
+          apt-get update -y
+          apt-get install -y libclang-dev
+          rustup default stable
+
+          # The ROS setup scripts read unset variables (AMENT_TRACE_SETUP_FILES
+          # and friends), so errexit/nounset have to come off while sourcing.
+          set +eu
+          for distro in jazzy humble; do
+            if [ -f "/opt/ros/$distro/setup.bash" ]; then
+              . "/opt/ros/$distro/setup.bash"
+              export ROS_DISTRO="$distro"
+              break
+            fi
+          done
+          set -eu
+          if [ -z "${ROS_DISTRO:-}" ]; then
+            echo "No supported ROS distro found in this image" >&2
+            exit 1
+          fi
+
+          PREFIX="$(pwd)/install/pelorus"
+          cmake -S . -B build/ament-glim -DCMAKE_INSTALL_PREFIX="$PREFIX" 2>&1 | tee configure.log
+
+          if [ "$GLIM" = "expected" ]; then
+            grep -q "building the pelorus GLIM odometry plugin" configure.log
+            # the plugin has to end up in the package's install rules, otherwise
+            # it never reaches the colcon prefix
+            grep -rq odometry_estimation_pelorus \
+              --include=cmake_install.cmake build/ament-glim
+            # the subproject must not force its own prefix onto the parent
+            grep -Fq "CMAKE_INSTALL_PREFIX:PATH=$PREFIX" build/ament-glim/CMakeCache.txt
+            echo "GLIM plugin is wired into the ament build"
+          else
+            grep -q "GLIM odometry plugin skipped" configure.log
+            ! grep -rq odometry_estimation_pelorus \
+              --include=cmake_install.cmake build/ament-glim
+            echo "GLIM absent, node configures without the plugin"
+          fi

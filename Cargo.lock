@@ -5862,7 +5862,7 @@ dependencies = [
  "ros_pointcloud2",
  "thiserror 2.0.20",
  "tokio",
- "transforms_io 0.5.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "transforms_io 0.5.1",
  "transforms_io_hiroz",
  "zenoh-buffers",
 ]
@@ -9585,8 +9585,23 @@ dependencies = [
 [[package]]
 name = "transforms_io"
 version = "0.5.0"
+source = "git+https://codeberg.org/stelzo/transforms_io?tag=v0.5.0#d8f86e45411c5e630cd34d0d984e0d5943d455dc"
+dependencies = [
+ "futures-lite",
+ "log",
+ "mt_pubsub",
+ "nalgebra 0.35.0",
+ "ros2-interfaces-jazzy-rkyv",
+ "thiserror 2.0.20",
+ "tokio",
+ "transforms",
+]
+
+[[package]]
+name = "transforms_io"
+version = "0.5.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "aee4fed95a0c65b69bb4fa5c8e20f05b622076b8b018af582faa129d51ec65a1"
+checksum = "41d9c27187a3204062e1b4c37b2c0f4167bc437a3afd198156919c82ed63712a"
 dependencies = [
  "futures-lite",
  "log",
@@ -9596,21 +9611,6 @@ dependencies = [
  "ros2-client",
  "ros2-interfaces-jazzy-rkyv",
  "ros2-interfaces-jazzy-serde",
- "thiserror 2.0.20",
- "tokio",
- "transforms",
-]
-
-[[package]]
-name = "transforms_io"
-version = "0.5.0"
-source = "git+https://codeberg.org/stelzo/transforms_io?tag=v0.5.0#d8f86e45411c5e630cd34d0d984e0d5943d455dc"
-dependencies = [
- "futures-lite",
- "log",
- "mt_pubsub",
- "nalgebra 0.35.0",
- "ros2-interfaces-jazzy-rkyv",
  "thiserror 2.0.20",
  "tokio",
  "transforms",
@@ -9627,7 +9627,7 @@ dependencies = [
  "nalgebra 0.35.0",
  "thiserror 2.0.20",
  "transforms",
- "transforms_io 0.5.0 (git+https://codeberg.org/stelzo/transforms_io?tag=v0.5.0)",
+ "transforms_io 0.5.0",
 ]
 
 [[package]]

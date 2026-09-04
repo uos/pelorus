@@ -9,8 +9,11 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 
-# Set default install prefix if not specified
-if(CMAKE_INSTALL_PREFIX_INITIALIZED_TO_DEFAULT)
+# Set default install prefix if not specified. Only when this is the top-level
+# project: as a subdirectory of the ament package the parent owns the prefix
+# (colcon passes its own), and a subproject must not force it.
+if(CMAKE_INSTALL_PREFIX_INITIALIZED_TO_DEFAULT
+   AND CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
   set(CMAKE_INSTALL_PREFIX /usr/local CACHE PATH "Default install prefix" FORCE)
 endif()
 

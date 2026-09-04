@@ -372,21 +372,21 @@ jobs:
     strategy:
       matrix:
         include:
-          - image: docker.io/stelzo/ubuntu-dev:lyrical
-            repo: resolute
-            runner: ubuntu-latest
+          # Lyrical is on hold: humble and jazzy are the supported targets for
+          # now. Re-enabling it needs r2r > 0.9.5, which is not on crates.io yet
+          # (tag 0.9.6 of sequenceplanner/r2r has the support).
+          # - image: docker.io/stelzo/ubuntu-dev:lyrical
+          #   repo: resolute
+          #   runner: ubuntu-latest
           - image: docker.io/stelzo/ubuntu-dev:jazzy
             repo: noble
             runner: ubuntu-latest
           - image: docker.io/stelzo/ubuntu-dev:humble
             repo: jammy
             runner: ubuntu-latest
-          - image: docker.io/stelzo/ubuntu-dev:lyrical
-            repo: resolute
-            runner: ubuntu-latest-arm
-          - image: docker.io/stelzo/ubuntu-dev:lyrical
-            repo: resolute
-            runner: ubuntu-latest-arm
+          # - image: docker.io/stelzo/ubuntu-dev:lyrical
+          #   repo: resolute
+          #   runner: ubuntu-latest-arm
           - image: docker.io/stelzo/ubuntu-dev:jazzy
             repo: noble
             runner: ubuntu-latest-arm
@@ -434,11 +434,14 @@ jobs:
     strategy:
       matrix:
         include:
+          # Built natively per arch instead of cross-compiled with cargo-zigbuild:
+          # rustc passes -Wl,--fix-cortex-a53-843419 for aarch64 targets and zig's
+          # linker rejects it ("unsupported linker arg").
           - target: x86_64-unknown-linux-musl
             runner: ubuntu-dev-resolute
             arch: amd64
           - target: aarch64-unknown-linux-musl
-            runner: ubuntu-dev-resolute
+            runner: ubuntu-dev-resolute-arm
             arch: arm64
     runs-on: ${{ matrix.runner }}
     steps:
@@ -449,20 +452,23 @@ jobs:
           ARCH: ${{ matrix.arch }}
         run: |
           ulimit -n 65536
+          apt-get update && apt-get install -y musl-tools
           rustup toolchain uninstall stable
           rustup toolchain install stable
           rustup target add $TARGET
 
           mkdir -p "dist/${ARCH}"
 
+          # for ring
+          export CFLAGS_aarch64_unknown_linux_musl="-D__ARM_ARCH=8"
           export RUSTFLAGS="-C target-feature=+crt-static"
-          cargo zigbuild -p pelorus_cli --release --target $TARGET
+          cargo build -p pelorus_cli --release --target $TARGET
           mv target/$TARGET/release/pelorus dist/${ARCH}/
 
-          cargo zigbuild -p pelorus_cli --release --target $TARGET --no-default-features --features ros2-client,processing-time-export,rayon
+          cargo build -p pelorus_cli --release --target $TARGET --no-default-features --features ros2-client,processing-time-export,rayon
           mv target/$TARGET/release/pelorus dist/${ARCH}/pelorus-dds
 
-          cargo zigbuild -p pelorus_cli --release --target $TARGET --no-default-features --features offline-hiroz,processing-time-export,rayon
+          cargo build -p pelorus_cli --release --target $TARGET --no-default-features --features offline-hiroz,processing-time-export,rayon
           mv target/$TARGET/release/pelorus dist/${ARCH}/pelorus-hiroz
 
       - name: Upload
@@ -725,41 +731,66 @@ jobs:
     strategy:
       matrix:
         # omitting ppc64le and s390x since they probably have other problems than running this software
+        # The aarch64 Linux targets are built natively on an arm64 runner
+        # instead of cross-compiled with zig. Their rustc target specs attach
+        # `-Wl,--fix-cortex-a53-843419` as a pre_link_arg for every cc-driver
+        # linker flavor, and zig's linker rejects it ("unsupported linker arg").
+        # There is no way to switch it off: rustc registers the arg for the lld
+        # flavor as well, so -C linker-flavor / -fuse-ld=lld do not drop it, and
+        # cargo-zigbuild does not filter it out in any released version. Every
+        # other target keeps --zig, which is what gives the x86_64 wheels their
+        # low glibc requirement.
         include:
           - target: aarch64-apple-darwin # MacOS Apple Silicon
             runner: macos-latest
+            zig: "no"
           - target: aarch64-unknown-linux-gnu # armv8 gnu (Jetson etc)
-            runner: ubuntu-dev-resolute
+            runner: ubuntu-dev-resolute-arm
+            zig: "no"
           - target: x86_64-unknown-linux-gnu # x64 gnu
             runner: ubuntu-dev-resolute
+            zig: "yes"
           - target: x86_64-unknown-linux-musl # musl manylinux x64
             runner: ubuntu-dev-resolute
+            zig: "yes"
           - target: aarch64-unknown-linux-musl # musl manylinux armv8
-            runner: ubuntu-dev-resolute
+            runner: ubuntu-dev-resolute-arm
+            zig: "no"
           - target: armv7-unknown-linux-musleabihf # musl manylinux armv7
             runner: ubuntu-dev-resolute
+            zig: "yes"
     runs-on: ${{ matrix.runner }}
     env:
       TARGET: ${{ matrix.target }}
+      USE_ZIG: ${{ matrix.zig }}
     steps:
       - uses: actions/checkout@v4
       - name: Build wheels
         run: |
           set -euo pipefail
           ulimit -n 65536
+          if [[ "$TARGET" != *apple-darwin* ]]; then
+            apt-get update -y
+            apt-get install -y musl-tools patchelf
+          fi
           rustup toolchain uninstall stable
           rustup toolchain install stable
           rustup target add "$TARGET"
 
           # for ring
           export CFLAGS_aarch64_unknown_linux_gnu="-D__ARM_ARCH=8"
+          export CFLAGS_aarch64_unknown_linux_musl="-D__ARM_ARCH=8"
 
           if [[ "$TARGET" == *apple-darwin* ]]; then
             maturin build --manifest-path pelorus_cli/Cargo.toml --release --target-dir wheels --features rerun,metal
             maturin build --manifest-path pelorus_py/Cargo.toml --release --target-dir wheels --features metal
           else
-            maturin build --zig --manifest-path pelorus_cli/Cargo.toml --release --target-dir wheels --features rerun --target "$TARGET"
-            maturin build --zig --manifest-path pelorus_py/Cargo.toml --release --target-dir wheels --target "$TARGET"
+            ZIG=""
+            if [ "$USE_ZIG" = "yes" ]; then
+              ZIG="--zig"
+            fi
+            maturin build $ZIG --manifest-path pelorus_cli/Cargo.toml --release --target-dir wheels --features rerun --target "$TARGET"
+            maturin build $ZIG --manifest-path pelorus_py/Cargo.toml --release --target-dir wheels --target "$TARGET"
           fi
 
       - name: Upload wheels

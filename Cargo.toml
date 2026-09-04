@@ -49,7 +49,7 @@ pelorus_metal = { path = "pelorus_metal", version = "0.0.6" }
 pelorus_vulkan = { path = "pelorus_vulkan", version = "0.0.6", default-features = false }
 pelorus_drivers = { path = "pelorus_drivers", version = "0.0.6", default-features = false }
 
-transforms_io = { version = "0.5", default-features = false }
+transforms_io = { version = "0.5.1", default-features = false }
 transforms_io_hiroz = { version = "0.5", git = "https://codeberg.org/stelzo/transforms_io", tag = "v0.5.0" }
 ros_pointcloud2 = { version = "1.0.0-rc.4", features = [
   "derive",

@@ -1789,7 +1789,14 @@ fn lio_with_ready_signal(
     #[cfg(feature = "r2r")]
     let mut node = r2r::Node::create(ctx, &ros_node_args.node_name, &ros_node_args.namespace)?;
 
-    #[cfg(any(feature = "ros2-client", feature = "r2r"))]
+    // r2r's publishers are `Send` but deliberately not `Sync`, so anything
+    // holding one is not `Sync` either and an `Arc` of it is not `Send`. The
+    // broadcaster is therefore kept owned and cloned per thread - a clone is a
+    // `Weak` handle to the same publishers, not a second one. The
+    // `ros2-client` broadcaster shares fine behind an `Arc`.
+    #[cfg(feature = "r2r")]
+    let tf_broadcaster = TfBroadcaster::new(&mut node);
+    #[cfg(feature = "ros2-client")]
     let tf_broadcaster = Arc::new(TfBroadcaster::new(&mut node));
     #[cfg(feature = "mt_pubsub")]
     let tf_broadcaster = Arc::new(TfBroadcaster::new(
@@ -2132,12 +2139,20 @@ fn lio_with_ready_signal(
         .with_qos(prelio_io::qos_to_hiroz(config.odom_qos))
         .build()
         .map_err(|e| anyhow!("Failed to create Hiroz odom publisher: {e}"))?;
+    // Same for the odometry publisher: r2r's `Publisher<T>` is `Send` and
+    // `Clone` (it is a `Weak` handle, so cloning is cheap), and wrapping it in
+    // an `Arc` would only make it unusable across threads.
+    #[cfg(not(feature = "r2r"))]
     let odom_publisher = Arc::new(odom_publisher);
 
     let realtime_child_frame = Arc::new(std::sync::RwLock::new(None::<String>));
     let _realtime_odom_publisher = realtime_prediction_rx.map(|receiver| {
-        let publisher = Arc::clone(&odom_publisher);
-        let prediction_tf_broadcaster = Arc::clone(&tf_broadcaster);
+        // Clones the `Arc` for the shared backends and the r2r handles
+        // themselves otherwise. Handing a publisher to another thread is r2r's
+        // documented pattern: creation stays on the node's thread, publishing
+        // may move.
+        let publisher = odom_publisher.clone();
+        let prediction_tf_broadcaster = tf_broadcaster.clone();
         let map_frame = config.prelio_params.map_frame.clone();
         let child_frame = Arc::clone(&realtime_child_frame);
         #[cfg(feature = "rerun")]
