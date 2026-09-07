@@ -263,6 +263,49 @@ setup_output_dir() {
     log_info "Output directory: $OUTPUT_DIR"
 }
 
+# Route core dumps to a file we can actually reach. `coredumpctl` talks to the
+# host journal, so inside a container (the CI runs under act) it never finds the
+# core the crash produced and every SIGSEGV is thrown away undiagnosed.
+# core_pattern is a host-wide kernel setting, so this only sticks when the
+# container is privileged; when it does not, we fall back to coredumpctl.
+CORE_DIR=""
+SAVED_CORE_PATTERN=""
+
+# core_pattern is global to the kernel, so a container that is privileged enough
+# to set it is also changing it for everything else on the host. Put it back.
+restore_core_pattern() {
+    if [[ -n "$SAVED_CORE_PATTERN" ]]; then
+        printf '%s\n' "$SAVED_CORE_PATTERN" > /proc/sys/kernel/core_pattern 2>/dev/null || true
+        SAVED_CORE_PATTERN=""
+    fi
+}
+
+setup_core_capture() {
+    if [[ "${PELORUS_CAPTURE_CORES:-0}" != "1" ]]; then
+        return
+    fi
+
+    ulimit -c unlimited 2>/dev/null || log_warn "Could not raise the core dump size limit"
+
+    if [[ ! -w /proc/sys/kernel/core_pattern ]]; then
+        log_warn "/proc/sys/kernel/core_pattern is not writable; relying on coredumpctl"
+        return
+    fi
+
+    CORE_DIR="$(cd "$OUTPUT_DIR" && pwd)/cores"
+    mkdir -p "$CORE_DIR"
+    SAVED_CORE_PATTERN="$(cat /proc/sys/kernel/core_pattern 2>/dev/null || true)"
+    # %e executable, %p pid. No pipe, so this works without a userspace helper.
+    if echo "${CORE_DIR}/core.%e.%p" > /proc/sys/kernel/core_pattern 2>/dev/null; then
+        log_info "Core dumps will be written to ${CORE_DIR}"
+        trap restore_core_pattern EXIT
+    else
+        log_warn "Could not set core_pattern; relying on coredumpctl"
+        CORE_DIR=""
+        SAVED_CORE_PATTERN=""
+    fi
+}
+
 capture_core_backtrace() {
     local backend_name="$1"
     local run_started="$2"
@@ -270,24 +313,41 @@ capture_core_backtrace() {
     if [[ "${PELORUS_CAPTURE_CORES:-0}" != "1" ]]; then
         return
     fi
-    if ! command -v coredumpctl &> /dev/null || ! command -v gdb &> /dev/null; then
-        log_warn "Cannot capture $backend_name backtrace: coredumpctl and gdb are required"
+    if ! command -v gdb &> /dev/null; then
+        log_warn "Cannot capture $backend_name backtrace: gdb is required"
         return
     fi
 
     local executable core_file
     executable="$(readlink -f target/release/pelorus)"
-    core_file="${OUTPUT_DIR}/pelorus_${backend_name,,}.core"
-    log_info "Extracting $backend_name core dump for native backtrace..."
-    if coredumpctl --quiet --since "$run_started" -1 --output "$core_file" dump "$executable"; then
-        gdb -q -batch \
-            -ex "set debuginfod enabled off" \
-            -ex "set pagination off" \
-            -ex "thread apply all backtrace full" \
-            "$executable" "$core_file" || true
-    else
-        log_warn "No core dump for $executable was available through coredumpctl"
+    core_file=""
+
+    # Prefer a core the kernel dropped where we asked it to; coredumpctl cannot
+    # see it from inside the container.
+    if [[ -n "$CORE_DIR" ]]; then
+        core_file="$(find "$CORE_DIR" -maxdepth 1 -name 'core.pelorus.*' -newermt "$run_started" \
+            -printf '%T@ %p\n' 2>/dev/null | sort -rn | head -1 | cut -d' ' -f2-)"
     fi
+
+    if [[ -z "$core_file" ]]; then
+        if ! command -v coredumpctl &> /dev/null; then
+            log_warn "No core dump under ${CORE_DIR:-<unset>} and coredumpctl is unavailable"
+            return
+        fi
+        core_file="${OUTPUT_DIR}/pelorus_${backend_name,,}.core"
+        log_info "No local core dump; trying coredumpctl..."
+        if ! coredumpctl --quiet --since "$run_started" -1 --output "$core_file" dump "$executable"; then
+            log_warn "No core dump for $executable was available through coredumpctl"
+            return
+        fi
+    fi
+
+    log_info "Extracting $backend_name backtrace from ${core_file}..."
+    gdb -q -batch \
+        -ex "set debuginfod enabled off" \
+        -ex "set pagination off" \
+        -ex "thread apply all backtrace full" \
+        "$executable" "$core_file" || true
 }
 
 run_backend_test() {
@@ -322,6 +382,22 @@ run_backend_test() {
         log_warn "timeout/gtimeout not found; running without timeout (may block indefinitely on hang)"
     fi
     
+    # Vulkan validation layers turn silent API misuse - use-after-free, missing
+    # barriers, out-of-bounds descriptor access - into a message at the offending
+    # call instead of a segfault somewhere later. Off by default because they
+    # cost a lot of runtime; opt in with PELORUS_VULKAN_VALIDATION=1.
+    local -a run_env=()
+    if [[ "$feature_flag" == *vulkan* && "${PELORUS_VULKAN_VALIDATION:-0}" == "1" ]]; then
+        log_info "Enabling Vulkan validation layers (incl. synchronization validation)"
+        run_env=(
+            env
+            # the first is honoured by older loaders, the second by >= 1.3.234
+            "VK_INSTANCE_LAYERS=VK_LAYER_KHRONOS_validation"
+            "VK_LOADER_LAYERS_ENABLE=VK_LAYER_KHRONOS_validation"
+            "VK_LAYER_ENABLES=VK_VALIDATION_FEATURE_ENABLE_SYNCHRONIZATION_VALIDATION_EXT"
+        )
+    fi
+
     local exit_code=0
     local backend_lower
     backend_lower="$(echo "$backend_name" | tr '[:upper:]' '[:lower:]')"
@@ -332,9 +408,9 @@ run_backend_test() {
     : > "$run_log"
     if [[ -n "$timeout_cmd" ]]; then
         # Pipe through tee so pelorus sees non-interactive stdout and skips TUI mode.
-        $timeout_cmd "${cmd[@]}" 2>&1 | tee -a "$run_log" || exit_code=${PIPESTATUS[0]}
+        $timeout_cmd ${run_env[@]+"${run_env[@]}"} "${cmd[@]}" 2>&1 | tee -a "$run_log" || exit_code=${PIPESTATUS[0]}
     else
-        "${cmd[@]}" 2>&1 | tee -a "$run_log" || exit_code=${PIPESTATUS[0]}
+        ${run_env[@]+"${run_env[@]}"} "${cmd[@]}" 2>&1 | tee -a "$run_log" || exit_code=${PIPESTATUS[0]}
     fi
     
     # Check for timeout exit code (124 from timeout/gtimeout)
@@ -463,6 +539,7 @@ main() {
     
     check_prerequisites
     setup_output_dir
+    setup_core_capture
 
 local ran_gpu_comparison=false
 local requested_backends_str
@@ -533,6 +610,6 @@ read -r -a requested_backends <<< "$requested_backends_str"
 }
 
 # Trap errors for cleanup
-trap 'log_error "Script interrupted"; exit 130' INT TERM
+trap 'restore_core_pattern; log_error "Script interrupted"; exit 130' INT TERM
 
 main "$@"

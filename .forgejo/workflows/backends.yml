@@ -94,4 +94,7 @@ jobs:
           source .venv/bin/activate
           export CARGO_PROFILE_RELEASE_DEBUG=1
           export PELORUS_CAPTURE_CORES=1
+          # Turn the intermittent Vulkan SIGSEGV into a validation message at the
+          # offending API call. Costs runtime, so it is opt-in per run.
+          export PELORUS_VULKAN_VALIDATION=1
           ./scripts/compare-backends-offline.bash --backends cuda,vulkan "$(marina resolve -y $DATASET)" "$(marina resolve -y $DATASET)/pelorus.rl"
