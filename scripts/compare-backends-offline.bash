@@ -402,10 +402,12 @@ run_backend_test() {
         cmd=(gdb -q -batch
             -ex "set debuginfod enabled off"
             -ex "set pagination off"
+            # this program churns through hundreds of threads; without this gdb
+            # prints two lines per thread and buries the actual output
+            -ex "set print thread-events off"
             -ex "run"
             -ex "echo \n=== backtrace (all threads) ===\n"
             -ex "thread apply all backtrace full"
-            -ex "kill"
             --args target/release/pelorus "${pelorus_args[@]}")
     else
         cmd=(cargo run --release --bin pelorus ${cargo_flags[@]+"${cargo_flags[@]}"}
@@ -464,16 +466,21 @@ run_backend_test() {
         ${run_env[@]+"${run_env[@]}"} "${cmd[@]}" 2>&1 | tee -a "$run_log" || exit_code=${PIPESTATUS[0]}
     fi
     
-    # gdb reports its own batch status, not the inferior's: a SIGSEGV under gdb
-    # still exits 0. Recover the real outcome from what gdb printed, otherwise a
-    # crashing run would be reported as a pass.
-    if [[ "$use_gdb" == "true" && $exit_code -eq 0 ]]; then
+    # gdb's own exit status says nothing useful about the inferior: it is 0 when
+    # the program segfaulted, and 1 after a clean run because the trailing
+    # `backtrace` errors with "The program is not being run". So ignore it and
+    # read the outcome out of what gdb printed. If none of the markers are there
+    # the run never reached them (timeout, gdb itself failing), and the
+    # pipeline's own status stands.
+    if [[ "$use_gdb" == "true" ]]; then
         if grep -qE "(Program received|Program terminated with) signal" "$run_log"; then
             log_error "$backend_name crashed under gdb; backtrace is above and in $run_log"
             exit_code=139
         elif grep -q "exited with code" "$run_log"; then
             log_error "$backend_name exited non-zero under gdb; see $run_log"
             exit_code=1
+        elif grep -q "exited normally" "$run_log"; then
+            exit_code=0
         fi
     fi
 
