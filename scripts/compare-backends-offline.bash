@@ -306,6 +306,23 @@ setup_core_capture() {
     fi
 }
 
+# The Vulkan loader ignores a requested-but-missing layer without saying a word,
+# so probe for the manifest before promising validation.
+vulkan_validation_layer_available() {
+    local d
+    for d in "${VK_LAYER_PATH:-}" \
+             /usr/share/vulkan/explicit_layer.d \
+             /usr/local/share/vulkan/explicit_layer.d \
+             /etc/vulkan/explicit_layer.d \
+             "$HOME/.local/share/vulkan/explicit_layer.d"; do
+        [[ -n "$d" && -d "$d" ]] || continue
+        if compgen -G "${d}/*validation*.json" > /dev/null; then
+            return 0
+        fi
+    done
+    return 1
+}
+
 capture_core_backtrace() {
     local backend_name="$1"
     local run_started="$2"
@@ -363,14 +380,37 @@ run_backend_test() {
     
     log_info "Running Pelorus $backend_name backend..."
     
-    local cmd=(cargo run --release --bin pelorus)
+    local -a cargo_flags=()
     if [[ "$no_default_features" == "true" ]]; then
-        cmd+=(--no-default-features)
+        cargo_flags+=(--no-default-features)
     fi
     if [[ -n "$feature_flag" ]]; then
-        cmd+=(--features "$feature_flag")
+        cargo_flags+=(--features "$feature_flag")
     fi
-    cmd+=(-- offline -c "$CONFIG_FILE" "$BAGFILE" --export-trajectory "$output_file")
+    local -a pelorus_args=(offline -c "$CONFIG_FILE" "$BAGFILE" --export-trajectory "$output_file")
+
+    # Running under gdb gets a backtrace at the moment of the fault, which does
+    # not depend on core_pattern, container privileges or apport/systemd-coredump
+    # - all of which have already swallowed one crash each. Needs the binary
+    # built separately, because wrapping `cargo run` would only debug cargo.
+    local -a cmd=()
+    local use_gdb="false"
+    if [[ "${PELORUS_CAPTURE_CORES:-0}" == "1" ]] && command -v gdb &> /dev/null; then
+        use_gdb="true"
+        log_info "Building $backend_name binary for the gdb-wrapped run..."
+        cargo build --release --bin pelorus ${cargo_flags[@]+"${cargo_flags[@]}"}
+        cmd=(gdb -q -batch
+            -ex "set debuginfod enabled off"
+            -ex "set pagination off"
+            -ex "run"
+            -ex "echo \n=== backtrace (all threads) ===\n"
+            -ex "thread apply all backtrace full"
+            -ex "kill"
+            --args target/release/pelorus "${pelorus_args[@]}")
+    else
+        cmd=(cargo run --release --bin pelorus ${cargo_flags[@]+"${cargo_flags[@]}"}
+            -- "${pelorus_args[@]}")
+    fi
     
     # macOS compatibility: use gtimeout if available, otherwise skip timeout
     local timeout_cmd=""
@@ -388,14 +428,25 @@ run_backend_test() {
     # cost a lot of runtime; opt in with PELORUS_VULKAN_VALIDATION=1.
     local -a run_env=()
     if [[ "$feature_flag" == *vulkan* && "${PELORUS_VULKAN_VALIDATION:-0}" == "1" ]]; then
-        log_info "Enabling Vulkan validation layers (incl. synchronization validation)"
-        run_env=(
-            env
-            # the first is honoured by older loaders, the second by >= 1.3.234
-            "VK_INSTANCE_LAYERS=VK_LAYER_KHRONOS_validation"
-            "VK_LOADER_LAYERS_ENABLE=VK_LAYER_KHRONOS_validation"
-            "VK_LAYER_ENABLES=VK_VALIDATION_FEATURE_ENABLE_SYNCHRONIZATION_VALIDATION_EXT"
-        )
+        # A layer the loader cannot find is ignored in silence, which is what
+        # happened the first time this was switched on: the script announced
+        # validation and nothing was actually validating. Check before claiming.
+        if ! vulkan_validation_layer_available; then
+            log_warn "PELORUS_VULKAN_VALIDATION=1 but VK_LAYER_KHRONOS_validation is not installed"
+            log_warn "  install it with: apt-get install -y vulkan-validationlayers"
+            log_warn "  running without validation"
+        else
+            log_info "Enabling Vulkan validation layers (incl. synchronization validation)"
+            run_env=(
+                env
+                # the first is honoured by older loaders, the second by >= 1.3.234
+                "VK_INSTANCE_LAYERS=VK_LAYER_KHRONOS_validation"
+                "VK_LOADER_LAYERS_ENABLE=VK_LAYER_KHRONOS_validation"
+                "VK_LAYER_ENABLES=VK_VALIDATION_FEATURE_ENABLE_SYNCHRONIZATION_VALIDATION_EXT"
+                # make the loader say so if it still cannot load the layer
+                "VK_LOADER_DEBUG=warn"
+            )
+        fi
     fi
 
     local exit_code=0
@@ -413,11 +464,26 @@ run_backend_test() {
         ${run_env[@]+"${run_env[@]}"} "${cmd[@]}" 2>&1 | tee -a "$run_log" || exit_code=${PIPESTATUS[0]}
     fi
     
+    # gdb reports its own batch status, not the inferior's: a SIGSEGV under gdb
+    # still exits 0. Recover the real outcome from what gdb printed, otherwise a
+    # crashing run would be reported as a pass.
+    if [[ "$use_gdb" == "true" && $exit_code -eq 0 ]]; then
+        if grep -qE "(Program received|Program terminated with) signal" "$run_log"; then
+            log_error "$backend_name crashed under gdb; backtrace is above and in $run_log"
+            exit_code=139
+        elif grep -q "exited with code" "$run_log"; then
+            log_error "$backend_name exited non-zero under gdb; see $run_log"
+            exit_code=1
+        fi
+    fi
+
     # Check for timeout exit code (124 from timeout/gtimeout)
     if [[ $exit_code -eq 124 ]]; then
         fail "$backend_name run timed out after 900 seconds"
     elif [[ $exit_code -eq 139 ]]; then
-        capture_core_backtrace "$backend_name" "$run_started"
+        if [[ "$use_gdb" != "true" ]]; then
+            capture_core_backtrace "$backend_name" "$run_started"
+        fi
         fail "$backend_name run failed with SIGSEGV (exit code 139)"
     elif [[ $exit_code -ne 0 ]]; then
         fail "$backend_name run failed with exit code $exit_code"
