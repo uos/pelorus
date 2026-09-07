@@ -739,13 +739,11 @@ jobs:
         # flavor as well, so -C linker-flavor / -fuse-ld=lld do not drop it, and
         # cargo-zigbuild does not filter it out in any released version. Every
         # other target keeps --zig, which is what gives the x86_64 wheels their
-        # low glibc requirement.
+        # low glibc requirement. aarch64-unknown-linux-gnu additionally needs a
+        # controlled glibc floor, so it lives in `wheels-aarch64-gnu` below.
         include:
           - target: aarch64-apple-darwin # MacOS Apple Silicon
             runner: macos-latest
-            zig: "no"
-          - target: aarch64-unknown-linux-gnu # armv8 gnu (Jetson etc)
-            runner: ubuntu-dev-resolute-arm
             zig: "no"
           - target: x86_64-unknown-linux-gnu # x64 gnu
             runner: ubuntu-dev-resolute
@@ -757,6 +755,9 @@ jobs:
             runner: ubuntu-dev-resolute-arm
             zig: "no"
           - target: armv7-unknown-linux-musleabihf # musl manylinux armv7
+            runner: ubuntu-dev-resolute
+            zig: "yes"
+          - target: armv7-unknown-linux-gnueabihf # glibc armv7
             runner: ubuntu-dev-resolute
             zig: "yes"
     runs-on: ${{ matrix.runner }}
@@ -789,9 +790,65 @@ jobs:
             if [ "$USE_ZIG" = "yes" ]; then
               ZIG="--zig"
             fi
-            maturin build $ZIG --manifest-path pelorus_cli/Cargo.toml --release --target-dir wheels --features rerun --target "$TARGET"
-            maturin build $ZIG --manifest-path pelorus_py/Cargo.toml --release --target-dir wheels --target "$TARGET"
+
+            # A natively built musl target needs its tag forced. maturin only
+            # infers musllinux when zig tells it the target libc; building
+            # natively it just auditwheels the artifact, and a statically
+            # linked musl binary has no dynamic deps at all, so pelorus_cli
+            # came out tagged manylinux_2_17 - which no musl system will ever
+            # install.
+            COMPAT=""
+            if [ "$USE_ZIG" = "no" ] && [[ "$TARGET" == *-musl* ]]; then
+              COMPAT="--compatibility musllinux_1_2"
+            fi
+
+            maturin build $ZIG $COMPAT --manifest-path pelorus_cli/Cargo.toml --release --target-dir wheels --features rerun --target "$TARGET"
+            maturin build $ZIG $COMPAT --manifest-path pelorus_py/Cargo.toml --release --target-dir wheels --target "$TARGET"
           fi
+
+      - name: Upload wheels
+        uses: actions/upload-artifact@v3
+        with:
+          name: wheels
+          path: target/wheels
+
+  wheels-aarch64-gnu:
+    # Split out of `wheels` because this target needs both a native arm64 build
+    # (zig cannot link aarch64, see the note there) and a pinned glibc floor.
+    # Built natively on the resolute arm runner the wheel came out tagged
+    # `linux_aarch64`: that runner's glibc is newer than any manylinux policy
+    # maturin knows, so it gave up on a manylinux tag, and PyPI rejects
+    # `linux_*` outright. Jammy pins glibc 2.35 -> manylinux_2_35_aarch64, which
+    # still covers Ubuntu 22.04+ / Debian 12+ / JetPack 6. The
+    # arm-runner-plus-container shape is the same one `wheels-cuda` uses to
+    # build this target with maturin.
+    needs:
+      - sanity
+      - examples-regression
+    runs-on: ubuntu-latest-arm
+    container:
+      image: docker.io/stelzo/ubuntu-dev:jammy
+    env:
+      TARGET: aarch64-unknown-linux-gnu
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build wheels
+        run: |
+          set -euo pipefail
+          ulimit -n 65536
+          # maturin shells out to patchelf when it bundles libgcc_s into the
+          # pelorus_py wheel
+          apt-get update -y
+          apt-get install -y patchelf
+          rustup toolchain uninstall stable
+          rustup toolchain install stable
+          rustup target add "$TARGET"
+
+          # for ring
+          export CFLAGS_aarch64_unknown_linux_gnu="-D__ARM_ARCH=8"
+
+          maturin build --manifest-path pelorus_cli/Cargo.toml --release --target-dir wheels --features rerun --target "$TARGET"
+          maturin build --manifest-path pelorus_py/Cargo.toml --release --target-dir wheels --target "$TARGET"
 
       - name: Upload wheels
         uses: actions/upload-artifact@v3
@@ -873,6 +930,7 @@ jobs:
       - rawlibs
       - rawlibs-cuda
       - wheels
+      - wheels-aarch64-gnu
       - wheels-cuda
     runs-on: ubuntu-dev-resolute
     steps:

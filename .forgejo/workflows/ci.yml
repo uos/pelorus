@@ -107,6 +107,28 @@ jobs:
           cargo check --target x86_64-unknown-linux-musl -p pelorus_cli --no-default-features --features ros2-client,processing-time-export,rayon
           cargo check --target x86_64-unknown-linux-musl -p pelorus_cli --no-default-features --features offline-hiroz,processing-time-export,rayon
 
+  armv7-gnu-build:
+    # The release `wheels` job cross-compiles armv7-unknown-linux-gnueabihf with
+    # zig. This links for real rather than `cargo check`ing, because every
+    # cross-compilation failure this repo has hit was at the link step, which
+    # `cargo check` never reaches.
+    runs-on: ubuntu-dev-resolute
+    container:
+      image: docker.io/stelzo/ubuntu-dev:resolute
+    steps:
+      - uses: actions/checkout@v4
+      - name: Link armv7 glibc target
+        run: |
+          set -euo pipefail
+          ulimit -n 65536
+          # the release images pin an older stable than the workspace's
+          # rust-version, so force a fresh toolchain
+          rustup toolchain uninstall stable
+          rustup toolchain install stable
+          rustup default stable
+          rustup target add armv7-unknown-linux-gnueabihf
+          cargo zigbuild -p pelorus_cli --target armv7-unknown-linux-gnueabihf
+
   ros-debs-build:
     # Mirrors what the release `ros-debs` job ends up compiling: the deb is built
     # via CMakeLists.txt -> r2r_cargo.cmake, which invokes cargo with exactly the
