@@ -308,6 +308,7 @@ setup_core_capture() {
 
 # The Vulkan loader ignores a requested-but-missing layer without saying a word,
 # so probe for the manifest before promising validation.
+VULKAN_VALIDATION_MANIFEST=""
 vulkan_validation_layer_available() {
     local d
     for d in "${VK_LAYER_PATH:-}" \
@@ -316,9 +317,12 @@ vulkan_validation_layer_available() {
              /etc/vulkan/explicit_layer.d \
              "$HOME/.local/share/vulkan/explicit_layer.d"; do
         [[ -n "$d" && -d "$d" ]] || continue
-        if compgen -G "${d}/*validation*.json" > /dev/null; then
+        local m
+        for m in "${d}"/*validation*.json; do
+            [[ -e "$m" ]] || continue
+            VULKAN_VALIDATION_MANIFEST="$m"
             return 0
-        fi
+        done
     done
     return 1
 }
@@ -439,6 +443,7 @@ run_backend_test() {
             log_warn "  running without validation"
         else
             log_info "Enabling Vulkan validation layers (incl. synchronization validation)"
+            log_info "  layer manifest: ${VULKAN_VALIDATION_MANIFEST}"
             run_env=(
                 env
                 # the first is honoured by older loaders, the second by >= 1.3.234
