@@ -48,6 +48,11 @@ sed_i -E "s/(project\([a-zA-Z_]+ VERSION )[0-9]+\.[0-9]+\.[0-9]+/\1${NEW_VERSION
 # Update PKGBUILD
 sed_i "s/^pkgver=.*/pkgver=${NEW_VERSION}/" \
     packaging/arch-bin/PKGBUILD
+sed_i "s/^pkgrel=.*/pkgrel=1/" \
+    packaging/arch-bin/PKGBUILD
+
+# Synchronize minot dependency version constraints across packaging manifests
+python3 scripts/check-packaging.py --fix
 
 echo ""
 echo "Updated files:"
@@ -55,6 +60,8 @@ echo "  Cargo.toml"
 echo "  package.xml"
 echo "  pelorus_c/CMakeLists.txt"
 echo "  packaging/arch-bin/PKGBUILD"
+echo "  pelorus_cli/Cargo.toml (deb/rpm metadata)"
+echo "  pelorus_cli/pyproject.toml"
 
 ROS_IMAGE="docker.io/stelzo/ubuntu-dev:jazzy"
 # Use a separate CARGO_HOME for the container to avoid overwriting host shims (macOS vs Linux)

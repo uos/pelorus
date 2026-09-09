@@ -32,22 +32,22 @@ include = [
 keywords = ["robotics"]
 license = "MIT OR Apache-2.0"
 repository = "https://codeberg.org/stelzo/pelorus/"
-version = "0.0.6"
+version = "0.0.7"
 authors = ["Christopher Sieh <stelzo@steado.de>"]
 rust-version = "1.95.0"
 
 [workspace.dependencies]
-pelorus = { path = "pelorus", version = "0.0.6", default-features = false }
-pelorus_core = { path = "pelorus_core", version = "0.0.6" }
-pelorus_protocol = { path = "pelorus_protocol", version = "0.0.6" }
-pelorus_reg = { path = "pelorus_reg", version = "0.0.6", default-features = false }
-prelio = { path = "prelio", version = "0.0.6", default-features = false }
-prelio_io = { path = "prelio_io", version = "0.0.6", default-features = false }
-spole = { path = "spole", version = "0.0.6", default-features = false }
-pelorus_cuda = { path = "pelorus_cuda", version = "0.0.6", default-features = false }
-pelorus_metal = { path = "pelorus_metal", version = "0.0.6" }
-pelorus_vulkan = { path = "pelorus_vulkan", version = "0.0.6", default-features = false }
-pelorus_drivers = { path = "pelorus_drivers", version = "0.0.6", default-features = false }
+pelorus = { path = "pelorus", version = "0.0.7", default-features = false }
+pelorus_core = { path = "pelorus_core", version = "0.0.7" }
+pelorus_protocol = { path = "pelorus_protocol", version = "0.0.7" }
+pelorus_reg = { path = "pelorus_reg", version = "0.0.7", default-features = false }
+prelio = { path = "prelio", version = "0.0.7", default-features = false }
+prelio_io = { path = "prelio_io", version = "0.0.7", default-features = false }
+spole = { path = "spole", version = "0.0.7", default-features = false }
+pelorus_cuda = { path = "pelorus_cuda", version = "0.0.7", default-features = false }
+pelorus_metal = { path = "pelorus_metal", version = "0.0.7" }
+pelorus_vulkan = { path = "pelorus_vulkan", version = "0.0.7", default-features = false }
+pelorus_drivers = { path = "pelorus_drivers", version = "0.0.7", default-features = false }
 
 transforms_io = { version = "0.5.1", default-features = false }
 transforms_io_hiroz = { version = "0.5", git = "https://codeberg.org/stelzo/transforms_io", tag = "v0.5.0" }

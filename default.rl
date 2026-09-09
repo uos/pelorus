@@ -321,7 +321,7 @@ imu {
   lidar_only = false
 
   # CreateOrientationOnly | FilterAccelerationAndCreateOrientation | FilterAccelerationOnly | Disable (recommended when using on-device filtering in the driver)
-  ahrs_filtering.method = FilterAccelerationAndCreateOrientation
+  ahrs_filtering.method = Disable
 
   # Initial guess in m/s^2 for initialization.
   gravity = 9.81

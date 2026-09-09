@@ -16,6 +16,9 @@ jobs:
       image: docker.io/stelzo/ubuntu-dev:resolute
     steps:
       - uses: actions/checkout@v4
+      - name: Validate packaging versions and dependencies
+        run: |
+          python3 ./scripts/check-packaging.py
       - name: Build and test workspace
         run: |
           rustup default stable

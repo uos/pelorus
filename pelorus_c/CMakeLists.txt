@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.12)
-project(pelorus_c VERSION 0.0.6 LANGUAGES C)
+project(pelorus_c VERSION 0.0.7 LANGUAGES C)
 
 include(GNUInstallDirs)
 

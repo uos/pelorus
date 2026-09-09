@@ -47,6 +47,9 @@ jobs:
           fi
 
           echo "Packaging files contain correct version: $VERSION"
+      - name: Validate minot and packaging dependencies
+        run: |
+          python3 ./scripts/check-packaging.py
 
   examples-regression:
     runs-on: ubuntu-dev-resolute
