@@ -1879,7 +1879,11 @@ fn lio_with_ready_signal(
 
     let (ready_for_next_tx, ready_for_next_rx) = std::sync::mpsc::channel();
     let minot_replay_mode = synchronous_mode && shutdown_request_rx.is_some();
-    let imu_sync_mode = if minot_replay_mode {
+    let imu_sync_mode = if config.imu_params.lidar_only {
+        ImuSyncMode::Disabled {
+            lossless: minot_replay_mode,
+        }
+    } else if minot_replay_mode {
         let demand_tick_debt = Arc::clone(&replay_tick_debt);
         let demand_shutdown_flag = shutdown_flag.clone();
         ImuSyncMode::DemandDrivenReplay {
@@ -1952,7 +1956,8 @@ fn lio_with_ready_signal(
         &config.prelio_params,
         PrelioNodeInputs {
             node_params: &config.prelio_node_params,
-            imu_pose_predictor_init: Some(pipeline.build_init_callback()),
+            imu_pose_predictor_init: (!config.imu_params.lidar_only)
+                .then(|| pipeline.build_init_callback()),
             imu_pose_prediction_undistort: Some(pipeline.build_undistort()),
             imu_pose_prediction_init_guess: Some(pipeline.build_init_guess()),
             ready_for_next: Some(ready_for_next_rx),
@@ -1969,7 +1974,13 @@ fn lio_with_ready_signal(
         feature = "xsens-driver",
         feature = "ouster-driver"
     ))]
-    prelio_node.start_native_drivers(&config.sensor_drivers, filtered_imu_tx.clone(), None)?;
+    {
+        let mut sensor_drivers = config.sensor_drivers.clone();
+        if config.imu_params.lidar_only {
+            sensor_drivers.imu.driver_type = pelorus_core::ImuDriverType::Disabled;
+        }
+        prelio_node.start_native_drivers(&sensor_drivers, filtered_imu_tx.clone(), None)?;
+    }
     let prelio_node = Arc::new(prelio_node);
     let drain_on_shutdown = Arc::new(AtomicBool::new(false));
     if let Some(stop_rx) = shutdown_request_rx {
@@ -4606,6 +4617,103 @@ fn canonicalize_bagfile_path(path: &std::path::Path) -> anyhow::Result<PathBuf> 
     })
 }
 
+#[cfg(feature = "rat")]
+fn build_offline_minot_config(
+    bagfile_path: &str,
+    lidar_topic: &str,
+    imu_topic: &str,
+    lidar_only: bool,
+) -> String {
+    if lidar_only {
+        format!(
+            r#"
+_bag.{{
+  cloud.{{
+    _topic = "{lidar_topic}"
+    _short = "l"
+    _type = Cloud
+  }}
+}}
+_start_locked = false
+
+# LiDAR-only replay has no IMU subscriber or initialization handshake.
+pf! l 1 tick_end
+
+reset! "{bagfile_path}"
+
+# Start the feedback loop with the first cloud.
+pf! l 1
+"#
+        )
+    } else {
+        format!(
+            r#"
+_bag.{{
+  cloud.{{
+    _topic = "{lidar_topic}"
+    _short = "l"
+    _type = Cloud
+  }}
+  imu.{{
+    _topic = "{imu_topic}"
+    _short = "i"
+    _type = Imu
+  }}
+}}
+_start_locked = false
+
+# Setting triggers for topics.
+# During IMU bootstrap, advance IMU only. The first active LIO tick
+# advances to one cloud with its surrounding IMUs. After that, each
+# tick_end publishes one cloud and then advances IMUs up to the next
+# cloud without consuming that next cloud.
+pf! i 1 imu_init_tick
+pf! i, l 1 lio_start_tick
+pf! l 1 lio_start_tick
+pf! i, l 1 lio_start_tick
+pf! l 1 tick_end
+pf! i, l 1 tick_end
+
+reset! "{bagfile_path}"
+
+# Starting the feedback loop by playing the first IMU message (first step is IMU init)
+pf! i 1
+"#
+        )
+    }
+}
+
+#[cfg(all(test, feature = "rat"))]
+mod offline_minot_config_tests {
+    use super::build_offline_minot_config;
+
+    #[test]
+    fn lidar_only_replay_requests_clouds_without_declaring_imu() {
+        let config =
+            build_offline_minot_config("/tmp/input.mcap", "/lidar/points", "/imu/data", true);
+
+        assert!(config.contains("_topic = \"/lidar/points\""));
+        assert!(config.contains("pf! l 1 tick_end"));
+        assert!(config.contains("pf! l 1\n"));
+        assert!(!config.contains("/imu/data"));
+        assert!(!config.contains("_type = Imu"));
+        assert!(!config.contains("imu_init_tick"));
+        assert!(!config.contains("lio_start_tick"));
+    }
+
+    #[test]
+    fn lidar_imu_replay_keeps_the_imu_bootstrap_schedule() {
+        let config =
+            build_offline_minot_config("/tmp/input.mcap", "/lidar/points", "/imu/data", false);
+
+        assert!(config.contains("_topic = \"/imu/data\""));
+        assert!(config.contains("pf! i 1 imu_init_tick"));
+        assert!(config.contains("pf! i, l 1 lio_start_tick"));
+        assert!(config.contains("pf! i, l 1 tick_end"));
+        assert!(config.contains("pf! i 1\n"));
+    }
+}
+
 /// Loads configuration the same way `pelorus online` does, then hands over to
 /// the raw driver runner.
 #[cfg(feature = "mt_pubsub")]
@@ -5016,39 +5124,11 @@ fn main() -> Result<(), Box<dyn CoreError>> {
             let bagfile_label = bagfile_path.clone();
             shared_stats.set_bagfile(bagfile_label);
 
-            let mt_content = format!(
-                r#"
-_bag.{{
-  cloud.{{
-    _topic = "{lidar_topic}"
-    _short = "l"
-    _type = Cloud
-  }}
-  imu.{{
-    _topic = "{imu_topic}"
-    _short = "i"
-    _type = Imu
-  }}
-}}
-_start_locked = false
-
-# Setting triggers for topics.
-# During IMU bootstrap, advance IMU only. The first active LIO tick
-# advances to one cloud with its surrounding IMUs. After that, each
-# tick_end publishes one cloud and then advances IMUs up to the next
-# cloud without consuming that next cloud.
-pf! i 1 imu_init_tick
-pf! i, l 1 lio_start_tick
-pf! l 1 lio_start_tick
-pf! i, l 1 lio_start_tick
-pf! l 1 tick_end
-pf! i, l 1 tick_end
-
-reset! "{bagfile_path}"
-
-# Starting the feedback loop by playing the first IMU message (first step is IMU init)
-pf! i 1
-"#
+            let mt_content = build_offline_minot_config(
+                &bagfile_path,
+                lidar_topic,
+                imu_topic,
+                config.imu_params.lidar_only,
             );
 
             // Start TUI immediately so we can see what's happening

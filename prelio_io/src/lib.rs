@@ -1072,6 +1072,14 @@ impl PrelioNode {
         #[cfg(feature = "rerun")] rec: Option<Arc<rerun::RecordingStream>>,
     ) -> anyhow::Result<(Self, std::sync::mpsc::Receiver<Tick>)> {
         #[cfg(any(
+            feature = "ros2-client",
+            feature = "mt_pubsub",
+            feature = "r2r",
+            feature = "hiroz"
+        ))]
+        let enable_imu_ingress =
+            !matches!(&inputs.imu_sync_mode, prelio::ImuSyncMode::Disabled { .. });
+        #[cfg(any(
             feature = "rat",
             feature = "ros2-client",
             feature = "mt_pubsub",
@@ -1680,6 +1688,9 @@ impl PrelioNode {
         let init_imu_time = node_params.imu_predictor_init_time_sec;
         #[cfg(feature = "ros2-client")]
         std::thread::spawn(move || {
+            if !enable_imu_ingress {
+                return;
+            }
             // TODO use while let
             let imu_pose_predictor_init = imu_pose_predictor_init.clone();
             loop {
@@ -1768,7 +1779,7 @@ impl PrelioNode {
         });
 
         #[cfg(feature = "mt_pubsub")]
-        {
+        if enable_imu_ingress {
             let filtered_imu_sender_mt = filtered_imu_sender.clone();
             let imu_sub_rt = Arc::clone(&rt);
             let mut imu_sub = imu_sub_rt.block_on(async {
@@ -1857,6 +1868,9 @@ impl PrelioNode {
         let filtered_imu_sender_r2r = filtered_imu_sender.clone();
         #[cfg(all(feature = "r2r", not(feature = "no-imu-sync")))]
         std::thread::spawn(move || {
+            if !enable_imu_ingress {
+                return;
+            }
             let imu_pose_predictor_init = imu_pose_predictor_init.clone();
             while let Some(msg) = future::block_on(imu_subscription.next()) {
                 let prelio = {
@@ -1932,7 +1946,7 @@ impl PrelioNode {
         });
 
         #[cfg(feature = "hiroz")]
-        {
+        if enable_imu_ingress {
             let filtered_imu_sender_hiroz = filtered_imu_sender.clone();
             let imu_sub_rt = Arc::clone(&rt);
             let imu_imu_init_state = imu_init_state.clone();

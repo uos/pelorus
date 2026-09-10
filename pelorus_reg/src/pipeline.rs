@@ -153,7 +153,7 @@ impl Pipeline {
             config.dist_update_sensitivity as f32,
         );
 
-        let map = RegistrationState::new_with_execution_config(
+        let mut map = RegistrationState::new_with_execution_config(
             ivox,
             &config.imu_params,
             &ext_lidar_to_imu,
@@ -166,6 +166,14 @@ impl Pipeline {
             config.prelio_params.parallelism_decision_samples_per_mode,
             config.prelio_params.parallelism_execution_policy,
         );
+
+        if config.imu_params.lidar_only {
+            let synthetic = crate::lidar_only::SyntheticImu::new(
+                config.prelio_params.imu.gravity,
+                IMU_SYNTHESIS_RATE,
+            );
+            let _ = map.init_imu_ekf(&synthetic.initialization_buffer(2));
+        }
 
         Self {
             map: Arc::new(Mutex::new(map)),
@@ -225,17 +233,11 @@ impl Pipeline {
     pub fn build_init_callback(&self) -> Arc<Mutex<dyn FnMut(&[ImuMsg]) + Send + Sync>> {
         let map = self.map();
         let lidar_only = self.config.imu_params.lidar_only;
-        let gravity = self.config.prelio_params.imu.gravity;
         Arc::new(Mutex::new(move |msg: &[ImuMsg]| {
-            let mut map = map.lock().unwrap();
             if lidar_only {
-                // Initialization reads gravity and the starting attitude off
-                // the IMU. There is none, so it is handed a level, stationary
-                // sensor and every pose afterwards is relative to that.
-                let synthetic = crate::lidar_only::SyntheticImu::new(gravity, IMU_SYNTHESIS_RATE);
-                let _ = map.init_imu_ekf(&synthetic.initialization_buffer(msg.len().max(2)));
                 return;
             }
+            let mut map = map.lock().unwrap();
             let _ = map.init_imu_ekf(&msg);
         }))
     }
@@ -264,11 +266,15 @@ impl Pipeline {
                 let generated;
                 let imu_msgs: &[ImuMsg] = if lidar_only {
                     let pose = map.get_state().pose;
-                    generated = synthetic.lock().unwrap().generate(
+                    let (messages, linear_velocity) = synthetic.lock().unwrap().generate(
                         &pose,
                         last_cloud_end_time,
                         cloud_end_time,
                     );
+                    if let Some(linear_velocity) = linear_velocity {
+                        map.set_linear_velocity(linear_velocity);
+                    }
+                    generated = messages;
                     &generated
                 } else {
                     imu_msgs
@@ -568,7 +574,9 @@ impl Pipeline {
         let undistort = Some(self.build_undistort());
         let init_guess = Some(self.build_init_guess());
 
-        let imu_sync_mode = if params.lidar_as_sync {
+        let imu_sync_mode = if self.config.imu_params.lidar_only {
+            ImuSyncMode::Disabled { lossless: false }
+        } else if params.lidar_as_sync {
             ImuSyncMode::LidarDriven
         } else {
             ImuSyncMode::Continuous

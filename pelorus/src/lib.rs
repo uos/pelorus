@@ -452,7 +452,7 @@ impl Handle {
         }
 
         let pipeline = Pipeline::new(&config);
-        let imu_init_cb = Some(pipeline.build_init_callback());
+        let imu_init_cb = (!config.imu_params.lidar_only).then(|| pipeline.build_init_callback());
         let imu_predictor_init_time_sec = config.prelio_node_params.imu_predictor_init_time_sec;
         let imu_init_state = Arc::new(Mutex::new(ImuInitState {
             start_time: None,

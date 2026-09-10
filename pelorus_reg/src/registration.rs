@@ -52,6 +52,10 @@ pub struct RegistrationState {
 }
 
 impl RegistrationState {
+    pub(crate) fn set_linear_velocity(&mut self, velocity: Vector3<f64>) {
+        self.ekf.state.vel = velocity;
+    }
+
     #[cfg(not(feature = "nn_kdt"))]
     pub fn get_distributions(&self) -> Vec<VoxelDistribution> {
         self.map.get_distributions()

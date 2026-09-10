@@ -293,10 +293,7 @@ impl ImuProcessing {
         debug_assert!(cloud_begin_time > 0.0);
         debug_assert!(cloud_end_time > 0.0);
 
-        if !matches!(
-            lidar_vendor,
-            Some(LidarVendor::Robosense | LidarVendor::NoTimestamp)
-        ) {
+        if !matches!(lidar_vendor, Some(LidarVendor::NoTimestamp)) {
             cloud_end_time += cloud_begin_time;
         }
 

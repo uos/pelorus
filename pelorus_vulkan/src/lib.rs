@@ -192,10 +192,16 @@ impl VulkanContext {
         let mut features12 = vk::PhysicalDeviceVulkan12Features::default()
             .buffer_device_address(true)
             .scalar_block_layout(true);
+        // Without this, an out-of-range SSBO index is undefined behaviour. Software
+        // implementations (lavapipe, SwiftShader) JIT shaders to host code, so such an
+        // index dereferences a host pointer and takes the whole process down. With it,
+        // the access is defined: reads return zero, writes are discarded.
+        let enabled_features = vk::PhysicalDeviceFeatures::default().robust_buffer_access(true);
         let enabled_device_extensions = [push_descriptor::NAME.as_ptr()];
         let device_ci = vk::DeviceCreateInfo::default()
             .queue_create_infos(std::slice::from_ref(&queue_ci))
             .enabled_extension_names(&enabled_device_extensions)
+            .enabled_features(&enabled_features)
             .push_next(&mut features12);
 
         let device = match unsafe { instance.create_device(physical_device, &device_ci, None) } {
@@ -3489,9 +3495,12 @@ pub fn shutdown() {
         .take();
 
     let context = match (&map, &downsample) {
-        (Some(VulkanMapState { backend: MapBackendState::Vulkan(gpu) }), _) => {
-            Some(Arc::clone(&gpu.context))
-        }
+        (
+            Some(VulkanMapState {
+                backend: MapBackendState::Vulkan(gpu),
+            }),
+            _,
+        ) => Some(Arc::clone(&gpu.context)),
         (_, Some(state)) => Some(Arc::clone(&state.context)),
         // Neither state exists, but a context may still be live: `Stream`s are handed
         // out for downsampling before any map is initialized.
@@ -3512,7 +3521,10 @@ pub fn shutdown() {
     }
 
     let mut map = map;
-    if let Some(VulkanMapState { backend: MapBackendState::Vulkan(gpu) }) = &mut map {
+    if let Some(VulkanMapState {
+        backend: MapBackendState::Vulkan(gpu),
+    }) = &mut map
+    {
         unsafe { vrdxDestroySorter(gpu.scratch.sorter) };
         gpu.scratch.sorter = VrdxSorter(0);
     }

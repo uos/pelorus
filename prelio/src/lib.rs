@@ -38,6 +38,7 @@ use std::sync::{
 use std::{thread, time::Instant};
 
 use anyhow::Result;
+use either::Either::{Left, Right};
 use ros_pointcloud2::prelude::*;
 pub use ros_pointcloud2::ros::TimeMsg;
 
@@ -215,6 +216,12 @@ pub fn secs_to_timestamp(secs: f64) -> TimeMsg {
 
 /// Selects how the synchronizer obtains IMU messages for each LiDAR interval.
 pub enum ImuSyncMode {
+    /// Process LiDAR frames without consuming or waiting for IMU messages.
+    Disabled {
+        /// Apply producer backpressure instead of dropping scans. Enable this
+        /// for managed offline replay, not live sensor/topic input.
+        lossless: bool,
+    },
     /// Wait for timestamp-bracketing IMU messages from a continuous source.
     Continuous,
     /// Drain only the IMU messages already available when a LiDAR scan arrives.
@@ -402,6 +409,7 @@ mod tests {
     use super::*;
     use ros_pointcloud2::ros::{HeaderMsg, PointFieldMsg, TimeMsg, make_field_name};
     use ros_pointcloud2::{Denseness, Endian, FieldDatatype, PointCloud2MsgBuilder};
+    use std::sync::atomic::AtomicBool;
 
     fn field(name: &'static str, offset: u32) -> PointFieldMsg {
         PointFieldMsg {
@@ -597,6 +605,239 @@ mod tests {
 
         assert_eq!(begin, 0.0);
         assert_eq!(end, 0.0);
+    }
+
+    #[test]
+    fn disabled_imu_sync_processes_cloud_without_imu() {
+        let mut params = no_timestamp_params();
+        params.initial_scan_accumulate = 0;
+        let synthetic_undistort_called = Arc::new(AtomicBool::new(false));
+        let called = Arc::clone(&synthetic_undistort_called);
+        let undistort: Box<ImuPredictorUndistort> = Box::new(
+            move |imu, _odom, _last_end, _cloud_begin, _cloud_end, _cloud, _passthrough| {
+                assert!(imu.is_empty());
+                called.store(true, Ordering::Release);
+                Right(Isometry3::identity())
+            },
+        );
+        let mut prelio = Prelio::create(
+            params.imu.gravity,
+            params.imu.madgwick_setting,
+            &params.imu.calibration,
+            &params,
+            Some(undistort),
+            None,
+            params.lidar_vendor,
+            None,
+            ImuSyncMode::Disabled { lossless: true },
+            None,
+            None,
+        )
+        .unwrap();
+        assert!(prelio.lossless_replay);
+        let receiver = prelio.get_chan().unwrap();
+
+        prelio.add_pointcloud(cloud(&[(1.0, 0.0, 0.0, Some(42.0))]));
+
+        let processed = receiver
+            .recv_timeout(std::time::Duration::from_secs(2))
+            .expect("LiDAR-only cloud should not wait for IMU data");
+        assert!(processed.imu_buffer.is_empty());
+        assert_eq!(processed.imu_frame, "");
+        assert!(synthetic_undistort_called.load(Ordering::Acquire));
+    }
+
+    #[test]
+    fn robosense_scan_span_is_not_collapsed_by_f32_stamps() {
+        // Robosense publishes absolute epoch stamps per point. Stored raw in
+        // the f32 of `PointXYZIT` they all round to the same value (the ULP up
+        // there is 128 s), the scan span comes out empty and every scan is
+        // silently dropped. Preprocessing makes them header-relative, so the
+        // synchronizer receives small offsets.
+        let scan_stamp = 1_788_966_795.8;
+        let (lidar_tx, lidar_rx) = std::sync::mpsc::channel();
+        let (_odom_tx, odom_rx) = std::sync::mpsc::channel();
+        let (synced_tx, synced_rx) = std::sync::mpsc::sync_channel(8);
+
+        lidar_tx
+            .send((
+                (
+                    vec![PointXYZIT::default()],
+                    None,
+                    0.0,
+                    0.1,
+                    HeaderMsg {
+                        seq: 0,
+                        stamp: secs_to_timestamp(scan_stamp),
+                        frame_id: "rslidar".to_string(),
+                    },
+                ),
+                1,
+                Instant::now(),
+                RuntimeEvaluator::new(),
+            ))
+            .unwrap();
+        drop(lidar_tx);
+
+        let mut previous_lidar_end = 0.0;
+        Prelio::sync_lidar_imu_worker(
+            0,
+            &mut previous_lidar_end,
+            9.81,
+            lidar_rx,
+            None,
+            odom_rx,
+            &synced_tx,
+            false,
+            ImuProcess::new(9.81, false),
+            None,
+            None,
+            LidarVendor::Robosense,
+            None,
+            ImuSyncMode::Disabled { lossless: false },
+        );
+
+        let processed = synced_rx
+            .try_recv()
+            .expect("scan should be forwarded, not dropped as an empty span");
+        let end = timestamp_to_secs(&processed.lidar_end_time_abs);
+        assert!(
+            (end - (scan_stamp + 0.1)).abs() < 1e-3,
+            "frame end {end} should sit at the header stamp plus the scan span"
+        );
+        assert!((previous_lidar_end - (scan_stamp + 0.1)).abs() < 1e-3);
+    }
+
+    #[test]
+    fn point_stamps_stay_representable_as_f32() {
+        let header = HeaderMsg {
+            seq: 0,
+            stamp: secs_to_timestamp(1_788_966_795.8),
+            frame_id: "rslidar".to_string(),
+        };
+        for vendor in [
+            LidarVendor::Robosense,
+            LidarVendor::LivoxMid360,
+            LidarVendor::Hesai,
+        ] {
+            let reference = lidar_scan_reference_time(vendor, &header);
+            let absolute = 1_788_966_795.85;
+            let internal = internal_point_timestamp(absolute, vendor, reference).unwrap();
+            let round_tripped = internal as f32 as f64;
+            assert!(
+                (round_tripped - internal).abs() < 1e-3,
+                "{vendor:?} stamp {internal} does not survive the f32 in PointXYZIT"
+            );
+        }
+    }
+
+    #[test]
+    fn lidar_only_advances_the_interval_across_scans() {
+        let (lidar_tx, lidar_rx) = std::sync::mpsc::channel();
+        let (_odom_tx, odom_rx) = std::sync::mpsc::channel();
+        let (synced_tx, synced_rx) = std::sync::mpsc::sync_channel(8);
+
+        for (scan_id, stamp, begin, end) in [(1u64, 100.0, 0.0, 0.1), (2, 100.1, 0.0, 0.1)] {
+            lidar_tx
+                .send((
+                    (
+                        vec![PointXYZIT::default()],
+                        None,
+                        begin,
+                        end,
+                        HeaderMsg {
+                            seq: 0,
+                            stamp: secs_to_timestamp(stamp),
+                            frame_id: "lidar".to_string(),
+                        },
+                    ),
+                    scan_id,
+                    Instant::now(),
+                    RuntimeEvaluator::new(),
+                ))
+                .unwrap();
+        }
+        drop(lidar_tx);
+
+        let mut previous_lidar_end = 0.0;
+        Prelio::sync_lidar_imu_worker(
+            0,
+            &mut previous_lidar_end,
+            9.81,
+            lidar_rx,
+            None,
+            odom_rx,
+            &synced_tx,
+            false,
+            ImuProcess::new(9.81, false),
+            None,
+            None,
+            LidarVendor::Robosense,
+            None,
+            ImuSyncMode::Disabled { lossless: false },
+        );
+
+        // Both scans go through, and the interval start tracks the last end
+        // instead of being re-derived from each scan's own begin stamp.
+        let scan_ids: Vec<_> = synced_rx.try_iter().map(|cloud| cloud.scan_id).collect();
+        assert_eq!(scan_ids, vec![1, 2]);
+        assert!(
+            (previous_lidar_end - 100.2).abs() < 1e-6,
+            "interval end was {previous_lidar_end}"
+        );
+    }
+
+    #[test]
+    fn preprocessed_scan_gap_does_not_stop_sync_worker() {
+        let (lidar_tx, lidar_rx) = std::sync::mpsc::channel();
+        let (_odom_tx, odom_rx) = std::sync::mpsc::channel();
+        let (synced_tx, synced_rx) = std::sync::mpsc::sync_channel(8);
+
+        for scan_id in [1, 3] {
+            lidar_tx
+                .send((
+                    (
+                        vec![PointXYZIT::default()],
+                        None,
+                        0.0,
+                        0.0,
+                        HeaderMsg {
+                            seq: 0,
+                            stamp: TimeMsg {
+                                sec: scan_id as i32,
+                                nanosec: 0,
+                            },
+                            frame_id: "lidar".to_string(),
+                        },
+                    ),
+                    scan_id,
+                    Instant::now(),
+                    RuntimeEvaluator::new(),
+                ))
+                .unwrap();
+        }
+        drop(lidar_tx);
+
+        let mut previous_lidar_end = 0.0;
+        Prelio::sync_lidar_imu_worker(
+            2,
+            &mut previous_lidar_end,
+            9.81,
+            lidar_rx,
+            None,
+            odom_rx,
+            &synced_tx,
+            false,
+            ImuProcess::new(9.81, false),
+            None,
+            None,
+            LidarVendor::NoTimestamp,
+            None,
+            ImuSyncMode::Disabled { lossless: false },
+        );
+
+        let scan_ids: Vec<_> = synced_rx.try_iter().map(|cloud| cloud.scan_id).collect();
+        assert_eq!(scan_ids, vec![1, 3]);
     }
 
     #[test]
@@ -866,9 +1107,10 @@ fn key_downsample_point(point: &PointXYZIT, voxel_size: f32) -> KeyedPoint {
 #[inline]
 fn lidar_scan_reference_time(lidar_vendor: LidarVendor, header: &HeaderMsg) -> Option<f64> {
     match lidar_vendor {
-        LidarVendor::Velodyne | LidarVendor::LivoxMid360 | LidarVendor::Hesai => {
-            Some(timestamp_to_secs(&header.stamp))
-        }
+        LidarVendor::Velodyne
+        | LidarVendor::LivoxMid360
+        | LidarVendor::Hesai
+        | LidarVendor::Robosense => Some(timestamp_to_secs(&header.stamp)),
         _ => None,
     }
 }
@@ -884,7 +1126,11 @@ fn internal_point_timestamp(
     }
 
     Some(match lidar_vendor {
-        LidarVendor::LivoxMid360 | LidarVendor::Hesai => {
+        // Absolute per-point epochs do not survive the f32 in `PointXYZIT`:
+        // near 1.8e9 the spacing is 128 s, so every point in a scan collapses
+        // onto one value and the scan span comes out empty. Store them
+        // relative to the header instead.
+        LidarVendor::LivoxMid360 | LidarVendor::Hesai | LidarVendor::Robosense => {
             let scan_reference_time = scan_reference_time.expect("vendor match out of date");
             (timestamp - scan_reference_time).max(0.0)
         }
@@ -1749,23 +1995,32 @@ impl Prelio {
         realtime_imu_callback: Option<RealtimeImuCallback>,
         realtime_lidar_barrier_callback: Option<RealtimeLidarBarrierCallback>,
     ) -> anyhow::Result<Self> {
-        let lossless_replay = matches!(&imu_sync_mode, ImuSyncMode::DemandDrivenReplay { .. });
+        let imu_disabled = matches!(&imu_sync_mode, ImuSyncMode::Disabled { .. });
+        // LiDAR-only input has no IMU stream to pace it. Apply backpressure at
+        // the preprocessing queue instead of silently dropping scans when a
+        // dataset or driver produces them faster than registration consumes them.
+        let lossless_replay = matches!(
+            &imu_sync_mode,
+            ImuSyncMode::Disabled { lossless: true } | ImuSyncMode::DemandDrivenReplay { .. }
+        );
         #[cfg(not(feature = "rayon"))]
         if params.parallelism_execution_policy
             == pelorus_core::adaptive_execution::ExecutionPolicy::Rayon
         {
             anyhow::bail!("parallelism.execution_mode=Rayon requires the rayon feature");
         }
-        let imu_intrinsic_calibration = match imu_intrinsic_calibration_params
-            .imu_intrinsics_calib_file_path
-            .as_ref()
-        {
-            Some(imu_intrinsic_calibration_path) => Some(ImuIntrinsicCorrection::load(
+        let imu_intrinsic_calibration = match (
+            imu_disabled,
+            imu_intrinsic_calibration_params
+                .imu_intrinsics_calib_file_path
+                .as_ref(),
+        ) {
+            (true, _) | (false, None) => None,
+            (false, Some(imu_intrinsic_calibration_path)) => Some(ImuIntrinsicCorrection::load(
                 imu_intrinsic_calibration_path,
                 imu_intrinsic_calibration_params.imu_calibrate_gyros,
                 imu_intrinsic_calibration_params.gyro_calibration_samples,
             )?),
-            None => None,
         };
 
         let (preproc_tx, preproc_rx) =
@@ -1804,11 +2059,11 @@ impl Prelio {
             let mut last_lidar_frame_time = 0.0;
             let imu_process = ImuProcess::new(gravity, intrinsic_given);
 
-            #[cfg(feature = "no-imu-sync")]
-            let imu_rx = None;
-
-            #[cfg(not(feature = "no-imu-sync"))]
-            let imu_rx = Some(imu_rx);
+            let imu_rx = if cfg!(feature = "no-imu-sync") || imu_disabled {
+                None
+            } else {
+                Some(imu_rx)
+            };
 
             Self::sync_lidar_imu_worker(
                 initial_scan_accumulate,
@@ -2003,7 +2258,7 @@ impl Prelio {
         });
 
         Ok(Prelio {
-            imu_sender: Some(imu_tx),
+            imu_sender: (!imu_disabled).then_some(imu_tx),
             odom_sender: Some(odom_tx),
             synced_receiver: Some(synced_cloud_imu_rx),
             preproc_sender: Some(preproc_tx),
@@ -2283,25 +2538,40 @@ impl Prelio {
         let mut to_next: Option<ImuMsg> = None;
         let mut awaiting_correction: Option<u64> = None;
         let mut last_received_scan_id: Option<u64> = None;
+        let mut pending_skipped_scans: u64 = 0;
         let mut cloud_count: usize = 0;
         while let Ok((
-            (cloud_downsampled, cloud_output, lidar_begin_time, lidar_end_time, lidar_header),
+            (
+                mut cloud_downsampled,
+                mut cloud_output,
+                lidar_begin_time,
+                lidar_end_time,
+                lidar_header,
+            ),
             scan_id,
             received_at,
             prelio_eval,
         )) = lidar_receiver.recv()
         {
-            if let Some(previous_scan_id) = last_received_scan_id
-                && scan_id != previous_scan_id.wrapping_add(1)
-            {
-                error!(
-                    "Pointcloud preprocessing skipped scan IDs: expected {}, received {scan_id}",
-                    previous_scan_id.wrapping_add(1)
-                );
-                return;
+            let initializing = cloud_count < initial_scan_accumulate;
+            if let Some(previous_scan_id) = last_received_scan_id {
+                pending_skipped_scans += scan_id.wrapping_sub(previous_scan_id).saturating_sub(1);
             }
             last_received_scan_id = Some(scan_id);
-            let initializing = cloud_count < initial_scan_accumulate;
+            // Bursts while the input is still spinning up (a bag player warming up,
+            // a sensor driver flushing its first batch) are expected, so drops are
+            // only reported once the pipeline runs steadily, and then aggregated
+            // instead of one warning per gap.
+            if initializing {
+                pending_skipped_scans = 0;
+            } else if pending_skipped_scans > 0
+                && should_log_once_default("pointcloud_preproc_skipped_scans")
+            {
+                warn!(
+                    "Pointcloud preprocessing dropped {pending_skipped_scans} scan(s) to keep up with the input rate"
+                );
+                pending_skipped_scans = 0;
+            }
             if !initializing
                 && let Some(expected_scan_id) = awaiting_correction.take()
                 && let Some(completed) = ready_for_next.as_ref()
@@ -2311,10 +2581,13 @@ impl Prelio {
                         Ok(scan_id) if scan_id == expected_scan_id => break,
                         Ok(scan_id) if scan_id < expected_scan_id => continue,
                         Ok(scan_id) => {
+                            // The barrier is already past the scan it was
+                            // waiting for, so carry on instead of tearing the
+                            // synchronizer down and stalling the whole pipeline.
                             warn!(
                                 "Expected correction for scan {expected_scan_id}, received scan {scan_id}"
                             );
-                            return;
+                            break;
                         }
                         Err(_) => {
                             warn!("Could not wait for next sync");
@@ -2325,8 +2598,7 @@ impl Prelio {
             }
             eval.merge(&prelio_eval);
             let lidar_time = timestamp_to_secs(&lidar_header.stamp);
-            let abs_lidar_end =
-                secs_to_timestamp(timestamp_to_secs(&lidar_header.stamp) + lidar_end_time);
+            let abs_lidar_end = secs_to_timestamp(lidar_time + lidar_end_time);
 
             if initializing {
                 cloud_count += 1;
@@ -2366,7 +2638,6 @@ impl Prelio {
             let use_point_timestamps_for_frame =
                 has_point_timestamps(lidar_vendor) && !livox_use_header_span;
             let (lidar_begin_time, imu_span_end_time) = match lidar_vendor {
-                LidarVendor::Robosense => (lidar_begin_time, lidar_end_time),
                 LidarVendor::Livox if livox_use_header_span => (lidar_time, lidar_time),
                 LidarVendor::LivoxMid360 => (lidar_time - lidar_end_time, lidar_time),
                 LidarVendor::NoTimestamp => (lidar_time, lidar_time),
@@ -2402,6 +2673,7 @@ impl Prelio {
                 let mut requested_next_replay_scan = false;
                 loop {
                     let imu = match &mut imu_sync_mode {
+                        ImuSyncMode::Disabled { .. } => break,
                         ImuSyncMode::Continuous => imu_receiver.recv(),
                         ImuSyncMode::LidarDriven => match imu_receiver.try_recv() {
                             Ok(imu) => Ok(imu),
@@ -2502,8 +2774,34 @@ impl Prelio {
             // - data synced -
             // debug!("data synced");
 
+            // `undistort` takes the frame end in the same form the IMU path
+            // hands it over: header-relative when the points carry stamps.
+            let deskew_end_time = if use_point_timestamps_for_frame {
+                lidar_end_time
+            } else {
+                imu_span_end_time
+            };
+
             if imu_data.is_empty() {
-                // Passthrough when lidar only
+                // A runtime LiDAR-only pipeline still uses this callback to
+                // synthesize constant-twist IMU samples, propagate the EKF,
+                // and deskew the cloud. Only the generic no-callback case is
+                // a true passthrough.
+                let end_of_frame_guess = match imu_pose_prediction_undistort.as_ref() {
+                    Some(undistort) => match undistort(
+                        &[],
+                        &odom_data,
+                        imu_span_start_time,
+                        lidar_begin_time,
+                        deskew_end_time,
+                        &mut cloud_downsampled,
+                        cloud_output.as_mut(),
+                    ) {
+                        Left(prediction) => prediction.pose,
+                        Right(pose) => pose,
+                    },
+                    None => Isometry3::identity(),
+                };
 
                 let res = PrelioProcessedCloud {
                     scan_id: scan_id,
@@ -2513,7 +2811,7 @@ impl Prelio {
                     imu_buffer: Vec::new(),
                     imu_frame: "".to_string(),
                     header: lidar_header,
-                    end_of_frame_guess: Isometry3::identity(),
+                    end_of_frame_guess,
                     end_of_frame_time: if use_point_timestamps_for_frame {
                         secs_to_timestamp(lidar_end_time)
                     } else {
@@ -2529,20 +2827,19 @@ impl Prelio {
                     should_map_only: false,
                     lidar_end_time_abs: abs_lidar_end,
                 };
+                // The next interval starts where this one ended. Without this the
+                // span is re-derived from each scan's own begin stamp, so motion
+                // between scans never gets propagated.
+                *prev_lidar_end_time = imu_span_end_time;
                 synced_sender.send(res).unwrap();
                 awaiting_correction = Some(scan_id);
             } else {
-                let meas_lidar_end_time = if use_point_timestamps_for_frame {
-                    lidar_end_time
-                } else {
-                    imu_span_end_time
-                };
                 let meas = MeasureGroup {
                     cloud: cloud_downsampled,
                     cloud_passthrough: cloud_output,
                     last_lidar_end_stamp: imu_span_start_time,
                     lidar_start_stamp: lidar_begin_time,
-                    lidar_end_stamp: meas_lidar_end_time,
+                    lidar_end_stamp: deskew_end_time,
                     imu_buffer: imu_data.clone(),
                     odom_buffer: odom_data.clone(),
                 };

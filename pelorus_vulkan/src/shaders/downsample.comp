@@ -42,6 +42,14 @@ void main() {
 #endif
 
 #ifdef MEDOIDS
+    // `dispatch` rounds the grid up to whole workgroups, so invocations run past
+    // `pc.n`. The sentinel store below must not reach them: `medoids` is only
+    // guaranteed to cover `pc.n`, and for a cloud smaller than a workgroup its
+    // whole allocation sits inside the rounded-up range.
+    if (idx >= pc.n) {
+        return;
+    }
+
     if (idx >= unique_count) {
         Point invalid;
         invalid.x = 0.0;

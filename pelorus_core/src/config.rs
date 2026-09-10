@@ -354,8 +354,10 @@ mod override_tests {
 
     #[test]
     fn lidar_only_forces_the_extrinsic_to_identity() {
-        let source = "imu.from_lidar_transform.translation = [1.0m, 2.0m, 3.0m]\n";
+        let source = "imu.from_lidar_transform.translation = [1.0m, 2.0m, 3.0m]\n\
+                      imu.from_lidar_transform.use_tf_tree = true\n";
         let with_imu = config_with(source);
+        assert!(with_imu.prelio_params.imu_lidar_tf_override);
         assert_eq!(
             with_imu.imu_params.initial_translation_lidar_to_imu,
             Vector3::new(1.0, 2.0, 3.0)
@@ -363,6 +365,7 @@ mod override_tests {
 
         let lidar_only = config_with(&format!("{source}imu.lidar_only = true\n"));
         assert!(lidar_only.imu_params.lidar_only);
+        assert!(!lidar_only.prelio_params.imu_lidar_tf_override);
         assert_eq!(
             lidar_only.imu_params.initial_translation_lidar_to_imu,
             Vector3::zeros()
@@ -1126,7 +1129,7 @@ fn ast_to_config_inner(
             imu_src_topic,
             imu_qos,
             imu_predictor_init_time_sec,
-            imu_lidar_tf_override,
+            imu_lidar_tf_override && !lidar_only,
         );
 
         (imu_params, imu_prelio_params, imu_node_params)

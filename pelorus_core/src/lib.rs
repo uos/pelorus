@@ -18,13 +18,13 @@ pub struct RobosensePoint {
     pub x: f32,
     pub y: f32,
     pub z: f32,
-    pub intensity: u8,
+    pub intensity: f32,
     pub timestamp: f64,
 }
 
 impl PointXYZITimestamp<5> for RobosensePoint {
     fn intensity(&self) -> f32 {
-        self.intensity as f32 / 255.0 // TODO right?
+        self.intensity / 255.0
     }
 
     fn timestamp(&self) -> f64 {
