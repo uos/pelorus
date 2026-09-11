@@ -1318,8 +1318,16 @@ jobs:
             makepkg --printsrcinfo > .SRCINFO
             
             git add -f .SRCINFO PKGBUILD
-            git commit -m "Update package from $FORGEJO_REPOSITORY@$FORGEJO_SHA"
-            git push origin
+
+            # A re-run on an unchanged PKGBUILD stages nothing, and `git commit`
+            # exits 1 on an empty commit, which `set -e` turns into a job failure.
+            # The AUR is already at the right version in that case, so it is a no-op.
+            if git diff --cached --quiet; then
+              echo "AUR pelorus-bin already up to date; nothing to publish."
+            else
+              git commit -m "Update package from $FORGEJO_REPOSITORY@$FORGEJO_SHA"
+              git push origin
+            fi
           EOF
           shred -u /home/build/.ssh/aur_key
 

@@ -393,30 +393,13 @@ run_backend_test() {
     fi
     local -a pelorus_args=(offline -c "$CONFIG_FILE" "$BAGFILE" --export-trajectory "$output_file")
 
-    # Running under gdb gets a backtrace at the moment of the fault, which does
-    # not depend on core_pattern, container privileges or apport/systemd-coredump
-    # - all of which have already swallowed one crash each. Needs the binary
-    # built separately, because wrapping `cargo run` would only debug cargo.
-    local -a cmd=()
-    local use_gdb="false"
-    if [[ "${PELORUS_CAPTURE_CORES:-0}" == "1" ]] && command -v gdb &> /dev/null; then
-        use_gdb="true"
-        log_info "Building $backend_name binary for the gdb-wrapped run..."
-        cargo build --release --bin pelorus ${cargo_flags[@]+"${cargo_flags[@]}"}
-        cmd=(gdb -q -batch
-            -ex "set debuginfod enabled off"
-            -ex "set pagination off"
-            # this program churns through hundreds of threads; without this gdb
-            # prints two lines per thread and buries the actual output
-            -ex "set print thread-events off"
-            -ex "run"
-            -ex "echo \n=== backtrace (all threads) ===\n"
-            -ex "thread apply all backtrace full"
-            --args target/release/pelorus "${pelorus_args[@]}")
-    else
-        cmd=(cargo run --release --bin pelorus ${cargo_flags[@]+"${cargo_flags[@]}"}
-            -- "${pelorus_args[@]}")
-    fi
+    # Build before the timed region below. `timeout` is there to catch a hung
+    # run, and wrapping `cargo run` would let a cold target dir spend that
+    # budget on compilation instead - a slow build and a deadlock then look
+    # identical from the outside.
+    log_info "Building $backend_name binary..."
+    cargo build --release --bin pelorus ${cargo_flags[@]+"${cargo_flags[@]}"}
+    local -a cmd=(target/release/pelorus "${pelorus_args[@]}")
     
     # macOS compatibility: use gtimeout if available, otherwise skip timeout
     local timeout_cmd=""
@@ -471,31 +454,11 @@ run_backend_test() {
         ${run_env[@]+"${run_env[@]}"} "${cmd[@]}" 2>&1 | tee -a "$run_log" || exit_code=${PIPESTATUS[0]}
     fi
     
-    # gdb's own exit status says nothing useful about the inferior: it is 0 when
-    # the program segfaulted, and 1 after a clean run because the trailing
-    # `backtrace` errors with "The program is not being run". So ignore it and
-    # read the outcome out of what gdb printed. If none of the markers are there
-    # the run never reached them (timeout, gdb itself failing), and the
-    # pipeline's own status stands.
-    if [[ "$use_gdb" == "true" ]]; then
-        if grep -qE "(Program received|Program terminated with) signal" "$run_log"; then
-            log_error "$backend_name crashed under gdb; backtrace is above and in $run_log"
-            exit_code=139
-        elif grep -q "exited with code" "$run_log"; then
-            log_error "$backend_name exited non-zero under gdb; see $run_log"
-            exit_code=1
-        elif grep -q "exited normally" "$run_log"; then
-            exit_code=0
-        fi
-    fi
-
     # Check for timeout exit code (124 from timeout/gtimeout)
     if [[ $exit_code -eq 124 ]]; then
         fail "$backend_name run timed out after 900 seconds"
     elif [[ $exit_code -eq 139 ]]; then
-        if [[ "$use_gdb" != "true" ]]; then
-            capture_core_backtrace "$backend_name" "$run_started"
-        fi
+        capture_core_backtrace "$backend_name" "$run_started"
         fail "$backend_name run failed with SIGSEGV (exit code 139)"
     elif [[ $exit_code -ne 0 ]]; then
         fail "$backend_name run failed with exit code $exit_code"
