@@ -58,6 +58,70 @@ unsafe extern "C" {
     );
 }
 
+/// Forwards layer output into `log`, which this process writes to stderr.
+unsafe extern "system" fn vulkan_debug_callback(
+    severity: vk::DebugUtilsMessageSeverityFlagsEXT,
+    kinds: vk::DebugUtilsMessageTypeFlagsEXT,
+    data: *const vk::DebugUtilsMessengerCallbackDataEXT<'_>,
+    _user_data: *mut std::ffi::c_void,
+) -> vk::Bool32 {
+    let message = unsafe { data.as_ref() }
+        .map(|data| {
+            if data.p_message.is_null() {
+                std::borrow::Cow::Borrowed("<no message>")
+            } else {
+                unsafe { CStr::from_ptr(data.p_message) }.to_string_lossy()
+            }
+        })
+        .unwrap_or(std::borrow::Cow::Borrowed("<no callback data>"));
+
+    if severity.contains(vk::DebugUtilsMessageSeverityFlagsEXT::ERROR) {
+        log::error!("vulkan {kinds:?}: {message}");
+    } else {
+        log::warn!("vulkan {kinds:?}: {message}");
+    }
+
+    // Never abort the offending call; the report is the point.
+    vk::FALSE
+}
+
+/// Smallest subgroup size `vk_radix_sort` can be run on without corrupting memory.
+///
+/// Its downsweep shaders declare `localHistogramSum` as a 256-entry *workgroup*
+/// array and index it with `i / SubgroupSize`, where `i` runs to
+/// `256 * (512 / SubgroupSize)`. The largest index is therefore
+/// `131072 / SubgroupSize^2`, which only stays inside 256 entries once the
+/// subgroup size reaches 32: at 16 it reaches 511, at 8 it reaches 2047.
+///
+/// Nothing catches that at runtime. `robustBufferAccess` bounds descriptor-backed
+/// storage, not `Workgroup` storage, and the validation layer does not range-check
+/// shared memory either, so the write simply lands past the end of the array --
+/// silently on hardware that has real shared memory, as a host memory write on an
+/// implementation that JITs shaders to host code, which is where it takes the
+/// process down with no diagnostic of any kind.
+///
+/// Skipping such a device is the only safe option today: [`record_portable_sort`]
+/// covers the map sort, but the downsample path has no fallback and calls the
+/// sorter directly.
+const MIN_SORTER_SUBGROUP_SIZE: u32 = 32;
+
+/// Tear down an instance that never became a [`VulkanContext`].
+///
+/// The messenger is a child of the instance, so it has to go first or
+/// `vkDestroyInstance` reports a live child object. Every bail-out in `try_new`
+/// runs after the messenger may already exist, so they all go through here.
+unsafe fn abandon_instance(
+    instance: &Instance,
+    debug_messenger: &Option<(ash::ext::debug_utils::Instance, vk::DebugUtilsMessengerEXT)>,
+) {
+    unsafe {
+        if let Some((loader, messenger)) = debug_messenger {
+            loader.destroy_debug_utils_messenger(*messenger, None);
+        }
+        instance.destroy_instance(None);
+    }
+}
+
 struct VulkanContext {
     #[allow(dead_code)]
     entry: Entry,
@@ -67,6 +131,13 @@ struct VulkanContext {
     queue: vk::Queue,
     command_pool: vk::CommandPool,
     memory_properties: vk::PhysicalDeviceMemoryProperties,
+    /// Kept so validation output reaches this process's logger. Without a
+    /// messenger the layer falls back to its own reporter, which writes to
+    /// stdout -- block buffered whenever stdout is a pipe, so on a SIGSEGV the
+    /// unflushed block dies with the process and the report is never seen. The
+    /// loader's own messages go to stderr, which is why those survive and the
+    /// layer's do not.
+    debug_messenger: Option<(ash::ext::debug_utils::Instance, vk::DebugUtilsMessengerEXT)>,
     submit_lock: Mutex<()>,
     /// Set by `shutdown`. Teardown cannot wait for the `Arc` refcount to reach
     /// zero: background threads can still hold `Stream`s and `VulkanBuffer`s when
@@ -91,20 +162,61 @@ impl VulkanContext {
             .engine_version(0)
             .api_version(vk::make_api_version(0, 1, 2, 0));
 
-        let instance_ci = vk::InstanceCreateInfo::default().application_info(&app_info);
+        // Enable the messenger extension when the loader has it, so a layer that
+        // is active reports through `log` instead of its own stdout writer.
+        let instance_extensions =
+            unsafe { entry.enumerate_instance_extension_properties(None) }.unwrap_or_default();
+        let has_debug_utils = instance_extensions.iter().any(|ext| unsafe {
+            CStr::from_ptr(ext.extension_name.as_ptr()) == ash::ext::debug_utils::NAME
+        });
+        let enabled_instance_extensions: Vec<*const std::ffi::c_char> = if has_debug_utils {
+            vec![ash::ext::debug_utils::NAME.as_ptr()]
+        } else {
+            Vec::new()
+        };
+
+        let instance_ci = vk::InstanceCreateInfo::default()
+            .application_info(&app_info)
+            .enabled_extension_names(&enabled_instance_extensions);
         let instance = unsafe {
             entry
                 .create_instance(&instance_ci, None)
                 .map_err(|e| format!("failed to create Vulkan instance: {e}"))?
         };
 
-        let physical_devices = unsafe {
-            instance
-                .enumerate_physical_devices()
-                .map_err(|e| format!("failed to enumerate Vulkan physical devices: {e}"))?
+        let debug_messenger = if has_debug_utils {
+            let loader = ash::ext::debug_utils::Instance::new(&entry, &instance);
+            let messenger_ci = vk::DebugUtilsMessengerCreateInfoEXT::default()
+                .message_severity(
+                    vk::DebugUtilsMessageSeverityFlagsEXT::ERROR
+                        | vk::DebugUtilsMessageSeverityFlagsEXT::WARNING,
+                )
+                .message_type(
+                    vk::DebugUtilsMessageTypeFlagsEXT::GENERAL
+                        | vk::DebugUtilsMessageTypeFlagsEXT::VALIDATION
+                        | vk::DebugUtilsMessageTypeFlagsEXT::PERFORMANCE,
+                )
+                .pfn_user_callback(Some(vulkan_debug_callback));
+            match unsafe { loader.create_debug_utils_messenger(&messenger_ci, None) } {
+                Ok(messenger) => Some((loader, messenger)),
+                Err(e) => {
+                    log::warn!("could not install the Vulkan debug messenger: {e}");
+                    None
+                }
+            }
+        } else {
+            None
+        };
+
+        let physical_devices = match unsafe { instance.enumerate_physical_devices() } {
+            Ok(devices) => devices,
+            Err(e) => {
+                unsafe { abandon_instance(&instance, &debug_messenger) };
+                return Err(format!("failed to enumerate Vulkan physical devices: {e}"));
+            }
         };
         if physical_devices.is_empty() {
-            unsafe { instance.destroy_instance(None) };
+            unsafe { abandon_instance(&instance, &debug_messenger) };
             return Err("no Vulkan physical device available".to_string());
         }
 
@@ -124,11 +236,14 @@ impl VulkanContext {
                 continue;
             }
 
-            let device_extensions = unsafe {
-                instance
-                    .enumerate_device_extension_properties(physical)
-                    .map_err(|e| format!("failed to enumerate Vulkan device extensions: {e}"))?
-            };
+            let device_extensions =
+                match unsafe { instance.enumerate_device_extension_properties(physical) } {
+                    Ok(extensions) => extensions,
+                    Err(e) => {
+                        unsafe { abandon_instance(&instance, &debug_messenger) };
+                        return Err(format!("failed to enumerate Vulkan device extensions: {e}"));
+                    }
+                };
             let has_push_descriptor = device_extensions.iter().any(|ext| unsafe {
                 CStr::from_ptr(ext.extension_name.as_ptr()) == push_descriptor::NAME
             });
@@ -137,12 +252,29 @@ impl VulkanContext {
             }
 
             let mut push_desc_props = vk::PhysicalDevicePushDescriptorPropertiesKHR::default();
-            let mut props2 =
-                vk::PhysicalDeviceProperties2::default().push_next(&mut push_desc_props);
+            let mut subgroup_props = vk::PhysicalDeviceSubgroupProperties::default();
+            let mut props2 = vk::PhysicalDeviceProperties2::default()
+                .push_next(&mut push_desc_props)
+                .push_next(&mut subgroup_props);
             unsafe {
                 instance.get_physical_device_properties2(physical, &mut props2);
             }
             if push_desc_props.max_push_descriptors == 0 {
+                continue;
+            }
+            if subgroup_props.subgroup_size < MIN_SORTER_SUBGROUP_SIZE {
+                let name = unsafe { CStr::from_ptr(properties.device_name.as_ptr()) }
+                    .to_string_lossy()
+                    .into_owned();
+                // Debug, not warn: passing over an unsuitable device is ordinary,
+                // and a box with a real GPU often has a software one installed
+                // beside it. Only ending up with no device at all is worth saying
+                // out loud, and the error below says why.
+                log::debug!(
+                    "skipping Vulkan device {name}: subgroup size {} is below the {} the radix sorter requires",
+                    subgroup_props.subgroup_size,
+                    MIN_SORTER_SUBGROUP_SIZE
+                );
                 continue;
             }
 
@@ -177,12 +309,45 @@ impl VulkanContext {
         }
 
         let Some((physical_device, queue_family_index, _)) = selected else {
-            unsafe { instance.destroy_instance(None) };
-            return Err(
-                "no Vulkan device with compute + bufferDeviceAddress + scalarBlockLayout + VK_KHR_push_descriptor support available"
-                    .to_string(),
-            );
+            unsafe { abandon_instance(&instance, &debug_messenger) };
+            return Err(format!(
+                "no Vulkan device with compute + bufferDeviceAddress + scalarBlockLayout + \
+                 VK_KHR_push_descriptor + subgroup size >= {MIN_SORTER_SUBGROUP_SIZE} available"
+            ));
         };
+
+        // Say which device this is. Scoring prefers a discrete GPU, but it falls
+        // back to whatever else satisfies the feature checks, and a box with the
+        // GPU's ICD missing still has Mesa's lavapipe -- so the backend can end up
+        // on a CPU rasterizer without anything in the log saying so, and every
+        // timing and every crash after that is about a different implementation
+        // than the one anybody thinks is under test.
+        let selected_props = unsafe { instance.get_physical_device_properties(physical_device) };
+        let selected_name = unsafe { CStr::from_ptr(selected_props.device_name.as_ptr()) }
+            .to_string_lossy()
+            .into_owned();
+        if matches!(
+            selected_props.device_type,
+            vk::PhysicalDeviceType::CPU | vk::PhysicalDeviceType::OTHER
+        ) {
+            // Warn, not info: this is the level a default config prints at, and a
+            // software rasterizer is also where out-of-range shader access stops
+            // being harmless. These implementations JIT shaders to host code, so
+            // anything `robustBufferAccess` does not cover -- workgroup `shared`
+            // memory, a descriptor range wider than its buffer -- is a host
+            // pointer, and the process dies instead of reading garbage.
+            log::warn!(
+                "Vulkan backend selected a software device ({selected_name}, {:?}); this is a CPU rasterizer, \
+                 not GPU acceleration. Results are valid but orders of magnitude slower, and shader faults \
+                 take the process down rather than being contained.",
+                selected_props.device_type
+            );
+        } else {
+            log::info!(
+                "Vulkan backend device: {selected_name} ({:?})",
+                selected_props.device_type
+            );
+        }
 
         let queue_priorities = [1.0_f32];
         let queue_ci = vk::DeviceQueueCreateInfo::default()
@@ -207,7 +372,7 @@ impl VulkanContext {
         let device = match unsafe { instance.create_device(physical_device, &device_ci, None) } {
             Ok(d) => d,
             Err(e) => {
-                unsafe { instance.destroy_instance(None) };
+                unsafe { abandon_instance(&instance, &debug_messenger) };
                 return Err(format!("failed to create Vulkan device: {e}"));
             }
         };
@@ -222,7 +387,7 @@ impl VulkanContext {
             Err(e) => {
                 unsafe {
                     device.destroy_device(None);
-                    instance.destroy_instance(None);
+                    abandon_instance(&instance, &debug_messenger);
                 }
                 return Err(format!("failed to create Vulkan command pool: {e}"));
             }
@@ -239,6 +404,7 @@ impl VulkanContext {
             queue,
             command_pool,
             memory_properties,
+            debug_messenger,
             submit_lock: Mutex::new(()),
             destroyed: std::sync::atomic::AtomicBool::new(false),
         })
@@ -262,7 +428,7 @@ impl VulkanContext {
             let _ = self.device.device_wait_idle();
             self.device.destroy_command_pool(self.command_pool, None);
             self.device.destroy_device(None);
-            self.instance.destroy_instance(None);
+            abandon_instance(&self.instance, &self.debug_messenger);
         }
         true
     }
@@ -1605,6 +1771,102 @@ fn compile_shader(
     artifact.as_binary().to_vec()
 }
 
+/// Serializes every use of shaderc in this process.
+///
+/// `shaderc::Compiler` create/drop drives glslang's process-global initialization
+/// refcount, and glslang is not safe to set up or tear down from two threads at
+/// once. `build_pipelines` is reached from both the odometry thread (`init_map`)
+/// and prelio's preprocessing worker (`ensure_downsample_state`), each holding a
+/// different lock, so without this they can enter the compiler together.
+#[cfg(feature = "vulkan_enable")]
+static SHADERC_LOCK: Mutex<()> = Mutex::new(());
+
+/// One shader variant to compile: pipeline name, GLSL source, preprocessor defines.
+#[cfg(feature = "vulkan_enable")]
+type ShaderDef<'a> = (&'a str, &'a str, &'a [(&'a str, Option<&'a str>)]);
+
+/// Compile a batch of shader variants, one compiler for the whole batch.
+#[cfg(feature = "vulkan_enable")]
+fn compile_shaders(defs: &[ShaderDef<'_>]) -> Vec<Vec<u32>> {
+    let _guard = SHADERC_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let mut compiler = shaderc::Compiler::new().expect("failed creating shader compiler");
+    defs.iter()
+        .map(|(name, source, defines)| compile_shader(&mut compiler, source, name, defines))
+        .collect()
+}
+
+/// SPIR-V for every compute shader, in [`shader_binaries`] order.
+#[cfg(feature = "vulkan_enable")]
+static SHADER_BINARIES: OnceLock<Vec<Vec<u32>>> = OnceLock::new();
+
+/// The compiled shaders, compiling them on the first call only.
+///
+/// `build_pipelines` runs again for every Vulkan state that is built -- the map,
+/// the downsample state, and the downsample state once more on each capacity
+/// growth -- so compiling in it meant re-running shaderc over all 20 variants
+/// repeatedly during the first seconds of a run, on two threads at that.
+#[cfg(feature = "vulkan_enable")]
+fn shader_binaries() -> &'static [Vec<u32>] {
+    SHADER_BINARIES.get_or_init(|| {
+        let hashmap_src = shaders::source_with_common(shaders::HASHMAP);
+        let localmap_src = shaders::source_with_common(shaders::LOCALMAP);
+        let reorder_src = shaders::source_with_common(shaders::REORDER);
+        let planes_src = shaders::source_with_common(shaders::PLANES);
+        let compact_planes_src = shaders::source_with_common(shaders::COMPACT_PLANES);
+        let plane_count_src = shaders::source_with_common(shaders::PLANE_COUNT);
+        let portable_sort_src = shaders::source_with_common(shaders::PORTABLE_SORT);
+        let rle_src = shaders::source_with_common(shaders::RLE);
+        let lru_score_src = shaders::source_with_common(shaders::LRU_SCORE);
+        let classify_keys_src = shaders::source_with_common(shaders::CLASSIFY_KEYS);
+        let exclusive_scan_src = shaders::source_with_common(shaders::EXCLUSIVE_SCAN);
+        let assign_new_targets_src = shaders::source_with_common(shaders::ASSIGN_NEW_TARGETS);
+        let finalize_cursors_src = shaders::source_with_common(shaders::FINALIZE_CURSORS);
+        let scan_block_sums_src = shaders::source_with_common(shaders::SCAN_BLOCK_SUMS);
+        let add_block_prefix_src = shaders::source_with_common(shaders::ADD_BLOCK_PREFIX);
+        let downsample_src = shaders::source_with_common(shaders::DOWNSAMPLE);
+
+        // Order is the pipeline order in `build_pipelines`; keep the two in step.
+        let shader_defs: [ShaderDef<'_>; 20] = [
+            ("hashmap_init", &hashmap_src, &[("HASHMAP_INIT", None)]),
+            (
+                "rebuild_hashmap_keyed",
+                &hashmap_src,
+                &[("REBUILD_HASHMAP_KEYED", None)],
+            ),
+            ("calculate_keys", &localmap_src, &[("CALCULATE_KEYS", None)]),
+            ("reorder_points", &reorder_src, &[]),
+            ("build_voxels", &localmap_src, &[("BUILD_VOXELS", None)]),
+            ("plane_krnl", &planes_src, &[]),
+            ("compact_planes", &compact_planes_src, &[]),
+            ("plane_count", &plane_count_src, &[]),
+            ("portable_sort", &portable_sort_src, &[]),
+            ("rle", &rle_src, &[]),
+            ("lru_score", &lru_score_src, &[]),
+            ("classify_keys", &classify_keys_src, &[]),
+            ("exclusive_scan", &exclusive_scan_src, &[]),
+            ("assign_new_targets", &assign_new_targets_src, &[]),
+            ("finalize_cursors", &finalize_cursors_src, &[]),
+            ("scan_block_sums", &scan_block_sums_src, &[]),
+            ("add_block_prefix", &add_block_prefix_src, &[]),
+            (
+                "downsample_build_keys",
+                &downsample_src,
+                &[("BUILD_KEYS", None)],
+            ),
+            ("downsample_medoids", &downsample_src, &[("MEDOIDS", None)]),
+            (
+                "downsample_timestamp_keys",
+                &downsample_src,
+                &[("TIMESTAMP_KEYS", None)],
+            ),
+        ];
+
+        compile_shaders(&shader_defs)
+    })
+}
+
 fn create_shader_module(device: &Device, code: &[u32]) -> vk::ShaderModule {
     let ci = vk::ShaderModuleCreateInfo::default().code(code);
     unsafe {
@@ -1667,73 +1929,11 @@ fn build_pipelines(context: Arc<VulkanContext>) -> Arc<VulkanComputePipelines> {
             .expect("failed creating pipeline layout")
     };
 
-    let mut compiler = shaderc::Compiler::new().expect("failed creating shader compiler");
-
-    let hashmap_src = shaders::source_with_common(shaders::HASHMAP);
-    let localmap_src = shaders::source_with_common(shaders::LOCALMAP);
-    let reorder_src = shaders::source_with_common(shaders::REORDER);
-    let planes_src = shaders::source_with_common(shaders::PLANES);
-    let compact_planes_src = shaders::source_with_common(shaders::COMPACT_PLANES);
-    let plane_count_src = shaders::source_with_common(shaders::PLANE_COUNT);
-    let portable_sort_src = shaders::source_with_common(shaders::PORTABLE_SORT);
-    let rle_src = shaders::source_with_common(shaders::RLE);
-    let lru_score_src = shaders::source_with_common(shaders::LRU_SCORE);
-    let classify_keys_src = shaders::source_with_common(shaders::CLASSIFY_KEYS);
-    let exclusive_scan_src = shaders::source_with_common(shaders::EXCLUSIVE_SCAN);
-    let assign_new_targets_src = shaders::source_with_common(shaders::ASSIGN_NEW_TARGETS);
-    let finalize_cursors_src = shaders::source_with_common(shaders::FINALIZE_CURSORS);
-    let scan_block_sums_src = shaders::source_with_common(shaders::SCAN_BLOCK_SUMS);
-    let add_block_prefix_src = shaders::source_with_common(shaders::ADD_BLOCK_PREFIX);
-    let downsample_src = shaders::source_with_common(shaders::DOWNSAMPLE);
-
-    let shader_defs = [
-        ("hashmap_init", &hashmap_src, vec![("HASHMAP_INIT", None)]),
-        (
-            "rebuild_hashmap_keyed",
-            &hashmap_src,
-            vec![("REBUILD_HASHMAP_KEYED", None)],
-        ),
-        (
-            "calculate_keys",
-            &localmap_src,
-            vec![("CALCULATE_KEYS", None)],
-        ),
-        ("reorder_points", &reorder_src, vec![]),
-        ("build_voxels", &localmap_src, vec![("BUILD_VOXELS", None)]),
-        ("plane_krnl", &planes_src, vec![]),
-        ("compact_planes", &compact_planes_src, vec![]),
-        ("plane_count", &plane_count_src, vec![]),
-        ("portable_sort", &portable_sort_src, vec![]),
-        ("rle", &rle_src, vec![]),
-        ("lru_score", &lru_score_src, vec![]),
-        ("classify_keys", &classify_keys_src, vec![]),
-        ("exclusive_scan", &exclusive_scan_src, vec![]),
-        ("assign_new_targets", &assign_new_targets_src, vec![]),
-        ("finalize_cursors", &finalize_cursors_src, vec![]),
-        ("scan_block_sums", &scan_block_sums_src, vec![]),
-        ("add_block_prefix", &add_block_prefix_src, vec![]),
-        (
-            "downsample_build_keys",
-            &downsample_src,
-            vec![("BUILD_KEYS", None)],
-        ),
-        (
-            "downsample_medoids",
-            &downsample_src,
-            vec![("MEDOIDS", None)],
-        ),
-        (
-            "downsample_timestamp_keys",
-            &downsample_src,
-            vec![("TIMESTAMP_KEYS", None)],
-        ),
-    ];
-
-    let mut modules = Vec::with_capacity(shader_defs.len());
-    let mut pipelines = Vec::with_capacity(shader_defs.len());
-    for (name, source, defines) in shader_defs {
-        let spirv = compile_shader(&mut compiler, source, name, &defines);
-        let module = create_shader_module(&context.device, &spirv);
+    let binaries = shader_binaries();
+    let mut modules = Vec::with_capacity(binaries.len());
+    let mut pipelines = Vec::with_capacity(binaries.len());
+    for spirv in binaries {
+        let module = create_shader_module(&context.device, spirv);
         let pipeline = create_compute_pipeline(&context.device, pipeline_layout, module);
         modules.push(module);
         pipelines.push(pipeline);
@@ -2327,12 +2527,16 @@ pub fn init_map(
                 lru_mapping: VulkanBuffer::new(
                     stream,
                     size_of::<u32>(),
-                    (dist_cap as usize).next_power_of_two(),
+                    (dist_cap as usize)
+                        .next_power_of_two()
+                        .max(MIN_SORT_SCRATCH_ELEMS),
                 ),
                 lru_keys: VulkanBuffer::new(
                     stream,
                     size_of::<u32>(),
-                    (dist_cap as usize).next_power_of_two(),
+                    (dist_cap as usize)
+                        .next_power_of_two()
+                        .max(MIN_SORT_SCRATCH_ELEMS),
                 ),
                 is_new: VulkanBuffer::new(stream, size_of::<u32>(), 1),
                 new_offset: VulkanBuffer::new(stream, size_of::<u32>(), 1),
@@ -2449,6 +2653,17 @@ fn downsample_state() -> &'static Mutex<Option<VulkanDownsampleState>> {
     DOWNSAMPLE_STATE.get_or_init(|| Mutex::new(None))
 }
 
+/// Smallest scratch element count the radix sorter can be pointed at safely.
+///
+/// `vrdxCmdSortKeyValue` describes the key and value buffers with a range of
+/// `Align(elementCount * 4, 16)`, rounding *up*. A buffer of one or two u32s is
+/// 4 or 8 bytes, so sorting it hands the sorter a 16-byte descriptor range over a
+/// smaller allocation: past the end of the buffer, and past what
+/// `robustBufferAccess` clamps to, since that bounds against the descriptor range
+/// and not the allocation. Four elements is the first size where the rounding
+/// cannot overshoot.
+const MIN_SORT_SCRATCH_ELEMS: usize = 4;
+
 fn ensure_downsample_state(stream: &Stream, capacity: usize) {
     if cfg!(target_os = "macos") && std::env::var_os("PELORUS_VULKAN_ALLOW_MACOS_UNSAFE").is_none()
     {
@@ -2473,7 +2688,7 @@ fn ensure_downsample_state(stream: &Stream, capacity: usize) {
         return;
     };
 
-    let new_cap = capacity.next_power_of_two().max(1);
+    let new_cap = capacity.next_power_of_two().max(MIN_SORT_SCRATCH_ELEMS);
     let compute = build_pipelines(Arc::clone(context));
     let command_resources = Mutex::new(ComputeCommandResources::new(context, &compute));
     let dummy_buf = VulkanBuffer::new(stream, size_of::<u32>(), 1);
@@ -2973,7 +3188,8 @@ fn ensure_scratch_capacity(state: &mut VulkanGpuMapState, stream: &Stream, n_poi
     }
     let new_cap = (((n_points as f32) * 1.5).ceil() as usize)
         .max(n_points)
-        .next_power_of_two();
+        .next_power_of_two()
+        .max(MIN_SORT_SCRATCH_ELEMS);
     state.scratch.keys = VulkanBuffer::new(stream, size_of::<i32>(), new_cap);
     state.scratch.indices = VulkanBuffer::new(stream, size_of::<u32>(), new_cap);
     state.scratch.packed = VulkanBuffer::new(stream, size_of::<u64>(), new_cap);
@@ -3994,30 +4210,41 @@ mod map_full_tests {
     #[cfg(feature = "vulkan_enable")]
     #[test]
     fn downsample_shaders_compile() {
-        let mut compiler = shaderc::Compiler::new().expect("failed creating shader compiler");
         let downsample_src = super::shaders::source_with_common(super::shaders::DOWNSAMPLE);
 
-        let cases = [
+        // Through `compile_shaders`, so this cannot be inside shaderc at the same
+        // time as a `build_pipelines` from another test thread.
+        let cases: [super::ShaderDef<'_>; 3] = [
             (
                 "downsample_build_keys",
                 downsample_src.as_str(),
-                vec![("BUILD_KEYS", None)],
+                &[("BUILD_KEYS", None)],
             ),
             (
                 "downsample_medoids",
                 downsample_src.as_str(),
-                vec![("MEDOIDS", None)],
+                &[("MEDOIDS", None)],
             ),
             (
                 "downsample_timestamp_keys",
                 downsample_src.as_str(),
-                vec![("TIMESTAMP_KEYS", None)],
+                &[("TIMESTAMP_KEYS", None)],
             ),
         ];
 
-        for (name, source, defines) in cases {
-            super::compile_shader(&mut compiler, source, name, &defines);
-        }
+        assert_eq!(super::compile_shaders(&cases).len(), cases.len());
+    }
+
+    /// `build_pipelines` indexes `shader_binaries()` positionally, so the two have
+    /// to agree on how many variants there are and every one has to compile.
+    #[cfg(feature = "vulkan_enable")]
+    #[test]
+    fn every_shader_variant_compiles_once() {
+        let binaries = super::shader_binaries();
+        assert_eq!(binaries.len(), 20);
+        assert!(binaries.iter().all(|spirv| !spirv.is_empty()));
+        // Cached, so no later `build_pipelines` re-enters shaderc.
+        assert!(std::ptr::eq(binaries, super::shader_binaries()));
     }
 
     #[cfg(feature = "vulkan_enable")]

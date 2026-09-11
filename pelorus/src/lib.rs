@@ -30,7 +30,7 @@ use std::thread;
 use anyhow::anyhow;
 use log::error;
 use nalgebra::{Isometry3, Matrix3, SMatrix};
-use pelorus_core::config::ast_to_config;
+use pelorus_core::config::{ast_to_config, layer_overrides};
 use pelorus_core::{ImuMsg, LidarVendor, LioConfig, OdomMsg, PrelioProcessedCloud};
 use pelorus_reg::pipeline::{PelorusOutput, Pipeline};
 use prelio::Prelio;
@@ -291,19 +291,44 @@ fn build_cloud_msg(
     impl_ros2_interfaces_jazzy_serde::to_pointcloud2_msg(cloud)
 }
 
+fn is_config_url(location: &str) -> bool {
+    location.starts_with("http://") || location.starts_with("https://")
+}
+
+fn read_config_source(location: &str) -> anyhow::Result<String> {
+    if is_config_url(location) {
+        let agent: ureq::Agent = ureq::Agent::config_builder()
+            .timeout_global(Some(std::time::Duration::from_secs(30)))
+            .build()
+            .into();
+        return agent
+            .get(location)
+            .call()
+            .map_err(|error| anyhow!("Failed to fetch configuration '{location}': {error}"))?
+            .body_mut()
+            .read_to_string()
+            .map_err(|error| anyhow!("Failed to read configuration '{location}': {error}"));
+    }
+    std::fs::read_to_string(location)
+        .map_err(|error| anyhow!("Failed to read configuration '{location}': {error}"))
+}
+
 fn load_config(config_path: Option<&str>) -> anyhow::Result<LioConfig> {
     let default_ast = ratslang::compile_code(DEFAULT_CONFIG_STR)
         .map_err(|e| anyhow!("Failed to compile embedded default config: {e}"))?;
-    let user_ast = if let Some(path) = config_path {
-        let path = std::path::Path::new(path);
-        if !path.exists() {
-            return Err(anyhow!("Configuration file not found: {}", path.display()));
-        }
-        ratslang::compile_file(&path.to_path_buf(), None, None)
-            .map_err(|e| anyhow!("Failed to compile user config {}: {e}", path.display()))?
-    } else {
-        ratslang::compile_code("")?
-    };
+    let source = config_path
+        .map(read_config_source)
+        .transpose()?
+        .unwrap_or_default();
+    let parent = config_path
+        .filter(|location| !is_config_url(location))
+        .and_then(|location| std::path::Path::new(location).parent())
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or_else(|| std::path::Path::new("."));
+    let user_ast = layer_overrides(&source, parent, &[]).map_err(|error| match config_path {
+        Some(location) => anyhow!("Failed to compile user config '{location}': {error}"),
+        None => anyhow!("Failed to compile empty user config: {error}"),
+    })?;
     ast_to_config(default_ast, user_ast).map_err(|e| anyhow!("Failed to build configuration: {e}"))
 }
 
@@ -427,14 +452,14 @@ pub struct Handle {
 impl Handle {
     /// Create a new handle using the embedded default configuration.
     ///
-    /// Pass `Some(path)` to overlay a `.rl` config file on top of the defaults.
+    /// Pass a local path or HTTP(S) URL to overlay a `.rl` config on the defaults.
     pub fn new(config_path: Option<&str>) -> Result<Self, Error> {
         Self::new_with_options(config_path, true)
     }
 
     /// Create a new handle with additional creation-time options.
     ///
-    /// - `config_path`: optional path to a `.rl` config file.
+    /// - `config_path`: optional local path or HTTP(S) URL to a `.rl` config.
     /// - `device_specific_pointcloud2`: when `true` (default) the embedded
     ///   vendor-specific PointCloud2 parsing is used.  When `false` a generic
     ///   layout is expected where the per-point `t` field is a header-relative
@@ -796,5 +821,36 @@ impl Drop for Handle {
 
         // After the worker is joined, so its GPU buffers are gone first.
         pelorus_reg::backend_session_release();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn loads_an_http_config() {
+        use std::io::{Read, Write};
+
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut request = [0; 1024];
+            let _ = stream.read(&mut request).unwrap();
+            let body = "output.odometry_rate = ImuAndLidar\n";
+            write!(
+                stream,
+                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            )
+            .unwrap();
+        });
+
+        let config = load_config(Some(&format!("http://{address}/pelorus.rl"))).unwrap();
+        assert_eq!(
+            config.odometry_rate,
+            pelorus_core::OdometryRate::ImuAndLidar
+        );
     }
 }

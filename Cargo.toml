@@ -115,6 +115,7 @@ rerun = { version = "0.36", default-features = false, features = [
   "glam",
 ] }
 anyhow = "1.0"
+ureq = "3.4"
 rayon = "1.11"
 thiserror = "2.0"
 velodyne-lidar = "0.3.0"

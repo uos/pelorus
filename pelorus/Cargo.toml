@@ -21,6 +21,7 @@ ros_pointcloud2.workspace = true
 ros2-interfaces-jazzy-serde.workspace = true
 nalgebra.workspace = true
 anyhow.workspace = true
+ureq.workspace = true
 log.workspace = true
 ratslang.workspace = true
 thiserror.workspace = true

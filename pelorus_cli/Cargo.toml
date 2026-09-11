@@ -25,6 +25,7 @@ mcap = { workspace = true }
 cdr = { workspace = true }
 nalgebra.workspace = true
 anyhow.workspace = true
+ureq.workspace = true
 rand.workspace = true
 either.workspace = true
 env_logger.workspace = true

@@ -133,6 +133,27 @@ pub fn user_config_with_overrides(
     })
 }
 
+/// Builds a user layer from source text and rejects unknown overrides.
+pub fn user_config_source_with_checked_overrides(
+    defaults_source: &str,
+    source: &str,
+    parent: &std::path::Path,
+    overrides: &[ConfigOverride],
+) -> anyhow::Result<Evaluated> {
+    let user = layer_overrides(source, parent, overrides)?;
+    if overrides.is_empty() {
+        return Ok(user);
+    }
+    let mut defaults = ratslang::compile_code(defaults_source)
+        .map_err(|error| anyhow!("failed to compile embedded default config: {error}"))?;
+    defaults.vars = defaults.vars.with_drop_warning(false);
+    let mut probe = layer_overrides(source, parent, overrides)?;
+    probe.vars = probe.vars.with_drop_warning(false);
+    let (_, (_, evaluated)) = ast_to_config_with_user_usage(defaults, probe)?;
+    reject_unknown_overrides(overrides, &evaluated)?;
+    Ok(user)
+}
+
 /// Applies overrides to source text. Relative includes resolve from `parent`.
 pub fn layer_overrides(
     source: &str,
@@ -182,19 +203,21 @@ pub fn user_config_with_checked_overrides(
     path: Option<&std::path::Path>,
     overrides: &[ConfigOverride],
 ) -> anyhow::Result<Evaluated> {
-    let user = user_config_with_overrides(path, overrides)?;
-    if overrides.is_empty() {
-        return Ok(user);
-    }
-    let mut defaults = ratslang::compile_code(defaults_source)
-        .map_err(|error| anyhow!("failed to compile embedded default config: {error}"))?;
-    // These temporary layers exist only to collect the usage report.
-    defaults.vars = defaults.vars.with_drop_warning(false);
-    let mut probe = user_config_with_overrides(path, overrides)?;
-    probe.vars = probe.vars.with_drop_warning(false);
-    let (_, (_, evaluated)) = ast_to_config_with_user_usage(defaults, probe)?;
-    reject_unknown_overrides(overrides, &evaluated)?;
-    Ok(user)
+    let source = match path {
+        Some(path) => std::fs::read_to_string(path)
+            .map_err(|error| anyhow!("failed to read '{}': {error}", path.display()))?,
+        None => String::new(),
+    };
+    let parent = path
+        .and_then(std::path::Path::parent)
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or_else(|| std::path::Path::new("."));
+    user_config_source_with_checked_overrides(defaults_source, &source, parent, overrides).map_err(
+        |error| match path {
+            Some(path) => anyhow!("failed to compile '{}': {error}", path.display()),
+            None => anyhow!("failed to compile the command-line overrides: {error}"),
+        },
+    )
 }
 
 /// Validates configuration and returns usage statistics for the defaults.

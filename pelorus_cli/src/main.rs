@@ -35,7 +35,7 @@ use mimalloc::MiMalloc;
 use pelorus_core::PointCloudMode;
 use pelorus_core::config::{
     ast_to_config, ast_to_config_with_user_usage, layer_overrides, parse_overrides,
-    reject_unknown_overrides, user_config_with_checked_overrides,
+    reject_unknown_overrides, user_config_source_with_checked_overrides,
 };
 #[cfg(any(
     feature = "mt_pubsub",
@@ -270,6 +270,57 @@ fn lerp_color(c1: (f32, f32, f32), c2: (f32, f32, f32), t: f32) -> (f32, f32, f3
     )
 }
 
+fn is_config_url(location: &str) -> bool {
+    location.starts_with("http://") || location.starts_with("https://")
+}
+
+fn read_config_source(location: &std::path::Path) -> anyhow::Result<String> {
+    if let Some(url) = location.to_str().filter(|location| is_config_url(location)) {
+        let agent: ureq::Agent = ureq::Agent::config_builder()
+            .timeout_global(Some(Duration::from_secs(30)))
+            .build()
+            .into();
+        return agent
+            .get(url)
+            .call()
+            .map_err(|error| anyhow!("Failed to fetch configuration '{url}': {error}"))?
+            .body_mut()
+            .read_to_string()
+            .map_err(|error| anyhow!("Failed to read configuration '{url}': {error}"));
+    }
+    std::fs::read_to_string(location).map_err(|error| {
+        anyhow!(
+            "Failed to read configuration '{}': {error}",
+            location.display()
+        )
+    })
+}
+
+fn load_user_config_with_checked_overrides(
+    defaults: &str,
+    location: Option<&std::path::Path>,
+    overrides: &[pelorus_core::config::ConfigOverride],
+) -> anyhow::Result<ratslang::Evaluated> {
+    let source = location
+        .map(read_config_source)
+        .transpose()?
+        .unwrap_or_default();
+    let parent = location
+        .filter(|location| !location.to_str().is_some_and(is_config_url))
+        .and_then(|location| location.parent())
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or_else(|| std::path::Path::new("."));
+    user_config_source_with_checked_overrides(defaults, &source, parent, overrides).map_err(
+        |error| match location {
+            Some(location) => anyhow!(
+                "Failed to compile configuration '{}': {error}",
+                location.display()
+            ),
+            None => anyhow!("Failed to compile command-line overrides: {error}"),
+        },
+    )
+}
+
 #[derive(Parser, Debug)]
 #[command(version, about, long_about = None)]
 struct Args {
@@ -342,7 +393,7 @@ pub struct RawArgs {
     #[arg(value_enum, default_value_t = RawSensor::All)]
     pub sensor: RawSensor,
 
-    /// Optional path to a custom '.rl' configuration file to overwrite defaults.
+    /// Optional local path or HTTP(S) URL to a custom '.rl' configuration.
     /// If not provided, only the default configuration will be used
     #[arg(short, long)]
     pub config_path: Option<PathBuf>,
@@ -427,7 +478,7 @@ pub struct RawRecordingArgs {
 
 #[derive(Debug, Clone, Parser)]
 pub struct OfflineArgs {
-    /// Optional path to a custom '.rl' configuration file.
+    /// Optional local path or HTTP(S) URL to a custom '.rl' configuration.
     /// If not provided, only the default configuration will be used
     #[arg(short, long)]
     pub config_path: Option<PathBuf>,
@@ -503,7 +554,7 @@ pub struct OfflineArgs {
 
 #[derive(Debug, Clone, Parser)]
 pub struct ConfigArgs {
-    /// Optional path to a custom '.rl' configuration file to overwrite defaults.
+    /// Optional local path or HTTP(S) URL to a custom '.rl' configuration.
     /// If not provided, only the default configuration will be used
     #[arg(short, long)]
     pub config_path: Option<PathBuf>,
@@ -644,7 +695,7 @@ pub struct TfAutoRos2Args {
     #[arg(long, default_value_t = 1.0)]
     pub timeout: f64,
 
-    /// Optional path to a custom '.rl' configuration file to read topics from.
+    /// Optional local path or HTTP(S) URL to a custom '.rl' configuration used to read topics.
     /// If not provided, the default configuration values are used
     #[arg(short, long)]
     pub config_path: Option<PathBuf>,
@@ -652,7 +703,7 @@ pub struct TfAutoRos2Args {
 
 #[derive(Debug, Clone, Parser)]
 pub struct TestArgs {
-    /// The path of the configuration file to test. Use '-' to read from stdin
+    /// Local path or HTTP(S) URL of the configuration to test. Use '-' for stdin.
     #[arg(default_value = "pelorus.rl")]
     pub config_path: PathBuf,
 }
@@ -4725,16 +4776,7 @@ fn run_raw(
     let default_ast = ratslang::compile_code(default_config)
         .map_err(|e| anyhow!("Failed to compile embedded default config: {}", e))?;
 
-    if let Some(path) = args.config_path.as_ref()
-        && !path.exists()
-    {
-        return Err(anyhow!(
-            "Error: Configuration file not found at '{}'",
-            path.to_string_lossy()
-        )
-        .into());
-    }
-    let user_ast = user_config_with_checked_overrides(
+    let user_ast = load_user_config_with_checked_overrides(
         default_config,
         args.config_path.as_deref(),
         cli_overrides,
@@ -4842,24 +4884,11 @@ fn main() -> Result<(), Box<dyn CoreError>> {
             let default_ast = ratslang::compile_code(DEFAULT_CONFIG_STR)
                 .map_err(|e| anyhow!("Failed to compile embedded default config: {}", e))?;
 
-            let user_ast = {
-                let path = config_args.config_path;
-                if let Some(path) = path.as_ref() {
-                    let path = std::path::Path::new(path);
-                    if !path.exists() {
-                        return Err(anyhow!(
-                            "Error: Configuration file not found at '{}'",
-                            path.to_string_lossy()
-                        )
-                        .into());
-                    }
-                }
-                user_config_with_checked_overrides(
-                    DEFAULT_CONFIG_STR,
-                    path.as_ref().map(std::path::Path::new),
-                    &cli_overrides,
-                )?
-            };
+            let user_ast = load_user_config_with_checked_overrides(
+                DEFAULT_CONFIG_STR,
+                config_args.config_path.as_deref(),
+                &cli_overrides,
+            )?;
 
             let mut config = ast_to_config(default_ast, user_ast)?;
             if config_args.cpu_only {
@@ -5039,24 +5068,11 @@ fn main() -> Result<(), Box<dyn CoreError>> {
             let default_ast = ratslang::compile_code(DEFAULT_CONFIG_STR)
                 .map_err(|e| anyhow!("Failed to compile embedded default config: {}", e))?;
 
-            let user_ast = {
-                let path = offline_args.config_path;
-                if let Some(path) = path.as_ref() {
-                    let path = std::path::Path::new(path);
-                    if !path.exists() {
-                        return Err(anyhow!(
-                            "Error: Configuration file not found at '{}'",
-                            path.to_string_lossy()
-                        )
-                        .into());
-                    }
-                }
-                user_config_with_checked_overrides(
-                    DEFAULT_CONFIG_STR,
-                    path.as_ref().map(std::path::Path::new),
-                    &cli_overrides,
-                )?
-            };
+            let user_ast = load_user_config_with_checked_overrides(
+                DEFAULT_CONFIG_STR,
+                offline_args.config_path.as_deref(),
+                &cli_overrides,
+            )?;
 
             let config = {
                 let mut config = ast_to_config(default_ast, user_ast)?;
@@ -5624,7 +5640,7 @@ fn main() -> Result<(), Box<dyn CoreError>> {
                     .map_err(|e| anyhow!("Failed to compile embedded default config: {}", e))?;
 
                 // Verify the effective configuration, including global overrides.
-                let user_ast = if args.config_path.to_str() == Some("-") {
+                let user_ast = if args.config_path.as_os_str() == "-" {
                     use std::io::Read;
                     let mut buffer = String::new();
                     std::io::stdin()
@@ -5633,17 +5649,9 @@ fn main() -> Result<(), Box<dyn CoreError>> {
                     layer_overrides(&buffer, std::path::Path::new("."), &cli_overrides)
                         .map_err(|e| anyhow!("Failed to compile config from stdin: {}", e))?
                 } else {
-                    let path = std::path::Path::new(&args.config_path);
-                    if !path.exists() {
-                        return Err(anyhow!(
-                            "Error: Configuration file not found at '{}'",
-                            args.config_path.to_string_lossy()
-                        )
-                        .into());
-                    }
-                    user_config_with_checked_overrides(
+                    load_user_config_with_checked_overrides(
                         DEFAULT_CONFIG_STR,
-                        Some(path),
+                        Some(&args.config_path),
                         &cli_overrides,
                     )?
                 };
@@ -5674,23 +5682,11 @@ fn main() -> Result<(), Box<dyn CoreError>> {
 
                 let default_ast = ratslang::compile_code(DEFAULT_CONFIG_STR)
                     .map_err(|e| anyhow!("Failed to compile embedded default config: {}", e))?;
-                let user_ast = {
-                    if let Some(ref config_path) = args.config_path {
-                        let path = std::path::Path::new(config_path);
-                        if !path.exists() {
-                            return Err(anyhow!(
-                                "Error: Configuration file not found at '{}'",
-                                config_path.to_string_lossy()
-                            )
-                            .into());
-                        }
-                    }
-                    user_config_with_checked_overrides(
-                        DEFAULT_CONFIG_STR,
-                        args.config_path.as_deref(),
-                        &cli_overrides,
-                    )?
-                };
+                let user_ast = load_user_config_with_checked_overrides(
+                    DEFAULT_CONFIG_STR,
+                    args.config_path.as_deref(),
+                    &cli_overrides,
+                )?;
                 let lio_config = ast_to_config(default_ast, user_ast)?;
                 let lidar_topic = &lio_config.prelio_node_params.cloud_src_topic;
                 let imu_topic = &lio_config.prelio_node_params.imu_src_topic;
