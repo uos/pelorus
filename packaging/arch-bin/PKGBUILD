@@ -2,7 +2,7 @@
 pkgname=pelorus-bin
 pkgver=0.0.7
 pkgrel=1
-pkgdesc="Highly efficient Lidar Inertial Odometry."
+pkgdesc="Resource-aware Lidar-Inertial Odometry"
 arch=('x86_64' 'aarch64')
 url="https://codeberg.org/stelzo/pelorus"
 license=('MIT' 'Apache-2.0')
