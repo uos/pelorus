@@ -31,8 +31,6 @@ use core::sync::atomic::{AtomicBool, Ordering};
 use core::time::Duration;
 
 mod completions;
-#[cfg(feature = "rerun")]
-mod rerun_map;
 #[cfg(feature = "mimalloc")]
 use mimalloc::MiMalloc;
 #[cfg(feature = "mt_pubsub")]
@@ -2391,11 +2389,6 @@ fn lio_with_ready_signal(
     let export_processing_time_for_worker = export_processing_time.clone();
     let processing_handle = std::thread::spawn(move || -> anyhow::Result<()> {
         let mut filtered_imu_rx = filtered_imu_rx;
-        #[cfg(feature = "rerun")]
-        let mut rerun_map = rec
-            .as_ref()
-            .filter(|_| config.rerun.map.enabled)
-            .map(|_| rerun_map::RerunChunkMap::new(config.rerun.map.clone()));
         let mut mcap_writer = match output_mcap {
             Some(output) => Some(McapOutputWriter::create(
                 &output.path,
@@ -3544,11 +3537,6 @@ fn lio_with_ready_signal(
                         (pos, color_rgb)
                     })
                     .unzip();
-
-                if let Some(map) = rerun_map.as_mut() {
-                    map.add_scan(&positions, &colors, prelio_tick.scan_id);
-                    map.publish_if_due(rec, current_cloud_time);
-                }
 
                 if let Err(err) = rec.log(
                     "world/latest_scan",

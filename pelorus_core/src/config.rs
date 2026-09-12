@@ -14,9 +14,9 @@ use crate::{
     ImuDriverConfig, ImuDriverType, ImuParameters, KinematicModel, LidarDriverConfig,
     LidarDriverType, LidarVendor, LioConfig, MadgwickSetting, OdometryRate, OusterConfig,
     OusterTimestampMode, PassthroughFilterParameters, PointCloudMode, PrelioNodeParameters,
-    PrelioParameters, PreprocessingBackend, Qos, Reliability, RerunConfig, RerunMapConfig,
-    SensorDriverConfig, VelodyneConfig, VelodyneModel, VelodyneTimestampMode, XsensConfig,
-    XsensTimestampMode, adaptive_execution::ExecutionPolicy,
+    PrelioParameters, PreprocessingBackend, Qos, Reliability, RerunConfig, SensorDriverConfig,
+    VelodyneConfig, VelodyneModel, VelodyneTimestampMode, XsensConfig, XsensTimestampMode,
+    adaptive_execution::ExecutionPolicy,
 };
 
 /// Resolves an angle range (e.g., for FOV).
@@ -331,29 +331,6 @@ mod override_tests {
 
         assert_eq!(config.odometry_rate, crate::OdometryRate::Lidar);
         std::fs::remove_dir_all(&directory).unwrap();
-    }
-
-    #[test]
-    fn rerun_map_settings_can_be_overridden() {
-        let overrides = parse_overrides(&[
-            "output.rerun.map.enabled=false".to_owned(),
-            "output.rerun.map.voxel_size=0.1m".to_owned(),
-            "output.rerun.map.chunk_size=4.0m".to_owned(),
-            "output.rerun.map.max_chunks=12".to_owned(),
-            "output.rerun.map.max_points_per_chunk=345".to_owned(),
-            "output.rerun.map.publish_interval=2s".to_owned(),
-        ])
-        .unwrap();
-        let user = user_config_with_checked_overrides(DEFAULTS, None, &overrides).unwrap();
-        let defaults = ratslang::compile_code(DEFAULTS).unwrap();
-        let config = ast_to_config(defaults, user).unwrap();
-
-        assert!(!config.rerun.map.enabled);
-        assert_eq!(config.rerun.map.voxel_size, 0.1);
-        assert_eq!(config.rerun.map.chunk_size, 4.0);
-        assert_eq!(config.rerun.map.max_chunks, 12);
-        assert_eq!(config.rerun.map.max_points_per_chunk, 345);
-        assert_eq!(config.rerun.map.publish_interval_sec, 2.0);
     }
 
     #[test]
@@ -679,19 +656,13 @@ mod tests {
     }
 
     #[test]
-    fn rerun_map_defaults_parse() {
+    fn rerun_defaults_parse() {
         let defaults = ratslang::compile_code(include_str!("../../default.rl")).unwrap();
         let user = ratslang::compile_code("").unwrap();
         let config = ast_to_config(defaults, user).unwrap();
 
         assert!(!config.rerun.enabled);
         assert_eq!(config.rerun.server_addr, "127.0.0.1:9876");
-        assert!(config.rerun.map.enabled);
-        assert_eq!(config.rerun.map.voxel_size, 0.2);
-        assert_eq!(config.rerun.map.chunk_size, 10.0);
-        assert_eq!(config.rerun.map.max_chunks, 256);
-        assert_eq!(config.rerun.map.max_points_per_chunk, 8_192);
-        assert_eq!(config.rerun.map.publish_interval_sec, 0.5);
     }
 }
 
@@ -1282,52 +1253,9 @@ fn ast_to_config_inner(
         }
         let rerun_ns = output_ns.filter_ns(&["rerun"]);
         let rerun_server_addr = resolve_var!(rerun_ns, "server_addr", as String, Rhs::Val(Val::StringVal(s)) | Rhs::Path(s) => {s})?;
-        let rerun_map_ns = rerun_ns.filter_ns(&["map"]);
-        let rerun_map_enabled =
-            resolve_var!(rerun_map_ns, "enabled", as bool, Rhs::Val(Val::BoolVal(b)) => {b})?;
-        let rerun_map_voxel_size_m: f64 = resolve_var!(rerun_map_ns, "voxel_size", as f64, Rhs::Val(Val::UnitedVal(UnitVal::LengthVal(v))) => {v.get::<meter>()})?;
-        let rerun_map_voxel_size = rerun_map_voxel_size_m as f32;
-        let rerun_map_chunk_size_m: f64 = resolve_var!(rerun_map_ns, "chunk_size", as f64, Rhs::Val(Val::UnitedVal(UnitVal::LengthVal(v))) => {v.get::<meter>()})?;
-        let rerun_map_chunk_size = rerun_map_chunk_size_m as f32;
-        let rerun_map_max_chunks = resolve_var!(rerun_map_ns, "max_chunks", as usize, Rhs::Val(Val::NumVal(NumVal::Integer(v))) => {v})?;
-        let rerun_map_max_points_per_chunk = resolve_var!(rerun_map_ns, "max_points_per_chunk", as usize, Rhs::Val(Val::NumVal(NumVal::Integer(v))) => {v})?;
-        let rerun_map_publish_interval_sec: f64 = resolve_var!(rerun_map_ns, "publish_interval", as f64, Rhs::Val(Val::UnitedVal(UnitVal::TimeVal(v))) => {v.get::<second>()})?;
-        if !rerun_map_voxel_size.is_finite() || rerun_map_voxel_size <= 0.0 {
-            return Err(anyhow!(
-                "output.rerun.map.voxel_size must be finite and greater than zero"
-            ));
-        }
-        if !rerun_map_chunk_size.is_finite() || rerun_map_chunk_size <= 0.0 {
-            return Err(anyhow!(
-                "output.rerun.map.chunk_size must be finite and greater than zero"
-            ));
-        }
-        if rerun_map_max_chunks == 0 {
-            return Err(anyhow!(
-                "output.rerun.map.max_chunks must be greater than zero"
-            ));
-        }
-        if rerun_map_max_points_per_chunk == 0 {
-            return Err(anyhow!(
-                "output.rerun.map.max_points_per_chunk must be greater than zero"
-            ));
-        }
-        if !rerun_map_publish_interval_sec.is_finite() || rerun_map_publish_interval_sec < 0.0 {
-            return Err(anyhow!(
-                "output.rerun.map.publish_interval must be finite and non-negative"
-            ));
-        }
         let rerun = RerunConfig {
             enabled: false,
             server_addr: rerun_server_addr,
-            map: RerunMapConfig {
-                enabled: rerun_map_enabled,
-                voxel_size: rerun_map_voxel_size,
-                chunk_size: rerun_map_chunk_size,
-                max_chunks: rerun_map_max_chunks,
-                max_points_per_chunk: rerun_map_max_points_per_chunk,
-                publish_interval_sec: rerun_map_publish_interval_sec,
-            },
         };
 
         let map_frame = resolve_var!(output_ns, "global_frame", as String, Rhs::Val(Val::StringVal(s)) | Rhs::Path(s) => {s})?;

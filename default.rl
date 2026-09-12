@@ -466,18 +466,6 @@ output {
   rerun {
     # Address of an already running Rerun server. Visualization is activated with --rerun.
     server_addr = "127.0.0.1:9876"
-
-    # Build a bounded world-space map directly from registered output scans. This never downloads
-    # or copies the registration backend's internal map. Override any setting with -o, for example:
-    # -o output.rerun.map.enabled=false -o output.rerun.map.voxel_size=0.1m
-    map {
-      enabled = true
-      voxel_size = 0.2m
-      chunk_size = 10.0m
-      max_chunks = 256
-      max_points_per_chunk = 8192
-      publish_interval = 500ms
-    }
   }
 
   # Reliable | BestEffort | SystemDefault

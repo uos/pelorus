@@ -674,13 +674,12 @@ pub enum OdometryRate {
     ImuAndLidar,
 }
 
-/// Runtime and map-streaming settings for the optional Rerun visualization.
+/// Runtime settings for the optional Rerun visualization.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RerunConfig {
     /// Set by the CLI's `--rerun` switch. Configuration parsing leaves this disabled.
     pub enabled: bool,
     pub server_addr: String,
-    pub map: RerunMapConfig,
 }
 
 impl Default for RerunConfig {
@@ -688,31 +687,6 @@ impl Default for RerunConfig {
         Self {
             enabled: false,
             server_addr: "127.0.0.1:9876".to_owned(),
-            map: RerunMapConfig::default(),
-        }
-    }
-}
-
-/// Settings for the bounded map assembled from registered scans for Rerun.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct RerunMapConfig {
-    pub enabled: bool,
-    pub voxel_size: f32,
-    pub chunk_size: f32,
-    pub max_chunks: usize,
-    pub max_points_per_chunk: usize,
-    pub publish_interval_sec: f64,
-}
-
-impl Default for RerunMapConfig {
-    fn default() -> Self {
-        Self {
-            enabled: true,
-            voxel_size: 0.2,
-            chunk_size: 10.0,
-            max_chunks: 256,
-            max_points_per_chunk: 8_192,
-            publish_interval_sec: 0.5,
         }
     }
 }
