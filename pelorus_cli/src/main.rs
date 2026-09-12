@@ -31,6 +31,8 @@ use core::sync::atomic::{AtomicBool, Ordering};
 use core::time::Duration;
 
 mod completions;
+#[cfg(feature = "rerun")]
+mod rerun_map;
 #[cfg(feature = "mimalloc")]
 use mimalloc::MiMalloc;
 #[cfg(feature = "mt_pubsub")]
@@ -532,6 +534,10 @@ pub struct OfflineArgs {
     #[arg(long, default_value_t = false)]
     pub cpu_only: bool,
 
+    /// Stream debug visualizations to the Rerun server configured in output.rerun.
+    #[arg(long, default_value_t = false)]
+    pub rerun: bool,
+
     /// Allow Minot and Pelorus pub/sub to use non-local networking in offline mode.
     #[arg(long, default_value_t = false)]
     pub open_router: bool,
@@ -596,6 +602,10 @@ pub struct ConfigArgs {
     /// Force CPU-only processing regardless of available GPU backends.
     #[arg(long, default_value_t = false)]
     pub cpu_only: bool,
+
+    /// Stream debug visualizations to the Rerun server configured in output.rerun.
+    #[arg(long, default_value_t = false)]
+    pub rerun: bool,
 
     /// Restrict Pelorus pub/sub communication to this host.
     #[arg(long, default_value_t = false)]
@@ -1882,22 +1892,24 @@ fn lio_with_ready_signal(
 
     #[cfg(feature = "rerun")]
     let rec = {
-        let rerun_enabled = std::env::var("RERUN_ENABLED")
-            .map(|v| v != "0" && v.to_lowercase() != "false")
-            .unwrap_or(true);
-
-        if rerun_enabled {
-            let rerun_server_addr =
-                std::env::var("RERUN_SERVER_ADDR").unwrap_or("127.0.0.1:9876".to_string());
+        if config.rerun.enabled {
+            let rerun_server_addr = &config.rerun.server_addr;
 
             // First check if the server is reachable via TCP
-            let is_reachable = std::net::TcpStream::connect_timeout(
-                &rerun_server_addr
-                    .parse()
-                    .unwrap_or_else(|_| std::net::SocketAddr::from(([127, 0, 0, 1], 9876))),
-                Duration::from_millis(500),
-            )
-            .is_ok();
+            let is_reachable = match rerun_server_addr.parse() {
+                Ok(rerun_socket_addr) => std::net::TcpStream::connect_timeout(
+                    &rerun_socket_addr,
+                    Duration::from_millis(500),
+                )
+                .is_ok(),
+                Err(err) => {
+                    warn!(
+                        "Invalid output.rerun.server_addr '{}': {err}",
+                        rerun_server_addr
+                    );
+                    false
+                }
+            };
 
             if !is_reachable {
                 info!(
@@ -1908,7 +1920,7 @@ fn lio_with_ready_signal(
             } else {
                 // Server is reachable, try to connect
                 match rerun::RecordingStreamBuilder::new("pelorus")
-                    .connect_grpc_opts(format!("rerun+http://{}/proxy", rerun_server_addr))
+                    .connect_grpc_opts(format!("rerun+http://{rerun_server_addr}/proxy"))
                 {
                     Ok(stream) => {
                         info!("Connected to Rerun at {}", rerun_server_addr);
@@ -1924,10 +1936,14 @@ fn lio_with_ready_signal(
                 }
             }
         } else {
-            info!("Rerun disabled via RERUN_ENABLED=false");
             None
         }
     };
+
+    #[cfg(not(feature = "rerun"))]
+    if config.rerun.enabled {
+        return Err(anyhow!("--rerun requires a build with the 'rerun' feature").into());
+    }
 
     #[cfg(not(feature = "rerun"))]
     let _rerun_not_enabled = ();
@@ -2375,6 +2391,11 @@ fn lio_with_ready_signal(
     let export_processing_time_for_worker = export_processing_time.clone();
     let processing_handle = std::thread::spawn(move || -> anyhow::Result<()> {
         let mut filtered_imu_rx = filtered_imu_rx;
+        #[cfg(feature = "rerun")]
+        let mut rerun_map = rec
+            .as_ref()
+            .filter(|_| config.rerun.map.enabled)
+            .map(|_| rerun_map::RerunChunkMap::new(config.rerun.map.clone()));
         let mut mcap_writer = match output_mcap {
             Some(output) => Some(McapOutputWriter::create(
                 &output.path,
@@ -3350,153 +3371,6 @@ fn lio_with_ready_signal(
                 std::io::Write::write_all(file, line.as_bytes())?;
             }
 
-            #[cfg(all(feature = "map", all(feature = "rerun", feature = "mt_pubsub")))]
-            {
-                eval.start("pub_localmap").unwrap();
-                #[cfg(not(any(feature = "cuda", feature = "metal", feature = "vulkan")))]
-                let map_distributions = map.lock().unwrap().get_distributions_with_lru_scores();
-                #[cfg(feature = "cuda")]
-                let total_map = pelorus_cuda::get_map();
-                #[cfg(feature = "metal")]
-                let total_map = pelorus_metal::get_map();
-                #[cfg(feature = "vulkan")]
-                let total_map = pelorus_vulkan::get_map();
-                #[cfg(all(
-                    feature = "rerun",
-                    not(any(feature = "cuda", feature = "metal", feature = "vulkan"))
-                ))]
-                if let Some(ref rec) = rec {
-                    let map_distribution_visual_scale = 3.0f32;
-                    let min_patch_half_size = (config.map_resolution as f32 * 0.25).max(0.02);
-                    const SURFEL_DISC_SEGMENTS: u32 = 8;
-                    let vertices_per_disc = SURFEL_DISC_SEGMENTS as usize + 1;
-                    let mut vertices =
-                        Vec::with_capacity(map_distributions.len() * vertices_per_disc);
-                    let mut normals =
-                        Vec::with_capacity(map_distributions.len() * vertices_per_disc);
-                    let mut vertex_colors =
-                        Vec::with_capacity(map_distributions.len() * vertices_per_disc);
-                    let mut triangles =
-                        Vec::with_capacity(map_distributions.len() * SURFEL_DISC_SEGMENTS as usize);
-
-                    for scored_distribution in map_distributions.iter() {
-                        let distribution = &scored_distribution.distribution;
-                        let eig = distribution.covariance.symmetric_eigen();
-                        let center = glam::Vec3::new(
-                            distribution.mean.x,
-                            distribution.mean.y,
-                            distribution.mean.z,
-                        );
-                        let value = scored_distribution.lru_score.clamp(0.0, 1.0);
-                        let surfel_color = if value < 0.5 {
-                            let t = value * 2.0;
-                            rerun::Color::from_rgb(
-                                (150.0 + 95.0 * t) as u8,
-                                (58.0 + 116.0 * t) as u8,
-                                (70.0 - 20.0 * t) as u8,
-                            )
-                        } else {
-                            let t = (value - 0.5) * 2.0;
-                            rerun::Color::from_rgb(
-                                (245.0 - 171.0 * t) as u8,
-                                (174.0 + 42.0 * t) as u8,
-                                (50.0 + 166.0 * t) as u8,
-                            )
-                        };
-
-                        let mut axes = [
-                            (eig.eigenvalues.x.max(0.0), eig.eigenvectors.column(0)),
-                            (eig.eigenvalues.y.max(0.0), eig.eigenvectors.column(1)),
-                            (eig.eigenvalues.z.max(0.0), eig.eigenvectors.column(2)),
-                        ];
-                        axes.sort_by(|a, b| a.0.total_cmp(&b.0));
-
-                        let major_radius = (map_distribution_visual_scale * axes[2].0.sqrt())
-                            .max(min_patch_half_size);
-                        let minor_radius = (map_distribution_visual_scale * axes[1].0.sqrt())
-                            .max(min_patch_half_size);
-                        let major_dir = axes[2].1;
-                        let minor_dir = axes[1].1;
-                        let major = glam::Vec3::new(
-                            major_dir.x * major_radius,
-                            major_dir.y * major_radius,
-                            major_dir.z * major_radius,
-                        );
-                        let minor = glam::Vec3::new(
-                            minor_dir.x * minor_radius,
-                            minor_dir.y * minor_radius,
-                            minor_dir.z * minor_radius,
-                        );
-                        let normal_dir = axes[0].1;
-                        let normal = glam::Vec3::new(normal_dir.x, normal_dir.y, normal_dir.z)
-                            .normalize_or_zero();
-                        let base_idx = vertices.len() as u32;
-
-                        vertices.push(center);
-                        normals.push(normal);
-                        vertex_colors.push(surfel_color);
-
-                        for segment in 0..SURFEL_DISC_SEGMENTS {
-                            let angle = std::f32::consts::TAU * segment as f32
-                                / SURFEL_DISC_SEGMENTS as f32;
-                            vertices.push(center + major * angle.cos() + minor * angle.sin());
-                            normals.push(normal);
-                            vertex_colors.push(surfel_color);
-                        }
-
-                        for segment in 0..SURFEL_DISC_SEGMENTS {
-                            let first = base_idx + 1 + segment;
-                            let second = base_idx + 1 + ((segment + 1) % SURFEL_DISC_SEGMENTS);
-                            triangles.push([base_idx, first, second]);
-                        }
-                    }
-
-                    let map_patches = rerun::Mesh3D::new(vertices)
-                        .with_triangle_indices(triangles)
-                        .with_vertex_normals(normals)
-                        .with_vertex_colors(vertex_colors);
-
-                    if let Err(err) = rec.log("world/map_distributions", &map_patches) {
-                        error!("Error sending CPU map distributions to rerun {err}");
-                    }
-                }
-                #[cfg(all(
-                    feature = "rerun",
-                    any(feature = "cuda", feature = "metal", feature = "vulkan")
-                ))]
-                if let Some(ref rec) = rec {
-                    let points = total_map.iter().map(|v| {
-                        let v = ros_to_rerun.cast().transform_point(v);
-                        glam::Vec3::new(v.x as f32, v.y as f32, v.z as f32)
-                    });
-
-                    if let Err(err) = rec.log(
-                        "world/map",
-                        &rerun::Points3D::update_fields().with_positions(points),
-                    ) {
-                        error!("Error sending to rerun {err}");
-                    }
-                }
-                #[cfg(all(
-                    not(feature = "no-viz"),
-                    not(feature = "rerun"),
-                    not(feature = "mt_pubsub") // currently no use of the total map in mt_pubsub
-                ))]
-                {
-                    let mut total_map = PointCloud2Msg::try_from_vec(
-                        total_map
-                            .iter()
-                            .map(|p| PointXYZ::new(p.x, p.y, p.z))
-                            .collect(),
-                    )
-                    .unwrap();
-                    total_map.header.frame_id = config.prelio_params.map_frame.clone();
-                    let msg: PointCloud2 = total_map.into();
-                    map_publisher.publish(&msg).expect("Failed to publish map");
-                }
-                eval.stop("pub_localmap").unwrap();
-            }
-
             // -- TF --
             let tf = TransformStamped {
                 header: Header {
@@ -3671,14 +3545,13 @@ fn lio_with_ready_signal(
                     })
                     .unzip();
 
-                let topic = if config.rerun_undistorted_static_world {
-                    format!("undistorted_{:?}", current_cloud_time)
-                } else {
-                    "world/latest_scan".to_string()
-                };
+                if let Some(map) = rerun_map.as_mut() {
+                    map.add_scan(&positions, &colors, prelio_tick.scan_id);
+                    map.publish_if_due(rec, current_cloud_time);
+                }
 
                 if let Err(err) = rec.log(
-                    topic,
+                    "world/latest_scan",
                     &rerun::Points3D::update_fields()
                         .with_positions(positions)
                         .with_colors(colors)
@@ -4561,6 +4434,24 @@ mod mcap_output_config_tests {
         );
     }
 
+    #[test]
+    fn rerun_flag_is_available_online_and_offline() {
+        let online = Args::parse_from(["pelorus", "online", "--rerun"]);
+        let Command::Online(online) = online.command else {
+            panic!("expected online");
+        };
+        assert!(online.pipeline.rerun);
+
+        #[cfg(feature = "rat")]
+        {
+            let offline = Args::parse_from(["pelorus", "offline", "bag", "--rerun"]);
+            let Command::Offline(offline) = offline.command else {
+                panic!("expected offline");
+            };
+            assert!(offline.rerun);
+        }
+    }
+
     #[cfg(feature = "mt_pubsub")]
     #[test]
     fn raw_takes_the_sensor_and_its_own_recording_flags() {
@@ -4955,6 +4846,9 @@ fn main() -> Result<(), Box<dyn CoreError>> {
             if config_args.cpu_only {
                 config.cpu_only = true;
             }
+            if config_args.rerun {
+                config.rerun.enabled = true;
+            }
 
             let output_mcap_config = build_mcap_output_config(&config_args.recording, &config);
             if !prepare_mcap_output_targets(
@@ -5140,6 +5034,9 @@ fn main() -> Result<(), Box<dyn CoreError>> {
                 config.prelio_node_params.synchronous_mode = true;
                 if offline_args.cpu_only {
                     config.cpu_only = true;
+                }
+                if offline_args.rerun {
+                    config.rerun.enabled = true;
                 }
                 config
             };

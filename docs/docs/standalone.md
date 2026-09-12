@@ -21,12 +21,12 @@ cargo install --git git://git.steado.tech/minot minot --tag v0.9.1-hiroz --locke
 
 (Optional) Most people like fancy TUIs -- and we do as well. But we also offer good old GUIs for visualization. Install [Rerun](https://rerun.io/) via this command:
 ```sh
-cargo install rerun-cli@0.33.1
+cargo install rerun-cli@0.37.2
 ```
 
 Now we are ready to get our Pelorus odometry with the CLI. 
 ```sh
-cargo install --git ssh://git.steado.tech/pelorus pelorus_cli --features rerun --locked
+cargo install --git ssh://git.steado.tech/pelorus pelorus_cli --locked
 ```
 
 To detect the current shell and install self-refreshing completions for the current user, run:
