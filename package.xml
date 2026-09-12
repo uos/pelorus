@@ -4,9 +4,9 @@
   <name>pelorus</name>
   <version>0.0.7</version>
   <description>Pelorus ROS2</description>
-  <maintainer email="stelzo@steado.de">Christopher Sieh</maintainer>
+  <maintainer email="stelzo@steado.de">stelzo</maintainer>
   <license>MIT</license>
-  <author>Christopher Sieh</author>
+  <author>stelzo</author>
 
   <buildtool_depend>ament_cmake</buildtool_depend>
 
