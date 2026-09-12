@@ -20,8 +20,9 @@ jobs:
       - uses: actions/checkout@v4
       - name: Check
         run: |
-          rustup toolchain uninstall stable
-          rustup toolchain install stable
+          rustup update stable
+          rustup default stable
+          rustc --version
           cargo check
       - name: Validate packaging files versions
         run: |
@@ -57,6 +58,9 @@ jobs:
       - uses: actions/checkout@v4
       - name: Run C API examples regression
         run: |
+          rustup update stable
+          rustup default stable
+          rustc --version
           ./scripts/api-regression-tests.bash
 
   rawlibs:
@@ -105,8 +109,9 @@ jobs:
           apt-get install -y cmake
           VERSION=$(toml get --raw Cargo.toml workspace.package.version)
           VERSION=$VERSION-1
-          rustup toolchain uninstall stable
-          rustup toolchain install stable
+          rustup update stable
+          rustup default stable
+          rustc --version
           mkdir -p "dist/${ARCH}"
 
           # ------- RAW
@@ -181,8 +186,9 @@ jobs:
       - uses: actions/checkout@v4
       - name: Build
         run: |
-          rustup toolchain uninstall stable
-          rustup toolchain install stable
+          rustup update stable
+          rustup default stable
+          rustc --version
           rustup target add $TARGET
           ulimit -n 65536
           mkdir -p "dist/${ARCH}"
@@ -289,8 +295,9 @@ jobs:
           ulimit -n 65536
           apt-get install -y cmake
           VERSION=$(toml get --raw Cargo.toml workspace.package.version)
-          rustup toolchain uninstall stable
-          rustup toolchain install stable
+          rustup update stable
+          rustup default stable
+          rustc --version
 
           mkdir -p "dist/${ARCH}"
 
@@ -404,8 +411,9 @@ jobs:
       - name: Build
         run: |
           ulimit -n 65536
-          rustup toolchain uninstall stable
-          rustup toolchain install stable
+          rustup update stable
+          rustup default stable
+          rustc --version
 
           for distro in lyrical jazzy humble; do
           if [ -f "/opt/ros/$distro/setup.bash" ]; then
@@ -456,8 +464,9 @@ jobs:
         run: |
           ulimit -n 65536
           apt-get update && apt-get install -y musl-tools
-          rustup toolchain uninstall stable
-          rustup toolchain install stable
+          rustup update stable
+          rustup default stable
+          rustc --version
           rustup target add $TARGET
 
           mkdir -p "dist/${ARCH}"
@@ -581,8 +590,9 @@ jobs:
             exit 1
           fi
 
-          rustup toolchain uninstall stable
-          rustup toolchain install stable
+          rustup update stable
+          rustup default stable
+          rustc --version
 
           # mark ROS package with CUDA suffix so the generated .deb is variant-specific
           export CUDA_PART="${{ matrix.cuda }}"
@@ -660,8 +670,9 @@ jobs:
           VERSION=$(toml get --raw Cargo.toml workspace.package.version)
           VERSION=$VERSION-1
           mkdir -p dist/${ARCH}
-          rustup toolchain uninstall stable
-          rustup toolchain install stable
+          rustup update stable
+          rustup default stable
+          rustc --version
 
           # - set name
           updatetoml=glim_integration/pelorus_glim_odometry/Cargo.toml
@@ -777,8 +788,9 @@ jobs:
             apt-get update -y
             apt-get install -y musl-tools patchelf
           fi
-          rustup toolchain uninstall stable
-          rustup toolchain install stable
+          rustup update stable
+          rustup default stable
+          rustc --version
           rustup target add "$TARGET"
 
           # for ring
@@ -843,8 +855,9 @@ jobs:
           # pelorus_py wheel
           apt-get update -y
           apt-get install -y patchelf
-          rustup toolchain uninstall stable
-          rustup toolchain install stable
+          rustup update stable
+          rustup default stable
+          rustc --version
           rustup target add "$TARGET"
 
           # for ring
@@ -901,8 +914,9 @@ jobs:
       - name: Build CUDA wheels
         run: |
           ulimit -n 65536
-          rustup toolchain uninstall stable
-          rustup toolchain install stable
+          rustup update stable
+          rustup default stable
+          rustc --version
           maturin build --manifest-path pelorus_cli/Cargo.toml --release --features cuda,rerun --target "$TARGET" --skip-auditwheel
           maturin build --manifest-path pelorus_py/Cargo.toml --release --features cuda --target "$TARGET" --skip-auditwheel
       - name: Upload wheels
@@ -1426,4 +1440,3 @@ jobs:
   #       run: |
   #         set -euo pipefail
   #         bash ./scripts/cargo-publish.sh
-

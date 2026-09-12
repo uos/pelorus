@@ -1,0 +1,17 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/SchemaStore/schemastore/refs/heads/master/src/schemas/json/github-workflow.json
+
+name: rerun-version
+
+on:
+  schedule:
+    # Every Monday at 06:17 UTC.
+    - cron: "17 6 * * 1"
+  workflow_dispatch:
+
+jobs:
+  latest-breaking-version:
+    runs-on: ubuntu-dev-resolute
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check rerun breaking-version line
+        run: python3 ./scripts/check-rerun-breaking-version.py
