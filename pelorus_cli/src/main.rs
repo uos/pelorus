@@ -29,6 +29,8 @@ use core::sync::atomic::AtomicI32;
 use core::sync::atomic::AtomicUsize;
 use core::sync::atomic::{AtomicBool, Ordering};
 use core::time::Duration;
+
+mod completions;
 #[cfg(feature = "mimalloc")]
 use mimalloc::MiMalloc;
 #[cfg(feature = "mt_pubsub")]
@@ -357,12 +359,14 @@ pub enum Command {
     #[command(subcommand)]
     Config(ConfigCommand),
 
-    /// Generate shell completions
-    /// Example usage: `pelorus completions bash > pelorus_completions.sh`
+    /// Install shell completions, or print them for a specific shell
+    ///
+    /// Run without a shell to detect the current shell and install completions.
+    /// Example: `pelorus completions bash > pelorus_completions.sh`
     Completions {
-        /// The shell to generate completions for
+        /// The shell whose completion script should be printed
         #[arg(value_enum)]
-        shell: Shell,
+        shell: Option<Shell>,
     },
 }
 
@@ -4900,6 +4904,8 @@ fn run_raw(
 }
 
 fn main() -> Result<(), Box<dyn CoreError>> {
+    completions::activate_dynamic_completions(Args::command, "pelorus");
+
     // Initialize our custom logger that works with both TUI and console
     init_logger();
 
@@ -4916,14 +4922,18 @@ fn main() -> Result<(), Box<dyn CoreError>> {
 
     match args.command {
         Command::Completions { shell } => {
-            let mut cmd = Args::command();
-            generate(
-                shell,
-                &mut cmd,
-                "pelorus".to_owned(),
-                &mut std::io::stdout(),
-            );
-            Ok(())
+            if let Some(shell) = shell {
+                let mut cmd = Args::command();
+                generate(
+                    shell,
+                    &mut cmd,
+                    "pelorus".to_owned(),
+                    &mut std::io::stdout(),
+                );
+                Ok(())
+            } else {
+                completions::install("pelorus").map_err(Into::into)
+            }
         }
         /* `run` wrapper removed; `online`/`offline` are top-level commands */
         Command::Online(online_args) => {

@@ -61,4 +61,7 @@ sudo apt install ros-$ROS_DISTRO-pelorus
 # or with CUDA support
 sudo apt install ros-$ROS_DISTRO-pelorus-cuda12-8
 sudo apt install ros-$ROS_DISTRO-pelorus-cuda13-1
+
+# or with Vulkan support
+sudo apt install ros-$ROS_DISTRO-pelorus-vulkan
 ```

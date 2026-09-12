@@ -136,7 +136,8 @@ serde = { version = "1.0", features = ["derive"] }
 morton-encoding = "2.0.1"
 rustc-hash = "2.1.1"
 petname = "2.0"
-clap_complete = "4.5.65"
+clap = { version = "4.5.53", features = ["derive"] }
+clap_complete = { version = "4.5.65", features = ["unstable-dynamic"] }
 objc2 = "0.6"
 objc2-metal = { version = "0.3", features = [
   "std",
@@ -168,7 +169,6 @@ bindgen = "0.72"
 walkdir = "2"
 cbindgen = "0.29"
 serde_json = "1.0.149"
-clap = { version = "4.5.53", features = ["derive"] }
 mimalloc = { version = "0.1.48", default-features = false }
 colorous = "1.0"
 ratatui = "0.30"

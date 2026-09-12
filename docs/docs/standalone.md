@@ -29,7 +29,14 @@ Now we are ready to get our Pelorus odometry with the CLI.
 cargo install --git ssh://git.steado.tech/pelorus pelorus_cli --features rerun --locked
 ```
 
-To make our life easier, we will just also add the shell completions:
+To detect the current shell and install self-refreshing completions for the current user, run:
+
+```sh
+pelorus completions
+```
+
+Restart the shell afterward. To generate completion files for packaging or a system-wide installation instead, pass the shell explicitly:
+
 === "Bash"
 
     === "Linux"

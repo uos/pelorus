@@ -12,6 +12,9 @@ sudo apt install ros-$ROS_DISTRO-pelorus
 # or with CUDA support
 sudo apt install ros-$ROS_DISTRO-pelorus-cuda12-8
 sudo apt install ros-$ROS_DISTRO-pelorus-cuda13-1
+
+# or with Vulkan support
+sudo apt install ros-$ROS_DISTRO-pelorus-vulkan
 ```
 
 ```sh title="Standalone CLI and C library"
@@ -20,6 +23,9 @@ sudo apt install pelorus
 # or with CUDA support
 sudo apt install pelorus-cuda12-8
 sudo apt install pelorus-cuda13-1
+
+# or with Vulkan support
+sudo apt install pelorus-vulkan
 ```
 
 ```sh title="GLIM odometry plugin"
@@ -28,6 +34,9 @@ sudo apt install pelorus-glim-odometry
 # or with CUDA support
 sudo apt install pelorus-glim-odometry-cuda12-8
 sudo apt install pelorus-glim-odometry-cuda13-1
+
+# or with Vulkan support
+sudo apt install libpelorus-glim-odometry-vulkan
 ```
 
 ---
@@ -49,6 +58,9 @@ uv tool install "pelorus[all]"
 uv tool install "pelorus[all]" --extra-index-url https://uos-robotics.codeberg.page/ppa/pelorus/pypi/cuda12-8/simple
 uv tool install "pelorus[all]" --extra-index-url https://uos-robotics.codeberg.page/ppa/pelorus/pypi/cuda13-1/simple
 
+# or with Vulkan support
+uv tool install "pelorus[all]" --extra-index-url https://codeberg.org/uos-robotics/ppa/raw/branch/main/whl/vulkan/
+
 # Without uv (not recommended)
 pip install "pelorus[all]"
 ```
@@ -59,7 +71,15 @@ Vulkan needs both the Vulkan loader and a working Vulkan driver for your GPU. A 
 
 ### Ubuntu prerequisites
 
-Install the build dependencies and the tool used to check device detection:
+The prebuilt Vulkan packages depend on the Vulkan loader. Install the diagnostic
+tool and a suitable GPU driver before running Pelorus:
+
+```sh
+sudo apt update
+sudo apt install libvulkan1 vulkan-tools
+```
+
+When building Pelorus from source, install the development packages as well:
 
 ```sh
 sudo apt update
@@ -90,4 +110,3 @@ vulkaninfo --summary
 Under `Devices`, check that `deviceName` names your intended GPU and `deviceType` is a discrete or integrated GPU. Pelorus requires Vulkan 1.2 or newer.
 
 If the only device is `llvmpipe` with `PHYSICAL_DEVICE_TYPE_CPU`, Vulkan is running through Mesa's Lavapipe software implementation, which has been known to cause issues with Pelorus.
-

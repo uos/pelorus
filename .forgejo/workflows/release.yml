@@ -373,9 +373,121 @@ jobs:
           name: artifacts-rawlibs-${{ matrix.repo }}-cuda${{ matrix.cuda }}
           path: dist/
 
-  clean-3:
+  rawlibs-vulkan:
     needs:
       - rawlibs-cuda
+    strategy:
+      matrix:
+        include:
+          - image: docker.io/stelzo/ubuntu-dev:resolute
+            arch: amd64
+            repo: resolute
+            runner: ubuntu-latest
+          - image: docker.io/stelzo/ubuntu-dev:resolute
+            arch: arm64
+            repo: resolute
+            runner: ubuntu-latest-arm
+          - image: docker.io/stelzo/ubuntu-dev:noble
+            arch: amd64
+            repo: noble
+            runner: ubuntu-latest
+          - image: docker.io/stelzo/ubuntu-dev:noble
+            arch: arm64
+            repo: noble
+            runner: ubuntu-latest-arm
+          - image: docker.io/stelzo/ubuntu-dev:jammy
+            arch: amd64
+            repo: jammy
+            runner: ubuntu-latest
+          - image: docker.io/stelzo/ubuntu-dev:jammy
+            arch: arm64
+            repo: jammy
+            runner: ubuntu-latest-arm
+    runs-on: ${{ matrix.runner }}
+    container:
+      image: ${{ matrix.image }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build
+        env:
+          ARCH: ${{ matrix.arch }}
+        run: |
+          set -euo pipefail
+          ulimit -n 65536
+          apt-get update
+          apt-get install -y cmake libvulkan-dev
+          VERSION=$(toml get --raw Cargo.toml workspace.package.version)
+          VERSION=$VERSION-1
+          rustup self update
+          rustup toolchain uninstall stable
+          rustup toolchain install stable
+          rustup default stable
+          rustc --version
+          mkdir -p "dist/${ARCH}"
+
+          # ------- RAW
+          cargo build -p pelorus_c --release --features vulkan
+          mv target/release/libpelorus.so dist/${ARCH}/
+          mv target/release/libpelorus.a dist/${ARCH}/
+
+          cargo build -p pelorus_cli --release --features vulkan,rerun
+          mv target/release/pelorus dist/${ARCH}/
+
+          # ------- DEB
+          # -- lib
+          updatetoml=pelorus_c/Cargo.toml
+          DEB_NAME="libpelorus-vulkan"
+          LIB_DEB=$DEB_NAME
+          tmp=$(mktemp)
+          toml set "$updatetoml" 'package.metadata.deb.name' "$DEB_NAME" >"$tmp"
+          mv "$tmp" "$updatetoml"
+          tmp=$(mktemp)
+          toml set "$updatetoml" 'package.metadata.deb.depends' 'libvulkan1' >"$tmp"
+          mv "$tmp" "$updatetoml"
+
+          cargo deb --package pelorus_c --features vulkan
+
+          # -- dev
+          DEB_NAME="libpelorus-vulkan-dev"
+          updatetoml=pelorus_c/deb-dev/Cargo.toml
+          tmp=$(mktemp)
+          toml set "$updatetoml" 'package.metadata.deb.name' "$DEB_NAME" >"$tmp"
+          mv "$tmp" "$updatetoml"
+          tmp=$(mktemp)
+          toml set "$updatetoml" 'package.metadata.deb.depends' "${LIB_DEB} ( = ${VERSION} )" >"$tmp"
+          mv "$tmp" "$updatetoml"
+
+          cmake -S pelorus_c -B pelorus_c/build -DCMAKE_INSTALL_PREFIX=/usr
+          cp pelorus_c/build/pelorus.pc pelorus_c/deb-dev/pelorus.pc
+          cp pelorus_c/build/pelorusConfig.cmake pelorus_c/deb-dev/pelorusConfig.cmake
+          cp pelorus_c/build/pelorusConfigVersion.cmake pelorus_c/deb-dev/pelorusConfigVersion.cmake
+
+          cargo deb --package libpelorus-dev
+
+          # -- bin
+          DEB_NAME="pelorus-vulkan"
+          updatetoml=pelorus_cli/Cargo.toml
+          tmp=$(mktemp)
+          toml set "$updatetoml" 'package.metadata.deb.name' "$DEB_NAME" >"$tmp"
+          mv "$tmp" "$updatetoml"
+          tmp=$(mktemp)
+          toml set "$updatetoml" 'package.metadata.deb.depends' \
+            'minot (>= 0.11.0), minot (<< 0.12.0~), libvulkan1' >"$tmp"
+          mv "$tmp" "$updatetoml"
+
+          cargo deb --package pelorus_cli --features vulkan,rerun
+
+          mv target/debian/*.deb dist/${ARCH}/
+
+      - name: Upload
+        uses: actions/upload-artifact@v3
+        with:
+          name: artifacts-rawlibs-${{ matrix.repo }}-vulkan
+          path: dist/
+
+  clean-3:
+    needs:
+      - rawlibs-vulkan
     strategy:
       matrix:
         include:
@@ -626,9 +738,75 @@ jobs:
           path: |
             *.deb
 
-  clean-4:
+  ros-debs-vulkan:
     needs:
       - ros-debs-cuda
+    strategy:
+      matrix:
+        include:
+          - image: docker.io/stelzo/ubuntu-dev:jazzy
+            repo: noble
+            runner: ubuntu-latest
+          - image: docker.io/stelzo/ubuntu-dev:humble
+            repo: jammy
+            runner: ubuntu-latest
+          - image: docker.io/stelzo/ubuntu-dev:jazzy
+            repo: noble
+            runner: ubuntu-latest-arm
+          - image: docker.io/stelzo/ubuntu-dev:humble
+            repo: jammy
+            runner: ubuntu-latest-arm
+    runs-on: ${{ matrix.runner }}
+    container:
+      image: ${{ matrix.image }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build
+        run: |
+          set -euo pipefail
+          ulimit -n 65536
+          apt-get update
+          apt-get install -y libvulkan-dev
+
+          for distro in jazzy humble; do
+            if [ -f "/opt/ros/$distro/setup.bash" ]; then
+              echo "Sourcing ROS distro: $distro"
+              set +eu
+              . "/opt/ros/$distro/setup.bash"
+              set -eu
+              export ROS_DISTRO="$distro"
+              break
+            fi
+          done
+
+          if [ -z "${ROS_DISTRO:-}" ]; then
+            echo "No supported ROS distro found" >&2
+            exit 1
+          fi
+
+          rustup self update
+          rustup toolchain uninstall stable
+          rustup toolchain install stable
+          rustup default stable
+          rustc --version
+
+          sed -i 's|<name>pelorus</name>|<name>pelorus-vulkan</name>|' package.xml
+          sed -i 's|project(pelorus)|project(pelorus-vulkan)|' CMakeLists.txt
+          sed -i '/^\[features\]/i [[bin]]\nname = "pelorus-vulkan"\npath = "src/main.rs"\n' pelorus_cli/Cargo.toml
+
+          export PELORUS_VULKAN=1
+          bash ./scripts/make-deb.bash
+
+      - name: Upload deb
+        uses: actions/upload-artifact@v3
+        with:
+          name: artifacts-ros-debs-${{ matrix.repo }}-vulkan
+          path: |
+            *.deb
+
+  clean-4:
+    needs:
+      - ros-debs-vulkan
     strategy:
       matrix:
         include:
@@ -738,6 +916,20 @@ jobs:
           # ---- CUDA 13.1
           DEB_NAME="libpelorus_glim_odometry-cuda13-1"
           LIB_DEB="libpelorus-cuda13-1"
+
+          tmp=$(mktemp)
+          toml set "$updatetoml" 'package.metadata.deb.name' "$DEB_NAME" >"$tmp"
+          mv "$tmp" "$updatetoml"
+          tmp=$(mktemp)
+          toml set "$updatetoml" 'package.metadata.deb.depends' "${LIB_DEB} ( = ${VERSION} )" >"$tmp"
+          mv "$tmp" "$updatetoml"
+
+          cargo deb --package pelorus_glim_odometry --no-build
+          mv target/debian/*.deb dist/${ARCH}/
+
+          # ---- Vulkan
+          DEB_NAME="libpelorus_glim_odometry-vulkan"
+          LIB_DEB="libpelorus-vulkan"
 
           tmp=$(mktemp)
           toml set "$updatetoml" 'package.metadata.deb.name' "$DEB_NAME" >"$tmp"
@@ -949,9 +1141,48 @@ jobs:
           name: wheels-cuda${{ matrix.cuda }}
           path: target/wheels
 
-  clean-7:
+  wheels-vulkan:
     needs:
       - wheels-cuda
+    strategy:
+      matrix:
+        include:
+          - image: docker.io/stelzo/ubuntu-dev:noble
+            target: x86_64-unknown-linux-gnu
+            runner: ubuntu-latest
+          - image: docker.io/stelzo/ubuntu-dev:noble
+            target: aarch64-unknown-linux-gnu
+            runner: ubuntu-latest-arm
+    runs-on: ${{ matrix.runner }}
+    container:
+      image: ${{ matrix.image }}
+    env:
+      TARGET: ${{ matrix.target }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build Vulkan wheels
+        run: |
+          set -euo pipefail
+          ulimit -n 65536
+          apt-get update
+          apt-get install -y cmake libvulkan-dev patchelf
+          rustup self update
+          rustup toolchain uninstall stable
+          rustup toolchain install stable
+          rustup default stable
+          rustc --version
+          rustup target add "$TARGET"
+          maturin build --manifest-path pelorus_cli/Cargo.toml --release --features vulkan,rerun --target "$TARGET" --skip-auditwheel
+          maturin build --manifest-path pelorus_py/Cargo.toml --release --features vulkan --target "$TARGET" --skip-auditwheel
+      - name: Upload wheels
+        uses: actions/upload-artifact@v3
+        with:
+          name: wheels-vulkan
+          path: target/wheels
+
+  clean-7:
+    needs:
+      - wheels-vulkan
     strategy:
       matrix:
         include:
@@ -967,12 +1198,15 @@ jobs:
       - macos
       - ros-debs
       - ros-debs-cuda
+      - ros-debs-vulkan
       - glim
       - rawlibs
       - rawlibs-cuda
+      - rawlibs-vulkan
       - wheels
       - wheels-aarch64-gnu
       - wheels-cuda
+      - wheels-vulkan
     runs-on: ubuntu-dev-resolute
     steps:
       - uses: actions/checkout@v4
@@ -1051,6 +1285,16 @@ jobs:
             done
           done
 
+          echo "=== Linux Vulkan ==="
+          for repo in resolute noble jammy; do
+            for arch in amd64 arm64; do
+              make_tarball "pelorus-${VERSION}-linux-${repo}-${arch}-vulkan" \
+                "dl/artifacts-rawlibs-${repo}-vulkan/${arch}/pelorus" \
+                "dl/artifacts-rawlibs-${repo}-vulkan/${arch}/libpelorus.so" \
+                "dl/artifacts-rawlibs-${repo}-vulkan/${arch}/libpelorus.a"
+            done
+          done
+
           echo "=== glim plugin ==="
           for repo in noble jammy; do
             for arch in amd64 arm64; do
@@ -1119,8 +1363,9 @@ jobs:
           ### Artifacts
           - **tar.gz** archives for Linux (resolute, noble, jammy, musl, musl-dds, musl-hiroz) and macOS (amd64, arm64)
           - **CUDA** variants
+          - **Vulkan** variants
           - **.deb** packages published to [PPA](https://codeberg.org/uos-robotics/ppa)
-          - **Python wheels** on PyPI and custom index for CUDA variants" \
+          - **Python wheels** on PyPI and custom indexes for CUDA and Vulkan variants" \
             ${ASSET_FLAGS}; then
 
             echo "Release may already exist, trying to add assets individually..."
@@ -1174,6 +1419,11 @@ jobs:
             done
           done
 
+          # rawlibs-vulkan
+          for repo in resolute noble jammy; do
+            find "dl/artifacts-rawlibs-${repo}-vulkan" -name '*.deb' -exec cp {} "staging/${repo}/" \; 2>/dev/null || true
+          done
+
           # ros-debs
           for repo in noble jammy; do
             find "dl/artifacts-ros-debs-${repo}" -name '*.deb' -exec cp {} "staging/${repo}/" \; 2>/dev/null || true
@@ -1184,6 +1434,11 @@ jobs:
             for repo in noble jammy; do
               find "dl/artifacts-ros-debs-${repo}-${cuda}" -name '*.deb' -exec cp {} "staging/${repo}/" \; 2>/dev/null || true
             done
+          done
+
+          # ros-debs-vulkan
+          for repo in noble jammy; do
+            find "dl/artifacts-ros-debs-${repo}-vulkan" -name '*.deb' -exec cp {} "staging/${repo}/" \; 2>/dev/null || true
           done
 
           # glim
@@ -1197,7 +1452,7 @@ jobs:
           echo "jammy:  $(ls staging/jammy/*.deb 2>/dev/null | wc -l) packages"
 
           # ── Collect wheels by variant ─────────────────────────
-          mkdir -p staging-whl/cpu staging-whl/cu126 staging-whl/cu128 staging-whl/cu131
+          mkdir -p staging-whl/cpu staging-whl/cu126 staging-whl/cu128 staging-whl/cu131 staging-whl/vulkan
 
           # CPU wheels
           find "dl/wheels" -name '*.whl' -exec cp {} staging-whl/cpu/ \; 2>/dev/null || true
@@ -1207,9 +1462,12 @@ jobs:
           find "dl/wheels-cuda12-8" -name '*.whl' -exec cp {} staging-whl/cu128/ \; 2>/dev/null || true
           find "dl/wheels-cuda13-1" -name '*.whl' -exec cp {} staging-whl/cu131/ \; 2>/dev/null || true
 
+          # Vulkan wheels
+          find "dl/wheels-vulkan" -name '*.whl' -exec cp {} staging-whl/vulkan/ \; 2>/dev/null || true
+
           echo ""
           echo "=== Collected wheels ==="
-          for v in cpu cu126 cu128 cu131; do
+          for v in cpu cu126 cu128 cu131 vulkan; do
             echo "${v}: $(ls staging-whl/${v}/*.whl 2>/dev/null | wc -l) wheels"
           done
 
@@ -1273,6 +1531,7 @@ jobs:
             whl/cu126 \
             whl/cu128 \
             whl/cu131 \
+            whl/vulkan \
             bin
 
           for series in resolute noble jammy; do
@@ -1280,7 +1539,7 @@ jobs:
             cp ../staging/${series}/*.deb "ubuntu/pool/main/${series}/" 2>/dev/null || true
           done
 
-          for variant in cpu cu126 cu128 cu131; do
+          for variant in cpu cu126 cu128 cu131 vulkan; do
             mkdir -p "whl/${variant}"
             cp ../staging-whl/${variant}/*.whl "whl/${variant}/" 2>/dev/null || true
             build_pep503_index "whl/${variant}"
@@ -1307,6 +1566,7 @@ jobs:
           echo "Debs:   https://codeberg.org/uos-robotics/ppa/src/branch/main/ubuntu/pool/main/"
           echo "Wheels: pip install pelorus --extra-index-url https://codeberg.org/uos-robotics/ppa/raw/branch/main/whl/cpu/"
           echo "CUDA:   pip install pelorus --extra-index-url https://codeberg.org/uos-robotics/ppa/raw/branch/main/whl/cu126/"
+          echo "Vulkan: pip install pelorus --extra-index-url https://codeberg.org/uos-robotics/ppa/raw/branch/main/whl/vulkan/"
 
   aur:
     runs-on: ubuntu-dev-resolute

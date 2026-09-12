@@ -27,6 +27,8 @@ shopt -u dotglob nullglob
 
 if [ "${PELORUS_CUDA:-}" = 1 ]; then
     tar -cJf "ros-${ROS_DISTRO}-pelorus-cuda${CUDA_PART}_${xml_ver}.orig.tar.xz" pelorus-src
+elif [ "${PELORUS_VULKAN:-}" = 1 ]; then
+    tar -cJf "ros-${ROS_DISTRO}-pelorus-vulkan_${xml_ver}.orig.tar.xz" pelorus-src
 else
     tar -cJf "ros-${ROS_DISTRO}-pelorus_${xml_ver}.orig.tar.xz" pelorus-src
 fi
