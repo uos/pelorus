@@ -14,9 +14,9 @@ use crate::{
     ImuDriverConfig, ImuDriverType, ImuParameters, KinematicModel, LidarDriverConfig,
     LidarDriverType, LidarVendor, LioConfig, MadgwickSetting, OdometryRate, OusterConfig,
     OusterTimestampMode, PassthroughFilterParameters, PointCloudMode, PrelioNodeParameters,
-    PrelioParameters, PreprocessingBackend, Qos, Reliability, RerunConfig, SensorDriverConfig,
-    VelodyneConfig, VelodyneModel, VelodyneTimestampMode, XsensConfig, XsensTimestampMode,
-    adaptive_execution::ExecutionPolicy,
+    PrelioParameters, PreprocessingBackend, Qos, Reliability, RerunConfig, RerunMapConfig,
+    SensorDriverConfig, VelodyneConfig, VelodyneModel, VelodyneTimestampMode, XsensConfig,
+    XsensTimestampMode, adaptive_execution::ExecutionPolicy,
 };
 
 /// Resolves an angle range (e.g., for FOV).
@@ -97,9 +97,7 @@ pub fn parse_overrides(overrides: &[String]) -> anyhow::Result<Vec<ConfigOverrid
             // Compile separately so syntax errors identify the override.
             let mut syntax_check = ratslang::compile_code(&statement)
                 .map_err(|error| anyhow!("override '{raw}' is not valid Ratslang: {error}"))?;
-            // This parse only validates the override's syntax. The assignment is
-            // evaluated later as part of the complete layered configuration, so
-            // dropping this temporary AST must not report it as unused.
+            // Only checks syntax here. The value is used later, so silence the drop warning.
             syntax_check.vars = syntax_check.vars.with_drop_warning(false);
             Ok(ConfigOverride {
                 key: key.to_owned(),
@@ -302,9 +300,8 @@ pub fn ast_to_config_with_user_usage(
     mut defaults: Evaluated,
     user: Evaluated,
 ) -> anyhow::Result<(LioConfig, (Vec<String>, Vec<String>))> {
-    // User values intentionally shadow defaults. Suppress drop warnings for
-    // those shadowed defaults while retaining usage diagnostics for the user
-    // configuration this helper is meant to inspect.
+    // Defaults get shadowed by user values on purpose. Silence their drop warning
+    // but keep usage diagnostics for the user config, which is what this helper checks.
     defaults.vars = defaults.vars.with_drop_warning(false);
     let config = ast_to_config_inner(defaults, user, false, true)?;
     Ok((config.0, config.2))
@@ -343,6 +340,23 @@ mod override_tests {
         let config = ast_to_config(defaults, user).unwrap();
 
         assert_eq!(config.rerun.server_addr, "172.22.129.240:9876");
+    }
+
+    #[test]
+    fn rerun_map_settings_can_be_overridden() {
+        let overrides = parse_overrides(&[
+            "output.rerun.map.enabled=true".to_owned(),
+            "output.rerun.map.publish_interval=2s".to_owned(),
+            "output.rerun.map.visual_scale=4.5".to_owned(),
+        ])
+        .unwrap();
+        let user = user_config_with_checked_overrides(DEFAULTS, None, &overrides).unwrap();
+        let defaults = ratslang::compile_code(DEFAULTS).unwrap();
+        let config = ast_to_config(defaults, user).unwrap();
+
+        assert!(config.rerun.map.enabled);
+        assert_eq!(config.rerun.map.publish_interval_sec, 2.0);
+        assert_eq!(config.rerun.map.visual_scale, 4.5);
     }
 
     /// Writes the merged calibration format produced by `dedrunk merge`.
@@ -663,6 +677,9 @@ mod tests {
 
         assert!(!config.rerun.enabled);
         assert_eq!(config.rerun.server_addr, "127.0.0.1:9876");
+        assert!(!config.rerun.map.enabled);
+        assert_eq!(config.rerun.map.publish_interval_sec, 1.0);
+        assert_eq!(config.rerun.map.visual_scale, 3.0);
     }
 }
 
@@ -1253,9 +1270,29 @@ fn ast_to_config_inner(
         }
         let rerun_ns = output_ns.filter_ns(&["rerun"]);
         let rerun_server_addr = resolve_var!(rerun_ns, "server_addr", as String, Rhs::Val(Val::StringVal(s)) | Rhs::Path(s) => {s})?;
+        let rerun_map_ns = rerun_ns.filter_ns(&["map"]);
+        let rerun_map_enabled =
+            resolve_var!(rerun_map_ns, "enabled", as bool, Rhs::Val(Val::BoolVal(b)) => {b})?;
+        let rerun_map_publish_interval_sec: f64 = resolve_var!(rerun_map_ns, "publish_interval", as f64, Rhs::Val(Val::UnitedVal(UnitVal::TimeVal(v))) => {v.get::<second>()})?;
+        let rerun_map_visual_scale: f32 = resolve_var!(rerun_map_ns, "visual_scale", as f32, Rhs::Val(Val::NumVal(NumVal::Floating(v))) => {v as f32})?;
+        if !rerun_map_publish_interval_sec.is_finite() || rerun_map_publish_interval_sec < 0.0 {
+            return Err(anyhow!(
+                "output.rerun.map.publish_interval must be finite and non-negative"
+            ));
+        }
+        if !rerun_map_visual_scale.is_finite() || rerun_map_visual_scale <= 0.0 {
+            return Err(anyhow!(
+                "output.rerun.map.visual_scale must be finite and positive"
+            ));
+        }
         let rerun = RerunConfig {
             enabled: false,
             server_addr: rerun_server_addr,
+            map: RerunMapConfig {
+                enabled: rerun_map_enabled,
+                publish_interval_sec: rerun_map_publish_interval_sec,
+                visual_scale: rerun_map_visual_scale,
+            },
         };
 
         let map_frame = resolve_var!(output_ns, "global_frame", as String, Rhs::Val(Val::StringVal(s)) | Rhs::Path(s) => {s})?;

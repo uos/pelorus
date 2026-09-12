@@ -19,6 +19,7 @@ pelorus_metal = { optional = true, workspace = true }
 pelorus_vulkan = { optional = true, workspace = true }
 prelio = { workspace = true, default-features = false }
 pelorus_reg = { workspace = true, default-features = false }
+spole = { workspace = true, default-features = false }
 ros_pointcloud2.workspace = true
 ros2-client = { workspace = true, optional = true }
 mcap = { workspace = true }
@@ -173,12 +174,9 @@ large-processing-queue = [
 
 # -#-#-#-#-#- Visualizations -#-#-#-#-#-
 
-# Compile Rerun visualization support. Runtime activation uses `--rerun`; connection and map
-# settings live under `output.rerun` in the Ratslang configuration.
+# Compile Rerun visualization support. Activate it at runtime with `--rerun`.
+# Connection and map settings live under `output.rerun` in the config.
 rerun = ["dep:rerun", "prelio_io/rerun"]
-
-# Legacy compatibility feature. The Rerun map is runtime-controlled by output.rerun.map.
-map = []
 
 # Skips publishing any visualizations that take too much compute resources (e.g. iterating a point cloud)
 no-viz = []
@@ -188,7 +186,7 @@ no-viz = []
 # -#-#-#-#-#- Low level -#-#-#-#-#-
 
 # Toggle tooling typically used for development
-dev = ["offline", "rerun", "map"]
+dev = ["offline", "rerun"]
 
 # Use variable syncing for triggers
 rat = ["dep:mt_rat", "dep:tokio", "prelio_io/rat"]

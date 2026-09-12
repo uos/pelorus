@@ -466,6 +466,16 @@ output {
   rerun {
     # Address of an already running Rerun server. Visualization is activated with --rerun.
     server_addr = "127.0.0.1:9876"
+
+    # Periodic snapshot of the whole registration map, colored by relevance score.
+    # Off by default. Large maps can be expensive to render.
+    map {
+      enabled = false
+      # Minimum time between snapshots.
+      publish_interval = 1s
+      # Ellipsoid size, scaled by each voxel's covariance.
+      visual_scale = 3.0
+    }
   }
 
   # Reliable | BestEffort | SystemDefault

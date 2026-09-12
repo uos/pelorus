@@ -5114,6 +5114,7 @@ dependencies = [
  "ros_pointcloud2",
  "rustc-hash",
  "serde",
+ "spole",
  "tokio",
  "ureq",
 ]

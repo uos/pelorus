@@ -680,6 +680,7 @@ pub struct RerunConfig {
     /// Set by the CLI's `--rerun` switch. Configuration parsing leaves this disabled.
     pub enabled: bool,
     pub server_addr: String,
+    pub map: RerunMapConfig,
 }
 
 impl Default for RerunConfig {
@@ -687,6 +688,26 @@ impl Default for RerunConfig {
         Self {
             enabled: false,
             server_addr: "127.0.0.1:9876".to_owned(),
+            map: RerunMapConfig::default(),
+        }
+    }
+}
+
+/// Settings for the periodic map snapshot sent to Rerun.
+/// Renders one ellipsoid per voxel, colored by its relevance score.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RerunMapConfig {
+    pub enabled: bool,
+    pub publish_interval_sec: f64,
+    pub visual_scale: f32,
+}
+
+impl Default for RerunMapConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            publish_interval_sec: 1.0,
+            visual_scale: 3.0,
         }
     }
 }

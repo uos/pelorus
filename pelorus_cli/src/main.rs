@@ -1235,6 +1235,79 @@ fn log_realtime_prediction_to_rerun(rec: &rerun::RecordingStream, prediction: &R
     }
 }
 
+/// Publishes the CPU registration map to Rerun as ellipsoids.
+/// Color goes from warm (evicted soon) to cool (most relevant), by LRU score.
+#[cfg(all(feature = "rerun", not(any(feature = "cuda", feature = "metal", feature = "vulkan"))))]
+fn log_map_snapshot_to_rerun(
+    rec: &rerun::RecordingStream,
+    distributions: Vec<spole::localmap::VoxelDistributionLru>,
+    map_config: &pelorus_core::RerunMapConfig,
+) {
+    const MIN_HALF_SIZE: f32 = 0.02;
+    let mut centers = Vec::with_capacity(distributions.len());
+    let mut half_sizes = Vec::with_capacity(distributions.len());
+    let mut quaternions = Vec::with_capacity(distributions.len());
+    let mut colors = Vec::with_capacity(distributions.len());
+
+    for scored in &distributions {
+        let distribution = &scored.distribution;
+        let mut eigen = distribution.covariance.symmetric_eigen();
+        if eigen.eigenvectors.determinant() < 0.0 {
+            let flipped = -eigen.eigenvectors.column(0);
+            eigen.eigenvectors.set_column(0, &flipped);
+        }
+        let half_size = glam::Vec3::new(
+            (map_config.visual_scale * eigen.eigenvalues.x.max(0.0).sqrt()).max(MIN_HALF_SIZE),
+            (map_config.visual_scale * eigen.eigenvalues.y.max(0.0).sqrt()).max(MIN_HALF_SIZE),
+            (map_config.visual_scale * eigen.eigenvalues.z.max(0.0).sqrt()).max(MIN_HALF_SIZE),
+        );
+        let rotation = UnitQuaternion::from_matrix(&eigen.eigenvectors);
+        let q = rotation.quaternion();
+
+        let value = scored.lru_score.clamp(0.0, 1.0);
+        let color = if value < 0.5 {
+            let t = value * 2.0;
+            rerun::Color::from_rgb(
+                (150.0 + 95.0 * t) as u8,
+                (58.0 + 116.0 * t) as u8,
+                (70.0 - 20.0 * t) as u8,
+            )
+        } else {
+            let t = (value - 0.5) * 2.0;
+            rerun::Color::from_rgb(
+                (245.0 - 171.0 * t) as u8,
+                (174.0 + 42.0 * t) as u8,
+                (50.0 + 166.0 * t) as u8,
+            )
+        };
+
+        centers.push(glam::Vec3::new(
+            distribution.mean.x,
+            distribution.mean.y,
+            distribution.mean.z,
+        ));
+        half_sizes.push(half_size);
+        quaternions.push(glam::Quat::from_xyzw(
+            q.i as f32,
+            q.j as f32,
+            q.k as f32,
+            q.w as f32,
+        ));
+        colors.push(color);
+    }
+
+    let ellipsoids = rerun::Ellipsoids3D::update_fields()
+        .with_centers(centers)
+        .with_half_sizes(half_sizes)
+        .with_quaternions(quaternions)
+        .with_colors(colors)
+        .with_fill_mode(rerun::components::FillMode::Solid);
+
+    if let Err(err) = rec.log("world/map", &ellipsoids) {
+        error!("Error sending map snapshot to rerun {err}");
+    }
+}
+
 #[cfg(any(
     feature = "mt_pubsub",
     feature = "ros2-client",
@@ -2389,6 +2462,8 @@ fn lio_with_ready_signal(
     let export_processing_time_for_worker = export_processing_time.clone();
     let processing_handle = std::thread::spawn(move || -> anyhow::Result<()> {
         let mut filtered_imu_rx = filtered_imu_rx;
+        #[cfg(feature = "rerun")]
+        let mut last_map_snapshot_time: Option<f64> = None;
         let mut mcap_writer = match output_mcap {
             Some(output) => Some(McapOutputWriter::create(
                 &output.path,
@@ -3546,6 +3621,49 @@ fn lio_with_ready_signal(
                         .with_radii([rerun::Radius::new_ui_points(1.25)]), // for video scene_points: 0.025
                 ) {
                     error!("Error sending to rerun {err}");
+                }
+            }
+
+            #[cfg(feature = "rerun")]
+            if let Some(ref rec) = rec {
+                let map_config = &config.rerun.map;
+                let due = map_config.enabled
+                    && last_map_snapshot_time
+                        .map(|last| {
+                            current_cloud_time < last
+                                || current_cloud_time - last >= map_config.publish_interval_sec
+                        })
+                        .unwrap_or(true);
+                if due {
+                    last_map_snapshot_time = Some(current_cloud_time);
+
+                    #[cfg(not(any(feature = "cuda", feature = "metal", feature = "vulkan")))]
+                    {
+                        let distributions = map.lock().unwrap().get_distributions_with_lru_scores();
+                        log_map_snapshot_to_rerun(rec, distributions, map_config);
+                    }
+
+                    #[cfg(any(feature = "cuda", feature = "metal", feature = "vulkan"))]
+                    {
+                        #[cfg(feature = "cuda")]
+                        let total_map = pelorus_cuda::get_map();
+                        #[cfg(feature = "metal")]
+                        let total_map = pelorus_metal::get_map();
+                        #[cfg(feature = "vulkan")]
+                        let total_map = pelorus_vulkan::get_map();
+
+                        // GPU backends have no per-voxel score host-side. Points stay uncolored.
+                        let positions = total_map.iter().map(|v| {
+                            let v = ros_to_rerun.cast().transform_point(v);
+                            glam::Vec3::new(v.x as f32, v.y as f32, v.z as f32)
+                        });
+                        if let Err(err) = rec.log(
+                            "world/map",
+                            &rerun::Points3D::update_fields().with_positions(positions),
+                        ) {
+                            error!("Error sending map snapshot to rerun {err}");
+                        }
+                    }
                 }
             }
 
