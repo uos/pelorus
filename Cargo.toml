@@ -34,7 +34,7 @@ license = "MIT OR Apache-2.0"
 repository = "https://codeberg.org/stelzo/pelorus/"
 version = "0.0.7"
 authors = ["Christopher Sieh <stelzo@steado.de>"]
-rust-version = "1.95.0"
+rust-version = "1.96.0"
 
 [workspace.dependencies]
 pelorus = { path = "pelorus", version = "0.0.7", default-features = false }
@@ -49,8 +49,8 @@ pelorus_metal = { path = "pelorus_metal", version = "0.0.7" }
 pelorus_vulkan = { path = "pelorus_vulkan", version = "0.0.7", default-features = false }
 pelorus_drivers = { path = "pelorus_drivers", version = "0.0.7", default-features = false }
 
-transforms_io = { version = "0.5.1", default-features = false }
-transforms_io_hiroz = { version = "0.5", git = "https://codeberg.org/stelzo/transforms_io", tag = "v0.5.0" }
+transforms_io = { version = "0.5.2", default-features = false }
+transforms_io_hiroz = { version = "0.5", git = "https://codeberg.org/stelzo/transforms_io", tag = "v0.5.2" }
 ros_pointcloud2 = { version = "1.0.0-rc.4", features = [
   "derive",
   "r2r",
@@ -59,10 +59,10 @@ ros_pointcloud2 = { version = "1.0.0-rc.4", features = [
   "nalgebra",
 ] }
 ratslang = "0.4.3"
-mt_pubsub = "0.10.2"
-mt_service = "0.10.2"
-mt_log = { version = "0.10.2", features = ["tui", "env"] }
-mt_rat = "0.10.2"
+mt_pubsub = "0.11.0"
+mt_service = "0.11.0"
+mt_log = { version = "0.11.0", features = ["tui", "env"] }
+mt_rat = "0.11.0"
 cloudini = { version = "0.3.2", default-features = false, features = ["ros"] }
 imu-calib = "0.3"
 ros2-interfaces-jazzy-serde = { version = "0.0.5", features = [
@@ -110,7 +110,7 @@ hiroz-msgs = { version = "0.2.0", git = "https://github.com/ZettaScaleLabs/hiroz
 hiroz-protocol = { version = "0.2.0", git = "https://github.com/ZettaScaleLabs/hiroz.git", tag = "v0.2.0", default-features = false }
 zenoh-buffers = "1.9.0"
 tokio = { version = "1.49", default-features = false }
-rerun = { version = "0.36", default-features = false, features = [
+rerun = { version = "0.37", default-features = false, features = [
   "sdk",
   "glam",
 ] }
@@ -218,3 +218,7 @@ opt-level = 3
 # mt_pubsub = { git = "ssh://git@git.steado.tech/minot.git", branch = "hiroz" }
 # mt_rat = { git = "ssh://git@git.steado.tech/minot.git", branch = "hiroz" }
 # mt_service = { git = "ssh://git@git.steado.tech/minot.git", branch = "hiroz" }
+
+# [patch."https://codeberg.org/stelzo/transforms_io"]
+# transforms_io = { path = "../transforms_io" }
+# transforms_io_hiroz = { path = "../transforms_io/transforms_io_hiroz" }

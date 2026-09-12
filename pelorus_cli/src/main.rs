@@ -2957,6 +2957,57 @@ fn lio_with_ready_signal(
                         }
                     }
                 }
+
+                // Republish the base_link <-> lidar extrinsic on /tf_static. Internally
+                // `config.base_to_lidar` already carries this transform (manual config or
+                // just overridden from TF above), but until now it was never re-emitted:
+                // pelorus published `map_frame -> child_frame` (== base_link_frame here)
+                // dynamically, while the cloud stayed stamped with `orig_frame` (the lidar
+                // frame). A consumer with no other path from base_link to the lidar frame
+                // (e.g. scope, which insists on a fully resolvable TF chain per message)
+                // could never complete `map_frame -> base_link_frame -> orig_frame` and
+                // silently dropped every cloud as a stale pending TF lookup.
+                let base_to_lidar_tf = TransformStamped {
+                    header: Header {
+                        frame_id: child_frame.clone(),
+                        stamp: Time {
+                            sec: orig_time.sec,
+                            nanosec: orig_time.nanosec,
+                        },
+                    },
+                    child_frame_id: orig_frame.clone(),
+                    transform: Transform {
+                        translation: Vector3 {
+                            x: config.base_to_lidar.translation.vector.x,
+                            y: config.base_to_lidar.translation.vector.y,
+                            z: config.base_to_lidar.translation.vector.z,
+                        },
+                        rotation: Quaternion {
+                            x: config.base_to_lidar.rotation.quaternion().i,
+                            y: config.base_to_lidar.rotation.quaternion().j,
+                            z: config.base_to_lidar.rotation.quaternion().k,
+                            w: config.base_to_lidar.rotation.quaternion().w,
+                        },
+                    },
+                };
+                #[cfg(feature = "mt_pubsub")]
+                {
+                    let inner_tf_broad = Arc::clone(&tf_broadcaster);
+                    std::thread::spawn(move || {
+                        future::block_on(async move {
+                            if let Err(err) =
+                                inner_tf_broad.send_static_transform(base_to_lidar_tf).await
+                            {
+                                error!("Failed to send static base_link-to-lidar transform: {err}");
+                            }
+                        });
+                    });
+                }
+                #[cfg(not(feature = "mt_pubsub"))]
+                if let Err(err) = tf_broadcaster.send_static_transform(base_to_lidar_tf) {
+                    error!("Failed to send static base_link-to-lidar transform: {err}");
+                }
+
                 static_tf_published = true;
             }
 
