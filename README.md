@@ -33,3 +33,5 @@ ros2 launch pelorus pelorus.launch.py config_path:=pelorus.rl rviz:=false
 
 
 Please see the [docs](https://stelzo.codeberg.page/pelorus/) for more info about ROS, standalone usage, libraries and other tooling or information.
+
+For Vulkan acceleration, follow the [Vulkan installation and GPU verification guide](docs/docs/binaries.md#vulkan), including the NVIDIA Vulkan driver requirement for compute-only systems.

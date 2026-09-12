@@ -55,10 +55,39 @@ pip install "pelorus[all]"
 
 ## Vulkan
 
-When building from source, install Vulkan first and update your graphics driver. 
+Vulkan needs both the Vulkan loader and a working Vulkan driver for your GPU. A working CUDA installation or successful `nvidia-smi` output alone does not establish Vulkan support.
 
-Here are example packages for Ubuntu.
+### Ubuntu prerequisites
+
+Install the build dependencies and the tool used to check device detection:
 
 ```sh
-sudo apt install libshaderc-dev libvulkan-dev
+sudo apt update
+sudo apt install build-essential pkg-config libshaderc-dev libvulkan-dev libvulkan1 vulkan-tools
 ```
+
+Install a GPU driver as well:
+
+- **NVIDIA:** install the `libnvidia-gl-<branch>` package matching your installed NVIDIA driver. Despite its name, this package includes the Vulkan ICD (the vendor driver used by the Vulkan loader). Compute-only installations can lack it.
+- **AMD / Intel:** install `mesa-vulkan-drivers` and verify that your GPU is detected below.
+
+For NVIDIA, inspect the current driver and available package versions first:
+
+```sh
+nvidia-smi
+# Example for driver branch 570; replace 570 with your installed branch.
+apt-cache policy libnvidia-gl-570
+```
+
+Do not blindly use this historical version on a different driver installation. See the [Ubuntu package description](https://packages.ubuntu.com/noble/amd64/libnvidia-gl-570) and [NVIDIA package repository](https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2404/x86_64/) for package details.
+
+### Verify the GPU before running Pelorus
+
+```sh
+vulkaninfo --summary
+```
+
+Under `Devices`, check that `deviceName` names your intended GPU and `deviceType` is a discrete or integrated GPU. Pelorus requires Vulkan 1.2 or newer.
+
+If the only device is `llvmpipe` with `PHYSICAL_DEVICE_TYPE_CPU`, Vulkan is running through Mesa's Lavapipe software implementation, which has been known to cause issues with Pelorus.
+
