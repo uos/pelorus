@@ -20,7 +20,9 @@ jobs:
       - uses: actions/checkout@v4
       - name: Check
         run: |
-          rustup update stable
+          rustup self update
+          rustup toolchain uninstall stable
+          rustup toolchain install stable
           rustup default stable
           rustc --version
           cargo check
@@ -58,7 +60,9 @@ jobs:
       - uses: actions/checkout@v4
       - name: Run C API examples regression
         run: |
-          rustup update stable
+          rustup self update
+          rustup toolchain uninstall stable
+          rustup toolchain install stable
           rustup default stable
           rustc --version
           ./scripts/api-regression-tests.bash
@@ -109,7 +113,9 @@ jobs:
           apt-get install -y cmake
           VERSION=$(toml get --raw Cargo.toml workspace.package.version)
           VERSION=$VERSION-1
-          rustup update stable
+          rustup self update
+          rustup toolchain uninstall stable
+          rustup toolchain install stable
           rustup default stable
           rustc --version
           mkdir -p "dist/${ARCH}"
@@ -186,7 +192,9 @@ jobs:
       - uses: actions/checkout@v4
       - name: Build
         run: |
-          rustup update stable
+          rustup self update
+          rustup toolchain uninstall stable
+          rustup toolchain install stable
           rustup default stable
           rustc --version
           rustup target add $TARGET
@@ -295,7 +303,9 @@ jobs:
           ulimit -n 65536
           apt-get install -y cmake
           VERSION=$(toml get --raw Cargo.toml workspace.package.version)
-          rustup update stable
+          rustup self update
+          rustup toolchain uninstall stable
+          rustup toolchain install stable
           rustup default stable
           rustc --version
 
@@ -411,7 +421,9 @@ jobs:
       - name: Build
         run: |
           ulimit -n 65536
-          rustup update stable
+          rustup self update
+          rustup toolchain uninstall stable
+          rustup toolchain install stable
           rustup default stable
           rustc --version
 
@@ -464,7 +476,9 @@ jobs:
         run: |
           ulimit -n 65536
           apt-get update && apt-get install -y musl-tools
-          rustup update stable
+          rustup self update
+          rustup toolchain uninstall stable
+          rustup toolchain install stable
           rustup default stable
           rustc --version
           rustup target add $TARGET
@@ -590,7 +604,9 @@ jobs:
             exit 1
           fi
 
-          rustup update stable
+          rustup self update
+          rustup toolchain uninstall stable
+          rustup toolchain install stable
           rustup default stable
           rustc --version
 
@@ -670,7 +686,9 @@ jobs:
           VERSION=$(toml get --raw Cargo.toml workspace.package.version)
           VERSION=$VERSION-1
           mkdir -p dist/${ARCH}
-          rustup update stable
+          rustup self update
+          rustup toolchain uninstall stable
+          rustup toolchain install stable
           rustup default stable
           rustc --version
 
@@ -788,7 +806,9 @@ jobs:
             apt-get update -y
             apt-get install -y musl-tools patchelf
           fi
-          rustup update stable
+          rustup self update
+          rustup toolchain uninstall stable
+          rustup toolchain install stable
           rustup default stable
           rustc --version
           rustup target add "$TARGET"
@@ -855,7 +875,9 @@ jobs:
           # pelorus_py wheel
           apt-get update -y
           apt-get install -y patchelf
-          rustup update stable
+          rustup self update
+          rustup toolchain uninstall stable
+          rustup toolchain install stable
           rustup default stable
           rustc --version
           rustup target add "$TARGET"
@@ -914,7 +936,9 @@ jobs:
       - name: Build CUDA wheels
         run: |
           ulimit -n 65536
-          rustup update stable
+          rustup self update
+          rustup toolchain uninstall stable
+          rustup toolchain install stable
           rustup default stable
           rustc --version
           maturin build --manifest-path pelorus_cli/Cargo.toml --release --features cuda,rerun --target "$TARGET" --skip-auditwheel

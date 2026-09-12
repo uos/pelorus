@@ -22,9 +22,11 @@ jobs:
       - uses: actions/checkout@v4
       - name: Update Rust
         run: |
+          rustup self update
+          rustup toolchain uninstall stable
           rustup toolchain install stable
           rustup default stable
-          rustup update
+          rustc --version
       - name: Install SeaKit
         run: |
           python3 -m venv .venv
@@ -70,9 +72,11 @@ jobs:
       - name: Update Rust
         run: |
           . "$HOME/.cargo/env"
+          rustup self update
+          rustup toolchain uninstall stable
           rustup toolchain install stable
           rustup default stable
-          rustup update
+          rustc --version
       - name: Install build and SeaKit tools
         run: |
           python3 -m venv .venv
