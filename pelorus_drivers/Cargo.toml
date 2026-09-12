@@ -2,9 +2,12 @@
 name = "pelorus_drivers"
 description = "Optional native sensor drivers and transport-neutral ingress for Pelorus."
 edition.workspace = true
+include.workspace = true
+keywords.workspace = true
 version.workspace = true
 license.workspace = true
 repository.workspace = true
+authors.workspace = true
 rust-version.workspace = true
 
 [dependencies]

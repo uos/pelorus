@@ -327,7 +327,7 @@ __global__ void build_component_keys_kernel(
         }
         keys[tid] = ordered_float_key(value);
     } else {
-        // Match prelio::keyed_point_sort_key, which orders secondary fields by
+        // Match pelorus_sync::keyed_point_sort_key, which orders secondary fields by
         // their raw f32 bit patterns.
         keys[tid] = __float_as_uint(value);
     }

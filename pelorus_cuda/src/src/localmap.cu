@@ -124,7 +124,7 @@ __device__ float mahalanobis_sq(float3 diff, const float* __restrict__ L) {
 }
 
 // Explicit 3×3 cofactor inverse — matches nalgebra::Matrix3::try_inverse semantics
-// used by spole::VoxelDistribution::update on the CPU. Cholesky was previously
+// used by pelorus_localmap::VoxelDistribution::update on the CPU. Cholesky was previously
 // used here but its failure mode (L[i] sq ≤ 0) differs from LU/cofactor and
 // caused the update to fall back to Euclidean Mahalanobis when CPU did not.
 __device__ bool invert_3x3(const float* __restrict__ A, float* __restrict__ inv) {
@@ -438,7 +438,7 @@ __global__ void initialize_lru_mapping_kernel(uint32_t* d_lru_mapping,
     d_lru_mapping[idx] = idx;
 }
 
-// Match spole::Livodish's eviction ranking exactly. Comparing the rational
+// Match pelorus_localmap::Livodish's eviction ranking exactly. Comparing the rational
 // age/point_count scores by division loses ordering precision in f32 and causes
 // the CPU and CUDA maps to retain different voxels after reaching capacity.
 // CPU Livodish and Vulkan only build this order once the map is full, so empty

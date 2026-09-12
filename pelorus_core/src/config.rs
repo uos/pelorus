@@ -13,8 +13,8 @@ use crate::{
     CoordinateSystem, DownsampleParameters, ImuCalibrationParameters, ImuConfigParameter,
     ImuDriverConfig, ImuDriverType, ImuParameters, KinematicModel, LidarDriverConfig,
     LidarDriverType, LidarVendor, LioConfig, MadgwickSetting, OdometryRate, OusterConfig,
-    OusterTimestampMode, PassthroughFilterParameters, PointCloudMode, PrelioNodeParameters,
-    PrelioParameters, PreprocessingBackend, Qos, Reliability, RerunConfig, RerunMapConfig,
+    OusterTimestampMode, PassthroughFilterParameters, PointCloudMode, SyncNodeParameters,
+    SyncParameters, PreprocessingBackend, Qos, Reliability, RerunConfig, RerunMapConfig,
     SensorDriverConfig, VelodyneConfig, VelodyneModel, VelodyneTimestampMode, XsensConfig,
     XsensTimestampMode, adaptive_execution::ExecutionPolicy,
 };
@@ -311,7 +311,7 @@ pub fn ast_to_config_with_user_usage(
 mod override_tests {
     use super::*;
 
-    const DEFAULTS: &str = include_str!("../../default.rl");
+    const DEFAULTS: &str = include_str!("../default.rl");
 
     #[test]
     fn an_override_beats_the_same_setting_in_the_config_file() {
@@ -394,19 +394,19 @@ mod override_tests {
     #[test]
     fn the_imu_time_offset_is_read_in_seconds() {
         assert_eq!(
-            config_with("").prelio_params.imu.calibration.time_offset,
+            config_with("").sync_params.imu.calibration.time_offset,
             0.0
         );
 
         let shifted = config_with("imu.calibration.time_offset = -5.9ms\n");
         assert!(
-            (shifted.prelio_params.imu.calibration.time_offset + 0.0059).abs() < 1e-12,
+            (shifted.sync_params.imu.calibration.time_offset + 0.0059).abs() < 1e-12,
             "{}",
-            shifted.prelio_params.imu.calibration.time_offset
+            shifted.sync_params.imu.calibration.time_offset
         );
 
         let seconds = config_with("imu.calibration.time_offset = 0.25s\n");
-        assert!((seconds.prelio_params.imu.calibration.time_offset - 0.25).abs() < 1e-12);
+        assert!((seconds.sync_params.imu.calibration.time_offset - 0.25).abs() < 1e-12);
     }
 
     #[test]
@@ -414,7 +414,7 @@ mod override_tests {
         let source = "imu.from_lidar_transform.translation = [1.0m, 2.0m, 3.0m]\n\
                       imu.from_lidar_transform.use_tf_tree = true\n";
         let with_imu = config_with(source);
-        assert!(with_imu.prelio_params.imu_lidar_tf_override);
+        assert!(with_imu.sync_params.imu_lidar_tf_override);
         assert_eq!(
             with_imu.imu_params.initial_translation_lidar_to_imu,
             Vector3::new(1.0, 2.0, 3.0)
@@ -422,7 +422,7 @@ mod override_tests {
 
         let lidar_only = config_with(&format!("{source}imu.lidar_only = true\n"));
         assert!(lidar_only.imu_params.lidar_only);
-        assert!(!lidar_only.prelio_params.imu_lidar_tf_override);
+        assert!(!lidar_only.sync_params.imu_lidar_tf_override);
         assert_eq!(
             lidar_only.imu_params.initial_translation_lidar_to_imu,
             Vector3::zeros()
@@ -638,7 +638,7 @@ mod tests {
 
     #[test]
     fn default_sensor_driver_config_parses() {
-        let defaults = ratslang::compile_code(include_str!("../../default.rl")).unwrap();
+        let defaults = ratslang::compile_code(include_str!("../default.rl")).unwrap();
         let user = ratslang::compile_code("").unwrap();
         let config = ast_to_config(defaults, user).unwrap();
         assert_eq!(
@@ -655,7 +655,7 @@ mod tests {
 
     #[test]
     fn odometry_rate_defaults_to_lidar() {
-        let defaults = ratslang::compile_code(include_str!("../../default.rl")).unwrap();
+        let defaults = ratslang::compile_code(include_str!("../default.rl")).unwrap();
         let user = ratslang::compile_code("").unwrap();
         let config = ast_to_config(defaults, user).unwrap();
         assert_eq!(config.odometry_rate, OdometryRate::Lidar);
@@ -663,7 +663,7 @@ mod tests {
 
     #[test]
     fn imu_and_lidar_odometry_rate_parses() {
-        let defaults = ratslang::compile_code(include_str!("../../default.rl")).unwrap();
+        let defaults = ratslang::compile_code(include_str!("../default.rl")).unwrap();
         let user = ratslang::compile_code("output.odometry_rate = ImuAndLidar").unwrap();
         let config = ast_to_config(defaults, user).unwrap();
         assert_eq!(config.odometry_rate, OdometryRate::ImuAndLidar);
@@ -671,7 +671,7 @@ mod tests {
 
     #[test]
     fn rerun_defaults_parse() {
-        let defaults = ratslang::compile_code(include_str!("../../default.rl")).unwrap();
+        let defaults = ratslang::compile_code(include_str!("../default.rl")).unwrap();
         let user = ratslang::compile_code("").unwrap();
         let config = ast_to_config(defaults, user).unwrap();
 
@@ -1053,7 +1053,7 @@ fn ast_to_config_inner(
         )
     };
 
-    let (imu_params, imu_prelio_params, imu_node_params) = {
+    let (imu_params, imu_sync_params, imu_node_params) = {
         let imu = asts.filter_ns(&["imu"]);
         let imu_src_topic = resolve_var!(imu, "topic", as String, Rhs::Val(Val::StringVal(s)) | Rhs::Path(s) => {s})?;
         let imu_qos = resolve_var!(imu, "qos.reliability", as Qos, Rhs::Val(Val::StringVal(s)) | Rhs::Path(s) => {reliablility_parse(&s)?})?;
@@ -1183,7 +1183,7 @@ fn ast_to_config_inner(
             kinematic_model: wheel_kinematic_model,
             wheel_odom_cov_override: wheel_odom_cov,
         };
-        let imu_prelio_params = ImuConfigParameter {
+        let imu_sync_params = ImuConfigParameter {
             madgwick_setting,
             gravity,
             calibration: ImuCalibrationParameters {
@@ -1202,7 +1202,7 @@ fn ast_to_config_inner(
             imu_lidar_tf_override && !lidar_only,
         );
 
-        (imu_params, imu_prelio_params, imu_node_params)
+        (imu_params, imu_sync_params, imu_node_params)
     };
 
     let (
@@ -1551,7 +1551,7 @@ fn ast_to_config_inner(
         base_to_lidar,
         base_to_lidar_tf_override,
         cpu_only,
-        prelio_node_params: PrelioNodeParameters {
+        sync_node_params: SyncNodeParameters {
             wheel_qos,
             wheel_src_topic,
             cloud_src_topic,
@@ -1565,11 +1565,11 @@ fn ast_to_config_inner(
             imu_filtered_topic,
             synchronous_mode: false,
         },
-        prelio_params: PrelioParameters {
+        sync_params: SyncParameters {
             lidar_vendor,
             imu_lidar_tf_override: imu_node_params.3,
             map_frame,
-            imu: imu_prelio_params,
+            imu: imu_sync_params,
             downsample: DownsampleParameters {
                 voxel_size: (query_resolution_factor * map_resolution) as f32,
                 bypass_output_downsample,

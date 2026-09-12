@@ -102,7 +102,7 @@ impl RealtimePredictorHandle {
         )
     }
 
-    pub fn imu_callback(&self) -> prelio::RealtimeImuCallback {
+    pub fn imu_callback(&self) -> pelorus_sync::RealtimeImuCallback {
         let tx = self.command_tx.clone();
         Arc::new(move |imu| {
             // This stream is output-only: it must never backpressure sensor ingress.
@@ -110,7 +110,7 @@ impl RealtimePredictorHandle {
         })
     }
 
-    pub fn lidar_barrier_callback(&self) -> prelio::RealtimeLidarBarrierCallback {
+    pub fn lidar_barrier_callback(&self) -> pelorus_sync::RealtimeLidarBarrierCallback {
         let paused = Arc::clone(&self.paused);
         let pending_corrections = Arc::clone(&self.pending_corrections);
         Arc::new(move || {
@@ -207,7 +207,7 @@ fn worker(
         UnitQuaternion::from_matrix(&config.imu_params.initial_rotation_lidar_to_imu),
     );
     let mut state = WorkerState {
-        ekf: Eqf::new(config.prelio_params.imu.gravity, config.base_to_lidar),
+        ekf: Eqf::new(config.sync_params.imu.gravity, config.base_to_lidar),
         imu: ImuProcessing::new(&config.imu_params, &lidar_to_imu, &config.base_to_lidar),
         seeded: false,
         history: VecDeque::new(),
@@ -216,7 +216,7 @@ fn worker(
         output_base: config.base_link_frame.is_some(),
     };
     let mut export_state = export_tx.as_ref().map(|_| WorkerState {
-        ekf: Eqf::new(config.prelio_params.imu.gravity, config.base_to_lidar),
+        ekf: Eqf::new(config.sync_params.imu.gravity, config.base_to_lidar),
         imu: ImuProcessing::new(&config.imu_params, &lidar_to_imu, &config.base_to_lidar),
         seeded: false,
         history: VecDeque::new(),
@@ -527,7 +527,7 @@ mod tests {
             UnitQuaternion::from_matrix(&config.imu_params.initial_rotation_lidar_to_imu),
         );
         let mut state = WorkerState {
-            ekf: Eqf::new(config.prelio_params.imu.gravity, Isometry3::identity()),
+            ekf: Eqf::new(config.sync_params.imu.gravity, Isometry3::identity()),
             imu: ImuProcessing::new(&config.imu_params, &lidar_to_imu, &Isometry3::identity()),
             seeded: false,
             history: VecDeque::new(),

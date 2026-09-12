@@ -9,7 +9,7 @@ use crate::types::{NeighborType, PointNormal, Quaternion, Vector3};
 use ash::vk;
 use pelorus_core::PointXYZIT;
 use ros_pointcloud2::points::PointXYZINormal;
-use spole::IVoxNearbyType;
+use pelorus_localmap::IVoxNearbyType;
 use std::mem::size_of;
 
 #[derive(Debug, Clone, Copy, Default)]

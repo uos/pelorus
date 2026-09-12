@@ -13,7 +13,7 @@ rust-version.workspace = true
 
 [dependencies]
 pelorus_core.workspace = true
-prelio = { workspace = true, default-features = false }
+pelorus_sync = { workspace = true, default-features = false }
 pelorus_cuda = { workspace = true, optional = true }
 pelorus_metal = { workspace = true, optional = true }
 pelorus_vulkan = { workspace = true, optional = true }
@@ -22,7 +22,7 @@ anyhow.workspace = true
 nalgebra.workspace = true
 faer.workspace = true
 rayon = { workspace = true, optional = true }
-spole = { workspace = true, default-features = false }
+pelorus_localmap = { workspace = true, default-features = false }
 log.workspace = true
 serde.workspace = true
 either.workspace = true
@@ -32,17 +32,17 @@ default = ["rayon"]
 processing-time-export = []
 rayon = [
     "dep:rayon",
-    "prelio/rayon",
-    "spole/rayon",
+    "pelorus_sync/rayon",
+    "pelorus_localmap/rayon",
     "ros_pointcloud2/rayon",
     "faer/rayon",
     "pelorus_cuda?/rayon",
     "pelorus_vulkan?/rayon",
 ]
-nn_kdt = ["spole/nn_kdt"]
-cuda = ["dep:pelorus_cuda", "pelorus_cuda/cuda_available", "pelorus_cuda/cuda_enable", "prelio/cuda"]
-metal = ["dep:pelorus_metal", "pelorus_metal/metal_available", "pelorus_metal/metal_enable", "prelio/metal"]
-vulkan = ["dep:pelorus_vulkan", "pelorus_vulkan/vulkan_available", "pelorus_vulkan/vulkan_enable", "prelio/vulkan"]
+nn_kdt = ["pelorus_localmap/nn_kdt"]
+cuda = ["dep:pelorus_cuda", "pelorus_cuda/cuda_available", "pelorus_cuda/cuda_enable", "pelorus_sync/cuda"]
+metal = ["dep:pelorus_metal", "pelorus_metal/metal_available", "pelorus_metal/metal_enable", "pelorus_sync/metal"]
+vulkan = ["dep:pelorus_vulkan", "pelorus_vulkan/vulkan_available", "pelorus_vulkan/vulkan_enable", "pelorus_sync/vulkan"]
 
 [dev-dependencies]
 serde_json.workspace = true

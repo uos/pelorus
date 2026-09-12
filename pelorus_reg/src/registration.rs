@@ -9,11 +9,11 @@ use pelorus_core::adaptive_execution::ExecutionMode;
 use pelorus_core::adaptive_execution::{AdaptiveExecutionPlanner, ExecutionMode, HeavyPhase};
 use pelorus_core::timing::RuntimeEvaluator;
 use pelorus_core::{ImuMsg, ImuParameters, KinematicModel, LidarVendor, OdomMsg, PointXYZIT};
-use prelio::LocatedBufferView;
+use pelorus_sync::LocatedBufferView;
 #[cfg(feature = "rayon")]
 use rayon::prelude::*;
 use ros_pointcloud2::prelude::*;
-use spole::*;
+use pelorus_localmap::*;
 #[cfg(feature = "rayon")]
 use std::sync::Mutex;
 use std::sync::{Arc, RwLock};
@@ -62,7 +62,7 @@ impl RegistrationState {
     }
 
     #[cfg(not(feature = "nn_kdt"))]
-    pub fn get_distributions_with_lru_scores(&self) -> Vec<spole::localmap::VoxelDistributionLru> {
+    pub fn get_distributions_with_lru_scores(&self) -> Vec<pelorus_localmap::localmap::VoxelDistributionLru> {
         self.map.get_distributions_with_lru_scores()
     }
 

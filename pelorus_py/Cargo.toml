@@ -18,8 +18,8 @@ crate-type = ["cdylib"]
 [dependencies]
 pelorus_core.workspace = true
 pelorus_reg = { workspace = true, default-features = false }
-prelio = { workspace = true, default-features = false }
-spole = { workspace = true, default-features = false }
+pelorus_sync = { workspace = true, default-features = false }
+pelorus_localmap = { workspace = true, default-features = false }
 ros_pointcloud2.workspace = true
 ros2-interfaces-jazzy-serde.workspace = true
 nalgebra.workspace = true
@@ -37,15 +37,15 @@ numpy.workspace = true
 default = ["processing-time-export", "rayon"]
 rayon = [
     "dep:rayon",
-    "prelio/rayon",
+    "pelorus_sync/rayon",
     "pelorus_reg/rayon",
-    "spole/rayon",
+    "pelorus_localmap/rayon",
     "ros_pointcloud2/rayon",
 ]
-downsample = ["prelio/downsample"]
-cuda = ["prelio/cuda", "pelorus_reg/cuda"]
-metal = ["prelio/metal", "pelorus_reg/metal"]
-vulkan = ["prelio/vulkan", "pelorus_reg/vulkan"]
-no-imu-sync = ["prelio/no-imu-sync"]
-large-processing-queue = ["prelio/large-processing-queue"]
+downsample = ["pelorus_sync/downsample"]
+cuda = ["pelorus_sync/cuda", "pelorus_reg/cuda"]
+metal = ["pelorus_sync/metal", "pelorus_reg/metal"]
+vulkan = ["pelorus_sync/vulkan", "pelorus_reg/vulkan"]
+no-imu-sync = ["pelorus_sync/no-imu-sync"]
+large-processing-queue = ["pelorus_sync/large-processing-queue"]
 processing-time-export = ["pelorus_reg/processing-time-export"]

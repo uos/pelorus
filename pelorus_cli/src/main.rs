@@ -70,11 +70,11 @@ use pelorus_reg::pipeline::Pipeline;
 ))]
 use pelorus_reg::realtime::{RealtimePrediction, RealtimePredictorHandle};
 #[cfg(feature = "hiroz")]
-use prelio_io::impl_hiroz;
+use pelorus_syncio::impl_hiroz;
 #[cfg(feature = "r2r")]
-use prelio_io::impl_r2r;
+use pelorus_syncio::impl_r2r;
 #[cfg(feature = "mt_pubsub")]
-use prelio_io::impl_ros2_interfaces_jazzy_rkyv;
+use pelorus_syncio::impl_ros2_interfaces_jazzy_rkyv;
 #[cfg(feature = "ros2-client")]
 use ros2_interfaces_jazzy_serde::{
     builtin_interfaces::msg::Time,
@@ -207,7 +207,7 @@ impl MtCloudPublisher {
                 anyhow!("compressed registered clouds were negotiated but no publisher exists")
             })?;
             let cloud = impl_ros2_interfaces_jazzy_rkyv::to_pointcloud2_msg(cloud.clone());
-            let compressed = prelio_io::compress_cloud(cloud)?;
+            let compressed = pelorus_syncio::compress_cloud(cloud)?;
             return publisher.publish(&compressed).await;
         }
         self.plain.publish(cloud).await
@@ -220,15 +220,15 @@ impl MtCloudPublisher {
     feature = "r2r",
     feature = "hiroz"
 ))]
-use prelio_io::prelio::{ImuSyncMode, LocatedBufferView};
+use pelorus_syncio::pelorus_sync::{ImuSyncMode, LocatedBufferView};
 #[cfg(feature = "ros2-client")]
-use prelio_io::tf::TfBroadcaster;
+use pelorus_syncio::tf::TfBroadcaster;
 #[cfg(feature = "hiroz")]
-use prelio_io::tf_hiroz::TfBroadcaster;
+use pelorus_syncio::tf_hiroz::TfBroadcaster;
 #[cfg(feature = "mt_pubsub")]
-use prelio_io::tf_lh::TfBroadcaster;
+use pelorus_syncio::tf_lh::TfBroadcaster;
 #[cfg(feature = "r2r")]
-use prelio_io::tf_r2r::TfBroadcaster;
+use pelorus_syncio::tf_r2r::TfBroadcaster;
 
 #[cfg(any(
     feature = "mt_pubsub",
@@ -243,7 +243,7 @@ use pelorus_reg::Registration;
     feature = "r2r",
     feature = "hiroz"
 ))]
-use prelio_io::{PrelioNode, PrelioNodeInputs};
+use pelorus_syncio::{SyncNode, SyncNodeInputs};
 use std::path::PathBuf;
 
 use pelorus_cli::mcap_output::{McapOutputWriter, McapTopics};
@@ -783,7 +783,7 @@ struct McapOutputConfig {
 fn build_mcap_output_config(args: &RecordingArgs, config: &LioConfig) -> Option<McapOutputConfig> {
     build_mcap_output_config_with_filtered_topic(
         args,
-        &config.prelio_node_params.imu_filtered_topic,
+        &config.sync_node_params.imu_filtered_topic,
     )
 }
 
@@ -1240,7 +1240,7 @@ fn log_realtime_prediction_to_rerun(rec: &rerun::RecordingStream, prediction: &R
 #[cfg(all(feature = "rerun", not(any(feature = "cuda", feature = "metal", feature = "vulkan"))))]
 fn log_map_snapshot_to_rerun(
     rec: &rerun::RecordingStream,
-    distributions: Vec<spole::localmap::VoxelDistributionLru>,
+    distributions: Vec<pelorus_localmap::localmap::VoxelDistributionLru>,
     map_config: &pelorus_core::RerunMapConfig,
 ) {
     const MIN_HALF_SIZE: f32 = 0.02;
@@ -1895,8 +1895,8 @@ fn lio_with_ready_signal(
             "Starting Hiroz backend: mode={}, endpoints={:?}, cloud_topic={}, imu_topic={}",
             hiroz_node_args.mode,
             hiroz_node_args.endpoints,
-            config.prelio_node_params.cloud_src_topic,
-            config.prelio_node_params.imu_src_topic
+            config.sync_node_params.cloud_src_topic,
+            config.sync_node_params.imu_src_topic
         );
         let mut builder = ZContextBuilder::default()
             .with_mode(hiroz_node_args.mode.clone())
@@ -1953,12 +1953,12 @@ fn lio_with_ready_signal(
     let ext = pipeline.ext();
     let _odom_ext = Isometry3::from_parts(
         nalgebra::Translation3::new(0.0, 0.0, 0.0),
-        UnitQuaternion::from_matrix(&config.prelio_params.wheel_to_imu_rotation),
+        UnitQuaternion::from_matrix(&config.sync_params.wheel_to_imu_rotation),
     );
 
     // Set lidar vendor in shared stats if present
     if let Some(ref stats) = shared_stats {
-        stats.set_lidar_vendor(config.prelio_params.lidar_vendor);
+        stats.set_lidar_vendor(config.sync_params.lidar_vendor);
     }
 
     #[cfg(feature = "rerun")]
@@ -2043,7 +2043,7 @@ fn lio_with_ready_signal(
                 release_minot_tick(demand_shutdown_flag.as_ref(), synchronous_mode);
             }),
         }
-    } else if config.prelio_params.lidar_as_sync {
+    } else if config.sync_params.lidar_as_sync {
         ImuSyncMode::LidarDriven
     } else {
         ImuSyncMode::Continuous
@@ -2084,7 +2084,7 @@ fn lio_with_ready_signal(
         .map(RealtimePredictorHandle::lidar_barrier_callback);
 
     #[allow(unused_mut)]
-    let (mut prelio_node, synced_rx) = PrelioNode::new(
+    let (mut sync_node, synced_rx) = SyncNode::new(
         #[cfg(any(feature = "ros2-client", feature = "r2r"))]
         &mut node,
         #[cfg(any(feature = "mt_pubsub", feature = "hiroz"))]
@@ -2095,9 +2095,9 @@ fn lio_with_ready_signal(
             .clone(),
         #[cfg(feature = "mt_pubsub")]
         mt_pubsub_local_only,
-        &config.prelio_params,
-        PrelioNodeInputs {
-            node_params: &config.prelio_node_params,
+        &config.sync_params,
+        SyncNodeInputs {
+            node_params: &config.sync_node_params,
             imu_pose_predictor_init: (!config.imu_params.lidar_only)
                 .then(|| pipeline.build_init_callback()),
             imu_pose_prediction_undistort: Some(pipeline.build_undistort()),
@@ -2121,12 +2121,12 @@ fn lio_with_ready_signal(
         if config.imu_params.lidar_only {
             sensor_drivers.imu.driver_type = pelorus_core::ImuDriverType::Disabled;
         }
-        prelio_node.start_native_drivers(&sensor_drivers, filtered_imu_tx.clone(), None)?;
+        sync_node.start_native_drivers(&sensor_drivers, filtered_imu_tx.clone(), None)?;
     }
-    let prelio_node = Arc::new(prelio_node);
+    let sync_node = Arc::new(sync_node);
     let drain_on_shutdown = Arc::new(AtomicBool::new(false));
     if let Some(stop_rx) = shutdown_request_rx {
-        let node_for_stop = Arc::clone(&prelio_node);
+        let node_for_stop = Arc::clone(&sync_node);
         let drain_on_shutdown_for_stop = Arc::clone(&drain_on_shutdown);
         let shutdown_flag_for_stop = shutdown_flag.clone();
         std::thread::spawn(move || {
@@ -2153,10 +2153,10 @@ fn lio_with_ready_signal(
                 .create_topic(
                     &ros2_client::Name::new(&namespace, "registered").unwrap(),
                     ros2_client::MessageTypeName::new("sensor_msgs", "PointCloud2"),
-                    &prelio_io::qos_to_ros2(config.registered_cloud_qos),
+                    &pelorus_syncio::qos_to_ros2(config.registered_cloud_qos),
                 )
                 .unwrap(),
-            Some(prelio_io::qos_to_ros2(config.registered_cloud_qos)),
+            Some(pelorus_syncio::qos_to_ros2(config.registered_cloud_qos)),
         )
         .unwrap();
     #[cfg(any(feature = "ros2-client"))]
@@ -2166,10 +2166,10 @@ fn lio_with_ready_signal(
                 .create_topic(
                     &ros2_client::Name::new(&namespace, "odom").unwrap(),
                     ros2_client::MessageTypeName::new("nav_msgs", "Odometry"),
-                    &prelio_io::qos_to_ros2(config.odom_qos),
+                    &pelorus_syncio::qos_to_ros2(config.odom_qos),
                 )
                 .unwrap(),
-            Some(prelio_io::qos_to_ros2(config.odom_qos)),
+            Some(pelorus_syncio::qos_to_ros2(config.odom_qos)),
         )
         .unwrap();
     #[cfg(all(not(feature = "no-viz"), feature = "ros2-client"))]
@@ -2179,10 +2179,10 @@ fn lio_with_ready_signal(
                 .create_topic(
                     &ros2_client::Name::new(&namespace, "path").unwrap(),
                     ros2_client::MessageTypeName::new("nav_msgs", "Path"),
-                    &prelio_io::qos_to_ros2(config.path_qos),
+                    &pelorus_syncio::qos_to_ros2(config.path_qos),
                 )
                 .unwrap(),
-            Some(prelio_io::qos_to_ros2(config.path_qos)),
+            Some(pelorus_syncio::qos_to_ros2(config.path_qos)),
         )
         .unwrap();
     #[cfg(all(not(feature = "no-viz"), feature = "ros2-client"))]
@@ -2192,10 +2192,10 @@ fn lio_with_ready_signal(
                 .create_topic(
                     &ros2_client::Name::new(&namespace, "imu_odom").unwrap(),
                     ros2_client::MessageTypeName::new("nav_msgs", "Odometry"),
-                    &prelio_io::qos_to_ros2(config.imu_odom_qos),
+                    &pelorus_syncio::qos_to_ros2(config.imu_odom_qos),
                 )
                 .unwrap(),
-            Some(prelio_io::qos_to_ros2(config.imu_odom_qos)),
+            Some(pelorus_syncio::qos_to_ros2(config.imu_odom_qos)),
         )
         .unwrap();
 
@@ -2261,7 +2261,7 @@ fn lio_with_ready_signal(
     #[cfg(feature = "hiroz")]
     let cloud_publisher = node
         .create_pub::<PointCloud2>("registered")
-        .with_qos(prelio_io::qos_to_hiroz(config.registered_cloud_qos))
+        .with_qos(pelorus_syncio::qos_to_hiroz(config.registered_cloud_qos))
         .build()
         .map_err(|e| anyhow!("Failed to create Hiroz registered cloud publisher: {e}"))?;
     #[cfg(feature = "r2r")]
@@ -2289,7 +2289,7 @@ fn lio_with_ready_signal(
     #[cfg(feature = "hiroz")]
     let odom_publisher = node
         .create_pub::<Odometry>("odom")
-        .with_qos(prelio_io::qos_to_hiroz(config.odom_qos))
+        .with_qos(pelorus_syncio::qos_to_hiroz(config.odom_qos))
         .build()
         .map_err(|e| anyhow!("Failed to create Hiroz odom publisher: {e}"))?;
     // Same for the odometry publisher: r2r's `Publisher<T>` is `Send` and
@@ -2306,7 +2306,7 @@ fn lio_with_ready_signal(
         // may move.
         let publisher = odom_publisher.clone();
         let prediction_tf_broadcaster = tf_broadcaster.clone();
-        let map_frame = config.prelio_params.map_frame.clone();
+        let map_frame = config.sync_params.map_frame.clone();
         let child_frame = Arc::clone(&realtime_child_frame);
         #[cfg(feature = "rerun")]
         let prediction_rec = rec.clone();
@@ -2363,7 +2363,7 @@ fn lio_with_ready_signal(
     #[cfg(all(not(feature = "no-viz"), feature = "hiroz"))]
     let lidar_path_publisher = node
         .create_pub::<Path>("path")
-        .with_qos(prelio_io::qos_to_hiroz(config.path_qos))
+        .with_qos(pelorus_syncio::qos_to_hiroz(config.path_qos))
         .build()
         .map_err(|e| anyhow!("Failed to create Hiroz path publisher: {e}"))?;
     #[cfg(all(not(feature = "no-viz"), feature = "r2r"))]
@@ -2381,7 +2381,7 @@ fn lio_with_ready_signal(
     #[cfg(all(not(feature = "no-viz"), feature = "hiroz"))]
     let imu_odom_publisher = node
         .create_pub::<Odometry>("imu_odom")
-        .with_qos(prelio_io::qos_to_hiroz(config.imu_odom_qos))
+        .with_qos(pelorus_syncio::qos_to_hiroz(config.imu_odom_qos))
         .build()
         .map_err(|e| anyhow!("Failed to create Hiroz IMU odom publisher: {e}"))?;
     #[cfg(feature = "mt_pubsub")]
@@ -2396,7 +2396,7 @@ fn lio_with_ready_signal(
     #[cfg(feature = "hiroz")]
     let stats_publisher = node
         .create_pub::<RosString>("pelorus_stats")
-        .with_qos(prelio_io::qos_to_hiroz(pelorus_core::Qos::SystemDefault))
+        .with_qos(pelorus_syncio::qos_to_hiroz(pelorus_core::Qos::SystemDefault))
         .build()
         .map_err(|e| anyhow!("Failed to create Hiroz stats publisher: {e}"))?;
     #[cfg(feature = "mt_pubsub")]
@@ -2432,7 +2432,7 @@ fn lio_with_ready_signal(
     let mut last_stats_pub = std::time::Instant::now();
 
     let mut lidar_path_poses: VecDeque<PoseStamped> = VecDeque::new();
-    let lidar_path_frame_id = config.prelio_params.map_frame.clone();
+    let lidar_path_frame_id = config.sync_params.map_frame.clone();
     let mut last_mcap_path_write_time: Option<u64> = None;
 
     let mut last_scan_time = None;
@@ -2477,16 +2477,16 @@ fn lio_with_ready_signal(
             minot_replay_mode && !downstream_owns_replay && mcap_writer.is_some();
         let relay_minot_replay_on_registration = minot_replay_mode && mcap_writer.is_none();
         let mut minot_prefill_requested = false;
-        // Initialize Prelio prediction
+        // Initialize Synchronizer prediction
         let mut ready_for_next_tx = Some(ready_for_next_tx);
         let mut registration_ready_tx = None;
         let mut ready_relay_handle = None;
         if gate_minot_replay_on_mcap || relay_minot_replay_on_registration {
             let (relay_tx, relay_rx) = std::sync::mpsc::channel();
             registration_ready_tx = Some(relay_tx);
-            let prelio_ready_tx = ready_for_next_tx
+            let sync_ready_tx = ready_for_next_tx
                 .as_ref()
-                .expect("prelio ready sender must exist")
+                .expect("sync ready sender must exist")
                 .clone();
             let relay_shutdown_flag = processing_shutdown_flag.clone();
             let relay_drain_on_shutdown = Arc::clone(&drain_on_shutdown);
@@ -2495,7 +2495,7 @@ fn lio_with_ready_signal(
             ready_relay_handle = Some(std::thread::spawn(move || {
                 let mut requested_prefill = false;
                 while let Ok(scan_id) = relay_rx.recv() {
-                    if prelio_ready_tx.send(scan_id).is_err() {
+                    if sync_ready_tx.send(scan_id).is_err() {
                         break;
                     }
                     if relay_drain_on_shutdown.load(Ordering::SeqCst)
@@ -2507,7 +2507,7 @@ fn lio_with_ready_signal(
                         continue;
                     }
                     // Under downstream ownership the consumer's own trigger
-                    // pulls the next scan. This relay still releases Prelio's
+                    // pulls the next scan. This relay still releases Synchronizer's
                     // registration barrier, but must not advance bag input.
                     if !downstream_owns_replay {
                         let desired_request_count = if requested_prefill {
@@ -2533,7 +2533,7 @@ fn lio_with_ready_signal(
         }
         // A scan consumed without publishing an authoritative frame still owes
         // Minot exactly one trigger: the downstream consumer only pays for
-        // frames it actually receives. Prelio's mid-frame demand may already
+        // frames it actually receives. Synchronizer's mid-frame demand may already
         // have advanced the bag, so repay that debt before asking for more.
         let release_unpublished_scan_tick = || {
             let request_count = request_count_after_replay_debt(&processing_tick_debt, 1);
@@ -2545,7 +2545,7 @@ fn lio_with_ready_signal(
                 );
             }
         };
-        let mut prelio_node = Some(prelio_node);
+        let mut sync_node = Some(sync_node);
 
         let active_backend = ActiveBackend::detect(&config);
         log_active_backend(&config, &active_backend);
@@ -2671,7 +2671,7 @@ fn lio_with_ready_signal(
         // on recv() as before.
         let mut draining_after_end_of_bag = false;
         loop {
-            let prelio_tick = match processing_shutdown_flag.as_ref() {
+            let sync_tick = match processing_shutdown_flag.as_ref() {
                 Some(flag) => {
                     let shutdown_requested = flag.load(std::sync::atomic::Ordering::Relaxed);
                     let drain_requested =
@@ -2688,13 +2688,13 @@ fn lio_with_ready_signal(
                                 Ok(t) => t,
                                 Err(std::sync::mpsc::RecvTimeoutError::Timeout)
                                 | Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
-                                    if let Some(ref prelio_node) = prelio_node {
-                                        prelio_node.request_shutdown();
+                                    if let Some(ref sync_node) = sync_node {
+                                        sync_node.request_shutdown();
                                     }
                                     // Drop sync gate and node ownership so all producer chains can close.
                                     drop(registration_ready_tx.take());
                                     drop(ready_for_next_tx.take());
-                                    drop(prelio_node.take());
+                                    drop(sync_node.take());
                                     info!(
                                         "Shutdown requested after end-of-bag hint, queue drained, exiting processing loop"
                                     );
@@ -2702,13 +2702,13 @@ fn lio_with_ready_signal(
                                 }
                             }
                         } else {
-                            if let Some(ref prelio_node) = prelio_node {
-                                prelio_node.request_shutdown();
+                            if let Some(ref sync_node) = sync_node {
+                                sync_node.request_shutdown();
                             }
                             // Drop sync gate and node ownership so all producer chains can close.
                             drop(registration_ready_tx.take());
                             drop(ready_for_next_tx.take());
-                            drop(prelio_node.take());
+                            drop(sync_node.take());
                             info!("Shutdown requested, exiting processing loop");
                             break;
                         }
@@ -2732,21 +2732,21 @@ fn lio_with_ready_signal(
             #[cfg(feature = "processing-time-export")]
             let processing_started = processing_time_file
                 .as_ref()
-                .map(|_| prelio_tick.received_at);
+                .map(|_| sync_tick.received_at);
             // Record scan arrival for measuring actual sensor rate
             if let Some(ref stats) = shared_stats {
                 let stamp_sec = {
-                    let s = timestamp_to_secs(&prelio_tick.cloud_header.stamp);
+                    let s = timestamp_to_secs(&sync_tick.cloud_header.stamp);
                     if s > 0.0 {
                         s
                     } else {
-                        timestamp_to_secs(&prelio_tick.odom_time)
+                        timestamp_to_secs(&sync_tick.odom_time)
                     }
                 };
                 stats.record_scan_timestamp(stamp_sec);
             }
 
-            eval.merge(&prelio_tick.runtime_eval);
+            eval.merge(&sync_tick.runtime_eval);
             drain_filtered_imu_mcap(&mut mcap_writer, &mut filtered_imu_rx)?;
 
             match &active_backend {
@@ -2763,26 +2763,26 @@ fn lio_with_ready_signal(
                     // Uploads and kernels are enqueued on the same stream, so ping-pong slots
                     // can be reused without forcing a host sync here.
                     let cuda_cloud = &mut cuda_cloud_bufs[current_slot];
-                    cuda_cloud.realloc_if_needed_cuda(stream, prelio_tick.deskewed_cloud.len());
+                    cuda_cloud.realloc_if_needed_cuda(stream, sync_tick.deskewed_cloud.len());
                     cuda_cloud
-                        .upload_from_slice_cuda(stream, prelio_tick.deskewed_cloud.as_slice());
+                        .upload_from_slice_cuda(stream, sync_tick.deskewed_cloud.as_slice());
                 }
                 #[cfg(feature = "metal")]
                 ActiveBackend::Metal(stream) => {
                     // Metal uses shared memory; sync before overwriting to avoid races.
                     stream.sync();
                     persistent_cloud_buf
-                        .realloc_if_needed_metal(stream, prelio_tick.deskewed_cloud.len());
+                        .realloc_if_needed_metal(stream, sync_tick.deskewed_cloud.len());
                     persistent_cloud_buf
-                        .upload_from_slice_metal(stream, prelio_tick.deskewed_cloud.as_slice());
+                        .upload_from_slice_metal(stream, sync_tick.deskewed_cloud.as_slice());
                 }
                 #[cfg(feature = "vulkan")]
                 ActiveBackend::Vulkan(stream) => {
                     stream.sync();
                     persistent_cloud_buf
-                        .realloc_if_needed_vulkan(stream, prelio_tick.deskewed_cloud.len());
+                        .realloc_if_needed_vulkan(stream, sync_tick.deskewed_cloud.len());
                     persistent_cloud_buf
-                        .upload_from_slice_vulkan(stream, prelio_tick.deskewed_cloud.as_slice());
+                        .upload_from_slice_vulkan(stream, sync_tick.deskewed_cloud.as_slice());
                 }
             }
 
@@ -2791,7 +2791,7 @@ fn lio_with_ready_signal(
             let cloud_for_reg: &LocatedBufferView<pelorus_core::PointXYZIT> = match &active_backend
             {
                 ActiveBackend::Cpu => {
-                    ram_cloud = LocatedBufferView::Ram(prelio_tick.deskewed_cloud);
+                    ram_cloud = LocatedBufferView::Ram(sync_tick.deskewed_cloud);
                     &ram_cloud
                 }
                 #[cfg(feature = "cuda")]
@@ -2806,11 +2806,11 @@ fn lio_with_ready_signal(
                 _ => &persistent_cloud_buf,
             };
 
-            let cloud_out = prelio_tick.deskewed_cloud_passthrough;
+            let cloud_out = sync_tick.deskewed_cloud_passthrough;
 
-            let orig_frame = prelio_tick.cloud_header.frame_id.clone();
-            let orig_time = prelio_tick.cloud_header.stamp;
-            let current_cloud_time = timestamp_to_secs(&prelio_tick.odom_time);
+            let orig_frame = sync_tick.cloud_header.frame_id.clone();
+            let orig_time = sync_tick.cloud_header.stamp;
+            let current_cloud_time = timestamp_to_secs(&sync_tick.odom_time);
             if let Some(existing_last_scan_time) = last_scan_time {
                 if current_cloud_time < existing_last_scan_time {
                     let mut map = map.lock().unwrap();
@@ -2854,26 +2854,26 @@ fn lio_with_ready_signal(
 
             last_scan_time = Some(timestamp_to_secs(&orig_time));
 
-            // use the last difference if there is no odom from prelio
-            let init_guess_lidar = if prelio_tick.imu_odom.pose.pose.position.x == 0.0
-                && prelio_tick.imu_odom.pose.pose.position.y == 0.0
-                && prelio_tick.imu_odom.pose.pose.position.z == 0.0
+            // use the last difference if there is no odom from sync
+            let init_guess_lidar = if sync_tick.imu_odom.pose.pose.position.x == 0.0
+                && sync_tick.imu_odom.pose.pose.position.y == 0.0
+                && sync_tick.imu_odom.pose.pose.position.z == 0.0
             {
-                // prelio did not return a orientation (for example when not using IMU at all), use the last difference as guess
-                if prelio_tick.imu_odom.pose.pose.orientation.w == 1.0
-                    && prelio_tick.imu_odom.pose.pose.orientation.x == 0.0
-                    && prelio_tick.imu_odom.pose.pose.orientation.y == 0.0
-                    && prelio_tick.imu_odom.pose.pose.orientation.z == 0.0
+                // sync did not return a orientation (for example when not using IMU at all), use the last difference as guess
+                if sync_tick.imu_odom.pose.pose.orientation.w == 1.0
+                    && sync_tick.imu_odom.pose.pose.orientation.x == 0.0
+                    && sync_tick.imu_odom.pose.pose.orientation.y == 0.0
+                    && sync_tick.imu_odom.pose.pose.orientation.z == 0.0
                 {
                     t_world * t_last_current
                 } else {
-                    // there is an orientation calculated by prelio for undeskewing the cloud, so we can use that
+                    // there is an orientation calculated by sync for undeskewing the cloud, so we can use that
                     let initial_guess_rotation =
                         nalgebra::UnitQuaternion::from_quaternion(nalgebra::Quaternion::new(
-                            prelio_tick.imu_odom.pose.pose.orientation.w,
-                            prelio_tick.imu_odom.pose.pose.orientation.x,
-                            prelio_tick.imu_odom.pose.pose.orientation.y,
-                            prelio_tick.imu_odom.pose.pose.orientation.z,
+                            sync_tick.imu_odom.pose.pose.orientation.w,
+                            sync_tick.imu_odom.pose.pose.orientation.x,
+                            sync_tick.imu_odom.pose.pose.orientation.y,
+                            sync_tick.imu_odom.pose.pose.orientation.z,
                         ));
                     let initial_guess_lidar_local = nalgebra::Isometry3::from_parts(
                         t_last_current.translation,
@@ -2883,27 +2883,27 @@ fn lio_with_ready_signal(
                 }
             } else {
                 let initial_guess_translation = Translation3::new(
-                    prelio_tick.imu_odom.pose.pose.position.x,
-                    prelio_tick.imu_odom.pose.pose.position.y,
-                    prelio_tick.imu_odom.pose.pose.position.z,
+                    sync_tick.imu_odom.pose.pose.position.x,
+                    sync_tick.imu_odom.pose.pose.position.y,
+                    sync_tick.imu_odom.pose.pose.position.z,
                 );
 
                 let initial_guess_rotation =
                     nalgebra::UnitQuaternion::from_quaternion(nalgebra::Quaternion::new(
-                        prelio_tick.imu_odom.pose.pose.orientation.w,
-                        prelio_tick.imu_odom.pose.pose.orientation.x,
-                        prelio_tick.imu_odom.pose.pose.orientation.y,
-                        prelio_tick.imu_odom.pose.pose.orientation.z,
+                        sync_tick.imu_odom.pose.pose.orientation.w,
+                        sync_tick.imu_odom.pose.pose.orientation.x,
+                        sync_tick.imu_odom.pose.pose.orientation.y,
+                        sync_tick.imu_odom.pose.pose.orientation.z,
                     ));
 
-                // init_guess from prelio is IMU pose T_W_I. Convert to LiDAR pose T_W_L.
+                // init_guess from sync is IMU pose T_W_I. Convert to LiDAR pose T_W_L.
                 nalgebra::Isometry3::from_parts(initial_guess_translation, initial_guess_rotation)
                     * ext
             };
 
             let registration_result = {
                 let mut map = map.lock().unwrap();
-                // This correction barrier orders Prelio prediction independently
+                // This correction barrier orders Synchronizer prediction independently
                 // of downstream backpressure.
                 let ready_for_registration = if relay_minot_replay_on_registration {
                     registration_ready_tx.as_ref()
@@ -2913,11 +2913,11 @@ fn lio_with_ready_signal(
                     ready_for_next_tx.as_ref()
                 };
                 match map.register_and_map(
-                    prelio_tick.map_only,
+                    sync_tick.map_only,
                     init_guess_lidar,
                     cloud_for_reg,
                     current_cloud_time,
-                    prelio_tick.scan_id as usize,
+                    sync_tick.scan_id as usize,
                     ready_for_registration,
                     &mut eval,
                     &active_backend,
@@ -2936,7 +2936,7 @@ fn lio_with_ready_signal(
                         .as_ref()
                         .or_else(|| ready_for_next_tx.as_ref())
                     {
-                        let _ = ready.send(prelio_tick.scan_id);
+                        let _ = ready.send(sync_tick.scan_id);
                     }
                     if gate_minot_replay_on_mcap || relay_minot_replay_on_registration {
                         // The relay only advances Minot when Pelorus owns the
@@ -2972,7 +2972,7 @@ fn lio_with_ready_signal(
                         .as_ref()
                         .or_else(|| ready_for_next_tx.as_ref())
                     {
-                        let _ = ready.send(prelio_tick.scan_id);
+                        let _ = ready.send(sync_tick.scan_id);
                     }
                     if gate_minot_replay_on_mcap {
                     } else {
@@ -3010,8 +3010,8 @@ fn lio_with_ready_signal(
 
             if !static_tf_published && config.base_link_frame.is_some() {
                 if config.base_to_lidar_tf_override {
-                    if let Some(ref prelio_node) = prelio_node {
-                        match prelio_node.tf_listener.lookup_transform(
+                    if let Some(ref sync_node) = sync_node {
+                        match sync_node.tf_listener.lookup_transform(
                             &child_frame,
                             &orig_frame,
                             Time {
@@ -3021,14 +3021,14 @@ fn lio_with_ready_signal(
                         ) {
                             Ok(tf) => {
                                 #[cfg(feature = "r2r")]
-                                let iso = prelio_io::tf_r2r::isometry_from_transform(&tf.transform);
+                                let iso = pelorus_syncio::tf_r2r::isometry_from_transform(&tf.transform);
                                 #[cfg(feature = "ros2-client")]
-                                let iso = prelio_io::tf::isometry_from_transform(&tf.transform);
+                                let iso = pelorus_syncio::tf::isometry_from_transform(&tf.transform);
                                 #[cfg(feature = "mt_pubsub")]
-                                let iso = prelio_io::tf_lh::isometry_from_transform(&tf.transform);
+                                let iso = pelorus_syncio::tf_lh::isometry_from_transform(&tf.transform);
                                 #[cfg(feature = "hiroz")]
                                 let iso =
-                                    prelio_io::tf_hiroz::isometry_from_transform(&tf.transform);
+                                    pelorus_syncio::tf_hiroz::isometry_from_transform(&tf.transform);
 
                                 info!(
                                     "Updated base_link to lidar transform from TF: translation={:?}, rotation={:?}",
@@ -3115,10 +3115,10 @@ fn lio_with_ready_signal(
 
             let mut pelorus_odom = Odometry::default();
             pelorus_odom.header.stamp = Time {
-                sec: prelio_tick.odom_time.sec,
-                nanosec: prelio_tick.odom_time.nanosec,
+                sec: sync_tick.odom_time.sec,
+                nanosec: sync_tick.odom_time.nanosec,
             };
-            pelorus_odom.header.frame_id = config.prelio_params.map_frame.clone();
+            pelorus_odom.header.frame_id = config.sync_params.map_frame.clone();
             pelorus_odom.child_frame_id = child_frame.clone();
             pelorus_odom.pose.pose.position.x = t_world.translation.vector.x;
             pelorus_odom.pose.pose.position.y = t_world.translation.vector.y;
@@ -3177,7 +3177,7 @@ fn lio_with_ready_signal(
                 if let Some(predictor) = realtime_predictor.as_ref() {
                     let registration = pipeline.map();
                     let registration = registration.lock().unwrap();
-                    predictor.prepare_export(&registration, &prelio_tick.imu_buffer);
+                    predictor.prepare_export(&registration, &sync_tick.imu_buffer);
                 }
             }
 
@@ -3339,7 +3339,7 @@ fn lio_with_ready_signal(
                         let msg = PointCloud2Msg::try_from_vec(items.to_vec()).expect("msg");
                         #[cfg(feature = "ros2-client")]
                         let out =
-                            prelio_io::impl_ros2_interfaces_jazzy_serde::from_pointcloud2_msg(msg);
+                            pelorus_syncio::impl_ros2_interfaces_jazzy_serde::from_pointcloud2_msg(msg);
                         #[cfg(feature = "mt_pubsub")]
                         let out = impl_ros2_interfaces_jazzy_rkyv::from_pointcloud2_msg(msg);
                         #[cfg(feature = "r2r")]
@@ -3354,7 +3354,7 @@ fn lio_with_ready_signal(
                         let msg = PointCloud2Msg::try_from_vec(items.to_vec()).expect("msg");
                         #[cfg(feature = "ros2-client")]
                         let out =
-                            prelio_io::impl_ros2_interfaces_jazzy_serde::from_pointcloud2_msg(msg);
+                            pelorus_syncio::impl_ros2_interfaces_jazzy_serde::from_pointcloud2_msg(msg);
                         #[cfg(feature = "mt_pubsub")]
                         let out = impl_ros2_interfaces_jazzy_rkyv::from_pointcloud2_msg(msg);
                         #[cfg(feature = "r2r")]
@@ -3385,7 +3385,7 @@ fn lio_with_ready_signal(
                         let msg = ros_pointcloud2::PointCloud2Msg::try_from_vec(buff).unwrap();
                         #[cfg(feature = "ros2-client")]
                         let out =
-                            prelio_io::impl_ros2_interfaces_jazzy_serde::from_pointcloud2_msg(msg);
+                            pelorus_syncio::impl_ros2_interfaces_jazzy_serde::from_pointcloud2_msg(msg);
                         #[cfg(feature = "mt_pubsub")]
                         let out = impl_ros2_interfaces_jazzy_rkyv::from_pointcloud2_msg(msg);
                         #[cfg(feature = "r2r")]
@@ -3400,8 +3400,8 @@ fn lio_with_ready_signal(
 
             cloud.header.frame_id = orig_frame.clone();
             cloud.header.stamp = Time {
-                sec: prelio_tick.odom_time.sec,
-                nanosec: prelio_tick.odom_time.nanosec,
+                sec: sync_tick.odom_time.sec,
+                nanosec: sync_tick.odom_time.nanosec,
             };
             #[cfg(feature = "processing-time-export")]
             if let (Some(processing_time_file), Some(processing_started)) =
@@ -3424,7 +3424,7 @@ fn lio_with_ready_signal(
                 } else {
                     None
                 },
-                &config.prelio_params.map_frame,
+                &config.sync_params.map_frame,
                 &child_frame,
             )?;
             if let Some(samples) = trajectory_samples.as_mut() {
@@ -3442,10 +3442,10 @@ fn lio_with_ready_signal(
             // -- TF --
             let tf = TransformStamped {
                 header: Header {
-                    frame_id: config.prelio_params.map_frame.clone(),
+                    frame_id: config.sync_params.map_frame.clone(),
                     stamp: Time {
-                        sec: prelio_tick.odom_time.sec,
-                        nanosec: prelio_tick.odom_time.nanosec,
+                        sec: sync_tick.odom_time.sec,
+                        nanosec: sync_tick.odom_time.nanosec,
                     },
                 },
                 child_frame_id: child_frame,
@@ -3487,10 +3487,10 @@ fn lio_with_ready_signal(
 
                 let mcap_tf = TransformStamped {
                     header: Header {
-                        frame_id: config.prelio_params.map_frame.clone(),
+                        frame_id: config.sync_params.map_frame.clone(),
                         stamp: Time {
-                            sec: prelio_tick.odom_time.sec,
-                            nanosec: prelio_tick.odom_time.nanosec,
+                            sec: sync_tick.odom_time.sec,
+                            nanosec: sync_tick.odom_time.nanosec,
                         },
                     },
                     child_frame_id: pelorus_odom.child_frame_id.clone(),
@@ -3537,7 +3537,7 @@ fn lio_with_ready_signal(
             drain_filtered_imu_mcap(&mut mcap_writer, &mut filtered_imu_rx)?;
             if gate_minot_replay_on_mcap {
                 if let Some(ready) = registration_ready_tx.as_ref() {
-                    let _ = ready.send(prelio_tick.scan_id);
+                    let _ = ready.send(sync_tick.scan_id);
                 }
             } else if !relay_minot_replay_on_registration
                 && minot_replay_mode
@@ -3683,7 +3683,7 @@ fn lio_with_ready_signal(
 
                     let marker = pelorus_protocol::RegisteredFrameMarker {
                         protocol_version: pelorus_protocol::PROTOCOL_VERSION,
-                        scan_id: prelio_tick.scan_id,
+                        scan_id: sync_tick.scan_id,
                         timestamp_sec: pelorus_odom.header.stamp.sec,
                         timestamp_nanosec: pelorus_odom.header.stamp.nanosec,
                         // The negotiated encoding, not the configured one: a
@@ -3716,7 +3716,7 @@ fn lio_with_ready_signal(
 
             #[cfg(feature = "mt_pubsub")]
             if downstream_owns_replay {
-                debug!("published downstream frame {}", prelio_tick.scan_id);
+                debug!("published downstream frame {}", sync_tick.scan_id);
             }
 
             // Release the real-time barrier only after the authoritative
@@ -3900,7 +3900,7 @@ fn lio_with_ready_signal(
                 } else {
                     None
                 },
-                &config.prelio_params.map_frame,
+                &config.sync_params.map_frame,
                 child_frame,
             )?;
         }
@@ -3920,7 +3920,7 @@ fn lio_with_ready_signal(
         if let Some(writer) = mcap_writer.take() {
             writer.finish()?;
         }
-        info!("--- END prelio tick ---");
+        info!("--- END sync tick ---");
         Ok(())
     });
 
@@ -4911,7 +4911,7 @@ fn main() -> Result<(), Box<dyn CoreError>> {
     #[cfg(not(feature = "r2r"))]
     let args = Args::parse();
 
-    const DEFAULT_CONFIG_STR: &str = include_str!("../../default.rl");
+    const DEFAULT_CONFIG_STR: &str = pelorus_core::DEFAULT_CONFIG_STR;
 
     // Parsed before anything is spawned: a malformed --override should fail on
     // the command line, not partway into a run.
@@ -5137,7 +5137,7 @@ fn main() -> Result<(), Box<dyn CoreError>> {
 
             let config = {
                 let mut config = ast_to_config(default_ast, user_ast)?;
-                config.prelio_node_params.synchronous_mode = true;
+                config.sync_node_params.synchronous_mode = true;
                 if offline_args.cpu_only {
                     config.cpu_only = true;
                 }
@@ -5186,8 +5186,8 @@ fn main() -> Result<(), Box<dyn CoreError>> {
             // Update log level after config has set RUST_LOG
             update_log_level();
 
-            let lidar_topic = &config.prelio_node_params.cloud_src_topic;
-            let imu_topic = &config.prelio_node_params.imu_src_topic;
+            let lidar_topic = &config.sync_node_params.cloud_src_topic;
+            let imu_topic = &config.sync_node_params.imu_src_topic;
             // Resolve local paths before writing the temporary .mt file.
             let bagfile_path = if offline_args.bagfile_path.exists() {
                 canonicalize_bagfile_path(&offline_args.bagfile_path)?
@@ -5494,7 +5494,7 @@ fn main() -> Result<(), Box<dyn CoreError>> {
                 let lio_local_only = offline_local_only;
 
                 let lio_handle = std::thread::spawn(move || {
-                    let synchronous_mode = config.prelio_node_params.synchronous_mode;
+                    let synchronous_mode = config.sync_node_params.synchronous_mode;
                     let result = std::panic::catch_unwind(AssertUnwindSafe(|| {
                         lio_with_ready_signal(
                             config,
@@ -5742,7 +5742,7 @@ fn main() -> Result<(), Box<dyn CoreError>> {
             #[cfg(feature = "r2r")]
             ConfigCommand::TfAutoRos2(args) => {
                 use futures_lite::StreamExt;
-                use prelio_io::tf_r2r::{TfListener, isometry_from_transform};
+                use pelorus_syncio::tf_r2r::{TfListener, isometry_from_transform};
 
                 let default_ast = ratslang::compile_code(DEFAULT_CONFIG_STR)
                     .map_err(|e| anyhow!("Failed to compile embedded default config: {}", e))?;
@@ -5752,8 +5752,8 @@ fn main() -> Result<(), Box<dyn CoreError>> {
                     &cli_overrides,
                 )?;
                 let lio_config = ast_to_config(default_ast, user_ast)?;
-                let lidar_topic = &lio_config.prelio_node_params.cloud_src_topic;
-                let imu_topic = &lio_config.prelio_node_params.imu_src_topic;
+                let lidar_topic = &lio_config.sync_node_params.cloud_src_topic;
+                let imu_topic = &lio_config.sync_node_params.imu_src_topic;
 
                 eprintln!(
                     "Connecting to ROS2 and collecting TF data (timeout: {}s)...",

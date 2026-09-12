@@ -27,7 +27,7 @@ use nalgebra::Vector3; // Keep for sophus_lie interface
 use pelorus_core::{
     KinematicModel, OdomMsg, log_debouncer::should_log_once_default, timing::RuntimeEvaluator,
 };
-use prelio::timestamp_to_secs;
+use pelorus_sync::timestamp_to_secs;
 
 pub use pelorus_core::{SE3, SO3};
 

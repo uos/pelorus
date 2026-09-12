@@ -1,5 +1,5 @@
 [package]
-name = "prelio"
+name = "pelorus_sync"
 description = "Normalizing and synchronizing Lidar and IMU measurements for odometry estimation, including pre-integration."
 
 version.workspace = true

@@ -8,10 +8,10 @@ use either::Either;
 use nalgebra::{Isometry3, Translation3, UnitQuaternion};
 use pelorus_core::{
     ImuMsg, ImuPosePrediction, ImuPredictor, ImuPredictorUndistort, KinematicModel, LidarVendor,
-    LioConfig, OdomMsg, PointXYZIT, PrelioProcessedCloud,
+    LioConfig, OdomMsg, PointXYZIT, SyncProcessedCloud,
 };
-use prelio::{ImuSyncMode, LocatedBufferView, Prelio};
-use spole::{IVoxHashMap, IVoxNearbyType};
+use pelorus_sync::{ImuSyncMode, LocatedBufferView, Synchronizer};
+use pelorus_localmap::{IVoxHashMap, IVoxNearbyType};
 
 /// How densely the constant-twist model is sampled into IMU messages. It only
 /// has to be fine enough that the rotation between two samples stays small.
@@ -158,18 +158,18 @@ impl Pipeline {
             &config.imu_params,
             &ext_lidar_to_imu,
             &config.base_to_lidar,
-            config.prelio_params.imu.gravity,
+            config.sync_params.imu.gravity,
             config.lidar_odom_cov,
             config.ekf_max_iterations,
             None,
-            config.prelio_params.parallelism_decision_threshold_stddevs,
-            config.prelio_params.parallelism_decision_samples_per_mode,
-            config.prelio_params.parallelism_execution_policy,
+            config.sync_params.parallelism_decision_threshold_stddevs,
+            config.sync_params.parallelism_decision_samples_per_mode,
+            config.sync_params.parallelism_execution_policy,
         );
 
         if config.imu_params.lidar_only {
             let synthetic = crate::lidar_only::SyntheticImu::new(
-                config.prelio_params.imu.gravity,
+                config.sync_params.imu.gravity,
                 IMU_SYNTHESIS_RATE,
             );
             let _ = map.init_imu_ekf(&synthetic.initialization_buffer(2));
@@ -223,7 +223,7 @@ impl Pipeline {
     }
 
     pub fn lidar_vendor(&self) -> LidarVendor {
-        self.config.prelio_params.lidar_vendor
+        self.config.sync_params.lidar_vendor
     }
 
     pub fn kinematic_model(&self) -> KinematicModel {
@@ -246,10 +246,10 @@ impl Pipeline {
         let map = self.map();
         let kinematic_model = self.config.imu_params.kinematic_model;
         let constraint_std = self.config.imu_params.kinematic_constraint_std;
-        let lidar_vendor = self.config.prelio_params.lidar_vendor;
+        let lidar_vendor = self.config.sync_params.lidar_vendor;
         let lidar_only = self.config.imu_params.lidar_only;
         let synthetic = Mutex::new(crate::lidar_only::SyntheticImu::new(
-            self.config.prelio_params.imu.gravity,
+            self.config.sync_params.imu.gravity,
             IMU_SYNTHESIS_RATE,
         ));
 
@@ -313,7 +313,7 @@ impl Pipeline {
 
     pub fn register_processed_cloud(
         &self,
-        mut processed: PrelioProcessedCloud,
+        mut processed: SyncProcessedCloud,
         ready_for_next: Option<&std::sync::mpsc::Sender<u64>>,
     ) -> anyhow::Result<Option<PelorusOutput>> {
         #[cfg(feature = "processing-time-export")]
@@ -321,7 +321,7 @@ impl Pipeline {
         self.ensure_backend_map_initialized();
 
         let mut eval = processed.runtime_eval;
-        let lidar_timestamp = prelio::timestamp_to_secs(&processed.end_of_frame_time);
+        let lidar_timestamp = pelorus_sync::timestamp_to_secs(&processed.end_of_frame_time);
 
         #[cfg(feature = "cuda")]
         if let ActiveBackend::Cuda(stream) = &self.active_backend {
@@ -563,11 +563,11 @@ impl Pipeline {
         }))
     }
 
-    pub fn create_prelio(
+    pub fn create_sync(
         &self,
         ready_for_next: Option<std::sync::mpsc::Receiver<u64>>,
-    ) -> anyhow::Result<(Prelio, std::sync::mpsc::Receiver<PrelioProcessedCloud>)> {
-        let params = &self.config.prelio_params;
+    ) -> anyhow::Result<(Synchronizer, std::sync::mpsc::Receiver<SyncProcessedCloud>)> {
+        let params = &self.config.sync_params;
         let gravity = params.imu.gravity;
         let madgwick_filter = params.imu.madgwick_setting;
         let imu_calib = params.imu.calibration.clone();
@@ -581,7 +581,7 @@ impl Pipeline {
         } else {
             ImuSyncMode::Continuous
         };
-        let mut prelio = Prelio::create(
+        let mut sync = Synchronizer::create(
             gravity,
             madgwick_filter,
             &imu_calib,
@@ -595,10 +595,10 @@ impl Pipeline {
             None,
         )?;
 
-        let rx = prelio
+        let rx = sync
             .get_chan()
-            .ok_or_else(|| anyhow!("Prelio channel is not available"))?;
+            .ok_or_else(|| anyhow!("Synchronizer channel is not available"))?;
 
-        Ok((prelio, rx))
+        Ok((sync, rx))
     }
 }

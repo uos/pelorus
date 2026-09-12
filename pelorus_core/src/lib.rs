@@ -13,6 +13,9 @@ pub mod log_debouncer;
 
 pub use lie::{SE3, SO3};
 
+/// The reference default configuration, in Ratslang.
+pub const DEFAULT_CONFIG_STR: &str = include_str!("../default.rl");
+
 #[derive(Debug, Clone, Default, PointConvertible, Copy)]
 pub struct RobosensePoint {
     pub x: f32,
@@ -523,7 +526,7 @@ pub enum KinematicModel {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct PrelioParameters {
+pub struct SyncParameters {
     pub imu: ImuConfigParameter,
     pub downsample: DownsampleParameters,
     pub passthrough_filter: PassthroughFilterParameters,
@@ -602,7 +605,7 @@ pub struct PassthroughFilterParameters {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct PrelioNodeParameters {
+pub struct SyncNodeParameters {
     pub wheel_src_topic: String,
     pub cloud_src_topic: String,
     pub imu_src_topic: String,
@@ -730,8 +733,8 @@ pub struct LioConfig {
     pub imu_params: ImuParameters,
     pub lidar_odom_cov: f64,
     pub enable_live_extrinsic_calibration: bool,
-    pub prelio_params: PrelioParameters,
-    pub prelio_node_params: PrelioNodeParameters,
+    pub sync_params: SyncParameters,
+    pub sync_node_params: SyncNodeParameters,
     pub neighbor_max_range: f64,
     pub ekf_max_iterations: usize,
     pub dist_update_sensitivity: f32,
@@ -1004,7 +1007,7 @@ pub struct ImuPosePrediction {
 }
 
 #[derive(Debug)]
-pub struct PrelioProcessedCloud {
+pub struct SyncProcessedCloud {
     pub scan_id: u64,
     pub received_at: std::time::Instant,
     pub cloud: Vec<PointXYZIT>,

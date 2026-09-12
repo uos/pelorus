@@ -1,5 +1,5 @@
 [package]
-name = "pelorus"
+name = "pelorus_sdk"
 description = "Rust API for Pelorus Lidar-Inertial Odometry."
 edition.workspace = true
 include.workspace = true
@@ -16,7 +16,7 @@ name = "pelorus"
 [dependencies]
 pelorus_core.workspace = true
 pelorus_reg = { workspace = true, default-features = false }
-prelio = { workspace = true, default-features = false }
+pelorus_sync = { workspace = true, default-features = false }
 ros_pointcloud2.workspace = true
 ros2-interfaces-jazzy-serde.workspace = true
 nalgebra.workspace = true
@@ -30,10 +30,10 @@ rayon = { workspace = true, optional = true }
 [features]
 default = ["rayon"]
 processing-time-export = ["pelorus_reg/processing-time-export"]
-rayon = ["dep:rayon", "prelio/rayon", "pelorus_reg/rayon", "ros_pointcloud2/rayon"]
-downsample = ["prelio/downsample"]
-cuda = ["prelio/cuda", "pelorus_reg/cuda"]
-metal = ["prelio/metal", "pelorus_reg/metal"]
-vulkan = ["prelio/vulkan", "pelorus_reg/vulkan"]
-no-imu-sync = ["prelio/no-imu-sync"]
-large-processing-queue = ["prelio/large-processing-queue"]
+rayon = ["dep:rayon", "pelorus_sync/rayon", "pelorus_reg/rayon", "ros_pointcloud2/rayon"]
+downsample = ["pelorus_sync/downsample"]
+cuda = ["pelorus_sync/cuda", "pelorus_reg/cuda"]
+metal = ["pelorus_sync/metal", "pelorus_reg/metal"]
+vulkan = ["pelorus_sync/vulkan", "pelorus_reg/vulkan"]
+no-imu-sync = ["pelorus_sync/no-imu-sync"]
+large-processing-queue = ["pelorus_sync/large-processing-queue"]

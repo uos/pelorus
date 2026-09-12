@@ -1,5 +1,6 @@
 [package]
-name = "spole"
+name = "pelorus_localmap"
+description = "Voxel Hash Map and Local Map Registration Primitives for Pelorus Odometry."
 edition.workspace = true
 include.workspace = true
 keywords.workspace = true

@@ -31,13 +31,13 @@ use anyhow::anyhow;
 use log::error;
 use nalgebra::{Isometry3, Matrix3, SMatrix};
 use pelorus_core::config::{ast_to_config, layer_overrides};
-use pelorus_core::{ImuMsg, LidarVendor, LioConfig, OdomMsg, PrelioProcessedCloud};
+use pelorus_core::{ImuMsg, LidarVendor, LioConfig, OdomMsg, SyncProcessedCloud};
 use pelorus_reg::pipeline::{PelorusOutput, Pipeline};
-use prelio::Prelio;
+use pelorus_sync::Synchronizer;
 use ros_pointcloud2::prelude::*;
 use ros2_interfaces_jazzy_serde::sensor_msgs::msg::{PointCloud2, PointField};
 
-const DEFAULT_CONFIG_STR: &str = include_str!("../../default.rl");
+const DEFAULT_CONFIG_STR: &str = pelorus_core::DEFAULT_CONFIG_STR;
 
 impl_pointcloud2_for_ros2_interfaces_jazzy_serde!();
 
@@ -114,7 +114,7 @@ struct ImuInitState {
 
 struct ProcessingThread {
     pipeline: Pipeline,
-    prelio_receiver: mpsc::Receiver<PrelioProcessedCloud>,
+    sync_receiver: mpsc::Receiver<SyncProcessedCloud>,
     result_sender: mpsc::Sender<PelorusOutput>,
     ready_for_next: mpsc::Sender<u64>,
     callback: Arc<Mutex<Option<Arc<dyn Fn(Odometry) + Send + Sync>>>>,
@@ -335,7 +335,7 @@ fn load_config(config_path: Option<&str>) -> anyhow::Result<LioConfig> {
 fn processing_thread_main(thread: ProcessingThread) {
     let mut sent_count: usize = 0;
 
-    while let Ok(processed) = thread.prelio_receiver.recv() {
+    while let Ok(processed) = thread.sync_receiver.recv() {
         if thread.shutdown.load(Ordering::Relaxed) {
             continue;
         }
@@ -369,7 +369,7 @@ fn processing_thread_main(thread: ProcessingThread) {
             Ok(None) => {
                 // Map-only scans return before the registration barrier, so the
                 // correction ack for this scan id has to come from here or
-                // Prelio waits on it forever.
+                // Synchronizer waits on it forever.
                 if let Err(e) = thread.ready_for_next.send(scan_id) {
                     error!("failed to acknowledge map-only scan #{scan_id}: {e}");
                 }
@@ -437,7 +437,7 @@ fn configure_thread_pool(num_threads: usize) {
 ///   it is called from the processing thread for every result.  While a callback
 ///   is registered, `recv`/`try_recv` return [`Error::CallbackActive`].
 pub struct Handle {
-    prelio: Arc<Mutex<Option<Prelio>>>,
+    sync: Arc<Mutex<Option<Synchronizer>>>,
     result_receiver: mpsc::Receiver<PelorusOutput>,
     callback: Arc<Mutex<Option<Arc<dyn Fn(Odometry) + Send + Sync>>>>,
     imu_init_cb: Option<Arc<Mutex<dyn FnMut(&[ImuMsg]) + Send + Sync>>>,
@@ -473,19 +473,19 @@ impl Handle {
         configure_thread_pool(config.num_threads);
 
         if !device_specific_pointcloud2 {
-            config.prelio_params.lidar_vendor = LidarVendor::Ouster;
+            config.sync_params.lidar_vendor = LidarVendor::Ouster;
         }
 
         let pipeline = Pipeline::new(&config);
         let imu_init_cb = (!config.imu_params.lidar_only).then(|| pipeline.build_init_callback());
-        let imu_predictor_init_time_sec = config.prelio_node_params.imu_predictor_init_time_sec;
+        let imu_predictor_init_time_sec = config.sync_node_params.imu_predictor_init_time_sec;
         let imu_init_state = Arc::new(Mutex::new(ImuInitState {
             start_time: None,
             buffer: Some(Vec::new()),
         }));
 
         let (ready_tx, ready_rx) = mpsc::channel::<u64>();
-        let (prelio, prelio_receiver) = pipeline.create_prelio(Some(ready_rx))?;
+        let (sync, sync_receiver) = pipeline.create_sync(Some(ready_rx))?;
         let (result_tx, result_rx) = mpsc::channel();
 
         let callback: Arc<Mutex<Option<Arc<dyn Fn(Odometry) + Send + Sync>>>> =
@@ -495,7 +495,7 @@ impl Handle {
 
         let processing_thread = ProcessingThread {
             pipeline,
-            prelio_receiver,
+            sync_receiver,
             result_sender: result_tx,
             ready_for_next: ready_tx,
             callback: Arc::clone(&callback),
@@ -511,7 +511,7 @@ impl Handle {
         pelorus_reg::backend_session_retain();
 
         Ok(Handle {
-            prelio: Arc::new(Mutex::new(Some(prelio))),
+            sync: Arc::new(Mutex::new(Some(sync))),
             result_receiver: result_rx,
             callback,
             imu_init_cb,
@@ -594,11 +594,11 @@ impl Handle {
             }
         }
 
-        let mut prelio_guard = self.prelio.lock().unwrap();
-        let prelio = prelio_guard
+        let mut sync_guard = self.sync.lock().unwrap();
+        let sync = sync_guard
             .as_mut()
             .ok_or_else(|| anyhow!("Handle is closed"))?;
-        prelio.add_imu(imu_msg);
+        sync.add_imu(imu_msg);
         Ok(())
     }
 
@@ -625,11 +625,11 @@ impl Handle {
             },
         };
 
-        let mut prelio_guard = self.prelio.lock().unwrap();
-        let prelio = prelio_guard
+        let mut sync_guard = self.sync.lock().unwrap();
+        let sync = sync_guard
             .as_mut()
             .ok_or_else(|| anyhow!("Handle is closed"))?;
-        prelio.add_odom(odom_msg);
+        sync.add_odom(odom_msg);
         Ok(())
     }
 
@@ -654,11 +654,11 @@ impl Handle {
             (p[0], p[1], p[2], p[3], p[4] as u32)
         });
 
-        let mut prelio_guard = self.prelio.lock().unwrap();
-        let prelio = prelio_guard
+        let mut sync_guard = self.sync.lock().unwrap();
+        let sync = sync_guard
             .as_mut()
             .ok_or_else(|| anyhow!("Handle is closed"))?;
-        Ok(prelio.add_pointcloud(cloud_msg))
+        Ok(sync.add_pointcloud(cloud_msg))
     }
 
     /// Add a point cloud as `[x, y, z, t]` f32 tuples (intensity defaults to 0).
@@ -680,11 +680,11 @@ impl Handle {
             (p[0], p[1], p[2], 0.0f32, p[3] as u32)
         });
 
-        let mut prelio_guard = self.prelio.lock().unwrap();
-        let prelio = prelio_guard
+        let mut sync_guard = self.sync.lock().unwrap();
+        let sync = sync_guard
             .as_mut()
             .ok_or_else(|| anyhow!("Handle is closed"))?;
-        Ok(prelio.add_pointcloud(cloud_msg))
+        Ok(sync.add_pointcloud(cloud_msg))
     }
 
     /// Add a raw PointCloud2-formatted point cloud.
@@ -735,11 +735,11 @@ impl Handle {
 
         let cloud_msg = impl_ros2_interfaces_jazzy_serde::to_pointcloud2_msg(cloud);
 
-        let mut prelio_guard = self.prelio.lock().unwrap();
-        let prelio = prelio_guard
+        let mut sync_guard = self.sync.lock().unwrap();
+        let sync = sync_guard
             .as_mut()
             .ok_or_else(|| anyhow!("Handle is closed"))?;
-        Ok(prelio.add_pointcloud(cloud_msg))
+        Ok(sync.add_pointcloud(cloud_msg))
     }
 
     /// Non-blocking receive.
@@ -811,7 +811,7 @@ impl Drop for Handle {
     fn drop(&mut self) {
         self.shutdown.store(true, Ordering::Relaxed);
 
-        if let Ok(mut guard) = self.prelio.lock() {
+        if let Ok(mut guard) = self.sync.lock() {
             let _ = guard.take();
         }
 

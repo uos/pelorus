@@ -21,7 +21,7 @@ use pelorus_core::{
     LidarVendor, LivoxMid360Point, LivoxMid360PointNoIntensity, LivoxPoint, LivoxPointNoIntensity,
     LivoxPointOffsetTime, LivoxPointOffsetTimeNoIntensity, MadgwickSetting, OdomMsg, OusterPoint,
     OusterPointNoIntensity, PointXYZ, PointXYZI, PointXYZIT, PointXYZITimestamp, PointXYZIntensity,
-    PrelioParameters, PrelioProcessedCloud, RobosensePoint, RobosensePointNoIntensity, Twist,
+    SyncParameters, SyncProcessedCloud, RobosensePoint, RobosensePointNoIntensity, Twist,
     VelodynePoint, VelodynePointNoIntensity, time_msg_from_secs, timing::RuntimeEvaluator,
 };
 
@@ -420,8 +420,8 @@ mod tests {
         }
     }
 
-    fn no_timestamp_params() -> PrelioParameters {
-        let mut params = PrelioParameters::default();
+    fn no_timestamp_params() -> SyncParameters {
+        let mut params = SyncParameters::default();
         params.lidar_vendor = LidarVendor::NoTimestamp;
         params.downsample.voxel_size = 0.01;
         params.downsample.point_skip = 1;
@@ -620,7 +620,7 @@ mod tests {
                 Right(Isometry3::identity())
             },
         );
-        let mut prelio = Prelio::create(
+        let mut sync = Synchronizer::create(
             params.imu.gravity,
             params.imu.madgwick_setting,
             &params.imu.calibration,
@@ -634,10 +634,10 @@ mod tests {
             None,
         )
         .unwrap();
-        assert!(prelio.lossless_replay);
-        let receiver = prelio.get_chan().unwrap();
+        assert!(sync.lossless_replay);
+        let receiver = sync.get_chan().unwrap();
 
-        prelio.add_pointcloud(cloud(&[(1.0, 0.0, 0.0, Some(42.0))]));
+        sync.add_pointcloud(cloud(&[(1.0, 0.0, 0.0, Some(42.0))]));
 
         let processed = receiver
             .recv_timeout(std::time::Duration::from_secs(2))
@@ -680,7 +680,7 @@ mod tests {
         drop(lidar_tx);
 
         let mut previous_lidar_end = 0.0;
-        Prelio::sync_lidar_imu_worker(
+        Synchronizer::sync_lidar_imu_worker(
             0,
             &mut previous_lidar_end,
             9.81,
@@ -760,7 +760,7 @@ mod tests {
         drop(lidar_tx);
 
         let mut previous_lidar_end = 0.0;
-        Prelio::sync_lidar_imu_worker(
+        Synchronizer::sync_lidar_imu_worker(
             0,
             &mut previous_lidar_end,
             9.81,
@@ -819,7 +819,7 @@ mod tests {
         drop(lidar_tx);
 
         let mut previous_lidar_end = 0.0;
-        Prelio::sync_lidar_imu_worker(
+        Synchronizer::sync_lidar_imu_worker(
             2,
             &mut previous_lidar_end,
             9.81,
@@ -1144,12 +1144,12 @@ fn has_point_timestamps(lidar_vendor: LidarVendor) -> bool {
 }
 
 #[inline]
-fn passes_passthrough_filter(point: &PointXYZIT, prelio_params: &PrelioParameters) -> bool {
+fn passes_passthrough_filter(point: &PointXYZIT, sync_params: &SyncParameters) -> bool {
     if !(point.x.is_finite() && point.y.is_finite() && point.z.is_finite()) {
         return false;
     }
 
-    let params = &prelio_params.passthrough_filter;
+    let params = &sync_params.passthrough_filter;
     let p_t = params.filter_frame_transform * nalgebra::Point3::new(point.x, point.y, point.z);
 
     let dist = p_t.coords.norm_squared();
@@ -1207,8 +1207,8 @@ fn passes_passthrough_filter(point: &PointXYZIT, prelio_params: &PrelioParameter
 }
 
 #[inline]
-fn filter_point(mut point: PointXYZIT, prelio_params: &PrelioParameters) -> Option<PointXYZIT> {
-    if !passes_passthrough_filter(&point, prelio_params) {
+fn filter_point(mut point: PointXYZIT, sync_params: &SyncParameters) -> Option<PointXYZIT> {
+    if !passes_passthrough_filter(&point, sync_params) {
         return None;
     }
 
@@ -1543,12 +1543,12 @@ fn filter_downsample_with_fallback<
     PFallback: PointXYZITimestamp<N_FALLBACK>,
 >(
     cloud: &dyn PreprocessingPointCloud,
-    prelio_params: &PrelioParameters,
+    sync_params: &SyncParameters,
     eval: &mut RuntimeEvaluator,
     buffers: &mut DownsampleBuffers,
     mode: ExecutionMode,
 ) -> Result<Option<DownsampleResult>> {
-    let result = filter_downsample::<N, P>(cloud, prelio_params, eval, buffers, mode);
+    let result = filter_downsample::<N, P>(cloud, sync_params, eval, buffers, mode);
 
     match result {
         Ok(data) => Ok(data),
@@ -1557,7 +1557,7 @@ fn filter_downsample_with_fallback<
             if error_str.contains("Some fields") && (error_str.contains("intensity")) {
                 filter_downsample::<N_FALLBACK, PFallback>(
                     cloud,
-                    prelio_params,
+                    sync_params,
                     eval,
                     buffers,
                     mode,
@@ -1571,18 +1571,18 @@ fn filter_downsample_with_fallback<
 
 fn filter_downsample_livox(
     cloud: &dyn PreprocessingPointCloud,
-    prelio_params: &PrelioParameters,
+    sync_params: &SyncParameters,
     eval: &mut RuntimeEvaluator,
     buffers: &mut DownsampleBuffers,
     mode: ExecutionMode,
 ) -> Result<Option<DownsampleResult>> {
-    let result = filter_downsample::<5, LivoxPoint>(cloud, prelio_params, eval, buffers, mode);
+    let result = filter_downsample::<5, LivoxPoint>(cloud, sync_params, eval, buffers, mode);
     match result {
         Ok(data) => Ok(data),
         Err(t_error) => {
             let offset_time_result = filter_downsample::<5, LivoxPointOffsetTime>(
                 cloud,
-                prelio_params,
+                sync_params,
                 eval,
                 buffers,
                 mode,
@@ -1594,7 +1594,7 @@ fn filter_downsample_livox(
                     if error_str.contains("Some fields") && error_str.contains("intensity") {
                         filter_downsample::<4, LivoxPointOffsetTimeNoIntensity>(
                             cloud,
-                            prelio_params,
+                            sync_params,
                             eval,
                             buffers,
                             mode,
@@ -1605,7 +1605,7 @@ fn filter_downsample_livox(
                         {
                             filter_downsample::<4, LivoxPointNoIntensity>(
                                 cloud,
-                                prelio_params,
+                                sync_params,
                                 eval,
                                 buffers,
                                 mode,
@@ -1622,23 +1622,23 @@ fn filter_downsample_livox(
 
 fn filter_downsample<const N: usize, P: PointXYZITimestamp<N>>(
     cloud: &dyn PreprocessingPointCloud,
-    prelio_params: &PrelioParameters,
+    sync_params: &SyncParameters,
     eval: &mut RuntimeEvaluator,
     buffers: &mut DownsampleBuffers,
     mode: ExecutionMode,
 ) -> Result<Option<DownsampleResult>> {
     let header = cloud.header();
-    let scan_reference_time = lidar_scan_reference_time(prelio_params.lidar_vendor, &header);
+    let scan_reference_time = lidar_scan_reference_time(sync_params.lidar_vendor, &header);
     filter_downsample_inner::<N, P>(
         cloud,
-        prelio_params,
+        sync_params,
         eval,
         buffers,
         true,
         |p| {
             internal_point_timestamp(
                 p.timestamp(),
-                prelio_params.lidar_vendor,
+                sync_params.lidar_vendor,
                 scan_reference_time,
             )
             .map(|timestamp| PointXYZIT::from_p(p.xyz(), p.intensity(), timestamp as f32))
@@ -1649,14 +1649,14 @@ fn filter_downsample<const N: usize, P: PointXYZITimestamp<N>>(
 
 fn filter_downsample_without_timestamps<const N: usize, P: PointXYZIntensity<N>>(
     cloud: &dyn PreprocessingPointCloud,
-    prelio_params: &PrelioParameters,
+    sync_params: &SyncParameters,
     eval: &mut RuntimeEvaluator,
     buffers: &mut DownsampleBuffers,
     mode: ExecutionMode,
 ) -> Result<Option<DownsampleResult>> {
     filter_downsample_inner::<N, P>(
         cloud,
-        prelio_params,
+        sync_params,
         eval,
         buffers,
         false,
@@ -1672,13 +1672,13 @@ fn filter_downsample_without_timestamps_with_fallback<
     PFallback: PointXYZIntensity<N_FALLBACK>,
 >(
     cloud: &dyn PreprocessingPointCloud,
-    prelio_params: &PrelioParameters,
+    sync_params: &SyncParameters,
     eval: &mut RuntimeEvaluator,
     buffers: &mut DownsampleBuffers,
     mode: ExecutionMode,
 ) -> Result<Option<DownsampleResult>> {
     let result =
-        filter_downsample_without_timestamps::<N, P>(cloud, prelio_params, eval, buffers, mode);
+        filter_downsample_without_timestamps::<N, P>(cloud, sync_params, eval, buffers, mode);
 
     match result {
         Ok(data) => Ok(data),
@@ -1687,7 +1687,7 @@ fn filter_downsample_without_timestamps_with_fallback<
             if error_str.contains("Some fields") && error_str.contains("intensity") {
                 filter_downsample_without_timestamps::<N_FALLBACK, PFallback>(
                     cloud,
-                    prelio_params,
+                    sync_params,
                     eval,
                     buffers,
                     mode,
@@ -1701,18 +1701,18 @@ fn filter_downsample_without_timestamps_with_fallback<
 
 fn filter_downsample_inner<const N: usize, P: PointConvertible<N> + Send + Sync>(
     cloud: &dyn PreprocessingPointCloud,
-    prelio_params: &PrelioParameters,
+    sync_params: &SyncParameters,
     eval: &mut RuntimeEvaluator,
     buffers: &mut DownsampleBuffers,
     sort_by_timestamp: bool,
     map_to_non_trait: impl Fn(P) -> Option<PointXYZIT> + Send + Sync,
     mode: ExecutionMode,
 ) -> Result<Option<DownsampleResult>> {
-    let bypass_output_downsample = prelio_params.downsample.bypass_output_downsample;
+    let bypass_output_downsample = sync_params.downsample.bypass_output_downsample;
     let header = cloud.header();
     let source = cloud.source();
-    let voxel_size = prelio_params.downsample.voxel_size;
-    let filter_map_point = |point| filter_point(point, prelio_params);
+    let voxel_size = sync_params.downsample.voxel_size;
+    let filter_map_point = |point| filter_point(point, sync_params);
 
     buffers.prepare(source.point_count());
     let mut downsampled: Vec<PointXYZIT> = Vec::with_capacity(source.point_count());
@@ -1721,7 +1721,7 @@ fn filter_downsample_inner<const N: usize, P: PointConvertible<N> + Send + Sync>
     let used_cpu_downsample;
 
     {
-        let point_skip = prelio_params.downsample.point_skip.max(1);
+        let point_skip = sync_params.downsample.point_skip.max(1);
 
         eval.start("filter_downsample/bypass_filter_map")?;
         #[cfg(feature = "rayon")]
@@ -1747,7 +1747,7 @@ fn filter_downsample_inner<const N: usize, P: PointConvertible<N> + Send + Sync>
 
         #[cfg(any(feature = "cuda", feature = "metal", feature = "vulkan"))]
         let use_backend_preprocessing =
-            prelio_params.downsample.backend == PreprocessingBackend::Backend;
+            sync_params.downsample.backend == PreprocessingBackend::Backend;
 
         #[cfg(feature = "cuda")]
         let gpu_downsample = use_backend_preprocessing
@@ -1961,13 +1961,13 @@ impl ImuIntrinsicCorrection {
     }
 }
 
-pub struct Prelio {
+pub struct Synchronizer {
     preproc_sender: Option<std::sync::mpsc::SyncSender<LabeledPointCloud2Msg>>,
     preproc_queue_depth: Arc<AtomicUsize>,
     last_preproc_warning_message: Option<String>,
     imu_sender: Option<std::sync::mpsc::SyncSender<ImuMsg>>,
     odom_sender: Option<std::sync::mpsc::SyncSender<OdomMsg>>,
-    synced_receiver: Option<std::sync::mpsc::Receiver<PrelioProcessedCloud>>,
+    synced_receiver: Option<std::sync::mpsc::Receiver<SyncProcessedCloud>>,
     last_cloud_time: f64,
     imu_filter_fusion: ImuMadgwick,
     last_imu_time: f64,
@@ -1981,12 +1981,12 @@ pub struct Prelio {
     lossless_replay: bool,
 }
 
-impl Prelio {
+impl Synchronizer {
     pub fn create(
         gravity: f64,
         madgwick_filter: MadgwickSetting,
         imu_intrinsic_calibration_params: &ImuCalibrationParameters,
-        params: &PrelioParameters,
+        params: &SyncParameters,
         imu_pose_prediction_undistort: Option<Box<ImuPredictorUndistort>>,
         imu_pose_prediction_init_guess: Option<Box<ImuPredictor>>,
         lidar_vendor: LidarVendor,
@@ -2257,7 +2257,7 @@ impl Prelio {
             }
         });
 
-        Ok(Prelio {
+        Ok(Synchronizer {
             imu_sender: (!imu_disabled).then_some(imu_tx),
             odom_sender: Some(odom_tx),
             synced_receiver: Some(synced_cloud_imu_rx),
@@ -2283,7 +2283,7 @@ impl Prelio {
         self.odom_sender.take();
     }
 
-    pub fn get_chan(&mut self) -> Option<std::sync::mpsc::Receiver<PrelioProcessedCloud>> {
+    pub fn get_chan(&mut self) -> Option<std::sync::mpsc::Receiver<SyncProcessedCloud>> {
         self.synced_receiver.take()
     }
 
@@ -2525,7 +2525,7 @@ impl Prelio {
         )>,
         imu_receiver: Option<std::sync::mpsc::Receiver<ImuMsg>>,
         odom_receiver: std::sync::mpsc::Receiver<OdomMsg>,
-        synced_sender: &std::sync::mpsc::SyncSender<PrelioProcessedCloud>,
+        synced_sender: &std::sync::mpsc::SyncSender<SyncProcessedCloud>,
         imu_intrinsic_calibration_given: bool,
         mut imu_process: ImuProcess,
         imu_pose_prediction_undistort: Option<Box<ImuPredictorUndistort>>,
@@ -2550,7 +2550,7 @@ impl Prelio {
             ),
             scan_id,
             received_at,
-            prelio_eval,
+            sync_eval,
         )) = lidar_receiver.recv()
         {
             let initializing = cloud_count < initial_scan_accumulate;
@@ -2596,7 +2596,7 @@ impl Prelio {
                     }
                 }
             }
-            eval.merge(&prelio_eval);
+            eval.merge(&sync_eval);
             let lidar_time = timestamp_to_secs(&lidar_header.stamp);
             let abs_lidar_end = secs_to_timestamp(lidar_time + lidar_end_time);
 
@@ -2605,7 +2605,7 @@ impl Prelio {
                 if !has_point_timestamps(lidar_vendor) {
                     *prev_lidar_end_time = lidar_time;
                 }
-                let res = PrelioProcessedCloud {
+                let res = SyncProcessedCloud {
                     scan_id: scan_id,
                     received_at,
                     cloud: cloud_downsampled,
@@ -2803,7 +2803,7 @@ impl Prelio {
                     None => Isometry3::identity(),
                 };
 
-                let res = PrelioProcessedCloud {
+                let res = SyncProcessedCloud {
                     scan_id: scan_id,
                     received_at,
                     cloud: cloud_downsampled,
@@ -2897,7 +2897,7 @@ impl Prelio {
                         }
                     };
 
-                    let res = PrelioProcessedCloud {
+                    let res = SyncProcessedCloud {
                         scan_id: scan_id,
                         received_at,
                         cloud: imu_cloud.cloud,
