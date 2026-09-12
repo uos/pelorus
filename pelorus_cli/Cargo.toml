@@ -205,7 +205,7 @@ ratslang.workspace = true
 
 [package.metadata.deb]
 name = "pelorus"
-depends = "minot (>= 0.10.0), minot (<< 0.11.0~)"
+depends = "minot (>= 0.11.0), minot (<< 0.12.0~)"
 section = "science"
 priority = "optional"
 assets = [["target/release/pelorus", "usr/bin/pelorus", "755"]]
@@ -217,7 +217,7 @@ assets = [
 ]
 
 [package.metadata.generate-rpm.requires]
-minot = ">= 0.10.0, < 0.11.0"
+minot = ">= 0.11.0, < 0.12.0"
 
 [package.metadata.multivers.x86_64]
 cpus = [
