@@ -62,19 +62,18 @@ jobs:
           rustc --version
           cargo build -p pelorus_cli --features vulkan --jobs 2
 
-  # Lyrical is on hold: humble and jazzy are the supported targets for now.
-  # lyrical-build:
-  #   runs-on: ubuntu-dev-resolute
-  #   container:
-  #     image: docker.io/stelzo/ubuntu-dev:lyrical
-  #   steps:
-  #     - run: |
-  #         apt-get update -y
-  #         apt-get install -y nodejs npm cargo git
-  #     - uses: actions/checkout@v4
-  #     - name: Build lyrical target
-  #       run: |
-  #         cargo build
+  lyrical-build:
+    runs-on: ubuntu-dev-resolute
+    container:
+      image: docker.io/stelzo/ubuntu-dev:lyrical
+    steps:
+      - run: |
+          apt-get update -y
+          apt-get install -y nodejs npm cargo git
+      - uses: actions/checkout@v4
+      - name: Build lyrical target
+        run: |
+          cargo build
 
   glim-build:
     runs-on: ubuntu-dev-resolute
@@ -166,11 +165,8 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # Lyrical is on hold; re-enabling it needs r2r > 0.9.5, which is not
-          # on crates.io yet (tag 0.9.6 of sequenceplanner/r2r has the support),
-          # so it also needs the patch step described below.
-          # - image: docker.io/stelzo/ubuntu-dev:lyrical
-          #   distro: lyrical
+          - image: docker.io/stelzo/ubuntu-dev:lyrical
+            distro: lyrical
           - image: docker.io/stelzo/ubuntu-dev:jazzy
             distro: jazzy
           - image: docker.io/stelzo/ubuntu-dev:humble
@@ -213,20 +209,6 @@ jobs:
           . "/opt/ros/$DISTRO/setup.bash"
           set -eu
           export ROS_DISTRO="$DISTRO"
-
-          # When lyrical comes back, r2r 0.9.5 on crates.io predates its support
-          # and has to be patched in from git here (the tag has no "v" prefix).
-          # `cargo update -p r2r` is required: without it the lockfile keeps
-          # 0.9.5 and cargo only warns that the patch went unused. Drop the
-          # `--locked` below when doing so, or run the update before it.
-          # if [ "$DISTRO" = "lyrical" ]; then
-          #   {
-          #     echo ""
-          #     echo "[patch.crates-io]"
-          #     echo 'r2r = { version = "0.9.6", git = "https://github.com/sequenceplanner/r2r", tag = "0.9.6" }'
-          #   } >> Cargo.toml
-          #   cargo update -p r2r
-          # fi
 
           cargo check -p pelorus_cli --no-default-features --features ros2c,rat,rayon --locked
 

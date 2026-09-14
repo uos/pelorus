@@ -31,7 +31,7 @@ include = [
 ]
 keywords = ["robotics"]
 license = "MIT OR Apache-2.0"
-repository = "https://codeberg.org/stelzo/pelorus/"
+repository = "https://codeberg.org/stelzo/pelorus"
 version = "0.0.7"
 authors = ["Christopher Sieh <stelzo@steado.de>"]
 rust-version = "1.96.0"
@@ -49,8 +49,8 @@ pelorus_metal = { path = "pelorus_metal", version = "0.0.7" }
 pelorus_vulkan = { path = "pelorus_vulkan", version = "0.0.7", default-features = false }
 pelorus_drivers = { path = "pelorus_drivers", version = "0.0.7", default-features = false }
 
-transforms_io = { version = "0.5.2", default-features = false }
-transforms_io_hiroz = { version = "0.5", git = "https://codeberg.org/stelzo/transforms_io", tag = "v0.5.2" }
+transforms_io = { version = "0.5.3", default-features = false }
+transforms_io_hiroz = { version = "0.5", git = "https://codeberg.org/stelzo/transforms_io", tag = "v0.5.3" }
 ros_pointcloud2 = { version = "1.0.0-rc.4", features = [
   "derive",
   "r2r",
@@ -59,10 +59,10 @@ ros_pointcloud2 = { version = "1.0.0-rc.4", features = [
   "nalgebra",
 ] }
 ratslang = "0.4.3"
-mt_pubsub = "0.11.0"
-mt_service = "0.11.0"
-mt_log = { version = "0.11.0", features = ["tui", "env"] }
-mt_rat = "0.11.0"
+mt_pubsub = "0.11.1"
+mt_service = "0.11.1"
+mt_log = { version = "0.11.1", features = ["tui", "env"] }
+mt_rat = "0.11.1"
 cloudini = { version = "0.3.2", default-features = false, features = ["ros"] }
 imu-calib = "0.3"
 ros2-interfaces-jazzy-serde = { version = "0.0.5", features = [
@@ -93,7 +93,7 @@ faer = { version = "0.24", default-features = false, features = [
   "std",
   "sparse-linalg",
 ] }
-r2r = { version = "0.9.5" }
+r2r = { version = "0.9.7" }
 ros2-client = { version = "0.10" }
 hiroz = { version = "0.2.0", git = "https://github.com/ZettaScaleLabs/hiroz.git", tag = "v0.2.0", default-features = false, features = [
   "rmw-zenoh",

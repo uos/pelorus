@@ -504,21 +504,18 @@ jobs:
     strategy:
       matrix:
         include:
-          # Lyrical is on hold: humble and jazzy are the supported targets for
-          # now. Re-enabling it needs r2r > 0.9.5, which is not on crates.io yet
-          # (tag 0.9.6 of sequenceplanner/r2r has the support).
-          # - image: docker.io/stelzo/ubuntu-dev:lyrical
-          #   repo: resolute
-          #   runner: ubuntu-latest
+          - image: docker.io/stelzo/ubuntu-dev:lyrical
+            repo: resolute
+            runner: ubuntu-latest
           - image: docker.io/stelzo/ubuntu-dev:jazzy
             repo: noble
             runner: ubuntu-latest
           - image: docker.io/stelzo/ubuntu-dev:humble
             repo: jammy
             runner: ubuntu-latest
-          # - image: docker.io/stelzo/ubuntu-dev:lyrical
-          #   repo: resolute
-          #   runner: ubuntu-latest-arm
+          - image: docker.io/stelzo/ubuntu-dev:lyrical
+            repo: resolute
+            runner: ubuntu-latest-arm
           - image: docker.io/stelzo/ubuntu-dev:jazzy
             repo: noble
             runner: ubuntu-latest-arm
@@ -621,10 +618,10 @@ jobs:
     strategy:
       matrix:
         include:
-          # - image: docker.io/stelzo/ubuntu-dev:lyrical-cu12-6
-          #   repo: resolute
-          #   cuda: 12-6
-          #   runner: ubuntu-latest
+          - image: docker.io/stelzo/ubuntu-dev:lyrical-cu12-6
+            repo: resolute
+            cuda: 12-6
+            runner: ubuntu-latest
           - image: docker.io/stelzo/ubuntu-dev:jazzy-cu12-6
             repo: noble
             cuda: 12-6
@@ -633,10 +630,10 @@ jobs:
             repo: jammy
             cuda: 12-6
             runner: ubuntu-latest
-          # - image: docker.io/stelzo/ubuntu-dev:lyrical-cu12-6
-          #   repo: resolute
-          #   cuda: 12-6
-          #   runner: ubuntu-latest-arm
+          - image: docker.io/stelzo/ubuntu-dev:lyrical-cu12-6
+            repo: resolute
+            cuda: 12-6
+            runner: ubuntu-latest-arm
           - image: docker.io/stelzo/ubuntu-dev:jazzy-cu12-6
             repo: noble
             cuda: 12-6
@@ -645,10 +642,10 @@ jobs:
             repo: jammy
             cuda: 12-6
             runner: ubuntu-latest-arm
-          # - image: docker.io/stelzo/ubuntu-dev:lyrical-cu12-8
-          #   repo: resolute
-          #   cuda: 12-8
-          #   runner: ubuntu-latest
+          - image: docker.io/stelzo/ubuntu-dev:lyrical-cu12-8
+            repo: resolute
+            cuda: 12-8
+            runner: ubuntu-latest
           - image: docker.io/stelzo/ubuntu-dev:jazzy-cu12-8
             repo: noble
             cuda: 12-8
@@ -657,10 +654,10 @@ jobs:
             repo: jammy
             cuda: 12-8
             runner: ubuntu-latest
-          # - image: docker.io/stelzo/ubuntu-dev:lyrical-cu12-8
-          #   repo: resolute
-          #   cuda: 12-8
-          #   runner: ubuntu-latest-arm
+          - image: docker.io/stelzo/ubuntu-dev:lyrical-cu12-8
+            repo: resolute
+            cuda: 12-8
+            runner: ubuntu-latest-arm
           - image: docker.io/stelzo/ubuntu-dev:jazzy-cu12-8
             repo: noble
             cuda: 12-8
@@ -669,10 +666,10 @@ jobs:
             repo: jammy
             cuda: 12-8
             runner: ubuntu-latest-arm
-          # - image: docker.io/stelzo/ubuntu-dev:lyrical-cu13-1
-          #   repo: resolute
-          #   cuda: 13-1
-          #   runner: ubuntu-latest
+          - image: docker.io/stelzo/ubuntu-dev:lyrical-cu13-1
+            repo: resolute
+            cuda: 13-1
+            runner: ubuntu-latest
           - image: docker.io/stelzo/ubuntu-dev:jazzy-cu13-1
             repo: noble
             cuda: 13-1
@@ -681,10 +678,10 @@ jobs:
             repo: jammy
             cuda: 13-1
             runner: ubuntu-latest
-          # - image: docker.io/stelzo/ubuntu-dev:lyrical-cu13-1
-          #   repo: resolute
-          #   cuda: 13-1
-          #   runner: ubuntu-latest-arm
+          - image: docker.io/stelzo/ubuntu-dev:lyrical-cu13-1
+            repo: resolute
+            cuda: 13-1
+            runner: ubuntu-latest-arm
           - image: docker.io/stelzo/ubuntu-dev:jazzy-cu13-1
             repo: noble
             cuda: 13-1
@@ -744,12 +741,18 @@ jobs:
     strategy:
       matrix:
         include:
+          - image: docker.io/stelzo/ubuntu-dev:lyrical
+            repo: resolute
+            runner: ubuntu-latest
           - image: docker.io/stelzo/ubuntu-dev:jazzy
             repo: noble
             runner: ubuntu-latest
           - image: docker.io/stelzo/ubuntu-dev:humble
             repo: jammy
             runner: ubuntu-latest
+          - image: docker.io/stelzo/ubuntu-dev:lyrical
+            repo: resolute
+            runner: ubuntu-latest-arm
           - image: docker.io/stelzo/ubuntu-dev:jazzy
             repo: noble
             runner: ubuntu-latest-arm
@@ -768,7 +771,7 @@ jobs:
           apt-get update
           apt-get install -y libvulkan-dev
 
-          for distro in jazzy humble; do
+          for distro in lyrical jazzy humble; do
             if [ -f "/opt/ros/$distro/setup.bash" ]; then
               echo "Sourcing ROS distro: $distro"
               set +eu
@@ -1402,7 +1405,8 @@ jobs:
           set -euo pipefail
 
           ./scripts/update_mirror.bash
-          apt-get install -y ssh
+          apt-get install -y --no-install-recommends openssh-client
+          command -v ssh-keyscan
 
           # ── Collect .deb files by series ──────────────────────
           mkdir -p staging/resolute staging/noble staging/jammy
@@ -1425,19 +1429,19 @@ jobs:
           done
 
           # ros-debs
-          for repo in noble jammy; do
+          for repo in resolute noble jammy; do
             find "dl/artifacts-ros-debs-${repo}" -name '*.deb' -exec cp {} "staging/${repo}/" \; 2>/dev/null || true
           done
 
           # ros-debs-cuda
           for cuda in 12-6 12-8 13-1; do
-            for repo in noble jammy; do
+            for repo in resolute noble jammy; do
               find "dl/artifacts-ros-debs-${repo}-${cuda}" -name '*.deb' -exec cp {} "staging/${repo}/" \; 2>/dev/null || true
             done
           done
 
           # ros-debs-vulkan
-          for repo in noble jammy; do
+          for repo in resolute noble jammy; do
             find "dl/artifacts-ros-debs-${repo}-vulkan" -name '*.deb' -exec cp {} "staging/${repo}/" \; 2>/dev/null || true
           done
 
@@ -1651,7 +1655,8 @@ jobs:
           VERSION=$(toml get --raw Cargo.toml workspace.package.version)
 
           ./scripts/update_mirror.bash
-          apt-get install -y keychain
+          apt-get install -y --no-install-recommends keychain openssh-client
+          command -v ssh-keyscan
 
           ARM_SHA256=$(sha256sum "release/pelorus-${VERSION}-macos-arm64.tar.gz" | awk '{print $1}')
 
@@ -1674,8 +1679,12 @@ jobs:
           cp /tmp/pelorus.rb homebrew-tools/Formula/pelorus.rb
           cd homebrew-tools
           git add Formula/pelorus.rb
-          git commit -m "pelorus ${VERSION}"
-          git push origin
+          if git diff --cached --quiet; then
+            echo "Homebrew formula for pelorus ${VERSION} is already up to date; nothing to publish."
+          else
+            git commit -m "pelorus ${VERSION}"
+            git push origin
+          fi
           shred -u ~/.ssh/tap_key || rm -f ~/.ssh/tap_key
 
   publish-pypi:

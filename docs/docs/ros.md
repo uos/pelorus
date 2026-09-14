@@ -56,7 +56,7 @@ Since the binaries may have problems during the current beta, we recommend build
 
 You can [setup the UOS PPA](https://codeberg.org/uos-robotics/ppa/src/branch/pages/README.md) for the Ubuntu LTS versions to install Pelorus and get updates automatically.
 
-```sh title="ROS 2 package for Humble and Jazzy"
+```sh title="ROS 2 package for Lyrical, Jazzy, and Humble"
 sudo apt install ros-$ROS_DISTRO-pelorus
 
 # or with CUDA support
