@@ -299,7 +299,95 @@ use std::sync::{Arc, Mutex};
 
 pub type ImuInitCallback = Arc<Mutex<dyn FnMut(&[ImuMsg]) + Send + Sync>>;
 
+#[cfg(test)]
+mod startup_tf_tests {
+    use super::*;
+
+    #[test]
+    fn tf_is_applied_before_deferred_initialization_and_only_once() {
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let applied = events.clone();
+        let initialized = events.clone();
+        let mut gate = TfStartup {
+            apply: Arc::new(Mutex::new(move |_, _| applied.lock().unwrap().push("tf"))),
+            initialize: Some(Arc::new(Mutex::new(move |_: &[ImuMsg]| {
+                initialized.lock().unwrap().push("init")
+            }))),
+            pending: None,
+            resolved: false,
+            initialized: false,
+        };
+        gate.initialize(&[ImuMsg::default()]);
+        assert!(events.lock().unwrap().is_empty());
+        assert!(!gate.initialized);
+        assert!(gate.resolve(Some(nalgebra::Isometry3::identity()), None));
+        assert!(gate.resolve(Some(nalgebra::Isometry3::identity()), None));
+        assert_eq!(*events.lock().unwrap(), ["tf", "init"]);
+    }
+
+    #[test]
+    fn tf_before_imu_still_waits_for_initialization() {
+        let mut gate = TfStartup {
+            apply: Arc::new(Mutex::new(|_, _| {})),
+            initialize: Some(Arc::new(Mutex::new(|_: &[ImuMsg]| {}))),
+            pending: None,
+            resolved: false,
+            initialized: false,
+        };
+        assert!(!gate.resolve(None, None));
+        gate.initialize(&[ImuMsg::default()]);
+        assert!(gate.resolve(None, None));
+    }
+}
+pub type StartupTfCallback = Arc<
+    Mutex<
+        dyn FnMut(Option<nalgebra::Isometry3<f64>>, Option<nalgebra::Isometry3<f64>>) + Send + Sync,
+    >,
+>;
+
+/// Defer initialization without blocking the IMU ingress/replay thread. Replay
+/// must be allowed to deliver the first cloud so its sensor frame can be resolved.
+struct TfStartup {
+    apply: StartupTfCallback,
+    initialize: Option<ImuInitCallback>,
+    pending: Option<Vec<ImuMsg>>,
+    resolved: bool,
+    initialized: bool,
+}
+
+impl TfStartup {
+    fn initialize(&mut self, msgs: &[ImuMsg]) {
+        if self.resolved {
+            if let Some(init) = &self.initialize {
+                (init.lock().unwrap())(msgs);
+                info!("EKF: Imu initialized after requested sensor TF was applied");
+            }
+            self.initialized = true;
+        } else {
+            self.pending = Some(msgs.to_vec());
+            info!("IMU initialization deferred: waiting for requested sensor TF");
+        }
+    }
+
+    fn resolve(
+        &mut self,
+        imu: Option<nalgebra::Isometry3<f64>>,
+        base: Option<nalgebra::Isometry3<f64>>,
+    ) -> bool {
+        if !self.resolved {
+            (self.apply.lock().unwrap())(imu, base);
+            self.resolved = true;
+            if let Some(msgs) = self.pending.take() {
+                self.initialize(&msgs);
+            }
+        }
+        self.initialized
+    }
+}
+
 pub struct SyncNodeInputs<'a> {
+    pub startup_tf_callback: Option<StartupTfCallback>,
+    pub startup_base_frame: Option<String>,
     pub node_params: &'a SyncNodeParameters,
     pub imu_pose_predictor_init: Option<ImuInitCallback>,
     pub imu_pose_prediction_undistort: Option<Box<ImuPredictorUndistort>>,
@@ -366,6 +454,8 @@ fn minot_sd_start_timestamp() -> rat::NetArray<f64> {
 }
 
 pub struct State {
+    startup_tf: Option<Arc<Mutex<TfStartup>>>,
+    startup_base_frame: Option<String>,
     pub global_polygon: Option<Vec<nalgebra::Point2<f32>>>,
     pub sensor_tf: Option<nalgebra::geometry::Isometry3<f32>>,
     pub imu_tf: Option<nalgebra::geometry::Isometry3<f64>>,
@@ -398,6 +488,8 @@ impl State {
         realtime_lidar_barrier_callback: Option<pelorus_sync::RealtimeLidarBarrierCallback>,
     ) -> anyhow::Result<Self> {
         Ok(State {
+            startup_tf: None,
+            startup_base_frame: None,
             #[cfg(feature = "rerun")]
             rec,
             global_polygon: None,
@@ -565,11 +657,17 @@ fn cloud_callback(
                             return Ok(());
                         }
                         Some(first_imu_tf_frame) => {
-                            let tf = tf_listener.lookup_transform(
+                            let tf = match tf_listener.lookup_transform(
                                 &first_imu_tf_frame,
                                 &orig_header.frame_id,
                                 duplicate_timestamp(&in_stamp),
-                            )?;
+                            ) {
+                                Ok(tf) => tf,
+                                Err(error) => {
+                                    debug!("Waiting for IMU-to-Lidar TF: {error}");
+                                    return Ok(());
+                                }
+                            };
                             nalgebra::geometry::Isometry3::from_parts(
                                 nalgebra::geometry::Translation3::new(
                                     tf.transform.translation.x,
@@ -585,7 +683,6 @@ fn cloud_callback(
                                     ),
                                 ),
                             )
-                            .inverse()
                         }
                     }
                 } else {
@@ -600,6 +697,50 @@ fn cloud_callback(
                 (imu_tf, sensor_tf)
             }
         };
+
+        let (startup, base_frame) = {
+            let state = state.lock().unwrap();
+            (state.startup_tf.clone(), state.startup_base_frame.clone())
+        };
+        if let Some(startup) = startup {
+            let base = if let Some(frame) = base_frame {
+                let tf = match tf_listener.lookup_transform(
+                    &frame,
+                    &orig_header.frame_id,
+                    duplicate_timestamp(&in_stamp),
+                ) {
+                    Ok(tf) => tf,
+                    Err(error) => {
+                        debug!("Waiting for base-to-Lidar TF: {error}");
+                        return Ok(());
+                    }
+                };
+                Some(nalgebra::Isometry3::from_parts(
+                    nalgebra::Translation3::new(
+                        tf.transform.translation.x,
+                        tf.transform.translation.y,
+                        tf.transform.translation.z,
+                    ),
+                    nalgebra::UnitQuaternion::from_quaternion(nalgebra::Quaternion::new(
+                        tf.transform.rotation.w,
+                        tf.transform.rotation.x,
+                        tf.transform.rotation.y,
+                        tf.transform.rotation.z,
+                    )),
+                ))
+            } else {
+                None
+            };
+            let imu = state
+                .lock()
+                .unwrap()
+                .sync_params
+                .imu_lidar_tf_override
+                .then_some(imu_tf);
+            if !startup.lock().unwrap().resolve(imu, base) {
+                return Ok(());
+            }
+        }
 
         {
             let mut state = state.lock().unwrap();
@@ -881,14 +1022,7 @@ impl SensorIngress for NativeIngress {
                 self.imu_initialized.store(true, Ordering::Release);
             }
         }
-        let filtered = self
-            .state
-            .lock()
-            .unwrap()
-            .sync
-            .lock()
-            .unwrap()
-            .add_imu(imu);
+        let filtered = self.state.lock().unwrap().sync.lock().unwrap().add_imu(imu);
         if let (Some(v), Some(tx)) = (filtered, self.filtered_imu_sender.as_ref()) {
             let _ = tx.send(v);
         }
@@ -1068,17 +1202,34 @@ impl SyncNode {
         #[cfg(any(feature = "mt_pubsub", feature = "hiroz"))] rt: Arc<tokio::runtime::Runtime>,
         #[cfg(feature = "mt_pubsub")] mt_pubsub_local_only: bool,
         params: &SyncParameters,
-        inputs: SyncNodeInputs<'_>,
+        mut inputs: SyncNodeInputs<'_>,
         #[cfg(feature = "rerun")] rec: Option<Arc<rerun::RecordingStream>>,
     ) -> anyhow::Result<(Self, std::sync::mpsc::Receiver<Tick>)> {
+        let startup_tf = inputs.startup_tf_callback.take().map(|apply| {
+            let initialize = inputs.imu_pose_predictor_init.take();
+            let initialized = initialize.is_none();
+            let gate = Arc::new(Mutex::new(TfStartup {
+                apply, initialize, pending: None, resolved: false, initialized,
+            }));
+            if !initialized {
+                let gate_for_init = gate.clone();
+                inputs.imu_pose_predictor_init = Some(Arc::new(Mutex::new(move |msgs: &[ImuMsg]| {
+                    gate_for_init.lock().unwrap().initialize(msgs);
+                })));
+            }
+            info!("Waiting for requested sensor TF before starting SLAM; configured extrinsics will not be used as fallback");
+            gate
+        });
         #[cfg(any(
             feature = "ros2-client",
             feature = "mt_pubsub",
             feature = "r2r",
             feature = "hiroz"
         ))]
-        let enable_imu_ingress =
-            !matches!(&inputs.imu_sync_mode, pelorus_sync::ImuSyncMode::Disabled { .. });
+        let enable_imu_ingress = !matches!(
+            &inputs.imu_sync_mode,
+            pelorus_sync::ImuSyncMode::Disabled { .. }
+        );
         #[cfg(any(
             feature = "rat",
             feature = "ros2-client",
@@ -1132,7 +1283,7 @@ impl SyncNode {
         #[cfg(feature = "rat")]
         let synchronous_mode = node_params.synchronous_mode;
 
-        let state = State::new(
+        let mut state = State::new(
             params,
             inputs.imu_pose_prediction_undistort,
             inputs.imu_pose_prediction_init_guess,
@@ -1143,6 +1294,8 @@ impl SyncNode {
             inputs.realtime_imu_callback,
             inputs.realtime_lidar_barrier_callback,
         )?;
+        state.startup_tf = startup_tf;
+        state.startup_base_frame = inputs.startup_base_frame;
 
         #[cfg(any(
             feature = "ros2-client",
@@ -1741,7 +1894,7 @@ impl SyncNode {
                                     // apply the init buffer
                                     if let Some(buffer) = init_state.buffer.take() {
                                         imu_pose_predictor_init(&buffer);
-                                        info!("EKF: Imu initialized");
+                                        info!("EKF: IMU initialization samples collected");
                                         #[cfg(feature = "rat")]
                                         {
                                             minot_bootstrap_trigger = Some(MINOT_LIO_START_TICK);
@@ -1838,7 +1991,7 @@ impl SyncNode {
                                 // apply the init buffer
                                 if let Some(buffer) = init_state.buffer.take() {
                                     imu_pose_predictor_init(&buffer);
-                                    info!("EKF: Imu initialized");
+                                    info!("EKF: IMU initialization samples collected");
                                     #[cfg(feature = "rat")]
                                     {
                                         minot_bootstrap_trigger = Some(MINOT_LIO_START_TICK);
@@ -1914,7 +2067,7 @@ impl SyncNode {
                             // apply the init buffer
                             if let Some(buffer) = init_state.buffer.take() {
                                 imu_pose_predictor_init(&buffer);
-                                info!("EKF: Imu initialized");
+                                info!("EKF: IMU initialization samples collected");
                                 #[cfg(feature = "rat")]
                                 {
                                     minot_bootstrap_trigger = Some(MINOT_LIO_START_TICK);
@@ -1998,7 +2151,7 @@ impl SyncNode {
                                 }
                             } else if let Some(buffer) = init_state.buffer.take() {
                                 imu_pose_predictor_init(&buffer);
-                                info!("EKF: Imu initialized");
+                                info!("EKF: IMU initialization samples collected");
                                 #[cfg(feature = "rat")]
                                 {
                                     minot_bootstrap_trigger = Some(MINOT_LIO_START_TICK);

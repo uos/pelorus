@@ -198,7 +198,7 @@ if(PELORUS_INSTALL)
       "includedir=\${prefix}/include\n"
       "\n"
       "Name: Pelorus\n"
-      "Description: C library bindings for Pelorus - LiDAR-Inertial Odometry\n"
+      "Description: C library bindings for Pelorus - Lidar-Inertial Odometry\n"
       "Version: ${PROJECT_VERSION}\n"
       "Libs: -L\${libdir} -lpelorus\n"
       "Libs.private: -lpthread -ldl -lm\n"

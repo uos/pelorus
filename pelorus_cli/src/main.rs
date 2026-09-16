@@ -781,10 +781,13 @@ struct McapOutputConfig {
 }
 
 fn build_mcap_output_config(args: &RecordingArgs, config: &LioConfig) -> Option<McapOutputConfig> {
-    build_mcap_output_config_with_filtered_topic(
-        args,
-        &config.sync_node_params.imu_filtered_topic,
-    )
+    build_mcap_output_config_with_filtered_topic(args, &config.sync_node_params.imu_filtered_topic)
+        .map(|mut output| {
+            if config.imu_params.lidar_only {
+                output.topics.filtered_imu = None;
+            }
+            output
+        })
 }
 
 fn build_mcap_output_config_with_filtered_topic(
@@ -818,7 +821,7 @@ fn build_mcap_output_config_with_filtered_topic(
                     odom: normalize_mcap_topic(args.mcap_odom_topic.clone()),
                     path: normalize_mcap_topic(args.mcap_path_topic.clone()),
                     tf: normalize_mcap_topic(args.mcap_tf_topic.clone()),
-                    filtered_imu: normalize_mcap_topic(filtered_imu_topic),
+                    filtered_imu: Some(normalize_mcap_topic(filtered_imu_topic)),
                 },
             }
         })
@@ -1237,7 +1240,10 @@ fn log_realtime_prediction_to_rerun(rec: &rerun::RecordingStream, prediction: &R
 
 /// Publishes the CPU registration map to Rerun as ellipsoids.
 /// Color goes from warm (evicted soon) to cool (most relevant), by LRU score.
-#[cfg(all(feature = "rerun", not(any(feature = "cuda", feature = "metal", feature = "vulkan"))))]
+#[cfg(all(
+    feature = "rerun",
+    not(any(feature = "cuda", feature = "metal", feature = "vulkan"))
+))]
 fn log_map_snapshot_to_rerun(
     rec: &rerun::RecordingStream,
     distributions: Vec<pelorus_localmap::localmap::VoxelDistributionLru>,
@@ -1288,10 +1294,7 @@ fn log_map_snapshot_to_rerun(
         ));
         half_sizes.push(half_size);
         quaternions.push(glam::Quat::from_xyzw(
-            q.i as f32,
-            q.j as f32,
-            q.k as f32,
-            q.w as f32,
+            q.i as f32, q.j as f32, q.k as f32, q.w as f32,
         ));
         colors.push(color);
     }
@@ -1950,7 +1953,6 @@ fn lio_with_ready_signal(
 
     let mut pipeline = Pipeline::new(&config);
     let map = pipeline.map();
-    let ext = pipeline.ext();
     let _odom_ext = Isometry3::from_parts(
         nalgebra::Translation3::new(0.0, 0.0, 0.0),
         UnitQuaternion::from_matrix(&config.sync_params.wheel_to_imu_rotation),
@@ -2048,12 +2050,13 @@ fn lio_with_ready_signal(
     } else {
         ImuSyncMode::Continuous
     };
-    let (filtered_imu_tx, filtered_imu_rx) = if output_mcap.is_some() {
-        let (tx, rx) = std::sync::mpsc::channel();
-        (Some(tx), Some(rx))
-    } else {
-        (None, None)
-    };
+    let (filtered_imu_tx, filtered_imu_rx) =
+        if output_mcap.is_some() && !config.imu_params.lidar_only {
+            let (tx, rx) = std::sync::mpsc::channel();
+            (Some(tx), Some(rx))
+        } else {
+            (None, None)
+        };
 
     #[cfg(feature = "rerun")]
     let rerun_prediction_export = minot_replay_mode && rec.is_some();
@@ -2083,6 +2086,28 @@ fn lio_with_ready_signal(
         .as_ref()
         .map(RealtimePredictorHandle::lidar_barrier_callback);
 
+    let startup_base_frame = config
+        .base_to_lidar_tf_override
+        .then(|| config.base_link_frame.clone())
+        .flatten();
+    let startup_tf_callback = (config.sync_params.imu_lidar_tf_override || startup_base_frame.is_some()).then(|| {
+        let map = map.clone();
+        let realtime = realtime_predictor.as_ref().map(RealtimePredictorHandle::startup_tf_callback);
+        let callback: pelorus_syncio::StartupTfCallback = Arc::new(std::sync::Mutex::new(move |imu: Option<Isometry3<f64>>, base: Option<Isometry3<f64>>| {
+            let mut registration = map.lock().unwrap();
+            if let Some(imu) = imu {
+                registration.set_lidar_to_imu(imu);
+                info!("Applied Lidar-to-IMU TF before initialization: translation={:?}, rotation={:?}", imu.translation.vector, imu.rotation);
+            }
+            if let Some(base) = base {
+                registration.set_base_to_lidar(base);
+                info!("Applied base-to-Lidar TF before scan processing: translation={:?}, rotation={:?}", base.translation.vector, base.rotation);
+            }
+            if let Some(realtime) = &realtime { realtime(imu, base); }
+        }));
+        callback
+    });
+
     #[allow(unused_mut)]
     let (mut sync_node, synced_rx) = SyncNode::new(
         #[cfg(any(feature = "ros2-client", feature = "r2r"))]
@@ -2097,6 +2122,8 @@ fn lio_with_ready_signal(
         mt_pubsub_local_only,
         &config.sync_params,
         SyncNodeInputs {
+            startup_tf_callback,
+            startup_base_frame,
             node_params: &config.sync_node_params,
             imu_pose_predictor_init: (!config.imu_params.lidar_only)
                 .then(|| pipeline.build_init_callback()),
@@ -2396,7 +2423,9 @@ fn lio_with_ready_signal(
     #[cfg(feature = "hiroz")]
     let stats_publisher = node
         .create_pub::<RosString>("pelorus_stats")
-        .with_qos(pelorus_syncio::qos_to_hiroz(pelorus_core::Qos::SystemDefault))
+        .with_qos(pelorus_syncio::qos_to_hiroz(
+            pelorus_core::Qos::SystemDefault,
+        ))
         .build()
         .map_err(|e| anyhow!("Failed to create Hiroz stats publisher: {e}"))?;
     #[cfg(feature = "mt_pubsub")]
@@ -2730,10 +2759,11 @@ fn lio_with_ready_signal(
                 },
             };
             #[cfg(feature = "processing-time-export")]
-            let processing_started = processing_time_file
-                .as_ref()
-                .map(|_| sync_tick.received_at);
+            let processing_started = processing_time_file.as_ref().map(|_| sync_tick.received_at);
             // Record scan arrival for measuring actual sensor rate
+            if config.base_to_lidar_tf_override {
+                config.base_to_lidar = map.lock().unwrap().base_to_lidar;
+            }
             if let Some(ref stats) = shared_stats {
                 let stamp_sec = {
                     let s = timestamp_to_secs(&sync_tick.cloud_header.stamp);
@@ -2764,8 +2794,7 @@ fn lio_with_ready_signal(
                     // can be reused without forcing a host sync here.
                     let cuda_cloud = &mut cuda_cloud_bufs[current_slot];
                     cuda_cloud.realloc_if_needed_cuda(stream, sync_tick.deskewed_cloud.len());
-                    cuda_cloud
-                        .upload_from_slice_cuda(stream, sync_tick.deskewed_cloud.as_slice());
+                    cuda_cloud.upload_from_slice_cuda(stream, sync_tick.deskewed_cloud.as_slice());
                 }
                 #[cfg(feature = "metal")]
                 ActiveBackend::Metal(stream) => {
@@ -2896,9 +2925,9 @@ fn lio_with_ready_signal(
                         sync_tick.imu_odom.pose.pose.orientation.z,
                     ));
 
-                // init_guess from sync is IMU pose T_W_I. Convert to LiDAR pose T_W_L.
+                // init_guess from sync is IMU pose T_W_I. Convert to Lidar pose T_W_L.
                 nalgebra::Isometry3::from_parts(initial_guess_translation, initial_guess_rotation)
-                    * ext
+                    * pipeline.ext()
             };
 
             let registration_result = {
@@ -3009,48 +3038,6 @@ fn lio_with_ready_signal(
             }
 
             if !static_tf_published && config.base_link_frame.is_some() {
-                if config.base_to_lidar_tf_override {
-                    if let Some(ref sync_node) = sync_node {
-                        match sync_node.tf_listener.lookup_transform(
-                            &child_frame,
-                            &orig_frame,
-                            Time {
-                                sec: orig_time.sec,
-                                nanosec: orig_time.nanosec,
-                            },
-                        ) {
-                            Ok(tf) => {
-                                #[cfg(feature = "r2r")]
-                                let iso = pelorus_syncio::tf_r2r::isometry_from_transform(&tf.transform);
-                                #[cfg(feature = "ros2-client")]
-                                let iso = pelorus_syncio::tf::isometry_from_transform(&tf.transform);
-                                #[cfg(feature = "mt_pubsub")]
-                                let iso = pelorus_syncio::tf_lh::isometry_from_transform(&tf.transform);
-                                #[cfg(feature = "hiroz")]
-                                let iso =
-                                    pelorus_syncio::tf_hiroz::isometry_from_transform(&tf.transform);
-
-                                info!(
-                                    "Updated base_link to lidar transform from TF: translation={:?}, rotation={:?}",
-                                    iso.translation.vector, iso.rotation
-                                );
-                                // Keep output conversion and registration on the same transform.
-                                config.base_to_lidar = iso;
-                                pipeline.set_base_to_lidar(iso);
-                                if let Some(predictor) = realtime_predictor.as_ref() {
-                                    predictor.set_base_to_lidar(iso);
-                                }
-                            }
-                            Err(e) => {
-                                error!(
-                                    "Failed to lookup base_link to lidar transform from TF: {}. Using manual config.",
-                                    e
-                                );
-                            }
-                        }
-                    }
-                }
-
                 // Republish the base_link <-> lidar extrinsic on /tf_static. Internally
                 // `config.base_to_lidar` already carries this transform (manual config or
                 // just overridden from TF above), but until now it was never re-emitted:
@@ -3339,7 +3326,9 @@ fn lio_with_ready_signal(
                         let msg = PointCloud2Msg::try_from_vec(items.to_vec()).expect("msg");
                         #[cfg(feature = "ros2-client")]
                         let out =
-                            pelorus_syncio::impl_ros2_interfaces_jazzy_serde::from_pointcloud2_msg(msg);
+                            pelorus_syncio::impl_ros2_interfaces_jazzy_serde::from_pointcloud2_msg(
+                                msg,
+                            );
                         #[cfg(feature = "mt_pubsub")]
                         let out = impl_ros2_interfaces_jazzy_rkyv::from_pointcloud2_msg(msg);
                         #[cfg(feature = "r2r")]
@@ -3354,7 +3343,9 @@ fn lio_with_ready_signal(
                         let msg = PointCloud2Msg::try_from_vec(items.to_vec()).expect("msg");
                         #[cfg(feature = "ros2-client")]
                         let out =
-                            pelorus_syncio::impl_ros2_interfaces_jazzy_serde::from_pointcloud2_msg(msg);
+                            pelorus_syncio::impl_ros2_interfaces_jazzy_serde::from_pointcloud2_msg(
+                                msg,
+                            );
                         #[cfg(feature = "mt_pubsub")]
                         let out = impl_ros2_interfaces_jazzy_rkyv::from_pointcloud2_msg(msg);
                         #[cfg(feature = "r2r")]
@@ -3385,7 +3376,9 @@ fn lio_with_ready_signal(
                         let msg = ros_pointcloud2::PointCloud2Msg::try_from_vec(buff).unwrap();
                         #[cfg(feature = "ros2-client")]
                         let out =
-                            pelorus_syncio::impl_ros2_interfaces_jazzy_serde::from_pointcloud2_msg(msg);
+                            pelorus_syncio::impl_ros2_interfaces_jazzy_serde::from_pointcloud2_msg(
+                                msg,
+                            );
                         #[cfg(feature = "mt_pubsub")]
                         let out = impl_ros2_interfaces_jazzy_rkyv::from_pointcloud2_msg(msg);
                         #[cfg(feature = "r2r")]
@@ -4631,7 +4624,7 @@ mod mcap_output_config_tests {
 
         assert_eq!(output.path, PathBuf::from("out.mcap"));
         assert_eq!(output.rosbag_metadata_path, None);
-        assert_eq!(output.topics.filtered_imu, "/imu/ahrs");
+        assert_eq!(output.topics.filtered_imu.as_deref(), Some("/imu/ahrs"));
     }
 
     #[test]
@@ -4664,7 +4657,7 @@ mod mcap_output_config_tests {
         assert_eq!(output.topics.odom, "/odom");
         assert_eq!(output.topics.path, "/path");
         assert_eq!(output.topics.tf, "/tf");
-        assert_eq!(output.topics.filtered_imu, "/imu/custom");
+        assert_eq!(output.topics.filtered_imu.as_deref(), Some("/imu/custom"));
     }
 
     #[test]
@@ -4674,7 +4667,25 @@ mod mcap_output_config_tests {
 
         let output = build_mcap_output_config_with_filtered_topic(&args, "").unwrap();
 
-        assert_eq!(output.topics.filtered_imu, "/imu/filtered");
+        assert_eq!(output.topics.filtered_imu.as_deref(), Some("/imu/filtered"));
+    }
+
+    #[test]
+    fn lidar_only_mcap_omits_imu_even_with_a_topic_override() {
+        let mut args = recording_args();
+        args.output_mcap = Some(PathBuf::from("out.mcap"));
+        args.mcap_filtered_imu_topic = Some("imu/custom".to_string());
+        let defaults =
+            ratslang::compile_code(include_str!("../../pelorus_core/default.rl")).unwrap();
+        let user = ratslang::compile_code("imu.lidar_only = true").unwrap();
+        let config = ast_to_config(defaults, user).unwrap();
+
+        let output = build_mcap_output_config(&args, &config).unwrap();
+        assert!(output.topics.filtered_imu.is_none());
+        assert_eq!(
+            output.topics.cloud,
+            normalize_mcap_topic(args.mcap_cloud_topic)
+        );
     }
 }
 
@@ -4739,7 +4750,7 @@ _bag.{{
 }}
 _start_locked = false
 
-# LiDAR-only replay has no IMU subscriber or initialization handshake.
+# Lidar-only replay has no IMU subscriber or initialization handshake.
 pf! l 1 tick_end
 
 reset! "{bagfile_path}"

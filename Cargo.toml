@@ -55,8 +55,8 @@ pelorus_metal = { path = "pelorus_metal", version = "0.0.7" }
 pelorus_vulkan = { path = "pelorus_vulkan", version = "0.0.7", default-features = false }
 pelorus_drivers = { path = "pelorus_drivers", version = "0.0.7", default-features = false }
 
-transforms_io = { version = "0.5.2", default-features = false }
-transforms_io_hiroz = { version = "0.5", git = "https://codeberg.org/stelzo/transforms_io", tag = "v0.5.2" }
+transforms_io = { version = "0.5.4", default-features = false }
+transforms_io_hiroz = { version = "0.5", git = "https://codeberg.org/stelzo/transforms_io", tag = "v0.5.4" }
 ros_pointcloud2 = { version = "1.0.0-rc.4", features = [
   "derive",
   "r2r",
@@ -211,7 +211,7 @@ inherits = "release"
 [profile.dev.package.backtrace]
 opt-level = 3
 
-# [patch.crates-io]
+[patch.crates-io]
 # imu-calib 0.4 is not published yet; drop this once it is.
 # imu-calib = { path = "../imu-calib" }
 # ros_pointcloud2 = { path = "../ros_pointcloud2/ros_pointcloud2" }

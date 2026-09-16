@@ -1,4 +1,4 @@
-//! Iterated equivariant filter (EqF) for tightly coupled LiDAR-inertial odometry.
+//! Iterated equivariant filter (EqF) for tightly coupled Lidar-inertial odometry.
 //!
 //! Follows "Equivariant Filter for Tightly Coupled LiDAR-Inertial Odometry"
 //! (Xu et al., ICRA 2025, <https://arxiv.org/abs/2409.06948>) and its reference
@@ -6,7 +6,7 @@
 //!
 //! The state and measurement model follow a FAST-LIO style iterated EKF. The
 //! error is a group element of the semi-direct product symmetry coupling the
-//! navigation state, IMU biases, and LiDAR extrinsics. The correction acts on
+//! navigation state, IMU biases, and Lidar extrinsics. The correction acts on
 //! the left:
 //!
 //! ```text
@@ -298,7 +298,7 @@ pub struct Eqf {
     /// world origin makes both the Jacobians and the covariance scale with distance
     /// travelled and destroys the conditioning of the update. Kept near the robot.
     pub anchor: Vector3<f64>,
-    /// Estimate the LiDAR-to-IMU extrinsics online. Off by default; when on,
+    /// Estimate the Lidar-to-IMU extrinsics online. Off by default; when on,
     /// the extrinsic blocks of the equivariant error dynamics and the
     /// corresponding measurement Jacobian columns become active.
     pub extrinsic_est: bool,
@@ -651,10 +651,10 @@ impl Eqf {
         let adjusted_base_cov = base_cov * (1.0 + dt_gap * 5.0);
         let r_wi = self.state.rot.matrix();
 
-        // Current LiDAR-to-IMU rotation (R_IL from state)
+        // Current Lidar-to-IMU rotation (R_IL from state)
         let r_il = self.state.offset_r_l_i.matrix();
 
-        // Static Base-to-LiDAR (R_BL from config)
+        // Static Base-to-Lidar (R_BL from config)
         let r_bl_rot = self.base_to_lidar.rotation.to_rotation_matrix();
         let r_bl = r_bl_rot.matrix();
 
@@ -687,7 +687,7 @@ impl Eqf {
 
     /// Fuse one scalar measurement whose Jacobian is `h`.
     ///
-    /// LiDAR correction owns position and rotation. `max_gain` can damp the
+    /// Lidar correction owns position and rotation. `max_gain` can damp the
     /// model-based non-holonomic constraints.
     fn apply_scalar_constraint(
         &mut self,
@@ -835,10 +835,10 @@ impl Eqf {
         let r_wi = self.state.rot.matrix();
         let r_iw = r_wi.transpose();
 
-        // Current LiDAR-to-IMU rotation (R_IL from state)
+        // Current Lidar-to-IMU rotation (R_IL from state)
         let r_il = self.state.offset_r_l_i.matrix();
 
-        // Static Base-to-LiDAR (R_BL from config)
+        // Static Base-to-Lidar (R_BL from config)
         let r_bl_rot = self.base_to_lidar.rotation.to_rotation_matrix();
         let r_bl = r_bl_rot.matrix();
 
@@ -1321,7 +1321,7 @@ mod tests {
         }
     }
 
-    /// Scalar corrections inject an equivariant error just like the LiDAR
+    /// Scalar corrections inject an equivariant error just like the Lidar
     /// correction. Their posterior must therefore be moved from coordinates
     /// about the old state to coordinates about the corrected state as well.
     #[test]

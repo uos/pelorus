@@ -473,7 +473,7 @@ pub struct ImuParameters {
     pub kinematic_constraint_std: f64,
     pub kinematic_model: KinematicModel,
     pub wheel_odom_cov_override: Option<f64>,
-    /// Refine the configured LiDAR-to-IMU extrinsic during filtering.
+    /// Refine the configured Lidar-to-IMU extrinsic during filtering.
     pub estimate_extrinsic_online: bool,
     /// Ignore the IMU and propagate at a constant twist instead.
     pub lidar_only: bool,
@@ -550,7 +550,7 @@ pub struct ImuCalibrationParameters {
     pub imu_intrinsics_calib_file_path: Option<String>,
     pub imu_calibrate_gyros: bool,
     pub gyro_calibration_samples: usize,
-    /// Seconds the IMU clock runs ahead of the LiDAR clock. Subtracted from
+    /// Seconds the IMU clock runs ahead of the Lidar clock. Subtracted from
     /// every IMU timestamp to put both sensors on one clock.
     pub time_offset: f64,
 }
@@ -670,10 +670,10 @@ pub enum PointCloudMode {
 /// Controls which estimator updates are published as odometry.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub enum OdometryRate {
-    /// Publish only LiDAR-corrected states (legacy behavior).
+    /// Publish only Lidar-corrected states (legacy behavior).
     #[default]
     Lidar,
-    /// Publish live IMU predictions and LiDAR-corrected states.
+    /// Publish live IMU predictions and Lidar-corrected states.
     ImuAndLidar,
 }
 
@@ -1012,7 +1012,7 @@ pub struct SyncProcessedCloud {
     pub received_at: std::time::Instant,
     pub cloud: Vec<PointXYZIT>,
     pub passthrough: Option<Vec<PointXYZIT>>,
-    /// IMU measurements synchronized to this LiDAR frame.
+    /// IMU measurements synchronized to this Lidar frame.
     pub imu_buffer: Vec<ImuMsg>,
     pub imu_frame: String,
     pub header: HeaderMsg,
@@ -1117,7 +1117,7 @@ impl std::fmt::Display for LidarParseError {
         match self {
             LidarParseError::UnknownVendor => write!(
                 f,
-                "Unknown LiDAR vendor, can not assume per point timestamp format"
+                "Unknown Lidar vendor, can not assume per point timestamp format"
             ),
         }
     }

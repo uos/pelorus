@@ -75,7 +75,7 @@ pub struct PointXyzi {
 /// # Frame conventions
 /// - **World frame (W)**: fixed global reference, Z-up, aligned with IMU at init.
 /// - **IMU frame (I)**: body-fixed frame attached to the IMU sensor.
-/// - **Lidar frame (L)**: sensor-fixed frame attached to the LiDAR.
+/// - **Lidar frame (L)**: sensor-fixed frame attached to the Lidar.
 #[derive(Debug, Clone)]
 pub struct Odometry {
     pub timestamp_sec: i32,
@@ -422,7 +422,7 @@ fn configure_thread_pool(num_threads: usize) {
 
 // ---------- public API ----------
 
-/// Handle for the Pelorus LiDAR-Inertial Odometry pipeline.
+/// Handle for the Pelorus Lidar-Inertial Odometry pipeline.
 ///
 /// Manages the full processing pipeline: IMU pre-integration, point-cloud
 /// undistortion, scan registration, and state estimation.  Dropping the handle

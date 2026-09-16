@@ -1,6 +1,6 @@
 # Calibration
 
-Pelorus assumes three things about your IMU that are not true out of the box: that its axes are square and correctly scaled, that you know how noisy it is, and that you know where it sits relative to the LiDAR. Each one is a separate measurement, and each has its own way of failing quietly.
+Pelorus assumes three things about your IMU that are not true out of the box: that its axes are square and correctly scaled, that you know how noisy it is, and that you know where it sits relative to the Lidar. Each one is a separate measurement, and each has its own way of failing quietly.
 
 [dedrunk](https://github.com/stelzo/dedrunk) does the measuring. It reads MCAP recordings and writes Kalibr-format YAML, which Pelorus reads back through `imu.calibration.parameter_file` and `imu.from_lidar_transform`.
 
@@ -12,7 +12,7 @@ cargo install --path <checkout>/dedrunk
 | --- | --- | --- |
 | Scale, axis misalignment, biases | `dedrunk intrinsics` | minutes, sensor held still in many orientations |
 | Noise densities, bias random walks | `dedrunk noise` | hours, sensor completely undisturbed |
-| LiDAR-to-IMU transform | `dedrunk extrinsics` | minutes, rotating and tilting both sensors together |
+| Lidar-to-IMU transform | `dedrunk extrinsics` | minutes, rotating and tilting both sensors together |
 
 The first two are properties of the IMU alone. The third is about the pair. You can do them in any order, but the extrinsic fit is cleaner once the intrinsics are applied.
 
@@ -64,7 +64,7 @@ That drops the misalignment terms and needs six orientations instead of nine.
 
 ## Noise
 
-These four numbers say how much the IMU makes up: two white-noise densities and two bias random walks. They are **not** applied to measurements — noise is irreducible, and you cannot subtract a value you do not know sample by sample. What they do is tell the filter how far to trust the IMU between LiDAR corrections. Too small and it rides the IMU through a corner and ignores the scan match; too large and it throws away good inertial information.
+These four numbers say how much the IMU makes up: two white-noise densities and two bias random walks. They are **not** applied to measurements — noise is irreducible, and you cannot subtract a value you do not know sample by sample. What they do is tell the filter how far to trust the IMU between Lidar corrections. Too small and it rides the IMU through a corner and ignores the scan match; too large and it throws away good inertial information.
 
 ### What to record
 
@@ -76,7 +76,7 @@ Record the IMU **only**:
 pelorus online raw imu --output-rosbag imu_static
 ```
 
-The `imu` argument matters here. Three hours of IMU at 400 Hz is a couple of gigabytes; three hours with the LiDAR running is closer to a hundred, and none of it would be used. `pelorus online raw imu` also leaves the LiDAR socket closed, so the machine is doing nothing that could vibrate the sensor.
+The `imu` argument matters here. Three hours of IMU at 400 Hz is a couple of gigabytes; three hours with the Lidar running is closer to a hundred, and none of it would be used. `pelorus online raw imu` also leaves the Lidar socket closed, so the machine is doing nothing that could vibrate the sensor.
 
 It records until you stop it with `Ctrl-C`. Confirm afterwards that you got the whole thing:
 
@@ -188,9 +188,9 @@ acceleration bias 3.200e-3 (was 1.000e-4)
 
 Note that the four ratios there are nothing like each other — the gyroscope term lands 55× below the shipped constant while the accelerometer bias lands 32× above it. The defaults Pelorus inherits are FAST-LIO tuning values, not one consistent noise model, so no single inflation reproduces them. Switch this on against a bag you know the answer for and compare trajectories before adopting it.
 
-## LiDAR-to-IMU extrinsics
+## Lidar-to-IMU extrinsics
 
-The transform has to be measured against a trajectory that did **not** already assume it. Pelorus's own odometry is a LiDAR-inertial one, so feeding its poses back would return the assumption instead of measuring it. Run it LiDAR-only first:
+The transform has to be measured against a trajectory that did **not** already assume it. Pelorus's own odometry is a Lidar-inertial one, so feeding its poses back would return the assumption instead of measuring it. Run it Lidar-only first:
 
 ```sh
 pelorus offline calib_drive -c pelorus.rl -o imu.lidar_only=true --output-rosbag lidar_traj
@@ -217,7 +217,7 @@ imu {
 
 ### The time offset
 
-`imu.calibration.time_offset` is the constant skew between the two sensors' clocks — how far the IMU's timestamps run ahead of the LiDAR's for the same physical instant. Pelorus subtracts it from every IMU timestamp as the sample enters, before anything reads that time, so the integration step, the undistortion window and the scan pairing all agree.
+`imu.calibration.time_offset` is the constant skew between the two sensors' clocks — how far the IMU's timestamps run ahead of the Lidar's for the same physical instant. Pelorus subtracts it from every IMU timestamp as the sample enters, before anything reads that time, so the integration step, the undistortion window and the scan pairing all agree.
 
 **Paste the number exactly as dedrunk prints it, sign included.** Getting the sign backwards doubles the skew instead of removing it, and the symptom — slightly smeared scans while turning — looks like a registration problem rather than a timing one.
 
@@ -230,7 +230,7 @@ Unlike the transform, this comes out of the gyroscope alone, so it is trustworth
 This is where an extrinsic calibration goes wrong, and the two halves of the transform need different things:
 
 * **Rotation** needs the platform to *turn*, about at least two axes. An ordinary drive around a loop is enough — this half works on data you already have.
-* **Translation** — the lever arm — enters the model only through `S(ẇ) + S(w)²`. Without rotation the IMU and the LiDAR accelerate identically and their separation leaves no trace at all. Rotation about an axis makes the lever-arm components *perpendicular* to it observable and leaves the one along it invisible. Rotate briskly: the term goes with `w²`, so sharp direction changes are worth more than sustained turning.
+* **Translation** — the lever arm — enters the model only through `S(ẇ) + S(w)²`. Without rotation the IMU and the Lidar accelerate identically and their separation leaves no trace at all. Rotation about an axis makes the lever-arm components *perpendicular* to it observable and leaves the one along it invisible. Rotate briskly: the term goes with `w²`, so sharp direction changes are worth more than sustained turning.
 * **Gravity and the accelerometer bias** need something else again. They enter as `−R·Cᵀ·g` and `+b_a`, so separating them needs the platform's *attitude* to change enough that `Cᵀ·g` swings around the body frame. **Tilting, not turning.** A robot that stays level holds `Cᵀ·g` almost constant, and then the two are one unknown wearing two hats.
 
 That last point is the trap, because a wheeled robot on flat ground satisfies the first requirement and fails the third.
@@ -243,7 +243,7 @@ Look at these before the numbers:
 gravity:      [+0.723, +0.239, -6.267] m/s^2  (|g| = 6.313)
 residuals:    acceleration 4.126 m/s^2
 attitude spread:                       2.1°  (separates gravity from accel bias)
-angular excitation (rms, LiDAR frame): [0.030, 0.037, 0.143] rad/s
+angular excitation (rms, Lidar frame): [0.030, 0.037, 0.143] rad/s
 ```
 
 **Gravity is the check, not a result.** dedrunk fits it as a free vector precisely so its magnitude can be compared against 9.81. If it is off, everything the accelerometer contributed — translation, gravity, accelerometer bias — is worthless together, and dedrunk says so:

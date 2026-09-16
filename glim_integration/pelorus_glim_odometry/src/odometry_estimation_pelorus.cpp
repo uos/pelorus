@@ -332,7 +332,7 @@ private:
     uint64_t scan_id = odom_c->scan_id;
     CachedResult result;
 
-    // Pelorus poses and deskewed clouds are always expressed in the LiDAR
+    // Pelorus poses and deskewed clouds are always expressed in the Lidar
     // frame.
     const double *p = odom_c->position;
     const double *q = odom_c->orientation; // w, x, y, z
@@ -516,7 +516,7 @@ private:
     frame->imu_bias << res.accel_bias, res.gyro_bias;
     frame->frame_id = FrameID::LIDAR;
 
-    // Keep the returned deskewed points in the LiDAR frame so the cloud and
+    // Keep the returned deskewed points in the Lidar frame so the cloud and
     // T_world_lidar use the same coordinates.
     if (res.cloud) {
       std::vector<Eigen::Vector4d> points_lidar(res.cloud->size());

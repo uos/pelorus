@@ -83,7 +83,7 @@ scan_id = lio.add_pointcloud(
     timestamp_nanosec=0,
 )
 
-# After feeding enough synchronized IMU and LiDAR data, receive odometry:
+# After feeding enough synchronized IMU and Lidar data, receive odometry:
 odom = lio.try_recv()
 if odom:
     print(f"Position: {odom['position']}")
@@ -149,7 +149,7 @@ Pelorus uses two timestamp levels:
 1. **IMU/Odom timestamps** (`timestamp_sec` + `timestamp_nanosec`)
     - Absolute timestamps (typically epoch / ROS time) used for synchronization.
 
-2. **LiDAR timestamps**
+2. **Lidar timestamps**
     - **Scan header timestamp**: absolute (sec/nanosec)
     - **Per-point `t` field** (if provided): `uint32` nanoseconds offset, **non-negative** and **forward in time** relative to the scan header time.
 

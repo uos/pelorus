@@ -10,8 +10,8 @@ use pelorus_core::{
     ImuMsg, ImuPosePrediction, ImuPredictor, ImuPredictorUndistort, KinematicModel, LidarVendor,
     LioConfig, OdomMsg, PointXYZIT, SyncProcessedCloud,
 };
-use pelorus_sync::{ImuSyncMode, LocatedBufferView, Synchronizer};
 use pelorus_localmap::{IVoxHashMap, IVoxNearbyType};
+use pelorus_sync::{ImuSyncMode, LocatedBufferView, Synchronizer};
 
 /// How densely the constant-twist model is sampled into IMU messages. It only
 /// has to be fine enough that the rotation between two samples stays small.
@@ -55,7 +55,6 @@ impl CudaCloudUploadBuffers {
 
 pub struct Pipeline {
     map: Arc<Mutex<RegistrationState>>,
-    ext_lidar_to_imu: Isometry3<f64>,
     pub config: LioConfig,
     active_backend: ActiveBackend,
     #[cfg(feature = "cuda")]
@@ -72,7 +71,7 @@ pub struct Pipeline {
 /// - **World Frame (W)**: Fixed global reference frame, aligned with IMU orientation at
 ///   initialization. Z-axis points upward (anti-gravity).
 /// - **IMU Frame (I)**: Body-fixed frame attached to the IMU sensor
-/// - **Lidar Frame (L)**: Sensor-fixed frame attached to the LiDAR
+/// - **Lidar Frame (L)**: Sensor-fixed frame attached to the Lidar
 #[derive(Debug, Clone)]
 pub struct PelorusOutput {
     pub scan_id: u64,
@@ -177,7 +176,6 @@ impl Pipeline {
 
         Self {
             map: Arc::new(Mutex::new(map)),
-            ext_lidar_to_imu,
             config: config.clone(),
             active_backend: ActiveBackend::detect(config),
             #[cfg(feature = "cuda")]
@@ -199,7 +197,7 @@ impl Pipeline {
     }
 
     pub fn ext(&self) -> Isometry3<f64> {
-        self.ext_lidar_to_imu
+        self.map.lock().unwrap().get_state().lidar_imu_extrinsic
     }
 
     /// Drop the GPU-resident buffers this pipeline and its registration state own.
@@ -335,9 +333,10 @@ impl Pipeline {
                 cloud_view.upload_from_slice_cuda(stream, &processed.cloud);
 
                 let mut map = self.map.lock().unwrap();
+                let ext = map.get_state().lidar_imu_extrinsic;
                 match map.register_and_map(
                     processed.should_map_only,
-                    self.ext_lidar_to_imu,
+                    ext,
                     cloud_view,
                     lidar_timestamp,
                     processed.scan_id as usize,
@@ -398,9 +397,10 @@ impl Pipeline {
                 cloud_view.upload_from_slice_metal(stream, &processed.cloud);
 
                 let mut map = self.map.lock().unwrap();
+                let ext = map.get_state().lidar_imu_extrinsic;
                 match map.register_and_map(
                     processed.should_map_only,
-                    self.ext_lidar_to_imu,
+                    ext,
                     cloud_view,
                     lidar_timestamp,
                     processed.scan_id as usize,
@@ -461,9 +461,10 @@ impl Pipeline {
                 cloud_view.upload_from_slice_vulkan(stream, &processed.cloud);
 
                 let mut map = self.map.lock().unwrap();
+                let ext = map.get_state().lidar_imu_extrinsic;
                 match map.register_and_map(
                     processed.should_map_only,
-                    self.ext_lidar_to_imu,
+                    ext,
                     cloud_view,
                     lidar_timestamp,
                     processed.scan_id as usize,
@@ -512,9 +513,10 @@ impl Pipeline {
 
         let register_result = {
             let mut map = self.map.lock().unwrap();
+            let ext = map.get_state().lidar_imu_extrinsic;
             match map.register_and_map(
                 processed.should_map_only,
-                self.ext_lidar_to_imu,
+                ext,
                 &cloud_view,
                 lidar_timestamp,
                 processed.scan_id as usize,

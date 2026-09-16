@@ -1,8 +1,4 @@
 //! Low-latency, output-only IMU propagation.
-//!
-//! This predictor is separate from the registration EqF. LiDAR
-//! corrections reseed it, so enabling high-rate output cannot perturb mapping
-//! or the corrected trajectory.
 
 use std::{
     collections::VecDeque,
@@ -57,6 +53,11 @@ enum Command {
     PrepareExport(CorrectedSnapshot, Vec<ImuMsg>, SyncSender<()>),
     Corrected(CorrectedSnapshot, SyncSender<()>),
     SetBaseToLidar(Isometry3<f64>, SyncSender<()>),
+    SetStartupTf(
+        Option<Isometry3<f64>>,
+        Option<Isometry3<f64>>,
+        SyncSender<()>,
+    ),
     Shutdown,
 }
 
@@ -67,6 +68,17 @@ pub struct RealtimePredictorHandle {
 }
 
 impl RealtimePredictorHandle {
+    pub fn startup_tf_callback(
+        &self,
+    ) -> impl Fn(Option<Isometry3<f64>>, Option<Isometry3<f64>>) + Send + Sync + use<> {
+        let tx = self.command_tx.clone();
+        move |imu, base| {
+            let (done_tx, done_rx) = std::sync::mpsc::sync_channel(0);
+            if tx.send(Command::SetStartupTf(imu, base, done_tx)).is_ok() {
+                let _ = done_rx.recv();
+            }
+        }
+    }
     pub fn new(config: &LioConfig) -> (Self, Receiver<RealtimePrediction>) {
         Self::new_with_export(config, None)
     }
@@ -293,6 +305,22 @@ fn worker(
                 state.set_base_to_lidar(base_to_lidar);
                 if let Some(export_state) = export_state.as_mut() {
                     export_state.set_base_to_lidar(base_to_lidar);
+                }
+                let _ = completed.send(());
+            }
+            Command::SetStartupTf(imu, base, completed) => {
+                for worker in std::iter::once(&mut state).chain(export_state.iter_mut()) {
+                    if let Some(imu) = imu {
+                        worker.imu.set_lidar_to_imu(&imu);
+                        worker.ekf.state.offset_t_l_i = imu.translation.vector;
+                        worker.ekf.state.offset_r_l_i = crate::eqf::SO3::try_from_mat(
+                            imu.rotation.to_rotation_matrix().matrix(),
+                        )
+                        .unwrap();
+                    }
+                    if let Some(base) = base {
+                        worker.set_base_to_lidar(base);
+                    }
                 }
                 let _ = completed.send(());
             }

@@ -120,7 +120,7 @@ int main(int argc, char **argv)
     pthread_mutex_unlock(&ctx.mutex);
 
     if (target_scan_id == 0) {
-        fprintf(stderr, "Dataset did not contain a valid LiDAR scan\n");
+        fprintf(stderr, "Dataset did not contain a valid Lidar scan\n");
         pelorus_set_callback(pelorus, NULL, NULL);
         pthread_cond_destroy(&ctx.cond);
         pthread_mutex_destroy(&ctx.mutex);

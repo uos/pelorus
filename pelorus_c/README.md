@@ -192,7 +192,7 @@ pelorus config generate recommended > my_config.rl
 pelorus config generate full > my_config.rl
 ```
 
-All parameters (map resolution, IMU covariances, LiDAR vendor, filtering options, etc.) are configurable.
+All parameters (map resolution, IMU covariances, Lidar vendor, filtering options, etc.) are configurable.
 
 ## API Design
 
@@ -299,7 +299,7 @@ Pelorus uses two timestamp levels:
 1. **IMU/Odom timestamps** (`timestamp_sec` + `timestamp_nanosec`)
     - Absolute timestamps (typically epoch / ROS time) used for synchronization.
 
-2. **LiDAR timestamps**
+2. **Lidar timestamps**
     - `pelorus_pointcloud2.header_timestamp_sec/nanosec`: absolute reference time for the scan.
     - Per-point field `t` (if provided): `uint32` **nanoseconds offset**, **non-negative** and **forward in time** relative to the scan header timestamp.
 

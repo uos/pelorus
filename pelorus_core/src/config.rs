@@ -13,9 +13,9 @@ use crate::{
     CoordinateSystem, DownsampleParameters, ImuCalibrationParameters, ImuConfigParameter,
     ImuDriverConfig, ImuDriverType, ImuParameters, KinematicModel, LidarDriverConfig,
     LidarDriverType, LidarVendor, LioConfig, MadgwickSetting, OdometryRate, OusterConfig,
-    OusterTimestampMode, PassthroughFilterParameters, PointCloudMode, SyncNodeParameters,
-    SyncParameters, PreprocessingBackend, Qos, Reliability, RerunConfig, RerunMapConfig,
-    SensorDriverConfig, VelodyneConfig, VelodyneModel, VelodyneTimestampMode, XsensConfig,
+    OusterTimestampMode, PassthroughFilterParameters, PointCloudMode, PreprocessingBackend, Qos,
+    Reliability, RerunConfig, RerunMapConfig, SensorDriverConfig, SyncNodeParameters,
+    SyncParameters, VelodyneConfig, VelodyneModel, VelodyneTimestampMode, XsensConfig,
     XsensTimestampMode, adaptive_execution::ExecutionPolicy,
 };
 
@@ -188,7 +188,7 @@ pub fn reject_unknown_overrides(
         .collect::<Vec<_>>();
     if !unknown.is_empty() {
         return Err(anyhow!(
-            "override{} {} not recognized; run 'config generate full' to see every setting",
+            "override{} {} not recognized. Run 'config generate full' to see every setting",
             if unknown.len() == 1 { "" } else { "s" },
             unknown.join(", ")
         ));
@@ -393,10 +393,7 @@ mod override_tests {
 
     #[test]
     fn the_imu_time_offset_is_read_in_seconds() {
-        assert_eq!(
-            config_with("").sync_params.imu.calibration.time_offset,
-            0.0
-        );
+        assert_eq!(config_with("").sync_params.imu.calibration.time_offset, 0.0);
 
         let shifted = config_with("imu.calibration.time_offset = -5.9ms\n");
         assert!(
@@ -1152,14 +1149,14 @@ fn ast_to_config_inner(
             (cov_gyr, cov_acc, cov_gyr_bias, cov_acc_bias)
         };
 
-        // LiDAR-only trajectories use the LiDAR frame directly.
+        // Lidar-only trajectories use the Lidar frame directly.
         let (initial_translation_lidar_to_imu, initial_rotation_lidar_to_imu) = if lidar_only {
             if initial_translation_lidar_to_imu != Vector3::zeros()
                 || initial_rotation_lidar_to_imu != Matrix3::identity()
             {
                 log::info!(
                     "imu.lidar_only is on, so imu.from_lidar_transform is ignored and the \
-                     trajectory is the LiDAR's own."
+                     trajectory is the Lidar's own."
                 );
             }
             (Vector3::zeros(), Matrix3::identity())

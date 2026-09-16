@@ -44,7 +44,7 @@ pub use ros_pointcloud2::ros::TimeMsg;
 
 /// Output-only hook invoked after calibration and AHRS filtering.
 pub type RealtimeImuCallback = Arc<dyn Fn(ImuMsg) + Send + Sync>;
-/// Output-only hook invoked as soon as a LiDAR scan enters preprocessing.
+/// Output-only hook invoked as soon as a Lidar scan enters preprocessing.
 pub type RealtimeLidarBarrierCallback = Arc<dyn Fn() + Send + Sync>;
 
 #[cfg(not(feature = "large-processing-queue"))]
@@ -214,9 +214,9 @@ pub fn secs_to_timestamp(secs: f64) -> TimeMsg {
     TimeMsg { sec, nanosec }
 }
 
-/// Selects how the synchronizer obtains IMU messages for each LiDAR interval.
+/// Selects how the synchronizer obtains IMU messages for each Lidar interval.
 pub enum ImuSyncMode {
-    /// Process LiDAR frames without consuming or waiting for IMU messages.
+    /// Process Lidar frames without consuming or waiting for IMU messages.
     Disabled {
         /// Apply producer backpressure instead of dropping scans. Enable this
         /// for managed offline replay, not live sensor/topic input.
@@ -224,7 +224,7 @@ pub enum ImuSyncMode {
     },
     /// Wait for timestamp-bracketing IMU messages from a continuous source.
     Continuous,
-    /// Drain only the IMU messages already available when a LiDAR scan arrives.
+    /// Drain only the IMU messages already available when a Lidar scan arrives.
     LidarDriven,
     /// During bounded replay, advance one scan when timestamp-bracketing IMU data
     /// has not arrived yet.
@@ -641,7 +641,7 @@ mod tests {
 
         let processed = receiver
             .recv_timeout(std::time::Duration::from_secs(2))
-            .expect("LiDAR-only cloud should not wait for IMU data");
+            .expect("Lidar-only cloud should not wait for IMU data");
         assert!(processed.imu_buffer.is_empty());
         assert_eq!(processed.imu_frame, "");
         assert!(synthetic_undistort_called.load(Ordering::Acquire));
@@ -1973,7 +1973,7 @@ pub struct Synchronizer {
     last_imu_time: f64,
     runtime_eval: RuntimeEvaluator,
     imu_calibration_apply: Option<ImuIntrinsicCorrection>,
-    /// Seconds the IMU clock runs ahead of the LiDAR clock.
+    /// Seconds the IMU clock runs ahead of the Lidar clock.
     imu_time_offset: f64,
     madgwick_filter: MadgwickSetting,
     realtime_imu_callback: Option<RealtimeImuCallback>,
@@ -1996,7 +1996,7 @@ impl Synchronizer {
         realtime_lidar_barrier_callback: Option<RealtimeLidarBarrierCallback>,
     ) -> anyhow::Result<Self> {
         let imu_disabled = matches!(&imu_sync_mode, ImuSyncMode::Disabled { .. });
-        // LiDAR-only input has no IMU stream to pace it. Apply backpressure at
+        // Lidar-only input has no IMU stream to pace it. Apply backpressure at
         // the preprocessing queue instead of silently dropping scans when a
         // dataset or driver produces them faster than registration consumes them.
         let lossless_replay = matches!(
@@ -2783,7 +2783,7 @@ impl Synchronizer {
             };
 
             if imu_data.is_empty() {
-                // A runtime LiDAR-only pipeline still uses this callback to
+                // A runtime Lidar-only pipeline still uses this callback to
                 // synthesize constant-twist IMU samples, propagate the EKF,
                 // and deskew the cloud. Only the generic no-callback case is
                 // a true passthrough.

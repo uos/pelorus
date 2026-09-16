@@ -9,11 +9,11 @@ use pelorus_core::adaptive_execution::ExecutionMode;
 use pelorus_core::adaptive_execution::{AdaptiveExecutionPlanner, ExecutionMode, HeavyPhase};
 use pelorus_core::timing::RuntimeEvaluator;
 use pelorus_core::{ImuMsg, ImuParameters, KinematicModel, LidarVendor, OdomMsg, PointXYZIT};
+use pelorus_localmap::*;
 use pelorus_sync::LocatedBufferView;
 #[cfg(feature = "rayon")]
 use rayon::prelude::*;
 use ros_pointcloud2::prelude::*;
-use pelorus_localmap::*;
 #[cfg(feature = "rayon")]
 use std::sync::Mutex;
 use std::sync::{Arc, RwLock};
@@ -52,6 +52,17 @@ pub struct RegistrationState {
 }
 
 impl RegistrationState {
+    pub fn set_lidar_to_imu(&mut self, transform: Isometry3<f64>) {
+        assert!(
+            !self.ekf.initialized,
+            "Cannot change startup extrinsics after initialization"
+        );
+        self.imu_processing.set_lidar_to_imu(&transform);
+        self.ekf.state.offset_t_l_i = transform.translation.vector;
+        self.ekf.state.offset_r_l_i =
+            SO3::try_from_mat(transform.rotation.to_rotation_matrix().matrix()).unwrap();
+    }
+
     pub(crate) fn set_linear_velocity(&mut self, velocity: Vector3<f64>) {
         self.ekf.state.vel = velocity;
     }
@@ -62,7 +73,9 @@ impl RegistrationState {
     }
 
     #[cfg(not(feature = "nn_kdt"))]
-    pub fn get_distributions_with_lru_scores(&self) -> Vec<pelorus_localmap::localmap::VoxelDistributionLru> {
+    pub fn get_distributions_with_lru_scores(
+        &self,
+    ) -> Vec<pelorus_localmap::localmap::VoxelDistributionLru> {
         self.map.get_distributions_with_lru_scores()
     }
 

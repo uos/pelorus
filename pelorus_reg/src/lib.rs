@@ -22,7 +22,7 @@ pub use pelorus_localmap::*;
 /// - **World Frame (W)**: Fixed global reference frame, aligned with IMU orientation at
 ///   initialization. Z-axis points upward (anti-gravity).
 /// - **IMU Frame (I)**: Body-fixed frame attached to the IMU sensor
-/// - **Lidar Frame (L)**: Sensor-fixed frame attached to the LiDAR
+/// - **Lidar Frame (L)**: Sensor-fixed frame attached to the Lidar
 #[derive(Clone, Default, Debug)]
 pub struct CloudRegisterResult {
     /// Pose of the lidar in world frame (T_W_L)
@@ -38,7 +38,7 @@ pub struct CloudRegisterResult {
 /// - **World Frame (W)**: Fixed global reference frame, aligned with IMU at initialization,
 ///   Z-axis points upward (anti-gravity)
 /// - **IMU Frame (I)**: Body-fixed frame attached to the IMU sensor
-/// - **Lidar Frame (L)**: Sensor-fixed frame attached to the LiDAR
+/// - **Lidar Frame (L)**: Sensor-fixed frame attached to the Lidar
 #[derive(Clone, Debug, PartialEq)]
 pub struct ImuEkfPrediction {
     /// Pose of the IMU in world frame
