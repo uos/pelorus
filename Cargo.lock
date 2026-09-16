@@ -5021,30 +5021,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7011d97b484a5ebdc4b1fdb3b12d5e4bbbea56e9d22b688f2e79e04b65a7d8a6"
 
 [[package]]
-name = "pelorus"
-version = "0.0.7"
-dependencies = [
- "anyhow",
- "log",
- "nalgebra 0.35.0",
- "pelorus_core",
- "pelorus_reg",
- "prelio",
- "ratslang",
- "rayon",
- "ros2-interfaces-jazzy-serde",
- "ros_pointcloud2",
- "thiserror 2.0.20",
- "ureq",
-]
-
-[[package]]
 name = "pelorus_c"
 version = "0.0.7"
 dependencies = [
  "cbindgen",
  "log",
- "pelorus",
+ "pelorus_sdk",
 ]
 
 [[package]]
@@ -5076,13 +5058,14 @@ dependencies = [
  "num_cpus",
  "pelorus_core",
  "pelorus_cuda",
+ "pelorus_localmap",
  "pelorus_metal",
  "pelorus_protocol",
  "pelorus_reg",
+ "pelorus_sync",
+ "pelorus_syncio",
  "pelorus_vulkan",
  "petname",
- "prelio",
- "prelio_io",
  "r2r",
  "rand 0.9.5",
  "ratatui",
@@ -5150,6 +5133,26 @@ name = "pelorus_glim_odometry"
 version = "0.0.7"
 
 [[package]]
+name = "pelorus_localmap"
+version = "0.0.7"
+dependencies = [
+ "bytemuck",
+ "kiddo",
+ "log",
+ "morton-encoding",
+ "nalgebra 0.35.0",
+ "nohash-hasher",
+ "pelorus_core",
+ "rand 0.9.5",
+ "rand_distr",
+ "rand_pcg 0.9.0",
+ "rayon",
+ "ros_pointcloud2",
+ "rustc-hash",
+ "serde",
+]
+
+[[package]]
 name = "pelorus_metal"
 version = "0.0.7"
 dependencies = [
@@ -5184,14 +5187,14 @@ dependencies = [
  "ndarray 0.17.2",
  "numpy",
  "pelorus_core",
+ "pelorus_localmap",
  "pelorus_reg",
- "prelio",
+ "pelorus_sync",
  "pyo3",
  "ratslang",
  "rayon",
  "ros2-interfaces-jazzy-serde",
  "ros_pointcloud2",
- "spole",
 ]
 
 [[package]]
@@ -5205,14 +5208,85 @@ dependencies = [
  "nalgebra 0.35.0",
  "pelorus_core",
  "pelorus_cuda",
+ "pelorus_localmap",
  "pelorus_metal",
+ "pelorus_sync",
  "pelorus_vulkan",
- "prelio",
  "rayon",
  "ros_pointcloud2",
  "serde",
  "serde_json",
- "spole",
+]
+
+[[package]]
+name = "pelorus_sdk"
+version = "0.0.7"
+dependencies = [
+ "anyhow",
+ "log",
+ "nalgebra 0.35.0",
+ "pelorus_core",
+ "pelorus_reg",
+ "pelorus_sync",
+ "ratslang",
+ "rayon",
+ "ros2-interfaces-jazzy-serde",
+ "ros_pointcloud2",
+ "thiserror 2.0.20",
+ "ureq",
+]
+
+[[package]]
+name = "pelorus_sync"
+version = "0.0.7"
+dependencies = [
+ "anyhow",
+ "either",
+ "imu-calib",
+ "imu-fusion",
+ "log",
+ "morton-encoding",
+ "nalgebra 0.35.0",
+ "pelorus_core",
+ "pelorus_cuda",
+ "pelorus_metal",
+ "pelorus_vulkan",
+ "rand 0.9.5",
+ "rayon",
+ "ros_pointcloud2",
+]
+
+[[package]]
+name = "pelorus_syncio"
+version = "0.0.7"
+dependencies = [
+ "anyhow",
+ "cloudini",
+ "env_logger",
+ "futures-lite",
+ "hiroz",
+ "hiroz-msgs",
+ "hiroz-protocol",
+ "log",
+ "mt_pubsub",
+ "mt_rat",
+ "nalgebra 0.35.0",
+ "pelorus_core",
+ "pelorus_drivers",
+ "pelorus_protocol",
+ "pelorus_sync",
+ "r2r",
+ "rerun",
+ "rkyv",
+ "ros2-client",
+ "ros2-interfaces-jazzy-rkyv",
+ "ros2-interfaces-jazzy-serde",
+ "ros_pointcloud2",
+ "thiserror 2.0.20",
+ "tokio",
+ "transforms_io 0.5.4 (registry+https://github.com/rust-lang/crates.io-index)",
+ "transforms_io_hiroz",
+ "zenoh-buffers",
 ]
 
 [[package]]
@@ -5225,10 +5299,10 @@ dependencies = [
  "log",
  "nalgebra 0.35.0",
  "pelorus_core",
+ "pelorus_localmap",
  "pkg-config",
  "ros_pointcloud2",
  "shaderc",
- "spole",
 ]
 
 [[package]]
@@ -5583,59 +5657,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "85eae3c4ed2f50dcfe72643da4befc30deadb458a9b590d720cde2f2b1e97da9"
 dependencies = [
  "zerocopy",
-]
-
-[[package]]
-name = "prelio"
-version = "0.0.7"
-dependencies = [
- "anyhow",
- "either",
- "imu-calib",
- "imu-fusion",
- "log",
- "morton-encoding",
- "nalgebra 0.35.0",
- "pelorus_core",
- "pelorus_cuda",
- "pelorus_metal",
- "pelorus_vulkan",
- "rand 0.9.5",
- "rayon",
- "ros_pointcloud2",
-]
-
-[[package]]
-name = "prelio_io"
-version = "0.0.7"
-dependencies = [
- "anyhow",
- "cloudini",
- "env_logger",
- "futures-lite",
- "hiroz",
- "hiroz-msgs",
- "hiroz-protocol",
- "log",
- "mt_pubsub",
- "mt_rat",
- "nalgebra 0.35.0",
- "pelorus_core",
- "pelorus_drivers",
- "pelorus_protocol",
- "prelio",
- "r2r",
- "rerun",
- "rkyv",
- "ros2-client",
- "ros2-interfaces-jazzy-rkyv",
- "ros2-interfaces-jazzy-serde",
- "ros_pointcloud2",
- "thiserror 2.0.20",
- "tokio",
- "transforms_io 0.5.3 (registry+https://github.com/rust-lang/crates.io-index)",
- "transforms_io_hiroz",
- "zenoh-buffers",
 ]
 
 [[package]]
@@ -8320,26 +8341,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "spole"
-version = "0.0.7"
-dependencies = [
- "bytemuck",
- "kiddo",
- "log",
- "morton-encoding",
- "nalgebra 0.35.0",
- "nohash-hasher",
- "pelorus_core",
- "rand 0.9.5",
- "rand_distr",
- "rand_pcg 0.9.0",
- "rayon",
- "ros_pointcloud2",
- "rustc-hash",
- "serde",
-]
-
-[[package]]
 name = "stabby"
 version = "72.1.16"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -9158,9 +9159,9 @@ dependencies = [
 
 [[package]]
 name = "transforms_io"
-version = "0.5.3"
+version = "0.5.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "64cb9f5c86b55c40719f900a030cfa2dc3cc040492d06be7f274a1efeaa22fca"
+checksum = "ab15e78f0db414df4ccdf4c984b6c269370618af7e11e5a754f32cab1df3586d"
 dependencies = [
  "futures-lite",
  "log",
@@ -9177,8 +9178,8 @@ dependencies = [
 
 [[package]]
 name = "transforms_io"
-version = "0.5.3"
-source = "git+https://codeberg.org/stelzo/transforms_io?tag=v0.5.3#6ed1e7e92424753f09d03addc868dcbc226682de"
+version = "0.5.4"
+source = "git+https://codeberg.org/stelzo/transforms_io?tag=v0.5.4#93b4ee9afe7f9e59ff4fecc28b8016082641b1f1"
 dependencies = [
  "futures-lite",
  "log",
@@ -9192,8 +9193,8 @@ dependencies = [
 
 [[package]]
 name = "transforms_io_hiroz"
-version = "0.5.0"
-source = "git+https://codeberg.org/stelzo/transforms_io?tag=v0.5.3#6ed1e7e92424753f09d03addc868dcbc226682de"
+version = "0.5.1"
+source = "git+https://codeberg.org/stelzo/transforms_io?tag=v0.5.4#93b4ee9afe7f9e59ff4fecc28b8016082641b1f1"
 dependencies = [
  "hiroz",
  "hiroz-msgs",
@@ -9201,7 +9202,7 @@ dependencies = [
  "nalgebra 0.35.0",
  "thiserror 2.0.20",
  "transforms",
- "transforms_io 0.5.3 (git+https://codeberg.org/stelzo/transforms_io?tag=v0.5.3)",
+ "transforms_io 0.5.4 (git+https://codeberg.org/stelzo/transforms_io?tag=v0.5.4)",
 ]
 
 [[package]]

@@ -1,6 +1,6 @@
-# [l]iDAR [i]MU [fi]ltering and [s]yncronization
+# pelorus_sync
 
-Preparing point clouds for tighly coupled LIO workloads.
+Lidar and IMU filtering and synchronization, preparing point clouds for tightly coupled LIO workloads.
 
 ## Features
 

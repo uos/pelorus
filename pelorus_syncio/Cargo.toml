@@ -1,6 +1,6 @@
 [package]
-name = "prelio_io"
-description = "IO layer for prelio"
+name = "pelorus_syncio"
+description = "IO layer for pelorus_sync"
 
 version.workspace = true
 edition.workspace = true
@@ -19,7 +19,7 @@ ros_pointcloud2.workspace = true
 anyhow.workspace = true
 nalgebra.workspace = true
 futures-lite.workspace = true
-prelio = { workspace = true, default-features = false }
+pelorus_sync = { workspace = true, default-features = false }
 log.workspace = true
 env_logger.workspace = true
 ros2-client = { workspace = true, optional = true }
@@ -42,14 +42,14 @@ transforms_io_hiroz = { workspace = true, optional = true }
 
 [features]
 default = ["rayon", "compressed-pointcloud"]
-rayon = ["prelio/rayon", "ros_pointcloud2/rayon"]
+rayon = ["pelorus_sync/rayon", "ros_pointcloud2/rayon"]
 rat = ["dep:mt_rat"]
-downsample = ["prelio/downsample"]
-cuda = ["prelio/cuda"]
-metal = ["prelio/metal"]
-vulkan = ["prelio/vulkan"]
-no-imu-sync = ["prelio/no-imu-sync"]
-large-processing-queue = ["prelio/large-processing-queue"]
+downsample = ["pelorus_sync/downsample"]
+cuda = ["pelorus_sync/cuda"]
+metal = ["pelorus_sync/metal"]
+vulkan = ["pelorus_sync/vulkan"]
+no-imu-sync = ["pelorus_sync/no-imu-sync"]
+large-processing-queue = ["pelorus_sync/large-processing-queue"]
 velodyne-driver = ["dep:pelorus_drivers", "pelorus_drivers/velodyne-driver"]
 xsens-driver = ["dep:pelorus_drivers", "pelorus_drivers/xsens-driver"]
 ouster-driver = ["dep:pelorus_drivers", "pelorus_drivers/ouster-driver"]

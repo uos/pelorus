@@ -191,6 +191,11 @@ impl ImuProcessing {
         s
     }
 
+    pub fn set_lidar_to_imu(&mut self, lidar_to_imu: &Isometry3<f64>) {
+        self.lidar_to_imu_r = *lidar_to_imu.rotation.to_rotation_matrix().matrix();
+        self.lidar_to_imu_t = lidar_to_imu.translation.vector;
+    }
+
     pub fn set_base_to_lidar(&mut self, base_to_lidar: &Isometry3<f64>) {
         let lidar_to_base = base_to_lidar.inverse();
         self.lidar_to_base_r = *lidar_to_base.rotation.to_rotation_matrix().matrix();
@@ -224,7 +229,7 @@ impl ImuProcessing {
         ekf.state.offset_t_l_i = self.lidar_to_imu_t;
         ekf.state.offset_r_l_i = SO3::try_from_mat(&self.lidar_to_imu_r).unwrap();
 
-        // Initialize R_W_I so the world frame aligns with the base frame (not the IMU or LiDAR frame).
+        // Initialize R_W_I so the world frame aligns with the base frame (not the IMU or Lidar frame).
         // R_W_B = R_W_I * R_I_L * R_L_B = I  =>  R_W_I = (R_I_L * R_L_B)^{-1} = R_B_L * R_L_I
         // Note: self.lidar_to_base_r is R_B_L.
         let r_b_l = self.lidar_to_base_r;

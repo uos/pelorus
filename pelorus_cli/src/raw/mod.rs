@@ -140,14 +140,14 @@ pub fn plan_raw_run(config: &LioConfig, sensor: RawSensor) -> Result<RawPlan> {
         feature = "ouster-driver"
     ))]
     if lidar {
-        prelio_io::validate_native_lidar_vendor(
+        pelorus_syncio::validate_native_lidar_vendor(
             &drivers.lidar.driver_type,
-            config.prelio_params.lidar_vendor,
+            config.sync_params.lidar_vendor,
         )?;
     }
 
-    let cloud_topic = config.prelio_node_params.cloud_src_topic.clone();
-    let imu_topic = config.prelio_node_params.imu_src_topic.clone();
+    let cloud_topic = config.sync_node_params.cloud_src_topic.clone();
+    let imu_topic = config.sync_node_params.imu_src_topic.clone();
     if lidar && cloud_topic.is_empty() {
         bail!("`lidar.topic` is empty, so there is no topic to publish raw scans on.");
     }
@@ -161,7 +161,7 @@ pub fn plan_raw_run(config: &LioConfig, sensor: RawSensor) -> Result<RawPlan> {
         imu,
         cloud_topic,
         imu_topic,
-        cloud_mode: config.prelio_node_params.cloud_subscriber_mode,
+        cloud_mode: config.sync_node_params.cloud_subscriber_mode,
     })
 }
 
@@ -174,9 +174,9 @@ mod tests {
         let mut config = LioConfig::default();
         config.sensor_drivers.lidar.driver_type = lidar;
         config.sensor_drivers.imu.driver_type = imu;
-        config.prelio_node_params.cloud_src_topic = "/ouster/points".into();
-        config.prelio_node_params.imu_src_topic = "/ouster/imu".into();
-        config.prelio_params.lidar_vendor = LidarVendor::Ouster;
+        config.sync_node_params.cloud_src_topic = "/ouster/points".into();
+        config.sync_node_params.imu_src_topic = "/ouster/imu".into();
+        config.sync_params.lidar_vendor = LidarVendor::Ouster;
         config
     }
 
@@ -241,7 +241,7 @@ mod tests {
     #[test]
     fn lidar_vendor_must_match_the_driver() {
         let mut config = config_with(LidarDriverType::Ouster, ImuDriverType::Disabled);
-        config.prelio_params.lidar_vendor = LidarVendor::Velodyne;
+        config.sync_params.lidar_vendor = LidarVendor::Velodyne;
         assert!(plan_raw_run(&config, RawSensor::Lidar).is_err());
     }
 
@@ -253,14 +253,14 @@ mod tests {
     #[test]
     fn imu_only_run_ignores_a_mismatched_lidar_vendor() {
         let mut config = config_with(LidarDriverType::Ouster, ImuDriverType::Ouster);
-        config.prelio_params.lidar_vendor = LidarVendor::Velodyne;
+        config.sync_params.lidar_vendor = LidarVendor::Velodyne;
         assert!(plan_raw_run(&config, RawSensor::Imu).is_ok());
     }
 
     #[test]
     fn an_empty_input_topic_is_rejected() {
         let mut config = config_with(LidarDriverType::Disabled, ImuDriverType::Xsens);
-        config.prelio_node_params.imu_src_topic = String::new();
+        config.sync_node_params.imu_src_topic = String::new();
         assert!(plan_raw_run(&config, RawSensor::Imu).is_err());
     }
 }

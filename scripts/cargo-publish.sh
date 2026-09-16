@@ -25,7 +25,7 @@ echo "==> Preparing workspace manifests for crates.io..."
 # Ensure we restore Cargo.toml files upon exit/interruption
 cleanup() {
     echo "==> Restoring Cargo.toml files..."
-    git checkout Cargo.toml prelio_io/Cargo.toml pelorus_cli/Cargo.toml 2>/dev/null || true
+    git checkout Cargo.toml pelorus_syncio/Cargo.toml pelorus_cli/Cargo.toml 2>/dev/null || true
 }
 trap cleanup EXIT INT TERM
 
@@ -61,7 +61,7 @@ def strip_hiroz(content):
                 "\"transforms_io_hiroz",
                 "\"dep:transforms_io_hiroz",
                 "\"dep:hiroz",
-                "\"prelio_io/hiroz",
+                "\"pelorus_syncio/hiroz",
                 "\"ros_pointcloud2/hiroz",
             ]
         ):
@@ -80,7 +80,7 @@ def strip_hiroz(content):
 
     return "\n".join(out) + "\n"
 
-for path in ["prelio_io/Cargo.toml", "pelorus_cli/Cargo.toml", "Cargo.toml"]:
+for path in ["pelorus_syncio/Cargo.toml", "pelorus_cli/Cargo.toml", "Cargo.toml"]:
     with open(path, "r") as f:
         c = f.read()
     c = strip_hiroz(c)
@@ -90,19 +90,20 @@ EOF
 
 echo "==> Manifests stripped of unpublished git dependencies."
 
-# Topological publishing order for Pelorus workspace
+# Topological publishing order for Pelorus workspace.
+# pelorus_vulkan depends on pelorus_localmap, so pelorus_localmap must publish first.
 PACKAGES=(
     "pelorus_core"
     "pelorus_protocol"
     "pelorus_drivers"
+    "pelorus_localmap"
     "pelorus_cuda"
     "pelorus_metal"
     "pelorus_vulkan"
-    "spole"
-    "prelio"
+    "pelorus_sync"
     "pelorus_reg"
-    "prelio_io"
-    "pelorus"
+    "pelorus_syncio"
+    "pelorus_sdk"
     "pelorus_cli"
 )
 

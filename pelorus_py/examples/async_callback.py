@@ -115,7 +115,7 @@ def main():
 
     if target_scan_id is None:
         lio.clear_callback()
-        raise RuntimeError("Dataset did not contain a valid LiDAR scan")
+        raise RuntimeError("Dataset did not contain a valid Lidar scan")
 
     with completion:
         while target_scan_id not in received_odometry:

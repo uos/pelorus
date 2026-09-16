@@ -1,8 +1,4 @@
 //! Low-latency, output-only IMU propagation.
-//!
-//! This predictor is separate from the registration EqF. LiDAR
-//! corrections reseed it, so enabling high-rate output cannot perturb mapping
-//! or the corrected trajectory.
 
 use std::{
     collections::VecDeque,
@@ -57,6 +53,11 @@ enum Command {
     PrepareExport(CorrectedSnapshot, Vec<ImuMsg>, SyncSender<()>),
     Corrected(CorrectedSnapshot, SyncSender<()>),
     SetBaseToLidar(Isometry3<f64>, SyncSender<()>),
+    SetStartupTf(
+        Option<Isometry3<f64>>,
+        Option<Isometry3<f64>>,
+        SyncSender<()>,
+    ),
     Shutdown,
 }
 
@@ -67,6 +68,17 @@ pub struct RealtimePredictorHandle {
 }
 
 impl RealtimePredictorHandle {
+    pub fn startup_tf_callback(
+        &self,
+    ) -> impl Fn(Option<Isometry3<f64>>, Option<Isometry3<f64>>) + Send + Sync + use<> {
+        let tx = self.command_tx.clone();
+        move |imu, base| {
+            let (done_tx, done_rx) = std::sync::mpsc::sync_channel(0);
+            if tx.send(Command::SetStartupTf(imu, base, done_tx)).is_ok() {
+                let _ = done_rx.recv();
+            }
+        }
+    }
     pub fn new(config: &LioConfig) -> (Self, Receiver<RealtimePrediction>) {
         Self::new_with_export(config, None)
     }
@@ -102,7 +114,7 @@ impl RealtimePredictorHandle {
         )
     }
 
-    pub fn imu_callback(&self) -> prelio::RealtimeImuCallback {
+    pub fn imu_callback(&self) -> pelorus_sync::RealtimeImuCallback {
         let tx = self.command_tx.clone();
         Arc::new(move |imu| {
             // This stream is output-only: it must never backpressure sensor ingress.
@@ -110,7 +122,7 @@ impl RealtimePredictorHandle {
         })
     }
 
-    pub fn lidar_barrier_callback(&self) -> prelio::RealtimeLidarBarrierCallback {
+    pub fn lidar_barrier_callback(&self) -> pelorus_sync::RealtimeLidarBarrierCallback {
         let paused = Arc::clone(&self.paused);
         let pending_corrections = Arc::clone(&self.pending_corrections);
         Arc::new(move || {
@@ -207,7 +219,7 @@ fn worker(
         UnitQuaternion::from_matrix(&config.imu_params.initial_rotation_lidar_to_imu),
     );
     let mut state = WorkerState {
-        ekf: Eqf::new(config.prelio_params.imu.gravity, config.base_to_lidar),
+        ekf: Eqf::new(config.sync_params.imu.gravity, config.base_to_lidar),
         imu: ImuProcessing::new(&config.imu_params, &lidar_to_imu, &config.base_to_lidar),
         seeded: false,
         history: VecDeque::new(),
@@ -216,7 +228,7 @@ fn worker(
         output_base: config.base_link_frame.is_some(),
     };
     let mut export_state = export_tx.as_ref().map(|_| WorkerState {
-        ekf: Eqf::new(config.prelio_params.imu.gravity, config.base_to_lidar),
+        ekf: Eqf::new(config.sync_params.imu.gravity, config.base_to_lidar),
         imu: ImuProcessing::new(&config.imu_params, &lidar_to_imu, &config.base_to_lidar),
         seeded: false,
         history: VecDeque::new(),
@@ -293,6 +305,22 @@ fn worker(
                 state.set_base_to_lidar(base_to_lidar);
                 if let Some(export_state) = export_state.as_mut() {
                     export_state.set_base_to_lidar(base_to_lidar);
+                }
+                let _ = completed.send(());
+            }
+            Command::SetStartupTf(imu, base, completed) => {
+                for worker in std::iter::once(&mut state).chain(export_state.iter_mut()) {
+                    if let Some(imu) = imu {
+                        worker.imu.set_lidar_to_imu(&imu);
+                        worker.ekf.state.offset_t_l_i = imu.translation.vector;
+                        worker.ekf.state.offset_r_l_i = crate::eqf::SO3::try_from_mat(
+                            imu.rotation.to_rotation_matrix().matrix(),
+                        )
+                        .unwrap();
+                    }
+                    if let Some(base) = base {
+                        worker.set_base_to_lidar(base);
+                    }
                 }
                 let _ = completed.send(());
             }
@@ -527,7 +555,7 @@ mod tests {
             UnitQuaternion::from_matrix(&config.imu_params.initial_rotation_lidar_to_imu),
         );
         let mut state = WorkerState {
-            ekf: Eqf::new(config.prelio_params.imu.gravity, Isometry3::identity()),
+            ekf: Eqf::new(config.sync_params.imu.gravity, Isometry3::identity()),
             imu: ImuProcessing::new(&config.imu_params, &lidar_to_imu, &Isometry3::identity()),
             seeded: false,
             history: VecDeque::new(),

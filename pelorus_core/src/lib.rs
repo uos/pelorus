@@ -13,6 +13,9 @@ pub mod log_debouncer;
 
 pub use lie::{SE3, SO3};
 
+/// The reference default configuration, in Ratslang.
+pub const DEFAULT_CONFIG_STR: &str = include_str!("../default.rl");
+
 #[derive(Debug, Clone, Default, PointConvertible, Copy)]
 pub struct RobosensePoint {
     pub x: f32,
@@ -470,7 +473,7 @@ pub struct ImuParameters {
     pub kinematic_constraint_std: f64,
     pub kinematic_model: KinematicModel,
     pub wheel_odom_cov_override: Option<f64>,
-    /// Refine the configured LiDAR-to-IMU extrinsic during filtering.
+    /// Refine the configured Lidar-to-IMU extrinsic during filtering.
     pub estimate_extrinsic_online: bool,
     /// Ignore the IMU and propagate at a constant twist instead.
     pub lidar_only: bool,
@@ -523,7 +526,7 @@ pub enum KinematicModel {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct PrelioParameters {
+pub struct SyncParameters {
     pub imu: ImuConfigParameter,
     pub downsample: DownsampleParameters,
     pub passthrough_filter: PassthroughFilterParameters,
@@ -547,7 +550,7 @@ pub struct ImuCalibrationParameters {
     pub imu_intrinsics_calib_file_path: Option<String>,
     pub imu_calibrate_gyros: bool,
     pub gyro_calibration_samples: usize,
-    /// Seconds the IMU clock runs ahead of the LiDAR clock. Subtracted from
+    /// Seconds the IMU clock runs ahead of the Lidar clock. Subtracted from
     /// every IMU timestamp to put both sensors on one clock.
     pub time_offset: f64,
 }
@@ -602,7 +605,7 @@ pub struct PassthroughFilterParameters {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct PrelioNodeParameters {
+pub struct SyncNodeParameters {
     pub wheel_src_topic: String,
     pub cloud_src_topic: String,
     pub imu_src_topic: String,
@@ -667,14 +670,14 @@ pub enum PointCloudMode {
 /// Controls which estimator updates are published as odometry.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub enum OdometryRate {
-    /// Publish only LiDAR-corrected states (legacy behavior).
+    /// Publish only Lidar-corrected states (legacy behavior).
     #[default]
     Lidar,
-    /// Publish live IMU predictions and LiDAR-corrected states.
+    /// Publish live IMU predictions and Lidar-corrected states.
     ImuAndLidar,
 }
 
-/// Runtime and map-streaming settings for the optional Rerun visualization.
+/// Runtime settings for the optional Rerun visualization.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RerunConfig {
     /// Set by the CLI's `--rerun` switch. Configuration parsing leaves this disabled.
@@ -693,26 +696,21 @@ impl Default for RerunConfig {
     }
 }
 
-/// Settings for the bounded map assembled from registered scans for Rerun.
+/// Settings for the periodic map snapshot sent to Rerun.
+/// Renders one ellipsoid per voxel, colored by its relevance score.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RerunMapConfig {
     pub enabled: bool,
-    pub voxel_size: f32,
-    pub chunk_size: f32,
-    pub max_chunks: usize,
-    pub max_points_per_chunk: usize,
     pub publish_interval_sec: f64,
+    pub visual_scale: f32,
 }
 
 impl Default for RerunMapConfig {
     fn default() -> Self {
         Self {
-            enabled: true,
-            voxel_size: 0.2,
-            chunk_size: 10.0,
-            max_chunks: 256,
-            max_points_per_chunk: 8_192,
-            publish_interval_sec: 0.5,
+            enabled: false,
+            publish_interval_sec: 1.0,
+            visual_scale: 3.0,
         }
     }
 }
@@ -735,8 +733,8 @@ pub struct LioConfig {
     pub imu_params: ImuParameters,
     pub lidar_odom_cov: f64,
     pub enable_live_extrinsic_calibration: bool,
-    pub prelio_params: PrelioParameters,
-    pub prelio_node_params: PrelioNodeParameters,
+    pub sync_params: SyncParameters,
+    pub sync_node_params: SyncNodeParameters,
     pub neighbor_max_range: f64,
     pub ekf_max_iterations: usize,
     pub dist_update_sensitivity: f32,
@@ -1009,12 +1007,12 @@ pub struct ImuPosePrediction {
 }
 
 #[derive(Debug)]
-pub struct PrelioProcessedCloud {
+pub struct SyncProcessedCloud {
     pub scan_id: u64,
     pub received_at: std::time::Instant,
     pub cloud: Vec<PointXYZIT>,
     pub passthrough: Option<Vec<PointXYZIT>>,
-    /// IMU measurements synchronized to this LiDAR frame.
+    /// IMU measurements synchronized to this Lidar frame.
     pub imu_buffer: Vec<ImuMsg>,
     pub imu_frame: String,
     pub header: HeaderMsg,
@@ -1119,7 +1117,7 @@ impl std::fmt::Display for LidarParseError {
         match self {
             LidarParseError::UnknownVendor => write!(
                 f,
-                "Unknown LiDAR vendor, can not assume per point timestamp format"
+                "Unknown Lidar vendor, can not assume per point timestamp format"
             ),
         }
     }

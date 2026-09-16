@@ -13,12 +13,13 @@ rust-version.workspace = true
 [dependencies]
 imu-calib.workspace = true
 pelorus_core.workspace = true
-prelio_io = { workspace = true, default-features = false }
+pelorus_syncio = { workspace = true, default-features = false }
 pelorus_cuda = { optional = true, workspace = true }
 pelorus_metal = { optional = true, workspace = true }
 pelorus_vulkan = { optional = true, workspace = true }
-prelio = { workspace = true, default-features = false }
+pelorus_sync = { workspace = true, default-features = false }
 pelorus_reg = { workspace = true, default-features = false }
+pelorus_localmap = { workspace = true, default-features = false }
 ros_pointcloud2.workspace = true
 ros2-client = { workspace = true, optional = true }
 mcap = { workspace = true }
@@ -73,8 +74,8 @@ default = [
 
 rayon = [
   "dep:rayon",
-  "prelio_io/rayon",
-  "prelio/rayon",
+  "pelorus_syncio/rayon",
+  "pelorus_sync/rayon",
   "pelorus_reg/rayon",
   "ros_pointcloud2/rayon",
   "pelorus_cuda?/rayon",
@@ -84,9 +85,9 @@ rayon = [
 # -#-#-#-#-#- Sensor Communication -#-#-#-#-#-
 
 # Native drivers are opt-in; Disabled in Ratslang preserves external subscriptions.
-velodyne-driver = ["prelio_io/velodyne-driver"]
-xsens-driver = ["prelio_io/xsens-driver"]
-ouster-driver = ["prelio_io/ouster-driver"]
+velodyne-driver = ["pelorus_syncio/velodyne-driver"]
+xsens-driver = ["pelorus_syncio/xsens-driver"]
+ouster-driver = ["pelorus_syncio/ouster-driver"]
 sensor-drivers = ["velodyne-driver", "xsens-driver", "ouster-driver"]
 
 # Alias for default fallback
@@ -104,11 +105,11 @@ mt_pubsub = [
   "dep:mt_service",
   "dep:tokio",
   "dep:ros2-interfaces-jazzy-rkyv",
-  "prelio_io/mt_pubsub",
+  "pelorus_syncio/mt_pubsub",
 ]
 
 # Cloudini-compressed point-cloud transport for mt_pubsub. Uses the pure-Rust codec.
-compressed-pointcloud = ["mt_pubsub", "prelio_io/compressed-pointcloud"]
+compressed-pointcloud = ["mt_pubsub", "pelorus_syncio/compressed-pointcloud"]
 
 # Pure Rust ROS 2-compatible communication over Zenoh via Hiroz.
 hiroz = [
@@ -116,32 +117,32 @@ hiroz = [
   "dep:hiroz-msgs",
   "dep:hiroz-protocol",
   "dep:tokio",
-  "prelio_io/hiroz",
+  "pelorus_syncio/hiroz",
 ]
 
 # -#-#-#-#-#- Performance and Methods -#-#-#-#-#-
 
 # The input scan is reduced for faster registration (resolution affects accuracy)
-downsample = ["prelio_io/downsample"]
+downsample = ["pelorus_syncio/downsample"]
 
 # Build and use CUDA accelerations
 cuda = [
-  "prelio_io/cuda",
+  "pelorus_syncio/cuda",
   "dep:pelorus_cuda",
   "pelorus_reg/cuda",
   "pelorus_cuda/cuda_enable",
 ]
 metal = [
-  "prelio_io/metal",
-  "prelio/metal",
+  "pelorus_syncio/metal",
+  "pelorus_sync/metal",
   "dep:pelorus_metal",
   "pelorus_reg/metal",
   "pelorus_metal/metal_available",
   "pelorus_metal/metal_enable",
 ]
 vulkan = [
-  "prelio_io/vulkan",
-  "prelio/vulkan",
+  "pelorus_syncio/vulkan",
+  "pelorus_sync/vulkan",
   "dep:pelorus_vulkan",
   "pelorus_reg/vulkan",
   "pelorus_vulkan/vulkan_available",
@@ -167,18 +168,15 @@ processing-time-export = ["pelorus_reg/processing-time-export"]
 # and registration stages. Intended for stress tests or intentionally buffered
 # offline runs; default capacities are much smaller.
 large-processing-queue = [
-  "prelio_io/large-processing-queue",
-  "prelio/large-processing-queue",
+  "pelorus_syncio/large-processing-queue",
+  "pelorus_sync/large-processing-queue",
 ]
 
 # -#-#-#-#-#- Visualizations -#-#-#-#-#-
 
-# Compile Rerun visualization support. Runtime activation uses `--rerun`; connection and map
-# settings live under `output.rerun` in the Ratslang configuration.
-rerun = ["dep:rerun", "prelio_io/rerun"]
-
-# Legacy compatibility feature. The Rerun map is runtime-controlled by output.rerun.map.
-map = []
+# Compile Rerun visualization support. Activate it at runtime with `--rerun`.
+# Connection and map settings live under `output.rerun` in the config.
+rerun = ["dep:rerun", "pelorus_syncio/rerun"]
 
 # Skips publishing any visualizations that take too much compute resources (e.g. iterating a point cloud)
 no-viz = []
@@ -188,21 +186,21 @@ no-viz = []
 # -#-#-#-#-#- Low level -#-#-#-#-#-
 
 # Toggle tooling typically used for development
-dev = ["offline", "rerun", "map"]
+dev = ["offline", "rerun"]
 
 # Use variable syncing for triggers
-rat = ["dep:mt_rat", "dep:tokio", "prelio_io/rat"]
+rat = ["dep:mt_rat", "dep:tokio", "pelorus_syncio/rat"]
 
 # Use native ROS2 as pub/sub system
-ros2-client = ["dep:ros2-client", "prelio_io/ros2-client"]
+ros2-client = ["dep:ros2-client", "pelorus_syncio/ros2-client"]
 
 # Use rclc bindings as pub/sub system
-r2r = ["dep:r2r", "prelio_io/r2r"]
+r2r = ["dep:r2r", "pelorus_syncio/r2r"]
 
 [build-dependencies]
 anyhow.workspace = true
 env_logger.workspace = true
-pelorus_core = { path = "../pelorus_core" }
+pelorus_core.workspace = true
 ratslang.workspace = true
 
 [package.metadata.deb]

@@ -14,13 +14,13 @@ use log::{error, info};
 use nalgebra::{Isometry3, Matrix3, SMatrix};
 
 use pelorus_core::config::ast_to_config;
-use pelorus_core::{ImuMsg, LidarVendor, LioConfig, OdomMsg, PrelioProcessedCloud};
+use pelorus_core::{ImuMsg, LidarVendor, LioConfig, OdomMsg, SyncProcessedCloud};
 use pelorus_reg::pipeline::{PelorusOutput, Pipeline};
-use prelio::Prelio;
+use pelorus_sync::Synchronizer;
 use ros_pointcloud2::prelude::*;
 use ros2_interfaces_jazzy_serde::sensor_msgs::msg::{PointCloud2, PointField};
 
-const DEFAULT_CONFIG_STR: &str = include_str!("../../default.rl");
+const DEFAULT_CONFIG_STR: &str = pelorus_core::DEFAULT_CONFIG_STR;
 
 #[cfg(any(
     all(feature = "cuda", feature = "metal"),
@@ -231,7 +231,7 @@ type ImuInitCallback = Arc<Mutex<dyn FnMut(&[ImuMsg]) + Send + Sync>>;
 
 struct ProcessingThread {
     pipeline: Pipeline,
-    prelio_receiver: mpsc::Receiver<PrelioProcessedCloud>,
+    sync_receiver: mpsc::Receiver<SyncProcessedCloud>,
     result_sender: mpsc::Sender<PelorusOutput>,
     ready_for_next: mpsc::Sender<u64>,
     odom_callback: Arc<Mutex<Option<Py<PyAny>>>>,
@@ -282,9 +282,9 @@ fn processing_thread_main(thread: ProcessingThread) {
         error!("failed to send initial ready signal: {e}");
     }
 
-    while let Ok(processed) = thread.prelio_receiver.recv() {
-        // Shutdown mode: keep draining the prelio output channel so Prelio's producer thread
-        // doesn't panic on send after Prelio drops its receiver.
+    while let Ok(processed) = thread.sync_receiver.recv() {
+        // Shutdown mode: keep draining the sync output channel so Synchronizer's producer thread
+        // doesn't panic on send after Synchronizer drops its receiver.
         if thread.shutdown.load(Ordering::Relaxed) {
             continue;
         }
@@ -333,13 +333,13 @@ fn processing_thread_main(thread: ProcessingThread) {
         }
     }
 
-    info!("processing thread exiting (prelio channel disconnected)");
+    info!("processing thread exiting (sync channel disconnected)");
 }
 
 /// Python wrapper for Pelorus handle
 #[pyclass(name = "Handle", module = "pelorus")]
 struct PelorusHandle {
-    prelio: Arc<Mutex<Option<Prelio>>>,
+    sync: Arc<Mutex<Option<Synchronizer>>>,
     result_receiver: Arc<Mutex<mpsc::Receiver<PelorusOutput>>>,
     odom_callback: Arc<Mutex<Option<Py<PyAny>>>>,
     imu_init_cb: Option<ImuInitCallback>,
@@ -370,7 +370,7 @@ impl PelorusHandle {
         if !device_specific_pointcloud2 {
             // Select the generic parsing path (internally uses a vendor mode, but we keep the
             // public API vendor-agnostic).
-            config.prelio_params.lidar_vendor = LidarVendor::Ouster;
+            config.sync_params.lidar_vendor = LidarVendor::Ouster;
         }
 
         // Ensure Rust logging works when used from Python (RUST_LOG env var)
@@ -379,19 +379,19 @@ impl PelorusHandle {
         let pipeline = Pipeline::new(&config);
 
         let imu_init_cb = Some(pipeline.build_init_callback());
-        let imu_predictor_init_time_sec = config.prelio_node_params.imu_predictor_init_time_sec;
+        let imu_predictor_init_time_sec = config.sync_node_params.imu_predictor_init_time_sec;
         let imu_init_state = Arc::new(Mutex::new(ImuInitState {
             start_time: None,
             buffer: Some(Vec::new()),
         }));
 
-        // Create the ready_for_next channel for synchronization with Prelio
+        // Create the ready_for_next channel for synchronization with Synchronizer
         let (ready_tx, ready_rx) = mpsc::channel::<u64>();
 
-        // Pass the receiver to Prelio for proper synchronization
-        let (prelio, prelio_receiver) = pipeline
-            .create_prelio(Some(ready_rx))
-            .map_err(|e| PyRuntimeError::new_err(format!("Failed to initialize Prelio: {}", e)))?;
+        // Pass the receiver to Synchronizer for proper synchronization
+        let (sync, sync_receiver) = pipeline
+            .create_sync(Some(ready_rx))
+            .map_err(|e| PyRuntimeError::new_err(format!("Failed to initialize Synchronizer: {}", e)))?;
 
         let (result_tx, result_rx) = mpsc::channel();
 
@@ -401,7 +401,7 @@ impl PelorusHandle {
 
         let processing_thread = ProcessingThread {
             pipeline,
-            prelio_receiver,
+            sync_receiver,
             result_sender: result_tx,
             ready_for_next: ready_tx,
             odom_callback: Arc::clone(&odom_callback),
@@ -417,7 +417,7 @@ impl PelorusHandle {
         pelorus_reg::backend_session_retain();
 
         Ok(PelorusHandle {
-            prelio: Arc::new(Mutex::new(Some(prelio))),
+            sync: Arc::new(Mutex::new(Some(sync))),
             result_receiver: Arc::new(Mutex::new(result_rx)),
             odom_callback,
             imu_init_cb,
@@ -533,11 +533,11 @@ impl PelorusHandle {
             }
         }
 
-        let mut prelio_guard = self.prelio.lock().unwrap();
-        let prelio = prelio_guard
+        let mut sync_guard = self.sync.lock().unwrap();
+        let sync = sync_guard
             .as_mut()
             .ok_or_else(|| PyRuntimeError::new_err("Handle is closed"))?;
-        prelio.add_imu(imu_msg);
+        sync.add_imu(imu_msg);
         Ok(())
     }
 
@@ -624,11 +624,11 @@ impl PelorusHandle {
             },
         };
 
-        let mut prelio_guard = self.prelio.lock().unwrap();
-        let prelio = prelio_guard
+        let mut sync_guard = self.sync.lock().unwrap();
+        let sync = sync_guard
             .as_mut()
             .ok_or_else(|| PyRuntimeError::new_err("Handle is closed"))?;
-        prelio.add_odom(odom_msg);
+        sync.add_odom(odom_msg);
         Ok(())
     }
 
@@ -808,13 +808,13 @@ impl PelorusHandle {
 impl Drop for PelorusHandle {
     fn drop(&mut self) {
         // Two-phase shutdown:
-        // 1) Tell the processing thread to stop releasing Prelio ticks once Prelio is dropped.
-        // 2) Drop Prelio to stop its producer thread.
-        // 3) Join the processing thread (it will drain until prelio_receiver disconnects).
+        // 1) Tell the processing thread to stop releasing Synchronizer ticks once Synchronizer is dropped.
+        // 2) Drop Synchronizer to stop its producer thread.
+        // 3) Join the processing thread (it will drain until sync_receiver disconnects).
         self.shutdown.store(true, Ordering::Relaxed);
 
-        // Drop Prelio while the processing thread is still alive and draining.
-        if let Ok(mut guard) = self.prelio.lock() {
+        // Drop Synchronizer while the processing thread is still alive and draining.
+        if let Ok(mut guard) = self.sync.lock() {
             let _ = guard.take();
         }
 
@@ -1003,11 +1003,11 @@ impl PelorusHandle {
 
         let cloud_msg_internal: PointCloud2Msg =
             impl_ros2_interfaces_jazzy_serde::to_pointcloud2_msg(cloud_msg);
-        let mut prelio_guard = self.prelio.lock().unwrap();
-        let prelio = prelio_guard
+        let mut sync_guard = self.sync.lock().unwrap();
+        let sync = sync_guard
             .as_mut()
             .ok_or_else(|| PyRuntimeError::new_err("Handle is closed"))?;
-        let scan_id = prelio.add_pointcloud(cloud_msg_internal);
+        let scan_id = sync.add_pointcloud(cloud_msg_internal);
         Ok(scan_id)
     }
 
@@ -1064,11 +1064,11 @@ impl PelorusHandle {
 
         let cloud_msg_internal: PointCloud2Msg =
             impl_ros2_interfaces_jazzy_serde::to_pointcloud2_msg(cloud_msg);
-        let mut prelio_guard = self.prelio.lock().unwrap();
-        let prelio = prelio_guard
+        let mut sync_guard = self.sync.lock().unwrap();
+        let sync = sync_guard
             .as_mut()
             .ok_or_else(|| PyRuntimeError::new_err("Handle is closed"))?;
-        let scan_id = prelio.add_pointcloud(cloud_msg_internal);
+        let scan_id = sync.add_pointcloud(cloud_msg_internal);
         Ok(scan_id)
     }
 
@@ -1185,11 +1185,11 @@ impl PelorusHandle {
 
         let cloud_msg_internal: PointCloud2Msg =
             impl_ros2_interfaces_jazzy_serde::to_pointcloud2_msg(cloud_msg);
-        let mut prelio_guard = self.prelio.lock().unwrap();
-        let prelio = prelio_guard
+        let mut sync_guard = self.sync.lock().unwrap();
+        let sync = sync_guard
             .as_mut()
             .ok_or_else(|| PyRuntimeError::new_err("Handle is closed"))?;
-        let scan_id = prelio.add_pointcloud(cloud_msg_internal);
+        let scan_id = sync.add_pointcloud(cloud_msg_internal);
         Ok(scan_id)
     }
 
@@ -1318,11 +1318,11 @@ impl PelorusHandle {
 
         let cloud_msg_internal: PointCloud2Msg =
             impl_ros2_interfaces_jazzy_serde::to_pointcloud2_msg(cloud_msg);
-        let mut prelio_guard = self.prelio.lock().unwrap();
-        let prelio = prelio_guard
+        let mut sync_guard = self.sync.lock().unwrap();
+        let sync = sync_guard
             .as_mut()
             .ok_or_else(|| PyRuntimeError::new_err("Handle is closed"))?;
-        let scan_id = prelio.add_pointcloud(cloud_msg_internal);
+        let scan_id = sync.add_pointcloud(cloud_msg_internal);
         Ok(scan_id)
     }
 }

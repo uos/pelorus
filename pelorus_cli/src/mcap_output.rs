@@ -352,7 +352,8 @@ pub struct McapTopics {
     pub odom: String,
     pub path: String,
     pub tf: String,
-    pub filtered_imu: String,
+    /// Omitted for Lidar-only output, including its channel and schema.
+    pub filtered_imu: Option<String>,
 }
 
 /// The Pelorus odometry output bag: registered clouds, odometry, path, TF, and
@@ -363,7 +364,7 @@ pub struct McapOutputWriter<W: Write + Seek> {
     odom: TopicId,
     path: TopicId,
     tf: TopicId,
-    filtered_imu: TopicId,
+    filtered_imu: Option<TopicId>,
 }
 
 impl McapOutputWriter<BufWriter<File>> {
@@ -386,7 +387,11 @@ impl<W: Write + Seek> McapOutputWriter<W> {
         let odom = inner.add_topic(&topics.odom, ODOMETRY_MSG)?;
         let path = inner.add_topic(&topics.path, PATH_MSG)?;
         let tf = inner.add_topic(&topics.tf, TF_MSG)?;
-        let filtered_imu = inner.add_topic(&topics.filtered_imu, IMU_MSG)?;
+        let filtered_imu = topics
+            .filtered_imu
+            .as_deref()
+            .map(|topic| inner.add_topic(topic, IMU_MSG))
+            .transpose()?;
         Ok(Self {
             inner,
             cloud,
@@ -422,8 +427,11 @@ impl<W: Write + Seek> McapOutputWriter<W> {
     }
 
     pub fn write_filtered_imu(&mut self, msg: &Imu) -> Result<()> {
+        let Some(topic) = self.filtered_imu else {
+            return Ok(());
+        };
         let time = stamp_to_nanos(&msg.header.stamp);
-        self.inner.write(self.filtered_imu, msg, time)
+        self.inner.write(topic, msg, time)
     }
 
     pub fn finish(self) -> Result<()> {
@@ -605,6 +613,47 @@ mod tests {
     };
 
     #[test]
+    fn lidar_only_output_has_no_imu_messages_channel_or_schema() -> Result<()> {
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)?
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!("pelorus_mcap_lidar_only_{nonce}.mcap"));
+        let metadata_path =
+            std::env::temp_dir().join(format!("pelorus_mcap_lidar_only_{nonce}.yaml"));
+        let topics = McapTopics {
+            cloud: "/cloud_out".to_string(),
+            odom: "/odom_out".to_string(),
+            path: "/path_out".to_string(),
+            tf: "/tf_out".to_string(),
+            filtered_imu: None,
+        };
+        let mut writer = McapOutputWriter::create(&path, &topics, Some(metadata_path.clone()))?;
+        // Even an unexpected IMU sample must not create a channel or message.
+        writer.write_filtered_imu(&Imu::default())?;
+        writer.write_odom(&Odometry::default())?;
+        writer.finish()?;
+
+        let data = std::fs::read(&path)?;
+        let metadata = std::fs::read_to_string(&metadata_path)?;
+        std::fs::remove_file(&path)?;
+        std::fs::remove_file(&metadata_path)?;
+        let summary = mcap::Summary::read(&data)?.expect("MCAP summary");
+        assert_eq!(summary.channels.len(), 4);
+        assert!(
+            summary
+                .schemas
+                .values()
+                .all(|schema| schema.name != IMU_MSG.name)
+        );
+        assert!(!metadata.contains(IMU_MSG.name));
+        let messages =
+            mcap::MessageStream::new(&data)?.collect::<std::result::Result<Vec<_>, _>>()?;
+        assert_eq!(messages.len(), 1);
+        assert_eq!(messages[0].channel.topic, "/odom_out");
+        Ok(())
+    }
+
+    #[test]
     fn writes_configured_channels_and_timestamps() -> Result<()> {
         let path = std::env::temp_dir().join(format!(
             "pelorus_mcap_output_test_{}_{}.mcap",
@@ -619,7 +668,7 @@ mod tests {
             odom: "/odom_out".to_string(),
             path: "/path_out".to_string(),
             tf: "/tf_out".to_string(),
-            filtered_imu: "/imu_out".to_string(),
+            filtered_imu: Some("/imu_out".to_string()),
         };
 
         let mut writer = McapOutputWriter::create(&path, &topics, None)?;
@@ -686,7 +735,7 @@ mod tests {
             odom: "/odom_out".to_string(),
             path: "/path_out".to_string(),
             tf: "/tf_out".to_string(),
-            filtered_imu: "/imu_out".to_string(),
+            filtered_imu: Some("/imu_out".to_string()),
         };
         let mut writer = McapOutputWriter::create(&path, &topics, Some(metadata_path.clone()))?;
         // Only one topic carries traffic.
@@ -808,7 +857,7 @@ mod tests {
             odom: "/odom_out".to_string(),
             path: "/path_out".to_string(),
             tf: "/tf_out".to_string(),
-            filtered_imu: "/imu_out".to_string(),
+            filtered_imu: Some("/imu_out".to_string()),
         };
 
         let mut writer = McapOutputWriter::create(&path, &topics, Some(metadata_path.clone()))?;

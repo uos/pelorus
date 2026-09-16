@@ -21,7 +21,7 @@ use pelorus_core::PointCloudMode;
     feature = "r2r",
     feature = "hiroz"
 ))]
-use pelorus_core::PrelioProcessedCloud;
+use pelorus_core::SyncProcessedCloud;
 #[cfg(any(
     feature = "velodyne-driver",
     feature = "xsens-driver",
@@ -32,8 +32,8 @@ use pelorus_core::{
     time_msg_from_secs,
 };
 use pelorus_core::{
-    ImuMsg, ImuPredictor, ImuPredictorUndistort, LidarVendor, PointXYZIT, PrelioNodeParameters,
-    PrelioParameters, timing::RuntimeEvaluator,
+    ImuMsg, ImuPredictor, ImuPredictorUndistort, LidarVendor, PointXYZIT, SyncNodeParameters,
+    SyncParameters, timing::RuntimeEvaluator,
 };
 #[cfg(any(
     feature = "velodyne-driver",
@@ -41,7 +41,7 @@ use pelorus_core::{
     feature = "ouster-driver"
 ))]
 use pelorus_drivers::{DriverError, DriverManager, RawLidarScan, SensorIngress, SensorOutputSink};
-pub use prelio;
+pub use pelorus_sync;
 
 /// Re-exported so consumers can implement `SensorIngress` without taking their
 /// own dependency on the optional driver crate.
@@ -68,7 +68,7 @@ use anyhow::anyhow;
     feature = "xsens-driver",
     feature = "ouster-driver"
 ))]
-use prelio::timestamp_to_secs;
+use pelorus_sync::timestamp_to_secs;
 
 #[cfg(feature = "hiroz")]
 use hiroz::Builder;
@@ -92,7 +92,7 @@ use mt_pubsub::Node;
     feature = "r2r",
     feature = "hiroz"
 ))]
-use prelio::PreprocessingPointCloud;
+use pelorus_sync::PreprocessingPointCloud;
 #[cfg(feature = "r2r")]
 use r2r::{
     builtin_interfaces::msg::Time,
@@ -299,16 +299,104 @@ use std::sync::{Arc, Mutex};
 
 pub type ImuInitCallback = Arc<Mutex<dyn FnMut(&[ImuMsg]) + Send + Sync>>;
 
-pub struct PrelioNodeInputs<'a> {
-    pub node_params: &'a PrelioNodeParameters,
+#[cfg(test)]
+mod startup_tf_tests {
+    use super::*;
+
+    #[test]
+    fn tf_is_applied_before_deferred_initialization_and_only_once() {
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let applied = events.clone();
+        let initialized = events.clone();
+        let mut gate = TfStartup {
+            apply: Arc::new(Mutex::new(move |_, _| applied.lock().unwrap().push("tf"))),
+            initialize: Some(Arc::new(Mutex::new(move |_: &[ImuMsg]| {
+                initialized.lock().unwrap().push("init")
+            }))),
+            pending: None,
+            resolved: false,
+            initialized: false,
+        };
+        gate.initialize(&[ImuMsg::default()]);
+        assert!(events.lock().unwrap().is_empty());
+        assert!(!gate.initialized);
+        assert!(gate.resolve(Some(nalgebra::Isometry3::identity()), None));
+        assert!(gate.resolve(Some(nalgebra::Isometry3::identity()), None));
+        assert_eq!(*events.lock().unwrap(), ["tf", "init"]);
+    }
+
+    #[test]
+    fn tf_before_imu_still_waits_for_initialization() {
+        let mut gate = TfStartup {
+            apply: Arc::new(Mutex::new(|_, _| {})),
+            initialize: Some(Arc::new(Mutex::new(|_: &[ImuMsg]| {}))),
+            pending: None,
+            resolved: false,
+            initialized: false,
+        };
+        assert!(!gate.resolve(None, None));
+        gate.initialize(&[ImuMsg::default()]);
+        assert!(gate.resolve(None, None));
+    }
+}
+pub type StartupTfCallback = Arc<
+    Mutex<
+        dyn FnMut(Option<nalgebra::Isometry3<f64>>, Option<nalgebra::Isometry3<f64>>) + Send + Sync,
+    >,
+>;
+
+/// Defer initialization without blocking the IMU ingress/replay thread. Replay
+/// must be allowed to deliver the first cloud so its sensor frame can be resolved.
+struct TfStartup {
+    apply: StartupTfCallback,
+    initialize: Option<ImuInitCallback>,
+    pending: Option<Vec<ImuMsg>>,
+    resolved: bool,
+    initialized: bool,
+}
+
+impl TfStartup {
+    fn initialize(&mut self, msgs: &[ImuMsg]) {
+        if self.resolved {
+            if let Some(init) = &self.initialize {
+                (init.lock().unwrap())(msgs);
+                info!("EKF: Imu initialized after requested sensor TF was applied");
+            }
+            self.initialized = true;
+        } else {
+            self.pending = Some(msgs.to_vec());
+            info!("IMU initialization deferred: waiting for requested sensor TF");
+        }
+    }
+
+    fn resolve(
+        &mut self,
+        imu: Option<nalgebra::Isometry3<f64>>,
+        base: Option<nalgebra::Isometry3<f64>>,
+    ) -> bool {
+        if !self.resolved {
+            (self.apply.lock().unwrap())(imu, base);
+            self.resolved = true;
+            if let Some(msgs) = self.pending.take() {
+                self.initialize(&msgs);
+            }
+        }
+        self.initialized
+    }
+}
+
+pub struct SyncNodeInputs<'a> {
+    pub startup_tf_callback: Option<StartupTfCallback>,
+    pub startup_base_frame: Option<String>,
+    pub node_params: &'a SyncNodeParameters,
     pub imu_pose_predictor_init: Option<ImuInitCallback>,
     pub imu_pose_prediction_undistort: Option<Box<ImuPredictorUndistort>>,
     pub imu_pose_prediction_init_guess: Option<Box<ImuPredictor>>,
     pub ready_for_next: Option<std::sync::mpsc::Receiver<u64>>,
     pub filtered_imu_sender: Option<std::sync::mpsc::Sender<ImuMsg>>,
-    pub imu_sync_mode: prelio::ImuSyncMode,
-    pub realtime_imu_callback: Option<prelio::RealtimeImuCallback>,
-    pub realtime_lidar_barrier_callback: Option<prelio::RealtimeLidarBarrierCallback>,
+    pub imu_sync_mode: pelorus_sync::ImuSyncMode,
+    pub realtime_imu_callback: Option<pelorus_sync::RealtimeImuCallback>,
+    pub realtime_lidar_barrier_callback: Option<pelorus_sync::RealtimeLidarBarrierCallback>,
 }
 #[cfg(feature = "hiroz")]
 use zenoh_buffers::buffer::Buffer;
@@ -366,12 +454,14 @@ fn minot_sd_start_timestamp() -> rat::NetArray<f64> {
 }
 
 pub struct State {
+    startup_tf: Option<Arc<Mutex<TfStartup>>>,
+    startup_base_frame: Option<String>,
     pub global_polygon: Option<Vec<nalgebra::Point2<f32>>>,
     pub sensor_tf: Option<nalgebra::geometry::Isometry3<f32>>,
     pub imu_tf: Option<nalgebra::geometry::Isometry3<f64>>,
 
-    pub prelio: Arc<Mutex<prelio::Prelio>>,
-    pub prelio_params: PrelioParameters,
+    pub sync: Arc<Mutex<pelorus_sync::Synchronizer>>,
+    pub sync_params: SyncParameters,
     #[cfg(any(
         feature = "ros2-client",
         feature = "mt_pubsub",
@@ -388,22 +478,24 @@ pub struct State {
 
 impl State {
     pub fn new(
-        config: &PrelioParameters,
+        config: &SyncParameters,
         imu_pose_prediction_undistort: Option<Box<ImuPredictorUndistort>>,
         imu_pose_prediction_init_guess: Option<Box<ImuPredictor>>,
         #[cfg(feature = "rerun")] rec: Option<Arc<rerun::RecordingStream>>,
         ready_for_next: Option<std::sync::mpsc::Receiver<u64>>,
-        imu_sync_mode: prelio::ImuSyncMode,
-        realtime_imu_callback: Option<prelio::RealtimeImuCallback>,
-        realtime_lidar_barrier_callback: Option<prelio::RealtimeLidarBarrierCallback>,
+        imu_sync_mode: pelorus_sync::ImuSyncMode,
+        realtime_imu_callback: Option<pelorus_sync::RealtimeImuCallback>,
+        realtime_lidar_barrier_callback: Option<pelorus_sync::RealtimeLidarBarrierCallback>,
     ) -> anyhow::Result<Self> {
         Ok(State {
+            startup_tf: None,
+            startup_base_frame: None,
             #[cfg(feature = "rerun")]
             rec,
             global_polygon: None,
             sensor_tf: None,
             imu_tf: None,
-            prelio: Arc::new(Mutex::new(prelio::Prelio::create(
+            sync: Arc::new(Mutex::new(pelorus_sync::Synchronizer::create(
                 config.imu.gravity,
                 config.imu.madgwick_setting,
                 &config.imu.calibration,
@@ -416,7 +508,7 @@ impl State {
                 realtime_imu_callback,
                 realtime_lidar_barrier_callback,
             )?)),
-            prelio_params: config.clone(),
+            sync_params: config.clone(),
             #[cfg(any(
                 feature = "ros2-client",
                 feature = "mt_pubsub",
@@ -519,9 +611,9 @@ fn cloud_callback(
                 }
 
                 (
-                    state.prelio_params.imu_lidar_tf_override,
-                    state.prelio_params.global_zero_frame.clone(),
-                    state.prelio_params.map_frame.clone(),
+                    state.sync_params.imu_lidar_tf_override,
+                    state.sync_params.global_zero_frame.clone(),
+                    state.sync_params.map_frame.clone(),
                     state.sensor_tf,
                 )
             };
@@ -565,11 +657,17 @@ fn cloud_callback(
                             return Ok(());
                         }
                         Some(first_imu_tf_frame) => {
-                            let tf = tf_listener.lookup_transform(
+                            let tf = match tf_listener.lookup_transform(
                                 &first_imu_tf_frame,
                                 &orig_header.frame_id,
                                 duplicate_timestamp(&in_stamp),
-                            )?;
+                            ) {
+                                Ok(tf) => tf,
+                                Err(error) => {
+                                    debug!("Waiting for IMU-to-Lidar TF: {error}");
+                                    return Ok(());
+                                }
+                            };
                             nalgebra::geometry::Isometry3::from_parts(
                                 nalgebra::geometry::Translation3::new(
                                     tf.transform.translation.x,
@@ -585,7 +683,6 @@ fn cloud_callback(
                                     ),
                                 ),
                             )
-                            .inverse()
                         }
                     }
                 } else {
@@ -600,6 +697,50 @@ fn cloud_callback(
                 (imu_tf, sensor_tf)
             }
         };
+
+        let (startup, base_frame) = {
+            let state = state.lock().unwrap();
+            (state.startup_tf.clone(), state.startup_base_frame.clone())
+        };
+        if let Some(startup) = startup {
+            let base = if let Some(frame) = base_frame {
+                let tf = match tf_listener.lookup_transform(
+                    &frame,
+                    &orig_header.frame_id,
+                    duplicate_timestamp(&in_stamp),
+                ) {
+                    Ok(tf) => tf,
+                    Err(error) => {
+                        debug!("Waiting for base-to-Lidar TF: {error}");
+                        return Ok(());
+                    }
+                };
+                Some(nalgebra::Isometry3::from_parts(
+                    nalgebra::Translation3::new(
+                        tf.transform.translation.x,
+                        tf.transform.translation.y,
+                        tf.transform.translation.z,
+                    ),
+                    nalgebra::UnitQuaternion::from_quaternion(nalgebra::Quaternion::new(
+                        tf.transform.rotation.w,
+                        tf.transform.rotation.x,
+                        tf.transform.rotation.y,
+                        tf.transform.rotation.z,
+                    )),
+                ))
+            } else {
+                None
+            };
+            let imu = state
+                .lock()
+                .unwrap()
+                .sync_params
+                .imu_lidar_tf_override
+                .then_some(imu_tf);
+            if !startup.lock().unwrap().resolve(imu, base) {
+                return Ok(());
+            }
+        }
 
         {
             let mut state = state.lock().unwrap();
@@ -622,10 +763,10 @@ fn cloud_callback(
 
                 (
                     state.global_polygon.clone(),
-                    state.prelio_params.passthrough_filter.invert_polygon,
-                    state.prelio_params.global_zero_frame.clone(),
-                    state.prelio_params.map_frame.clone(),
-                    state.prelio_params.clone(), // TODO overhead clone on every cloud but now params can not change anymore while runtime
+                    state.sync_params.passthrough_filter.invert_polygon,
+                    state.sync_params.global_zero_frame.clone(),
+                    state.sync_params.map_frame.clone(),
+                    state.sync_params.clone(), // TODO overhead clone on every cloud but now params can not change anymore while runtime
                 )
             };
 
@@ -675,7 +816,7 @@ fn cloud_callback(
 
         {
             let mut state = state.lock().unwrap();
-            state.prelio_params = params;
+            state.sync_params = params;
         }
     };
 
@@ -688,15 +829,15 @@ fn cloud_callback(
     }
 
     {
-        let prelio = state.lock().unwrap().prelio.clone();
-        let mut prelio = prelio.lock().unwrap();
-        prelio.add_pointcloud_source(in_msg, callback_started);
+        let sync = state.lock().unwrap().sync.clone();
+        let mut sync = sync.lock().unwrap();
+        sync.add_pointcloud_source(in_msg, callback_started);
     }
 
     Ok(())
 }
 
-pub struct PrelioNode {
+pub struct SyncNode {
     pub state: Arc<std::sync::Mutex<State>>,
     #[cfg(feature = "ros2-client")]
     pub tf_listener: Arc<tf::TfListener>,
@@ -859,7 +1000,7 @@ impl SensorIngress for NativeIngress {
         self.state
             .lock()
             .unwrap()
-            .prelio
+            .sync
             .lock()
             .unwrap()
             .add_pointcloud(cloud);
@@ -881,14 +1022,7 @@ impl SensorIngress for NativeIngress {
                 self.imu_initialized.store(true, Ordering::Release);
             }
         }
-        let filtered = self
-            .state
-            .lock()
-            .unwrap()
-            .prelio
-            .lock()
-            .unwrap()
-            .add_imu(imu);
+        let filtered = self.state.lock().unwrap().sync.lock().unwrap().add_imu(imu);
         if let (Some(v), Some(tx)) = (filtered, self.filtered_imu_sender.as_ref()) {
             let _ = tx.send(v);
         }
@@ -898,9 +1032,9 @@ impl SensorIngress for NativeIngress {
     fn driver_failed(&self, error: &DriverError) {
         log::error!("Native sensor driver failed; stopping Pelorus ingress: {error}");
         if let Ok(state) = self.state.lock()
-            && let Ok(mut prelio) = state.prelio.lock()
+            && let Ok(mut sync) = state.sync.lock()
         {
-            prelio.shutdown();
+            sync.shutdown();
         }
     }
 }
@@ -1029,7 +1163,7 @@ fn split_namespace_topic(input: &str) -> (String, String) {
     }
 }
 
-impl PrelioNode {
+impl SyncNode {
     #[cfg(any(
         feature = "velodyne-driver",
         feature = "xsens-driver",
@@ -1067,18 +1201,35 @@ impl PrelioNode {
         #[cfg(feature = "hiroz")] node: &ZNode,
         #[cfg(any(feature = "mt_pubsub", feature = "hiroz"))] rt: Arc<tokio::runtime::Runtime>,
         #[cfg(feature = "mt_pubsub")] mt_pubsub_local_only: bool,
-        params: &PrelioParameters,
-        inputs: PrelioNodeInputs<'_>,
+        params: &SyncParameters,
+        mut inputs: SyncNodeInputs<'_>,
         #[cfg(feature = "rerun")] rec: Option<Arc<rerun::RecordingStream>>,
     ) -> anyhow::Result<(Self, std::sync::mpsc::Receiver<Tick>)> {
+        let startup_tf = inputs.startup_tf_callback.take().map(|apply| {
+            let initialize = inputs.imu_pose_predictor_init.take();
+            let initialized = initialize.is_none();
+            let gate = Arc::new(Mutex::new(TfStartup {
+                apply, initialize, pending: None, resolved: false, initialized,
+            }));
+            if !initialized {
+                let gate_for_init = gate.clone();
+                inputs.imu_pose_predictor_init = Some(Arc::new(Mutex::new(move |msgs: &[ImuMsg]| {
+                    gate_for_init.lock().unwrap().initialize(msgs);
+                })));
+            }
+            info!("Waiting for requested sensor TF before starting SLAM; configured extrinsics will not be used as fallback");
+            gate
+        });
         #[cfg(any(
             feature = "ros2-client",
             feature = "mt_pubsub",
             feature = "r2r",
             feature = "hiroz"
         ))]
-        let enable_imu_ingress =
-            !matches!(&inputs.imu_sync_mode, prelio::ImuSyncMode::Disabled { .. });
+        let enable_imu_ingress = !matches!(
+            &inputs.imu_sync_mode,
+            pelorus_sync::ImuSyncMode::Disabled { .. }
+        );
         #[cfg(any(
             feature = "rat",
             feature = "ros2-client",
@@ -1132,7 +1283,7 @@ impl PrelioNode {
         #[cfg(feature = "rat")]
         let synchronous_mode = node_params.synchronous_mode;
 
-        let state = State::new(
+        let mut state = State::new(
             params,
             inputs.imu_pose_prediction_undistort,
             inputs.imu_pose_prediction_init_guess,
@@ -1143,6 +1294,8 @@ impl PrelioNode {
             inputs.realtime_imu_callback,
             inputs.realtime_lidar_barrier_callback,
         )?;
+        state.startup_tf = startup_tf;
+        state.startup_base_frame = inputs.startup_base_frame;
 
         #[cfg(any(
             feature = "ros2-client",
@@ -1151,8 +1304,8 @@ impl PrelioNode {
             feature = "hiroz"
         ))]
         let chan = {
-            let mut prelio = state.prelio.lock().unwrap();
-            prelio.get_chan().unwrap()
+            let mut sync = state.sync.lock().unwrap();
+            sync.get_chan().unwrap()
         };
 
         let (tx, rx) = std::sync::mpsc::channel();
@@ -1400,7 +1553,7 @@ impl PrelioNode {
             std::thread::spawn(move || {
                 wheel_sub_rt.block_on(async {
                     while let Some(msg) = wheel_subscriber.next().await {
-                        // Transform odom to IMU frame and send to prelio for sync'd processing
+                        // Transform odom to IMU frame and send to sync for sync'd processing
 
                         use pelorus_core::OdomMsg;
                         let v = nalgebra::Vector3::new(
@@ -1418,15 +1571,15 @@ impl PrelioNode {
                                 msg.twist.twist.angular.z,
                             ),
                             twist_cov: msg.twist.covariance,
-                            stamp: prelio::TimeMsg {
+                            stamp: pelorus_sync::TimeMsg {
                                 sec: msg.header.stamp.sec,
                                 nanosec: msg.header.stamp.nanosec,
                             },
                         };
 
-                        // Send to prelio's sync worker for synchronized lidar-imu-odom processing
+                        // Send to sync's sync worker for synchronized lidar-imu-odom processing
                         let state_lock = state_wheel.lock().unwrap();
-                        state_lock.prelio.lock().unwrap().add_odom(odom_msg);
+                        state_lock.sync.lock().unwrap().add_odom(odom_msg);
                     }
                 })
             });
@@ -1442,10 +1595,10 @@ impl PrelioNode {
                 future::block_on(async {
                     wheel_subscriber
                         .for_each(|msg| {
-                            let mut odom_msg = odom_to_prelio(msg);
+                            let mut odom_msg = odom_to_sync(msg);
                             odom_msg.twist_linear = ext.transform_vector(&odom_msg.twist_linear);
                             let state_lock = state_wheel.lock().unwrap();
-                            state_lock.prelio.lock().unwrap().add_odom(odom_msg);
+                            state_lock.sync.lock().unwrap().add_odom(odom_msg);
                         })
                         .await
                 })
@@ -1469,10 +1622,10 @@ impl PrelioNode {
                             msg.header.frame_id, msg.header.stamp.sec, msg.header.stamp.nanosec
                         );
                     }
-                    let mut odom_msg = odom_to_prelio(msg);
+                    let mut odom_msg = odom_to_sync(msg);
                     odom_msg.twist_linear = ext.transform_vector(&odom_msg.twist_linear);
                     let state_lock = state_wheel.lock().unwrap();
-                    state_lock.prelio.lock().unwrap().add_odom(odom_msg);
+                    state_lock.sync.lock().unwrap().add_odom(odom_msg);
                 }
             });
         }
@@ -1708,8 +1861,8 @@ impl PrelioNode {
                             .get_or_insert(msg.header.frame_id.clone());
                         let imu_init_state = imu_init_state.clone();
 
-                        let imu_prelio = imu_to_prelio(msg.clone());
-                        let curr_stamp = timestamp_to_secs(&imu_prelio.stamp);
+                        let imu_sync = imu_to_sync(msg.clone());
+                        let curr_stamp = timestamp_to_secs(&imu_sync.stamp);
                         #[cfg(feature = "rat")]
                         let mut minot_bootstrap_trigger: Option<
                             &'static str,
@@ -1729,8 +1882,8 @@ impl PrelioNode {
                                 if delta < init_imu_time {
                                     if let Some(ref mut buffer) = init_state.buffer {
                                         // Buffer IMU for EKF init callback, but still forward it
-                                        // to prelio so scan/IMU sync is not backend-timing dependent.
-                                        buffer.push(imu_prelio.clone());
+                                        // to sync so scan/IMU sync is not backend-timing dependent.
+                                        buffer.push(imu_sync.clone());
 
                                         #[cfg(feature = "rat")]
                                         {
@@ -1741,7 +1894,7 @@ impl PrelioNode {
                                     // apply the init buffer
                                     if let Some(buffer) = init_state.buffer.take() {
                                         imu_pose_predictor_init(&buffer);
-                                        info!("EKF: Imu initialized");
+                                        info!("EKF: IMU initialization samples collected");
                                         #[cfg(feature = "rat")]
                                         {
                                             minot_bootstrap_trigger = Some(MINOT_LIO_START_TICK);
@@ -1751,8 +1904,8 @@ impl PrelioNode {
                             }
                         }
 
-                        let prelio = state_clone.lock().unwrap().prelio.clone();
-                        let filtered = prelio.lock().unwrap().add_imu(imu_prelio);
+                        let sync = state_clone.lock().unwrap().sync.clone();
+                        let filtered = sync.lock().unwrap().add_imu(imu_sync);
                         #[cfg(feature = "rat")]
                         if let Some(trigger) = minot_bootstrap_trigger {
                             publish_minot_trigger(synchronous_mode, trigger);
@@ -1766,7 +1919,7 @@ impl PrelioNode {
                                     .clone()
                                     .lock()
                                     .unwrap()
-                                    .publish(&prelio_to_imu(filtered))
+                                    .publish(&sync_to_imu(filtered))
                                     .expect("could not publish filtered imu");
                             }
                         }
@@ -1797,19 +1950,19 @@ impl PrelioNode {
                 let imu_pose_predictor_init = imu_pose_predictor_init.clone();
                 while let Some(msg) = imu_sub_rt.block_on(imu_sub.next()) {
                     // debug!("received imu");
-                    let prelio = {
+                    let sync = {
                         let state = state_clone.lock().unwrap();
                         imu_tf_frame_lidar_inner
                             .clone()
                             .lock()
                             .unwrap()
                             .get_or_insert(msg.header.frame_id.clone());
-                        state.prelio.clone()
+                        state.sync.clone()
                     };
                     let imu_init_state = imu_imu_init_state.clone();
 
-                    let imu_prelio = imu_to_prelio(msg.clone());
-                    let curr_stamp = timestamp_to_secs(&imu_prelio.stamp);
+                    let imu_sync = imu_to_sync(msg.clone());
+                    let curr_stamp = timestamp_to_secs(&imu_sync.stamp);
                     #[cfg(feature = "rat")]
                     let mut minot_bootstrap_trigger: Option<&'static str> = None;
 
@@ -1826,8 +1979,8 @@ impl PrelioNode {
                             if delta < init_imu_time {
                                 if let Some(ref mut buffer) = init_state.buffer {
                                     // Buffer IMU for EKF init callback, but still forward it
-                                    // to prelio so scan/IMU sync is not backend-timing dependent.
-                                    buffer.push(imu_prelio.clone());
+                                    // to sync so scan/IMU sync is not backend-timing dependent.
+                                    buffer.push(imu_sync.clone());
 
                                     #[cfg(feature = "rat")]
                                     {
@@ -1838,7 +1991,7 @@ impl PrelioNode {
                                 // apply the init buffer
                                 if let Some(buffer) = init_state.buffer.take() {
                                     imu_pose_predictor_init(&buffer);
-                                    info!("EKF: Imu initialized");
+                                    info!("EKF: IMU initialization samples collected");
                                     #[cfg(feature = "rat")]
                                     {
                                         minot_bootstrap_trigger = Some(MINOT_LIO_START_TICK);
@@ -1848,7 +2001,7 @@ impl PrelioNode {
                         }
                     }
 
-                    let filtered = prelio.lock().unwrap().add_imu(imu_prelio);
+                    let filtered = sync.lock().unwrap().add_imu(imu_sync);
                     #[cfg(feature = "rat")]
                     if let Some(trigger) = minot_bootstrap_trigger {
                         publish_minot_trigger(synchronous_mode, trigger);
@@ -1873,19 +2026,19 @@ impl PrelioNode {
             }
             let imu_pose_predictor_init = imu_pose_predictor_init.clone();
             while let Some(msg) = future::block_on(imu_subscription.next()) {
-                let prelio = {
+                let sync = {
                     let state = state_clone.lock().unwrap();
                     imu_tf_frame_lidar_inner
                         .clone()
                         .lock()
                         .unwrap()
                         .get_or_insert(msg.header.frame_id.clone());
-                    state.prelio.clone()
+                    state.sync.clone()
                 };
                 let imu_init_state = imu_init_state.clone();
 
-                let imu_prelio = imu_to_prelio(msg.clone());
-                let curr_stamp = timestamp_to_secs(&imu_prelio.stamp);
+                let imu_sync = imu_to_sync(msg.clone());
+                let curr_stamp = timestamp_to_secs(&imu_sync.stamp);
                 #[cfg(feature = "rat")]
                 let mut minot_bootstrap_trigger: Option<&'static str> = None;
 
@@ -1902,8 +2055,8 @@ impl PrelioNode {
                         if delta < init_imu_time {
                             if let Some(ref mut buffer) = init_state.buffer {
                                 // Buffer IMU for EKF init callback, but still forward it
-                                // to prelio so scan/IMU sync is not backend-timing dependent.
-                                buffer.push(imu_prelio.clone());
+                                // to sync so scan/IMU sync is not backend-timing dependent.
+                                buffer.push(imu_sync.clone());
 
                                 #[cfg(feature = "rat")]
                                 {
@@ -1914,7 +2067,7 @@ impl PrelioNode {
                             // apply the init buffer
                             if let Some(buffer) = init_state.buffer.take() {
                                 imu_pose_predictor_init(&buffer);
-                                info!("EKF: Imu initialized");
+                                info!("EKF: IMU initialization samples collected");
                                 #[cfg(feature = "rat")]
                                 {
                                     minot_bootstrap_trigger = Some(MINOT_LIO_START_TICK);
@@ -1924,7 +2077,7 @@ impl PrelioNode {
                     }
                 }
 
-                let filtered = prelio.lock().unwrap().add_imu(imu_prelio);
+                let filtered = sync.lock().unwrap().add_imu(imu_sync);
                 #[cfg(feature = "rat")]
                 if let Some(trigger) = minot_bootstrap_trigger {
                     publish_minot_trigger(synchronous_mode, trigger);
@@ -1938,7 +2091,7 @@ impl PrelioNode {
                             .clone()
                             .lock()
                             .unwrap()
-                            .publish(&prelio_to_imu(filtered))
+                            .publish(&sync_to_imu(filtered))
                             .expect("could not publish filtered imu");
                     }
                 }
@@ -1961,19 +2114,19 @@ impl PrelioNode {
                             msg.header.frame_id, msg.header.stamp.sec, msg.header.stamp.nanosec
                         );
                     }
-                    let prelio = {
+                    let sync = {
                         let state = state_clone.lock().unwrap();
                         imu_tf_frame_lidar_inner
                             .clone()
                             .lock()
                             .unwrap()
                             .get_or_insert(msg.header.frame_id.clone());
-                        state.prelio.clone()
+                        state.sync.clone()
                     };
                     let imu_init_state = imu_imu_init_state.clone();
 
-                    let imu_prelio = imu_to_prelio(msg.clone());
-                    let curr_stamp = timestamp_to_secs(&imu_prelio.stamp);
+                    let imu_sync = imu_to_sync(msg.clone());
+                    let curr_stamp = timestamp_to_secs(&imu_sync.stamp);
                     #[cfg(feature = "rat")]
                     let mut minot_bootstrap_trigger: Option<&'static str> = None;
 
@@ -1989,7 +2142,7 @@ impl PrelioNode {
                             let delta = curr_stamp - init_time;
                             if delta < init_imu_time {
                                 if let Some(ref mut buffer) = init_state.buffer {
-                                    buffer.push(imu_prelio.clone());
+                                    buffer.push(imu_sync.clone());
 
                                     #[cfg(feature = "rat")]
                                     {
@@ -1998,7 +2151,7 @@ impl PrelioNode {
                                 }
                             } else if let Some(buffer) = init_state.buffer.take() {
                                 imu_pose_predictor_init(&buffer);
-                                info!("EKF: Imu initialized");
+                                info!("EKF: IMU initialization samples collected");
                                 #[cfg(feature = "rat")]
                                 {
                                     minot_bootstrap_trigger = Some(MINOT_LIO_START_TICK);
@@ -2007,7 +2160,7 @@ impl PrelioNode {
                         }
                     }
 
-                    let filtered = prelio.lock().unwrap().add_imu(imu_prelio);
+                    let filtered = sync.lock().unwrap().add_imu(imu_sync);
                     #[cfg(feature = "rat")]
                     if let Some(trigger) = minot_bootstrap_trigger {
                         publish_minot_trigger_async(synchronous_mode, trigger).await;
@@ -2018,7 +2171,7 @@ impl PrelioNode {
                         }
                         if let Some(imu_filtered_publisher) = imu_filtered_publisher.as_ref() {
                             imu_filtered_publisher
-                                .async_publish(&prelio_to_imu(filtered))
+                                .async_publish(&sync_to_imu(filtered))
                                 .await
                                 .expect("could not publish filtered imu");
                         }
@@ -2063,13 +2216,13 @@ impl PrelioNode {
 
     pub fn request_shutdown(&self) {
         if let Ok(state) = self.state.lock() {
-            if let Ok(mut prelio) = state.prelio.lock() {
-                prelio.shutdown();
+            if let Ok(mut sync) = state.sync.lock() {
+                sync.shutdown();
             }
         }
     }
 
-    /// Translates ROS types to Prelio Types
+    /// Translates ROS types to Synchronizer Types
     #[cfg(any(
         feature = "ros2-client",
         feature = "mt_pubsub",
@@ -2078,7 +2231,7 @@ impl PrelioNode {
     ))]
     pub fn transform_types(
         sender: std::sync::mpsc::Sender<Tick>,
-        receiver: std::sync::mpsc::Receiver<PrelioProcessedCloud>,
+        receiver: std::sync::mpsc::Receiver<SyncProcessedCloud>,
     ) {
         while let Ok(synced_data) = receiver.recv() {
             let pose = PoseWithCovariance {
@@ -2154,7 +2307,7 @@ impl PrelioNode {
     }
 }
 
-impl Drop for PrelioNode {
+impl Drop for SyncNode {
     fn drop(&mut self) {
         self.request_shutdown();
     }
@@ -2162,7 +2315,7 @@ impl Drop for PrelioNode {
 
 // only used with r2r
 #[cfg(any(feature = "r2r", feature = "hiroz"))]
-fn odom_to_prelio(msg: Odometry) -> OdomMsg {
+fn odom_to_sync(msg: Odometry) -> OdomMsg {
     OdomMsg {
         twist_linear: nalgebra::Vector3::new(
             msg.twist.twist.linear.x,
@@ -2225,7 +2378,7 @@ fn odom_to_prelio(msg: Odometry) -> OdomMsg {
     feature = "r2r",
     feature = "hiroz"
 ))]
-fn imu_to_prelio(msg: Imu) -> ImuMsg {
+fn imu_to_sync(msg: Imu) -> ImuMsg {
     ImuMsg {
         stamp: ros_pointcloud2::ros::TimeMsg {
             sec: msg.header.stamp.sec,
@@ -2367,7 +2520,7 @@ mod native_ingress_tests {
     feature = "hiroz",
     feature = "mt_pubsub"
 ))]
-pub fn prelio_to_imu(msg: ImuMsg) -> Imu {
+pub fn sync_to_imu(msg: ImuMsg) -> Imu {
     Imu {
         header: Header {
             stamp: Time {

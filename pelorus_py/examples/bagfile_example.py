@@ -2,7 +2,7 @@
 """
 Example using Pelorus Python bindings with MCAP bagfile data.
 
-This example reads IMU and LiDAR data from an MCAP bagfile and processes it
+This example reads IMU and Lidar data from an MCAP bagfile and processes it
 through Pelorus to produce odometry estimates.
 
 Requirements:
@@ -103,7 +103,7 @@ def main():
                     break
 
     if target_scan_id is None:
-        raise RuntimeError("The bag must contain at least two LiDAR scans")
+        raise RuntimeError("The bag must contain at least two Lidar scans")
 
     # The support scan above lets this specific target complete deterministically.
     while target_scan_id not in received_scan_ids:
@@ -115,7 +115,7 @@ def main():
     print()
     print(f"Summary:")
     print(f"  IMU messages processed: {imu_count}")
-    print(f"  LiDAR scans processed: {lidar_count}")
+    print(f"  Lidar scans processed: {lidar_count}")
     print(f"  Odometry results received: {odom_count}")
 
 if __name__ == "__main__":

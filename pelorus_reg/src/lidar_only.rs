@@ -90,7 +90,7 @@ impl SyntheticImu {
                 )
             }
             // The first interval has no previous pose to difference, so it
-            // propagates as pure translation and lets the LiDAR correct it.
+            // propagates as pure translation and lets the Lidar correct it.
             _ => (Vector3::zeros(), None),
         };
         self.previous = Some((*pose, from));

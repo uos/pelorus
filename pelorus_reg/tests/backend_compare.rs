@@ -2,9 +2,9 @@ use nalgebra::Isometry3;
 use pelorus_core::timing::RuntimeEvaluator;
 use pelorus_core::{ImuParameters, PointXYZIT};
 use pelorus_reg::{ActiveBackend, Registration, registration::RegistrationState};
-use prelio::LocatedBufferView;
+use pelorus_sync::LocatedBufferView;
 use serde::{Deserialize, Serialize};
-use spole::{IVoxHashMap, IVoxNearbyType};
+use pelorus_localmap::{IVoxHashMap, IVoxNearbyType};
 use std::fs;
 use std::path::PathBuf;
 #[cfg(any(feature = "metal", feature = "cuda", feature = "vulkan"))]
@@ -304,7 +304,7 @@ fn test_planes_direct_equivalency_cuda() {
     let map_cloud = create_simple_cloud();
     let query_cloud = create_complex_cloud();
 
-    let mut cpu_map = spole::IVoxHashMap::new(resolution, 10000, IVoxNearbyType::Nearby26, 0.1);
+    let mut cpu_map = pelorus_localmap::IVoxHashMap::new(resolution, 10000, IVoxNearbyType::Nearby26, 0.1);
     cpu_map.add(&map_cloud, &Isometry3::identity(), 1);
 
     let mut cpu_planes: Vec<PointXYZINormal> = Vec::new();
@@ -430,7 +430,7 @@ fn test_planes_after_voxel_update_cuda() {
     let resolution = 0.5_f32;
     let map_cloud = create_simple_cloud();
 
-    let mut cpu_map = spole::IVoxHashMap::new(resolution, 10000, IVoxNearbyType::Nearby26, 0.1);
+    let mut cpu_map = pelorus_localmap::IVoxHashMap::new(resolution, 10000, IVoxNearbyType::Nearby26, 0.1);
     cpu_map.add(&map_cloud, &Isometry3::identity(), 1);
     cpu_map.add(&map_cloud, &Isometry3::identity(), 2);
 
@@ -568,7 +568,7 @@ fn test_lru_eviction_equivalency_cuda() {
     let update_cloud = vec![point(0.0)];
     let eviction_cloud = vec![point(8.0)];
 
-    let mut cpu_map = spole::IVoxHashMap::new(resolution, capacity, IVoxNearbyType::Nearby26, 0.1);
+    let mut cpu_map = pelorus_localmap::IVoxHashMap::new(resolution, capacity, IVoxNearbyType::Nearby26, 0.1);
     cpu_map.add(&initial_cloud, &Isometry3::identity(), 1);
     cpu_map.add(&update_cloud, &Isometry3::identity(), 2);
     cpu_map.add(&eviction_cloud, &Isometry3::identity(), 3);
@@ -634,7 +634,7 @@ fn test_capacity_crossing_does_not_reuse_empty_cuda_slot() {
     let partial_cloud = vec![point(0.0), point(2.0), point(2.0)];
     let crossing_cloud = vec![point(4.0), point(6.0), point(8.0)];
 
-    let mut cpu_map = spole::IVoxHashMap::new(resolution, capacity, IVoxNearbyType::Nearby26, 0.1);
+    let mut cpu_map = pelorus_localmap::IVoxHashMap::new(resolution, capacity, IVoxNearbyType::Nearby26, 0.1);
     cpu_map.add(&partial_cloud, &Isometry3::identity(), 1);
     cpu_map.add(&crossing_cloud, &Isometry3::identity(), 2);
     let mut cpu_map_points = cpu_map.get_entire_map();
@@ -684,7 +684,7 @@ fn test_planes_direct_equivalency_vulkan() {
     let map_cloud = create_simple_cloud();
     let query_cloud = create_complex_cloud();
 
-    let mut cpu_map = spole::IVoxHashMap::new(resolution, 10000, IVoxNearbyType::Nearby26, 0.1);
+    let mut cpu_map = pelorus_localmap::IVoxHashMap::new(resolution, 10000, IVoxNearbyType::Nearby26, 0.1);
     cpu_map.add(&map_cloud, &Isometry3::identity(), 1);
 
     let mut cpu_planes: Vec<PointXYZINormal> = Vec::new();
@@ -814,7 +814,7 @@ fn test_planes_after_voxel_update_vulkan() {
     let resolution = 0.5_f32;
     let map_cloud = create_simple_cloud();
 
-    let mut cpu_map = spole::IVoxHashMap::new(resolution, 10000, IVoxNearbyType::Nearby26, 0.1);
+    let mut cpu_map = pelorus_localmap::IVoxHashMap::new(resolution, 10000, IVoxNearbyType::Nearby26, 0.1);
     cpu_map.add(&map_cloud, &Isometry3::identity(), 1);
     cpu_map.add(&map_cloud, &Isometry3::identity(), 2);
 
@@ -946,7 +946,7 @@ fn test_planes_transformed_extrinsic_equivalency_vulkan() {
         nalgebra::UnitQuaternion::from_euler_angles(std::f64::consts::PI, 0.0, 0.0);
     let lidar_to_imu_t = nalgebra::Vector3::new(0.1, -0.05, 0.02);
 
-    let mut cpu_map = spole::IVoxHashMap::new(resolution, 10000, IVoxNearbyType::Nearby26, 0.1);
+    let mut cpu_map = pelorus_localmap::IVoxHashMap::new(resolution, 10000, IVoxNearbyType::Nearby26, 0.1);
     cpu_map.add(&map_cloud, &map_pose, 1);
 
     let offset_q_f32 = lidar_to_imu_q.cast::<f32>();
@@ -1092,7 +1092,7 @@ fn test_planes_after_moved_voxel_update_vulkan() {
         nalgebra::UnitQuaternion::from_euler_angles(0.11, -0.19, 0.31),
     );
 
-    let mut cpu_map = spole::IVoxHashMap::new(resolution, 10000, IVoxNearbyType::Nearby26, 0.1);
+    let mut cpu_map = pelorus_localmap::IVoxHashMap::new(resolution, 10000, IVoxNearbyType::Nearby26, 0.1);
     cpu_map.add(&map_cloud, &first_pose, 1);
     cpu_map.add(&map_cloud, &second_pose, 2);
 
@@ -1220,7 +1220,7 @@ fn test_planes_direct_equivalency() {
     let query_cloud = create_complex_cloud();
 
     // ── CPU path ────────────────────────────────────────────────────────────────
-    let mut cpu_map = spole::IVoxHashMap::new(resolution, 10000, IVoxNearbyType::Nearby26, 0.1);
+    let mut cpu_map = pelorus_localmap::IVoxHashMap::new(resolution, 10000, IVoxNearbyType::Nearby26, 0.1);
     cpu_map.add(&map_cloud, &Isometry3::identity(), 1);
 
     let mut cpu_planes: Vec<PointXYZINormal> = Vec::new();
@@ -1366,7 +1366,7 @@ fn test_planes_after_voxel_update() {
     let map_cloud = create_simple_cloud();
 
     // ── CPU path: add cloud twice ────────────────────────────────────────────────
-    let mut cpu_map = spole::IVoxHashMap::new(resolution, 10000, IVoxNearbyType::Nearby26, 0.1);
+    let mut cpu_map = pelorus_localmap::IVoxHashMap::new(resolution, 10000, IVoxNearbyType::Nearby26, 0.1);
     cpu_map.add(&map_cloud, &Isometry3::identity(), 1);
     cpu_map.add(&map_cloud, &Isometry3::identity(), 2); // second add triggers voxel UPDATE
 

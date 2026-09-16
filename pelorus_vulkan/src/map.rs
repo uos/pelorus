@@ -14,7 +14,7 @@ use crate::stream::{Stream, StreamBackend};
 use crate::types::{NeighborType, Quaternion, Vector3};
 use ash::vk;
 use pelorus_core::PointXYZIT;
-use spole::IVoxHashMap;
+use pelorus_localmap::IVoxHashMap;
 use std::mem::size_of;
 use std::sync::{Arc, Mutex, OnceLock};
 

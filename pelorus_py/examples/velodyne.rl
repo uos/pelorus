@@ -1,4 +1,4 @@
-# Demo configuration for a custom robot setup with a Velodyne LiDAR
+# Demo configuration for a custom robot setup with a Velodyne Lidar
 # Adjust the parameters as needed for your specific setup of the bagfile.
 
 lidar.vendor = Velodyne
@@ -13,4 +13,4 @@ imu.from_lidar_transform {
 }
 
 preprocessing.downsample.resolution = 50cm
-registration.map.resolution = 50cm 
+registration.map.resolution = 50cm

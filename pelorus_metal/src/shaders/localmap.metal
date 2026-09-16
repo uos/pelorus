@@ -260,7 +260,7 @@ kernel void build_voxels(
 
 			d.point_count += count;
 		}
-		dists[buf_idx] = d; // Always write back: at minimum persists last_scan (matches CUDA/spole)
+		dists[buf_idx] = d; // Always write back: at minimum persists last_scan (matches CUDA/pelorus_localmap)
 	} else {
 		// Insert new voxel - use local copy for atomic writeback (matches Vulkan pattern)
 		VoxelDistribution d;

@@ -30,13 +30,13 @@ Available flags for the ROS 2 version are:
 **Default flags** (enabled by default, disable all with `-D PELORUS_ALL_DEFAULTS=OFF`):
 - `rayon` use all available CPU cores
 - `rat` synchronize input/output for use with [Minot](https://codeberg.org/stelzo/minot) using the `-r` flag
-- `rerun` compile Rerun visualization support; activate it at runtime with `--rerun`
+- `rerun` compile Rerun visualization support. Activate it at runtime with `--rerun`
 
 **Highlighted flags**:
 - `cuda` use all available CUDA accelerations; searches for your CUDA directory - if not found, please set the `CUDA_HOME` environment variable.
 - `metal` use Apple Metal acceleration on macOS (Apple Silicon)
 - `vulkan` use Vulkan acceleration
-- Rerun's server and bounded map settings are configured under `output.rerun` in the `.rl` file and can be changed per run with `-o`, for example `-o output.rerun.server_addr="192.168.1.2:9876"`.
+- Rerun's server and map settings live under `output.rerun` in the `.rl` file. Override them per run with `-o`, for example `-o output.rerun.server_addr="192.168.1.2:9876"`.
 
 Now you can use the launch file to start the node but we need a configuration first. For basics of the configuration language itself visit the [Ratslang](https://github.com/stelzo/ratslang) project.
 

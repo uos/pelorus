@@ -13,9 +13,9 @@ use crate::{
     CoordinateSystem, DownsampleParameters, ImuCalibrationParameters, ImuConfigParameter,
     ImuDriverConfig, ImuDriverType, ImuParameters, KinematicModel, LidarDriverConfig,
     LidarDriverType, LidarVendor, LioConfig, MadgwickSetting, OdometryRate, OusterConfig,
-    OusterTimestampMode, PassthroughFilterParameters, PointCloudMode, PrelioNodeParameters,
-    PrelioParameters, PreprocessingBackend, Qos, Reliability, RerunConfig, RerunMapConfig,
-    SensorDriverConfig, VelodyneConfig, VelodyneModel, VelodyneTimestampMode, XsensConfig,
+    OusterTimestampMode, PassthroughFilterParameters, PointCloudMode, PreprocessingBackend, Qos,
+    Reliability, RerunConfig, RerunMapConfig, SensorDriverConfig, SyncNodeParameters,
+    SyncParameters, VelodyneConfig, VelodyneModel, VelodyneTimestampMode, XsensConfig,
     XsensTimestampMode, adaptive_execution::ExecutionPolicy,
 };
 
@@ -97,9 +97,7 @@ pub fn parse_overrides(overrides: &[String]) -> anyhow::Result<Vec<ConfigOverrid
             // Compile separately so syntax errors identify the override.
             let mut syntax_check = ratslang::compile_code(&statement)
                 .map_err(|error| anyhow!("override '{raw}' is not valid Ratslang: {error}"))?;
-            // This parse only validates the override's syntax. The assignment is
-            // evaluated later as part of the complete layered configuration, so
-            // dropping this temporary AST must not report it as unused.
+            // Only checks syntax here. The value is used later, so silence the drop warning.
             syntax_check.vars = syntax_check.vars.with_drop_warning(false);
             Ok(ConfigOverride {
                 key: key.to_owned(),
@@ -190,7 +188,7 @@ pub fn reject_unknown_overrides(
         .collect::<Vec<_>>();
     if !unknown.is_empty() {
         return Err(anyhow!(
-            "override{} {} not recognized; run 'config generate full' to see every setting",
+            "override{} {} not recognized. Run 'config generate full' to see every setting",
             if unknown.len() == 1 { "" } else { "s" },
             unknown.join(", ")
         ));
@@ -302,9 +300,8 @@ pub fn ast_to_config_with_user_usage(
     mut defaults: Evaluated,
     user: Evaluated,
 ) -> anyhow::Result<(LioConfig, (Vec<String>, Vec<String>))> {
-    // User values intentionally shadow defaults. Suppress drop warnings for
-    // those shadowed defaults while retaining usage diagnostics for the user
-    // configuration this helper is meant to inspect.
+    // Defaults get shadowed by user values on purpose. Silence their drop warning
+    // but keep usage diagnostics for the user config, which is what this helper checks.
     defaults.vars = defaults.vars.with_drop_warning(false);
     let config = ast_to_config_inner(defaults, user, false, true)?;
     Ok((config.0, config.2))
@@ -314,7 +311,7 @@ pub fn ast_to_config_with_user_usage(
 mod override_tests {
     use super::*;
 
-    const DEFAULTS: &str = include_str!("../../default.rl");
+    const DEFAULTS: &str = include_str!("../default.rl");
 
     #[test]
     fn an_override_beats_the_same_setting_in_the_config_file() {
@@ -334,29 +331,6 @@ mod override_tests {
     }
 
     #[test]
-    fn rerun_map_settings_can_be_overridden() {
-        let overrides = parse_overrides(&[
-            "output.rerun.map.enabled=false".to_owned(),
-            "output.rerun.map.voxel_size=0.1m".to_owned(),
-            "output.rerun.map.chunk_size=4.0m".to_owned(),
-            "output.rerun.map.max_chunks=12".to_owned(),
-            "output.rerun.map.max_points_per_chunk=345".to_owned(),
-            "output.rerun.map.publish_interval=2s".to_owned(),
-        ])
-        .unwrap();
-        let user = user_config_with_checked_overrides(DEFAULTS, None, &overrides).unwrap();
-        let defaults = ratslang::compile_code(DEFAULTS).unwrap();
-        let config = ast_to_config(defaults, user).unwrap();
-
-        assert!(!config.rerun.map.enabled);
-        assert_eq!(config.rerun.map.voxel_size, 0.1);
-        assert_eq!(config.rerun.map.chunk_size, 4.0);
-        assert_eq!(config.rerun.map.max_chunks, 12);
-        assert_eq!(config.rerun.map.max_points_per_chunk, 345);
-        assert_eq!(config.rerun.map.publish_interval_sec, 2.0);
-    }
-
-    #[test]
     fn rerun_server_address_can_be_overridden() {
         let overrides =
             parse_overrides(&["output.rerun.server_addr=\"172.22.129.240:9876\"".to_owned()])
@@ -366,6 +340,23 @@ mod override_tests {
         let config = ast_to_config(defaults, user).unwrap();
 
         assert_eq!(config.rerun.server_addr, "172.22.129.240:9876");
+    }
+
+    #[test]
+    fn rerun_map_settings_can_be_overridden() {
+        let overrides = parse_overrides(&[
+            "output.rerun.map.enabled=true".to_owned(),
+            "output.rerun.map.publish_interval=2s".to_owned(),
+            "output.rerun.map.visual_scale=4.5".to_owned(),
+        ])
+        .unwrap();
+        let user = user_config_with_checked_overrides(DEFAULTS, None, &overrides).unwrap();
+        let defaults = ratslang::compile_code(DEFAULTS).unwrap();
+        let config = ast_to_config(defaults, user).unwrap();
+
+        assert!(config.rerun.map.enabled);
+        assert_eq!(config.rerun.map.publish_interval_sec, 2.0);
+        assert_eq!(config.rerun.map.visual_scale, 4.5);
     }
 
     /// Writes the merged calibration format produced by `dedrunk merge`.
@@ -402,20 +393,17 @@ mod override_tests {
 
     #[test]
     fn the_imu_time_offset_is_read_in_seconds() {
-        assert_eq!(
-            config_with("").prelio_params.imu.calibration.time_offset,
-            0.0
-        );
+        assert_eq!(config_with("").sync_params.imu.calibration.time_offset, 0.0);
 
         let shifted = config_with("imu.calibration.time_offset = -5.9ms\n");
         assert!(
-            (shifted.prelio_params.imu.calibration.time_offset + 0.0059).abs() < 1e-12,
+            (shifted.sync_params.imu.calibration.time_offset + 0.0059).abs() < 1e-12,
             "{}",
-            shifted.prelio_params.imu.calibration.time_offset
+            shifted.sync_params.imu.calibration.time_offset
         );
 
         let seconds = config_with("imu.calibration.time_offset = 0.25s\n");
-        assert!((seconds.prelio_params.imu.calibration.time_offset - 0.25).abs() < 1e-12);
+        assert!((seconds.sync_params.imu.calibration.time_offset - 0.25).abs() < 1e-12);
     }
 
     #[test]
@@ -423,7 +411,7 @@ mod override_tests {
         let source = "imu.from_lidar_transform.translation = [1.0m, 2.0m, 3.0m]\n\
                       imu.from_lidar_transform.use_tf_tree = true\n";
         let with_imu = config_with(source);
-        assert!(with_imu.prelio_params.imu_lidar_tf_override);
+        assert!(with_imu.sync_params.imu_lidar_tf_override);
         assert_eq!(
             with_imu.imu_params.initial_translation_lidar_to_imu,
             Vector3::new(1.0, 2.0, 3.0)
@@ -431,7 +419,7 @@ mod override_tests {
 
         let lidar_only = config_with(&format!("{source}imu.lidar_only = true\n"));
         assert!(lidar_only.imu_params.lidar_only);
-        assert!(!lidar_only.prelio_params.imu_lidar_tf_override);
+        assert!(!lidar_only.sync_params.imu_lidar_tf_override);
         assert_eq!(
             lidar_only.imu_params.initial_translation_lidar_to_imu,
             Vector3::zeros()
@@ -647,7 +635,7 @@ mod tests {
 
     #[test]
     fn default_sensor_driver_config_parses() {
-        let defaults = ratslang::compile_code(include_str!("../../default.rl")).unwrap();
+        let defaults = ratslang::compile_code(include_str!("../default.rl")).unwrap();
         let user = ratslang::compile_code("").unwrap();
         let config = ast_to_config(defaults, user).unwrap();
         assert_eq!(
@@ -664,7 +652,7 @@ mod tests {
 
     #[test]
     fn odometry_rate_defaults_to_lidar() {
-        let defaults = ratslang::compile_code(include_str!("../../default.rl")).unwrap();
+        let defaults = ratslang::compile_code(include_str!("../default.rl")).unwrap();
         let user = ratslang::compile_code("").unwrap();
         let config = ast_to_config(defaults, user).unwrap();
         assert_eq!(config.odometry_rate, OdometryRate::Lidar);
@@ -672,26 +660,23 @@ mod tests {
 
     #[test]
     fn imu_and_lidar_odometry_rate_parses() {
-        let defaults = ratslang::compile_code(include_str!("../../default.rl")).unwrap();
+        let defaults = ratslang::compile_code(include_str!("../default.rl")).unwrap();
         let user = ratslang::compile_code("output.odometry_rate = ImuAndLidar").unwrap();
         let config = ast_to_config(defaults, user).unwrap();
         assert_eq!(config.odometry_rate, OdometryRate::ImuAndLidar);
     }
 
     #[test]
-    fn rerun_map_defaults_parse() {
-        let defaults = ratslang::compile_code(include_str!("../../default.rl")).unwrap();
+    fn rerun_defaults_parse() {
+        let defaults = ratslang::compile_code(include_str!("../default.rl")).unwrap();
         let user = ratslang::compile_code("").unwrap();
         let config = ast_to_config(defaults, user).unwrap();
 
         assert!(!config.rerun.enabled);
         assert_eq!(config.rerun.server_addr, "127.0.0.1:9876");
-        assert!(config.rerun.map.enabled);
-        assert_eq!(config.rerun.map.voxel_size, 0.2);
-        assert_eq!(config.rerun.map.chunk_size, 10.0);
-        assert_eq!(config.rerun.map.max_chunks, 256);
-        assert_eq!(config.rerun.map.max_points_per_chunk, 8_192);
-        assert_eq!(config.rerun.map.publish_interval_sec, 0.5);
+        assert!(!config.rerun.map.enabled);
+        assert_eq!(config.rerun.map.publish_interval_sec, 1.0);
+        assert_eq!(config.rerun.map.visual_scale, 3.0);
     }
 }
 
@@ -1065,7 +1050,7 @@ fn ast_to_config_inner(
         )
     };
 
-    let (imu_params, imu_prelio_params, imu_node_params) = {
+    let (imu_params, imu_sync_params, imu_node_params) = {
         let imu = asts.filter_ns(&["imu"]);
         let imu_src_topic = resolve_var!(imu, "topic", as String, Rhs::Val(Val::StringVal(s)) | Rhs::Path(s) => {s})?;
         let imu_qos = resolve_var!(imu, "qos.reliability", as Qos, Rhs::Val(Val::StringVal(s)) | Rhs::Path(s) => {reliablility_parse(&s)?})?;
@@ -1164,14 +1149,14 @@ fn ast_to_config_inner(
             (cov_gyr, cov_acc, cov_gyr_bias, cov_acc_bias)
         };
 
-        // LiDAR-only trajectories use the LiDAR frame directly.
+        // Lidar-only trajectories use the Lidar frame directly.
         let (initial_translation_lidar_to_imu, initial_rotation_lidar_to_imu) = if lidar_only {
             if initial_translation_lidar_to_imu != Vector3::zeros()
                 || initial_rotation_lidar_to_imu != Matrix3::identity()
             {
                 log::info!(
                     "imu.lidar_only is on, so imu.from_lidar_transform is ignored and the \
-                     trajectory is the LiDAR's own."
+                     trajectory is the Lidar's own."
                 );
             }
             (Vector3::zeros(), Matrix3::identity())
@@ -1195,7 +1180,7 @@ fn ast_to_config_inner(
             kinematic_model: wheel_kinematic_model,
             wheel_odom_cov_override: wheel_odom_cov,
         };
-        let imu_prelio_params = ImuConfigParameter {
+        let imu_sync_params = ImuConfigParameter {
             madgwick_setting,
             gravity,
             calibration: ImuCalibrationParameters {
@@ -1214,7 +1199,7 @@ fn ast_to_config_inner(
             imu_lidar_tf_override && !lidar_only,
         );
 
-        (imu_params, imu_prelio_params, imu_node_params)
+        (imu_params, imu_sync_params, imu_node_params)
     };
 
     let (
@@ -1285,36 +1270,16 @@ fn ast_to_config_inner(
         let rerun_map_ns = rerun_ns.filter_ns(&["map"]);
         let rerun_map_enabled =
             resolve_var!(rerun_map_ns, "enabled", as bool, Rhs::Val(Val::BoolVal(b)) => {b})?;
-        let rerun_map_voxel_size_m: f64 = resolve_var!(rerun_map_ns, "voxel_size", as f64, Rhs::Val(Val::UnitedVal(UnitVal::LengthVal(v))) => {v.get::<meter>()})?;
-        let rerun_map_voxel_size = rerun_map_voxel_size_m as f32;
-        let rerun_map_chunk_size_m: f64 = resolve_var!(rerun_map_ns, "chunk_size", as f64, Rhs::Val(Val::UnitedVal(UnitVal::LengthVal(v))) => {v.get::<meter>()})?;
-        let rerun_map_chunk_size = rerun_map_chunk_size_m as f32;
-        let rerun_map_max_chunks = resolve_var!(rerun_map_ns, "max_chunks", as usize, Rhs::Val(Val::NumVal(NumVal::Integer(v))) => {v})?;
-        let rerun_map_max_points_per_chunk = resolve_var!(rerun_map_ns, "max_points_per_chunk", as usize, Rhs::Val(Val::NumVal(NumVal::Integer(v))) => {v})?;
         let rerun_map_publish_interval_sec: f64 = resolve_var!(rerun_map_ns, "publish_interval", as f64, Rhs::Val(Val::UnitedVal(UnitVal::TimeVal(v))) => {v.get::<second>()})?;
-        if !rerun_map_voxel_size.is_finite() || rerun_map_voxel_size <= 0.0 {
-            return Err(anyhow!(
-                "output.rerun.map.voxel_size must be finite and greater than zero"
-            ));
-        }
-        if !rerun_map_chunk_size.is_finite() || rerun_map_chunk_size <= 0.0 {
-            return Err(anyhow!(
-                "output.rerun.map.chunk_size must be finite and greater than zero"
-            ));
-        }
-        if rerun_map_max_chunks == 0 {
-            return Err(anyhow!(
-                "output.rerun.map.max_chunks must be greater than zero"
-            ));
-        }
-        if rerun_map_max_points_per_chunk == 0 {
-            return Err(anyhow!(
-                "output.rerun.map.max_points_per_chunk must be greater than zero"
-            ));
-        }
+        let rerun_map_visual_scale: f32 = resolve_var!(rerun_map_ns, "visual_scale", as f32, Rhs::Val(Val::NumVal(NumVal::Floating(v))) => {v as f32})?;
         if !rerun_map_publish_interval_sec.is_finite() || rerun_map_publish_interval_sec < 0.0 {
             return Err(anyhow!(
                 "output.rerun.map.publish_interval must be finite and non-negative"
+            ));
+        }
+        if !rerun_map_visual_scale.is_finite() || rerun_map_visual_scale <= 0.0 {
+            return Err(anyhow!(
+                "output.rerun.map.visual_scale must be finite and positive"
             ));
         }
         let rerun = RerunConfig {
@@ -1322,11 +1287,8 @@ fn ast_to_config_inner(
             server_addr: rerun_server_addr,
             map: RerunMapConfig {
                 enabled: rerun_map_enabled,
-                voxel_size: rerun_map_voxel_size,
-                chunk_size: rerun_map_chunk_size,
-                max_chunks: rerun_map_max_chunks,
-                max_points_per_chunk: rerun_map_max_points_per_chunk,
                 publish_interval_sec: rerun_map_publish_interval_sec,
+                visual_scale: rerun_map_visual_scale,
             },
         };
 
@@ -1586,7 +1548,7 @@ fn ast_to_config_inner(
         base_to_lidar,
         base_to_lidar_tf_override,
         cpu_only,
-        prelio_node_params: PrelioNodeParameters {
+        sync_node_params: SyncNodeParameters {
             wheel_qos,
             wheel_src_topic,
             cloud_src_topic,
@@ -1600,11 +1562,11 @@ fn ast_to_config_inner(
             imu_filtered_topic,
             synchronous_mode: false,
         },
-        prelio_params: PrelioParameters {
+        sync_params: SyncParameters {
             lidar_vendor,
             imu_lidar_tf_override: imu_node_params.3,
             map_frame,
-            imu: imu_prelio_params,
+            imu: imu_sync_params,
             downsample: DownsampleParameters {
                 voxel_size: (query_resolution_factor * map_resolution) as f32,
                 bypass_output_downsample,

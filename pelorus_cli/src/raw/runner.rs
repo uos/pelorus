@@ -11,7 +11,7 @@ use anyhow::{Context, Result, anyhow};
 use log::{error, info, warn};
 
 use pelorus_core::{ImuMsg, LidarDriverType, LioConfig, PointCloudMode};
-use prelio_io::pelorus_drivers::{
+use pelorus_syncio::pelorus_drivers::{
     DriverError, DriverManager, RawLidarScan, ReceiveMetadata, SensorIngress,
 };
 use ros2_interfaces_jazzy_rkyv::sensor_msgs::msg::{Imu, PointCloud2};
@@ -225,8 +225,8 @@ pub fn run(config: LioConfig, options: RawOptions, shutdown: Arc<AtomicBool>) ->
         .map_err(|err| anyhow!("Failed to create mt_pubsub node: {err}"))?,
     );
 
-    let cloud_qos = prelio_io::qos_to_mt(config.prelio_node_params.cloud_qos);
-    let imu_qos = prelio_io::qos_to_mt(config.prelio_node_params.imu_qos);
+    let cloud_qos = pelorus_syncio::qos_to_mt(config.sync_node_params.cloud_qos);
+    let imu_qos = pelorus_syncio::qos_to_mt(config.sync_node_params.imu_qos);
 
     let cloud_publisher = if plan.lidar && !compressed {
         Some(
@@ -377,7 +377,7 @@ fn handle_sample(
 ) -> Result<bool> {
     match sample {
         RawSample::Lidar(scan) => {
-            let cloud = prelio_io::native_scan_to_cloud(*scan, &sink.lidar_driver_type)
+            let cloud = pelorus_syncio::native_scan_to_cloud(*scan, &sink.lidar_driver_type)
                 .map_err(|error| anyhow!("Failed to convert a raw scan: {error}"))?;
 
             if let Some(recording) = recording
@@ -390,7 +390,7 @@ fn handle_sample(
 
             #[cfg(feature = "compressed-pointcloud")]
             if let Some(publisher) = sink.compressed_publisher.as_ref() {
-                let compressed = prelio_io::compress_cloud(cloud)
+                let compressed = pelorus_syncio::compress_cloud(cloud)
                     .map_err(|error| anyhow!("Failed to compress a raw scan: {error}"))?;
                 sink.rt.block_on(publisher.publish(&compressed))?;
                 sink.counters
@@ -400,7 +400,7 @@ fn handle_sample(
             }
 
             if let Some(publisher) = sink.cloud_publisher.as_ref() {
-                let msg = prelio_io::impl_ros2_interfaces_jazzy_rkyv::from_pointcloud2_msg(cloud);
+                let msg = pelorus_syncio::impl_ros2_interfaces_jazzy_rkyv::from_pointcloud2_msg(cloud);
                 sink.rt.block_on(publisher.publish(&msg))?;
                 sink.counters
                     .lidar_published
@@ -425,7 +425,7 @@ fn handle_sample(
             }
 
             if let Some(publisher) = sink.imu_publisher.as_ref() {
-                let msg = prelio_io::prelio_to_imu(*imu);
+                let msg = pelorus_syncio::sync_to_imu(*imu);
                 sink.rt.block_on(publisher.publish(&msg))?;
                 sink.counters.imu_published.fetch_add(1, Ordering::Relaxed);
             }

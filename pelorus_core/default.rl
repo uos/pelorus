@@ -308,7 +308,7 @@ imu {
     estimate_online = false
   }
 
-  # Ignore the IMU entirely and run the odometry on the LiDAR alone, with the
+  # Ignore the IMU entirely and run the odometry on the Lidar alone, with the
   # filter propagating at a constant twist between scans.
   #
   # This exists to produce a trajectory for calibrating the IMU against, which
@@ -358,7 +358,7 @@ imu {
     # ratio for this sensor is visible before you commit to it.
     noise_from_file = false
 
-    # Seconds the IMU clock runs ahead of the LiDAR clock, as reported by
+    # Seconds the IMU clock runs ahead of the Lidar clock, as reported by
     # `dedrunk extrinsics`. Pelorus subtracts it from every IMU timestamp, so
     # paste the number exactly as dedrunk prints it, sign included.
     #
@@ -414,7 +414,7 @@ wheel {
 output {
 
   # @recommended
-  # Lidar | ImuAndLidar. ImuAndLidar adds low-latency IMU predictions between LiDAR corrections.
+  # Lidar | ImuAndLidar. ImuAndLidar adds low-latency IMU predictions between Lidar corrections.
   odometry_rate = Lidar
 
   # PointCloud2 | Compressed. Selects the registered-cloud message type when using mt_pubsub.
@@ -448,14 +448,14 @@ output {
 
   # @recommended
   base_link {
-    # If not empty, the odometry and TF will be published for this frame instead of the LiDAR frame.
+    # If not empty, the odometry and TF will be published for this frame instead of the Lidar frame.
     frame_id = ""
 
     from_lidar_transform {
       # Ignore the next manual translation and use the TF tree instead. The lookup will be once with receiving the first sensor message.
       use_tf_tree = false
 
-      # Pose of the LiDAR in the base_link frame.
+      # Pose of the Lidar in the base_link frame.
       translation = [0.0mm, 0.0mm, 0.0mm]
       rotation = [ [1.0, 0.0, 0.0],
                    [0.0, 1.0, 0.0],
@@ -467,16 +467,14 @@ output {
     # Address of an already running Rerun server. Visualization is activated with --rerun.
     server_addr = "127.0.0.1:9876"
 
-    # Build a bounded world-space map directly from registered output scans. This never downloads
-    # or copies the registration backend's internal map. Override any setting with -o, for example:
-    # -o output.rerun.map.enabled=false -o output.rerun.map.voxel_size=0.1m
+    # Periodic snapshot of the whole registration map, colored by relevance score.
+    # Off by default. Large maps can be expensive to render.
     map {
-      enabled = true
-      voxel_size = 0.2m
-      chunk_size = 10.0m
-      max_chunks = 256
-      max_points_per_chunk = 8192
-      publish_interval = 500ms
+      enabled = false
+      # Minimum time between snapshots.
+      publish_interval = 1s
+      # Ellipsoid size, scaled by each voxel's covariance.
+      visual_scale = 3.0
     }
   }
 

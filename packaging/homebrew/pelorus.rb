@@ -1,4 +1,4 @@
-# Maintainer: Christopher Sieh (stelzo) <stelzo@steado.de>
+# Maintainer: stelzo <stelzo@steado.de>
 # Template file — CI replaces VERSION_PLACEHOLDER, ARM_SHA256_PLACEHOLDER,
 # before publishing to the tap.
 class Pelorus < Formula
