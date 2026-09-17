@@ -43,12 +43,12 @@ rerun
 # in other terminal
 pelorus offline wachsbleiche/parking_25:hunter \
     -c $(marina resolve wachsbleiche/parking_25:hunter)/pelorus.rl \
-    --rerun
+    -o output.rerun=true
 ```
 
 Pelorus will run the odometry as fast as possible through the offline pipeline. You can go back in time in the GUI to view real-time results. You can get there by selecting "sensor_time" and choose "1x" speed.
 
-Sometimes you'll want to see more than just the odometry. You can enable the local map visualization by appending `-o 'output.rerun.map.enabled=true'` to the above command. Mind that this will slow down the process. Even more so when running with GPU acceleration.
+Sometimes you'll want to see more than just the odometry. You can enable the local map visualization by appending `-o output.rerun.map=true` to the above command. Mind that this will slow down the process. Even more so when running with GPU acceleration.
 
 The local map visuals are meant for debugging [local map sizes](configuration/reference/registration.md#registration-map-capacity), since Pelorus' local map (and Pelorus in general) is intended for localization, not mapping. This is odometry after all. For pretty maps with global consistency, you can use the [GLIM plugin](glim.md) or wait for the release of our full SLAM in the coming weeks.
 

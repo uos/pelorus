@@ -1488,3 +1488,254 @@ fn test_planes_after_voxel_update() {
         max_diff
     );
 }
+
+#[cfg(feature = "cuda")]
+#[test]
+fn multiresolution_cuda_matches_cpu_geometry_and_capacity() {
+    use ros_pointcloud2::points::{PointXYZ, PointXYZINormal};
+    let _lock = CUDA_MAP_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+    let stream = pelorus_cuda::Stream::new();
+    let t = pelorus_cuda::Vector3::new(0.0, 0.0, 0.0);
+    let q = pelorus_cuda::Quaternion::default();
+    let point = |x, y, z| PointXYZIT {
+        x,
+        y,
+        z,
+        ..Default::default()
+    };
+    // Dense tilted surface, negative coordinates, a sparse plane, and a corner.
+    let mut cloud = Vec::new();
+    for x in -20..=20 {
+        for y in -20..=20 {
+            let (x, y) = (x as f32 * 0.08 + 0.031, y as f32 * 0.08 + 0.017);
+            cloud.push(point(x, y, 0.07 * x + 0.03 * y));
+            cloud.push(point(0.0, x, y.abs()));
+        }
+    }
+    for x in -4..=4 {
+        for y in -4..=4 {
+            cloud.push(point(10.03 + x as f32 * 0.6, y as f32 * 0.6, 0.1));
+        }
+    }
+    cloud.push(point(f32::NAN, 0.0, 0.0));
+    let queries = vec![
+        point(-1.0, -0.3, -0.07),
+        point(1.0, 0.3, 0.08),
+        point(10.03, 0.0, 0.11),
+        point(0.01, 0.8, 0.9),
+        point(100.0, 100.0, 100.0),
+        point(f32::NAN, 0.0, 0.0),
+    ];
+    // A non-power-of-two budget also tests per-level remainders and eviction.
+    for capacity in [12003, 37] {
+        pelorus_cuda::cleanup_map();
+        pelorus_cuda::init_multiresolution_map(&stream, capacity, 0.5, 10.0);
+        assert_eq!(pelorus_cuda::get_map_capacity() as usize, capacity);
+        assert_eq!(pelorus_cuda::get_map_size(), 0);
+        let mut cpu = IVoxHashMap::new(0.5, capacity, IVoxNearbyType::Nearby26, 10.0);
+        cpu.enable_multiresolution(capacity, 10.0);
+        for scan in 1..=3 {
+            let translated: Vec<_> = cloud
+                .iter()
+                .map(|p| point(p.x, p.y, p.z + scan as f32 * 0.001))
+                .collect();
+            cpu.add(&translated, &Isometry3::identity(), scan);
+            let buffer = pelorus_cuda::CudaBuffer::from_cloud(&stream, &translated);
+            pelorus_cuda::add_to_map(&stream, &buffer, &t, &q, scan);
+            assert!(pelorus_cuda::get_map_size() as usize <= capacity);
+        }
+        let mut a = cpu.get_entire_map();
+        let mut b = pelorus_cuda::get_map();
+        let sort = |a: &nalgebra::Point3<f32>, b: &nalgebra::Point3<f32>| {
+            a.x.total_cmp(&b.x)
+                .then(a.y.total_cmp(&b.y))
+                .then(a.z.total_cmp(&b.z))
+        };
+        a.sort_by(sort);
+        b.sort_by(sort);
+        assert_eq!(a.len(), b.len(), "base-level capacity mismatch");
+        // Float rounding may reorder means with nearly identical x values.
+        for a in &a {
+            let (index, distance) = b
+                .iter()
+                .enumerate()
+                .map(|(i, b)| (i, (a - b).norm()))
+                .min_by(|a, b| a.1.total_cmp(&b.1))
+                .unwrap();
+            let nearest = b.swap_remove(index);
+            assert!(
+                distance < 2e-5,
+                "map mean mismatch {a:?} {nearest:?} ({distance}) at capacity {capacity}"
+            );
+        }
+        let input = pelorus_cuda::CudaBuffer::from_cloud(&stream, &queries);
+        let mut output = pelorus_cuda::CudaBuffer::new(
+            &stream,
+            std::mem::size_of::<PointXYZINormal>(),
+            queries.len(),
+        );
+        let mut gpu = vec![PointXYZINormal::default(); queries.len()];
+        pelorus_cuda::planes_cuda(&stream, &input, &t, &q, &t, &q, &mut gpu, &mut output);
+        let expected: Vec<_> = queries
+            .iter()
+            .filter_map(|p| {
+                let plane = cpu.plane_fit_from_distributions(&PointXYZ::new(p.x, p.y, p.z))?;
+                let d = plane[0] * p.x + plane[1] * p.y + plane[2] * p.z + plane[3];
+                let range = (p.x * p.x + p.y * p.y + p.z * p.z).max(1e-9).sqrt().sqrt();
+                (1.0 - 0.9 * d.abs() / range > 0.9).then_some((p, plane))
+            })
+            .collect();
+        assert_eq!(
+            expected.len(),
+            gpu.len(),
+            "correspondence membership differs at capacity {capacity}"
+        );
+        for ((p, plane), g) in expected.iter().zip(&gpu) {
+            assert_eq!([p.x, p.y, p.z], [g.x, g.y, g.z]);
+            let dot = plane[0] * g.normal_x + plane[1] * g.normal_y + plane[2] * g.normal_z;
+            assert!(dot.abs() > 0.99999, "normal differs: {plane:?}, {g:?}");
+            assert!((plane[3] - dot.signum() * g.intensity).abs() < 1e-4);
+        }
+        pelorus_cuda::cleanup_map();
+        assert_eq!(pelorus_cuda::get_map_size(), 0);
+    }
+}
+
+#[cfg(feature = "vulkan")]
+#[test]
+fn multiresolution_vulkan_matches_cpu_geometry_and_capacity() {
+    use ros_pointcloud2::points::{PointXYZ, PointXYZINormal};
+    let _lock = VULKAN_MAP_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+    let stream = pelorus_vulkan::Stream::new();
+    let t = pelorus_vulkan::Vector3::new(0.0, 0.0, 0.0);
+    let q = pelorus_vulkan::Quaternion::default();
+    let point = |x, y, z| PointXYZIT {
+        x,
+        y,
+        z,
+        ..Default::default()
+    };
+    // Dense tilted surface, negative coordinates, a sparse plane, and a corner.
+    let mut cloud = Vec::new();
+    for x in -20..=20 {
+        for y in -20..=20 {
+            let (x, y) = (x as f32 * 0.08 + 0.031, y as f32 * 0.08 + 0.017);
+            cloud.push(point(x, y, 0.07 * x + 0.03 * y));
+            cloud.push(point(0.0, x, y.abs()));
+        }
+    }
+    for x in -4..=4 {
+        for y in -4..=4 {
+            cloud.push(point(10.03 + x as f32 * 0.6, y as f32 * 0.6, 0.1));
+        }
+    }
+    cloud.push(point(f32::NAN, 0.0, 0.0));
+    let queries = vec![
+        point(-1.0, -0.3, -0.07),
+        point(1.0, 0.3, 0.08),
+        point(10.03, 0.0, 0.11),
+        point(0.01, 0.8, 0.9),
+        point(100.0, 100.0, 100.0),
+        point(f32::NAN, 0.0, 0.0),
+    ];
+    // A non-power-of-two budget also tests per-level remainders and eviction.
+    for capacity in [12003, 37] {
+        pelorus_vulkan::cleanup_map();
+        pelorus_vulkan::init_map_with_mode(
+            &stream,
+            capacity,
+            0.5,
+            10.0,
+            0.125,
+            pelorus_vulkan::NeighborType::Neighbor26,
+            true,
+        );
+        assert_eq!(pelorus_vulkan::get_map_capacity() as usize, capacity);
+        assert_eq!(pelorus_vulkan::get_map_size(), 0);
+        let mut cpu = IVoxHashMap::new(0.5, capacity, IVoxNearbyType::Nearby26, 10.0);
+        cpu.enable_multiresolution(capacity, 10.0);
+        for scan in 1..=3 {
+            let translated: Vec<_> = cloud
+                .iter()
+                .map(|p| point(p.x, p.y, p.z + scan as f32 * 0.001))
+                .collect();
+            cpu.add(&translated, &Isometry3::identity(), scan);
+            let buffer = pelorus_vulkan::VulkanBuffer::from_cloud(&stream, &translated);
+            pelorus_vulkan::add_to_map(&stream, &buffer, &t, &q, scan);
+            assert!(pelorus_vulkan::get_map_size() as usize <= capacity);
+        }
+        let mut a = cpu.get_entire_map();
+        let mut b = pelorus_vulkan::get_map();
+        let sort = |a: &nalgebra::Point3<f32>, b: &nalgebra::Point3<f32>| {
+            a.x.total_cmp(&b.x)
+                .then(a.y.total_cmp(&b.y))
+                .then(a.z.total_cmp(&b.z))
+        };
+        a.sort_by(sort);
+        b.sort_by(sort);
+        assert_eq!(a.len(), b.len(), "base-level capacity mismatch");
+        // Float rounding may reorder means with nearly identical x values.
+        for a in &a {
+            let (index, distance) = b
+                .iter()
+                .enumerate()
+                .map(|(i, b)| (i, (a - b).norm()))
+                .min_by(|a, b| a.1.total_cmp(&b.1))
+                .unwrap();
+            let nearest = b.swap_remove(index);
+            assert!(
+                distance < 2e-5,
+                "map mean mismatch {a:?} {nearest:?} ({distance}) at capacity {capacity}"
+            );
+        }
+        // Reuse candidate storage with changing acceptance across workgroups.
+        // Rejected points must never retain a previous iteration's plane.
+        let queries: Vec<_> = queries.iter().copied().cycle().take(2052).collect();
+        for shift in [0, 1, 3, 5, 0] {
+            let mut queries = queries.clone();
+            queries.rotate_left(shift);
+            let input = pelorus_vulkan::VulkanBuffer::from_cloud(&stream, &queries);
+            let mut output = pelorus_vulkan::VulkanBuffer::new(
+                &stream,
+                std::mem::size_of::<PointXYZINormal>(),
+                queries.len(),
+            );
+            let mut gpu = vec![PointXYZINormal::default(); queries.len()];
+            let mut downloaded = vec![pelorus_vulkan::PointNormal::default(); queries.len()];
+            let mut counter = [0; 3];
+            pelorus_vulkan::planes_vulkan(
+                &stream,
+                &input,
+                &t,
+                &q,
+                &t,
+                &q,
+                &mut gpu,
+                &mut output,
+                &mut downloaded,
+                &mut counter,
+            );
+            let expected: Vec<_> = queries
+                .iter()
+                .filter_map(|p| {
+                    let plane = cpu.plane_fit_from_distributions(&PointXYZ::new(p.x, p.y, p.z))?;
+                    let d = plane[0] * p.x + plane[1] * p.y + plane[2] * p.z + plane[3];
+                    let range = (p.x * p.x + p.y * p.y + p.z * p.z).max(1e-9).sqrt().sqrt();
+                    (1.0 - 0.9 * d.abs() / range > 0.9).then_some((p, plane))
+                })
+                .collect();
+            assert_eq!(
+                expected.len(),
+                gpu.len(),
+                "correspondence membership differs at capacity {capacity}"
+            );
+            for ((p, plane), g) in expected.iter().zip(&gpu) {
+                assert_eq!([p.x, p.y, p.z], [g.x, g.y, g.z]);
+                let dot = plane[0] * g.normal_x + plane[1] * g.normal_y + plane[2] * g.normal_z;
+                assert!(dot.abs() > 0.99999, "normal differs: {plane:?}, {g:?}");
+                assert!((plane[3] - dot.signum() * g.intensity).abs() < 1e-4);
+            }
+        }
+        pelorus_vulkan::cleanup_map();
+    }
+}

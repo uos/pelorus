@@ -12,7 +12,7 @@ use ratslang::{
 use crate::{
     CoordinateSystem, DownsampleParameters, ImuCalibrationParameters, ImuConfigParameter,
     ImuDriverConfig, ImuDriverType, ImuParameters, KinematicModel, LidarDriverConfig,
-    LidarDriverType, LidarVendor, LioConfig, MadgwickSetting, OdometryRate, OusterConfig,
+    LidarDriverType, LidarVendor, LioConfig, MadgwickSetting, McapConfig, OdometryRate, OusterConfig,
     OusterTimestampMode, PassthroughFilterParameters, PointCloudMode, PreprocessingBackend, Qos,
     Reliability, RerunConfig, RerunMapConfig, RobosenseConfig, RobosenseModel,
     RobosenseTimestampMode, SensorDriverConfig, SyncNodeParameters, SyncParameters, VelodyneConfig,
@@ -249,7 +249,7 @@ struct DerivedNoise {
 /// ```
 ///
 /// The inflation is not derivable and has to be chosen. Allan variance is
-/// measured on a completely still sensor at constant temperature; a moving
+/// measured on a completely still sensor at constant temperature. A moving
 /// robot has vibration, thermal drift and timing jitter on top, and those
 /// dominate. Feeding the bench figures in raw makes the filter trust the IMU
 /// far more than it deserves.
@@ -269,7 +269,7 @@ fn derive_noise_covariances(path: &str, inflation: f64) -> anyhow::Result<Derive
             && noise.gyro_noise_density > 0.0
             && noise.accel_random_walk > 0.0
             && noise.gyro_random_walk > 0.0,
-        "'{path}' carries no noise parameters, so imu.calibration.noise_from_file has \
+        "'{path}' carries no noise parameters, so imu.calibration.parameter_file.use_noise has \
          nothing to derive from. Record a few hours of stationary data, run \
          `dedrunk noise` on it, and `dedrunk merge` the result with the intrinsics."
     );
@@ -332,6 +332,16 @@ mod override_tests {
     }
 
     #[test]
+    fn rerun_is_enabled_via_config_instead_of_a_cli_flag() {
+        let overrides = parse_overrides(&["output.rerun=true".to_owned()]).unwrap();
+        let user = user_config_with_checked_overrides(DEFAULTS, None, &overrides).unwrap();
+        let defaults = ratslang::compile_code(DEFAULTS).unwrap();
+        let config = ast_to_config(defaults, user).unwrap();
+
+        assert!(config.rerun.enabled);
+    }
+
+    #[test]
     fn rerun_server_address_can_be_overridden() {
         let overrides =
             parse_overrides(&["output.rerun.server_addr=\"172.22.129.240:9876\"".to_owned()])
@@ -346,7 +356,7 @@ mod override_tests {
     #[test]
     fn rerun_map_settings_can_be_overridden() {
         let overrides = parse_overrides(&[
-            "output.rerun.map.enabled=true".to_owned(),
+            "output.rerun.map=true".to_owned(),
             "output.rerun.map.publish_interval=2s".to_owned(),
             "output.rerun.map.visual_scale=4.5".to_owned(),
         ])
@@ -390,6 +400,29 @@ mod override_tests {
         let user = ratslang::compile_code(source).unwrap();
         let defaults = ratslang::compile_code(DEFAULTS).unwrap();
         ast_to_config(defaults, user).unwrap()
+    }
+
+    #[test]
+    fn multiresolution_is_the_default_and_can_be_opted_out_without_changing_downsampling() {
+        let adaptive = config_with("");
+        let fixed = config_with("registration.map.resolution.type = Single\n");
+        assert!(adaptive.map_multiresolution);
+        assert!(!fixed.map_multiresolution);
+        // Enum-like settings are case-insensitive, same as every other one.
+        assert!(config_with("registration.map.resolution.type = multi\n").map_multiresolution);
+        assert!(!config_with("registration.map.resolution.type = SINGLE\n").map_multiresolution);
+        assert_eq!(
+            fixed.sync_params.downsample.voxel_size,
+            adaptive.sync_params.downsample.voxel_size
+        );
+        for source in [
+            "registration.map.resolution.type = Multi\nregistration.map.capacity = 3\n",
+            "registration.map.resolution.type = Multi\nregistration.map.resolution = 0m\n",
+        ] {
+            let user = ratslang::compile_code(source).unwrap();
+            let defaults = ratslang::compile_code(DEFAULTS).unwrap();
+            assert!(ast_to_config(defaults, user).is_err());
+        }
     }
 
     #[test]
@@ -460,7 +493,7 @@ mod override_tests {
 
         let config = config_with(&format!(
             "imu.calibration.parameter_file = \"{}\"\n\
-             imu.calibration.noise_from_file = true\n\
+             imu.calibration.parameter_file.use_noise = true\n\
              imu.calibration.noise_inflation = 1.0\n",
             path.display()
         ));
@@ -497,7 +530,7 @@ mod override_tests {
 
         let config = config_with(&format!(
             "imu.calibration.parameter_file = \"{}\"\n\
-             imu.calibration.noise_from_file = true\n\
+             imu.calibration.parameter_file.use_noise = true\n\
              imu.calibration.noise_inflation = 10.0\n",
             path.display()
         ));
@@ -520,7 +553,7 @@ mod override_tests {
 
         let user = ratslang::compile_code(&format!(
             "imu.calibration.parameter_file = \"{}\"\n\
-             imu.calibration.noise_from_file = true\n",
+             imu.calibration.parameter_file.use_noise = true\n",
             path.display()
         ))
         .unwrap();
@@ -533,7 +566,7 @@ mod override_tests {
 
     #[test]
     fn deriving_without_a_calibration_file_is_refused() {
-        let user = ratslang::compile_code("imu.calibration.noise_from_file = true\n").unwrap();
+        let user = ratslang::compile_code("imu.calibration.parameter_file.use_noise = true\n").unwrap();
         let defaults = ratslang::compile_code(DEFAULTS).unwrap();
         let error = ast_to_config(defaults, user).unwrap_err().to_string();
         assert!(error.contains("parameter_file"), "{error}");
@@ -716,7 +749,7 @@ fn ast_to_config_inner(
             "compressed" => Ok(PointCloudMode::Compressed),
             "pointcloud2" => Ok(PointCloudMode::PointCloud2),
             _ => Err(anyhow!(
-                "Unknown point-cloud mode '{src}'; expected Compressed or PointCloud2."
+                "Unknown point-cloud mode '{src}'. Expected Compressed or PointCloud2."
             )),
         }
     }
@@ -804,6 +837,7 @@ fn ast_to_config_inner(
         neighbor_max_range,
         map_resolution,
         map_capacity,
+        map_multiresolution,
         dist_update_sensitivity,
         ekf_max_iterations,
     ) = {
@@ -813,14 +847,29 @@ fn ast_to_config_inner(
         let ekf_max_iterations = resolve_var!(registration, "max_iter", as usize, Rhs::Val(Val::NumVal(NumVal::Integer(i))) => { i })?;
 
         let map = registration.filter_ns(&["map"]);
-        let map_resolution = resolve_var!(map, "resolution", as f64, Rhs::Val(Val::UnitedVal(UnitVal::LengthVal(v))) => { v.get::<meter>() })?;
+        let map_resolution: f64 = resolve_var!(map, "resolution", as f64, Rhs::Val(Val::UnitedVal(UnitVal::LengthVal(v))) => { v.get::<meter>() })?;
         let map_capacity = resolve_var!(map, "capacity", as usize, Rhs::Val(Val::NumVal(NumVal::Integer(i))) => {i})?;
+        let map_multiresolution = resolve_var!(map, "resolution.type", as bool, Rhs::Val(Val::StringVal(s)) | Rhs::Path(s) => {
+            match s.to_lowercase().as_str() {
+                "single" => false,
+                "multi" => true,
+                _ => return Err(anyhow!("invalid registration.map.resolution.type '{s}'. Expected Single or Multi")),
+            }
+        })?;
+        if map_multiresolution
+            && (!map_resolution.is_finite() || map_resolution <= 0.0 || map_capacity < 4)
+        {
+            return Err(anyhow!(
+                "multiresolution requires a finite positive map resolution and capacity >= 4"
+            ));
+        }
         let dist_update_sensitivity = resolve_var!(map, "distribution_update_sensitivity", as f32, Rhs::Val(Val::NumVal(NumVal::Floating(i))) => {i as f32} )?;
 
         (
             neighbor_max_range,
             map_resolution,
             map_capacity,
+            map_multiresolution,
             dist_update_sensitivity,
             ekf_max_iterations,
         )
@@ -889,12 +938,12 @@ fn ast_to_config_inner(
         let imu = asts.filter_ns(&["imu", "driver"]);
         let xs = imu.filter_ns(&["xsens"]);
         let xs_ts = xs.filter_ns(&["timestamp"]);
-        let imu_type = resolve_var!(imu, "type", as ImuDriverType, Rhs::Val(Val::StringVal(s)) => { match s.to_lowercase().as_str() { "disabled" => ImuDriverType::Disabled, "xsens" => ImuDriverType::Xsens, "ouster" => ImuDriverType::Ouster, _ => return Err(anyhow!("invalid imu.driver.type '{s}'; expected Disabled, Xsens, or Ouster")) } })?;
+        let imu_type = resolve_var!(imu, "type", as ImuDriverType, Rhs::Val(Val::StringVal(s)) => { match s.to_lowercase().as_str() { "disabled" => ImuDriverType::Disabled, "xsens" => ImuDriverType::Xsens, "ouster" => ImuDriverType::Ouster, _ => return Err(anyhow!("invalid imu.driver.type '{s}'. Expected Disabled, Xsens, or Ouster")) } })?;
         let baudrate = resolve_var!(xs, "baudrate", as u32, Rhs::Val(Val::NumVal(NumVal::Integer(i))) => {u32::try_from(i)?})?;
         let output_rate = resolve_var!(xs, "output_rate", as u32, Rhs::Val(Val::NumVal(NumVal::Integer(i))) => {u32::try_from(i)?})?;
         if baudrate == 0 || output_rate == 0 || output_rate > 2000 {
             return Err(anyhow!(
-                "Xsens baudrate and output_rate must be positive; output_rate must not exceed 2000 Hz"
+                "Xsens baudrate and output_rate must be positive. output_rate must not exceed 2000 Hz"
             ));
         }
         let coordinate_system = resolve_var!(xs, "coordinate_system", as CoordinateSystem, Rhs::Val(Val::StringVal(s)) => {match s.to_lowercase().as_str(){"enu"=>CoordinateSystem::Enu,"ned"=>CoordinateSystem::Ned,"nwu"=>CoordinateSystem::Nwu,_=>return Err(anyhow!("invalid Xsens coordinate_system '{s}'"))}})?;
@@ -1146,12 +1195,11 @@ fn ast_to_config_inner(
         let calib = imu.filter_ns(&["calibration"]);
         let imu_calibrate_gyros =
             resolve_var!(calib, "gyroscope", as bool, Rhs::Val(Val::BoolVal(b)) => {b})?;
-        let gyro_calibration_samples = resolve_var!(calib, "samples", as usize, Rhs::Val(Val::NumVal(NumVal::Integer(i))) => {i})?;
+        let gyro_calibration_samples = resolve_var!(calib, "gyroscope.samples", as usize, Rhs::Val(Val::NumVal(NumVal::Integer(i))) => {i})?;
         let imu_intrinsics_calib_file_path: Option<String> = resolve_var!(calib, "parameter_file", as Option<String>, Rhs::Val(Val::StringVal(s)) | Rhs::Path(s) => { if s.is_empty() { None } else { Some(s) } })?;
         let imu_time_offset = resolve_var!(calib, "time_offset", as f64, Rhs::Val(Val::UnitedVal(UnitVal::TimeVal(v))) => { v.get::<second>() })?;
 
-        let noise_from_file =
-            resolve_var!(calib, "noise_from_file", as bool, Rhs::Val(Val::BoolVal(b)) => {b})?;
+        let noise_from_file = resolve_var!(calib, "parameter_file.use_noise", as bool, Rhs::Val(Val::BoolVal(b)) => {b})?;
         let noise_inflation = resolve_var!(calib, "noise_inflation", as f64, Rhs::Val(Val::NumVal(nv)) => {
             match nv {
                 NumVal::Floating(f) => f,
@@ -1164,7 +1212,7 @@ fn ast_to_config_inner(
         let (cov_gyr, cov_acc, cov_gyr_bias, cov_acc_bias) = if noise_from_file {
             let path = imu_intrinsics_calib_file_path.as_deref().ok_or_else(|| {
                 anyhow::anyhow!(
-                    "imu.calibration.noise_from_file is on but imu.calibration.parameter_file \
+                    "imu.calibration.parameter_file.use_noise is on but imu.calibration.parameter_file \
                      is empty, so there is no file to take the noise parameters from"
                 )
             })?;
@@ -1259,6 +1307,7 @@ fn ast_to_config_inner(
         imu_filtered_qos,
         warning_debounce,
         rerun,
+        mcap,
         base_link_frame,
         base_to_lidar,
         base_to_lidar_tf_override,
@@ -1271,6 +1320,7 @@ fn ast_to_config_inner(
         _,
         _,
         OdometryRate,
+        _,
         _,
         _,
         _,
@@ -1309,10 +1359,11 @@ fn ast_to_config_inner(
             }
         }
         let rerun_ns = output_ns.filter_ns(&["rerun"]);
+        let rerun_enabled = resolve_var!(output_ns, "rerun", as bool, Rhs::Val(Val::BoolVal(b)) => {b})?;
         let rerun_server_addr = resolve_var!(rerun_ns, "server_addr", as String, Rhs::Val(Val::StringVal(s)) | Rhs::Path(s) => {s})?;
         let rerun_map_ns = rerun_ns.filter_ns(&["map"]);
         let rerun_map_enabled =
-            resolve_var!(rerun_map_ns, "enabled", as bool, Rhs::Val(Val::BoolVal(b)) => {b})?;
+            resolve_var!(rerun_ns, "map", as bool, Rhs::Val(Val::BoolVal(b)) => {b})?;
         let rerun_map_publish_interval_sec: f64 = resolve_var!(rerun_map_ns, "publish_interval", as f64, Rhs::Val(Val::UnitedVal(UnitVal::TimeVal(v))) => {v.get::<second>()})?;
         let rerun_map_visual_scale: f32 = resolve_var!(rerun_map_ns, "visual_scale", as f32, Rhs::Val(Val::NumVal(NumVal::Floating(v))) => {v as f32})?;
         if !rerun_map_publish_interval_sec.is_finite() || rerun_map_publish_interval_sec < 0.0 {
@@ -1326,13 +1377,43 @@ fn ast_to_config_inner(
             ));
         }
         let rerun = RerunConfig {
-            enabled: false,
+            enabled: rerun_enabled,
             server_addr: rerun_server_addr,
             map: RerunMapConfig {
                 enabled: rerun_map_enabled,
                 publish_interval_sec: rerun_map_publish_interval_sec,
                 visual_scale: rerun_map_visual_scale,
             },
+        };
+
+        let mcap_ns = output_ns.filter_ns(&["mcap"]);
+        let mcap_file: Option<String> = resolve_var!(mcap_ns, "file", as Option<String>, Rhs::Val(Val::StringVal(s)) | Rhs::Path(s) => { if s.is_empty() { None } else { Some(s) } })?;
+        let mcap_rosbag_dir: Option<String> = resolve_var!(mcap_ns, "rosbag_dir", as Option<String>, Rhs::Val(Val::StringVal(s)) | Rhs::Path(s) => { if s.is_empty() { None } else { Some(s) } })?;
+        let mcap_rosbag_metadata: Option<String> = resolve_var!(mcap_ns, "rosbag_metadata", as Option<String>, Rhs::Val(Val::StringVal(s)) | Rhs::Path(s) => { if s.is_empty() { None } else { Some(s) } })?;
+        if mcap_file.is_some() && mcap_rosbag_dir.is_some() {
+            return Err(anyhow!(
+                "output.mcap.file and output.mcap.rosbag_dir are mutually exclusive"
+            ));
+        }
+        if mcap_rosbag_metadata.is_some() && mcap_rosbag_dir.is_some() {
+            return Err(anyhow!(
+                "output.mcap.rosbag_metadata cannot be combined with output.mcap.rosbag_dir; \
+                 rosbag_dir always writes its own metadata.yaml"
+            ));
+        }
+        if mcap_rosbag_metadata.is_some() && mcap_file.is_none() {
+            return Err(anyhow!(
+                "output.mcap.rosbag_metadata requires output.mcap.file"
+            ));
+        }
+        let mcap = McapConfig {
+            cloud_topic: resolve_var!(mcap_ns, "cloud_topic", as String, Rhs::Val(Val::StringVal(s)) | Rhs::Path(s) => {s})?,
+            odom_topic: resolve_var!(mcap_ns, "odom_topic", as String, Rhs::Val(Val::StringVal(s)) | Rhs::Path(s) => {s})?,
+            path_topic: resolve_var!(mcap_ns, "path_topic", as String, Rhs::Val(Val::StringVal(s)) | Rhs::Path(s) => {s})?,
+            tf_topic: resolve_var!(mcap_ns, "tf_topic", as String, Rhs::Val(Val::StringVal(s)) | Rhs::Path(s) => {s})?,
+            file: mcap_file,
+            rosbag_dir: mcap_rosbag_dir,
+            rosbag_metadata: mcap_rosbag_metadata,
         };
 
         let map_frame = resolve_var!(output_ns, "global_frame", as String, Rhs::Val(Val::StringVal(s)) | Rhs::Path(s) => {s})?;
@@ -1342,7 +1423,7 @@ fn ast_to_config_inner(
             match s.to_lowercase().as_str() {
                 "lidar" => OdometryRate::Lidar,
                 "imuandlidar" | "imu_and_lidar" => OdometryRate::ImuAndLidar,
-                _ => return Err(anyhow!("invalid output.odometry_rate '{s}'; expected Lidar or ImuAndLidar")),
+                _ => return Err(anyhow!("invalid output.odometry_rate '{s}'. Expected Lidar or ImuAndLidar")),
             }
         })?;
         let imu_filtered_topic = resolve_var!(output_ns, "imu_ahrs_filtered_topic", as String, Rhs::Val(Val::StringVal(s)) | Rhs::Path(s) => {s})?;
@@ -1401,6 +1482,7 @@ fn ast_to_config_inner(
             imu_filtered_qos,
             warning_debounce,
             rerun,
+            mcap,
             base_link_frame,
             base_to_lidar,
             base_to_lidar_tf_override,
@@ -1444,7 +1526,7 @@ fn ast_to_config_inner(
         let hfov_ns = filter_ns.filter_ns(&["horizontal_fov"]);
         let (fov_left, fov_right) = resolve_angle_range!(hfov_ns, "degrees", -180.0, 180.0)?;
         let enable_horizontal_fov =
-            resolve_var!(hfov_ns, "enable", as bool, Rhs::Val(Val::BoolVal(b)) => {b})?;
+            resolve_var!(filter_ns, "horizontal_fov", as bool, Rhs::Val(Val::BoolVal(b)) => {b})?;
         let invert_fov =
             resolve_var!(hfov_ns, "invert", as bool, Rhs::Val(Val::BoolVal(b)) => {b})?;
         let forward = resolve_var!(hfov_ns, "forward", as Vector2<f32>, Rhs::Array(v) => {
@@ -1573,9 +1655,11 @@ fn ast_to_config_inner(
     let final_config = LioConfig {
         sensor_drivers,
         rerun,
+        mcap,
         neighbor_max_range,
         map_resolution,
         map_capacity,
+        map_multiresolution,
         dist_update_sensitivity,
         ekf_max_iterations,
         lidar_odom_cov,

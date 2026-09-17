@@ -65,3 +65,13 @@ void     cleanup_map_impl();
 #ifdef __cplusplus
 } // extern "C++"
 #endif
+
+// Multiresolution GPU map (exact total capacity, no power-of-two rounding).
+bool multiresolution_active_impl();
+void init_multiresolution_impl(uint32_t capacity, float base, float sensitivity);
+void add_multiresolution_impl(cudaStream_t, Point*, uint32_t, Pose, uint32_t);
+uint32_t planes_multiresolution_impl(cudaStream_t, Point*, uint32_t, Pose, Pose, PointNormal*);
+uint32_t multiresolution_capacity_impl();
+uint32_t multiresolution_size_impl();
+void get_multiresolution_impl(Point*, uint32_t*);
+void cleanup_multiresolution_impl();

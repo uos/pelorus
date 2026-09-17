@@ -993,7 +993,7 @@ impl SensorIngress for NativeIngress {
     }
 
     fn driver_failed(&self, error: &DriverError) {
-        log::error!("Native sensor driver failed; stopping Pelorus ingress: {error}");
+        log::error!("Native sensor driver failed. Stopping Pelorus ingress: {error}");
         if let Ok(state) = self.state.lock()
             && let Ok(mut sync) = state.sync.lock()
         {
@@ -1176,7 +1176,7 @@ impl SyncNode {
                     gate_for_init.lock().unwrap().initialize(msgs);
                 })));
             }
-            info!("Waiting for requested sensor TF before starting SLAM; configured extrinsics will not be used as fallback");
+            info!("Waiting for requested sensor TF before starting SLAM. Configured extrinsics will not be used as fallback");
             gate
         });
         #[cfg(any(

@@ -37,7 +37,7 @@ fn parse_rmc(nmea: &[u8]) -> Option<f64> {
 
 /// Convert a return's packet-local firing time into the scan-relative seconds
 /// expected by Pelorus' Velodyne point type.  `packet_stamp` and `scan_stamp`
-/// use the selected (sensor or host) clock; `firing_offset` is always relative
+/// use the selected (sensor or host) clock. `firing_offset` is always relative
 /// to the packet timestamp supplied by the Velodyne packet decoder.
 fn scan_relative_time(packet_stamp: f64, scan_stamp: f64, firing_offset: f64) -> f64 {
     (packet_stamp - scan_stamp) + firing_offset

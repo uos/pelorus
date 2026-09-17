@@ -79,7 +79,7 @@ pub fn prepare_output_targets(
     if let Some(rosbag_path) = rosbag_dir {
         if !confirm_output_overwrite("ROS bag output directory", rosbag_path, assume_yes)? {
             info!(
-                "ROS bag output directory '{}' was not overwritten; exiting.",
+                "ROS bag output directory '{}' was not overwritten. Exiting.",
                 rosbag_path.display()
             );
             return Ok(false);
@@ -102,7 +102,7 @@ pub fn prepare_output_targets(
             assume_yes || rosbag_overwrite_confirmed,
         )? {
             info!(
-                "MCAP output '{}' was not overwritten; exiting.",
+                "MCAP output '{}' was not overwritten. Exiting.",
                 mcap_path.display()
             );
             return Ok(false);
@@ -115,7 +115,7 @@ pub fn prepare_output_targets(
                 assume_yes || rosbag_overwrite_confirmed,
             )? {
                 info!(
-                    "ROS bag metadata '{}' was not overwritten; exiting.",
+                    "ROS bag metadata '{}' was not overwritten. Exiting.",
                     metadata_path.display()
                 );
                 return Ok(false);

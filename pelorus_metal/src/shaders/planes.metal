@@ -21,7 +21,7 @@ inline float plane_point_dist(float4 plane, float3 p) {
 }
 
 // Fit a plane from a merged accumulation.
-// Returns true on success; sets plane_eq = (nx,ny,nz,d) such that n·p+d=0.
+// Returns true on success. Sets plane_eq = (nx,ny,nz,d) such that n·p+d=0.
 inline bool plane_fit(uint point_count, thread const float* mean, thread const float* cov,
                       float sphericity_threshold,
                       thread float4& plane_eq) {

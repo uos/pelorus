@@ -46,6 +46,7 @@ fn main() {
                 "src/src/exceptions.cu",
                 "src/src/cuda_stream.cu",
                 "src/src/localmap.cu",
+                "src/src/multiresolution.cu",
                 "src/src/downsample.cu",
             ];
             let include_paths = vec!["src/include"];
@@ -138,6 +139,10 @@ fn main() {
                         .arg(&obj_path)
                         .arg("-rdc=true"); // needed for device‑link later
 
+                    if source_file.ends_with("multiresolution.cu") {
+                        // Preserve f32 expression rounding used by the CPU reference.
+                        cmd.arg("--fmad=false");
+                    }
                     for g in &gencode_args {
                         cmd.arg(g);
                     }

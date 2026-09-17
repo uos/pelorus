@@ -73,7 +73,7 @@ curl -LsSf https://astral.sh/uv/install.sh | sh
 
     `uv tool` installs applications, so the package to name here is
     `pelorus-cli`. The `rerun` extra adds the Rerun viewer, and the CLI's
-    `--rerun` flag needs it.
+    `output.rerun = true` config setting needs it.
 
     ~~~sh
     uv tool install "pelorus-cli[rerun]"

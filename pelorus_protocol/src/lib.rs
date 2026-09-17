@@ -210,7 +210,7 @@ pub struct DownstreamResponse {
     pub unlocked_replay: bool,
     /// The encoding registered clouds will actually use for this session.
     ///
-    /// On `GetCapabilities` this is what Pelorus would prefer; on an accepted
+    /// On `GetCapabilities` this is what Pelorus would prefer. On an accepted
     /// `Register` it is binding for the rest of the run. The consumer reads
     /// clouds from the matching topic and ignores the other.
     pub cloud_encoding: CloudEncoding,
@@ -268,7 +268,7 @@ impl DownstreamGate {
     }
 
     /// The encoding to publish registered clouds with. Meaningful once a
-    /// consumer has registered; the baseline before that.
+    /// consumer has registered. The baseline before that.
     pub fn negotiated_cloud_encoding(&self) -> CloudEncoding {
         self.negotiated_cloud_encoding
     }

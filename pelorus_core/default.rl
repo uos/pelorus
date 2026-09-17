@@ -10,18 +10,23 @@ registration {
     # both accuracy and runtime, so change it before anything else.
     resolution = 50cm
 
+    # Single: one fixed-resolution map.
+    # Multi: scales of 0.5x, 1x, 2x and 4x `resolution`.
+    resolution.type = Multi
+
     # @recommended
     # How many voxels of the resolution above the map holds at any time. Once it
     # is full, older voxels are dropped, so memory stays bounded on a long run.
-    # With CUDA enabled this is rounded up to the next power of two.
-    capacity = 131072
+    # With CUDA enabled and Single resolution this is rounded up to the next
+    # power of two. The multiresolution map keeps the exact total instead.
+    capacity = 262144
    
     # How strongly a new scan moves the distribution stored in a voxel. Higher
     # values track changes in the environment faster and keep less history.
     distribution_update_sensitivity = 10.0
   }
 
-  # Maximum IEKF correction iterations per scan.
+  # Maximum filter correction iterations per scan.
   max_iter = 4
 
   # Largest distance at which a map voxel is still considered a neighbor of a
@@ -40,14 +45,13 @@ preprocessing {
     # what is published. Registration always uses the downsampled cloud.
     bypass_output_downsample = true
 
-    # @recommended
     # Downsample the incoming scan by keeping only every n-th point. 1 means no points are skipped.
     point_skip = 1
 
     # Where the downsampling runs. Backend uses the active acceleration backend
     # when one is available, CPU always uses the CPU path.
     # CPU | Backend
-    backend = CPU
+    backend = Backend
 
     # Expected feature size in the incoming scan, as a factor of
     # registration.map.resolution. Values between 0.0 and 1.0 are expected.
@@ -93,15 +97,11 @@ preprocessing {
       invert = false
     }
 
+    # Keeps points within a horizontal angular sector, measured around the
+    # forward axis below. Useful where part of the field of view is permanently
+    # blocked, for example by a mast or an arm.
+    horizontal_fov = false
     horizontal_fov {
-      # Keeps points within a horizontal angular sector, measured around the
-      # forward axis below. Useful where part of the field of view is permanently
-      # blocked, for example by a mast or an arm.
-
-      # Whether this filter runs at all. The remaining options in this block have
-      # no effect while it is false.
-      enable = false
-
       # Angular range in degrees, for example 10..42.
       degrees = ..
 
@@ -480,8 +480,8 @@ imu {
   # mean less trust, so the scan match pulls the estimate further on each update.
   #
   # The defaults are the FAST-LIO tuning values and are not a noise model of any
-  # particular sensor. `calibration.noise_from_file` below replaces them with
-  # figures measured from your own IMU.
+  # particular sensor. `calibration.parameter_file.use_noise` below replaces them
+  # with figures measured from your own IMU.
   covariance_gyroscope = 0.1
 
   # Process noise on the gyroscope bias, i.e. how fast the filter lets that bias
@@ -503,7 +503,7 @@ imu {
     gyroscope = true
 
     # How many measurements the start-up bias estimate averages over.
-    samples = 100
+    gyroscope.samples = 100
 
     # Kalibr-format IMU calibration to apply to every sample: scale factors,
     # axis misalignment and biases. Relative path "./<path>" from this config
@@ -514,7 +514,7 @@ imu {
     # `pelorus online raw imu intrinsics --output-rosbag <dir>`.
     parameter_file = ""
 
-    # Take the four covariances above from parameter_file instead of the
+    # Take the covariances above from parameter_file instead of the
     # constants, deriving them from its measured noise densities and bias
     # random walks. This needs a file that carries the stochastic half too, so
     # one from `dedrunk merge`. `dedrunk intrinsics` alone does not produce one.
@@ -522,7 +522,7 @@ imu {
     # Off by default because it moves numbers the odometry is tuned around.
     # Both the derived and the configured values are logged at startup, so the
     # ratio for this sensor is visible before you commit to it.
-    noise_from_file = false
+    parameter_file.use_noise = false
 
     # Seconds the IMU clock runs ahead of the Lidar clock, as reported by
     # `dedrunk extrinsics`. Pelorus subtracts it from every IMU timestamp, so
@@ -660,18 +660,16 @@ output {
   }
 
   # Live visualization. Pelorus sends to a Rerun viewer that is already running.
-  # It never starts one itself, and sends nothing unless --rerun is passed.
+  # It never starts one itself. Requires a build with the `rerun` Cargo feature.
+  rerun = false
   rerun {
-    # Address of the running Rerun server.
+    # Address of the already running Rerun server to stream visualizations to.
     server_addr = "127.0.0.1:9876"
 
     # Periodic snapshot of the whole registration map, colored by relevance score.
     # Off by default. Large maps can be expensive to render.
+    map = false
     map {
-      # Whether the map snapshot is sent at all. The two options below have no
-      # effect while this is false.
-      enabled = false
-
       # Shortest interval between two snapshots.
       publish_interval = 1s
 
@@ -709,6 +707,30 @@ output {
 
   # Namespace every published topic and every log line is prefixed with.
   logger_prefix = "pelorus"
+
+  # Optional MCAP/ROS 2 bag recording of Pelorus output, unrelated to the live
+  # pub/sub topics above. Off by default (both file and rosbag_dir empty).
+  mcap {
+    # Write a bare MCAP file at this path. Empty disables it. Mutually
+    # exclusive with rosbag_dir.
+    file = ""
+
+    # Write a ROS 2 bag directory at this path instead of a bare MCAP file.
+    # Always writes its own <rosbag_dir>/metadata.yaml. Empty disables it.
+    # Mutually exclusive with file.
+    rosbag_dir = ""
+
+    # Also write a ROS 2 bag metadata.yaml next to `file`. Only valid together
+    # with file (rosbag_dir already writes its own). Empty disables it.
+    rosbag_metadata = ""
+
+    # Topic names used inside the MCAP/ROS 2 bag. Unrelated to the live
+    # pub/sub topics above.
+    cloud_topic = "/registered"
+    odom_topic = "/odom"
+    path_topic = "/path"
+    tf_topic = "/tf"
+  }
 }
 
 # How much of the machine Pelorus is allowed to use. It also decides between the

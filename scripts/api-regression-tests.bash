@@ -59,12 +59,12 @@ install_apt_deps() {
     fi
 
     if ! command -v apt-get >/dev/null 2>&1; then
-        echo "apt-get not found; skipping CI dependency install"
+        echo "apt-get not found. Skipping CI dependency install"
         return
     fi
 
     if ((EUID != 0)) && ((${#sudo_cmd[@]} == 0)); then
-        echo "apt-get dependency install needs root or sudo; rerun as root or use --skip-apt" >&2
+        echo "apt-get dependency install needs root or sudo. Rerun as root or use --skip-apt" >&2
         exit 1
     fi
 
@@ -81,7 +81,7 @@ run_rustup_stable() {
     if command -v rustup >/dev/null 2>&1; then
         rustup default stable
     else
-        echo "rustup not found; continuing with current Rust toolchain"
+        echo "rustup not found. Continuing with current Rust toolchain"
     fi
 }
 
@@ -95,7 +95,7 @@ build_and_install_pelorus_c() {
     elif ((${#sudo_cmd[@]} > 0)); then
         "${sudo_cmd[@]}" cmake --install build
     else
-        echo "installing pelorus_c needs root or sudo; rerun as root" >&2
+        echo "installing pelorus_c needs root or sudo. Rerun as root" >&2
         exit 1
     fi
 }

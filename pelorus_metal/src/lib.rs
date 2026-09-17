@@ -3,6 +3,7 @@
 mod buffer;
 mod downsample;
 mod map;
+mod multiresolution;
 mod pipeline;
 mod radix_sort;
 mod stream;
@@ -56,13 +57,9 @@ pub fn try_get_gpu_timings() -> Option<(f64, f64)> {
     }
 }
 
-// ── Size checks ───────────────────────────────────────────────────────────────
-
 const _: () = {
     assert!(size_of::<types::Point>() == size_of::<PointXYZIT>());
 };
-
-// ── Public API ────────────────────────────────────────────────────────────────
 
 /// Initialise the global voxel map.
 ///
@@ -82,16 +79,27 @@ pub fn init_map(
     ensure_cleanup_registered();
 }
 
-/// Add a point cloud to the global map.
-///
-/// `cloud` must have been created with `MetalBuffer::from_cloud` or
-/// `MetalBuffer::new(stream, size_of::<PointXYZIT>(), n)`.
-///
-/// The orientation parameter is **not** a rotation matrix any more; it is a
-/// unit quaternion packed in [`types::Quaternion`].
-/// This matches the GPU-side representation and avoids an expensive
-/// `Matrix3 -> UnitQuaternion` conversion at every call.
-/// The CUDA backend still accepts a matrix and performs its own conversion.
+pub fn init_map_with_mode(
+    stream: &Stream,
+    capacity: usize,
+    voxel_size: f32,
+    sensitivity: f32,
+    min_dist: f32,
+    nbtype: NeighborType,
+    multiresolution: bool,
+) {
+    if multiresolution {
+        multiresolution::init(stream, capacity, voxel_size, sensitivity);
+        ensure_cleanup_registered();
+    } else {
+        init_map(stream, capacity, voxel_size, sensitivity, min_dist, nbtype);
+    }
+}
+
+pub fn is_multiresolution_available() -> bool {
+    is_available()
+}
+
 pub fn add_to_map(
     stream: &Stream,
     cloud: &MetalBuffer,
@@ -99,23 +107,63 @@ pub fn add_to_map(
     ekf_pose_r: &Quaternion,
     scan_id: usize,
 ) {
-    let gpu_time_ms = map::add_to_map_impl(stream, cloud, ekf_pose_t, ekf_pose_r, scan_id);
+    let gpu_time_ms = if multiresolution::is_active() {
+        multiresolution::add_to_map(stream, cloud, ekf_pose_t, ekf_pose_r, scan_id)
+    } else {
+        map::add_to_map_impl(stream, cloud, ekf_pose_t, ekf_pose_r, scan_id)
+    };
     record_add_to_map_gpu_time(gpu_time_ms);
 }
 
 /// Return the voxel map means as a `Vec<Point3<f32>>`.
 pub fn get_map() -> Vec<nalgebra::Point3<f32>> {
-    map::get_map_impl()
+    if multiresolution::is_active() {
+        multiresolution::get_map()
+    } else {
+        map::get_map_impl()
+    }
+}
+
+/// Same as [`get_map`] but also returns, per point, the multiresolution
+/// level it lives at (0 = finest) and the scan number it was last touched
+/// on. The flat map reports level 0 and scan 0 for every point.
+pub fn get_map_with_recency() -> Vec<(nalgebra::Point3<f32>, u8, u32)> {
+    if multiresolution::is_active() {
+        multiresolution::get_map_with_recency()
+    } else {
+        map::get_map_impl()
+            .into_iter()
+            .map(|p| (p, 0u8, 0u32))
+            .collect()
+    }
 }
 
 /// Return the number of occupied voxels.
 pub fn get_map_size() -> u32 {
-    map::get_map_size_impl()
+    if multiresolution::is_active() {
+        multiresolution::get_map_size()
+    } else {
+        map::get_map_size_impl()
+    }
+}
+
+/// Return the map capacity. Only meaningful for the multiresolution map
+/// (the flat map has no equivalent API). Returns 0 otherwise.
+pub fn get_map_capacity() -> u32 {
+    if multiresolution::is_active() {
+        multiresolution::get_map_capacity()
+    } else {
+        0
+    }
 }
 
 /// Free all GPU resources held by the map.
 pub fn cleanup_map() {
-    map::cleanup_map_impl();
+    if multiresolution::is_active() {
+        multiresolution::cleanup();
+    } else {
+        map::cleanup_map_impl();
+    }
 }
 
 /// Compute plane-fitted normals for every point in `cloud`.
@@ -137,16 +185,29 @@ pub fn planes_metal(
     out_buff: &mut Vec<PointXYZINormal>,
     out_buff_gpu: &mut MetalBuffer,
 ) {
-    let gpu_time_ms = map::planes_metal_impl(
-        stream,
-        cloud,
-        ekf_pose_t,
-        ekf_pose_r,
-        ekf_imu_offset_t,
-        ekf_imu_offset_r,
-        out_buff,
-        out_buff_gpu,
-    );
+    let gpu_time_ms = if multiresolution::is_active() {
+        multiresolution::planes(
+            stream,
+            cloud,
+            ekf_pose_t,
+            ekf_pose_r,
+            ekf_imu_offset_t,
+            ekf_imu_offset_r,
+            out_buff,
+            out_buff_gpu,
+        )
+    } else {
+        map::planes_metal_impl(
+            stream,
+            cloud,
+            ekf_pose_t,
+            ekf_pose_r,
+            ekf_imu_offset_t,
+            ekf_imu_offset_r,
+            out_buff,
+            out_buff_gpu,
+        )
+    };
     record_planes_gpu_time(gpu_time_ms);
 }
 
@@ -178,8 +239,6 @@ pub fn downsample_points_metal(
     downsample::downsample_points_metal_impl(stream, filtered_cloud, point_skip, voxel_size)
 }
 
-// ── Cleanup registration ──────────────────────────────────────────────────────
-
 static CLEANUP_GUARD: std::sync::Once = std::sync::Once::new();
 
 fn ensure_cleanup_registered() {
@@ -192,8 +251,6 @@ fn ensure_cleanup_registered() {
         }
     });
 }
-
-// ── Tests ─────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
 mod tests {

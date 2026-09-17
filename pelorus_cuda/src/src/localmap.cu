@@ -442,7 +442,7 @@ __global__ void initialize_lru_mapping_kernel(uint32_t* d_lru_mapping,
 // age/point_count scores by division loses ordering precision in f32 and causes
 // the CPU and CUDA maps to retain different voxels after reaching capacity.
 // CPU Livodish and Vulkan only build this order once the map is full, so empty
-// slots are never eviction candidates. CUDA invokes the sort eagerly; retain
+// slots are never eviction candidates. CUDA invokes the sort eagerly. Retain
 // identity order while the map is partial, then rank only after it reaches
 // capacity. This prevents a capacity-crossing scan from both filling and
 // evicting the same slot.
@@ -938,7 +938,7 @@ void init_map_impl(cudaStream_t stream, uint32_t capacity, float voxel_size,
 
     // LRU buffers
     CUDA_CHECK(cudaMalloc(&s->d_lru_mapping,     dist_cap * sizeof(uint32_t)));
-    // Zero dist_buf; fill dist_keys with EMPTY_KEY
+    // Zero dist_buf. Fill dist_keys with EMPTY_KEY.
     CUDA_CHECK(cudaMemsetAsync(s->dist_buf, 0, dist_cap * sizeof(GpuVoxelDist), stream));
     std::vector<int> h_keys(dist_cap, EMPTY_KEY);
     CUDA_CHECK(cudaMemcpyAsync(s->dist_keys, h_keys.data(), dist_cap * sizeof(int), cudaMemcpyHostToDevice, stream));
@@ -954,7 +954,7 @@ void init_map_impl(cudaStream_t stream, uint32_t capacity, float voxel_size,
     CUDA_CHECK(cudaMemsetAsync(s->d_num_unique, 0, sizeof(uint32_t), stream));
     CUDA_CHECK(cudaMemsetAsync(s->d_selected_planes, 0, sizeof(uint32_t), stream));
 
-    // Scratch buffers (minimum size; will grow on first add_to_map_impl)
+    // Scratch buffers start at minimum size and grow on first add_to_map_impl.
     alloc_scratch(s, 1);
 
     s->dist_cap     = dist_cap;
@@ -972,6 +972,7 @@ void init_map_impl(cudaStream_t stream, uint32_t capacity, float voxel_size,
 }
 
 void add_to_map_impl(cudaStream_t stream, Point* points, uint32_t n_points, Pose pose, uint32_t scan_id) {
+    if (multiresolution_active_impl()) { add_multiresolution_impl(stream, points, n_points, pose, scan_id); return; }
     CudaMapState* s = g_state;
     assert(s != nullptr);
 
@@ -1106,6 +1107,7 @@ void add_to_map_impl(cudaStream_t stream, Point* points, uint32_t n_points, Pose
 
 uint32_t planes_impl(cudaStream_t stream, Point* cloud, uint32_t cloud_size,
                      Pose lidar_to_imu, Pose pose, PointNormal* out_buff) {
+    if (multiresolution_active_impl()) return planes_multiresolution_impl(stream, cloud, cloud_size, lidar_to_imu, pose, out_buff);
     CudaMapState* s = g_state;
     assert(s != nullptr);
 
@@ -1168,6 +1170,7 @@ uint32_t planes_impl(cudaStream_t stream, Point* cloud, uint32_t cloud_size,
 }
 
 void get_map_impl(Point* points, uint32_t* size) {
+    if (multiresolution_active_impl()) { get_multiresolution_impl(points, size); return; }
     if (!g_state) { *size = 0; return; }
     CudaMapState* s = g_state;
 
@@ -1195,10 +1198,12 @@ void get_map_impl(Point* points, uint32_t* size) {
 }
 
 uint32_t get_map_capacity_impl() {
+    if (multiresolution_active_impl()) return multiresolution_capacity_impl();
     return g_state ? g_state->dist_cap : 0;
 }
 
 uint32_t get_map_size_impl() {
+    if (multiresolution_active_impl()) return multiresolution_size_impl();
     if (!g_state) return 0;
     uint32_t add_cursor = 0;
     CUDA_CHECK(cudaMemcpy(&add_cursor, g_state->d_add_cursor, sizeof(add_cursor),
@@ -1207,6 +1212,7 @@ uint32_t get_map_size_impl() {
 }
 
 void cleanup_map_impl() {
+    cleanup_multiresolution_impl();
     if (g_state) {
         // Do NOT call cudaDeviceSynchronize() here: this is called from an atexit
         // handler registered via libc::atexit() in Rust. CUDA's own atexit handlers

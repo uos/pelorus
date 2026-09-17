@@ -12,6 +12,7 @@ pub(crate) struct VulkanContext {
     pub(crate) command_pool: vk::CommandPool,
     pub(crate) memory_properties: vk::PhysicalDeviceMemoryProperties,
     pub(crate) submit_lock: Mutex<()>,
+    pub(crate) precise_multiresolution: bool,
     /// Set by `shutdown`. Teardown cannot wait for the `Arc` refcount to reach
     /// zero: background threads can still hold `Stream`s and `VulkanBuffer`s when
     /// `main` returns, so the device would outlive the process and the driver
@@ -140,7 +141,13 @@ impl VulkanContext {
         // implementations (lavapipe, SwiftShader) JIT shaders to host code, so such an
         // index dereferences a host pointer and takes the whole process down. With it,
         // the access is defined: reads return zero, writes are discarded.
-        let enabled_features = vk::PhysicalDeviceFeatures::default().robust_buffer_access(true);
+        let supported_features = unsafe { instance.get_physical_device_features(physical_device) };
+        let precise_multiresolution = supported_features.shader_float64 == vk::TRUE
+            && supported_features.shader_int64 == vk::TRUE;
+        let enabled_features = vk::PhysicalDeviceFeatures::default()
+            .robust_buffer_access(true)
+            .shader_float64(precise_multiresolution)
+            .shader_int64(precise_multiresolution);
         let enabled_device_extensions = [push_descriptor::NAME.as_ptr()];
         let device_ci = vk::DeviceCreateInfo::default()
             .queue_create_infos(std::slice::from_ref(&queue_ci))
@@ -184,6 +191,7 @@ impl VulkanContext {
             command_pool,
             memory_properties,
             submit_lock: Mutex::new(()),
+            precise_multiresolution,
             destroyed: std::sync::atomic::AtomicBool::new(false),
         })
     }
@@ -226,7 +234,7 @@ impl VulkanContext {
 
 impl Drop for VulkanContext {
     fn drop(&mut self) {
-        // Normally `shutdown` already did this; this only covers contexts that
+        // Normally `shutdown` already did this. This only covers contexts that
         // were never handed to `shutdown` (tests, probing, host fallback paths).
         if self.destroy_now() {
             log::debug!("Vulkan device destroyed without an explicit shutdown");
@@ -266,7 +274,7 @@ pub(crate) fn global_vulkan_context() -> Result<Arc<VulkanContext>, &'static str
         if ctx.is_alive() {
             return Ok(Arc::clone(ctx));
         }
-        // Released by `shutdown`; the handles are dead, so build a new device.
+        // Released by `shutdown`. The handles are dead, so build a new device.
         *guard = None;
     }
 
@@ -345,4 +353,9 @@ pub fn get_vulkan_metadata() -> Option<VulkanMetadata> {
         driver_version: VulkanVersion::from_vk_encoded(properties.driver_version),
         driver_version_raw: properties.driver_version,
     })
+}
+
+/// Whether the selected Vulkan device supports the multiresolution arithmetic.
+pub fn is_multiresolution_available() -> bool {
+    global_vulkan_context().is_ok_and(|context| context.precise_multiresolution)
 }

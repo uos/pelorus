@@ -120,6 +120,8 @@ uint32_t get_map_size();
 void init_map(void *stream, uint32_t map_capacity, float sensitivity,
               float min_dist, float map_resolution, NearbyType nbtype);
 
+void init_multiresolution_map(void *stream, uint32_t capacity, float resolution, float sensitivity);
+
 void cleanup_map();
 
 bool cupcl_is_available(void);

@@ -73,7 +73,7 @@ Once the file carries the noise half, Pelorus can derive the four `imu.covarianc
 
 ```ratslang
 imu.calibration {
-    noise_from_file = true
+    parameter_file.use_noise = true
     noise_inflation = 10.0
 }
 ```

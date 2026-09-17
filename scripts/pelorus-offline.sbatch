@@ -52,7 +52,7 @@ OUTDIR="${OUTDIR:-slurm_runs/${SLURM_JOB_ID:-manual}}"
 
 case "$BACKEND" in
     cpu)
-        CPU_ONLY_ARGS=(--cpu-only)
+        CPU_ONLY_ARGS=(-o parallelism.cpu_only=true)
         ;;
     cuda)
         CPU_ONLY_ARGS=()

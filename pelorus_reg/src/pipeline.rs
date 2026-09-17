@@ -96,39 +96,42 @@ impl Pipeline {
             #[cfg(feature = "cuda")]
             ActiveBackend::Cuda(stream) => {
                 if pelorus_cuda::get_map_size() == 0 {
-                    pelorus_cuda::init_map(
+                    pelorus_cuda::init_map_with_mode(
                         stream,
                         self.config.map_capacity,
                         self.config.map_resolution as f32,
                         self.config.dist_update_sensitivity,
                         (self.config.map_resolution as f32) / 4.0,
                         pelorus_cuda::NeighborType::Neighbor26,
+                        self.config.map_multiresolution,
                     );
                 }
             }
             #[cfg(feature = "metal")]
             ActiveBackend::Metal(stream) => {
                 if pelorus_metal::get_map_size() == 0 {
-                    pelorus_metal::init_map(
+                    pelorus_metal::init_map_with_mode(
                         stream,
                         self.config.map_capacity,
                         self.config.map_resolution as f32,
                         self.config.dist_update_sensitivity,
                         (self.config.map_resolution as f32) / 4.0,
                         pelorus_metal::NeighborType::Neighbor26,
+                        self.config.map_multiresolution,
                     );
                 }
             }
             #[cfg(feature = "vulkan")]
             ActiveBackend::Vulkan(stream) => {
                 if pelorus_vulkan::get_map_size() == 0 {
-                    pelorus_vulkan::init_map(
+                    pelorus_vulkan::init_map_with_mode(
                         stream,
                         self.config.map_capacity,
                         self.config.map_resolution as f32,
                         self.config.dist_update_sensitivity,
                         (self.config.map_resolution as f32) / 4.0,
                         pelorus_vulkan::NeighborType::Neighbor26,
+                        self.config.map_multiresolution,
                     );
                 }
             }
@@ -145,12 +148,15 @@ impl Pipeline {
             UnitQuaternion::from_matrix(&config.imu_params.initial_rotation_lidar_to_imu),
         );
 
-        let ivox = IVoxHashMap::new(
+        let mut ivox = IVoxHashMap::new(
             config.map_resolution as f32,
             config.map_capacity,
             IVoxNearbyType::Nearby26,
             config.dist_update_sensitivity as f32,
         );
+        if config.map_multiresolution {
+            ivox.enable_multiresolution(config.map_capacity, config.dist_update_sensitivity);
+        }
 
         let mut map = RegistrationState::new_with_execution_config(
             ivox,
@@ -204,7 +210,7 @@ impl Pipeline {
     ///
     /// Backend teardown destroys the device, and every child object has to be gone
     /// before that. These two buffers outlive the map and downsample state, so they
-    /// have to be released explicitly. Safe to call more than once; the pipeline
+    /// have to be released explicitly. Safe to call more than once. The pipeline
     /// reallocates them on the next scan.
     pub fn release_gpu_buffers(&mut self) {
         #[cfg(feature = "vulkan")]

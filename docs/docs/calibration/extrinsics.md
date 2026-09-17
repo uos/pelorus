@@ -3,7 +3,7 @@
 The transform has to be measured against a trajectory that did not already assume it. Pelorus runs a LiDAR-inertial odometry, so feeding its poses back would return the assumption instead of measuring it. Run it LiDAR only first:
 
 ```sh
-pelorus offline calib_drive -c pelorus.rl -o imu.lidar_only=true --output-rosbag lidar_traj
+pelorus offline calib_drive -c pelorus.rl -o imu.lidar_only=true -o output.mcap.rosbag_dir=lidar_traj
 dedrunk extrinsics lidar_traj --imu-bag calib_drive
 ```
 

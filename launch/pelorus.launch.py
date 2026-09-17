@@ -31,7 +31,7 @@ def _launch_pelorus(context):
 
     cpu_only = LaunchConfiguration("cpu_only").perform(context).lower()
     if cpu_only in ("1", "true", "yes", "on"):
-        arguments.append("--cpu-only")
+        arguments.extend(["-o", "parallelism.cpu_only=true"])
 
     nodes.append(
         Node(

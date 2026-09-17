@@ -797,7 +797,7 @@ enum BufferMemoryPolicy {
 }
 
 /// Memory preferences for buffers the host reads, best first. `HOST_CACHED` is what
-/// makes the read fast; everything after it is a correctness fallback.
+/// makes the read fast. Everything after it is a correctness fallback.
 const HOST_READBACK_PREFERENCES: [vk::MemoryPropertyFlags; 4] = [
     vk::MemoryPropertyFlags::from_raw(
         vk::MemoryPropertyFlags::HOST_VISIBLE.as_raw()

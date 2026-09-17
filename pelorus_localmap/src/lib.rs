@@ -3,6 +3,7 @@ use kiddo::SquaredEuclidean;
 use localmap::Livodish;
 
 pub mod localmap;
+mod multiresolution;
 use rand_distr::{Distribution, Normal};
 
 use nalgebra::{Point3, Vector3};
@@ -55,6 +56,7 @@ pub struct IVoxHashMap {
     max_map_size: usize,
 
     livodish: localmap::Livodish,
+    multiresolution: Option<multiresolution::MultiResolutionMap>,
     rng: rand_pcg::Pcg64Mcg,
 }
 
@@ -410,6 +412,7 @@ impl IVoxHashMap {
             #[cfg(feature = "nn_kdt")]
             kd_points_lookup: std::collections::HashMap::new(),
             livodish: Livodish::new(capacity, sensitivity, resolution / 4.0),
+            multiresolution: None,
             rng: rand_pcg::Pcg64Mcg::from_os_rng(),
             #[cfg(feature = "nn_kdt")]
             pt_id: 0,
@@ -418,7 +421,29 @@ impl IVoxHashMap {
         }
     }
 
+    /// Enable the experimental CPU hierarchy. Call before inserting map points.
+    pub fn enable_multiresolution(&mut self, capacity: usize, sensitivity: f32) {
+        assert!(
+            !cfg!(feature = "nn_kdt"),
+            "multiresolution is incompatible with nn_kdt"
+        );
+        assert!(
+            self.is_empty(),
+            "enable multiresolution before inserting points"
+        );
+        self.multiresolution = Some(multiresolution::MultiResolutionMap::new(
+            self.resolution,
+            capacity,
+            sensitivity,
+        ));
+        // Release the unused fixed-map storage: capacity is a total cell budget.
+        self.livodish = Livodish::new(0, sensitivity, self.resolution / 4.0);
+    }
+
     pub fn is_empty(&self) -> bool {
+        if let Some(map) = &self.multiresolution {
+            return map.is_empty();
+        }
         #[cfg(feature = "nn_kdt")]
         return self.kd_map.size() == 0;
 
@@ -447,6 +472,10 @@ impl IVoxHashMap {
         execution_mode: ExecutionMode,
     ) -> Option<f64> {
         self.scan_number = scan_id;
+        if let Some(map) = &mut self.multiresolution {
+            map.add(points, transform, scan_id);
+            return None;
+        }
 
         #[cfg(feature = "nn_kdt")]
         {
@@ -762,6 +791,11 @@ impl IVoxHashMap {
     }
 
     pub fn plane_fit_from_distributions(&self, query: &PointXYZ) -> Option<[f32; 4]> {
+        if let Some(map) = &self.multiresolution {
+            let matched = map.query(&Point3::new(query.x, query.y, query.z))?;
+            log::trace!("Multi-resolution correspondence at level {}", matched.level);
+            return Some(matched.plane);
+        }
         let mut merged_dist = VoxelDistribution::new();
 
         let grid = self.pos2grid(query);
@@ -1000,12 +1034,19 @@ impl IVoxHashMap {
     }
 
     pub fn clear(&mut self) {
+        if let Some(map) = &mut self.multiresolution {
+            map.clear();
+            return;
+        }
         self.livodish.clear();
     }
 
     /// Mostly for testing purposes, is not efficient
     #[must_use]
     pub fn get_entire_map(&self) -> Vec<nalgebra::Point3<f32>> {
+        if let Some(map) = &self.multiresolution {
+            return map.distributions().into_iter().map(|d| d.mean).collect();
+        }
         #[cfg(feature = "nn_kdt")]
         {
             return self.kd_points.iter().map(|rc| rc.1).collect();
@@ -1020,12 +1061,100 @@ impl IVoxHashMap {
     #[cfg(not(feature = "nn_kdt"))]
     #[must_use]
     pub fn get_distributions(&self) -> Vec<VoxelDistribution> {
+        if let Some(map) = &self.multiresolution {
+            return map.distributions();
+        }
         self.livodish.get_distributions()
     }
 
     #[cfg(not(feature = "nn_kdt"))]
     #[must_use]
     pub fn get_distributions_with_lru_scores(&self) -> Vec<localmap::VoxelDistributionLru> {
+        if let Some(map) = &self.multiresolution {
+            return map
+                .distributions()
+                .into_iter()
+                .map(|distribution| localmap::VoxelDistributionLru {
+                    lru_score: 1.0
+                        / (1.0
+                            + self
+                                .scan_number
+                                .saturating_sub(distribution.last_updated_at_scan)
+                                as f32),
+                    distribution,
+                })
+                .collect();
+        }
         self.livodish.get_distributions_with_lru_scores()
     }
+
+    /// All distributions tagged with the multiresolution level they live at
+    /// (0 = finest, 3 = coarsest) and a relevance score in `[0, 1]`. The
+    /// score ranks each cell by recency *within its level*
+    /// (see [`rank_scores_by_recency`]) rather than a raw age-based decay:
+    /// a LiDAR scan does not revisit every voxel every tick, so a raw
+    /// `1/(1+age)` decay would make almost the entire map read as
+    /// "irrelevant" within one or two scans. Ranking spreads scores evenly
+    /// across `[0, 1]` regardless of scan cadence, matching how
+    /// [`Self::get_distributions_with_lru_scores`]'s rank-based score
+    /// behaves for the flat map. Unlike [`Self::get_distributions`], this
+    /// does not collapse the pyramid to a single layer. The flat (non
+    /// multiresolution) map reports level 0 for everything.
+    #[cfg(not(feature = "nn_kdt"))]
+    #[must_use]
+    pub fn get_distributions_with_levels(&self) -> Vec<(localmap::VoxelDistributionLru, u8)> {
+        if let Some(map) = &self.multiresolution {
+            let per_level = map.distributions_with_levels();
+            let mut result = Vec::with_capacity(per_level.len());
+            for level in 0..4u8 {
+                let group: Vec<VoxelDistribution> = per_level
+                    .iter()
+                    .filter(|(_, l)| *l == level)
+                    .map(|(d, _)| *d)
+                    .collect();
+                let ages: Vec<u64> = group
+                    .iter()
+                    .map(|d| self.scan_number.saturating_sub(d.last_updated_at_scan) as u64)
+                    .collect();
+                let scores = rank_scores_by_recency(&ages);
+                result.extend(group.into_iter().zip(scores).map(|(distribution, score)| {
+                    (
+                        localmap::VoxelDistributionLru {
+                            distribution,
+                            lru_score: score,
+                        },
+                        level,
+                    )
+                }));
+            }
+            return result;
+        }
+        self.livodish
+            .get_distributions_with_lru_scores()
+            .into_iter()
+            .map(|d| (d, 0u8))
+            .collect()
+    }
+}
+
+/// Ranks `ages` (smaller = more recent) into relevance scores in `[0, 1]`:
+/// the most recent entry scores 1.0, the oldest scores toward 0.0, evenly
+/// spread across the population regardless of the ages' absolute scale.
+/// Mirrors `Livodish::get_distributions_with_lru_scores`'s `rank/capacity`
+/// score, which is why the flat map's relevance coloring doesn't suffer the
+/// same "decays to irrelevant within one scan" problem a raw age ratio would.
+#[must_use]
+pub fn rank_scores_by_recency(ages: &[u64]) -> Vec<f32> {
+    let n = ages.len();
+    if n <= 1 {
+        return vec![1.0; n];
+    }
+    let mut order: Vec<usize> = (0..n).collect();
+    order.sort_by_key(|&i| ages[i]);
+    let mut scores = vec![0.0f32; n];
+    let denom = (n - 1) as f32;
+    for (rank, idx) in order.into_iter().enumerate() {
+        scores[idx] = 1.0 - (rank as f32 / denom);
+    }
+    scores
 }

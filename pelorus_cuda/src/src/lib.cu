@@ -256,6 +256,18 @@ void init_map(void *stream, u_int32_t map_capacity, float sensitivity,
   }
 }
 
+void init_multiresolution_map(void *stream, uint32_t capacity, float resolution, float sensitivity) {
+  try {
+    assert(stream != NULL);
+    auto* stream_ = static_cast<rm::CudaStream*>(stream);
+    StreamContextGuard context_guard(stream_);
+    init_multiresolution_impl(capacity, resolution, sensitivity);
+  } catch (const std::exception& e) {
+    std::cerr << "CUDA multiresolution init: " << e.what() << std::endl;
+    std::exit(1);
+  }
+}
+
 void get_map(Point *points, uint32_t *points_size) {
   try {
     rm::cuda_current_context()->use();

@@ -21,7 +21,7 @@ impl Guide {
     pub fn new(poses: usize) -> Self {
         let session = GuidedCalibration::new(GuidedConfig {
             num_poses: poses,
-            // Only the prompting is wanted here; the fit runs later from the
+            // Only the prompting is wanted here. The fit runs later from the
             // bag, so there is no point spending the session on it.
             estimate_gyro_intrinsics: false,
             ..GuidedConfig::default()

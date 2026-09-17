@@ -815,7 +815,7 @@ mod tests {
     }
 
     /// The IMU reaches the bag exactly as the driver reported it. `ImuMsg`
-    /// stores the quaternion `wxyz`; the ROS message stores it `xyzw`.
+    /// stores the quaternion `wxyz`. The ROS message stores it `xyzw`.
     #[test]
     fn imu_conversion_preserves_quaternion_order() {
         let sample = pelorus_core::ImuMsg {

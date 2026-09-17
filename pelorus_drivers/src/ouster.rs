@@ -34,7 +34,7 @@ impl LidarProfile {
             "RNG19_RFL8_SIG16_NIR16" => Ok(Self::Single),
             "RNG15_RFL8_NIR8" => Ok(Self::LowDataRate),
             value => Err(DriverError::Driver(format!(
-                "unsupported Ouster lidar UDP profile `{value}`; supported profiles are RNG19_RFL8_SIG16_NIR16 and RNG15_RFL8_NIR8"
+                "unsupported Ouster lidar UDP profile `{value}`. Supported profiles are RNG19_RFL8_SIG16_NIR16 and RNG15_RFL8_NIR8"
             ))),
         }
     }
@@ -173,7 +173,7 @@ fn load_metadata(
             .is_some_and(|profile| profile != "LEGACY")
     {
         return Err(DriverError::Driver(format!(
-            "unsupported Ouster IMU UDP profile `{}`; only LEGACY is supported",
+            "unsupported Ouster IMU UDP profile `{}`. Only LEGACY is supported",
             config_params
                 .udp_profile_imu
                 .as_deref()
@@ -239,7 +239,7 @@ impl LidarDecoder {
             .is_some_and(|header| header != "STANDARD")
         {
             return Err(DriverError::Driver(format!(
-                "unsupported Ouster lidar header type `{}`; only STANDARD is supported",
+                "unsupported Ouster lidar header type `{}`. Only STANDARD is supported",
                 format.header_type.as_deref().expect("header is present")
             )));
         }
