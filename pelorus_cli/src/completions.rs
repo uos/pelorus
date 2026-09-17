@@ -47,7 +47,7 @@ fn detect_shell() -> Result<Shell> {
     }
 
     bail!(
-        "could not detect the current shell; set SHELL to bash, zsh, fish, or elvish, or pass a shell to print its completion script"
+        "could not detect the current shell. Set SHELL to bash, zsh, fish, or elvish, or pass a shell to print its completion script"
     )
 }
 

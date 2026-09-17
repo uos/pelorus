@@ -5,22 +5,23 @@ registration {
     # Feature size used for registration. NOTE: This will heavily affect your registration accuracy and runtime.
     resolution = 50cm
 
-    # Experimental CPU map: support scales of 0.5x, 1x, 2x and 4x resolution.
-    # Capacity is shared across all four levels. Scan downsampling is unchanged.
-    multiresolution = false
+    # @recommended
+    # Single: one fixed-resolution map.
+    # Multi: scales of 0.5x, 1x, 2x and 4x `resolution`.
+    resolution.type = Multi
 
     # @recommended
-    # How many Voxels of the previous defined resolution to save at any time. With Cuda enabled, the capacity will be round up to the next power of 2.
-    capacity = 131072
+    # How many Voxels of the previous defined resolution to save at any time. The fixed CUDA map rounds capacity up to a power of 2. The multiresolution map keeps the exact total.
+    capacity = 262144
    
     # Magic weighting value for handling the sensivity to new scans. The higher this value, the sensitive is it to brand new scans.
     distribution_update_sensitivity = 10.0
   }
 
-  # Maximum IEKF correction iterations per scan.
+  # Maximum filter correction iterations per scan.
   max_iter = 4
 
-  # Maximum distance to any neighbor. Default is mostly ok if you do not drastically reduce the map resolution.
+  # Maximum distance to any neighbor. 5m is Mostly ok if you do not drastically reduce the map resolution.
   neighbors_max_range = 5m
 }
 
@@ -30,13 +31,12 @@ preprocessing {
     # Output the full undistorted cloud on the cloud output topic.
     bypass_output_downsample = true
 
-    # @recommended
     # Downsample the incoming scan by keeping only every n-th point. 1 means no points are skipped.
     point_skip = 1
 
-    # Where to run preprocessing downsampling. Backend uses the active acceleration backend when available; Cpu always uses the CPU path.
+    # Where to run preprocessing downsampling. Backend uses the active acceleration backend when available.
     # CPU | Backend
-    backend = CPU
+    backend = Backend
 
     # Estimated sizes of features in the incoming scan, expressed as a factor of registration.map.resolution. Expected values are between 0.0 and 1.0.
     query_resolution_factor = 0.5
@@ -64,15 +64,14 @@ preprocessing {
 
     distance {
       # Example ..2m (up to 2m from origin) or 1cm..4m (everything from 1cm to 4m distance)
-      range = 4m..
+      range = 50cm..
 
       # if true we only accept points outside the range
       invert = false
     }
 
+    horizontal_fov = false
     horizontal_fov {
-      enable = false
-
       # Degrees, Example 10..42
       degrees = ..
 
@@ -113,7 +112,7 @@ sensor_drivers {
     hostname = "os.local"
 
     # Optional Ouster metadata JSON file. Empty fetches live metadata from
-    # hostname; a file is useful for deterministic replay and offline testing.
+    # hostname. A file is useful for deterministic replay and offline testing.
     metadata_path = ""
 
     # Local receive address and the sensor's configured UDP destination ports.
@@ -162,8 +161,8 @@ lidar {
       # UDP position/NMEA packet port. Must be in 1..=65535 and differ from data_port.
       position_port = 8308
 
-      # Optional sender-address filter. Empty accepts packets from any device;
-      # otherwise this must be an IPv4 or IPv6 address, for example "192.168.1.201".
+      # Optional sender-address filter. Empty accepts packets from any device.
+      # Otherwise this must be an IPv4 or IPv6 address, for example "192.168.1.201".
       device_ip = ""
 
       # Frame assigned to native scans. Coordinates follow ROS REP-103:
@@ -191,7 +190,7 @@ lidar {
         allow_host_hour_anchor = true
 
         # Maximum accepted absolute difference between reconstructed sensor UTC and
-        # host UTC. Must be positive. Used by Sensor mode; Host mode already uses host time.
+        # host UTC. Must be positive. Used by Sensor mode. Host mode already uses host time.
         max_host_skew = 20ms
 
         # Maximum positive duration to wait for usable packets/timestamps during
@@ -269,7 +268,7 @@ imu {
         mode = Utc
 
         # Maximum accepted absolute difference between Xsens UTC and host UTC.
-        # Must be positive. Used by Utc mode; Host mode already uses host time.
+        # Must be positive. Used by Utc mode. Host mode already uses host time.
         max_host_skew = 20ms
 
         # Maximum positive duration to wait for usable MTData2 input during startup.
@@ -295,7 +294,7 @@ imu {
     use_tf_tree = false
 
     # lidar -> imu
-    translation = [-6.253mm, 11.775mm, 28.535mm]
+    translation = [0.0m, 0.0m, 0.0m]
     rotation = [  [1.0, 0.0, 0.0],
                   [0.0, 1.0, 0.0],
                   [0.0, 0.0, 1.0] ]
@@ -339,9 +338,9 @@ imu {
   calibration {
     # Take a few measurements first without rotating in the beginning to smooth out rotations.
     gyroscope = true
-    
-    # Use this many measurements for the gyroscope
-    samples = 100
+
+    # Use this many measurements for the gyroscope.
+    gyroscope.samples = 100
 
     # Kalibr-format IMU calibration to apply to every sample: scale factors,
     # axis misalignment and biases. Relative path "./<path>" from this config
@@ -352,15 +351,15 @@ imu {
     # `pelorus online raw imu intrinsics --output-rosbag <dir>`.
     parameter_file = ""
 
-    # Take the four covariances above from parameter_file instead of the
+    # Take the covariances above from parameter_file instead of the
     # constants, deriving them from its measured noise densities and bias
     # random walks. Needs a file that carries the stochastic half too, i.e.
-    # one from `dedrunk merge`; `dedrunk intrinsics` alone does not.
+    # one from `dedrunk merge`. `dedrunk intrinsics` alone does not.
     #
     # Off by default because it moves numbers the odometry is tuned around.
     # Both the derived and the configured values are logged at startup, so the
     # ratio for this sensor is visible before you commit to it.
-    noise_from_file = false
+    parameter_file.use_noise = false
 
     # Seconds the IMU clock runs ahead of the Lidar clock, as reported by
     # `dedrunk extrinsics`. Pelorus subtracts it from every IMU timestamp, so
@@ -467,14 +466,17 @@ output {
     }
   }
 
+  # Off by default. Requires a build with the `rerun` Cargo feature and an
+  # already running Rerun server at rerun.server_addr.
+  rerun = false
   rerun {
-    # Address of an already running Rerun server. Visualization is activated with --rerun.
+    # Address of the already running Rerun server to stream visualizations to.
     server_addr = "127.0.0.1:9876"
 
     # Periodic snapshot of the whole registration map, colored by relevance score.
     # Off by default. Large maps can be expensive to render.
+    map = false
     map {
-      enabled = false
       # Minimum time between snapshots.
       publish_interval = 1s
       # Ellipsoid size, scaled by each voxel's covariance.
@@ -501,6 +503,30 @@ output {
   imu_ahrs_filtered_topic = "imu/filtered"
 
   logger_prefix = "pelorus"
+
+  # Optional MCAP/ROS 2 bag recording of Pelorus output, unrelated to the live
+  # pub/sub topics above. Off by default (both file and rosbag_dir empty).
+  mcap {
+    # Write a bare MCAP file at this path. Empty disables it. Mutually
+    # exclusive with rosbag_dir.
+    file = ""
+
+    # Write a ROS 2 bag directory at this path instead of a bare MCAP file.
+    # Always writes its own <rosbag_dir>/metadata.yaml. Empty disables it.
+    # Mutually exclusive with file.
+    rosbag_dir = ""
+
+    # Also write a ROS 2 bag metadata.yaml next to `file`. Only valid together
+    # with file (rosbag_dir already writes its own). Empty disables it.
+    rosbag_metadata = ""
+
+    # Topic names used inside the MCAP/ROS 2 bag. Unrelated to the live
+    # pub/sub topics above.
+    cloud_topic = "/registered"
+    odom_topic = "/odom"
+    path_topic = "/path"
+    tf_topic = "/tf"
+  }
 }
 
 parallelism {

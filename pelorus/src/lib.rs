@@ -48,7 +48,7 @@ pub enum Error {
     NoData,
     #[error("pipeline channel disconnected")]
     Disconnected,
-    #[error("cannot poll while a callback is registered; call clear_callback() first")]
+    #[error("cannot poll while a callback is registered. Call clear_callback() first")]
     CallbackActive,
     #[error(transparent)]
     Other(#[from] anyhow::Error),
@@ -375,7 +375,7 @@ fn processing_thread_main(thread: ProcessingThread) {
                 }
             }
             Err(e) => {
-                error!("fatal registration error; stopping processing thread: {e:#}");
+                error!("fatal registration error. Stopping processing thread: {e:#}");
                 break;
             }
         }
@@ -407,8 +407,8 @@ fn configure_thread_pool(num_threads: usize) {
         });
         if *prev != num_threads {
             log::warn!(
-                "Rayon thread pool already configured with {} threads; \
-             ignoring request for {} threads (first Handle wins).",
+                "Rayon thread pool already configured with {} threads. \
+             Ignoring request for {} threads (first Handle wins).",
                 prev,
                 num_threads
             );
@@ -416,7 +416,7 @@ fn configure_thread_pool(num_threads: usize) {
     }
     #[cfg(not(feature = "rayon"))]
     log::warn!(
-        "Ignoring num_threads={num_threads}; thread-pool configuration requires the rayon feature."
+        "Ignoring num_threads={num_threads}. Thread-pool configuration requires the rayon feature."
     );
 }
 
@@ -433,8 +433,8 @@ fn configure_thread_pool(num_threads: usize) {
 /// Results can be consumed in two ways (mutually exclusive):
 /// - Polling: [`recv`](Handle::recv) (blocking) or [`try_recv`](Handle::try_recv)
 ///   (non-blocking).
-/// - Callback: register a closure with [`set_callback`](Handle::set_callback);
-///   it is called from the processing thread for every result.  While a callback
+/// - Callback: register a closure with [`set_callback`](Handle::set_callback).
+///   It is called from the processing thread for every result.  While a callback
 ///   is registered, `recv`/`try_recv` return [`Error::CallbackActive`].
 pub struct Handle {
     sync: Arc<Mutex<Option<Synchronizer>>>,

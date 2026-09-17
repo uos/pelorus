@@ -315,6 +315,24 @@ impl<'a> ComputeCommandSession<'a> {
         }
     }
 
+    /// Publish device results both to staging copies and mapped host counters.
+    pub(crate) fn shader_to_readback_barrier(&self) {
+        let barrier = vk::MemoryBarrier::default()
+            .src_access_mask(vk::AccessFlags::SHADER_WRITE)
+            .dst_access_mask(vk::AccessFlags::TRANSFER_READ | vk::AccessFlags::HOST_READ);
+        unsafe {
+            self.context.device.cmd_pipeline_barrier(
+                self.resources.command_buffer,
+                vk::PipelineStageFlags::COMPUTE_SHADER,
+                vk::PipelineStageFlags::TRANSFER | vk::PipelineStageFlags::HOST,
+                vk::DependencyFlags::empty(),
+                std::slice::from_ref(&barrier),
+                &[],
+                &[],
+            );
+        }
+    }
+
     pub(crate) fn transfer_to_host_barrier(&self) {
         let barrier = vk::MemoryBarrier::default()
             .src_access_mask(vk::AccessFlags::TRANSFER_WRITE)
@@ -399,7 +417,7 @@ impl<'a> ComputeCommandSession<'a> {
 
             // The EKF blocks on this result, so the submit round-trip is on the
             // critical path once per iteration. `vkWaitForFences` parks in the
-            // kernel and pays a wake-up; these submissions finish in ~100us, so poll
+            // kernel and pays a wake-up. These submissions finish in ~100us, so poll
             // briefly first and only block if the work turns out to be long.
             let mut signalled = false;
             for _ in 0..SUBMIT_SPIN_ITERATIONS {

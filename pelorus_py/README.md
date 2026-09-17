@@ -20,8 +20,8 @@ maturin develop --release --features vulkan
 maturin develop --release --features metal
 ```
 
-Metal is available on macOS; CUDA requires a supported NVIDIA CUDA
-installation; Vulkan requires a compatible device and driver. The default
+Metal is available on macOS. CUDA requires a supported NVIDIA CUDA
+installation. Vulkan requires a compatible device and driver. The default
 features enable Rayon CPU parallelism and include `processing_time_ns` in
 odometry results. Additional features are `no-imu-sync` and
 `large-processing-queue`. The legacy `downsample` feature is retained for
@@ -138,7 +138,7 @@ Main interface to the Pelorus system.
 - `add_pointcloud2_ros(cloud_msg)`: Add a ROS2 `sensor_msgs/msg/PointCloud2` message directly
 - `try_recv()`: Try to receive odometry (non-blocking), returns `None` if no data
 - `recv()`: Receive odometry (blocks until available)
-- `set_callback(callback)`: Deliver odometry via callback from a background thread; disables `try_recv()`/`recv()` queuing while enabled
+- `set_callback(callback)`: Deliver odometry via callback from a background thread. Disables `try_recv()`/`recv()` queuing while enabled
 - `clear_callback()`: Disable callback delivery (equivalent to `set_callback(None)`)
 - `version()`: Get library version (static method)
 

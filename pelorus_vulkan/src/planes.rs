@@ -8,8 +8,8 @@ use crate::stream::Stream;
 use crate::types::{NeighborType, PointNormal, Quaternion, Vector3};
 use ash::vk;
 use pelorus_core::PointXYZIT;
-use ros_pointcloud2::points::PointXYZINormal;
 use pelorus_localmap::IVoxNearbyType;
+use ros_pointcloud2::points::PointXYZINormal;
 use std::mem::size_of;
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -35,6 +35,16 @@ pub fn planes_vulkan(
         "output buffer must fit cloud size"
     );
     with_state(|state| match &mut state.backend {
+        MapBackendState::Multiresolution(map) => map.planes(
+            stream,
+            cloud,
+            ekf_pose_t,
+            ekf_pose_r,
+            ekf_imu_offset_t,
+            ekf_imu_offset_r,
+            out_buff,
+            out_buff_gpu,
+        ),
         MapBackendState::Host(host) => {
             let start = std::time::Instant::now();
             let cloud_cpu: Vec<PointXYZIT> = cloud.download(stream);
@@ -339,7 +349,7 @@ impl From<NeighborType> for IVoxNearbyType {
 /// (planes_ms, add_to_map_ms)
 pub fn try_get_gpu_timings() -> Option<(f64, f64)> {
     with_state(|state| match &mut state.backend {
-        MapBackendState::Host(_) => None,
+        MapBackendState::Host(_) | MapBackendState::Multiresolution(_) => None,
         MapBackendState::Vulkan(gpu) => {
             let mut planes_ms = None;
             let mut add_to_map_ms = None;

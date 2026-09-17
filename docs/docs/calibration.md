@@ -18,7 +18,7 @@ The first two are properties of the IMU alone. The third is about the pair. You 
 
 ## Getting the data into a bag
 
-Two of the three need a bag with both sensors in it, and your robot already writes one — dedrunk picks the topics apart by message type. Noise is the exception and wants its own recording; [see below](#noise).
+Two of the three need a bag with both sensors in it, and your robot already writes one — dedrunk picks the topics apart by message type. Noise is the exception and wants its own recording. [See below](#noise).
 
 ```sh
 pelorus online raw --output-rosbag calib_drive
@@ -44,7 +44,7 @@ Hold the sensor still in **at least nine well-spread orientations**, rotating ab
 dedrunk intrinsics calib_drive -o output.path='"imu_intrinsics.yaml"'
 ```
 
-dedrunk finds the stationary stretches itself; there is nothing to mark up. It prints how many it found and the residuals:
+dedrunk finds the stationary stretches itself. There is nothing to mark up. It prints how many it found and the residuals:
 
 ```
 poses: 12   duration: 42.5 s   rate: 200.0 Hz
@@ -64,7 +64,7 @@ That drops the misalignment terms and needs six orientations instead of nine.
 
 ## Noise
 
-These four numbers say how much the IMU makes up: two white-noise densities and two bias random walks. They are **not** applied to measurements — noise is irreducible, and you cannot subtract a value you do not know sample by sample. What they do is tell the filter how far to trust the IMU between Lidar corrections. Too small and it rides the IMU through a corner and ignores the scan match; too large and it throws away good inertial information.
+These four numbers say how much the IMU makes up: two white-noise densities and two bias random walks. They are **not** applied to measurements — noise is irreducible, and you cannot subtract a value you do not know sample by sample. What they do is tell the filter how far to trust the IMU between Lidar corrections. Too small and it rides the IMU through a corner and ignores the scan match. Too large and it throws away good inertial information.
 
 ### What to record
 
@@ -76,7 +76,7 @@ Record the IMU **only**:
 pelorus online raw imu --output-rosbag imu_static
 ```
 
-The `imu` argument matters here. Three hours of IMU at 400 Hz is a couple of gigabytes; three hours with the Lidar running is closer to a hundred, and none of it would be used. `pelorus online raw imu` also leaves the Lidar socket closed, so the machine is doing nothing that could vibrate the sensor.
+The `imu` argument matters here. Three hours of IMU at 400 Hz is a couple of gigabytes. Three hours with the Lidar running is closer to a hundred, and none of it would be used. `pelorus online raw imu` also leaves the Lidar socket closed, so the machine is doing nothing that could vibrate the sensor.
 
 It records until you stop it with `Ctrl-C`. Confirm afterwards that you got the whole thing:
 
@@ -134,13 +134,13 @@ tau,accel_x,accel_y,accel_z,gyro_x,gyro_y,gyro_z,pairs
 
 Plot the axis columns against `tau` on log-log axes in whatever you normally use, and look at the shape rather than the numbers.
 
-A healthy curve falls at slope `−1/2`, flattens through a minimum — the bias instability — and rises again at `+1/2`. What you are checking is that both sloped regions are actually there and reasonably long. A curve that only ever falls means no measurable random walk over the range covered; a curve with bumps or a rise that starts early usually means the sensor was disturbed, and the recording is not usable.
+A healthy curve falls at slope `−1/2`, flattens through a minimum — the bias instability — and rises again at `+1/2`. What you are checking is that both sloped regions are actually there and reasonably long. A curve that only ever falls means no measurable random walk over the range covered. A curve with bumps or a rise that starts early usually means the sensor was disturbed, and the recording is not usable.
 
 The three axes should look similar. One that stands out is worth investigating before you use the averaged value.
 
 ### If you cannot record for hours
 
-Datasheet figures are a legitimate fallback. Manufacturers usually quote white noise as **angular random walk** for the gyroscope and **velocity random walk** for the accelerometer, which are the same quantities under different names; bias figures are rarer, and **in-run bias instability** is the usual stand-in. Write them into a Kalibr file by hand and merge as below.
+Datasheet figures are a legitimate fallback. Manufacturers usually quote white noise as **angular random walk** for the gyroscope and **velocity random walk** for the accelerometer, which are the same quantities under different names. Bias figures are rarer, and **in-run bias instability** is the usual stand-in. Write them into a Kalibr file by hand and merge as below.
 
 Expect them to be optimistic. The Kalibr wiki suggests inflating measured densities by 10× or more for low-cost MEMS parts, and datasheet values need at least as much.
 
@@ -163,7 +163,7 @@ imu.calibration {
 }
 ```
 
-Keep the robot stationary for the first second after start-up; those samples measure the gyroscope bias and are dropped rather than published.
+Keep the robot stationary for the first second after start-up. Those samples measure the gyroscope bias and are dropped rather than published.
 
 ### Covariances from the file
 
@@ -171,7 +171,7 @@ Once the file carries the noise half, Pelorus can derive `imu.covariance_*` from
 
 ```ratslang
 imu.calibration {
-    noise_from_file = true
+    parameter_file.use_noise = true
     noise_inflation = 10.0
 }
 ```
@@ -193,7 +193,7 @@ Note that the four ratios there are nothing like each other — the gyroscope te
 The transform has to be measured against a trajectory that did **not** already assume it. Pelorus's own odometry is a Lidar-inertial one, so feeding its poses back would return the assumption instead of measuring it. Run it Lidar-only first:
 
 ```sh
-pelorus offline calib_drive -c pelorus.rl -o imu.lidar_only=true --output-rosbag lidar_traj
+pelorus offline calib_drive -c pelorus.rl -o imu.lidar_only=true -o output.mcap.rosbag_dir=lidar_traj
 dedrunk extrinsics lidar_traj --imu-bag calib_drive
 ```
 

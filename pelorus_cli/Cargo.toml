@@ -174,7 +174,7 @@ large-processing-queue = [
 
 # -#-#-#-#-#- Visualizations -#-#-#-#-#-
 
-# Compile Rerun visualization support. Activate it at runtime with `--rerun`.
+# Compile Rerun visualization support. Activate it at runtime with `output.rerun = true`.
 # Connection and map settings live under `output.rerun` in the config.
 rerun = ["dep:rerun", "pelorus_syncio/rerun"]
 

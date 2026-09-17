@@ -528,20 +528,9 @@ pub struct OfflineArgs {
     )]
     pub export_processing_time: Option<String>,
 
-    /// Force CPU-only processing regardless of available GPU backends.
-    #[arg(long, default_value_t = false)]
-    pub cpu_only: bool,
-
-    /// Stream debug visualizations to the Rerun server configured in output.rerun.
-    #[arg(long, default_value_t = false)]
-    pub rerun: bool,
-
     /// Allow Minot and Pelorus pub/sub to use non-local networking in offline mode.
     #[arg(long, default_value_t = false)]
     pub open_router: bool,
-
-    #[command(flatten)]
-    pub recording: RecordingArgs,
 
     /// Answer yes to overwrite prompts.
     #[arg(short = 'y', long, default_value_t = false)]
@@ -549,7 +538,7 @@ pub struct OfflineArgs {
 
     /// Number of offline scans to request ahead from Minot.
     ///
-    /// Registration and publishing remain gated one scan at a time; this only
+    /// Registration and publishing remain gated one scan at a time. This only
     /// keeps the preprocessing side fed while the current scan is registering.
     #[arg(long, default_value_t = DEFAULT_OFFLINE_PREFETCH_SCANS)]
     pub prefetch_scans: usize,
@@ -597,14 +586,6 @@ pub struct ConfigArgs {
     #[arg(short, long)]
     pub rat: bool,
 
-    /// Force CPU-only processing regardless of available GPU backends.
-    #[arg(long, default_value_t = false)]
-    pub cpu_only: bool,
-
-    /// Stream debug visualizations to the Rerun server configured in output.rerun.
-    #[arg(long, default_value_t = false)]
-    pub rerun: bool,
-
     /// Restrict Pelorus pub/sub communication to this host.
     #[arg(long, default_value_t = false)]
     pub local_only: bool,
@@ -629,9 +610,6 @@ pub struct ConfigArgs {
     #[arg(long, value_name = "ENDPOINT")]
     pub hiroz_endpoint: Vec<String>,
 
-    #[command(flatten)]
-    pub recording: RecordingArgs,
-
     /// Answer yes to overwrite prompts.
     #[arg(short = 'y', long, default_value_t = false)]
     pub yes: bool,
@@ -649,41 +627,6 @@ struct RosNodeArgs {
 struct HirozNodeArgs {
     mode: String,
     endpoints: Vec<String>,
-}
-
-#[derive(Debug, Clone, Parser)]
-pub struct RecordingArgs {
-    /// Write Pelorus outputs to this MCAP bagfile.
-    #[arg(long, value_name = "PATH", conflicts_with = "output_rosbag")]
-    pub output_mcap: Option<PathBuf>,
-
-    /// Also write ROS 2 bag metadata.yaml for the MCAP output.
-    #[arg(long, value_name = "PATH", requires = "output_mcap")]
-    pub output_rosbag_metadata: Option<PathBuf>,
-
-    /// Write Pelorus outputs as a ROS 2 MCAP bag directory.
-    #[arg(long, value_name = "DIR", conflicts_with_all = ["output_mcap", "output_rosbag_metadata"])]
-    pub output_rosbag: Option<PathBuf>,
-
-    /// MCAP topic for undistorted PointCloud2 output.
-    #[arg(long, default_value = "/registered")]
-    pub mcap_cloud_topic: String,
-
-    /// MCAP topic for Pelorus odometry output.
-    #[arg(long, default_value = "/odom")]
-    pub mcap_odom_topic: String,
-
-    /// MCAP topic for Pelorus path output.
-    #[arg(long, default_value = "/path")]
-    pub mcap_path_topic: String,
-
-    /// MCAP topic for dynamic TF output.
-    #[arg(long, default_value = "/tf")]
-    pub mcap_tf_topic: String,
-
-    /// MCAP topic for filtered IMU output. Defaults to the configured filtered IMU topic.
-    #[arg(long)]
-    pub mcap_filtered_imu_topic: Option<String>,
 }
 
 #[derive(Debug, Clone, Subcommand)]
@@ -780,8 +723,8 @@ struct McapOutputConfig {
     topics: McapTopics,
 }
 
-fn build_mcap_output_config(args: &RecordingArgs, config: &LioConfig) -> Option<McapOutputConfig> {
-    build_mcap_output_config_with_filtered_topic(args, &config.sync_node_params.imu_filtered_topic)
+fn build_mcap_output_config(config: &LioConfig) -> Option<McapOutputConfig> {
+    build_mcap_output_config_with_filtered_topic(&config.mcap, &config.sync_node_params.imu_filtered_topic)
         .map(|mut output| {
             if config.imu_params.lidar_only {
                 output.topics.filtered_imu = None;
@@ -791,36 +734,35 @@ fn build_mcap_output_config(args: &RecordingArgs, config: &LioConfig) -> Option<
 }
 
 fn build_mcap_output_config_with_filtered_topic(
-    args: &RecordingArgs,
+    mcap: &pelorus_core::McapConfig,
     configured_filtered_imu_topic: &str,
 ) -> Option<McapOutputConfig> {
-    args.output_mcap
-        .clone()
-        .or_else(|| {
-            args.output_rosbag
-                .as_ref()
-                .map(|path| rosbag_mcap_path(path))
-        })
+    mcap.file
+        .as_ref()
+        .map(PathBuf::from)
+        .or_else(|| mcap.rosbag_dir.as_ref().map(|dir| rosbag_mcap_path(std::path::Path::new(dir))))
         .map(|path| {
-            let filtered_imu_topic = args.mcap_filtered_imu_topic.clone().unwrap_or_else(|| {
-                if configured_filtered_imu_topic.is_empty() {
-                    "imu/filtered".to_string()
-                } else {
-                    configured_filtered_imu_topic.to_string()
-                }
-            });
+            let filtered_imu_topic = if configured_filtered_imu_topic.is_empty() {
+                "imu/filtered".to_string()
+            } else {
+                configured_filtered_imu_topic.to_string()
+            };
             McapOutputConfig {
                 path,
-                rosbag_metadata_path: args.output_rosbag_metadata.clone().or_else(|| {
-                    args.output_rosbag
-                        .as_ref()
-                        .map(|path| path.join("metadata.yaml"))
-                }),
+                rosbag_metadata_path: mcap
+                    .rosbag_metadata
+                    .as_ref()
+                    .map(PathBuf::from)
+                    .or_else(|| {
+                        mcap.rosbag_dir
+                            .as_ref()
+                            .map(|dir| std::path::Path::new(dir).join("metadata.yaml"))
+                    }),
                 topics: McapTopics {
-                    cloud: normalize_mcap_topic(args.mcap_cloud_topic.clone()),
-                    odom: normalize_mcap_topic(args.mcap_odom_topic.clone()),
-                    path: normalize_mcap_topic(args.mcap_path_topic.clone()),
-                    tf: normalize_mcap_topic(args.mcap_tf_topic.clone()),
+                    cloud: normalize_mcap_topic(mcap.cloud_topic.clone()),
+                    odom: normalize_mcap_topic(mcap.odom_topic.clone()),
+                    path: normalize_mcap_topic(mcap.path_topic.clone()),
+                    tf: normalize_mcap_topic(mcap.tf_topic.clone()),
                     filtered_imu: Some(normalize_mcap_topic(filtered_imu_topic)),
                 },
             }
@@ -828,12 +770,12 @@ fn build_mcap_output_config_with_filtered_topic(
 }
 
 fn prepare_mcap_output_targets(
-    args: &RecordingArgs,
+    mcap: &pelorus_core::McapConfig,
     output_mcap: Option<&McapOutputConfig>,
     assume_yes: bool,
 ) -> anyhow::Result<bool> {
     prepare_output_targets(
-        args.output_rosbag.as_deref(),
+        mcap.rosbag_dir.as_deref().map(std::path::Path::new),
         output_mcap.map(|output| output.path.as_path()),
         output_mcap.and_then(|output| output.rosbag_metadata_path.as_deref()),
         assume_yes,
@@ -1238,6 +1180,88 @@ fn log_realtime_prediction_to_rerun(rec: &rerun::RecordingStream, prediction: &R
     }
 }
 
+/// Color for a relevance score in `[0, 1]`, shared by every backend's rerun
+/// map snapshot so the gradient does not depend on which backend happens to
+/// be active. Warm (evicted soon) to cool (most relevant).
+#[cfg(feature = "rerun")]
+fn relevance_color(score: f32) -> rerun::Color {
+    let value = score.clamp(0.0, 1.0);
+    if value < 0.5 {
+        let t = value * 2.0;
+        rerun::Color::from_rgb(
+            (150.0 + 95.0 * t) as u8,
+            (58.0 + 116.0 * t) as u8,
+            (70.0 - 20.0 * t) as u8,
+        )
+    } else {
+        let t = (value - 0.5) * 2.0;
+        rerun::Color::from_rgb(
+            (245.0 - 171.0 * t) as u8,
+            (174.0 + 42.0 * t) as u8,
+            (50.0 + 166.0 * t) as u8,
+        )
+    }
+}
+
+/// Publishes one multiresolution level of the CPU registration map to Rerun
+/// as ellipsoids, colored by the same recency-based relevance score as the
+/// flat map (`log_map_snapshot_to_rerun`). Each level gets its own entity
+/// path so it can be toggled independently in Rerun.
+#[cfg(all(
+    feature = "rerun",
+    not(any(feature = "cuda", feature = "metal", feature = "vulkan"))
+))]
+fn log_multires_snapshot_to_rerun(
+    rec: &rerun::RecordingStream,
+    distributions: Vec<(pelorus_localmap::localmap::VoxelDistributionLru, u8)>,
+    map_config: &pelorus_core::RerunMapConfig,
+) {
+    const MIN_HALF_SIZE: f32 = 0.02;
+    const LEVELS: usize = 4;
+    let mut centers: [Vec<glam::Vec3>; LEVELS] = Default::default();
+    let mut half_sizes: [Vec<glam::Vec3>; LEVELS] = Default::default();
+    let mut quaternions: [Vec<glam::Quat>; LEVELS] = Default::default();
+    let mut colors: [Vec<rerun::Color>; LEVELS] = Default::default();
+
+    for (scored, level) in &distributions {
+        let level = (*level as usize).min(LEVELS - 1);
+        let distribution = &scored.distribution;
+        let mut eigen = distribution.covariance.symmetric_eigen();
+        if eigen.eigenvectors.determinant() < 0.0 {
+            let flipped = -eigen.eigenvectors.column(0);
+            eigen.eigenvectors.set_column(0, &flipped);
+        }
+        let half_size = glam::Vec3::new(
+            (map_config.visual_scale * eigen.eigenvalues.x.max(0.0).sqrt()).max(MIN_HALF_SIZE),
+            (map_config.visual_scale * eigen.eigenvalues.y.max(0.0).sqrt()).max(MIN_HALF_SIZE),
+            (map_config.visual_scale * eigen.eigenvalues.z.max(0.0).sqrt()).max(MIN_HALF_SIZE),
+        );
+        let rotation = UnitQuaternion::from_matrix(&eigen.eigenvectors);
+        let q = rotation.quaternion();
+
+        centers[level].push(glam::Vec3::new(
+            distribution.mean.x,
+            distribution.mean.y,
+            distribution.mean.z,
+        ));
+        half_sizes[level].push(half_size);
+        quaternions[level].push(glam::Quat::from_xyzw(q.i, q.j, q.k, q.w));
+        colors[level].push(relevance_color(scored.lru_score));
+    }
+
+    for level in 0..LEVELS {
+        let ellipsoids = rerun::Ellipsoids3D::update_fields()
+            .with_centers(core::mem::take(&mut centers[level]))
+            .with_half_sizes(core::mem::take(&mut half_sizes[level]))
+            .with_quaternions(core::mem::take(&mut quaternions[level]))
+            .with_colors(core::mem::take(&mut colors[level]))
+            .with_fill_mode(rerun::components::FillMode::Solid);
+        if let Err(err) = rec.log(format!("world/map/level{level}"), &ellipsoids) {
+            error!("Error sending map snapshot to rerun {err}");
+        }
+    }
+}
+
 /// Publishes the CPU registration map to Rerun as ellipsoids.
 /// Color goes from warm (evicted soon) to cool (most relevant), by LRU score.
 #[cfg(all(
@@ -1270,23 +1294,6 @@ fn log_map_snapshot_to_rerun(
         let rotation = UnitQuaternion::from_matrix(&eigen.eigenvectors);
         let q = rotation.quaternion();
 
-        let value = scored.lru_score.clamp(0.0, 1.0);
-        let color = if value < 0.5 {
-            let t = value * 2.0;
-            rerun::Color::from_rgb(
-                (150.0 + 95.0 * t) as u8,
-                (58.0 + 116.0 * t) as u8,
-                (70.0 - 20.0 * t) as u8,
-            )
-        } else {
-            let t = (value - 0.5) * 2.0;
-            rerun::Color::from_rgb(
-                (245.0 - 171.0 * t) as u8,
-                (174.0 + 42.0 * t) as u8,
-                (50.0 + 166.0 * t) as u8,
-            )
-        };
-
         centers.push(glam::Vec3::new(
             distribution.mean.x,
             distribution.mean.y,
@@ -1296,7 +1303,7 @@ fn log_map_snapshot_to_rerun(
         quaternions.push(glam::Quat::from_xyzw(
             q.i as f32, q.j as f32, q.k as f32, q.w as f32,
         ));
-        colors.push(color);
+        colors.push(relevance_color(scored.lru_score));
     }
 
     let ellipsoids = rerun::Ellipsoids3D::update_fields()
@@ -1710,7 +1717,7 @@ fn lio_with_ready_signal(
     // Set from the register handshake before the bag is released, read by the
     // cloud publisher on every frame. Under managed replay no frame can be
     // published before registration, so the publisher never reads a stale
-    // value; without managed replay it is decided by configuration alone.
+    // value. Without managed replay it is decided by configuration alone.
     #[cfg(feature = "mt_pubsub")]
     let publish_compressed_clouds = Arc::new(AtomicBool::new(false));
     let export_trajectory = resolve_export_trajectory_path(export_trajectory);
@@ -2015,7 +2022,7 @@ fn lio_with_ready_signal(
 
     #[cfg(not(feature = "rerun"))]
     if config.rerun.enabled {
-        return Err(anyhow!("--rerun requires a build with the 'rerun' feature").into());
+        return Err(anyhow!("output.rerun = true requires a build with the 'rerun' feature").into());
     }
 
     #[cfg(not(feature = "rerun"))]
@@ -2480,7 +2487,7 @@ fn lio_with_ready_signal(
     };
     let mut last_render = std::time::Instant::now();
 
-    // Clone shutdown_flag for the processing thread; original is used for the spinner
+    // Clone shutdown_flag for the processing thread. The original is used for the spinner.
     let processing_shutdown_flag = shutdown_flag.clone();
 
     let processing_tick_debt = Arc::clone(&replay_tick_debt);
@@ -2586,31 +2593,34 @@ fn lio_with_ready_signal(
         match &active_backend {
             ActiveBackend::Cpu => {}
             #[cfg(feature = "cuda")]
-            ActiveBackend::Cuda(stream) => pelorus_cuda::init_map(
+            ActiveBackend::Cuda(stream) => pelorus_cuda::init_map_with_mode(
                 stream,
                 config.map_capacity,
                 config.map_resolution as f32,
                 config.dist_update_sensitivity,
                 config.neighbor_max_range as f32,
                 pelorus_cuda::NeighborType::Neighbor26,
+                config.map_multiresolution,
             ),
             #[cfg(feature = "metal")]
-            ActiveBackend::Metal(stream) => pelorus_metal::init_map(
+            ActiveBackend::Metal(stream) => pelorus_metal::init_map_with_mode(
                 stream,
                 config.map_capacity,
                 config.map_resolution as f32,
                 config.dist_update_sensitivity,
                 config.neighbor_max_range as f32,
                 pelorus_metal::NeighborType::Neighbor26,
+                config.map_multiresolution,
             ),
             #[cfg(feature = "vulkan")]
-            ActiveBackend::Vulkan(stream) => pelorus_vulkan::init_map(
+            ActiveBackend::Vulkan(stream) => pelorus_vulkan::init_map_with_mode(
                 stream,
                 config.map_capacity,
                 config.map_resolution as f32,
                 config.dist_update_sensitivity,
                 config.neighbor_max_range as f32,
                 pelorus_vulkan::NeighborType::Neighbor26,
+                config.map_multiresolution,
             ),
         }
 
@@ -2710,7 +2720,7 @@ fn lio_with_ready_signal(
                             if !draining_after_end_of_bag {
                                 draining_after_end_of_bag = true;
                                 info!(
-                                    "Shutdown requested after end-of-bag hint; draining queued scans"
+                                    "Shutdown requested after end-of-bag hint. Draining queued scans"
                                 );
                             }
                             match synced_rx.recv_timeout(Duration::from_millis(50)) {
@@ -2798,7 +2808,7 @@ fn lio_with_ready_signal(
                 }
                 #[cfg(feature = "metal")]
                 ActiveBackend::Metal(stream) => {
-                    // Metal uses shared memory; sync before overwriting to avoid races.
+                    // Metal uses shared memory. Sync before overwriting to avoid races.
                     stream.sync();
                     persistent_cloud_buf
                         .realloc_if_needed_metal(stream, sync_tick.deskewed_cloud.len());
@@ -2849,31 +2859,34 @@ fn lio_with_ready_signal(
                     match &active_backend {
                         ActiveBackend::Cpu => {}
                         #[cfg(feature = "cuda")]
-                        ActiveBackend::Cuda(stream) => pelorus_cuda::init_map(
+                        ActiveBackend::Cuda(stream) => pelorus_cuda::init_map_with_mode(
                             stream,
                             config.map_capacity,
                             config.map_resolution as f32,
                             config.dist_update_sensitivity,
                             config.neighbor_max_range as f32,
                             pelorus_cuda::NeighborType::Neighbor26,
+                            config.map_multiresolution,
                         ),
                         #[cfg(feature = "metal")]
-                        ActiveBackend::Metal(stream) => pelorus_metal::init_map(
+                        ActiveBackend::Metal(stream) => pelorus_metal::init_map_with_mode(
                             stream,
                             config.map_capacity,
                             config.map_resolution as f32,
                             config.dist_update_sensitivity,
                             config.neighbor_max_range as f32,
                             pelorus_metal::NeighborType::Neighbor26,
+                            config.map_multiresolution,
                         ),
                         #[cfg(feature = "vulkan")]
-                        ActiveBackend::Vulkan(stream) => pelorus_vulkan::init_map(
+                        ActiveBackend::Vulkan(stream) => pelorus_vulkan::init_map_with_mode(
                             stream,
                             config.map_capacity,
                             config.map_resolution as f32,
                             config.dist_update_sensitivity,
                             config.neighbor_max_range as f32,
                             pelorus_vulkan::NeighborType::Neighbor26,
+                            config.map_multiresolution,
                         ),
                     };
                     t_world = nalgebra::Isometry3::identity();
@@ -3475,7 +3488,7 @@ fn lio_with_ready_signal(
 
             if let Some(writer) = mcap_writer.as_mut() {
                 // Record the exact corrected odometry message published on
-                // `odom`; high-rate predictions use the same frame and schema.
+                // `odom`. High-rate predictions use the same frame and schema.
                 let mcap_odom = pelorus_odom.clone();
 
                 let mcap_tf = TransformStamped {
@@ -3632,29 +3645,58 @@ fn lio_with_ready_signal(
 
                     #[cfg(not(any(feature = "cuda", feature = "metal", feature = "vulkan")))]
                     {
-                        let distributions = map.lock().unwrap().get_distributions_with_lru_scores();
-                        log_map_snapshot_to_rerun(rec, distributions, map_config);
+                        if config.map_multiresolution {
+                            let distributions = map.lock().unwrap().get_distributions_with_levels();
+                            log_multires_snapshot_to_rerun(rec, distributions, map_config);
+                        } else {
+                            let distributions =
+                                map.lock().unwrap().get_distributions_with_lru_scores();
+                            log_map_snapshot_to_rerun(rec, distributions, map_config);
+                        }
                     }
 
                     #[cfg(any(feature = "cuda", feature = "metal", feature = "vulkan"))]
                     {
                         #[cfg(feature = "cuda")]
-                        let total_map = pelorus_cuda::get_map();
+                        let total_map = pelorus_cuda::get_map_with_recency();
                         #[cfg(feature = "metal")]
-                        let total_map = pelorus_metal::get_map();
+                        let total_map = pelorus_metal::get_map_with_recency();
                         #[cfg(feature = "vulkan")]
-                        let total_map = pelorus_vulkan::get_map();
+                        let total_map = pelorus_vulkan::get_map_with_recency();
 
-                        // GPU backends have no per-voxel score host-side. Points stay uncolored.
-                        let positions = total_map.iter().map(|v| {
-                            let v = ros_to_rerun.cast().transform_point(v);
-                            glam::Vec3::new(v.x as f32, v.y as f32, v.z as f32)
-                        });
-                        if let Err(err) = rec.log(
-                            "world/map",
-                            &rerun::Points3D::update_fields().with_positions(positions),
-                        ) {
-                            error!("Error sending map snapshot to rerun {err}");
+                        // GPU backends have no true LRU list, but every backend's map
+                        // cell carries the scan it was last touched on. A raw age-based
+                        // decay would make almost the entire map read as "irrelevant"
+                        // within a scan or two (a LiDAR does not revisit every voxel
+                        // every tick), so relevance is ranked by recency *within each
+                        // level* instead, same as the CPU multires path
+                        // (see `rank_scores_by_recency`). Each level gets its own
+                        // entity path so it can be toggled independently in Rerun.
+                        const LEVELS: usize = 4;
+                        let current_scan = sync_tick.scan_id;
+                        let mut positions: [Vec<glam::Vec3>; LEVELS] = Default::default();
+                        let mut ages: [Vec<u64>; LEVELS] = Default::default();
+                        for (v, level, last_scan) in total_map {
+                            let level = (level as usize).min(LEVELS - 1);
+                            let v = ros_to_rerun.cast().transform_point(&v);
+                            let pos = glam::Vec3::new(v.x as f32, v.y as f32, v.z as f32);
+                            positions[level].push(pos);
+                            ages[level].push(current_scan.saturating_sub(last_scan as u64));
+                        }
+                        for level in 0..LEVELS {
+                            let colors: Vec<rerun::Color> =
+                                pelorus_localmap::rank_scores_by_recency(&ages[level])
+                                    .into_iter()
+                                    .map(relevance_color)
+                                    .collect();
+                            if let Err(err) = rec.log(
+                                format!("world/map/level{level}"),
+                                &rerun::Points3D::update_fields()
+                                    .with_positions(core::mem::take(&mut positions[level]))
+                                    .with_colors(colors),
+                            ) {
+                                error!("Error sending map snapshot to rerun {err}");
+                            }
                         }
                     }
                 }
@@ -3858,7 +3900,7 @@ fn lio_with_ready_signal(
         // Ensure backend work is quiesced and map state is released before GPU
         // buffers/contexts in this thread are dropped.
         active_backend.stream_sync();
-        // Release GPU buffers before the backend tears the device down; every
+        // Release GPU buffers before the backend tears the device down. Every
         // child object has to be gone before the device is destroyed.
         pipeline.release_gpu_buffers();
         #[cfg(feature = "vulkan")]
@@ -4443,10 +4485,10 @@ mod ros_args_tests {
             "debug",
             "--",
             "online",
-            "--cpu-only",
+            "--local-only",
         ]));
 
-        assert_eq!(args, strings(&["pelorus", "online", "--cpu-only"]));
+        assert_eq!(args, strings(&["pelorus", "online", "--local-only"]));
     }
 }
 
@@ -4478,17 +4520,11 @@ mod vulkan_backend_details_tests {
 mod mcap_output_config_tests {
     use super::*;
 
-    fn recording_args() -> RecordingArgs {
-        RecordingArgs {
-            output_mcap: None,
-            output_rosbag_metadata: None,
-            output_rosbag: None,
-            mcap_cloud_topic: "/registered".to_string(),
-            mcap_odom_topic: "/odom".to_string(),
-            mcap_path_topic: "/path".to_string(),
-            mcap_tf_topic: "/tf".to_string(),
-            mcap_filtered_imu_topic: None,
-        }
+    fn config_with_mcap_overrides(overrides: &str) -> LioConfig {
+        let defaults =
+            ratslang::compile_code(include_str!("../../pelorus_core/default.rl")).unwrap();
+        let user = ratslang::compile_code(overrides).unwrap();
+        ast_to_config(defaults, user).unwrap()
     }
 
     #[test]
@@ -4522,33 +4558,15 @@ mod mcap_output_config_tests {
 
     #[test]
     fn plain_online_still_parses_its_pipeline_flags() {
-        let args = Args::parse_from(["pelorus", "online", "--output-rosbag", "/tmp/bag"]);
+        let args = Args::parse_from(["pelorus", "online", "--export-trajectory", "/tmp/traj.tum"]);
         let Command::Online(online) = args.command else {
             panic!("expected online");
         };
         assert!(online.mode.is_none());
         assert_eq!(
-            online.pipeline.recording.output_rosbag,
-            Some(PathBuf::from("/tmp/bag"))
+            online.pipeline.export_trajectory,
+            Some("/tmp/traj.tum".to_string())
         );
-    }
-
-    #[test]
-    fn rerun_flag_is_available_online_and_offline() {
-        let online = Args::parse_from(["pelorus", "online", "--rerun"]);
-        let Command::Online(online) = online.command else {
-            panic!("expected online");
-        };
-        assert!(online.pipeline.rerun);
-
-        #[cfg(feature = "rat")]
-        {
-            let offline = Args::parse_from(["pelorus", "offline", "bag", "--rerun"]);
-            let Command::Offline(offline) = offline.command else {
-                panic!("expected offline");
-            };
-            assert!(offline.rerun);
-        }
     }
 
     #[cfg(feature = "mt_pubsub")]
@@ -4617,10 +4635,10 @@ mod mcap_output_config_tests {
 
     #[test]
     fn builds_direct_mcap_output_without_metadata_by_default() {
-        let mut args = recording_args();
-        args.output_mcap = Some(PathBuf::from("out.mcap"));
+        let config = config_with_mcap_overrides("output.mcap.file = \"out.mcap\"");
 
-        let output = build_mcap_output_config_with_filtered_topic(&args, "imu/ahrs").unwrap();
+        let output =
+            build_mcap_output_config_with_filtered_topic(&config.mcap, "imu/ahrs").unwrap();
 
         assert_eq!(output.path, PathBuf::from("out.mcap"));
         assert_eq!(output.rosbag_metadata_path, None);
@@ -4629,10 +4647,10 @@ mod mcap_output_config_tests {
 
     #[test]
     fn builds_rosbag_directory_paths() {
-        let mut args = recording_args();
-        args.output_rosbag = Some(PathBuf::from("bags/run1"));
+        let config = config_with_mcap_overrides("output.mcap.rosbag_dir = \"bags/run1\"");
 
-        let output = build_mcap_output_config_with_filtered_topic(&args, "imu/ahrs").unwrap();
+        let output =
+            build_mcap_output_config_with_filtered_topic(&config.mcap, "imu/ahrs").unwrap();
 
         assert_eq!(output.path, PathBuf::from("bags/run1/run1.mcap"));
         assert_eq!(
@@ -4642,16 +4660,39 @@ mod mcap_output_config_tests {
     }
 
     #[test]
-    fn normalizes_topic_overrides() {
-        let mut args = recording_args();
-        args.output_mcap = Some(PathBuf::from("out.mcap"));
-        args.mcap_cloud_topic = "cloud".to_string();
-        args.mcap_odom_topic = "odom".to_string();
-        args.mcap_path_topic = "path".to_string();
-        args.mcap_tf_topic = "tf".to_string();
-        args.mcap_filtered_imu_topic = Some("imu/custom".to_string());
+    fn file_and_rosbag_dir_are_mutually_exclusive() {
+        let defaults =
+            ratslang::compile_code(include_str!("../../pelorus_core/default.rl")).unwrap();
+        let user = ratslang::compile_code(
+            "output.mcap.file = \"out.mcap\"\noutput.mcap.rosbag_dir = \"bags/run1\"",
+        )
+        .unwrap();
+        assert!(ast_to_config(defaults, user).is_err());
+    }
 
-        let output = build_mcap_output_config_with_filtered_topic(&args, "imu/ahrs").unwrap();
+    #[test]
+    fn rosbag_metadata_requires_file_not_rosbag_dir() {
+        let defaults =
+            ratslang::compile_code(include_str!("../../pelorus_core/default.rl")).unwrap();
+        let user = ratslang::compile_code(
+            "output.mcap.rosbag_dir = \"bags/run1\"\noutput.mcap.rosbag_metadata = \"meta.yaml\"",
+        )
+        .unwrap();
+        assert!(ast_to_config(defaults, user).is_err());
+    }
+
+    #[test]
+    fn normalizes_topic_overrides() {
+        let config = config_with_mcap_overrides(
+            "output.mcap.file = \"out.mcap\"\n\
+             output.mcap.cloud_topic = \"cloud\"\n\
+             output.mcap.odom_topic = \"odom\"\n\
+             output.mcap.path_topic = \"path\"\n\
+             output.mcap.tf_topic = \"tf\"",
+        );
+
+        let output =
+            build_mcap_output_config_with_filtered_topic(&config.mcap, "imu/custom").unwrap();
 
         assert_eq!(output.topics.cloud, "/cloud");
         assert_eq!(output.topics.odom, "/odom");
@@ -4662,29 +4703,26 @@ mod mcap_output_config_tests {
 
     #[test]
     fn uses_default_filtered_imu_topic_when_configured_topic_is_empty() {
-        let mut args = recording_args();
-        args.output_mcap = Some(PathBuf::from("out.mcap"));
+        let config = config_with_mcap_overrides("output.mcap.file = \"out.mcap\"");
 
-        let output = build_mcap_output_config_with_filtered_topic(&args, "").unwrap();
+        let output = build_mcap_output_config_with_filtered_topic(&config.mcap, "").unwrap();
 
         assert_eq!(output.topics.filtered_imu.as_deref(), Some("/imu/filtered"));
     }
 
     #[test]
     fn lidar_only_mcap_omits_imu_even_with_a_topic_override() {
-        let mut args = recording_args();
-        args.output_mcap = Some(PathBuf::from("out.mcap"));
-        args.mcap_filtered_imu_topic = Some("imu/custom".to_string());
-        let defaults =
-            ratslang::compile_code(include_str!("../../pelorus_core/default.rl")).unwrap();
-        let user = ratslang::compile_code("imu.lidar_only = true").unwrap();
-        let config = ast_to_config(defaults, user).unwrap();
+        let config = config_with_mcap_overrides(
+            "output.mcap.file = \"out.mcap\"\n\
+             imu.lidar_only = true\n\
+             output.mcap.cloud_topic = \"custom\"",
+        );
 
-        let output = build_mcap_output_config(&args, &config).unwrap();
+        let output = build_mcap_output_config(&config).unwrap();
         assert!(output.topics.filtered_imu.is_none());
         assert_eq!(
             output.topics.cloud,
-            normalize_mcap_topic(args.mcap_cloud_topic)
+            normalize_mcap_topic(config.mcap.cloud_topic)
         );
     }
 }
@@ -4959,17 +4997,11 @@ fn main() -> Result<(), Box<dyn CoreError>> {
                 &cli_overrides,
             )?;
 
-            let mut config = ast_to_config(default_ast, user_ast)?;
-            if config_args.cpu_only {
-                config.cpu_only = true;
-            }
-            if config_args.rerun {
-                config.rerun.enabled = true;
-            }
+            let config = ast_to_config(default_ast, user_ast)?;
 
-            let output_mcap_config = build_mcap_output_config(&config_args.recording, &config);
+            let output_mcap_config = build_mcap_output_config(&config);
             if !prepare_mcap_output_targets(
-                &config_args.recording,
+                &config.mcap,
                 output_mcap_config.as_ref(),
                 config_args.yes,
             )? {
@@ -4989,7 +5021,7 @@ fn main() -> Result<(), Box<dyn CoreError>> {
                 }
                 #[cfg(not(feature = "rayon"))]
                 warn!(
-                    "Ignoring num_threads={}; thread-pool configuration requires the rayon feature.",
+                    "Ignoring num_threads={}. Thread-pool configuration requires the rayon feature.",
                     config.num_threads
                 );
             }
@@ -5149,18 +5181,12 @@ fn main() -> Result<(), Box<dyn CoreError>> {
             let config = {
                 let mut config = ast_to_config(default_ast, user_ast)?;
                 config.sync_node_params.synchronous_mode = true;
-                if offline_args.cpu_only {
-                    config.cpu_only = true;
-                }
-                if offline_args.rerun {
-                    config.rerun.enabled = true;
-                }
                 config
             };
 
-            let output_mcap_config = build_mcap_output_config(&offline_args.recording, &config);
+            let output_mcap_config = build_mcap_output_config(&config);
             if !prepare_mcap_output_targets(
-                &offline_args.recording,
+                &config.mcap,
                 output_mcap_config.as_ref(),
                 offline_args.yes,
             )? {
@@ -5182,7 +5208,7 @@ fn main() -> Result<(), Box<dyn CoreError>> {
                 }
                 #[cfg(not(feature = "rayon"))]
                 warn!(
-                    "Ignoring num_threads={}; thread-pool configuration requires the rayon feature.",
+                    "Ignoring num_threads={}. Thread-pool configuration requires the rayon feature.",
                     config.num_threads
                 );
             }
@@ -5402,8 +5428,8 @@ fn main() -> Result<(), Box<dyn CoreError>> {
                                 }
 
                                 // Minot emits this only after its coordinator connection and
-                                // bagfile setup are complete. Keep this an exact protocol marker;
-                                // unrelated log messages mentioning stdin are not readiness.
+                                // bagfile setup are complete. Keep this an exact protocol marker.
+                                // Unrelated log messages mentioning stdin are not readiness.
                                 if line.contains(
                                     "Waiting for input on stdin before execution (--sync mode)",
                                 ) {
@@ -5474,7 +5500,7 @@ fn main() -> Result<(), Box<dyn CoreError>> {
                 }
 
                 info!(
-                    "Minot is ready after {:.3}s; starting pelorus offline processing...",
+                    "Minot is ready after {:.3}s. Starting pelorus offline processing...",
                     startup_started.elapsed().as_secs_f64()
                 );
 

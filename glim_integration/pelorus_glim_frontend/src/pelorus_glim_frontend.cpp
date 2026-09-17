@@ -377,8 +377,8 @@ private:
       if (pelorus_initialized_) {
         recent_scan_ids_.push_back(scan_id);
       } else {
-        // Still in Pelorus init phase; drop this frame's scan id so it won't be
-        // associated/published later
+        // Still in Pelorus init phase. Drop this frame's scan id so it won't be
+        // associated/published later.
         spdlog::debug("[pelorus_frontend] Dropping frame scan_id {} while "
                       "Pelorus initializes",
                       scan_id);

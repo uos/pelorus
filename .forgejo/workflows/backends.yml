@@ -56,7 +56,9 @@ jobs:
       - name: Equivalence
         run: |
           source .venv/bin/activate
+          # Single and multi-resolution can't run in parallel (both build target/release/pelorus), so they run one after another here.
           ./scripts/compare-backends-offline.bash --backends metal "$(marina resolve -y $DATASET)" "$(marina resolve -y $DATASET)/pelorus.rl"
+          ./scripts/compare-backends-offline.bash --multiresolution --backends metal "$(marina resolve -y $DATASET)" "$(marina resolve -y $DATASET)/pelorus.rl"
 
   nvidia:
     runs-on: noble
@@ -96,4 +98,6 @@ jobs:
         run: |
           . "$HOME/.cargo/env"
           source .venv/bin/activate
+          # Single and multi-resolution can't run in parallel (both build target/release/pelorus), so they run one after another here.
           ./scripts/compare-backends-offline.bash --backends cuda,vulkan "$(marina resolve -y $DATASET)" "$(marina resolve -y $DATASET)/pelorus.rl"
+          ./scripts/compare-backends-offline.bash --multiresolution --backends cuda,vulkan "$(marina resolve -y $DATASET)" "$(marina resolve -y $DATASET)/pelorus.rl"

@@ -79,6 +79,13 @@ impl RegistrationState {
         self.map.get_distributions_with_lru_scores()
     }
 
+    #[cfg(not(feature = "nn_kdt"))]
+    pub fn get_distributions_with_levels(
+        &self,
+    ) -> Vec<(pelorus_localmap::localmap::VoxelDistributionLru, u8)> {
+        self.map.get_distributions_with_levels()
+    }
+
     fn ensure_cloud_matches_backend(
         backend: &ActiveBackend,
         cloud: &LocatedBufferView<PointXYZIT>,
@@ -184,7 +191,7 @@ impl RegistrationState {
             parallelism_execution_policy,
         );
         let mut ekf = Eqf::new(gravity, base_to_lidar.clone());
-        // The configured extrinsic is the starting point either way; this only
+        // The configured extrinsic is the starting point either way. This only
         // decides whether the filter is allowed to move it afterwards.
         ekf.extrinsic_est = imu_params.estimate_extrinsic_online;
         if let Some(guess) = initial_guess {
@@ -704,8 +711,8 @@ impl crate::Registration for RegistrationState {
 
                             // Match the GPU backends' f32 transform precision so CPU↔GPU
                             // plane selection stays numerically equivalent. GPU shaders do
-                            // the lidar→imu→world transform in f32 (via UnitQuaternion cast
-                            // from the f64 pose rotation matrix); doing the same here keeps
+                            // the lidar→imu→world transform in f32, via UnitQuaternion cast
+                            // from the f64 pose rotation matrix. Doing the same here keeps
                             // the query point, pd2 and score bit-close to the GPU path.
                             let offset_q_f32: nalgebra::UnitQuaternion<f32> =
                                 nalgebra::UnitQuaternion::from_matrix(

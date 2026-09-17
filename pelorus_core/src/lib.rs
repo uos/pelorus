@@ -680,7 +680,6 @@ pub enum OdometryRate {
 /// Runtime settings for the optional Rerun visualization.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RerunConfig {
-    /// Set by the CLI's `--rerun` switch. Configuration parsing leaves this disabled.
     pub enabled: bool,
     pub server_addr: String,
     pub map: RerunMapConfig,
@@ -692,6 +691,39 @@ impl Default for RerunConfig {
             enabled: false,
             server_addr: "127.0.0.1:9876".to_owned(),
             map: RerunMapConfig::default(),
+        }
+    }
+}
+
+/// Settings for the MCAP/ROS 2 bag output, not the live pub/sub topics.
+/// Overridable per-run with `-o output.mcap.file=./run.mcap` etc.
+///
+/// `file` and `rosbag_dir` are mutually exclusive: `file` writes a bare MCAP
+/// file, `rosbag_dir` writes a ROS 2 bag directory (with its own
+/// `metadata.yaml`, always at `<rosbag_dir>/metadata.yaml`). `rosbag_metadata`
+/// only applies to `file` mode, for the rarer case of wanting a ROS 2
+/// `metadata.yaml` written alongside a bare MCAP file.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct McapConfig {
+    pub cloud_topic: String,
+    pub odom_topic: String,
+    pub path_topic: String,
+    pub tf_topic: String,
+    pub file: Option<String>,
+    pub rosbag_dir: Option<String>,
+    pub rosbag_metadata: Option<String>,
+}
+
+impl Default for McapConfig {
+    fn default() -> Self {
+        Self {
+            cloud_topic: "/registered".to_owned(),
+            odom_topic: "/odom".to_owned(),
+            path_topic: "/path".to_owned(),
+            tf_topic: "/tf".to_owned(),
+            file: None,
+            rosbag_dir: None,
+            rosbag_metadata: None,
         }
     }
 }
@@ -742,6 +774,7 @@ pub struct LioConfig {
     pub ekf_max_iterations: usize,
     pub dist_update_sensitivity: f32,
     pub rerun: RerunConfig,
+    pub mcap: McapConfig,
     pub base_link_frame: Option<String>,
     pub base_to_lidar: Isometry3<f64>,
     pub base_to_lidar_tf_override: bool,

@@ -32,8 +32,8 @@ sudo make install
 - `PELORUS_FEATURE_NO_IMU_SYNC` - Disable IMU synchronization (default: OFF)
 - `PELORUS_FEATURE_LARGE_PROCESSING_QUEUE` - Use larger internal processing queues (default: OFF)
 
-Select at most one GPU backend. Metal is available on macOS; CUDA requires a
-supported NVIDIA CUDA installation; Vulkan requires a compatible Vulkan device
+Select at most one GPU backend. Metal is available on macOS. CUDA requires a
+supported NVIDIA CUDA installation. Vulkan requires a compatible Vulkan device
 and driver. If no GPU backend is selected, Pelorus uses the CPU backend.
 
 Example with CUDA:

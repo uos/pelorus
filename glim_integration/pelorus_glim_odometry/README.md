@@ -39,7 +39,7 @@ Create the config file in your GLIM config root:
 query voxel size is `query_resolution_factor * map_resolution`.
 
 The generated Pelorus overlay selects backend preprocessing. CUDA, Vulkan, or
-Metal is used when the corresponding backend is built and available; otherwise
+Metal is used when the corresponding backend is built and available. Otherwise
 Pelorus falls back to CPU preprocessing.
 
 Pelorus accelerometer and gyroscope bias estimates are forwarded to GLIM's

@@ -20,6 +20,7 @@ NC='\033[0m' # No Color
 # Configuration
 STRICT_MODE="${STRICT_MODE:-true}"
 BACKENDS_SPEC="auto"
+MULTIRESOLUTION=false
 BAGFILE=""
 CONFIG_FILE="pelorus.rl"
 RUN_ID=$(date +%s)_$RANDOM
@@ -84,6 +85,9 @@ parse_args() {
     local positional=()
     while [[ $# -gt 0 ]]; do
         case "$1" in
+            --multiresolution)
+                MULTIRESOLUTION=true
+                ;;
             --backends)
                 shift
                 [[ $# -gt 0 ]] || fail "--backends requires a value"
@@ -94,6 +98,7 @@ parse_args() {
 Usage: $0 [--backends <list|auto>] <bagfile-path> [config-file]
 
 Options:
+  --multiresolution  Test the multiresolution map (CPU, Rayon, CUDA, Vulkan, Metal).
   --backends   Comma-separated list of backends to test against CPU.
                Supported values: rayon,cuda,metal,vulkan
                Special value: auto (default) -> run all available backends.
@@ -305,6 +310,20 @@ run_backend_test() {
         cargo_flags+=(--features "$feature_flag")
     fi
     local -a pelorus_args=(offline -c "$CONFIG_FILE" "$BAGFILE" --export-trajectory "$output_file")
+    if [[ "$MULTIRESOLUTION" == true ]]; then
+        case "$backend_name" in
+            CPU|Rayon|CUDA|Vulkan|Metal) ;;
+            *) fail "Multiresolution is not implemented for $backend_name" ;;
+        esac
+        pelorus_args+=(-o registration.map.resolution.type=Multi)
+        pelorus_args+=(-o output.terminal.ui=false -o output.terminal.debug=false)
+        pelorus_args+=(-o output.terminal.log_level=Info)
+        if [[ "$backend_name" == CUDA || "$backend_name" == Vulkan || "$backend_name" == Metal ]]; then
+            pelorus_args+=(-o parallelism.cpu_only=false)
+        else
+            pelorus_args+=(-o parallelism.cpu_only=true)
+        fi
+    fi
 
     # Build before the timed region below. `timeout` is there to catch a hung
     # run, and wrapping `cargo run` would let a cold target dir spend that
@@ -321,13 +340,13 @@ run_backend_test() {
     elif command -v gtimeout &> /dev/null; then
         timeout_cmd="gtimeout 900"
     else
-        log_warn "timeout/gtimeout not found; running without timeout (may block indefinitely on hang)"
+        log_warn "timeout/gtimeout not found. Running without timeout (may block indefinitely on hang)"
     fi
     
     # Vulkan validation layers turn silent API misuse - use-after-free, missing
     # barriers, out-of-bounds descriptor access - into a message at the offending
     # call instead of a segfault somewhere later. Off by default because they
-    # cost a lot of runtime; opt in with PELORUS_VULKAN_VALIDATION=1.
+    # cost a lot of runtime. Opt in with PELORUS_VULKAN_VALIDATION=1.
     local -a run_env=()
     if [[ "$feature_flag" == *vulkan* && "${PELORUS_VULKAN_VALIDATION:-0}" == "1" ]]; then
         # A layer the loader cannot find is ignored in silence, which is what
@@ -374,6 +393,9 @@ run_backend_test() {
     fi
     
     # Verify output file was created
+    if [[ "$MULTIRESOLUTION" == true && ( "$backend_name" == CUDA || "$backend_name" == Vulkan || "$backend_name" == Metal ) ]]; then
+        grep -q "Backend: $backend_name" "$run_log" || fail "$backend_name comparison used a fallback backend"
+    fi
     if [[ ! -f "$output_file" ]]; then
         fail "Trajectory file not created: $output_file"
     fi
@@ -410,6 +432,9 @@ compare_trajectories() {
     # Require exact match - no tolerance
     if (( lhs_lines != rhs_lines )); then
         fail "Trajectory length mismatch: ${lhs_label}=${lhs_lines} vs ${rhs_label}=${rhs_lines} (must be equal)"
+    fi
+    if ! cmp -s <(awk '{print $1}' "$lhs_traj") <(awk '{print $1}' "$rhs_traj"); then
+        fail "Trajectory timestamps differ despite matching lengths"
     fi
 
     # Run sounding and capture output (on non-TTY this is JSON)

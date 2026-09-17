@@ -61,7 +61,7 @@ fn is_noisy(level: LogLevel, _target: &str, message: &str) -> bool {
 
 /// Install the TUI-aware logger. Call this early in main().
 ///
-/// Starts at the level `RUST_LOG` says, or info; [`update_log_level`] applies
+/// Starts at the level `RUST_LOG` says, or info. [`update_log_level`] applies
 /// whatever the config asks for once it has been read.
 pub fn init_logger() {
     let spec = log_spec();
@@ -1280,7 +1280,7 @@ impl StatsTui {
 
             if let Some(rx) = &self.stop_rx {
                 if rx.try_recv().is_ok() {
-                    // External shutdown requested; forward to main via shutdown_tx and exit
+                    // External shutdown requested. Forward to main via shutdown_tx and exit.
                     if let Some(tx) = &self.shutdown_tx {
                         let _ = tx.send(());
                     }

@@ -23,7 +23,7 @@ dependencies = ["numpy>=1.16"]
 [project.optional-dependencies]
 mcap = ["mcap-ros2-support>=0.5.7,<0.6.0"]
 cli = ["pelorus-cli[rerun]"]
-all = ["pelorus-cli[rerun]", "mcap-ros2-support>=0.5.7,<0.6.0"]
+all = ["pelorus-cli[rerun]", "mcap-ros2-support>=0.5.7,<0.6.0", "dedrunk-cli", "marina-cli"]
 
 [project.urls]
 Homepage = "https://github.com/uos/pelorus"

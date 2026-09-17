@@ -28,6 +28,7 @@ pub struct Pipelines {
     pub downsample_build_keys: Retained<ProtocolObject<dyn MTLComputePipelineState>>,
     pub downsample_rle: Retained<ProtocolObject<dyn MTLComputePipelineState>>,
     pub downsample_medoids: Retained<ProtocolObject<dyn MTLComputePipelineState>>,
+    pub mr_query: Retained<ProtocolObject<dyn MTLComputePipelineState>>,
 }
 
 unsafe impl Send for Pipelines {}
@@ -80,6 +81,7 @@ impl Pipelines {
             downsample_build_keys: make("downsample_build_keys"),
             downsample_rle: make("downsample_rle"),
             downsample_medoids: make("downsample_medoids"),
+            mr_query: make("mr_query"),
         }
     }
 }

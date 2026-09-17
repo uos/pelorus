@@ -2,8 +2,6 @@ use bytemuck::{Pod, Zeroable};
 use pelorus_core::PointXYZIT;
 use ros_pointcloud2::points::PointXYZINormal;
 
-// ── Scalar math types (double-precision, matching CUDA ffi) ──────────────────
-
 #[derive(Debug, Clone, Copy, Default)]
 pub struct Vector3 {
     pub x: f64,
@@ -69,8 +67,6 @@ impl From<Vector3> for nalgebra::Translation3<f64> {
     }
 }
 
-// ── Quaternion ────────────────────────────────────────────────────────────────
-
 #[derive(Debug, Clone, Copy)]
 pub struct Quaternion {
     pub w: f64,
@@ -112,8 +108,6 @@ impl From<Quaternion> for nalgebra::UnitQuaternion<f64> {
         nalgebra::UnitQuaternion::new_normalize(nalgebra::Quaternion::new(q.w, q.x, q.y, q.z))
     }
 }
-
-// ── Matrix3 ───────────────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Copy, Default)]
 pub struct Matrix3 {
@@ -188,8 +182,6 @@ impl From<Pose> for nalgebra::Isometry3<f64> {
     }
 }
 
-// ── NeighborType ──────────────────────────────────────────────────────────────
-
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum NeighborType {
     Center,
@@ -220,8 +212,6 @@ impl NeighborType {
     }
 }
 
-// ── GPU-side point types (must match PointXYZIT / PointXYZINormal byte layout) ─
-
 /// Matches `PointXYZIT { x, y, z, intensity, timestamp: f32 }` — 20 bytes
 #[repr(C)]
 #[derive(Debug, Clone, Copy, Default, Pod, Zeroable, PartialEq)]
@@ -248,15 +238,8 @@ pub struct PointNormal {
     pub _pad: f32,
 }
 
-// ── Compile-time size checks ──────────────────────────────────────────────────
-
 const _: [u8; 20] = [0u8; std::mem::size_of::<Point>()];
 const _: [u8; 20] = [0u8; std::mem::size_of::<PointXYZIT>()];
-
-// PointNormal is 32 bytes (7 f32 + 1 pad f32 @ align 16); PointXYZINormal size may differ
-// We check at runtime inside lib.rs via debug_assert.
-
-// ── Conversions between GPU types and ros_pointcloud2 types ──────────────────
 
 impl From<PointXYZIT> for Point {
     fn from(p: PointXYZIT) -> Self {

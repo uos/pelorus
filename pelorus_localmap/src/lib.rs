@@ -1087,4 +1087,74 @@ impl IVoxHashMap {
         }
         self.livodish.get_distributions_with_lru_scores()
     }
+
+    /// All distributions tagged with the multiresolution level they live at
+    /// (0 = finest, 3 = coarsest) and a relevance score in `[0, 1]`. The
+    /// score ranks each cell by recency *within its level*
+    /// (see [`rank_scores_by_recency`]) rather than a raw age-based decay:
+    /// a LiDAR scan does not revisit every voxel every tick, so a raw
+    /// `1/(1+age)` decay would make almost the entire map read as
+    /// "irrelevant" within one or two scans. Ranking spreads scores evenly
+    /// across `[0, 1]` regardless of scan cadence, matching how
+    /// [`Self::get_distributions_with_lru_scores`]'s rank-based score
+    /// behaves for the flat map. Unlike [`Self::get_distributions`], this
+    /// does not collapse the pyramid to a single layer. The flat (non
+    /// multiresolution) map reports level 0 for everything.
+    #[cfg(not(feature = "nn_kdt"))]
+    #[must_use]
+    pub fn get_distributions_with_levels(&self) -> Vec<(localmap::VoxelDistributionLru, u8)> {
+        if let Some(map) = &self.multiresolution {
+            let per_level = map.distributions_with_levels();
+            let mut result = Vec::with_capacity(per_level.len());
+            for level in 0..4u8 {
+                let group: Vec<VoxelDistribution> = per_level
+                    .iter()
+                    .filter(|(_, l)| *l == level)
+                    .map(|(d, _)| *d)
+                    .collect();
+                let ages: Vec<u64> = group
+                    .iter()
+                    .map(|d| self.scan_number.saturating_sub(d.last_updated_at_scan) as u64)
+                    .collect();
+                let scores = rank_scores_by_recency(&ages);
+                result.extend(group.into_iter().zip(scores).map(|(distribution, score)| {
+                    (
+                        localmap::VoxelDistributionLru {
+                            distribution,
+                            lru_score: score,
+                        },
+                        level,
+                    )
+                }));
+            }
+            return result;
+        }
+        self.livodish
+            .get_distributions_with_lru_scores()
+            .into_iter()
+            .map(|d| (d, 0u8))
+            .collect()
+    }
+}
+
+/// Ranks `ages` (smaller = more recent) into relevance scores in `[0, 1]`:
+/// the most recent entry scores 1.0, the oldest scores toward 0.0, evenly
+/// spread across the population regardless of the ages' absolute scale.
+/// Mirrors `Livodish::get_distributions_with_lru_scores`'s `rank/capacity`
+/// score, which is why the flat map's relevance coloring doesn't suffer the
+/// same "decays to irrelevant within one scan" problem a raw age ratio would.
+#[must_use]
+pub fn rank_scores_by_recency(ages: &[u64]) -> Vec<f32> {
+    let n = ages.len();
+    if n <= 1 {
+        return vec![1.0; n];
+    }
+    let mut order: Vec<usize> = (0..n).collect();
+    order.sort_by_key(|&i| ages[i]);
+    let mut scores = vec![0.0f32; n];
+    let denom = (n - 1) as f32;
+    for (rank, idx) in order.into_iter().enumerate() {
+        scores[idx] = 1.0 - (rank as f32 / denom);
+    }
+    scores
 }

@@ -72,7 +72,7 @@ inline uint hash_fn(int key) {
 
 // ── Cholesky 3×3 ─────────────────────────────────────────────────────────────
 
-// Returns true on success; fills L (lower-triangular) such that A = L * L^T
+// Returns true on success. Fills L (lower-triangular) such that A = L * L^T
 template<typename T>
 inline bool cholesky_3x3_impl(T A, thread float* L) {
     // Zero out L
@@ -218,7 +218,7 @@ inline uint hashmap_lookup(device const int* table_keys,
 
 // ── Neighbor offsets ──────────────────────────────────────────────────────────
 
-// Writes neighbor grid offsets into out[]; returns count.
+// Writes neighbor grid offsets into out[]. Returns count.
 inline uint neighbor_cells(uint nbtype, int3 g, thread int3* out) {
     if (nbtype == 6) { // Nearby6
         out[0] = g;

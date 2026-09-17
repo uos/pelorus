@@ -88,6 +88,7 @@ pub(crate) struct HostMapState {
 pub(crate) enum MapBackendState {
     Vulkan(VulkanGpuMapState),
     Host(HostMapState),
+    Multiresolution(crate::multiresolution::MultiResolutionMap),
 }
 
 pub(crate) struct VulkanMapState {
@@ -104,7 +105,7 @@ pub(crate) fn with_state<R>(f: impl FnOnce(&mut VulkanMapState) -> R) -> R {
     let mut guard = global_state().lock().expect("vulkan map mutex poisoned");
     let state = guard
         .as_mut()
-        .expect("vulkan map is not initialized; call init_map first");
+        .expect("vulkan map is not initialized. Call init_map first");
     f(state)
 }
 
@@ -138,10 +139,10 @@ pub fn init_map(
 
     // Hold the map lock for the whole initialization. Releasing it between the
     // emptiness check and the store lets two callers both observe an empty map
-    // and build a full state each; the loser's state is then dropped out from
+    // and build a full state each. The loser's state is then dropped out from
     // under whoever already looked it up, and the winner can be stored over a
     // state that is mid-use. `ensure_downsample_state` already holds its guard
-    // across construction; this path was the odd one out.
+    // across construction. This path was the odd one out.
     let mut guard = global_state().lock().expect("vulkan map mutex poisoned");
     if guard.is_some() {
         return;
@@ -150,7 +151,7 @@ pub fn init_map(
     let backend = match &stream.backend {
         StreamBackend::Vulkan(context) => {
             log::info!(
-                "Vulkan strict memory mode enabled: heavy map/scratch buffers require DEVICE_LOCAL memory; host-visible fallback is disabled for these buffers"
+                "Vulkan strict memory mode enabled: heavy map/scratch buffers require DEVICE_LOCAL memory. Host-visible fallback is disabled for these buffers"
             );
             let dist_cap = capacity as u32;
             let table_cap = dist_cap
@@ -213,7 +214,7 @@ pub fn init_map(
                 // Keep tiny counters host-visible for frequent scalar readback/writes.
                 counter: VulkanBuffer::new_host_readback(stream, size_of::<u32>(), 3),
                 sorter_scratch: VulkanBuffer::new(stream, 1, requirements.size as usize),
-                // This buffer is hot in map-full replacement and LRU sort; keep it device-local.
+                // This buffer is hot in map-full replacement and LRU sort. Keep it device-local.
                 lru_mapping: VulkanBuffer::new(
                     stream,
                     size_of::<u32>(),
@@ -313,7 +314,7 @@ pub fn init_map(
         }
         StreamBackend::Host(_) => {
             log::warn!(
-                "Vulkan map initialized in host fallback mode; backend equivalence with CUDA is not guaranteed"
+                "Vulkan map initialized in host fallback mode. Backend equivalence with CUDA is not guaranteed"
             );
             let map = IVoxHashMap::new(
                 voxel_size,
@@ -325,6 +326,42 @@ pub fn init_map(
         }
     };
 
+    *guard = Some(VulkanMapState { backend });
+}
+
+/// Initialize either the fixed map or the device-resident distribution pyramid.
+pub fn init_map_with_mode(
+    stream: &Stream,
+    capacity: usize,
+    resolution: f32,
+    sensitivity: f32,
+    min_dist: f32,
+    nearby: NeighborType,
+    multiresolution: bool,
+) {
+    if !multiresolution {
+        init_map(stream, capacity, resolution, sensitivity, min_dist, nearby);
+        return;
+    }
+    let mut guard = global_state().lock().expect("vulkan map mutex poisoned");
+    if guard.is_some() {
+        return;
+    }
+    let backend = match &stream.backend {
+        StreamBackend::Vulkan(_) => {
+            MapBackendState::Multiresolution(crate::multiresolution::MultiResolutionMap::new(
+                stream,
+                capacity,
+                resolution,
+                sensitivity,
+            ))
+        }
+        StreamBackend::Host(_) => {
+            let mut map = IVoxHashMap::new(resolution, capacity, nearby.into(), sensitivity);
+            map.enable_multiresolution(capacity, sensitivity);
+            MapBackendState::Host(HostMapState { map })
+        }
+    };
     *guard = Some(VulkanMapState { backend });
 }
 
@@ -373,7 +410,7 @@ pub(crate) fn ensure_scratch_capacity(
     let sort_capacity = new_cap.max(state.dist_cap as usize);
     assert!(
         state.scratch.sorter.0 != 0,
-        "Vulkan map scratch has a null radix sorter; the map state was not initialized by init_map"
+        "Vulkan map scratch has a null radix sorter. The map state was not initialized by init_map"
     );
     unsafe {
         vrdxGetSorterKeyValueStorageRequirements(
@@ -468,6 +505,13 @@ pub fn add_to_map(
     scan_id: usize,
 ) {
     with_state(|state| match &mut state.backend {
+        MapBackendState::Multiresolution(map) => map.add(
+            stream,
+            cloud,
+            ekf_pose_t,
+            ekf_pose_r,
+            u32::try_from(scan_id).expect("scan id overflow"),
+        ),
         MapBackendState::Host(host) => {
             let cloud_cpu: Vec<PointXYZIT> = cloud.download(stream);
             let pose = nalgebra::Isometry3::from_parts(
@@ -793,6 +837,9 @@ pub fn add_to_map(
 
 pub fn get_map() -> Vec<nalgebra::Point3<f32>> {
     with_state(|state| match &mut state.backend {
+        MapBackendState::Multiresolution(map) => map.get_map(&Stream {
+            backend: StreamBackend::Vulkan(Arc::clone(&map.context)),
+        }),
         MapBackendState::Host(host) => host.map.get_entire_map(),
         MapBackendState::Vulkan(gpu) => {
             let stream = Stream {
@@ -809,10 +856,54 @@ pub fn get_map() -> Vec<nalgebra::Point3<f32>> {
     })
 }
 
+/// Same as [`get_map`] but also returns, per point, the multiresolution
+/// level it lives at (0 = finest) and the scan number it was last touched
+/// on. Single-resolution maps report level 0 for every point.
+pub fn get_map_with_recency() -> Vec<(nalgebra::Point3<f32>, u8, u32)> {
+    with_state(|state| match &mut state.backend {
+        MapBackendState::Multiresolution(map) => map.get_map_with_recency(&Stream {
+            backend: StreamBackend::Vulkan(Arc::clone(&map.context)),
+        }),
+        MapBackendState::Host(host) => host
+            .map
+            .get_entire_map()
+            .into_iter()
+            .map(|p| (p, 0u8, 0u32))
+            .collect(),
+        MapBackendState::Vulkan(gpu) => {
+            let stream = Stream {
+                backend: StreamBackend::Vulkan(Arc::clone(&gpu.context)),
+            };
+            let dists: Vec<GpuVoxelDist> = gpu.dist_buf.download(&stream);
+            let valid = (gpu.add_cursor as usize).min(gpu.dist_cap as usize);
+            dists[..valid]
+                .iter()
+                .filter(|d| d.point_count > 0)
+                .map(|d| {
+                    (
+                        nalgebra::Point3::new(d.mean[0], d.mean[1], d.mean[2]),
+                        0u8,
+                        d.last_scan,
+                    )
+                })
+                .collect()
+        }
+    })
+}
+
 pub fn get_map_size() -> u32 {
     with_state(|state| match &mut state.backend {
+        MapBackendState::Multiresolution(map) => map.size(),
         MapBackendState::Host(host) => host.map.get_entire_map().len() as u32,
         MapBackendState::Vulkan(gpu) => gpu.add_cursor.min(gpu.dist_cap),
+    })
+}
+
+pub fn get_map_capacity() -> u32 {
+    with_state(|state| match &state.backend {
+        MapBackendState::Multiresolution(map) => map.capacity(),
+        MapBackendState::Vulkan(gpu) => gpu.dist_cap,
+        MapBackendState::Host(_) => panic!("capacity inspection requires a Vulkan map"),
     })
 }
 
@@ -854,7 +945,7 @@ pub fn session_release() {
 /// and one of them faults on state the handler already freed.
 ///
 /// Call this once, at the end of the run, after backend work has been quiesced.
-/// Any Vulkan call afterwards will panic; the map has to be re-initialized with
+/// Any Vulkan call afterwards will panic. The map has to be re-initialized with
 /// `init_map` first.
 pub fn shutdown() {
     let map = global_state()
@@ -873,6 +964,12 @@ pub fn shutdown() {
             }),
             _,
         ) => Some(Arc::clone(&gpu.context)),
+        (
+            Some(VulkanMapState {
+                backend: MapBackendState::Multiresolution(map),
+            }),
+            _,
+        ) => Some(Arc::clone(&map.context)),
         (_, Some(state)) => Some(Arc::clone(&state.context)),
         // Neither state exists, but a context may still be live: `Stream`s are handed
         // out for downsampling before any map is initialized.

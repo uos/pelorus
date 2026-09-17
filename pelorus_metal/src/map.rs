@@ -256,7 +256,7 @@ pub fn init_map_impl(
         slice.fill(i32::MIN);
     }
 
-    // Initial scratch buffers with capacity 1; these will be resized on demand in add_to_map_impl.
+    // Initial scratch buffers with capacity 1. These will be resized on demand in add_to_map_impl.
     // Initialization requires valid GPU buffers.
     let scratch_cap = 1;
     let scratch = ScratchBuffers {

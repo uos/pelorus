@@ -308,6 +308,29 @@ pub fn get_map() -> Vec<nalgebra::Point3<f32>> {
         .collect()
 }
 
+/// Same as [`get_map`] but also returns, per point, the multiresolution
+/// level it lives at (0 = finest) and the scan number it was last touched
+/// on. Single-resolution maps report level 0 and scan 0 for every point.
+pub fn get_map_with_recency() -> Vec<(nalgebra::Point3<f32>, u8, u32)> {
+    let mut out = vec![PointXYZIT::default(); unsafe { ffi::get_map_capacity() as usize }];
+    let mut actual_size: u32 = 0;
+
+    unsafe {
+        ffi::get_map(out.as_mut_ptr() as *mut Point, &mut actual_size as *mut u32);
+        out.set_len(actual_size as usize);
+    };
+
+    out.iter()
+        .map(|p| {
+            (
+                nalgebra::Point3::new(p.x, p.y, p.z),
+                p.intensity.round() as u8,
+                p.timestamp.round() as u32,
+            )
+        })
+        .collect()
+}
+
 pub fn init_map(
     stream: &Stream,
     capacity: usize,
@@ -339,6 +362,38 @@ pub fn init_map(
     }
 }
 
+/// Initialize the four-level GPU map with an exact shared cell budget.
+pub fn init_multiresolution_map(
+    stream: &Stream,
+    capacity: usize,
+    resolution: f32,
+    sensitivity: f32,
+) {
+    assert!(capacity >= 4 && capacity <= (u32::MAX / 2) as usize);
+    assert!(resolution.is_finite() && resolution > 0.0);
+    ensure_cleanup_registered();
+    unsafe {
+        ffi::init_multiresolution_map(stream.stream.raw, capacity as u32, resolution, sensitivity)
+    };
+}
+
+/// Common initialization for standalone and embedded registration pipelines.
+pub fn init_map_with_mode(
+    stream: &Stream,
+    capacity: usize,
+    resolution: f32,
+    sensitivity: f32,
+    min_dist: f32,
+    nearby: NeighborType,
+    multiresolution: bool,
+) {
+    if multiresolution {
+        init_multiresolution_map(stream, capacity, resolution, sensitivity);
+    } else {
+        init_map(stream, capacity, resolution, sensitivity, min_dist, nearby);
+    }
+}
+
 pub fn add_to_map(
     stream: &Stream,
     cloud: &CudaBuffer,
@@ -361,6 +416,10 @@ pub fn add_to_map(
         );
     }
 }
+pub fn get_map_capacity() -> u32 {
+    unsafe { ffi::get_map_capacity() }
+}
+
 pub fn get_map_size() -> u32 {
     unsafe { ffi::get_map_size() }
 }

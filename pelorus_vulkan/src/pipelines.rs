@@ -103,6 +103,7 @@ pub(crate) struct VulkanComputePipelines {
     pub(crate) downsample_build_keys: vk::Pipeline,
     pub(crate) downsample_medoids: vk::Pipeline,
     pub(crate) downsample_timestamp_keys: vk::Pipeline,
+    pub(crate) multiresolution: Vec<vk::Pipeline>,
     shader_modules: Vec<vk::ShaderModule>,
 }
 
@@ -133,6 +134,9 @@ impl Drop for VulkanComputePipelines {
             device.destroy_pipeline(self.downsample_build_keys, None);
             device.destroy_pipeline(self.downsample_medoids, None);
             device.destroy_pipeline(self.downsample_timestamp_keys, None);
+            for pipeline in self.multiresolution.drain(..) {
+                device.destroy_pipeline(pipeline, None);
+            }
             for module in self.shader_modules.drain(..) {
                 device.destroy_shader_module(module, None);
             }
@@ -303,6 +307,38 @@ pub(crate) fn build_pipelines(context: Arc<VulkanContext>) -> Arc<VulkanComputeP
         pipelines.push(pipeline);
     }
 
+    let mut multiresolution = Vec::new();
+    if context.precise_multiresolution {
+        let body = include_str!("shaders/multiresolution.comp");
+        let split = body.find("// The host prepends").unwrap();
+        let source = format!(
+            "{}\n{}\n{}",
+            &body[..split],
+            shaders::COMMON.strip_prefix("#version 450").unwrap(),
+            &body[split..]
+        );
+        for name in [
+            "MR_TRANSFORM",
+            "MR_SORT",
+            "MR_COMBINE",
+            "MR_COMPACT",
+            "MR_PARENT",
+            "MR_MERGE",
+            "MR_RETAIN",
+            "MR_CACHE",
+            "MR_QUERY",
+        ] {
+            let spirv = compile_shader(&mut compiler, &source, name, &[(name, None)]);
+            let module = create_shader_module(&context.device, &spirv);
+            multiresolution.push(create_compute_pipeline(
+                &context.device,
+                pipeline_layout,
+                module,
+            ));
+            modules.push(module);
+        }
+    }
+
     Arc::new(VulkanComputePipelines {
         context,
         descriptor_set_layout,
@@ -327,6 +363,7 @@ pub(crate) fn build_pipelines(context: Arc<VulkanContext>) -> Arc<VulkanComputeP
         downsample_build_keys: pipelines[17],
         downsample_medoids: pipelines[18],
         downsample_timestamp_keys: pipelines[19],
+        multiresolution,
         shader_modules: modules,
     })
 }

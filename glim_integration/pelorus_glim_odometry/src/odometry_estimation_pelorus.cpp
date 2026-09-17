@@ -367,7 +367,7 @@ private:
       result_generation_++;
 
       // Pelorus's initial map-only scans do not produce odometry results. The
-      // first callback therefore marks initialization complete; discard older
+      // first callback therefore marks initialization complete. Discard older
       // pending input frames because no result will arrive for them.
       if (!pelorus_initialized_) {
         for (auto it = pending_frames_.begin(); it != pending_frames_.end();) {

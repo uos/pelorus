@@ -137,7 +137,7 @@ fn configure_thread_pool(num_threads: usize) {
         });
         if *configured_threads != num_threads {
             log::warn!(
-                "Rayon thread pool already configured with {} threads; ignoring request for {} threads (first Handle wins).",
+                "Rayon thread pool already configured with {} threads. Ignoring request for {} threads (first Handle wins).",
                 configured_threads,
                 num_threads
             );
@@ -145,7 +145,7 @@ fn configure_thread_pool(num_threads: usize) {
     }
     #[cfg(not(feature = "rayon"))]
     log::warn!(
-        "Ignoring num_threads={num_threads}; thread-pool configuration requires the rayon feature."
+        "Ignoring num_threads={num_threads}. Thread-pool configuration requires the rayon feature."
     );
 }
 
@@ -327,7 +327,7 @@ fn processing_thread_main(thread: ProcessingThread) {
                 }
             }
             Err(e) => {
-                error!("fatal registration error; stopping processing thread: {e:#}");
+                error!("fatal registration error. Stopping processing thread: {e:#}");
                 break;
             }
         }
@@ -730,7 +730,7 @@ impl PelorusHandle {
         // Fail fast when callback mode is enabled.
         if self.odom_callback.lock().unwrap().is_some() {
             return Err(PyRuntimeError::new_err(
-                "Callback is set; try_recv() unavailable. Use callback API or clear_callback() first.",
+                "Callback is set. try_recv() unavailable. Use callback API or clear_callback() first.",
             ));
         }
 
@@ -762,14 +762,14 @@ impl PelorusHandle {
         // Fail fast when callback mode is enabled.
         if self.odom_callback.lock().unwrap().is_some() {
             return Err(PyRuntimeError::new_err(
-                "Callback is set; recv() unavailable. Use callback API or clear_callback() first.",
+                "Callback is set. recv() unavailable. Use callback API or clear_callback() first.",
             ));
         }
 
         // If IMU initialization hasn't completed yet (buffer still present), return last known odometry
         if let Ok(init_state) = self.imu_init_state.lock() {
             if init_state.buffer.is_some() {
-                // No odometry yet during init; block until we get one
+                // No odometry yet during init. Block until we get one.
             }
         }
 
@@ -1099,7 +1099,7 @@ impl PelorusHandle {
 
         // Build point cloud data.
         // Always emit Ouster-like fields: x,y,z (f32), intensity (f32), t (u32).
-        // For Nx4, the 4th column is treated as t; intensity is 0.
+        // For Nx4, the 4th column is treated as t. Intensity is 0.
         let has_t = num_fields >= 4;
         let has_intensity = num_fields == 5;
         let point_step = 20;

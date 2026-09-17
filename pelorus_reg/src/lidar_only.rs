@@ -11,7 +11,7 @@ use pelorus_core::{ImuMsg, time_msg_from_secs};
 fn rotation_increment(from: &Rotation3<f64>, to: &Rotation3<f64>) -> Vector3<f64> {
     let delta = nalgebra::UnitQuaternion::from_rotation_matrix(&(from.inverse() * to));
 
-    // q and −q are the same rotation; the positive-scalar one is the short way.
+    // q and −q are the same rotation. The positive-scalar one is the short way.
     let (scalar, vector) = if delta.w < 0.0 {
         (-delta.w, -delta.imag())
     } else {
@@ -46,7 +46,7 @@ pub struct SyntheticImu {
 }
 
 impl SyntheticImu {
-    /// `rate` is how densely to sample the interval; it only has to be fine
+    /// `rate` is how densely to sample the interval. It only has to be fine
     /// enough that the rotation between samples is small.
     pub fn new(gravity: f64, rate: f64) -> Self {
         Self {

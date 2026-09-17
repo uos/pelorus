@@ -1,0 +1,477 @@
+#version 450
+#extension GL_EXT_shader_explicit_arithmetic_types_int64 : require
+#extension GL_EXT_scalar_block_layout : require
+
+// The host prepends the common point types and push constants after extensions.
+layout(local_size_x = 256) in;
+struct MRCell {
+  ivec3 key;
+  uint scan;
+  uint64_t count;
+  float mean[3];
+  float cov[9];
+};
+struct MRFit {
+  uint status;
+  float mean[3];
+  float normal[3];
+  float tangent[6];
+  float extent[2];
+  float quality;
+  float d;
+};
+layout(scalar, set = 0, binding = 0) buffer InputCells { MRCell input_cells[]; };
+#ifdef MR_QUERY
+layout(std430, set = 0, binding = 1) buffer OutputNormals { PointNormal output_normals[]; };
+#else
+layout(scalar, set = 0, binding = 1) buffer OutputCells { MRCell output_cells[]; };
+#endif
+layout(std430, set = 0, binding = 2) buffer SortIndices { uint indices[]; };
+layout(scalar, set = 0, binding = 3) readonly buffer SecondaryCells { MRCell secondary_cells[]; };
+layout(scalar, set = 0, binding = 4) readonly buffer Level0 { MRCell cells0[]; };
+layout(scalar, set = 0, binding = 5) readonly buffer Level1 { MRCell cells1[]; };
+layout(scalar, set = 0, binding = 6) readonly buffer Level2 { MRCell cells2[]; };
+layout(scalar, set = 0, binding = 7) readonly buffer Level3 { MRCell cells3[]; };
+layout(scalar, set = 0, binding = 8) buffer Fit0 { MRFit fits0[]; };
+layout(scalar, set = 0, binding = 9) readonly buffer Fit1 { MRFit fits1[]; };
+layout(std430, set = 0, binding = 10) buffer Counter { uint count; };
+layout(scalar, set = 0, binding = 11) readonly buffer Fit2 { MRFit fits2[]; };
+layout(scalar, set = 0, binding = 12) readonly buffer Fit3 { MRFit fits3[]; };
+layout(std430, set = 0, binding = 13) buffer Cloud { Point cloud[]; };
+layout(std430, set = 0, binding = 14) readonly buffer Poses { double pose_data[]; };
+layout(std430, set = 0, binding = 15) buffer Flags { uint flags[]; };
+layout(std430, set = 0, binding = 16) readonly buffer Offsets { uint offsets[]; };
+
+bool key_less(ivec3 a, ivec3 b) {
+  return a.x != b.x ? a.x < b.x : a.y != b.y ? a.y < b.y : a.z < b.z;
+}
+bool key_equal(ivec3 a, ivec3 b) { return all(equal(a, b)); }
+MRCell empty_cell() {
+  MRCell c;
+  c.key = ivec3(0);
+  c.scan = pc.scan_number;
+  c.count = uint64_t(0);
+  for (int i = 0; i < 3; i++)
+    c.mean[i] = 0;
+  for (int i = 0; i < 9; i++)
+    c.cov[i] = 0;
+  return c;
+}
+MRFit empty_fit() {
+  MRFit f;
+  f.status = 0;
+  for (int i = 0; i < 3; i++) {
+    f.mean[i] = 0;
+    f.normal[i] = 0;
+  }
+  for (int i = 0; i < 6; i++)
+    f.tangent[i] = 0;
+  for (int i = 0; i < 2; i++)
+    f.extent[i] = 0;
+  f.quality = 0;
+  f.d = 0;
+  return f;
+}
+float mr_dot(float a[3], float b[3]) {
+  precise float d = (a[0] * b[0] + a[1] * b[1]) + a[2] * b[2];
+  return d;
+}
+int coordinate(float p, float r) {
+  float v = floor(p / r);
+  return v >= 2147483648.0 ? 2147483647 : v <= -2147483648.0 ? int(0x80000000) : int(v);
+}
+ivec3 mr_grid(float p[3], float r) {
+  return ivec3(coordinate(p[0], r), coordinate(p[1], r), coordinate(p[2], r));
+}
+int parent(int x) { return x / 2 - int(x < 0 && x % 2 != 0); }
+int neighbor(int x, int d) {
+  return d > 0 && x == 2147483647 ? x : d < 0 && x == int(0x80000000) ? x : x + d;
+}
+void mr_pool(inout MRCell a, MRCell b) {
+  if (b.count == uint64_t(0))
+    return;
+  if (a.count == uint64_t(0)) {
+    a = b;
+    return;
+  }
+  precise float n1 = float(a.count), n2 = float(b.count), n = n1 + n2, w = n1 * n2 / n;
+  precise float delta[3];
+  for (int i = 0; i < 3; i++)
+    delta[i] = a.mean[i] - b.mean[i];
+  for (int i = 0; i < 3; i++)
+    a.mean[i] = (n1 * a.mean[i] + n2 * b.mean[i]) / n;
+  for (int r = 0; r < 3; r++)
+    for (int c = 0; c < 3; c++)
+      a.cov[3 * r + c] =
+          (n1 * a.cov[3 * r + c] + n2 * b.cov[3 * r + c] + delta[r] * delta[c] * w) / n;
+  a.count = uint64_t(n);
+}
+void mr_update(inout MRCell a, MRCell b) {
+  a.scan = b.scan;
+  precise float delta[3];
+  for (int i = 0; i < 3; i++)
+    delta[i] = a.mean[i] - b.mean[i];
+  precise float l00 = sqrt(a.cov[0] + 1e-6), l10 = a.cov[3] / l00, l20 = a.cov[6] / l00;
+  precise float l11 = sqrt(a.cov[4] + 1e-6 - l10 * l10), l21 = (a.cov[7] - l20 * l10) / l11;
+  precise float l22 = sqrt(a.cov[8] + 1e-6 - (l20 * l20 + l21 * l21)), m = mr_dot(delta, delta);
+  if (!isnan(l00) && !isnan(l11) && !isnan(l22) && !isinf(l00) && !isinf(l11) && !isinf(l22) &&
+      l00 > 0 && l11 > 0 && l22 > 0) {
+    precise float y0 = delta[0] / l00, y1 = (delta[1] - l10 * y0) / l11,
+                  y2 = (delta[2] - (l20 * y0 + l21 * y1)) / l22;
+    precise float x2 = y2 / l22, x1 = (y1 - l21 * x2) / l11,
+                  x0 = (y0 - (l10 * x1 + l20 * x2)) / l00;
+    m = (delta[0] * x0 + delta[1] * x1) + delta[2] * x2;
+  }
+  precise float alpha = exp(-m / (2 * (pc.sensitivity / max(log(float(a.count)), 1.0))));
+  if (alpha < 1e-5)
+    return;
+  precise float oma = 1 - alpha;
+  for (int i = 0; i < 3; i++)
+    a.mean[i] = oma * a.mean[i] + alpha * b.mean[i];
+  for (int r = 0; r < 3; r++)
+    for (int c = 0; c < 3; c++)
+      a.cov[3 * r + c] =
+          oma * a.cov[3 * r + c] + alpha * b.cov[3 * r + c] + alpha * oma * (delta[r] * delta[c]);
+  a.count += b.count;
+}
+MRFit mr_fit(MRCell cell) {
+  MRFit f = empty_fit();
+  if (cell.count < uint64_t(6))
+    return f;
+  f.status = 1;
+  double a[9], v[9];
+  for (int r = 0; r < 3; r++)
+    for (int c = 0; c < 3; c++) {
+      float x = cell.cov[3 * r + c];
+      if (isnan(x) || isinf(x))
+        return f;
+      a[3 * r + c] = double(x);
+      v[3 * r + c] = r == c ? 1.0LF : 0.0LF;
+    }
+  for (int it = 0; it < 24; it++) {
+    int p = 0, q = 1;
+    if (abs(a[2]) > abs(a[3 * p + q])) {
+      p = 0;
+      q = 2;
+    }
+    if (abs(a[5]) > abs(a[3 * p + q])) {
+      p = 1;
+      q = 2;
+    }
+    if (abs(a[3 * p + q]) < 1e-14LF * (abs(a[0]) + abs(a[4]) + abs(a[8]) + 1e-20LF))
+      break;
+    double tau = (a[3 * q + q] - a[3 * p + p]) / (2.0LF * a[3 * p + q]);
+    double t = (tau < 0 ? -1.0LF : 1.0LF) / (abs(tau) + sqrt(1.0LF + tau * tau)),
+           c = 1.0LF / sqrt(1.0LF + t * t), s = t * c;
+    double app = a[3 * p + p], aqq = a[3 * q + q], apq = a[3 * p + q];
+    a[3 * p + p] = app - t * apq;
+    a[3 * q + q] = aqq + t * apq;
+    a[3 * p + q] = 0;
+    a[3 * q + p] = 0;
+    for (int k = 0; k < 3; k++) {
+      if (k != p && k != q) {
+        double kp = a[3 * k + p], kq = a[3 * k + q];
+        a[3 * k + p] = c * kp - s * kq;
+        a[3 * p + k] = a[3 * k + p];
+        a[3 * k + q] = s * kp + c * kq;
+        a[3 * q + k] = a[3 * k + q];
+      }
+      double vp = v[3 * k + p], vq = v[3 * k + q];
+      v[3 * k + p] = c * vp - s * vq;
+      v[3 * k + q] = s * vp + c * vq;
+    }
+  }
+  int idx[3] = int[3](0, 1, 2);
+  for (int i = 0; i < 3; i++)
+    for (int j = i + 1; j < 3; j++)
+      if (a[4 * idx[j]] < a[4 * idx[i]]) {
+        int t = idx[i];
+        idx[i] = idx[j];
+        idx[j] = t;
+      }
+  float small = max(float(a[4 * idx[0]]), 0), middle = float(a[4 * idx[1]]),
+        large = float(a[4 * idx[2]]);
+  if (isnan(middle) || isinf(middle) || isnan(large) || isinf(large))
+    return f;
+  if (middle < 1e-4) {
+    f.status = 0;
+    return f;
+  }
+  float thickness = pc.resolution * .15;
+  if (small > thickness * thickness || small > .1 * middle)
+    return f;
+  f.status = 2;
+  for (int k = 0; k < 3; k++) {
+    f.mean[k] = cell.mean[k];
+    f.normal[k] = float(v[3 * k + idx[0]]);
+    f.tangent[k] = float(v[3 * k + idx[1]]);
+    f.tangent[3 + k] = float(v[3 * k + idx[2]]);
+  }
+  f.extent[0] = 3 * sqrt(max(middle, 0)) + pc.resolution * .5;
+  f.extent[1] = 3 * sqrt(max(large, 0)) + pc.resolution * .5;
+  precise float noise = pc.resolution * .04;
+  f.quality =
+      (small + noise * noise) * (1 / max(middle - small, 1e-6) + 1 / max(large - small, 1e-6));
+  f.d = -mr_dot(f.normal, f.mean);
+  return f;
+}
+uint level_size(uint l) {
+  return l == 0   ? pc.dist_cap
+         : l == 1 ? pc.table_cap
+         : l == 2 ? pc.valid_size
+                  : pc.unique_key_count;
+}
+MRCell level_cell(uint l, uint i) {
+  return l == 0 ? cells0[i] : l == 1 ? cells1[i] : l == 2 ? cells2[i] : cells3[i];
+}
+int find_cell(uint l, ivec3 key, uint n, bool cache) {
+  uint lo = 0, hi = n;
+  while (lo < hi) {
+    uint mid = lo + (hi - lo) / 2;
+    MRCell c = cache ? input_cells[mid] : level_cell(l, mid);
+    if (key_less(c.key, key))
+      lo = mid + 1;
+    else
+      hi = mid;
+  }
+  if (lo >= n)
+    return -1;
+  MRCell c = cache ? input_cells[lo] : level_cell(l, lo);
+  return key_equal(c.key, key) ? int(lo) : -1;
+}
+MRFit mr_neighborhood(uint l, ivec3 key, uint n, bool cache) {
+  MRCell pooled = empty_cell();
+  for (int x = -1; x <= 1; x++)
+    for (int y = -1; y <= 1; y++)
+      for (int z = -1; z <= 1; z++) {
+        int i = find_cell(l, ivec3(neighbor(key.x, x), neighbor(key.y, y), neighbor(key.z, z)), n,
+                          cache);
+        if (i >= 0)
+          mr_pool(pooled, cache ? input_cells[i] : level_cell(l, uint(i)));
+      }
+  return mr_fit(pooled);
+}
+// Exact age/support comparisons: each 64-bit count times 32-bit age gives a
+// 96-bit product, represented as high64/low32 without requiring 128-bit types.
+bool evict_less(MRCell a, MRCell b) {
+  uint age_a = pc.scan_number >= a.scan ? pc.scan_number - a.scan : 0,
+       age_b = pc.scan_number >= b.scan ? pc.scan_number - b.scan : 0;
+  uint high_a, low_a, high_b, low_b;
+  umulExtended(age_a, uint(b.count), high_a, low_a);
+  umulExtended(age_b, uint(a.count), high_b, low_b);
+  uint64_t ha = uint64_t(high_a) + uint64_t(age_a) * (b.count >> 32),
+           hb = uint64_t(high_b) + uint64_t(age_b) * (a.count >> 32);
+  return ha != hb ? ha > hb : low_a != low_b ? low_a > low_b : key_less(a.key, b.key);
+}
+bool index_less(uint i, uint j) {
+  if (i == 0xffffffffu)
+    return false;
+  if (j == 0xffffffffu)
+    return true;
+  MRCell a = input_cells[i], b = input_cells[j];
+  bool va = a.count != uint64_t(0), vb = b.count != uint64_t(0);
+  if (va != vb)
+    return va;
+  if (pc.nbtype == 1)
+    return evict_less(a, b);
+  return key_equal(a.key, b.key) ? i < j : key_less(a.key, b.key);
+}
+void main() {
+  uint i = gl_GlobalInvocationID.x;
+#ifdef MR_TRANSFORM
+  if (i >= pc.n)
+    return;
+  MRCell c = empty_cell();
+  Point p = cloud[i];
+  double x = double(p.x), y = double(p.y), z = double(p.z);
+  double qx = pose_data[0], qy = pose_data[1], qz = pose_data[2], qw = pose_data[3];
+  precise double tx = 2.0LF * (qy * z - qz * y), ty = 2.0LF * (qz * x - qx * z),
+                 tz = 2.0LF * (qx * y - qy * x);
+  c.mean[0] = float(x + qw * tx + (qy * tz - qz * ty) + pose_data[4]);
+  c.mean[1] = float(y + qw * ty + (qz * tx - qx * tz) + pose_data[5]);
+  c.mean[2] = float(z + qw * tz + (qx * ty - qy * tx) + pose_data[6]);
+  bool valid = true;
+  for (int k = 0; k < 3; k++)
+    if (isnan(c.mean[k]) || isinf(c.mean[k]))
+      valid = false;
+  if (valid) {
+    c.count = uint64_t(1);
+    c.key = mr_grid(c.mean, pc.resolution * .5);
+  }
+  input_cells[i] = c;
+#endif
+#ifdef MR_SORT
+  if (i >= pc.cap)
+    return;
+  if (pc.k == 0) {
+    indices[i] = i < pc.n ? i : 0xffffffffu;
+    return;
+  }
+  uint j = i ^ pc.j;
+  if (j <= i || j >= pc.cap)
+    return;
+  uint a = indices[i], b = indices[j];
+  bool ascending = (i & pc.k) == 0;
+  if (ascending ? index_less(b, a) : index_less(a, b)) {
+    indices[i] = b;
+    indices[j] = a;
+  }
+#endif
+#ifdef MR_COMBINE
+  if (i >= pc.n)
+    return;
+  flags[i] = 0;
+  uint source = indices[i];
+  if (source == 0xffffffffu)
+    return;
+  MRCell c = input_cells[source];
+  if (c.count == uint64_t(0))
+    return;
+  if (i > 0) {
+    uint prev = indices[i - 1];
+    if (prev != 0xffffffffu && key_equal(input_cells[prev].key, c.key))
+      return;
+  }
+  uint end = i + 1;
+  while (end < pc.n) {
+    uint next = indices[end];
+    if (next == 0xffffffffu || input_cells[next].count == uint64_t(0) ||
+        !key_equal(input_cells[next].key, c.key))
+      break;
+    end++;
+  }
+  if (pc.nbtype == 2) {
+    c = empty_cell();
+    c.key = input_cells[source].key;
+    c.count = uint64_t(end - i);
+    precise float n = float(end - i);
+    for (uint j = i; j < end; j++)
+      for (int k = 0; k < 3; k++)
+        c.mean[k] += input_cells[indices[j]].mean[k];
+    for (int k = 0; k < 3; k++)
+      c.mean[k] /= n;
+    for (uint j = i; j < end; j++) {
+      precise float delta[3];
+      for (int k = 0; k < 3; k++)
+        delta[k] = input_cells[indices[j]].mean[k] - c.mean[k];
+      for (int r = 0; r < 3; r++)
+        for (int k = 0; k < 3; k++)
+          c.cov[3 * r + k] += delta[r] * delta[k];
+    }
+    for (int k = 0; k < 9; k++)
+      c.cov[k] /= n;
+  } else
+    for (uint j = i + 1; j < end; j++) {
+      if (pc.nbtype == 3)
+        mr_update(c, input_cells[indices[j]]);
+      else
+        mr_pool(c, input_cells[indices[j]]);
+    }
+  output_cells[i] = c;
+  flags[i] = 1;
+#endif
+#ifdef MR_COMPACT
+  if (i < pc.n && flags[i] != 0)
+    output_cells[offsets[i]] = input_cells[i];
+#endif
+#ifdef MR_PARENT
+  if (i >= pc.n)
+    return;
+  MRCell c = input_cells[i];
+  c.key = ivec3(parent(c.key.x), parent(c.key.y), parent(c.key.z));
+  output_cells[i] = c;
+#endif
+#ifdef MR_MERGE
+  if (i >= pc.n)
+    return;
+  output_cells[i] = i < pc.valid_size ? input_cells[i] : secondary_cells[i - pc.valid_size];
+#endif
+#ifdef MR_RETAIN
+  if (i >= pc.n - pc.valid_size)
+    return;
+  output_cells[i] = input_cells[indices[i + pc.valid_size]];
+#endif
+#ifdef MR_CACHE
+  if (i >= pc.n)
+    return;
+  fits0[i] = mr_neighborhood(0, input_cells[i].key, pc.n, true);
+#endif
+#ifdef MR_QUERY
+  if (i >= pc.n)
+    return;
+  flags[i] = 0;
+  // The shared compaction kernel tests candidate normals, so rejected queries
+  // must clear candidates left by earlier registration iterations.
+  PointNormal rejected;
+  rejected.x = 0;
+  rejected.y = 0;
+  rejected.z = 0;
+  rejected.intensity = 0;
+  rejected.nx = 0;
+  rejected.ny = 0;
+  rejected.nz = 0;
+  rejected._pad = 0;
+  output_normals[i] = rejected;
+  Point p = cloud[i];
+  float local[3] = float[3](p.x, p.y, p.z);
+  vec3 imu = iso_transform(pc.lidar_to_imu_quat, pc.lidar_to_imu_pos, vec3(p.x, p.y, p.z));
+  vec3 w = iso_transform(pc.pose_quat, pc.pose_trans, imu);
+  float world[3] = float[3](w.x, w.y, w.z);
+  if (any(isnan(w)) || any(isinf(w)))
+    return;
+  MRFit selected = empty_fit();
+  for (uint l = 0; l < 4; l++) {
+    float r = pc.resolution * (.5 * float(1u << l));
+    ivec3 key = mr_grid(world, r);
+    uint n = level_size(l);
+    int cell = find_cell(l, key, n, false);
+    MRFit f = cell >= 0 ? (l == 0   ? fits0[cell]
+                           : l == 1 ? fits1[cell]
+                           : l == 2 ? fits2[cell]
+                                    : fits3[cell])
+                        : mr_neighborhood(l, key, n, false);
+    if (f.status == 0)
+      continue;
+    if (f.status == 1)
+      break;
+    float delta[3], t0[3], t1[3];
+    for (int k = 0; k < 3; k++) {
+      delta[k] = world[k] - f.mean[k];
+      t0[k] = f.tangent[k];
+      t1[k] = f.tangent[k + 3];
+    }
+    if (abs(mr_dot(delta, t0)) > f.extent[0] || abs(mr_dot(delta, t1)) > f.extent[1])
+      continue;
+    if (selected.status == 2) {
+      float cosine = min(abs(mr_dot(selected.normal, f.normal)), 1);
+      for (int k = 0; k < 3; k++)
+        delta[k] = f.mean[k] - selected.mean[k];
+      if (cosine < .98 || 1 - cosine * cosine > selected.quality + f.quality ||
+          abs(mr_dot(selected.normal, delta)) > pc.resolution * .15 ||
+          abs(mr_dot(f.normal, delta)) > pc.resolution * .15)
+        break;
+      if (f.quality >= selected.quality)
+        continue;
+    }
+    selected = f;
+  }
+  if (selected.status != 2)
+    return;
+  float distance = mr_dot(selected.normal, world) + selected.d,
+        s = 1 - .9 * abs(distance) / sqrt(sqrt(max(mr_dot(local, local), 1e-9)));
+  if (s <= .9)
+    return;
+  PointNormal outp;
+  outp.x = p.x;
+  outp.y = p.y;
+  outp.z = p.z;
+  outp.intensity = selected.d;
+  outp.nx = selected.normal[0];
+  outp.ny = selected.normal[1];
+  outp.nz = selected.normal[2];
+  outp._pad = 0;
+  // Output candidates use binding 1, separate from the point input.
+  output_normals[i] = outp;
+  flags[i] = 1;
+#endif
+}

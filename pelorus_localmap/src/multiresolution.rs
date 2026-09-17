@@ -1,5 +1,5 @@
 //! Experimental, bounded CPU distribution pyramid. Each level receives the
-//! same observations exactly once; only one level contributes a query residual.
+//! same observations exactly once. Only one level contributes a query residual.
 //! Inspired by VoxelMap's geometry-dependent support and MARS's surfel pyramid.
 use nalgebra::{Isometry3, Matrix3, Point3, Vector3};
 use pelorus_core::PointXYZIT;
@@ -151,6 +151,22 @@ impl MultiResolutionMap {
             .cells
             .values()
             .map(|c| c.distribution)
+            .collect()
+    }
+
+    /// All four levels, each cell tagged with the level it lives at
+    /// (0 = finest, 3 = coarsest). Unlike [`Self::distributions`] this does
+    /// not collapse to a single layer, so callers can visualize the actual
+    /// pyramid structure.
+    pub fn distributions_with_levels(&self) -> Vec<(VoxelDistribution, u8)> {
+        self.levels
+            .iter()
+            .enumerate()
+            .flat_map(|(level, l)| {
+                l.cells
+                    .values()
+                    .map(move |c| (c.distribution, level as u8))
+            })
             .collect()
     }
 

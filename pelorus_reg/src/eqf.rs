@@ -43,7 +43,7 @@ const GRAVITY_DEFAULT: f64 = 9.81;
 /// Gain cap for the non-holonomic kinematic constraints.
 const KINEMATIC_MAX_GAIN: f64 = 0.8;
 
-/// Filter state; the index ranges are the layout of the 24-dimensional error
+/// Filter state. The index ranges are the layout of the 24-dimensional error
 /// vector used by the covariance, the Jacobians, [`compensate`] and [`box_minus`].
 ///
 /// - pos (0-2): position in world frame
@@ -80,7 +80,6 @@ impl StateIKFom {
         }
     }
 
-    /// Helper to get pose as SE3 (for compatibility)
     pub fn pose(&self) -> SE3 {
         SE3::from_rotation_and_translation(self.rot, self.pos)
     }
@@ -190,10 +189,10 @@ where
 /// Jacobian of the error dynamics with respect to the error state (Eq-LIO eq. (7)).
 ///
 /// The equivariant error uses the global frame of the semi-direct product. Its
-/// linearisation is driven by `X = hat(R (omega - bg))`; the blocks below depend
+/// linearisation is driven by `X = hat(R (omega - bg))`. The blocks below depend
 /// on quantities that transform covariantly with the group action.
 ///
-/// Returns the matrix WITHOUT the identity and the `dt` factor; both are applied
+/// Returns the matrix WITHOUT the identity and the `dt` factor. Both are applied
 /// in `predict()`.
 pub fn df_dx(
     s: &StateIKFom,
@@ -298,7 +297,7 @@ pub struct Eqf {
     /// world origin makes both the Jacobians and the covariance scale with distance
     /// travelled and destroys the conditioning of the update. Kept near the robot.
     pub anchor: Vector3<f64>,
-    /// Estimate the Lidar-to-IMU extrinsics online. Off by default; when on,
+    /// Estimate the Lidar-to-IMU extrinsics online. Off by default. When on,
     /// the extrinsic blocks of the equivariant error dynamics and the
     /// corresponding measurement Jacobian columns become active.
     pub extrinsic_est: bool,
@@ -317,7 +316,7 @@ pub struct Eqf {
 /// vel(12-14), bg(15-17), ba(18-20), grav(21-23).
 ///
 /// Propagation is unaffected by the choice of error frame, so this stays the
-/// plain right-multiplied manifold update; the equivariance shows up in
+/// plain right-multiplied manifold update. The equivariance shows up in
 /// `compensate` and `box_minus`.
 fn propagate(x: &StateIKFom, f: &Mat<f64>) -> StateIKFom {
     let mut x_r = *x;
@@ -393,7 +392,7 @@ fn compensate(
 ///
 /// It matters more here than in a body-frame EKF. There, position and velocity are
 /// corrected additively and their reset blocks are exactly identity, leaving only
-/// the rotation block; here the group action folds the rotation correction into
+/// the rotation block. Here the group action folds the rotation correction into
 /// position and velocity too, which measures ~3x further from identity.
 ///
 /// Computed by central differences: a closed form exists but this is exact to

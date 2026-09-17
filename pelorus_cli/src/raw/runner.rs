@@ -90,7 +90,7 @@ impl SensorIngress for RawIngress {
     }
 
     fn driver_failed(&self, error: &DriverError) {
-        error!("Native sensor driver failed; stopping raw output: {error}");
+        error!("Native sensor driver failed. Stopping raw output: {error}");
         self.stop.store(true, Ordering::Release);
     }
 }
@@ -349,7 +349,7 @@ fn drain(
         }
     }
 
-    // Whatever the drivers already handed over belongs in the bag; truncating
+    // Whatever the drivers already handed over belongs in the bag. Truncating
     // at the moment of Ctrl-C would lose samples that were merely in flight.
     // The drivers are still running here, so this drains what is queued rather
     // than waiting for the stream to end.
