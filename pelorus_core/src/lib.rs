@@ -17,6 +17,7 @@ pub use lie::{SE3, SO3};
 pub const DEFAULT_CONFIG_STR: &str = include_str!("../default.rl");
 
 #[derive(Debug, Clone, Default, PointConvertible, Copy)]
+#[repr(C)]
 pub struct RobosensePoint {
     pub x: f32,
     pub y: f32,
@@ -40,6 +41,7 @@ impl PointXYZITimestamp<5> for RobosensePoint {
 }
 
 #[derive(Debug, Clone, Default, PointConvertible, Copy)]
+#[repr(C)]
 pub struct RobosensePointNoIntensity {
     pub x: f32,
     pub y: f32,
@@ -62,6 +64,7 @@ impl PointXYZITimestamp<4> for RobosensePointNoIntensity {
 }
 
 #[derive(Debug, Clone, Default, PointConvertible, Copy)]
+#[repr(C)]
 pub struct VelodynePoint {
     pub x: f32,
     pub y: f32,
@@ -85,6 +88,7 @@ impl PointXYZITimestamp<5> for VelodynePoint {
 }
 
 #[derive(Debug, Clone, Default, PointConvertible, Copy)]
+#[repr(C)]
 pub struct VelodynePointNoIntensity {
     pub x: f32,
     pub y: f32,
@@ -107,6 +111,7 @@ impl PointXYZITimestamp<4> for VelodynePointNoIntensity {
 }
 
 #[derive(Debug, Clone, Default, PointConvertible, Copy)]
+#[repr(C)]
 pub struct LivoxPoint {
     pub x: f32,
     pub y: f32,
@@ -130,6 +135,7 @@ impl PointXYZITimestamp<5> for LivoxPoint {
 }
 
 #[derive(Debug, Clone, Default, PointConvertible, Copy)]
+#[repr(C)]
 pub struct LivoxPointNoIntensity {
     pub x: f32,
     pub y: f32,
@@ -152,6 +158,7 @@ impl PointXYZITimestamp<4> for LivoxPointNoIntensity {
 }
 
 #[derive(Debug, Clone, Default, PointConvertible, Copy)]
+#[repr(C)]
 pub struct LivoxPointOffsetTime {
     pub x: f32,
     pub y: f32,
@@ -176,6 +183,7 @@ impl PointXYZITimestamp<5> for LivoxPointOffsetTime {
 }
 
 #[derive(Debug, Clone, Default, PointConvertible, Copy)]
+#[repr(C)]
 pub struct LivoxPointOffsetTimeNoIntensity {
     pub x: f32,
     pub y: f32,
@@ -199,6 +207,7 @@ impl PointXYZITimestamp<4> for LivoxPointOffsetTimeNoIntensity {
 }
 
 #[derive(Debug, Clone, Default, PointConvertible, Copy)]
+#[repr(C)]
 pub struct LivoxMid360Point {
     pub x: f32,
     pub y: f32,
@@ -222,6 +231,7 @@ impl PointXYZITimestamp<5> for LivoxMid360Point {
 }
 
 #[derive(Debug, Clone, Default, PointConvertible, Copy)]
+#[repr(C)]
 pub struct LivoxMid360PointNoIntensity {
     pub x: f32,
     pub y: f32,
@@ -244,6 +254,7 @@ impl PointXYZITimestamp<4> for LivoxMid360PointNoIntensity {
 }
 
 #[derive(Debug, Clone, Default, PointConvertible, Copy)]
+#[repr(C)]
 pub struct HesaiPoint {
     pub x: f32,
     pub y: f32,
@@ -267,6 +278,7 @@ impl PointXYZITimestamp<5> for HesaiPoint {
 }
 
 #[derive(Debug, Clone, Default, PointConvertible, Copy)]
+#[repr(C)]
 pub struct HesaiPointNoIntensity {
     pub x: f32,
     pub y: f32,
@@ -289,6 +301,7 @@ impl PointXYZITimestamp<4> for HesaiPointNoIntensity {
 }
 
 #[derive(Debug, Clone, Default, PointConvertible, Copy)]
+#[repr(C)]
 pub struct SickMultiScanPoint {
     pub x: f32,
     pub y: f32,
@@ -312,6 +325,7 @@ impl PointXYZITimestamp<5> for SickMultiScanPoint {
 }
 
 #[derive(Debug, Clone, Default, PointConvertible, Copy)]
+#[repr(C)]
 pub struct SickMultiScanPointNoIntensity {
     pub x: f32,
     pub y: f32,
@@ -334,6 +348,7 @@ impl PointXYZITimestamp<4> for SickMultiScanPointNoIntensity {
 }
 
 #[derive(Debug, Clone, Default, PointConvertible, Copy)]
+#[repr(C)]
 pub struct BlickfeldPoint {
     pub x: f32,
     pub y: f32,
@@ -357,6 +372,7 @@ impl PointXYZITimestamp<5> for BlickfeldPoint {
 }
 
 #[derive(Debug, Clone, Default, PointConvertible, Copy)]
+#[repr(C)]
 pub struct BlickfeldPointNoIntensity {
     pub x: f32,
     pub y: f32,
@@ -379,6 +395,7 @@ impl PointXYZITimestamp<4> for BlickfeldPointNoIntensity {
 }
 
 #[derive(Debug, Clone, Default, PointConvertible, Copy)]
+#[repr(C)]
 pub struct OusterPoint {
     pub x: f32,
     pub y: f32,
@@ -402,6 +419,7 @@ impl PointXYZITimestamp<5> for OusterPoint {
 }
 
 #[derive(Debug, Clone, Default, PointConvertible, Copy)]
+#[repr(C)]
 pub struct OusterPointNoIntensity {
     pub x: f32,
     pub y: f32,
@@ -424,6 +442,7 @@ impl PointXYZITimestamp<4> for OusterPointNoIntensity {
 }
 
 #[derive(Debug, Clone, Default, PointConvertible, Copy)]
+#[repr(C)]
 pub struct PointXYZI {
     pub x: f32,
     pub y: f32,
@@ -442,6 +461,7 @@ impl PointXYZIntensity<4> for PointXYZI {
 }
 
 #[derive(Debug, Clone, Default, PointConvertible, Copy)]
+#[repr(C)]
 pub struct PointXYZ {
     pub x: f32,
     pub y: f32,
@@ -769,6 +789,7 @@ pub enum LidarDriverType {
     Disabled,
     Velodyne,
     Ouster,
+    Robosense,
 }
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
 pub enum ImuDriverType {
@@ -786,6 +807,20 @@ pub enum VelodyneModel {
 }
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub enum VelodyneTimestampMode {
+    Sensor,
+    Host,
+}
+/// RoboSense solid-state models. All share the M-series MSOP framing and differ
+/// only in packet length and per-point layout.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+pub enum RobosenseModel {
+    M1,
+    M2,
+    E1,
+    Mx,
+}
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub enum RobosenseTimestampMode {
     Sensor,
     Host,
 }
@@ -810,12 +845,14 @@ pub enum CoordinateSystem {
 pub struct LidarDriverConfig {
     pub driver_type: LidarDriverType,
     pub velodyne: VelodyneConfig,
+    pub robosense: RobosenseConfig,
 }
 impl Default for LidarDriverConfig {
     fn default() -> Self {
         Self {
             driver_type: Default::default(),
             velodyne: Default::default(),
+            robosense: Default::default(),
         }
     }
 }
@@ -892,6 +929,34 @@ impl Default for XsensConfig {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct RobosenseConfig {
+    pub model: RobosenseModel,
+    pub bind_address: String,
+    pub msop_port: u16,
+    pub difop_port: u16,
+    pub device_ip: Option<String>,
+    pub frame_id: String,
+    pub timestamp_mode: RobosenseTimestampMode,
+    pub max_host_skew_secs: f64,
+    pub startup_timeout_secs: f64,
+}
+impl Default for RobosenseConfig {
+    fn default() -> Self {
+        Self {
+            model: RobosenseModel::M1,
+            bind_address: "0.0.0.0".into(),
+            msop_port: 6699,
+            difop_port: 7788,
+            device_ip: None,
+            frame_id: "rslidar".into(),
+            timestamp_mode: RobosenseTimestampMode::Sensor,
+            max_host_skew_secs: 0.020,
+            startup_timeout_secs: 15.0,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct OusterConfig {
     pub hostname: String,
     pub metadata_path: Option<String>,
@@ -920,6 +985,72 @@ impl Default for OusterConfig {
             max_host_skew_secs: 0.020,
             startup_timeout_secs: 15.0,
         }
+    }
+}
+
+/// These point types are mapped onto a PointCloud2 byte layout by field order,
+/// so their declaration order has to be their memory order. Without `repr(C)`
+/// Rust hoists the 8-byte timestamp ahead of the f32s, the writer then labels
+/// the fields against a layout that no longer matches the data it wrote, and
+/// every per-point timestamp reads back as zero — which downstream looks like a
+/// sensor with no per-point timing rather than like a bug.
+#[cfg(test)]
+mod point_layout {
+    use super::*;
+
+    fn offsets<T>(base: *const T, parts: [*const u8; 5]) -> [usize; 5] {
+        parts.map(|part| part as usize - base as usize)
+    }
+
+    #[test]
+    fn mixed_width_points_keep_their_declared_field_order() {
+        let robosense = RobosensePoint::default();
+        assert_eq!(
+            offsets(
+                &robosense,
+                [
+                    (&robosense.x) as *const f32 as *const u8,
+                    (&robosense.y) as *const f32 as *const u8,
+                    (&robosense.z) as *const f32 as *const u8,
+                    (&robosense.intensity) as *const f32 as *const u8,
+                    (&robosense.timestamp) as *const f64 as *const u8,
+                ]
+            ),
+            [0, 4, 8, 12, 16],
+            "RobosensePoint fields moved; is #[repr(C)] still on it?"
+        );
+
+        let hesai = HesaiPoint::default();
+        assert_eq!(
+            offsets(
+                &hesai,
+                [
+                    (&hesai.x) as *const f32 as *const u8,
+                    (&hesai.y) as *const f32 as *const u8,
+                    (&hesai.z) as *const f32 as *const u8,
+                    (&hesai.intensity) as *const f32 as *const u8,
+                    (&hesai.timestamp) as *const f64 as *const u8,
+                ]
+            ),
+            [0, 4, 8, 12, 16],
+            "HesaiPoint fields moved; is #[repr(C)] still on it?"
+        );
+
+        let livox = LivoxMid360Point::default();
+        assert_eq!(
+            offsets(
+                &livox,
+                [
+                    (&livox.x) as *const f32 as *const u8,
+                    (&livox.y) as *const f32 as *const u8,
+                    (&livox.z) as *const f32 as *const u8,
+                    (&livox.intensity) as *const f32 as *const u8,
+                    (&livox.timestamp) as *const f64 as *const u8,
+                ]
+            ),
+            [0, 4, 8, 12, 16],
+            "LivoxMid360Point fields moved; is #[repr(C)] still on it?"
+        );
     }
 }
 

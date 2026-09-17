@@ -85,10 +85,17 @@ rayon = [
 # -#-#-#-#-#- Sensor Communication -#-#-#-#-#-
 
 # Native drivers are opt-in; Disabled in Ratslang preserves external subscriptions.
-velodyne-driver = ["pelorus_syncio/velodyne-driver"]
-xsens-driver = ["pelorus_syncio/xsens-driver"]
-ouster-driver = ["pelorus_syncio/ouster-driver"]
-sensor-drivers = ["velodyne-driver", "xsens-driver", "ouster-driver"]
+native-drivers = ["pelorus_syncio/native-drivers"]
+velodyne-driver = ["native-drivers", "pelorus_syncio/velodyne-driver"]
+xsens-driver = ["native-drivers", "pelorus_syncio/xsens-driver"]
+ouster-driver = ["native-drivers", "pelorus_syncio/ouster-driver"]
+robosense-driver = ["native-drivers", "pelorus_syncio/robosense-driver"]
+sensor-drivers = [
+  "velodyne-driver",
+  "xsens-driver",
+  "ouster-driver",
+  "robosense-driver",
+]
 
 # Alias for default fallback
 ros2 = ["ros2c"]

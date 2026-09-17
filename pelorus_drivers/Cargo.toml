@@ -13,6 +13,7 @@ rust-version.workspace = true
 [dependencies]
 pelorus_core.workspace = true
 thiserror.workspace = true
+log.workspace = true
 velodyne-lidar = { workspace = true, optional = true }
 xsens-mti = { workspace = true, optional = true }
 serialport = { workspace = true, optional = true }
@@ -22,7 +23,14 @@ serde_json = { workspace = true, optional = true }
 
 [features]
 default = []
-velodyne-driver = ["dep:velodyne-lidar", "dep:chrono"]
-xsens-driver = ["dep:xsens-mti", "dep:serialport", "dep:chrono"]
-ouster-driver = ["dep:serde", "dep:serde_json"]
-sensor-drivers = ["velodyne-driver", "xsens-driver", "ouster-driver"]
+native-drivers = []
+velodyne-driver = ["native-drivers", "dep:velodyne-lidar", "dep:chrono"]
+xsens-driver = ["native-drivers", "dep:xsens-mti", "dep:serialport", "dep:chrono"]
+ouster-driver = ["native-drivers", "dep:serde", "dep:serde_json"]
+robosense-driver = ["native-drivers"]
+sensor-drivers = [
+    "velodyne-driver",
+    "xsens-driver",
+    "ouster-driver",
+    "robosense-driver",
+]

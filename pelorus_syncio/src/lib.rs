@@ -22,34 +22,22 @@ use pelorus_core::PointCloudMode;
     feature = "hiroz"
 ))]
 use pelorus_core::SyncProcessedCloud;
-#[cfg(any(
-    feature = "velodyne-driver",
-    feature = "xsens-driver",
-    feature = "ouster-driver"
-))]
+#[cfg(feature = "native-drivers")]
 use pelorus_core::{
-    ImuDriverType, LidarDriverType, OusterPoint, SensorDriverConfig, VelodynePoint,
+    ImuDriverType, LidarDriverType, OusterPoint, RobosensePoint, SensorDriverConfig, VelodynePoint,
     time_msg_from_secs,
 };
 use pelorus_core::{
     ImuMsg, ImuPredictor, ImuPredictorUndistort, LidarVendor, PointXYZIT, SyncNodeParameters,
     SyncParameters, timing::RuntimeEvaluator,
 };
-#[cfg(any(
-    feature = "velodyne-driver",
-    feature = "xsens-driver",
-    feature = "ouster-driver"
-))]
+#[cfg(feature = "native-drivers")]
 use pelorus_drivers::{DriverError, DriverManager, RawLidarScan, SensorIngress, SensorOutputSink};
 pub use pelorus_sync;
 
 /// Re-exported so consumers can implement `SensorIngress` without taking their
 /// own dependency on the optional driver crate.
-#[cfg(any(
-    feature = "velodyne-driver",
-    feature = "xsens-driver",
-    feature = "ouster-driver"
-))]
+#[cfg(feature = "native-drivers")]
 pub use pelorus_drivers;
 
 #[cfg(any(
@@ -64,9 +52,7 @@ use anyhow::anyhow;
     feature = "mt_pubsub",
     feature = "r2r",
     feature = "hiroz",
-    feature = "velodyne-driver",
-    feature = "xsens-driver",
-    feature = "ouster-driver"
+    feature = "native-drivers",
 ))]
 use pelorus_sync::timestamp_to_secs;
 
@@ -289,11 +275,7 @@ use ros2_interfaces_jazzy_serde::{
     sensor_msgs::msg::{Imu, PointCloud2},
     std_msgs::msg::Header,
 };
-#[cfg(any(
-    feature = "velodyne-driver",
-    feature = "xsens-driver",
-    feature = "ouster-driver"
-))]
+#[cfg(feature = "native-drivers")]
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
@@ -848,42 +830,22 @@ pub struct SyncNode {
     #[cfg(feature = "hiroz")]
     pub tf_listener: Arc<tf_hiroz::TfListener>,
     pub logger: String,
-    #[cfg(any(
-        feature = "velodyne-driver",
-        feature = "xsens-driver",
-        feature = "ouster-driver"
-    ))]
+    #[cfg(feature = "native-drivers")]
     native_drivers: Option<DriverManager>,
-    #[cfg(any(
-        feature = "velodyne-driver",
-        feature = "xsens-driver",
-        feature = "ouster-driver"
-    ))]
+    #[cfg(feature = "native-drivers")]
     native_imu_init: Option<ImuInitCallback>,
-    #[cfg(any(
-        feature = "velodyne-driver",
-        feature = "xsens-driver",
-        feature = "ouster-driver"
-    ))]
+    #[cfg(feature = "native-drivers")]
     native_imu_init_time: f64,
 }
 
-#[cfg(any(
-    feature = "velodyne-driver",
-    feature = "xsens-driver",
-    feature = "ouster-driver"
-))]
+#[cfg(feature = "native-drivers")]
 #[derive(Default)]
 struct NativeImuInitState {
     start_time: Option<f64>,
     buffer: Option<Vec<ImuMsg>>,
 }
 
-#[cfg(any(
-    feature = "velodyne-driver",
-    feature = "xsens-driver",
-    feature = "ouster-driver"
-))]
+#[cfg(feature = "native-drivers")]
 struct NativeIngress {
     state: Arc<Mutex<State>>,
     lidar_driver_type: LidarDriverType,
@@ -894,11 +856,7 @@ struct NativeIngress {
     imu_initialized: AtomicBool,
 }
 
-#[cfg(any(
-    feature = "velodyne-driver",
-    feature = "xsens-driver",
-    feature = "ouster-driver"
-))]
+#[cfg(feature = "native-drivers")]
 pub fn validate_native_lidar_vendor(
     driver_type: &LidarDriverType,
     lidar_vendor: LidarVendor,
@@ -908,6 +866,7 @@ pub fn validate_native_lidar_vendor(
         (&LidarDriverType::Disabled, _)
             | (&LidarDriverType::Velodyne, LidarVendor::Velodyne)
             | (&LidarDriverType::Ouster, LidarVendor::Ouster)
+            | (&LidarDriverType::Robosense, LidarVendor::Robosense)
     ) {
         Ok(())
     } else {
@@ -917,11 +876,7 @@ pub fn validate_native_lidar_vendor(
     }
 }
 
-#[cfg(any(
-    feature = "velodyne-driver",
-    feature = "xsens-driver",
-    feature = "ouster-driver"
-))]
+#[cfg(feature = "native-drivers")]
 pub fn ouster_offset_nanoseconds(seconds: f64) -> Result<u32, DriverError> {
     let nanoseconds = seconds * 1e9;
     if !nanoseconds.is_finite() || nanoseconds < 0.0 || nanoseconds > u32::MAX as f64 {
@@ -932,11 +887,7 @@ pub fn ouster_offset_nanoseconds(seconds: f64) -> Result<u32, DriverError> {
     Ok(nanoseconds.round() as u32)
 }
 
-#[cfg(any(
-    feature = "velodyne-driver",
-    feature = "xsens-driver",
-    feature = "ouster-driver"
-))]
+#[cfg(feature = "native-drivers")]
 pub fn native_scan_to_cloud(
     scan: RawLidarScan,
     driver_type: &LidarDriverType,
@@ -974,6 +925,22 @@ pub fn native_scan_to_cloud(
                 .collect::<Result<Vec<_>, DriverError>>()?;
             ros_pointcloud2::PointCloud2Msg::try_from_vec(points)
         }
+        LidarDriverType::Robosense => {
+            // RobosensePoint stores an absolute epoch per point; pelorus_sync
+            // subtracts the header stamp again when it deskews the scan.
+            let points = scan
+                .points
+                .into_iter()
+                .map(|point| RobosensePoint {
+                    x: point.xyz[0],
+                    y: point.xyz[1],
+                    z: point.xyz[2],
+                    intensity: point.intensity * 255.0,
+                    timestamp: stamp + point.time_offset_secs,
+                })
+                .collect();
+            ros_pointcloud2::PointCloud2Msg::try_from_vec(points)
+        }
         LidarDriverType::Disabled => {
             return Err(DriverError::Driver(
                 "received a native lidar scan while the native lidar driver is disabled".into(),
@@ -986,11 +953,7 @@ pub fn native_scan_to_cloud(
     Ok(cloud)
 }
 
-#[cfg(any(
-    feature = "velodyne-driver",
-    feature = "xsens-driver",
-    feature = "ouster-driver"
-))]
+#[cfg(feature = "native-drivers")]
 impl SensorIngress for NativeIngress {
     fn push_lidar(&self, scan: RawLidarScan) -> Result<(), DriverError> {
         if !self.imu_initialized.load(Ordering::Acquire) {
@@ -1164,11 +1127,7 @@ fn split_namespace_topic(input: &str) -> (String, String) {
 }
 
 impl SyncNode {
-    #[cfg(any(
-        feature = "velodyne-driver",
-        feature = "xsens-driver",
-        feature = "ouster-driver"
-    ))]
+    #[cfg(feature = "native-drivers")]
     pub fn start_native_drivers(
         &mut self,
         config: &SensorDriverConfig,
@@ -1236,9 +1195,7 @@ impl SyncNode {
             feature = "mt_pubsub",
             feature = "r2r",
             feature = "hiroz",
-            feature = "velodyne-driver",
-            feature = "xsens-driver",
-            feature = "ouster-driver"
+            feature = "native-drivers",
         ))]
         let node_params = inputs.node_params;
         #[cfg(any(
@@ -1255,11 +1212,7 @@ impl SyncNode {
             feature = "hiroz"
         ))]
         let filtered_imu_sender = inputs.filtered_imu_sender.clone();
-        #[cfg(any(
-            feature = "velodyne-driver",
-            feature = "xsens-driver",
-            feature = "ouster-driver"
-        ))]
+        #[cfg(feature = "native-drivers")]
         let native_imu_init = inputs.imu_pose_predictor_init.clone();
         #[cfg(feature = "ros2-client")]
         let tf_listener = Arc::new(tf::TfListener::new(node));
@@ -2191,23 +2144,11 @@ impl SyncNode {
                 ))]
                 tf_listener,
                 logger: "".to_string(), // TODO rm logger prefix
-                #[cfg(any(
-                    feature = "velodyne-driver",
-                    feature = "xsens-driver",
-                    feature = "ouster-driver"
-                ))]
+                #[cfg(feature = "native-drivers")]
                 native_drivers: None,
-                #[cfg(any(
-                    feature = "velodyne-driver",
-                    feature = "xsens-driver",
-                    feature = "ouster-driver"
-                ))]
+                #[cfg(feature = "native-drivers")]
                 native_imu_init,
-                #[cfg(any(
-                    feature = "velodyne-driver",
-                    feature = "xsens-driver",
-                    feature = "ouster-driver"
-                ))]
+                #[cfg(feature = "native-drivers")]
                 native_imu_init_time: node_params.imu_predictor_init_time_sec,
             },
             rx,
@@ -2437,14 +2378,7 @@ fn imu_to_sync(msg: Imu) -> ImuMsg {
     }
 }
 
-#[cfg(all(
-    test,
-    any(
-        feature = "velodyne-driver",
-        feature = "xsens-driver",
-        feature = "ouster-driver"
-    )
-))]
+#[cfg(all(test, feature = "native-drivers"))]
 mod native_ingress_tests {
     use super::*;
     use pelorus_drivers::{RawLidarPoint, ReceiveMetadata};
@@ -2495,6 +2429,51 @@ mod native_ingress_tests {
     }
 
     #[test]
+    fn robosense_scan_carries_an_absolute_epoch_per_point() {
+        let cloud = native_scan_to_cloud(scan(0.012_345), &LidarDriverType::Robosense).unwrap();
+
+        assert_eq!(cloud.header.stamp.sec, 1_700_000_000);
+        assert_eq!(cloud.header.stamp.nanosec, 250_000_000);
+        assert!(cloud.fields.iter().any(|field| field.name == "timestamp"));
+        assert!(!cloud.fields.iter().any(|field| field.name == "t"));
+
+        // pelorus_sync recovers the per-point offset by subtracting the header
+        // stamp again, so that subtraction is what has to come back intact.
+        // An absolute epoch near 1.7e9 has an f64 ULP of ~238 ns, so the offset
+        // comes back quantized to ~76 ns here. That is far below the 1 us the
+        // wire format can express, but it does put a floor under this check.
+        let points: Vec<RobosensePoint> = cloud.try_into_iter().unwrap().collect();
+        assert_eq!(points.len(), 1);
+        assert!((points[0].timestamp - 1_700_000_000.25 - 0.012_345).abs() < 1e-6);
+        assert_eq!(points[0].intensity, 127.5);
+    }
+
+    #[test]
+    fn robosense_microsecond_offsets_survive_the_absolute_epoch() {
+        // Block time offsets are whole microseconds. Carrying them as an
+        // absolute epoch near 1.7e9 leaves only ~0.4 us of f64 resolution, so
+        // check the smallest offset the wire format can express still returns.
+        let cloud = native_scan_to_cloud(scan(0.000_001), &LidarDriverType::Robosense).unwrap();
+        let points: Vec<RobosensePoint> = cloud.try_into_iter().unwrap().collect();
+        let recovered = points[0].timestamp - 1_700_000_000.25;
+        assert!(
+            (recovered - 0.000_001).abs() < 1e-7,
+            "1 us offset came back as {recovered} s"
+        );
+    }
+
+    #[test]
+    fn a_reordered_robosense_packet_may_predate_the_scan_stamp() {
+        // A packet that arrives before the one that opened the frame produces a
+        // negative offset. Unlike Ouster, which packs offsets into unsigned
+        // nanoseconds and must reject these, Robosense carries a signed
+        // absolute epoch, so it round-trips and pelorus_sync clamps it at zero.
+        let cloud = native_scan_to_cloud(scan(-0.000_2), &LidarDriverType::Robosense).unwrap();
+        let points: Vec<RobosensePoint> = cloud.try_into_iter().unwrap().collect();
+        assert!(points[0].timestamp < 1_700_000_000.25);
+    }
+
+    #[test]
     fn incompatible_native_driver_and_vendor_are_rejected() {
         assert!(
             validate_native_lidar_vendor(&LidarDriverType::Ouster, LidarVendor::Velodyne).is_err()
@@ -2504,6 +2483,15 @@ mod native_ingress_tests {
         );
         assert!(
             validate_native_lidar_vendor(&LidarDriverType::Ouster, LidarVendor::Ouster).is_ok()
+        );
+        // The driver writes the RobosensePoint layout, so pelorus_sync has to
+        // be reading the scan back with the matching vendor.
+        assert!(
+            validate_native_lidar_vendor(&LidarDriverType::Robosense, LidarVendor::Robosense)
+                .is_ok()
+        );
+        assert!(
+            validate_native_lidar_vendor(&LidarDriverType::Robosense, LidarVendor::Ouster).is_err()
         );
     }
 

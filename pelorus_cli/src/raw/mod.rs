@@ -12,34 +12,13 @@ use pelorus_core::{ImuDriverType, LidarDriverType, LioConfig, PointCloudMode, Se
 
 pub mod dedrunk;
 
-#[cfg(all(
-    feature = "mt_pubsub",
-    any(
-        feature = "velodyne-driver",
-        feature = "xsens-driver",
-        feature = "ouster-driver"
-    )
-))]
+#[cfg(all(feature = "mt_pubsub", feature = "native-drivers"))]
 mod guide;
 
-#[cfg(all(
-    feature = "mt_pubsub",
-    any(
-        feature = "velodyne-driver",
-        feature = "xsens-driver",
-        feature = "ouster-driver"
-    )
-))]
+#[cfg(all(feature = "mt_pubsub", feature = "native-drivers"))]
 mod runner;
 
-#[cfg(all(
-    feature = "mt_pubsub",
-    any(
-        feature = "velodyne-driver",
-        feature = "xsens-driver",
-        feature = "ouster-driver"
-    )
-))]
+#[cfg(all(feature = "mt_pubsub", feature = "native-drivers"))]
 pub use runner::run;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
@@ -134,11 +113,7 @@ pub fn plan_raw_run(config: &LioConfig, sensor: RawSensor) -> Result<RawPlan> {
     }
 
     // Point timestamp decoding requires a matching driver and vendor.
-    #[cfg(any(
-        feature = "velodyne-driver",
-        feature = "xsens-driver",
-        feature = "ouster-driver"
-    ))]
+    #[cfg(feature = "native-drivers")]
     if lidar {
         pelorus_syncio::validate_native_lidar_vendor(
             &drivers.lidar.driver_type,
@@ -233,11 +208,7 @@ mod tests {
         assert!(plan_raw_run(&config, RawSensor::All).is_err());
     }
 
-    #[cfg(any(
-        feature = "velodyne-driver",
-        feature = "xsens-driver",
-        feature = "ouster-driver"
-    ))]
+    #[cfg(feature = "native-drivers")]
     #[test]
     fn lidar_vendor_must_match_the_driver() {
         let mut config = config_with(LidarDriverType::Ouster, ImuDriverType::Disabled);
@@ -245,11 +216,7 @@ mod tests {
         assert!(plan_raw_run(&config, RawSensor::Lidar).is_err());
     }
 
-    #[cfg(any(
-        feature = "velodyne-driver",
-        feature = "xsens-driver",
-        feature = "ouster-driver"
-    ))]
+    #[cfg(feature = "native-drivers")]
     #[test]
     fn imu_only_run_ignores_a_mismatched_lidar_vendor() {
         let mut config = config_with(LidarDriverType::Ouster, ImuDriverType::Ouster);

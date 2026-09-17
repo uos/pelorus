@@ -193,10 +193,10 @@ sensor_drivers {
 # Where point clouds come from and what Pelorus may assume about them.
 lidar {
   driver {
-    # Disabled | Velodyne | Ouster
+    # Disabled | Velodyne | Ouster | Robosense
     # Disabled keeps the existing external point-cloud input configured by lidar.topic.
-    # Velodyne and Ouster enable in-process UDP drivers and require Pelorus to be
-    # built with their matching feature (or the aggregate `sensor-drivers` feature).
+    # Velodyne, Ouster and Robosense enable in-process UDP drivers and require Pelorus
+    # to be built with their matching feature (or the aggregate `sensor-drivers` feature).
     type = Disabled
 
     velodyne {
@@ -253,6 +253,61 @@ lidar {
         # Maximum positive duration to wait for usable packets or timestamps
         # during startup. If the configured clock mode cannot be satisfied,
         # Pelorus fails startup and says so.
+        startup_timeout = 15s
+      }
+    }
+
+    robosense {
+      # UDP connection to a RoboSense solid-state sensor. Only used when
+      # type = Robosense. The mechanical units (RS-16, RS-32, Helios, Bpearl)
+      # speak a different packet format and are not handled by this driver.
+
+      # M1 | M2 | E1 | Mx
+      # These differ in packet length and per-point layout, so a mismatch is
+      # rejected on the first packet rather than decoded into noise.
+      model = M1
+
+      # Local IPv4 or IPv6 address on which to receive UDP packets. "0.0.0.0"
+      # listens on every IPv4 interface.
+      bind_address = "0.0.0.0"
+
+      # UDP point-data (MSOP) port. Must be in 1..=65535 and differ from difop_port.
+      msop_port = 6699
+
+      # UDP device-info (DIFOP) port. Must be in 1..=65535 and differ from msop_port.
+      # The driver reads the echo mode from it, which decides whether Mx reports
+      # one return per channel or two. Geometry never depends on it: these
+      # sensors put the direction of every point in the data packet itself.
+      difop_port = 7788
+
+      # Optional sender-address filter. Empty accepts packets from any device.
+      # Otherwise this must be an IPv4 or IPv6 address, for example
+      # "192.168.1.200".
+      device_ip = ""
+
+      # Frame assigned to native scans. Coordinates follow ROS REP-103:
+      # +X forward, +Y left, +Z up.
+      frame_id = "rslidar"
+
+      timestamp {
+        # Sensor | Host
+        # Sensor uses the UTC stamp in each packet header and requires the sensor
+        # to be time-synchronized, typically over PTP or GPS. Host stamps packets
+        # when they are received, which includes network and scheduling latency.
+        # Both modes keep per-point measurement offsets.
+        mode = Sensor
+
+        # Largest accepted difference between sensor UTC and host UTC in Sensor
+        # mode. Must be positive. A sensor that is not synchronized at all fails
+        # this immediately. One that is merely a few milliseconds out passes it
+        # at startup and only fails later, so the driver also measures the offset
+        # over the first seconds of a run and logs what it saw, warning when the
+        # observed drift would use up this budget within a minute.
+        max_host_skew = 20ms
+
+        # Maximum positive duration to wait for usable packets during startup.
+        # If the configured clock mode cannot be satisfied, Pelorus fails
+        # startup and says so.
         startup_timeout = 15s
       }
     }

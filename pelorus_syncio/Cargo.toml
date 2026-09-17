@@ -50,10 +50,17 @@ metal = ["pelorus_sync/metal"]
 vulkan = ["pelorus_sync/vulkan"]
 no-imu-sync = ["pelorus_sync/no-imu-sync"]
 large-processing-queue = ["pelorus_sync/large-processing-queue"]
-velodyne-driver = ["dep:pelorus_drivers", "pelorus_drivers/velodyne-driver"]
-xsens-driver = ["dep:pelorus_drivers", "pelorus_drivers/xsens-driver"]
-ouster-driver = ["dep:pelorus_drivers", "pelorus_drivers/ouster-driver"]
-sensor-drivers = ["velodyne-driver", "xsens-driver", "ouster-driver"]
+native-drivers = ["dep:pelorus_drivers", "pelorus_drivers/native-drivers"]
+velodyne-driver = ["native-drivers", "pelorus_drivers/velodyne-driver"]
+xsens-driver = ["native-drivers", "pelorus_drivers/xsens-driver"]
+ouster-driver = ["native-drivers", "pelorus_drivers/ouster-driver"]
+robosense-driver = ["native-drivers", "pelorus_drivers/robosense-driver"]
+sensor-drivers = [
+    "velodyne-driver",
+    "xsens-driver",
+    "ouster-driver",
+    "robosense-driver",
+]
 rerun = ["dep:rerun"]
 compressed-pointcloud = ["dep:cloudini", "dep:rkyv", "dep:pelorus_protocol"]
 mt_pubsub = [

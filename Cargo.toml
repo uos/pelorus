@@ -58,7 +58,7 @@ pelorus_drivers = { path = "pelorus_drivers", version = "0.0.7", default-feature
 
 transforms_io = { version = "0.5.4", default-features = false }
 transforms_io_hiroz = { version = "0.5", git = "https://codeberg.org/stelzo/transforms_io", tag = "v0.5.4" }
-ros_pointcloud2 = { version = "1.0.0-rc.4", features = [
+ros_pointcloud2 = { version = "1.0.0-rc.5", features = [
   "derive",
   "r2r",
   "ros2_interfaces_jazzy_serde",

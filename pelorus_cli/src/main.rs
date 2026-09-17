@@ -2138,11 +2138,7 @@ fn lio_with_ready_signal(
         #[cfg(feature = "rerun")]
         rec.clone(),
     )?;
-    #[cfg(any(
-        feature = "velodyne-driver",
-        feature = "xsens-driver",
-        feature = "ouster-driver"
-    ))]
+    #[cfg(feature = "native-drivers")]
     {
         let mut sensor_drivers = config.sensor_drivers.clone();
         if config.imu_params.lidar_only {
@@ -4890,22 +4886,14 @@ fn run_raw(
     let shutdown = Arc::new(AtomicBool::new(false));
     install_online_shutdown_signal_handler(Arc::clone(&shutdown));
 
-    #[cfg(any(
-        feature = "velodyne-driver",
-        feature = "xsens-driver",
-        feature = "ouster-driver"
-    ))]
+    #[cfg(feature = "native-drivers")]
     return pelorus_cli::raw::run(config, options, shutdown).map_err(Into::into);
 
-    #[cfg(not(any(
-        feature = "velodyne-driver",
-        feature = "xsens-driver",
-        feature = "ouster-driver"
-    )))]
+    #[cfg(not(feature = "native-drivers"))]
     {
         let _ = (config, options, shutdown);
         Err(anyhow!(
-            "`pelorus online raw` needs a native sensor driver. Rebuild with the `sensor-drivers` feature (or one of `velodyne-driver`, `xsens-driver`, `ouster-driver`)."
+            "`pelorus online raw` needs a native sensor driver. Rebuild with the `sensor-drivers` feature (or one of `velodyne-driver`, `xsens-driver`, `ouster-driver`, `robosense-driver`)."
         )
         .into())
     }

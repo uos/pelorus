@@ -10,6 +10,8 @@ use std::{
 
 #[cfg(feature = "ouster-driver")]
 mod ouster;
+#[cfg(feature = "robosense-driver")]
+mod robosense;
 #[cfg(feature = "velodyne-driver")]
 mod velodyne;
 #[cfg(feature = "xsens-driver")]
@@ -50,21 +52,13 @@ pub trait SensorOutputSink: Send + Sync + 'static {
     fn mirror_imu(&self, imu: &ImuMsg) -> Result<(), DriverError>;
 }
 
-#[cfg(any(
-    feature = "velodyne-driver",
-    feature = "xsens-driver",
-    feature = "ouster-driver"
-))]
+#[cfg(feature = "native-drivers")]
 struct DriverStartGate {
     ready: std::sync::atomic::AtomicUsize,
     participants: usize,
 }
 
-#[cfg(any(
-    feature = "velodyne-driver",
-    feature = "xsens-driver",
-    feature = "ouster-driver"
-))]
+#[cfg(feature = "native-drivers")]
 impl DriverStartGate {
     fn wait(&self, stop: &AtomicBool) -> Result<(), DriverError> {
         self.ready.fetch_add(1, Ordering::AcqRel);
@@ -175,6 +169,14 @@ impl DriverManager {
                 "velodyne-driver",
             ));
         }
+        if config.lidar.driver_type == LidarDriverType::Robosense
+            && !cfg!(feature = "robosense-driver")
+        {
+            return Err(DriverError::FeatureUnavailable(
+                "RoboSense",
+                "robosense-driver",
+            ));
+        }
         if config.imu.driver_type == ImuDriverType::Xsens && !cfg!(feature = "xsens-driver") {
             return Err(DriverError::FeatureUnavailable("Xsens", "xsens-driver"));
         }
@@ -185,11 +187,7 @@ impl DriverManager {
             return Err(DriverError::FeatureUnavailable("Ouster", "ouster-driver"));
         }
         let stop = Arc::new(AtomicBool::new(false));
-        #[cfg(any(
-            feature = "velodyne-driver",
-            feature = "xsens-driver",
-            feature = "ouster-driver"
-        ))]
+        #[cfg(feature = "native-drivers")]
         let enabled_driver_count = usize::from(
             cfg!(feature = "velodyne-driver")
                 && config.lidar.driver_type == LidarDriverType::Velodyne,
@@ -199,21 +197,20 @@ impl DriverManager {
             cfg!(feature = "ouster-driver")
                 && (config.lidar.driver_type == LidarDriverType::Ouster
                     || config.imu.driver_type == ImuDriverType::Ouster),
+        ) + usize::from(
+            cfg!(feature = "robosense-driver")
+                && config.lidar.driver_type == LidarDriverType::Robosense,
         );
-        #[cfg(any(
-            feature = "velodyne-driver",
-            feature = "xsens-driver",
-            feature = "ouster-driver"
-        ))]
+        #[cfg(feature = "native-drivers")]
         let startup_barrier = (enabled_driver_count > 1).then(|| {
             Arc::new(DriverStartGate {
                 ready: std::sync::atomic::AtomicUsize::new(0),
                 participants: enabled_driver_count,
             })
         });
-        let launchers: Vec<DriverLauncher> = Vec::new();
-        #[cfg(feature = "velodyne-driver")]
-        let mut launchers = launchers;
+        // `unused_mut` when the crate is built without any driver feature.
+        #[allow(unused_mut)]
+        let mut launchers: Vec<DriverLauncher> = Vec::new();
         #[cfg(feature = "velodyne-driver")]
         if config.lidar.driver_type == LidarDriverType::Velodyne {
             let cfg = config.lidar.clone();
@@ -239,8 +236,6 @@ impl DriverManager {
             }));
         }
         #[cfg(feature = "xsens-driver")]
-        let mut launchers = launchers;
-        #[cfg(feature = "xsens-driver")]
         if config.imu.driver_type == ImuDriverType::Xsens {
             let cfg = config.imu.clone();
             let startup_barrier = startup_barrier.clone();
@@ -265,8 +260,6 @@ impl DriverManager {
             }));
         }
         #[cfg(feature = "ouster-driver")]
-        let mut launchers = launchers;
-        #[cfg(feature = "ouster-driver")]
         if config.lidar.driver_type == LidarDriverType::Ouster
             || config.imu.driver_type == ImuDriverType::Ouster
         {
@@ -282,6 +275,30 @@ impl DriverManager {
                             cfg,
                             receive_lidar,
                             receive_imu,
+                            Arc::clone(&ingress),
+                            sink,
+                            Arc::clone(&stop),
+                            startup_barrier,
+                        );
+                        if let Err(error) = &result {
+                            stop.store(true, Ordering::Release);
+                            ingress.driver_failed(error);
+                        }
+                        result
+                    })
+                    .map_err(DriverError::Io)
+            }));
+        }
+        #[cfg(feature = "robosense-driver")]
+        if config.lidar.driver_type == LidarDriverType::Robosense {
+            let cfg = config.lidar.robosense.clone();
+            let startup_barrier = startup_barrier.clone();
+            launchers.push(Box::new(move |ingress, sink, stop| {
+                std::thread::Builder::new()
+                    .name("pelorus-robosense".into())
+                    .spawn(move || {
+                        let result = robosense::run(
+                            cfg,
                             Arc::clone(&ingress),
                             sink,
                             Arc::clone(&stop),

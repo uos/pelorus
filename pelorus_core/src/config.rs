@@ -14,9 +14,10 @@ use crate::{
     ImuDriverConfig, ImuDriverType, ImuParameters, KinematicModel, LidarDriverConfig,
     LidarDriverType, LidarVendor, LioConfig, MadgwickSetting, OdometryRate, OusterConfig,
     OusterTimestampMode, PassthroughFilterParameters, PointCloudMode, PreprocessingBackend, Qos,
-    Reliability, RerunConfig, RerunMapConfig, SensorDriverConfig, SyncNodeParameters,
-    SyncParameters, VelodyneConfig, VelodyneModel, VelodyneTimestampMode, XsensConfig,
-    XsensTimestampMode, adaptive_execution::ExecutionPolicy,
+    Reliability, RerunConfig, RerunMapConfig, RobosenseConfig, RobosenseModel,
+    RobosenseTimestampMode, SensorDriverConfig, SyncNodeParameters, SyncParameters, VelodyneConfig,
+    VelodyneModel, VelodyneTimestampMode, XsensConfig, XsensTimestampMode,
+    adaptive_execution::ExecutionPolicy,
 };
 
 /// Resolves an angle range (e.g., for FOV).
@@ -829,7 +830,7 @@ fn ast_to_config_inner(
         let lidar = asts.filter_ns(&["lidar", "driver"]);
         let vel = lidar.filter_ns(&["velodyne"]);
         let vel_ts = vel.filter_ns(&["timestamp"]);
-        let lidar_type = resolve_var!(lidar, "type", as LidarDriverType, Rhs::Val(Val::StringVal(s)) => { match s.to_lowercase().as_str() { "disabled" => LidarDriverType::Disabled, "velodyne" => LidarDriverType::Velodyne, "ouster" => LidarDriverType::Ouster, _ => return Err(anyhow!("invalid lidar.driver.type '{s}'; expected Disabled, Velodyne, or Ouster")) } })?;
+        let lidar_type = resolve_var!(lidar, "type", as LidarDriverType, Rhs::Val(Val::StringVal(s)) => { match s.to_lowercase().as_str() { "disabled" => LidarDriverType::Disabled, "velodyne" => LidarDriverType::Velodyne, "ouster" => LidarDriverType::Ouster, "robosense" => LidarDriverType::Robosense, _ => return Err(anyhow!("invalid lidar.driver.type '{s}'; expected Disabled, Velodyne, Ouster, or Robosense")) } })?;
         let model = resolve_var!(vel, "model", as VelodyneModel, Rhs::Val(Val::StringVal(s)) => { match s.to_lowercase().as_str() { "vlp16" => VelodyneModel::Vlp16, "vlp32c" => VelodyneModel::Vlp32c, "pucklite" => VelodyneModel::PuckLite, "puckhires" => VelodyneModel::PuckHiRes, _ => return Err(anyhow!("unsupported Velodyne model '{s}'")) } })?;
         let bind_address: String =
             resolve_var!(vel, "bind_address", as String, Rhs::Val(Val::StringVal(s)) => {s})?;
@@ -854,6 +855,37 @@ fn ast_to_config_inner(
         let v_max_skew = resolve_var!(vel_ts, "max_host_skew", as f64, Rhs::Val(Val::UnitedVal(UnitVal::TimeVal(v))) => {v.get::<second>()})?;
         let v_timeout = resolve_var!(vel_ts, "startup_timeout", as f64, Rhs::Val(Val::UnitedVal(UnitVal::TimeVal(v))) => {v.get::<second>()})?;
         let v_timestamp_mode = resolve_var!(vel_ts, "mode", as VelodyneTimestampMode, Rhs::Val(Val::StringVal(s)) => { match s.to_lowercase().as_str() { "sensor" => VelodyneTimestampMode::Sensor, "host" => VelodyneTimestampMode::Host, _ => return Err(anyhow!("Velodyne timestamp mode must be Sensor or Host")) } })?;
+        let rs = lidar.filter_ns(&["robosense"]);
+        let rs_ts = rs.filter_ns(&["timestamp"]);
+        let rs_model = resolve_var!(rs, "model", as RobosenseModel, Rhs::Val(Val::StringVal(s)) => { match s.to_lowercase().as_str() { "m1" => RobosenseModel::M1, "m2" => RobosenseModel::M2, "e1" => RobosenseModel::E1, "mx" => RobosenseModel::Mx, _ => return Err(anyhow!("unsupported Robosense model '{s}'; expected M1, M2, E1, or Mx")) } })?;
+        let rs_bind_address: String =
+            resolve_var!(rs, "bind_address", as String, Rhs::Val(Val::StringVal(s)) => {s})?;
+        rs_bind_address
+            .parse::<std::net::IpAddr>()
+            .map_err(|_| anyhow!("lidar.driver.robosense.bind_address must be an IP address"))?;
+        let rs_msop_port = resolve_var!(rs, "msop_port", as u16, Rhs::Val(Val::NumVal(NumVal::Integer(i))) => { u16::try_from(i).map_err(|_| anyhow!("Robosense msop_port must be in 1..=65535"))? })?;
+        let rs_difop_port = resolve_var!(rs, "difop_port", as u16, Rhs::Val(Val::NumVal(NumVal::Integer(i))) => { u16::try_from(i).map_err(|_| anyhow!("Robosense difop_port must be in 1..=65535"))? })?;
+        if rs_msop_port == 0 || rs_difop_port == 0 || rs_msop_port == rs_difop_port {
+            return Err(anyhow!("Robosense ports must be non-zero and distinct"));
+        }
+        let rs_device_ip_raw: String =
+            resolve_var!(rs, "device_ip", as String, Rhs::Val(Val::StringVal(s)) => {s})?;
+        let rs_device_ip = if rs_device_ip_raw.is_empty() {
+            None
+        } else {
+            rs_device_ip_raw
+                .parse::<std::net::IpAddr>()
+                .map_err(|_| anyhow!("lidar.driver.robosense.device_ip must be an IP address"))?;
+            Some(rs_device_ip_raw)
+        };
+        let rs_max_skew = resolve_var!(rs_ts, "max_host_skew", as f64, Rhs::Val(Val::UnitedVal(UnitVal::TimeVal(v))) => {v.get::<second>()})?;
+        let rs_timeout = resolve_var!(rs_ts, "startup_timeout", as f64, Rhs::Val(Val::UnitedVal(UnitVal::TimeVal(v))) => {v.get::<second>()})?;
+        if rs_max_skew <= 0.0 || rs_timeout <= 0.0 {
+            return Err(anyhow!(
+                "Robosense clock skew and startup timeout values must be positive"
+            ));
+        }
+        let rs_timestamp_mode = resolve_var!(rs_ts, "mode", as RobosenseTimestampMode, Rhs::Val(Val::StringVal(s)) => { match s.to_lowercase().as_str() { "sensor" => RobosenseTimestampMode::Sensor, "host" => RobosenseTimestampMode::Host, _ => return Err(anyhow!("Robosense timestamp mode must be Sensor or Host")) } })?;
         let imu = asts.filter_ns(&["imu", "driver"]);
         let xs = imu.filter_ns(&["xsens"]);
         let xs_ts = xs.filter_ns(&["timestamp"]);
@@ -933,6 +965,17 @@ fn ast_to_config_inner(
                     allow_host_hour_anchor: resolve_var!(vel_ts,"allow_host_hour_anchor",as bool,Rhs::Val(Val::BoolVal(b))=>{b})?,
                     max_host_skew_secs: v_max_skew,
                     startup_timeout_secs: v_timeout,
+                },
+                robosense: RobosenseConfig {
+                    model: rs_model,
+                    bind_address: rs_bind_address,
+                    msop_port: rs_msop_port,
+                    difop_port: rs_difop_port,
+                    device_ip: rs_device_ip,
+                    frame_id: resolve_var!(rs,"frame_id",as String,Rhs::Val(Val::StringVal(s))=>{s})?,
+                    timestamp_mode: rs_timestamp_mode,
+                    max_host_skew_secs: rs_max_skew,
+                    startup_timeout_secs: rs_timeout,
                 },
             },
             imu: ImuDriverConfig {
