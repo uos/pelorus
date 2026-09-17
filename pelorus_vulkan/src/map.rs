@@ -137,12 +137,6 @@ pub fn init_map(
         );
     }
 
-    // Hold the map lock for the whole initialization. Releasing it between the
-    // emptiness check and the store lets two callers both observe an empty map
-    // and build a full state each. The loser's state is then dropped out from
-    // under whoever already looked it up, and the winner can be stored over a
-    // state that is mid-use. `ensure_downsample_state` already holds its guard
-    // across construction. This path was the odd one out.
     let mut guard = global_state().lock().expect("vulkan map mutex poisoned");
     if guard.is_some() {
         return;
@@ -914,17 +908,10 @@ pub fn cleanup_map() {
 /// Live embedder sessions, so `session_release` only tears down at the last one.
 static LIVE_SESSIONS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 
-/// Register a session that is using the Vulkan backend.
-///
-/// Embedders that create and drop handles (the C API, the Python module) pair this
-/// with [`session_release`], so that dropping one handle cannot destroy the device
-/// out from under another that is still running.
 pub fn session_retain() {
     LIVE_SESSIONS.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
 }
 
-/// End a session registered with [`session_retain`], running [`shutdown`] when the
-/// last one ends.
 pub fn session_release() {
     if LIVE_SESSIONS
         .fetch_sub(1, std::sync::atomic::Ordering::AcqRel)
@@ -935,18 +922,6 @@ pub fn session_release() {
     }
 }
 
-/// Release every Vulkan object this crate owns, in order, before the process exits.
-///
-/// `MAP_STATE` and `DOWNSAMPLE_STATE` are `OnceLock` statics, and Rust never drops
-/// statics. Each holds an `Arc<VulkanContext>`, so without this the refcount never
-/// reaches zero, `VulkanContext::drop` never runs, and the process reaches `exit()`
-/// with a live `VkInstance`. The NVIDIA driver then tears itself down from an
-/// `atexit` handler while its own worker threads are still parked in the driver,
-/// and one of them faults on state the handler already freed.
-///
-/// Call this once, at the end of the run, after backend work has been quiesced.
-/// Any Vulkan call afterwards will panic. The map has to be re-initialized with
-/// `init_map` first.
 pub fn shutdown() {
     let map = global_state()
         .lock()
@@ -1003,8 +978,6 @@ pub fn shutdown() {
         state.scratch.sorter = VrdxSorter(0);
     }
 
-    // Buffers, pipelines, descriptor pools and query pools go here, while the
-    // device is still alive.
     drop(map);
     drop(downsample);
 
@@ -1013,10 +986,6 @@ pub fn shutdown() {
         .unwrap_or_else(|poisoned| poisoned.into_inner())
         .take();
 
-    // Destroy the device explicitly rather than waiting for the refcount: other
-    // threads may still hold `Stream`s or `VulkanBuffer`s when `main` returns, and
-    // those objects would otherwise keep the instance alive past `exit()`. Their
-    // `Drop` impls check `VulkanContext::is_alive` and become no-ops from here on.
     context.destroy_now();
     drop(context);
 }

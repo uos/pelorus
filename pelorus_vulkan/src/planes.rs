@@ -44,6 +44,7 @@ pub fn planes_vulkan(
             ekf_imu_offset_r,
             out_buff,
             out_buff_gpu,
+            download_buff,
         ),
         MapBackendState::Host(host) => {
             let start = std::time::Instant::now();

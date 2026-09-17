@@ -4,8 +4,6 @@
 #include <cstdint>
 #include <lib.h>
 
-// ── GPU voxel distribution — matches Metal's GpuVoxelDist (96 bytes) ─────────
-
 struct GpuVoxelDist {
     int      lock_flag;      //  4 bytes, offset  0
     float    transform[9];   // 36 bytes, offset  4
@@ -15,8 +13,6 @@ struct GpuVoxelDist {
     uint32_t last_scan;      //  4 bytes, offset 92
 };
 static_assert(sizeof(GpuVoxelDist) == 96, "GpuVoxelDist must be 96 bytes");
-
-// ── Kernel parameter structs — must match Metal exactly ───────────────────────
 
 struct BuildVoxelsParams {
     float    pose_quat[4];      // 16 bytes, offset  0
@@ -45,8 +41,6 @@ struct PlanesParams {
     float    sphericity_threshold; //  4 bytes, offset 76
     uint32_t nbtype;               //  4 bytes, offset 80  → 84 total
 };
-
-// ── C API exposed to lib.cu ───────────────────────────────────────────────────
 
 #ifdef __cplusplus
 extern "C++" {

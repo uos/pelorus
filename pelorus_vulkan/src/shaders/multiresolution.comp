@@ -20,14 +20,28 @@ struct MRFit {
   float quality;
   float d;
 };
+#ifdef MR_QUERY
+layout(std430, set = 0, binding = 0) readonly buffer Table1 { uint table1[]; };
+#else
 layout(scalar, set = 0, binding = 0) buffer InputCells { MRCell input_cells[]; };
+#endif
 #ifdef MR_QUERY
 layout(std430, set = 0, binding = 1) buffer OutputNormals { PointNormal output_normals[]; };
+#elif defined(MR_INDEX)
+layout(std430, set = 0, binding = 1) buffer IndexTable { uint table0[]; };
 #else
 layout(scalar, set = 0, binding = 1) buffer OutputCells { MRCell output_cells[]; };
 #endif
+#ifdef MR_QUERY
+layout(std430, set = 0, binding = 2) readonly buffer Table2 { uint table2[]; };
+#else
 layout(std430, set = 0, binding = 2) buffer SortIndices { uint indices[]; };
+#endif
+#if defined(MR_QUERY) || defined(MR_CACHE)
+layout(std430, set = 0, binding = 3) readonly buffer Table0 { uint table0[]; };
+#else
 layout(scalar, set = 0, binding = 3) readonly buffer SecondaryCells { MRCell secondary_cells[]; };
+#endif
 layout(scalar, set = 0, binding = 4) readonly buffer Level0 { MRCell cells0[]; };
 layout(scalar, set = 0, binding = 5) readonly buffer Level1 { MRCell cells1[]; };
 layout(scalar, set = 0, binding = 6) readonly buffer Level2 { MRCell cells2[]; };
@@ -38,7 +52,11 @@ layout(std430, set = 0, binding = 10) buffer Counter { uint count; };
 layout(scalar, set = 0, binding = 11) readonly buffer Fit2 { MRFit fits2[]; };
 layout(scalar, set = 0, binding = 12) readonly buffer Fit3 { MRFit fits3[]; };
 layout(std430, set = 0, binding = 13) buffer Cloud { Point cloud[]; };
+#ifdef MR_QUERY
+layout(std430, set = 0, binding = 14) readonly buffer Table3 { uint table3[]; };
+#else
 layout(std430, set = 0, binding = 14) readonly buffer Poses { double pose_data[]; };
+#endif
 layout(std430, set = 0, binding = 15) buffer Flags { uint flags[]; };
 layout(std430, set = 0, binding = 16) readonly buffer Offsets { uint offsets[]; };
 
@@ -224,33 +242,60 @@ uint level_size(uint l) {
 MRCell level_cell(uint l, uint i) {
   return l == 0 ? cells0[i] : l == 1 ? cells1[i] : l == 2 ? cells2[i] : cells3[i];
 }
-int find_cell(uint l, ivec3 key, uint n, bool cache) {
-  uint lo = 0, hi = n;
-  while (lo < hi) {
-    uint mid = lo + (hi - lo) / 2;
-    MRCell c = cache ? input_cells[mid] : level_cell(l, mid);
-    if (key_less(c.key, key))
-      lo = mid + 1;
-    else
-      hi = mid;
-  }
-  if (lo >= n)
-    return -1;
-  MRCell c = cache ? input_cells[lo] : level_cell(l, lo);
-  return key_equal(c.key, key) ? int(lo) : -1;
+uint mr_hash(ivec3 key) {
+  uint h = uint(key.x) * 73856093u + uint(key.y) * 471943u + uint(key.z) * 83492791u;
+  h ^= h >> 16;
+  h *= 0x85ebca6bu;
+  h ^= h >> 13;
+  h *= 0xc2b2ae35u;
+  return h ^ (h >> 16);
 }
-MRFit mr_neighborhood(uint l, ivec3 key, uint n, bool cache) {
+#if defined(MR_QUERY) || defined(MR_CACHE)
+int find_cell(uint l, ivec3 key) {
+#ifdef MR_CACHE
+  uint capacity = pc.table_cap;
+#else
+  if (level_size(l) == 0)
+    return -1;
+  uint capacity = l == 0 ? pc.cap : l == 1 ? pc.nbtype : l == 2 ? pc.k : pc.j;
+#endif
+  uint slot = mr_hash(key) & (capacity - 1);
+  for (uint probe = 0; probe < capacity; probe++) {
+#ifdef MR_CACHE
+    uint index = table0[slot];
+#else
+    uint index = l == 0 ? table0[slot] : l == 1 ? table1[slot] : l == 2 ? table2[slot] : table3[slot];
+#endif
+    if (index == 0xffffffffu)
+      return -1;
+#ifdef MR_CACHE
+    ivec3 found = input_cells[index].key;
+#else
+    ivec3 found = level_cell(l, index).key;
+#endif
+    if (key_equal(found, key))
+      return int(index);
+    slot = (slot + 1) & (capacity - 1);
+  }
+  return -1;
+}
+MRFit mr_neighborhood(uint l, ivec3 key) {
   MRCell pooled = empty_cell();
   for (int x = -1; x <= 1; x++)
     for (int y = -1; y <= 1; y++)
       for (int z = -1; z <= 1; z++) {
-        int i = find_cell(l, ivec3(neighbor(key.x, x), neighbor(key.y, y), neighbor(key.z, z)), n,
-                          cache);
-        if (i >= 0)
-          mr_pool(pooled, cache ? input_cells[i] : level_cell(l, uint(i)));
+        int i = find_cell(l, ivec3(neighbor(key.x, x), neighbor(key.y, y), neighbor(key.z, z)));
+        if (i >= 0) {
+#ifdef MR_CACHE
+          mr_pool(pooled, input_cells[i]);
+#else
+          mr_pool(pooled, level_cell(l, uint(i)));
+#endif
+        }
       }
   return mr_fit(pooled);
 }
+#endif
 // Exact age/support comparisons: each 64-bit count times 32-bit age gives a
 // 96-bit product, represented as high64/low32 without requiring 128-bit types.
 bool evict_less(MRCell a, MRCell b) {
@@ -263,6 +308,7 @@ bool evict_less(MRCell a, MRCell b) {
            hb = uint64_t(high_b) + uint64_t(age_b) * (a.count >> 32);
   return ha != hb ? ha > hb : low_a != low_b ? low_a > low_b : key_less(a.key, b.key);
 }
+#ifdef MR_SORT
 bool index_less(uint i, uint j) {
   if (i == 0xffffffffu)
     return false;
@@ -276,6 +322,24 @@ bool index_less(uint i, uint j) {
     return evict_less(a, b);
   return key_equal(a.key, b.key) ? i < j : key_less(a.key, b.key);
 }
+shared uint sort_tile[256];
+
+// All lanes participate, including padding, so workgroup barriers are uniform.
+// The source index remains the tie-breaker, preserving temporal update order.
+void sort_local(uint i, uint sequence, uint stride) {
+  uint lane = gl_LocalInvocationID.x;
+  for (; stride > 0; stride /= 2) {
+    uint a = sort_tile[lane], b = sort_tile[lane ^ stride];
+    bool ascending = (i & sequence) == 0;
+    bool lower = ((i & stride) == 0) == ascending;
+    uint next = lower ? (index_less(b, a) ? b : a) : (index_less(a, b) ? b : a);
+    barrier();
+    sort_tile[lane] = next;
+    barrier();
+  }
+}
+#endif
+
 void main() {
   uint i = gl_GlobalInvocationID.x;
 #ifdef MR_TRANSFORM
@@ -301,12 +365,26 @@ void main() {
   input_cells[i] = c;
 #endif
 #ifdef MR_SORT
-  if (i >= pc.cap)
-    return;
+  uint lane = gl_LocalInvocationID.x;
   if (pc.k == 0) {
-    indices[i] = i < pc.n ? i : 0xffffffffu;
+    sort_tile[lane] = i < pc.n ? i : 0xffffffffu;
+    barrier();
+    for (uint sequence = 2; sequence <= min(pc.cap, 256u); sequence *= 2)
+      sort_local(i, sequence, sequence / 2);
+    if (i < pc.cap)
+      indices[i] = sort_tile[lane];
     return;
   }
+  if (pc.j < 256) {
+    sort_tile[lane] = i < pc.cap ? indices[i] : 0xffffffffu;
+    barrier();
+    sort_local(i, pc.k, pc.j);
+    if (i < pc.cap)
+      indices[i] = sort_tile[lane];
+    return;
+  }
+  if (i >= pc.cap)
+    return;
   uint j = i ^ pc.j;
   if (j <= i || j >= pc.cap)
     return;
@@ -386,15 +464,47 @@ void main() {
     return;
   output_cells[i] = i < pc.valid_size ? input_cells[i] : secondary_cells[i - pc.valid_size];
 #endif
+#ifdef MR_STABLE_MERGE
+  if (i >= pc.n)
+    return;
+  uint old_n = pc.valid_size, batch_n = pc.n - old_n;
+  bool old = i < old_n;
+  uint source = old ? i : i - old_n;
+  MRCell cell = old ? input_cells[source] : secondary_cells[source];
+  uint lo = 0, hi = old ? batch_n : old_n;
+  // Old cells use lower_bound in the batch, new cells upper_bound in the
+  // map. These ranks are unique even at equal keys and preserve stable ties.
+  while (lo < hi) {
+    uint mid = lo + (hi - lo) / 2;
+    ivec3 key = old ? secondary_cells[mid].key : input_cells[mid].key;
+    bool before = old ? key_less(key, cell.key) : !key_less(cell.key, key);
+    if (before)
+      lo = mid + 1;
+    else
+      hi = mid;
+  }
+  output_cells[source + lo] = cell;
+  indices[i] = i;
+#endif
 #ifdef MR_RETAIN
   if (i >= pc.n - pc.valid_size)
     return;
   output_cells[i] = input_cells[indices[i + pc.valid_size]];
 #endif
+#ifdef MR_INDEX
+  if (pc.k == 0) {
+    if (i < pc.cap)
+      table0[i] = 0xffffffffu;
+  } else if (i < pc.n) {
+    uint slot = mr_hash(input_cells[i].key) & (pc.cap - 1);
+    while (atomicCompSwap(table0[slot], 0xffffffffu, i) != 0xffffffffu)
+      slot = (slot + 1) & (pc.cap - 1);
+  }
+#endif
 #ifdef MR_CACHE
   if (i >= pc.n)
     return;
-  fits0[i] = mr_neighborhood(0, input_cells[i].key, pc.n, true);
+  fits0[i] = mr_neighborhood(0, input_cells[i].key);
 #endif
 #ifdef MR_QUERY
   if (i >= pc.n)
@@ -423,13 +533,12 @@ void main() {
   for (uint l = 0; l < 4; l++) {
     float r = pc.resolution * (.5 * float(1u << l));
     ivec3 key = mr_grid(world, r);
-    uint n = level_size(l);
-    int cell = find_cell(l, key, n, false);
+    int cell = find_cell(l, key);
     MRFit f = cell >= 0 ? (l == 0   ? fits0[cell]
                            : l == 1 ? fits1[cell]
                            : l == 2 ? fits2[cell]
                                     : fits3[cell])
-                        : mr_neighborhood(l, key, n, false);
+                        : mr_neighborhood(l, key);
     if (f.status == 0)
       continue;
     if (f.status == 1)

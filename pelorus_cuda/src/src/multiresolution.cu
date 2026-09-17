@@ -1,7 +1,3 @@
-// GPU distribution pyramid. Statistics, eviction, fitting and selection stay on
-// device. Only compacted correspondences and visualization data are downloaded.
-// Isolate Thrust/CUB kernels from the legacy map's separately compiled CUB
-// instantiations, which otherwise register duplicate CUDA kernel names.
 #define THRUST_CUB_WRAPPED_NAMESPACE pelorus_multires_cccl
 #include <algorithm>
 #include <cassert>
@@ -12,6 +8,7 @@
 #include <cuda_runtime.h>
 #include <localmap.cuh>
 #include <thrust/copy.h>
+#include <thrust/merge.h>
 #include <thrust/sort.h>
 #include <thrust/system/cuda/execution_policy.h>
 #include <vector>
@@ -78,7 +75,7 @@ struct Storage {
   Buffer<Cell> cells;
   Buffer<Fit> fits;
   Buffer<int> table;
-  uint32_t n = 0, budget = 0;
+  uint32_t n = 0, budget = 0, table_n = 0;
 };
 struct State {
   Storage level[4];
@@ -148,14 +145,14 @@ __device__ uint32_t hash(int3 k) {
   return h ^ (h >> 16);
 }
 __device__ int lookup(Level l, int3 key) {
-  uint32_t slot = hash(key) % l.table_n;
+  uint32_t slot = hash(key) & (l.table_n - 1);
   for (uint32_t i = 0; i < l.table_n; ++i) {
     int index = l.table[slot];
     if (index < 0)
       return -1;
     if (equal(l.cells[index].key, key))
       return index;
-    slot = (slot + 1) % l.table_n;
+    slot = (slot + 1) & (l.table_n - 1);
   }
   return -1;
 }
@@ -163,9 +160,9 @@ __global__ void index_cells(Level l) {
   uint32_t i = blockIdx.x * blockDim.x + threadIdx.x;
   if (i >= l.n)
     return;
-  uint32_t slot = hash(l.cells[i].key) % l.table_n;
+  uint32_t slot = hash(l.cells[i].key) & (l.table_n - 1);
   while (atomicCAS(l.table + slot, -1, int(i)) != -1)
-    slot = (slot + 1) % l.table_n;
+    slot = (slot + 1) & (l.table_n - 1);
 }
 __device__ void pool(Dist &a, const Dist &b) {
   if (!b.count)
@@ -316,8 +313,8 @@ struct EvictLess {
     return lo_a != lo_b ? lo_a > lo_b : less(a.key, b.key);
   }
 };
-// Symmetric Jacobi eigendecomposition. Double intermediates avoid unstable
-// normals in nearly rank-two covariance matrices. Stored statistics stay f32.
+
+
 __device__ Fit fit(Dist d, float base) {
   Fit f{};
   if (d.count < 6)
@@ -485,8 +482,8 @@ static int blocks(uint32_t n) { return (n + 255) / 256; }
 static Level view(int i) {
   auto &s = *state;
   auto &l = s.level[i];
-  return {l.cells.p, l.fits.p,         l.table.p,
-          l.n,       2 * l.budget + 1, s.base * (.5f * float(1 << i))};
+  return {l.cells.p, l.fits.p,  l.table.p,
+          l.n,       l.table_n, s.base * (.5f * float(1 << i))};
 }
 } // namespace mr
 
@@ -504,8 +501,12 @@ void init_multiresolution_impl(uint32_t capacity, float base,
     l.budget = capacity / 4 + uint32_t(i < int(capacity % 4));
     l.cells.reserve(l.budget);
     l.fits.reserve(l.budget);
-    l.table.reserve(2 * l.budget + 1);
-    MR_CHECK(cudaMemset(l.table.p, 255, (2 * l.budget + 1) * sizeof(int)));
+    // Power-of-two tables avoid integer division on every neighborhood probe.
+    l.table_n = 1;
+    while (l.table_n < 2 * l.budget)
+      l.table_n *= 2;
+    l.table.reserve(l.table_n);
+    MR_CHECK(cudaMemset(l.table.p, 255, size_t(l.table_n) * sizeof(int)));
   }
 }
 void add_multiresolution_impl(cudaStream_t stream, Point *points, uint32_t n,
@@ -514,7 +515,8 @@ void add_multiresolution_impl(cudaStream_t stream, Point *points, uint32_t n,
     return;
   using namespace mr;
   auto &s = *state;
-  auto policy = thrust::cuda::par.on(stream);
+
+  auto policy = thrust::cuda::par_nosync.on(stream);
   s.samples.reserve(n);
   s.valid_samples.reserve(n);
   s.scratch.reserve(n);
@@ -549,14 +551,11 @@ void add_multiresolution_impl(cudaStream_t stream, Point *points, uint32_t n,
     uint32_t total = l.n + batches;
     s.scratch.reserve(total);
     s.merged.reserve(total);
-    if (l.n)
-      MR_CHECK(cudaMemcpyAsync(s.scratch.p, l.cells.p, l.n * sizeof(Cell),
-                               cudaMemcpyDeviceToDevice, stream));
-    MR_CHECK(cudaMemcpyAsync(s.scratch.p + l.n, s.batches.p,
-                             batches * sizeof(Cell), cudaMemcpyDeviceToDevice,
-                             stream));
-    // Stable sorting keeps the old map before this scan at an equal key.
-    thrust::stable_sort(policy, s.scratch.p, s.scratch.p + total, CellLess{});
+
+    // Both inputs are already key-sorted. Stable merge keeps the old map
+    // before this scan at equal keys.
+    thrust::merge(policy, l.cells.p, l.cells.p + l.n, s.batches.p,
+                  s.batches.p + batches, s.scratch.p, CellLess{});
     combine<<<blocks(total), 256, 0, stream>>>(s.scratch.p, total, s.merged.p,
                                                true, s.sensitivity);
     uint32_t count = thrust::copy_if(policy, s.merged.p, s.merged.p + total,
@@ -569,7 +568,9 @@ void add_multiresolution_impl(cudaStream_t stream, Point *points, uint32_t n,
     MR_CHECK(cudaMemcpyAsync(l.cells.p, s.scratch.p + excess,
                              l.n * sizeof(Cell), cudaMemcpyDeviceToDevice,
                              stream));
-    thrust::sort(policy, l.cells.p, l.cells.p + l.n, CellLess{});
+    // Without eviction, compaction preserved the merge's sorted key order.
+    if (excess)
+      thrust::sort(policy, l.cells.p, l.cells.p + l.n, CellLess{});
     Level v = view(i);
     MR_CHECK(cudaMemsetAsync(v.table, 255, v.table_n * sizeof(int), stream));
     index_cells<<<blocks(l.n), 256, 0, stream>>>(v);
@@ -590,9 +591,10 @@ uint32_t planes_multiresolution_impl(cudaStream_t stream, Point *cloud,
   query<<<blocks(n), 256, 0, stream>>>(cloud, n, ext, pose, view(0), view(1),
                                        view(2), view(3), s.base, s.planes.p,
                                        s.flags.p);
-  uint32_t count = thrust::copy_if(thrust::cuda::par.on(stream), s.planes.p,
-                                   s.planes.p + n, s.flags.p, out, Flag{}) -
-                   out;
+  uint32_t count =
+      thrust::copy_if(thrust::cuda::par_nosync.on(stream), s.planes.p,
+                      s.planes.p + n, s.flags.p, out, Flag{}) -
+      out;
   MR_CHECK(cudaGetLastError());
   return count;
 }

@@ -333,10 +333,16 @@ mod tests {
 
         assert_eq!(out.len(), 2);
         assert!(timings.total_ms > 0.0);
-        assert_eq!(out[0].timestamp, 2.0);
-        assert_eq!(out[1].timestamp, 3.0);
-        assert_eq!(out[0].x, 2.0);
-        assert_eq!(out[1].x, 0.0);
+        // The first two points share a voxel and sit exactly equidistant from
+        // its centroid (0.1), so the medoid is decided purely by the tie
+        // break. The CPU reference breaks it on the smallest timestamp, so the
+        // winner is the t=1 point, not the t=3 one. Verified directly against
+        // `cpu_downsample_reference`; `metal_downsample_matches_cpu_*` in
+        // pelorus_sync now pins this down in general.
+        assert_eq!(out[0].timestamp, 1.0);
+        assert_eq!(out[1].timestamp, 2.0);
+        assert_eq!(out[0].x, 0.2);
+        assert_eq!(out[1].x, 2.0);
     }
 
     #[test]

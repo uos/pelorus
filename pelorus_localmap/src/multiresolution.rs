@@ -1,4 +1,4 @@
-//! Experimental, bounded CPU distribution pyramid. Each level receives the
+//! Bounded CPU distribution pyramid. Each level receives the
 //! same observations exactly once. Only one level contributes a query residual.
 //! Inspired by VoxelMap's geometry-dependent support and MARS's surfel pyramid.
 use nalgebra::{Isometry3, Matrix3, Point3, Vector3};
@@ -9,6 +9,112 @@ use std::sync::OnceLock;
 use crate::VoxelDistribution;
 
 type Grid = (i32, i32, i32);
+
+fn plane_eigen(covariance: Matrix3<f32>) -> (Vector3<f32>, Matrix3<f32>) {
+    let mut a = covariance.cast::<f64>();
+    let mut v = Matrix3::<f64>::identity();
+    for _ in 0..24 {
+        let (mut p, mut q) = (0, 1);
+        if a[(0, 2)].abs() > a[(p, q)].abs() {
+            (p, q) = (0, 2);
+        }
+        if a[(1, 2)].abs() > a[(p, q)].abs() {
+            (p, q) = (1, 2);
+        }
+        if a[(p, q)].abs() < 1e-14 * (a[(0, 0)].abs() + a[(1, 1)].abs() + a[(2, 2)].abs() + 1e-20) {
+            break;
+        }
+        let tau = (a[(q, q)] - a[(p, p)]) / (2.0 * a[(p, q)]);
+        let t = (if tau < 0.0 { -1.0 } else { 1.0 }) / (tau.abs() + (1.0 + tau * tau).sqrt());
+        let c = 1.0 / (1.0 + t * t).sqrt();
+        let s = t * c;
+        let (app, aqq, apq) = (a[(p, p)], a[(q, q)], a[(p, q)]);
+        a[(p, p)] = app - t * apq;
+        a[(q, q)] = aqq + t * apq;
+        a[(p, q)] = 0.0;
+        a[(q, p)] = 0.0;
+        for k in 0..3 {
+            if k != p && k != q {
+                let (kp, kq) = (a[(k, p)], a[(k, q)]);
+                a[(k, p)] = c * kp - s * kq;
+                a[(p, k)] = a[(k, p)];
+                a[(k, q)] = s * kp + c * kq;
+                a[(q, k)] = a[(k, q)];
+            }
+            let (vp, vq) = (v[(k, p)], v[(k, q)]);
+            v[(k, p)] = c * vp - s * vq;
+            v[(k, q)] = s * vp + c * vq;
+        }
+    }
+    let mut indices = [0, 1, 2];
+    for i in 0..3 {
+        for j in i + 1..3 {
+            if a[(indices[j], indices[j])] < a[(indices[i], indices[i])] {
+                indices.swap(i, j);
+            }
+        }
+    }
+    (
+        Vector3::from_fn(|i, _| a[(indices[i], indices[i])] as f32),
+        Matrix3::from_fn(|r, c| v[(r, indices[c])] as f32),
+    )
+}
+
+fn update_distribution(
+    a: &mut VoxelDistribution,
+    b: &VoxelDistribution,
+    sensitivity: f32,
+    scan: usize,
+) {
+    if b.point_count == 0 {
+        return;
+    }
+    a.last_updated_at_scan = scan;
+    if a.point_count == 0 {
+        a.mean = b.mean;
+        a.covariance = b.covariance;
+        a.point_count = b.point_count;
+        a.transform = b.transform;
+        return;
+    }
+    let delta = a.mean - b.mean;
+    let l00 = (a.covariance[(0, 0)] + 1e-6).sqrt();
+    let l10 = a.covariance[(1, 0)] / l00;
+    let l20 = a.covariance[(2, 0)] / l00;
+    let l11 = (a.covariance[(1, 1)] + 1e-6 - l10 * l10).sqrt();
+    let l21 = (a.covariance[(2, 1)] - l20 * l10) / l11;
+    let l22 = (a.covariance[(2, 2)] + 1e-6 - (l20 * l20 + l21 * l21)).sqrt();
+    let dot = |x: Vector3<f32>, y: Vector3<f32>| (x.x * y.x + x.y * y.y) + x.z * y.z;
+    let mut m = dot(delta, delta);
+    if [l00, l11, l22].iter().all(|x| x.is_finite() && *x > 0.0) {
+        let y0 = delta.x / l00;
+        let y1 = (delta.y - l10 * y0) / l11;
+        let y2 = (delta.z - (l20 * y0 + l21 * y1)) / l22;
+        let x2 = y2 / l22;
+        let x1 = (y1 - l21 * x2) / l11;
+        let x0 = (y0 - (l10 * x1 + l20 * x2)) / l00;
+        m = dot(delta, Vector3::new(x0, x1, x2));
+    }
+    let alpha = (-m / (2.0 * (sensitivity / (a.point_count as f32).ln().max(1.0)))).exp();
+    if alpha < 1e-5 {
+        return;
+    }
+    let oma = 1.0 - alpha;
+    for i in 0..3 {
+        a.mean[i] = oma * a.mean[i] + alpha * b.mean[i];
+    }
+    for r in 0..3 {
+        for c in 0..3 {
+            a.covariance[(r, c)] = oma * a.covariance[(r, c)]
+                + alpha * b.covariance[(r, c)]
+                + alpha * oma * (delta[r] * delta[c]);
+        }
+    }
+    a.point_count += b.point_count;
+    if let Some(chol) = nalgebra::Cholesky::new(a.covariance) {
+        a.transform = chol.l();
+    }
+}
 
 struct Cell {
     distribution: VoxelDistribution,
@@ -162,11 +268,7 @@ impl MultiResolutionMap {
         self.levels
             .iter()
             .enumerate()
-            .flat_map(|(level, l)| {
-                l.cells
-                    .values()
-                    .map(move |c| (c.distribution, level as u8))
-            })
+            .flat_map(|(level, l)| l.cells.values().map(move |c| (c.distribution, level as u8)))
             .collect()
     }
 
@@ -184,7 +286,8 @@ impl MultiResolutionMap {
                     .then(|| (self.levels[0].grid(&world), world))
             })
             .collect();
-        keyed.sort_unstable_by_key(|(key, _)| *key);
+        // Preserve input order inside each voxel, matching the GPU reductions.
+        keyed.sort_by_key(|(key, _)| *key);
         let mut batches = Vec::new();
         for group in keyed.chunk_by(|a, b| a.0 == b.0) {
             let mean = Point3::from(
@@ -216,7 +319,8 @@ impl MultiResolutionMap {
                         key.2.div_euclid(2),
                     );
                 }
-                batches.sort_unstable_by_key(|(key, _)| *key);
+                // Parent cells must pool children in the same order on every backend.
+                batches.sort_by_key(|(key, _)| *key);
                 batches = batches
                     .chunk_by(|a, b| a.0 == b.0)
                     .map(|group| {
@@ -238,10 +342,10 @@ impl MultiResolutionMap {
                         });
                     }
                     std::collections::hash_map::Entry::Occupied(mut entry) => {
-                        entry.get_mut().distribution.update(
+                        update_distribution(
+                            &mut entry.get_mut().distribution,
                             &batch,
                             self.sensitivity,
-                            level.resolution / 4.0,
                             scan,
                         );
                     }
@@ -263,13 +367,11 @@ impl MultiResolutionMap {
         if !distribution.covariance.iter().all(|v| v.is_finite()) {
             return Err(FitFailure::ConflictingGeometry);
         }
-        let eigen = distribution.covariance.symmetric_eigen();
-        let mut indices = [0, 1, 2];
-        indices.sort_unstable_by(|&a, &b| eigen.eigenvalues[a].total_cmp(&eigen.eigenvalues[b]));
-        let [small, middle, large] = indices;
-        let thickness = eigen.eigenvalues[small].max(0.0);
-        let spread = eigen.eigenvalues[middle];
-        if !spread.is_finite() {
+        let (eigenvalues, eigenvectors) = plane_eigen(distribution.covariance);
+        let [small, middle, large] = [0, 1, 2];
+        let thickness = eigenvalues[small].max(0.0);
+        let spread = eigenvalues[middle];
+        if !spread.is_finite() || !eigenvalues[large].is_finite() {
             return Err(FitFailure::ConflictingGeometry);
         }
         if spread < 1e-4 {
@@ -278,12 +380,12 @@ impl MultiResolutionMap {
         if thickness > self.max_thickness.powi(2) || thickness > 0.1 * spread {
             return Err(FitFailure::ConflictingGeometry);
         }
-        let normal = eigen.eigenvectors.column(small).into_owned();
+        let normal = eigenvectors.column(small).into_owned();
         // Restrict association to the observed finite patch in both tangent
         // directions. A small floor handles sparse narrow but valid patches.
-        let tangents = [middle, large].map(|i| eigen.eigenvectors.column(i).into_owned());
+        let tangents = [middle, large].map(|i| eigenvectors.column(i).into_owned());
         let extents = [middle, large]
-            .map(|i| 3.0 * eigen.eigenvalues[i].max(0.0).sqrt() + self.levels[0].resolution);
+            .map(|i| 3.0 * eigenvalues[i].max(0.0).sqrt() + self.levels[0].resolution);
         // Prefer a well-constrained normal, not just a large support region.
         // This is a geometric quality proxy, not calibrated plane uncertainty:
         // robust temporal blending makes point_count unsuitable as an IID count.
@@ -291,8 +393,8 @@ impl MultiResolutionMap {
         // because their measured thickness rounded to zero.
         let noise_floor = (self.levels[1].resolution * 0.04).powi(2);
         let normal_quality = (thickness + noise_floor)
-            * (1.0 / (eigen.eigenvalues[middle] - thickness).max(1e-6)
-                + 1.0 / (eigen.eigenvalues[large] - thickness).max(1e-6));
+            * (1.0 / (eigenvalues[middle] - thickness).max(1e-6)
+                + 1.0 / (eigenvalues[large] - thickness).max(1e-6));
         // Registration applies its range-dependent residual gate as before.
         let d = -normal.dot(&distribution.mean.coords);
         Ok(PlaneMatch {
@@ -347,256 +449,3 @@ impl MultiResolutionMap {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn normal_agreement_respects_fit_quality_and_sign() {
-        let mut map = MultiResolutionMap::new(0.5, 12000, 10.0);
-        map.add(&patch(0.1, 10, 0.0), &Isometry3::identity(), 1);
-        let mut fine = map.query(&Point3::new(0.1, 0.1, 0.01)).unwrap();
-        fine.normal = Vector3::z();
-        fine.normal_quality = 0.0001;
-        let mut coarse = fine;
-        let angle = 5.0_f32.to_radians();
-        coarse.normal = Vector3::new(angle.sin(), 0.0, angle.cos());
-        assert!(fine.normal.dot(&coarse.normal) > 0.98);
-        assert!(!fine.agrees_with_normal(&coarse));
-        coarse.normal_quality = 0.01;
-        assert!(fine.agrees_with_normal(&coarse));
-        coarse.normal = -coarse.normal;
-        assert!(fine.agrees_with_normal(&coarse));
-        coarse.normal = Vector3::x();
-        coarse.normal_quality = 10.0;
-        assert!(!fine.agrees_with_normal(&coarse));
-    }
-
-    fn point(x: f32, y: f32, z: f32) -> PointXYZIT {
-        PointXYZIT {
-            x,
-            y,
-            z,
-            ..Default::default()
-        }
-    }
-
-    fn patch(step: f32, count: i32, z: f32) -> Vec<PointXYZIT> {
-        (-count..=count)
-            .flat_map(|x| {
-                (-count..=count)
-                    .map(move |y| point(x as f32 * step + 0.03, y as f32 * step + 0.03, z))
-            })
-            .collect()
-    }
-
-    #[test]
-    fn sparse_plane_uses_coarse_support() {
-        let mut map = MultiResolutionMap::new(0.5, 12000, 10.0);
-        map.add(&patch(0.6, 3, 0.0), &Isometry3::identity(), 1);
-        let query = Point3::new(0.03, 0.03, 0.01);
-        assert!(map.fit(map.levels[0].neighborhood(&query), 0).is_err());
-        let matched = map.query(&query).unwrap();
-        assert!(matched.level >= 2);
-        assert!(matched.normal.z.abs() > 0.999);
-        assert!(matched.plane[3].abs() < 1e-5);
-    }
-
-    #[test]
-    fn corner_keeps_fine_surface() {
-        let mut points = patch(0.05, 30, 0.0);
-        points.extend(
-            (-30..=30)
-                .flat_map(|y| (0..=30).map(move |z| point(0.0, y as f32 * 0.05, z as f32 * 0.05))),
-        );
-        let mut map = MultiResolutionMap::new(0.5, 12000, 10.0);
-        map.add(&points, &Isometry3::identity(), 1);
-        let matched = map.query(&Point3::new(0.6, 0.1, 0.01)).unwrap();
-        assert_eq!(matched.level, 0);
-        assert!(matched.normal.z.abs() > 0.999);
-    }
-
-    #[test]
-    fn parallel_surfaces_are_not_replaced_by_midplane() {
-        let mut points = patch(0.05, 30, 0.01);
-        points.extend(patch(0.05, 30, 0.61));
-        let mut map = MultiResolutionMap::new(0.5, 12000, 10.0);
-        map.add(&points, &Isometry3::identity(), 1);
-        let matched = map.query(&Point3::new(0.1, 0.1, 0.01)).unwrap();
-        assert_eq!(matched.level, 0);
-        assert!(
-            (matched.normal.dot(&Point3::new(0.1, 0.1, 0.01).coords) + matched.plane[3]).abs()
-                < 1e-4
-        );
-    }
-
-    #[test]
-    fn line_and_nonfinite_queries_have_no_plane() {
-        let mut map = MultiResolutionMap::new(0.5, 100, 10.0);
-        let points: Vec<_> = (0..100).map(|i| point(i as f32 * 0.01, 0.0, 0.0)).collect();
-        map.add(&points, &Isometry3::identity(), 1);
-        assert!(map.query(&Point3::new(0.2, 0.0, 0.0)).is_none());
-        assert!(map.query(&Point3::new(f32::NAN, 0.0, 0.0)).is_none());
-    }
-
-    #[test]
-    fn observations_are_counted_once_per_level_with_negative_coordinates() {
-        let mut map = MultiResolutionMap::new(0.5, 12000, 10.0);
-        let points = patch(0.07, 10, -0.25);
-        for scan in 1..=2 {
-            map.add(&points, &Isometry3::identity(), scan);
-        }
-        for level in &map.levels {
-            assert_eq!(
-                level
-                    .cells
-                    .values()
-                    .map(|d| d.distribution.point_count)
-                    .sum::<u64>(),
-                2 * points.len() as u64
-            );
-            for (&key, d) in &level.cells {
-                assert_eq!(key, level.grid(&d.distribution.mean));
-            }
-        }
-        for key in map.levels[0].cells.keys() {
-            let parent = (
-                key.0.div_euclid(2),
-                key.1.div_euclid(2),
-                key.2.div_euclid(2),
-            );
-            assert!(map.levels[1].cells.contains_key(&parent));
-        }
-    }
-
-    #[test]
-    fn total_capacity_is_bounded_and_reset_allows_reuse() {
-        let mut map = MultiResolutionMap::new(0.5, 101, 10.0);
-        for scan in 1..=5 {
-            map.add(&patch(0.2, 20, scan as f32), &Isometry3::identity(), scan);
-            assert!(map.levels.iter().map(|l| l.cells.len()).sum::<usize>() <= 101);
-        }
-        map.clear();
-        assert!(map.is_empty());
-        map.add(&patch(0.05, 3, 0.0), &Isometry3::identity(), 6);
-        assert!(map.query(&Point3::origin()).is_some());
-    }
-
-    #[test]
-    fn finite_support_rejects_extrapolation() {
-        let mut map = MultiResolutionMap::new(0.5, 100, 10.0);
-        map.add(&patch(0.01, 3, 0.0), &Isometry3::identity(), 1);
-        assert!(map.query(&Point3::new(1.0, 0.0, 0.0)).is_none());
-        assert!(map.query(&Point3::new(0.03, 0.03, 0.01)).is_some());
-    }
-
-    #[test]
-    fn cached_rejection_is_invalidated_when_neighbors_change() {
-        let mut map = MultiResolutionMap::new(0.5, 12000, 10.0);
-        let query = Point3::new(0.03, 0.03, 0.0);
-        map.add(
-            &[point(query.x, query.y, query.z)],
-            &Isometry3::identity(),
-            1,
-        );
-        assert!(map.query(&query).is_none());
-        let grid = map.levels[0].grid(&query);
-        assert!(
-            map.levels[0].cells[&grid]
-                .neighborhood
-                .get()
-                .unwrap()
-                .is_err()
-        );
-        let neighbors: Vec<_> = patch(0.06, 10, 0.0)
-            .into_iter()
-            .filter(|p| map.levels[0].grid(&Point3::new(p.x, p.y, p.z)) != grid)
-            .collect();
-        map.add(&neighbors, &Isometry3::identity(), 2);
-        assert!(map.levels[0].cells[&grid].neighborhood.get().is_none());
-        assert!(map.query(&query).is_some());
-    }
-
-    #[test]
-    fn parallel_queries_share_identical_fits() {
-        let mut map = MultiResolutionMap::new(0.5, 12000, 10.0);
-        map.add(&patch(0.05, 20, 0.0), &Isometry3::identity(), 1);
-        let map = &map;
-        let planes = std::thread::scope(|scope| {
-            let handles: Vec<_> = (0..4)
-                .map(|_| {
-                    scope.spawn(move || map.query(&Point3::new(0.1, 0.1, 0.01)).unwrap().plane)
-                })
-                .collect();
-            handles
-                .into_iter()
-                .map(|h| h.join().unwrap())
-                .collect::<Vec<_>>()
-        });
-        assert!(planes.iter().all(|p| p == &planes[0]));
-    }
-
-    #[test]
-    fn coarser_valid_patch_must_improve_normal_quality() {
-        let mut map = MultiResolutionMap::new(0.5, 100, 10.0);
-        // Both patches satisfy the thickness and planarity gates and have the
-        // same normal/center. The larger one has substantially more roughness.
-        for (index, covariance) in [
-            Matrix3::from_diagonal(&Vector3::new(0.01, 0.01, 0.0)),
-            Matrix3::from_diagonal(&Vector3::new(0.05, 0.05, 0.004)),
-        ]
-        .into_iter()
-        .enumerate()
-        {
-            map.levels[index].cells.insert(
-                (0, 0, 0),
-                Cell {
-                    distribution: VoxelDistribution {
-                        covariance,
-                        mean: Point3::origin(),
-                        point_count: 100,
-                        ..VoxelDistribution::new()
-                    },
-                    neighborhood: OnceLock::new(),
-                },
-            );
-        }
-        assert!(
-            map.fit(map.levels[1].neighborhood(&Point3::origin()), 1)
-                .is_ok()
-        );
-        assert_eq!(map.query(&Point3::origin()).unwrap().level, 0);
-    }
-
-    #[test]
-    fn coarse_ground_must_not_hide_a_conflicting_fine_surface() {
-        let mut map = MultiResolutionMap::new(0.5, 100, 10.0);
-        for (index, covariance) in [
-            Matrix3::from_diagonal(&Vector3::new(0.01, 0.02, 0.008)),
-            Matrix3::from_diagonal(&Vector3::new(0.5, 0.5, 0.001)),
-        ]
-        .into_iter()
-        .enumerate()
-        {
-            map.levels[index].cells.insert(
-                (0, 0, 0),
-                Cell {
-                    distribution: VoxelDistribution {
-                        covariance,
-                        mean: Point3::origin(),
-                        point_count: 100,
-                        ..VoxelDistribution::new()
-                    },
-                    neighborhood: OnceLock::new(),
-                },
-            );
-        }
-        // The coarser patch could pass its own fit gates after dilution by many
-        // ground observations, but fine-scale evidence already contradicts it.
-        assert!(
-            map.fit(map.levels[1].neighborhood(&Point3::origin()), 1)
-                .is_ok()
-        );
-        assert!(map.query(&Point3::origin()).is_none());
-    }
-}

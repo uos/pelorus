@@ -6,12 +6,7 @@ use crate::pipelines::{
 use ash::vk;
 use std::sync::{Arc, Mutex};
 
-/// Work-item count for the two-elements-per-thread scan passes.
-///
-/// `exclusive_scan` and `add_block_prefix` each cover `2 * THREADS_PER_GROUP`
-/// elements per workgroup, but `dispatch` sizes the grid at one element per thread.
-/// Passing the raw element count therefore launches twice the workgroups needed, and
-/// the upper half does nothing but write zero block sums.
+
 pub(crate) fn scan_work_items(elements: u32) -> u32 {
     elements.div_ceil(2)
 }
@@ -25,8 +20,6 @@ pub(crate) struct ComputeCommandResources {
     command_buffer: vk::CommandBuffer,
     descriptor_pool: vk::DescriptorPool,
     descriptor_sets: Vec<vk::DescriptorSet>,
-    /// Signalled by each submission, so `submit` can wait on just that submission
-    /// instead of idling the whole queue.
     fence: vk::Fence,
 }
 

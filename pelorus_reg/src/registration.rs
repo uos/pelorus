@@ -1082,8 +1082,14 @@ impl crate::Registration for RegistrationState {
                     let mat: Matrix3<f64> = t_w_l.rotation.to_rotation_matrix().matrix().clone();
                     UnitQuaternion::from_matrix(&mat).into()
                 };
+                // No `stream.sync()` here, matching the Vulkan arm. The map
+                // build enqueues its kernels and returns; nothing on the CPU
+                // reads their results, and the next `planes_metal` is enqueued
+                // on the same queue, which Metal executes in submission order.
+                // Waiting here instead put the whole GPU map rebuild on the
+                // critical path — it was ~2.9 ms of the 4.2 ms `map_update`
+                // stage, the most expensive stage in the pipeline.
                 pelorus_metal::add_to_map(stream, buffer, transl, &rot_quat, scan_id);
-                stream.sync();
             }
             #[cfg(feature = "vulkan")]
             ActiveBackend::Vulkan(stream) => {

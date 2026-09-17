@@ -3,11 +3,6 @@ use nalgebra::{Isometry3, Rotation3, Vector3};
 use pelorus_core::{ImuMsg, time_msg_from_secs};
 
 /// The rotation vector taking `from` to `to`, in the `from` body frame.
-///
-/// Deliberately not `Rotation3::scaled_axis`, whose angle is an unclamped
-/// `acos((trace − 1) / 2)`: between two scans of a slowly turning platform the
-/// trace is about 3, rounding pushes the argument past 1, and `acos` returns
-/// NaN. A NaN angular rate here would go straight into the filter.
 fn rotation_increment(from: &Rotation3<f64>, to: &Rotation3<f64>) -> Vector3<f64> {
     let delta = nalgebra::UnitQuaternion::from_rotation_matrix(&(from.inverse() * to));
 

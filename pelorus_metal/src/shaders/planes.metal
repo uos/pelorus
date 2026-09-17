@@ -1,4 +1,4 @@
-// planes.metal — per-point plane fitting via voxel distribution lookup.
+// Per-point plane fitting via voxel distribution lookup.
 // Included after localmap.metal in the compiled source.
 
 struct PlanesParams {
@@ -15,13 +15,12 @@ struct PlanesParams {
     uint  nbtype;
 };
 
-// Helper: plane normal–point distance (signed)
 inline float plane_point_dist(float4 plane, float3 p) {
     return plane.x * p.x + plane.y * p.y + plane.z * p.z + plane.w;
 }
 
 // Fit a plane from a merged accumulation.
-// Returns true on success. Sets plane_eq = (nx,ny,nz,d) such that n·p+d=0.
+// Returns true on success.
 inline bool plane_fit(uint point_count, thread const float* mean, thread const float* cov,
                       float sphericity_threshold,
                       thread float4& plane_eq) {
@@ -41,9 +40,6 @@ inline bool plane_fit(uint point_count, thread const float* mean, thread const f
     if (lambda_2 < 1e-9f) return false;
     if (lambda_0 / lambda_2 > sphericity_threshold) return false;
 
-// Find eigenvector for lambda_0: null space of (cov - lambda_0 * I)
-    // We use power iteration to find the eigenvector corresponding to the smallest eigenvalue.
-    // This is more numerically stable than the cross-product method.
     float3 normal;
     
     // Shifted matrix M = cov - lambda_0 * I

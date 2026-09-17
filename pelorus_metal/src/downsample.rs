@@ -187,7 +187,24 @@ pub fn downsample_points_metal_impl(
     let download_ms = download_start.elapsed().as_secs_f64() * 1000.0;
 
     let timestamp_sort_start = std::time::Instant::now();
-    out.sort_unstable_by(|a, b| a.timestamp.partial_cmp(&b.timestamp).unwrap());
+    // Must be a *total* order over the whole point, matching
+    // `compare_point_timestamp` in pelorus_sync (which is what the CPU and
+    // CUDA/Vulkan paths sort by). Ordering on `timestamp` alone is not enough:
+    // a scan has many points per timestamp tick, and this is an unstable sort,
+    // so tied points would keep whatever order `downsample_rle` happened to
+    // produce — and that order comes from an atomic race, which made the whole
+    // Metal backend nondeterministic run to run. Comparing the remaining
+    // fields makes the result a function of the medoid *set* alone.
+    // `unwrap_or(Equal)` rather than `unwrap()` so a NaN coordinate sorts
+    // instead of panicking, again matching the CPU comparator.
+    let cmp = |x: f32, y: f32| x.partial_cmp(&y).unwrap_or(std::cmp::Ordering::Equal);
+    out.sort_unstable_by(|a, b| {
+        cmp(a.timestamp, b.timestamp)
+            .then_with(|| cmp(a.x, b.x))
+            .then_with(|| cmp(a.y, b.y))
+            .then_with(|| cmp(a.z, b.z))
+            .then_with(|| cmp(a.intensity, b.intensity))
+    });
     let timestamp_sort_ms = timestamp_sort_start.elapsed().as_secs_f64() * 1000.0;
 
     (

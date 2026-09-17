@@ -107,6 +107,17 @@ pub fn get_state() -> MutexGuard<'static, Option<MetalMapState>> {
     global_state().lock().unwrap()
 }
 
+/// Serializes tests that share the process-global map state and the Metal
+/// device. This is deliberately *not* the state mutex: the functions under
+/// test take that one themselves, so holding it here would deadlock.
+/// Poisoning is ignored so that one panicking test does not cascade into
+/// spurious failures across the rest of the suite.
+#[cfg(test)]
+pub fn acquire_test_lock() -> MutexGuard<'static, ()> {
+    static TEST_LOCK: Mutex<()> = Mutex::new(());
+    TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner())
+}
+
 fn parity_trace_enabled() -> bool {
     std::env::var("PELORUS_METAL_PARITY_TRACE")
         .map(|v| {

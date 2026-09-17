@@ -1,38 +1,34 @@
 //! CPU-orchestrated multiresolution distribution pyramid for the Metal backend.
-//!
-//! Metal has no double-precision floating point, so pose composition and the
-//! per-cell eigendecomposition run in float — the same precision tier the
-//! existing single-resolution Metal backend already uses (see
-//! `shaders/localmap.metal`). Building the pyramid (folding in new samples,
-//! merging with existing cells, evicting the least-supported ones, and
-//! caching neighborhood fits) touches at most `capacity / 4` cells per level
-//! and runs once per scan, so it is done on the CPU in plain Rust — mirroring
-//! `pelorus_vulkan::multiresolution`'s GLSL kernels function for function
-//! (using nalgebra's `symmetric_eigen` in place of its hand-rolled Jacobi
-//! sweep) — rather than as an unverifiable custom bitonic-sort/prefix-scan
-//! Metal kernel network.
-//!
-//! The hot path — correspondence search for every point in a scan against
-//! the pyramid, called every ICP iteration — runs as a real Metal compute
-//! kernel (`mr_query`, see `shaders/multiresolution.metal`), mirroring the
-//! existing single-resolution `plane_krnl`.
 
 use crate::buffer::MetalBuffer;
 use crate::pipeline::{get_pipelines, grid1d, group1d};
 use crate::stream::Stream;
 use crate::types::{Point, PointNormal as GpuPointNormal, Quaternion, Vector3};
 use bytemuck::{Pod, Zeroable};
-use objc2_metal::{MTLCommandBuffer, MTLCommandEncoder, MTLCommandQueue, MTLComputeCommandEncoder};
+use objc2::rc::Retained;
+use objc2::runtime::ProtocolObject;
+use rayon::prelude::*;
+use objc2_metal::{
+    MTLBarrierScope, MTLCommandBuffer, MTLCommandEncoder, MTLCommandQueue,
+    MTLComputeCommandEncoder,
+};
 use ros_pointcloud2::points::PointXYZINormal;
 use std::cmp::Ordering;
 use std::mem::size_of;
 use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
 use std::sync::{Mutex, MutexGuard, OnceLock};
 
+#[path = "multiresolution_transform.rs"]
+mod transform;
+use transform::transform_sample;
+
 const LEVELS: usize = 4;
 
-// Must match `MRCell` in shaders/multiresolution.metal exactly (72 bytes,
-// no padding).
+struct AddFence(Retained<ProtocolObject<dyn MTLCommandBuffer>>);
+unsafe impl Send for AddFence {}
+unsafe impl Sync for AddFence {}
+
+// Must match `MRCell` in shaders/multiresolution.metal.
 #[repr(C)]
 #[derive(Clone, Copy, Default, Pod, Zeroable)]
 struct Cell {
@@ -44,7 +40,7 @@ struct Cell {
 }
 const _: () = assert!(size_of::<Cell>() == 72);
 
-// Must match `MRFit` in shaders/multiresolution.metal exactly (68 bytes).
+// Must match `MRFit` in shaders/multiresolution.metal.
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]
 struct Fit {
@@ -63,7 +59,7 @@ impl Default for Fit {
     }
 }
 
-// Must match `MRQueryParams` in shaders/multiresolution.metal exactly (100 bytes).
+// Must match `MRQueryParams` in shaders/multiresolution.metal.
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]
 struct QueryParams {
@@ -74,11 +70,28 @@ struct QueryParams {
     pose_trans: [f32; 3],
     _pad1: f32,
     resolution: f32,
-    level_sizes: [u32; 4],
+    table_cap: u32,
     n: u32,
-    _pad2: [u32; 3],
+    level_sizes: [u32; 4],
+    fitcache_cap: u32,
+    /// Monotonic per-query-dispatch counter.
+    fitcache_gen: u32,
+    /// First generation belonging to the current scan.
+    fitcache_epoch: u32,
+    _pad2: u32,
 }
-const _: () = assert!(size_of::<QueryParams>() == 100);
+const _: () = assert!(size_of::<QueryParams>() == 108);
+
+// Must match `MRCacheParams` in shaders/multiresolution.metal.
+#[repr(C)]
+#[derive(Clone, Copy, Pod, Zeroable)]
+struct CacheParams {
+    n: u32,
+    resolution: f32,
+    cap: u32,
+    _pad: u32,
+}
+const _: () = assert!(size_of::<CacheParams>() == 16);
 
 fn key_cmp(a: &[i32; 3], b: &[i32; 3]) -> Ordering {
     a[0].cmp(&b[0]).then(a[1].cmp(&b[1])).then(a[2].cmp(&b[2]))
@@ -107,6 +120,7 @@ fn parent_key(k: [i32; 3]) -> [i32; 3] {
     [parent_coord(k[0]), parent_coord(k[1]), parent_coord(k[2])]
 }
 
+#[cfg(test)]
 fn neighbor_coord(x: i32, d: i32) -> i32 {
     if d > 0 && x == i32::MAX {
         x
@@ -117,35 +131,6 @@ fn neighbor_coord(x: i32, d: i32) -> i32 {
     }
 }
 
-fn cross(a: [f32; 3], b: [f32; 3]) -> [f32; 3] {
-    [
-        a[1] * b[2] - a[2] * b[1],
-        a[2] * b[0] - a[0] * b[2],
-        a[0] * b[1] - a[1] * b[0],
-    ]
-}
-
-// Matches `quat_rotate`/`iso_transform` in shaders/common.metal (float,
-// quaternion as (x, y, z, w)).
-fn quat_rotate(q: [f32; 4], v: [f32; 3]) -> [f32; 3] {
-    let u = [q[0], q[1], q[2]];
-    let uv = cross(u, v);
-    let t = [2.0 * uv[0], 2.0 * uv[1], 2.0 * uv[2]];
-    let ut = cross(u, t);
-    [
-        v[0] + q[3] * t[0] + ut[0],
-        v[1] + q[3] * t[1] + ut[1],
-        v[2] + q[3] * t[2] + ut[2],
-    ]
-}
-
-fn iso_transform(q: [f32; 4], t: [f32; 3], p: [f32; 3]) -> [f32; 3] {
-    let r = quat_rotate(q, p);
-    [r[0] + t[0], r[1] + t[1], r[2] + t[2]]
-}
-
-/// Incorporate `b`'s statistics into `a` via the parallel-mean/covariance
-/// formula. Mirrors `mr_pool` in the Vulkan/CUDA kernels.
 fn pool(a: &mut Cell, b: &Cell) {
     if b.count == 0 {
         return;
@@ -171,10 +156,6 @@ fn pool(a: &mut Cell, b: &Cell) {
     a.count = n as u64;
 }
 
-/// Blend a new observation `b` into the existing cell `a` by an amount
-/// governed by their Mahalanobis distance and `sensitivity`, instead of a
-/// plain running-average pool. Mirrors `mr_update` in the Vulkan/CUDA
-/// kernels (Cholesky forward/back substitution, same formulas).
 fn temporal_update(a: &mut Cell, b: &Cell, sensitivity: f32) {
     a.scan = b.scan;
     let delta: [f32; 3] = std::array::from_fn(|i| a.mean[i] - b.mean[i]);
@@ -215,20 +196,12 @@ fn temporal_update(a: &mut Cell, b: &Cell, sensitivity: f32) {
 
 #[derive(Clone, Copy)]
 enum Mode {
-    /// Exact two-pass mean/covariance over the whole run (fresh raw samples
-    /// at level 0, before any incremental pooling). Mirrors GLSL `nbtype==2`.
     Raw,
-    /// Parent-level pooling of an already-deduped batch. Mirrors `mr_pool`.
     Pool,
-    /// Fold a new observation into an existing map cell. Mirrors `mr_update`.
-    Update,
 }
 
-/// Sorts `cells` by key and folds each run of equal-key cells into one,
-/// using `mode`. Mirrors the Vulkan/CUDA `MR_COMBINE` kernel plus its
-/// caller-side sort.
-fn combine_runs(mut cells: Vec<Cell>, mode: Mode, sensitivity: f32) -> Vec<Cell> {
-    cells.sort_by(|a, b| key_cmp(&a.key, &b.key));
+fn combine_runs(mut cells: Vec<Cell>, mode: Mode) -> Vec<Cell> {
+    cells.par_sort_by(|a, b| key_cmp(&a.key, &b.key));
     let mut out = Vec::with_capacity(cells.len());
     let mut i = 0;
     while i < cells.len() {
@@ -276,13 +249,6 @@ fn combine_runs(mut cells: Vec<Cell>, mode: Mode, sensitivity: f32) -> Vec<Cell>
                 }
                 c
             }
-            Mode::Update => {
-                let mut c = run[0];
-                for cell in &run[1..] {
-                    temporal_update(&mut c, cell, sensitivity);
-                }
-                c
-            }
         };
         out.push(c);
         i = end;
@@ -290,11 +256,6 @@ fn combine_runs(mut cells: Vec<Cell>, mode: Mode, sensitivity: f32) -> Vec<Cell>
     out
 }
 
-/// Pairwise eviction comparator: `Less` means `a` is less well-supported
-/// relative to its age than `b`, and should be evicted first. Cross-
-/// multiplies age×support (as `u128`, avoiding the 96-bit extended-multiply
-/// trick the GLSL/CUDA kernels need without a wide integer type) instead of
-/// dividing. Mirrors `evict_less` in the Vulkan/CUDA kernels.
 fn evict_cmp(a: &Cell, b: &Cell, scan: u32) -> Ordering {
     let age_a = scan.saturating_sub(a.scan) as u128;
     let age_b = scan.saturating_sub(b.scan) as u128;
@@ -303,16 +264,12 @@ fn evict_cmp(a: &Cell, b: &Cell, scan: u32) -> Ordering {
     hb.cmp(&ha).then_with(|| key_cmp(&a.key, &b.key))
 }
 
+#[cfg(test)]
 fn find_cell(cells: &[Cell], key: [i32; 3]) -> Option<usize> {
     cells.binary_search_by(|c| key_cmp(&c.key, &key)).ok()
 }
 
-/// Fit a plane to a pooled cell. Mirrors `mr_fit` in the Vulkan/CUDA
-/// kernels, using nalgebra's `symmetric_eigen` in place of the hand-rolled
-/// Jacobi sweep. Both are just eigendecomposition of a symmetric 3x3. This
-/// substitution changes only the implementation, not the algorithm, and
-/// nalgebra's is safe, well-tested Rust already used elsewhere in this
-/// workspace for the same operation.
+#[cfg(test)]
 fn fit(cell: &Cell, resolution: f32) -> Fit {
     let mut f = Fit::default();
     if cell.count < 6 {
@@ -370,8 +327,7 @@ fn fit(cell: &Cell, resolution: f32) -> Fit {
     f
 }
 
-/// 3x3x3 neighborhood pool + fit, used to precompute each cell's cached fit.
-/// Mirrors `mr_neighborhood` (cache path) in the Vulkan/CUDA kernels.
+#[cfg(test)]
 fn neighborhood_fit(cells: &[Cell], key: [i32; 3], resolution: f32) -> Fit {
     let mut pooled = Cell::default();
     for dx in -1..=1 {
@@ -392,15 +348,39 @@ fn neighborhood_fit(cells: &[Cell], key: [i32; 3], resolution: f32) -> Fit {
 }
 
 struct Level {
-    cells: Vec<Cell>,
-    fits: Vec<Fit>,
+    /// Number of live cells, held in `gpu_cells[level][cur]`.
+    len: usize,
+    /// Which of the two cell buffers is current.
+    cur: usize,
     budget: usize,
 }
 
 pub(crate) struct MultiResolutionMap {
     levels: [Level; LEVELS],
-    gpu_cells: [MetalBuffer; LEVELS],
+    /// Cells live here, not in a `Vec`: the buffers are `StorageModeShared`,
+    /// so the CPU reads and writes them directly with no copy. Two per level,
+    /// used ping-pong, because folding a scan in produces a new ordered array
+    /// and doing that straight into device memory removes both a 5 MB
+    /// allocation and a 5 MB upload per level per scan.
+    gpu_cells: [[MetalBuffer; 2]; LEVELS],
     gpu_fits: [MetalBuffer; LEVELS],
+    /// Per-level open-addressing index: slot -> cell index, `u32::MAX` empty.
+    /// Sized once from the budget so it never reallocates mid-run.
+    gpu_tables: [MetalBuffer; LEVELS],
+    table_cap: usize,
+    /// Per-scan cache of live neighborhood fits, shared by the ICP iterations.
+    fitcache_flags: MetalBuffer,
+    fitcache_keys: MetalBuffer,
+    fitcache_fits: MetalBuffer,
+    fitcache_cap: usize,
+    fitcache_gen: u32,
+    fitcache_epoch: u32,
+    /// Reused across scans: eviction would otherwise allocate and initialise
+    /// two ~70k-element vectors per level per scan.
+    evict_idx: Vec<u32>,
+    evict_doomed: Vec<bool>,
+    /// The command buffer from the previous `add`.
+    last_add_cb: Option<AddFence>,
     base: f32,
     sensitivity: f32,
 }
@@ -410,37 +390,61 @@ impl MultiResolutionMap {
         assert!(capacity >= LEVELS && base.is_finite() && base > 0.0);
         let levels = std::array::from_fn(|i| {
             let budget = capacity / LEVELS + usize::from(i < capacity % LEVELS);
-            Level {
-                cells: Vec::new(),
-                fits: Vec::new(),
-                budget,
-            }
+            Level { len: 0, cur: 0, budget }
         });
-        let gpu_cells =
-            std::array::from_fn(|i: usize| MetalBuffer::new(stream, size_of::<Cell>(), levels[i].budget.max(1)));
+        // +1 so a scan can always be folded in before eviction trims back.
+        let gpu_cells: [[MetalBuffer; 2]; LEVELS] = std::array::from_fn(|i: usize| {
+            std::array::from_fn(|_| {
+                MetalBuffer::new(stream, size_of::<Cell>(), levels[i].budget.max(1))
+            })
+        });
         let gpu_fits =
             std::array::from_fn(|i: usize| MetalBuffer::new(stream, size_of::<Fit>(), levels[i].budget.max(1)));
+        let table_cap = (levels.iter().map(|l| l.budget).max().unwrap_or(1).max(1) * 2)
+            .next_power_of_two();
+        let gpu_tables = std::array::from_fn(|_| {
+            let mut table = MetalBuffer::new(stream, size_of::<u32>(), table_cap);
+            table.as_slice_mut::<u32>().fill(u32::MAX);
+            table
+        });
+        let fitcache_cap = 131072usize;
+        let mut fitcache_flags = MetalBuffer::new(stream, size_of::<u32>(), fitcache_cap);
+        fitcache_flags.as_slice_mut::<u32>().fill(0);
         Self {
             levels,
             gpu_cells,
             gpu_fits,
+            gpu_tables,
+            table_cap,
+            fitcache_flags,
+            fitcache_keys: MetalBuffer::new(stream, size_of::<i32>() * 4, fitcache_cap),
+            fitcache_fits: MetalBuffer::new(stream, size_of::<Fit>(), fitcache_cap),
+            fitcache_cap,
+            fitcache_gen: 0,
+            fitcache_epoch: 0,
+            evict_idx: Vec::new(),
+            evict_doomed: Vec::new(),
+            last_add_cb: None,
             base,
             sensitivity,
         }
     }
 
     fn add(&mut self, stream: &Stream, cloud: &MetalBuffer, t: &Vector3, q: &Quaternion, scan: usize) {
+        if let Some(fence) = self.last_add_cb.take() {
+            fence.0.waitUntilCompleted();
+        }
         let scan = scan as u32;
         let points = cloud.as_slice::<Point>();
         let quat: nalgebra::UnitQuaternion<f64> = (*q).into();
-        let rot = [quat.i as f32, quat.j as f32, quat.k as f32, quat.w as f32];
-        let trans = [t.x as f32, t.y as f32, t.z as f32];
+        let rot = [quat.i, quat.j, quat.k, quat.w];
+        let trans = [t.x, t.y, t.z];
 
         let mut batch: Vec<Cell> = points
             .iter()
             .filter_map(|p| {
                 let local = [p.x, p.y, p.z];
-                let world = iso_transform(rot, trans, local);
+                let world = transform_sample(rot, trans, local);
                 if world.iter().any(|v| !v.is_finite()) {
                     return None;
                 }
@@ -456,47 +460,204 @@ impl MultiResolutionMap {
         if batch.is_empty() {
             return;
         }
-        batch = combine_runs(batch, Mode::Raw, self.sensitivity);
+        let t_raw = std::time::Instant::now();
+        batch = combine_runs(batch, Mode::Raw);
+        let d_raw = t_raw.elapsed();
         if batch.is_empty() {
             return;
         }
 
+        let mut d_pool = std::time::Duration::ZERO;
+        let mut d_update = std::time::Duration::ZERO;
+        let mut d_evict = std::time::Duration::ZERO;
+        let mut n_fits = 0usize;
         for level in 0..LEVELS {
             if level > 0 {
+                let t = std::time::Instant::now();
                 for c in &mut batch {
                     c.key = parent_key(c.key);
                 }
-                batch = combine_runs(batch, Mode::Pool, self.sensitivity);
+                batch = combine_runs(batch, Mode::Pool);
+                d_pool += t.elapsed();
             }
             if batch.is_empty() {
                 continue;
             }
-            let lvl = &mut self.levels[level];
-            let merged: Vec<Cell> = lvl.cells.iter().copied().chain(batch.iter().copied()).collect();
-            let mut merged = combine_runs(merged, Mode::Update, self.sensitivity);
-            if merged.len() > lvl.budget {
-                merged.sort_by(|a, b| evict_cmp(a, b, scan));
-                let excess = merged.len() - lvl.budget;
-                merged.drain(0..excess);
-                merged.sort_by(|a, b| key_cmp(&a.key, &b.key));
+            let t = std::time::Instant::now();
+            let (len, cur, budget) = {
+                let lvl = &self.levels[level];
+                (lvl.len, lvl.cur, lvl.budget)
+            };
+            // Grow both buffers together if a scan cannot fit before eviction.
+            let want = len + batch.len();
+            if self.gpu_cells[level][0].capacity() < want {
+                self.gpu_cells[level] = std::array::from_fn(|k| {
+                    let mut fresh = MetalBuffer::new(stream, size_of::<Cell>(), want);
+                    if k == cur {
+                        fresh.as_slice_mut::<Cell>()[..len]
+                            .copy_from_slice(&self.gpu_cells[level][cur].as_slice::<Cell>()[..len]);
+                    }
+                    fresh
+                });
             }
-            lvl.fits = merged
-                .iter()
-                .map(|c| neighborhood_fit(&merged, c.key, self.base))
-                .collect();
-            lvl.cells = merged;
+            // Disjoint &mut into the two halves of the pair, so the merge can
+            // read one buffer and write the other.
+            let (src, dst) = {
+                let [a, b] = &mut self.gpu_cells[level];
+                if cur == 0 { (&*a, b) } else { (&*b, a) }
+            };
+            dst.n = dst.capacity();
+            let cells = &src.as_slice::<Cell>()[..len];
+            let out = dst.as_slice_mut::<Cell>();
+            let mut w = 0usize;
+            let (mut i, mut j) = (0usize, 0usize);
+            while i < len && j < batch.len() {
+                match key_cmp(&cells[i].key, &batch[j].key) {
+                    Ordering::Less => {
+                        out[w] = cells[i];
+                        i += 1;
+                    }
+                    Ordering::Greater => {
+                        out[w] = batch[j];
+                        j += 1;
+                    }
+                    Ordering::Equal => {
+                        // The same fold the old `Mode::Update` performed: the
+                        // existing map cell is the accumulator, the new
+                        // observation is blended into it.
+                        let mut cell = cells[i];
+                        temporal_update(&mut cell, &batch[j], self.sensitivity);
+                        out[w] = cell;
+                        i += 1;
+                        j += 1;
+                    }
+                }
+                w += 1;
+            }
+            out[w..w + (len - i)].copy_from_slice(&cells[i..len]);
+            w += len - i;
+            out[w..w + (batch.len() - j)].copy_from_slice(&batch[j..]);
+            w += batch.len() - j;
+            d_update += t.elapsed();
+
+            let t = std::time::Instant::now();
+            if w > budget {
+                let excess = w - budget;
+                let live = dst.as_slice_mut::<Cell>();
+                let idx = &mut self.evict_idx;
+                idx.clear();
+                idx.extend(0..w as u32);
+                idx.select_nth_unstable_by(excess, |&a, &b| {
+                    evict_cmp(&live[a as usize], &live[b as usize], scan)
+                });
+                let doomed = &mut self.evict_doomed;
+                doomed.clear();
+                doomed.resize(w, false);
+                for &k in &idx[..excess] {
+                    doomed[k as usize] = true;
+                }
+                let mut keep = 0usize;
+                for k in 0..w {
+                    if !doomed[k] {
+                        live[keep] = live[k];
+                        keep += 1;
+                    }
+                }
+                w = keep;
+            }
+            d_evict += t.elapsed();
+            n_fits += w;
+            let lvl = &mut self.levels[level];
+            lvl.len = w;
+            lvl.cur = 1 - cur;
         }
 
         for level in 0..LEVELS {
-            let lvl = &self.levels[level];
-            let want = lvl.cells.len().max(1);
-            if self.gpu_cells[level].capacity() < want {
-                self.gpu_cells[level] = MetalBuffer::new(stream, size_of::<Cell>(), want);
-                self.gpu_fits[level] = MetalBuffer::new(stream, size_of::<Fit>(), want);
+            let n = self.levels[level].len;
+            if self.gpu_fits[level].capacity() < n.max(1) {
+                self.gpu_fits[level] = MetalBuffer::new(stream, size_of::<Fit>(), n.max(1));
             }
-            self.gpu_cells[level].upload(stream, &lvl.cells);
-            self.gpu_fits[level].upload(stream, &lvl.fits);
+            self.gpu_fits[level].n = n;
+            self.gpu_cells[level][self.levels[level].cur].n = n;
         }
+        let t_gpu = std::time::Instant::now();
+        {
+            let pipes = get_pipelines(&stream.device);
+            let cb = stream.queue.commandBuffer().expect("cb");
+            let enc = cb.computeCommandEncoder().expect("enc");
+
+            let params: [CacheParams; LEVELS] = std::array::from_fn(|level| CacheParams {
+                n: self.levels[level].len as u32,
+                resolution: self.base,
+                cap: self.table_cap as u32,
+                _pad: 0,
+            });
+            let bind = |enc: &ProtocolObject<dyn MTLComputeCommandEncoder>,
+                            level: usize,
+                            index: usize| unsafe {
+                enc.setBytes_length_atIndex(
+                    std::ptr::NonNull::new(&params[level] as *const _ as *mut _).unwrap(),
+                    size_of::<CacheParams>(),
+                    index,
+                );
+            };
+
+            enc.setComputePipelineState(&pipes.mr_table_init);
+            for level in 0..LEVELS {
+                unsafe {
+                    enc.setBuffer_offset_atIndex(Some(self.gpu_tables[level].metal_buffer()), 0, 0);
+                }
+                bind(&enc, level, 1);
+                enc.dispatchThreads_threadsPerThreadgroup(grid1d(self.table_cap), group1d());
+            }
+            enc.memoryBarrierWithScope(MTLBarrierScope::Buffers);
+
+            enc.setComputePipelineState(&pipes.mr_table_build);
+            for level in 0..LEVELS {
+                let n = self.levels[level].len;
+                if n == 0 {
+                    continue;
+                }
+                unsafe {
+                    enc.setBuffer_offset_atIndex(Some(self.gpu_tables[level].metal_buffer()), 0, 0);
+                    enc.setBuffer_offset_atIndex(Some(self.gpu_cells[level][self.levels[level].cur].metal_buffer()), 0, 1);
+                }
+                bind(&enc, level, 2);
+                enc.dispatchThreads_threadsPerThreadgroup(grid1d(n), group1d());
+            }
+            enc.memoryBarrierWithScope(MTLBarrierScope::Buffers);
+
+            enc.setComputePipelineState(&pipes.mr_cache_fits);
+            for level in 0..LEVELS {
+                let n = self.levels[level].len;
+                if n == 0 {
+                    continue;
+                }
+                unsafe {
+                    enc.setBuffer_offset_atIndex(Some(self.gpu_cells[level][self.levels[level].cur].metal_buffer()), 0, 0);
+                    enc.setBuffer_offset_atIndex(Some(self.gpu_fits[level].metal_buffer()), 0, 1);
+                    enc.setBuffer_offset_atIndex(Some(self.gpu_tables[level].metal_buffer()), 0, 2);
+                }
+                bind(&enc, level, 3);
+                enc.dispatchThreads_threadsPerThreadgroup(grid1d(n), group1d());
+            }
+            enc.endEncoding();
+            cb.commit();
+            self.last_add_cb = Some(AddFence(cb));
+        }
+
+        // The map just changed, so everything cached before now is stale.
+        self.fitcache_epoch = self.fitcache_gen + 1;
+
+        log::debug!(
+            "[Metal-Multires] add: raw={:?}, pool={:?}, update={:?}, evict={:?}, gpu_enqueue={:?}, cells={}",
+            d_raw,
+            d_pool,
+            d_update,
+            d_evict,
+            t_gpu.elapsed(),
+            n_fits
+        );
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -522,6 +683,10 @@ impl MultiResolutionMap {
             *out_gpu = MetalBuffer::new(stream, size_of::<GpuPointNormal>(), n);
         }
 
+        // One generation per query dispatch; entries published by this one
+        // become readable to the next.
+        self.fitcache_gen += 1;
+
         let q: nalgebra::UnitQuaternion<f64> = (*q).into();
         let ext_q: nalgebra::UnitQuaternion<f64> = (*ext_q).into();
         let params = QueryParams {
@@ -532,9 +697,13 @@ impl MultiResolutionMap {
             pose_trans: [t.x as f32, t.y as f32, t.z as f32],
             _pad1: 0.0,
             resolution: self.base,
-            level_sizes: std::array::from_fn(|i| self.levels[i].cells.len() as u32),
+            table_cap: self.table_cap as u32,
             n: n as u32,
-            _pad2: [0; 3],
+            level_sizes: std::array::from_fn(|i| self.levels[i].len as u32),
+            fitcache_cap: self.fitcache_cap as u32,
+            fitcache_gen: self.fitcache_gen,
+            fitcache_epoch: self.fitcache_epoch,
+            _pad2: 0,
         };
 
         let t_gpu = Instant::now();
@@ -545,19 +714,26 @@ impl MultiResolutionMap {
             enc.setComputePipelineState(&pipes.mr_query);
             unsafe {
                 enc.setBuffer_offset_atIndex(Some(cloud.metal_buffer()), 0, 0);
-                enc.setBuffer_offset_atIndex(Some(self.gpu_cells[0].metal_buffer()), 0, 1);
-                enc.setBuffer_offset_atIndex(Some(self.gpu_cells[1].metal_buffer()), 0, 2);
-                enc.setBuffer_offset_atIndex(Some(self.gpu_cells[2].metal_buffer()), 0, 3);
-                enc.setBuffer_offset_atIndex(Some(self.gpu_cells[3].metal_buffer()), 0, 4);
+                enc.setBuffer_offset_atIndex(Some(self.gpu_cells[0][self.levels[0].cur].metal_buffer()), 0, 1);
+                enc.setBuffer_offset_atIndex(Some(self.gpu_cells[1][self.levels[1].cur].metal_buffer()), 0, 2);
+                enc.setBuffer_offset_atIndex(Some(self.gpu_cells[2][self.levels[2].cur].metal_buffer()), 0, 3);
+                enc.setBuffer_offset_atIndex(Some(self.gpu_cells[3][self.levels[3].cur].metal_buffer()), 0, 4);
                 enc.setBuffer_offset_atIndex(Some(self.gpu_fits[0].metal_buffer()), 0, 5);
                 enc.setBuffer_offset_atIndex(Some(self.gpu_fits[1].metal_buffer()), 0, 6);
                 enc.setBuffer_offset_atIndex(Some(self.gpu_fits[2].metal_buffer()), 0, 7);
                 enc.setBuffer_offset_atIndex(Some(self.gpu_fits[3].metal_buffer()), 0, 8);
-                enc.setBuffer_offset_atIndex(Some(out_gpu.metal_buffer()), 0, 9);
+                enc.setBuffer_offset_atIndex(Some(self.gpu_tables[0].metal_buffer()), 0, 9);
+                enc.setBuffer_offset_atIndex(Some(self.gpu_tables[1].metal_buffer()), 0, 10);
+                enc.setBuffer_offset_atIndex(Some(self.gpu_tables[2].metal_buffer()), 0, 11);
+                enc.setBuffer_offset_atIndex(Some(self.gpu_tables[3].metal_buffer()), 0, 12);
+                enc.setBuffer_offset_atIndex(Some(self.fitcache_flags.metal_buffer()), 0, 13);
+                enc.setBuffer_offset_atIndex(Some(self.fitcache_keys.metal_buffer()), 0, 14);
+                enc.setBuffer_offset_atIndex(Some(self.fitcache_fits.metal_buffer()), 0, 15);
+                enc.setBuffer_offset_atIndex(Some(out_gpu.metal_buffer()), 0, 16);
                 enc.setBytes_length_atIndex(
                     std::ptr::NonNull::new(&params as *const _ as *mut _).unwrap(),
                     size_of::<QueryParams>(),
-                    10,
+                    17,
                 );
                 enc.dispatchThreads_threadsPerThreadgroup(grid1d(n), group1d());
             }
@@ -588,13 +764,14 @@ impl MultiResolutionMap {
     }
 
     fn size(&self) -> u32 {
-        self.levels.iter().map(|l| l.cells.len() as u32).sum()
+        self.levels.iter().map(|l| l.len as u32).sum()
     }
 
     fn get_map_with_recency(&self) -> Vec<(nalgebra::Point3<f32>, u8, u32)> {
-        let mut out = Vec::with_capacity(self.levels.iter().map(|l| l.cells.len()).sum());
+        let mut out = Vec::with_capacity(self.levels.iter().map(|l| l.len).sum());
         for (level, l) in self.levels.iter().enumerate() {
-            out.extend(l.cells.iter().map(|c| {
+            let cells = &self.gpu_cells[level][l.cur].as_slice::<Cell>()[..l.len];
+            out.extend(cells.iter().map(|c| {
                 (
                     nalgebra::Point3::new(c.mean[0], c.mean[1], c.mean[2]),
                     level as u8,

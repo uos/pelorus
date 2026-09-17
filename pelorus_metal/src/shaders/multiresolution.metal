@@ -1,21 +1,4 @@
-// multiresolution.metal — GPU-accelerated correspondence query against the
-// CPU-maintained multiresolution distribution pyramid (see
-// pelorus_metal::multiresolution). Building the pyramid itself (folding in
-// new samples, merging, LRU eviction, neighborhood-fit caching) runs on the
-// CPU in plain Rust — those touch only a few thousand cells per scan, so
-// they are not worth an unverifiable custom GPU sort/scan network. This
-// kernel handles only the hot, per-point plane lookup, called every ICP
-// iteration for every point in a scan, mirroring `plane_krnl` in planes.metal.
-//
-// Metal has no double-precision floating point, so this runs in float
-// throughout — the same precision tier the rest of this Metal backend
-// already uses. The Vulkan/CUDA multiresolution backends use double for
-// pose composition and eigendecomposition instead.
-// Included after common.metal (iso_transform, symmetric_eigen_3x3) and
-// planes.metal in the compiled source.
-
-// Layout below must match `pelorus_metal::multiresolution::Cell` exactly
-// (72 bytes, no padding: 3×i32 + u32 + u64 + 3×f32 + 9×f32).
+// Must match `pelorus_metal::multiresolution::Cell`.
 struct MRCell {
     int key[3];
     uint scan;
@@ -24,7 +7,7 @@ struct MRCell {
     float cov[9];
 };
 
-// Must match `pelorus_metal::multiresolution::Fit` exactly (68 bytes).
+// Must match `pelorus_metal::multiresolution::Fit`.
 struct MRFit {
     uint status;
     float mean[3];
@@ -35,7 +18,7 @@ struct MRFit {
     float d;
 };
 
-// Must match `pelorus_metal::multiresolution::QueryParams` exactly (100 bytes).
+// Must match `pelorus_metal::multiresolution::QueryParams`.
 struct MRQueryParams {
     float lidar_to_imu_quat[4];
     float lidar_to_imu_pos[3];
@@ -44,9 +27,13 @@ struct MRQueryParams {
     float pose_trans[3];
     float _pad1;
     float resolution;
-    uint level_sizes[4];
+    uint table_cap;
     uint n;
-    uint _pad2[3];
+    uint level_sizes[4];
+    uint fitcache_cap;
+    uint fitcache_gen;
+    uint fitcache_epoch;
+    uint _pad2;
 };
 
 template <typename A, typename B>
@@ -85,9 +72,6 @@ inline void mr_empty_cell(thread MRCell& c) {
     for (int i = 0; i < 9; i++) c.cov[i] = 0.0;
 }
 
-// `b` is taken by value so callers can pass a `device` cell directly. A
-// by-value struct parameter copies out of whatever address space the
-// argument lives in. A reference parameter would need to match exactly.
 inline void mr_pool(thread MRCell& a, MRCell b) {
     if (b.count == 0) return;
     if (a.count == 0) { a = b; return; }
@@ -102,22 +86,30 @@ inline void mr_pool(thread MRCell& a, MRCell b) {
     a.count = ulong(n);
 }
 
-// Binary search a key-sorted level (cells are kept sorted by the CPU side).
-inline int mr_find_cell(device const MRCell* cells, uint n, thread const int* key) {
-    uint lo = 0, hi = n;
-    while (lo < hi) {
-        uint mid = lo + (hi - lo) / 2;
-        if (mr_key_less(cells[mid].key, key)) lo = mid + 1; else hi = mid;
-    }
-    if (lo >= n) return -1;
-    return mr_key_equal(cells[lo].key, key) ? int(lo) : -1;
+#define MR_EMPTY_SLOT 0xffffffffu
+
+inline uint mr_slot(thread const int* key, uint cap) {
+    return hash_fn(hash_grid(int3(key[0], key[1], key[2]))) & (cap - 1u);
 }
 
-// Null-space of (cov - lambda*I) via cross products of the shifted rows,
-// picking the largest-magnitude candidate — the same technique `plane_fit`
-// in planes.metal already uses to recover the smallest-eigenvalue
-// eigenvector from a closed-form eigenvalue solve (Metal has no
-// closed-form eigenvector solver of its own).
+// Locate a cell by key through a per-level open-addressing index.
+//
+// This replaced a binary search over the key-sorted cell array. The search
+// was correct but pathologically slow here: a scan is only ~5k points, far
+// too few to fill the GPU, so `mr_query` is bound by the latency of
+// dependent random loads rather than by throughput
+inline int mr_find_cell(device const MRCell* cells, device const uint* table, uint cap,
+                        thread const int* key) {
+    uint slot = mr_slot(key, cap);
+    for (uint probe = 0; probe < cap; ++probe) {
+        uint v = table[slot];
+        if (v == MR_EMPTY_SLOT) return -1;
+        if (mr_key_equal(cells[v].key, key)) return int(v);
+        slot = (slot + 1u) & (cap - 1u);
+    }
+    return -1;
+}
+
 inline float3 mr_eigenvector(thread const float* cov, float lambda) {
     float m[9];
     for (int i = 0; i < 9; i++) m[i] = cov[i];
@@ -135,7 +127,7 @@ inline float3 mr_eigenvector(thread const float* cov, float lambda) {
 // Fit a plane to a pooled cell. Mirrors `mr_fit` in the Vulkan/CUDA kernels:
 // status 0 = insufficient support, 1 = conflicting/degenerate (stop the
 // caller's level search), 2 = usable plane.
-inline MRFit mr_fit(MRCell cell, float resolution) {
+inline MRFit mr_fit(thread const MRCell& cell, float resolution) {
     MRFit f;
     f.status = 0;
     for (int i = 0; i < 3; i++) { f.mean[i] = 0; f.normal[i] = 0; }
@@ -144,14 +136,12 @@ inline MRFit mr_fit(MRCell cell, float resolution) {
     if (cell.count < 6) return f;
     f.status = 1;
 
-    float cov[9];
     for (int i = 0; i < 9; i++) {
         float x = cell.cov[i];
         if (isnan(x) || isinf(x)) return f;
-        cov[i] = x;
     }
 
-    float3 ev = symmetric_eigen_3x3(cov);
+    float3 ev = symmetric_eigen_3x3(cell.cov);
     int idx[3] = {0, 1, 2};
     float val[3] = {ev.x, ev.y, ev.z};
     for (int i = 0; i < 3; i++)
@@ -167,15 +157,20 @@ inline MRFit mr_fit(MRCell cell, float resolution) {
     if (small > thickness * thickness || small > .1 * middle) return f;
     f.status = 2;
 
-    float3 normal = mr_eigenvector(cov, val[idx[0]]);
-    float3 tangent0_raw = mr_eigenvector(cov, val[idx[1]]);
+    float3 normal = mr_eigenvector(cell.cov, val[idx[0]]);
+    float3 tangent0_raw = mr_eigenvector(cell.cov, val[idx[1]]);
     // Re-orthogonalize against `normal`. The two null-space directions are
     // only exactly orthogonal for an exact shift, so guard numerical drift
     // and near-degenerate (repeated-eigenvalue) cases before completing the
     // right-handed basis.
     float3 t0 = tangent0_raw - normal * dot(tangent0_raw, normal);
     float t0len = length(t0);
-    float3 tangent0 = t0len > 1e-6f ? t0 / t0len : normalize(cross(normal, float3(0, 0, 1)));
+    // Choose the least-aligned axis: crossing a horizontal plane's normal
+    // with z would produce zero and normalize it into NaNs.
+    float3 nabs = abs(normal);
+    float3 axis = nabs.x <= nabs.y && nabs.x <= nabs.z ? float3(1, 0, 0)
+        : nabs.y <= nabs.z ? float3(0, 1, 0) : float3(0, 0, 1);
+    float3 tangent0 = t0len > 1e-6f ? t0 / t0len : normalize(cross(normal, axis));
     float3 tangent1 = cross(normal, tangent0);
 
     f.mean[0] = cell.mean[0]; f.mean[1] = cell.mean[1]; f.mean[2] = cell.mean[2];
@@ -193,17 +188,87 @@ inline MRFit mr_fit(MRCell cell, float resolution) {
 
 // Live 3x3x3 neighborhood pool + fit, for query points whose grid cell has
 // no cached fit (i.e. it fell in a key with no cell of its own at this level).
-inline MRFit mr_neighborhood(device const MRCell* cells, uint n, thread const int* key, float resolution) {
+inline MRFit mr_neighborhood(device const MRCell* cells, device const uint* table, uint cap,
+                             uint n, thread const int* key, float resolution) {
     MRCell pooled;
     mr_empty_cell(pooled);
+
     for (int dx = -1; dx <= 1; dx++)
-        for (int dy = -1; dy <= 1; dy++)
+        for (int dy = -1; dy <= 1; dy++) {
+            int idx = -1;
             for (int dz = -1; dz <= 1; dz++) {
                 int k[3] = {mr_neighbor(key[0], dx), mr_neighbor(key[1], dy), mr_neighbor(key[2], dz)};
-                int i = mr_find_cell(cells, n, k);
-                if (i >= 0) mr_pool(pooled, cells[i]);
+                if (idx >= 0 && uint(idx) + 1u < n && mr_key_equal(cells[idx + 1].key, k)) {
+                    idx = idx + 1;
+                } else {
+                    idx = mr_find_cell(cells, table, cap, k);
+                }
+                if (idx >= 0) mr_pool(pooled, cells[idx]);
             }
+        }
     return mr_fit(pooled, resolution);
+}
+
+// Must match `pelorus_metal::multiresolution::CacheParams` exactly (16 bytes).
+struct MRCacheParams {
+    uint n;
+    float resolution;
+    uint cap;
+    uint _pad;
+};
+
+constant uint MR_FC_FREE    = 0u;
+constant uint MR_FC_WRITING = 1u;
+constant uint MR_FC_GEN_BIAS = 2u;
+
+inline uint mr_fc_slot(uint level, thread const int* key, uint cap) {
+    uint h = hash_fn(hash_grid(int3(key[0], key[1], key[2])));
+    return (h * 2654435761u + level * 2246822519u) & (cap - 1u);
+}
+
+inline bool mr_fc_key_eq(device const int* k, uint level, thread const int* key) {
+    return k[0] == int(level) && k[1] == key[0] && k[2] == key[1] && k[3] == key[2];
+}
+
+kernel void mr_table_init(
+    device uint*             table [[buffer(0)]],
+    constant MRCacheParams&  p     [[buffer(1)]],
+    uint i [[thread_position_in_grid]])
+{
+    if (i < p.cap) table[i] = MR_EMPTY_SLOT;
+}
+
+kernel void mr_table_build(
+    device atomic_uint*      table [[buffer(0)]],
+    device const MRCell*     cells [[buffer(1)]],
+    constant MRCacheParams&  p     [[buffer(2)]],
+    uint i [[thread_position_in_grid]])
+{
+    if (i >= p.n) return;
+    int key[3] = {cells[i].key[0], cells[i].key[1], cells[i].key[2]};
+    uint slot = mr_slot(key, p.cap);
+    for (uint probe = 0; probe < p.cap; ++probe) {
+        uint expected = MR_EMPTY_SLOT;
+        if (atomic_compare_exchange_weak_explicit(&table[slot], &expected, i,
+                                                  memory_order_relaxed,
+                                                  memory_order_relaxed)) {
+            return;
+        }
+        slot = (slot + 1u) & (p.cap - 1u);
+    }
+}
+
+kernel void mr_cache_fits(
+    device const MRCell*     cells [[buffer(0)]],
+    device MRFit*            fits  [[buffer(1)]],
+    device const uint*       table [[buffer(2)]],
+    constant MRCacheParams&  p     [[buffer(3)]],
+    uint i [[thread_position_in_grid]])
+{
+    if (i >= p.n) return;
+    // mr_neighborhood takes a thread-address-space key.
+    int key[3] = {cells[i].key[0], cells[i].key[1], cells[i].key[2]};
+    fits[i] = mr_neighborhood(cells, table, p.cap, p.n, key, p.resolution);
 }
 
 kernel void mr_query(
@@ -216,8 +281,15 @@ kernel void mr_query(
     device const MRFit*    fits1    [[buffer(6)]],
     device const MRFit*    fits2    [[buffer(7)]],
     device const MRFit*    fits3    [[buffer(8)]],
-    device PointNormal*    out_buff [[buffer(9)]],
-    constant MRQueryParams& p       [[buffer(10)]],
+    device const uint*     table0   [[buffer(9)]],
+    device const uint*     table1   [[buffer(10)]],
+    device const uint*     table2   [[buffer(11)]],
+    device const uint*     table3   [[buffer(12)]],
+    device atomic_uint*    fc_flags [[buffer(13)]],
+    device int*            fc_keys  [[buffer(14)]],
+    device MRFit*          fc_fits  [[buffer(15)]],
+    device PointNormal*    out_buff [[buffer(16)]],
+    constant MRQueryParams& p       [[buffer(17)]],
     uint idx [[thread_position_in_grid]])
 {
     if (idx >= p.n) return;
@@ -246,13 +318,20 @@ kernel void mr_query(
         float r = p.resolution * (.5 * float(1u << l));
         int key[3];
         mr_grid(world, r, key);
-        uint n = p.level_sizes[l];
+        uint cap = p.table_cap;
+        uint ln = p.level_sizes[l];
+        
+        // Registration queries before the first scan is added, so a level that
+        // has no cells yet also has a hash table that `mr_table_init` has never
+        // touched. Probing it would read whatever the allocator returned and
+        // could report a cell that does not exist.
+        if (ln == 0) continue;
 
         int cell = -1;
-        if (l == 0) cell = mr_find_cell(cells0, n, key);
-        else if (l == 1) cell = mr_find_cell(cells1, n, key);
-        else if (l == 2) cell = mr_find_cell(cells2, n, key);
-        else cell = mr_find_cell(cells3, n, key);
+        if (l == 0) cell = mr_find_cell(cells0, table0, cap, key);
+        else if (l == 1) cell = mr_find_cell(cells1, table1, cap, key);
+        else if (l == 2) cell = mr_find_cell(cells2, table2, cap, key);
+        else cell = mr_find_cell(cells3, table3, cap, key);
 
         MRFit f;
         if (cell >= 0) {
@@ -261,10 +340,60 @@ kernel void mr_query(
             else if (l == 2) f = fits2[cell];
             else f = fits3[cell];
         } else {
-            if (l == 0) f = mr_neighborhood(cells0, n, key, p.resolution);
-            else if (l == 1) f = mr_neighborhood(cells1, n, key, p.resolution);
-            else if (l == 2) f = mr_neighborhood(cells2, n, key, p.resolution);
-            else f = mr_neighborhood(cells3, n, key, p.resolution);
+            uint fcap = p.fitcache_cap;
+            bool hit = false;
+            uint free_slot = 0xffffffffu;
+            if (fcap > 0u) {
+                uint slot = mr_fc_slot(l, key, fcap);
+                for (uint probe = 0; probe < 16u; ++probe) {
+                    uint fl = atomic_load_explicit(&fc_flags[slot], memory_order_relaxed);
+                    if (fl == MR_FC_FREE) {
+                        if (free_slot == 0xffffffffu) free_slot = slot;
+                        break;
+                    }
+                    if (fl != MR_FC_WRITING) {
+                        uint gen = fl - MR_FC_GEN_BIAS;
+                        if (gen < p.fitcache_epoch) {
+                            // Left over from an earlier scan: reusable, but
+                            // keep probing in case this key is further along.
+                            if (free_slot == 0xffffffffu) free_slot = slot;
+                        } else if (gen < p.fitcache_gen
+                                   && mr_fc_key_eq(&fc_keys[slot * 4u], l, key)) {
+                            f = fc_fits[slot];
+                            hit = true;
+                            break;
+                        }
+                    }
+                    slot = (slot + 1u) & (fcap - 1u);
+                }
+            }
+            if (!hit) {
+                if (l == 0) f = mr_neighborhood(cells0, table0, cap, ln, key, p.resolution);
+                else if (l == 1) f = mr_neighborhood(cells1, table1, cap, ln, key, p.resolution);
+                else if (l == 2) f = mr_neighborhood(cells2, table2, cap, ln, key, p.resolution);
+                else f = mr_neighborhood(cells3, table3, cap, ln, key, p.resolution);
+                if (free_slot != 0xffffffffu) {
+                    uint expected = atomic_load_explicit(&fc_flags[free_slot],
+                                                         memory_order_relaxed);
+                    bool claimable = expected == MR_FC_FREE
+                        || (expected != MR_FC_WRITING
+                            && expected - MR_FC_GEN_BIAS < p.fitcache_epoch);
+                    if (claimable && atomic_compare_exchange_weak_explicit(
+                            &fc_flags[free_slot], &expected, MR_FC_WRITING,
+                            memory_order_relaxed, memory_order_relaxed)) {
+                        fc_keys[free_slot * 4u + 0u] = int(l);
+                        fc_keys[free_slot * 4u + 1u] = key[0];
+                        fc_keys[free_slot * 4u + 2u] = key[1];
+                        fc_keys[free_slot * 4u + 3u] = key[2];
+                        fc_fits[free_slot] = f;
+                        // Tagged with this dispatch's generation, so only a
+                        // later dispatch will read it.
+                        atomic_store_explicit(&fc_flags[free_slot],
+                                              p.fitcache_gen + MR_FC_GEN_BIAS,
+                                              memory_order_relaxed);
+                    }
+                }
+            }
         }
 
         if (f.status == 0) continue;

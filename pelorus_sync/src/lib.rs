@@ -532,7 +532,7 @@ mod tests {
         downsampled
     }
 
-    #[cfg(feature = "cuda")]
+    #[cfg(any(feature = "cuda", feature = "metal"))]
     fn dense_downsample_cloud() -> Vec<PointXYZIT> {
         let voxel_count = 4096usize;
         let points_per_voxel = 16usize;
@@ -565,7 +565,7 @@ mod tests {
         points
     }
 
-    #[cfg(feature = "cuda")]
+    #[cfg(any(feature = "cuda", feature = "metal"))]
     fn rounding_sensitive_medoid_cloud() -> Vec<PointXYZIT> {
         vec![
             PointXYZIT {
@@ -950,6 +950,65 @@ mod tests {
         let (actual, _) = pelorus_vulkan::downsample_points_vulkan(&stream, &points, 1, 1.0);
 
         assert_eq!(actual, expected);
+    }
+
+    #[cfg(feature = "metal")]
+    #[test]
+    fn metal_downsample_matches_cpu_ties_and_ordering() {
+        let points = adversarial_downsample_cloud();
+        let expected = cpu_downsample_reference(&points);
+        let stream = pelorus_metal::Stream::new();
+        let (actual, _) = pelorus_metal::downsample_points_metal(&stream, &points, 1, 1.0);
+
+        assert_eq!(actual, expected);
+    }
+
+    #[cfg(feature = "metal")]
+    #[test]
+    fn metal_downsample_matches_cpu_for_rounding_sensitive_medoid() {
+        let points = rounding_sensitive_medoid_cloud();
+        let expected = cpu_downsample_reference(&points);
+        let stream = pelorus_metal::Stream::new();
+        let (actual, _) = pelorus_metal::downsample_points_metal(&stream, &points, 1, 1.0);
+
+        assert_eq!(expected, vec![points[0]]);
+        assert_eq!(actual, expected);
+    }
+
+    #[cfg(feature = "metal")]
+    #[test]
+    fn metal_downsample_matches_cpu_at_realistic_density() {
+        let points = dense_downsample_cloud();
+        let expected = cpu_downsample_reference(&points);
+        let stream = pelorus_metal::Stream::new();
+        let (actual, _) = pelorus_metal::downsample_points_metal(&stream, &points, 1, 1.0);
+
+        assert_eq!(actual.len(), expected.len());
+        for (index, (actual, expected)) in actual.iter().zip(&expected).enumerate() {
+            assert_eq!(
+                actual, expected,
+                "Metal downsample differs from CPU at output point {index}"
+            );
+        }
+    }
+
+    /// `downsample_rle` picks each run's output slot with an atomic
+    /// fetch-add, so the medoids come back in thread-race order. The output
+    /// ordering must not depend on that: sorting it is what pins the result
+    /// down, and it has to be a total order to do so. Without it the whole
+    /// Metal backend drifts run to run (~0.017 m over a 139 s bag), because
+    /// per-voxel mean/covariance sums are accumulated in array order.
+    #[cfg(feature = "metal")]
+    #[test]
+    fn metal_downsample_is_deterministic_across_repeated_runs() {
+        let points = dense_downsample_cloud();
+        let stream = pelorus_metal::Stream::new();
+        let (first, _) = pelorus_metal::downsample_points_metal(&stream, &points, 1, 1.0);
+        assert!(first.len() > 1000, "expected a substantial cloud");
+        for attempt in 1..8 {
+            let (again, _) = pelorus_metal::downsample_points_metal(&stream, &points, 1, 1.0);
+            assert_eq!(again, first, "Metal downsample differed on attempt {attempt}");
+        }
     }
 }
 

@@ -1,10 +1,9 @@
-//! Device-resident distribution pyramid. Counts cross to the host between
-//! passes. Observations, statistics, sorting, fitting and selection stay on GPU.
+//! Device-resident distribution pyramid.
 use crate::buffer::VulkanBuffer;
 use crate::compute_session::{ComputeCommandResources, ComputeCommandSession, scan_work_items};
 use crate::context::VulkanContext;
 use crate::map::vk_buffer_handle as handle;
-use crate::pipelines::{PushConstants, VulkanComputePipelines, build_pipelines};
+use crate::pipelines::{PushConstants, THREADS_PER_GROUP, VulkanComputePipelines, build_pipelines};
 use crate::planes::VulkanPlaneTimings;
 use crate::stream::{Stream, StreamBackend};
 use crate::types::{PointNormal, Quaternion, Vector3};
@@ -39,6 +38,7 @@ const _: () = assert!(size_of::<Cell>() == 72 && size_of::<Fit>() == 68);
 struct Level {
     cells: VulkanBuffer,
     fits: VulkanBuffer,
+    table: VulkanBuffer,
     n: u32,
     budget: u32,
 }
@@ -52,6 +52,7 @@ struct Scratch {
     offsets: VulkanBuffer,
     sums: VulkanBuffer,
     planes: VulkanBuffer,
+    plane_readback: VulkanBuffer,
     counter: VulkanBuffer,
     poses: VulkanBuffer,
     cap: usize,
@@ -84,6 +85,7 @@ impl MultiResolutionMap {
             Level {
                 cells: alloc(size_of::<Cell>(), budget),
                 fits: alloc(size_of::<Fit>(), budget),
+                table: alloc(4, budget.next_power_of_two() * 2),
                 n: 0,
                 budget: budget as u32,
             }
@@ -105,6 +107,11 @@ impl MultiResolutionMap {
                 offsets: alloc(4, 1),
                 sums: alloc(4, 1),
                 planes: alloc(size_of::<PointNormal>(), 1),
+                plane_readback: VulkanBuffer::new_host_readback(
+                    stream,
+                    size_of::<PointNormal>(),
+                    1,
+                ),
                 counter: VulkanBuffer::new_host_visible(stream, 4, 1),
                 poses: VulkanBuffer::new_host_visible(stream, 8, 7),
                 cap: 1,
@@ -126,6 +133,8 @@ impl MultiResolutionMap {
         self.scratch.offsets = alloc(4);
         self.scratch.sums = VulkanBuffer::new_device_local_required(stream, 4, cap.div_ceil(512));
         self.scratch.planes = alloc(size_of::<PointNormal>());
+        self.scratch.plane_readback =
+            VulkanBuffer::new_host_readback(stream, size_of::<PointNormal>(), cap);
         self.scratch.cap = cap;
     }
     fn params(&self, n: u32, scan: u32) -> PushConstants {
@@ -178,13 +187,19 @@ impl MultiResolutionMap {
         p.nbtype = u32::from(eviction);
         p.k = 0;
         self.dispatch(session, 1, b, &p, p.cap);
-        let mut k = 2;
+        // The initialization dispatch sorts each workgroup in shared memory.
+        // Only comparisons spanning workgroups need separate dispatches.
+        let mut k = THREADS_PER_GROUP * 2;
         while k <= p.cap {
             p.k = k;
             let mut j = k / 2;
             while j > 0 {
                 p.j = j;
                 self.dispatch(session, 1, b, &p, p.cap);
+                if j < THREADS_PER_GROUP {
+                    // This dispatch finishes every remaining stride in its tile.
+                    break;
+                }
                 j /= 2;
             }
             k *= 2;
@@ -206,27 +221,30 @@ impl MultiResolutionMap {
         count[0]
     }
     // Modes: 2 raw two-pass statistics, 0 parent pooling, 3 temporal update.
-    fn reduce(&mut self, stream: &Stream, n: u32, scan: u32, mode: u32, output: vk::Buffer) -> u32 {
-        if n == 0 {
-            return 0;
-        }
-        self.scratch.counter.upload(stream, &[n]);
+    fn record_reduce(
+        &self,
+        session: &mut ComputeCommandSession<'_>,
+        n: u32,
+        scan: u32,
+        mode: u32,
+        output: vk::Buffer,
+        sorted: bool,
+    ) {
         let mut p = self.params(n, scan);
         let mut b = self.buffers();
         b[0] = handle(&self.scratch.work);
         b[1] = handle(&self.scratch.reduced);
-        let mut session = self.begin();
-        self.sort(&mut session, &b, &p, false);
+        if !sorted {
+            self.sort(session, &b, &p, false);
+        }
         p.nbtype = mode;
-        self.dispatch(&mut session, 2, &b, &p, n);
-        self.prefix(&mut session, &b, &p);
+        self.dispatch(session, 2, &b, &p, n);
+        self.prefix(session, &b, &p);
         b[0] = handle(&self.scratch.reduced);
         b[1] = output;
-        self.dispatch(&mut session, 3, &b, &p, n);
+        self.dispatch(session, 3, &b, &p, n);
         session.dispatch(&self.compute, self.compute.plane_count, &b, &p, 1);
         session.shader_to_readback_barrier();
-        session.submit();
-        self.read_count(stream)
     }
     pub(crate) fn add(
         &mut self,
@@ -249,10 +267,19 @@ impl MultiResolutionMap {
         b[0] = handle(&self.scratch.work);
         b[13] = handle(cloud);
         let p = self.params(n, scan);
+        self.scratch.counter.upload(stream, &[n]);
         let mut session = self.begin();
         self.dispatch(&mut session, 0, &b, &p, n);
+        self.record_reduce(
+            &mut session,
+            n,
+            scan,
+            2,
+            handle(&self.scratch.batches),
+            false,
+        );
         session.submit();
-        let mut batch_n = self.reduce(stream, n, scan, 2, handle(&self.scratch.batches));
+        let mut batch_n = self.read_count(stream);
         if batch_n == 0 {
             return;
         }
@@ -262,10 +289,19 @@ impl MultiResolutionMap {
                 b[0] = handle(&self.scratch.batches);
                 b[1] = handle(&self.scratch.work);
                 let p = self.params(batch_n, scan);
+                self.scratch.counter.upload(stream, &[batch_n]);
                 let mut session = self.begin();
                 self.dispatch(&mut session, 4, &b, &p, batch_n);
+                self.record_reduce(
+                    &mut session,
+                    batch_n,
+                    scan,
+                    0,
+                    handle(&self.scratch.batches),
+                    false,
+                );
                 session.submit();
-                batch_n = self.reduce(stream, batch_n, scan, 0, handle(&self.scratch.batches));
+                batch_n = self.read_count(stream);
             }
             let old_n = self.levels[level].n;
             let total = old_n + batch_n;
@@ -275,10 +311,21 @@ impl MultiResolutionMap {
             b[0] = handle(&self.levels[level].cells);
             b[3] = handle(&self.scratch.batches);
             b[1] = handle(&self.scratch.work);
+            self.scratch.counter.upload(stream, &[total]);
             let mut session = self.begin();
-            self.dispatch(&mut session, 5, &b, &p, total);
+            // Both inputs are sorted; equal keys keep old cells first. The merge
+            // writes identity indices, so temporal reduction needs no key sort.
+            self.dispatch(&mut session, 10, &b, &p, total);
+            self.record_reduce(
+                &mut session,
+                total,
+                scan,
+                3,
+                handle(&self.scratch.combined),
+                true,
+            );
             session.submit();
-            let merged_n = self.reduce(stream, total, scan, 3, handle(&self.scratch.combined));
+            let merged_n = self.read_count(stream);
             let excess = merged_n.saturating_sub(self.levels[level].budget);
             let retained = merged_n - excess;
             let mut b = self.buffers();
@@ -303,6 +350,14 @@ impl MultiResolutionMap {
             b[0] = handle(&self.levels[level].cells);
             b[8] = handle(&self.levels[level].fits);
             p = self.params(retained, scan);
+            p.cap = self.levels[level].table.n as u32;
+            let mut index_buffers = b;
+            index_buffers[1] = handle(&self.levels[level].table);
+            self.dispatch(&mut session, 9, &index_buffers, &p, p.cap);
+            p.k = 1;
+            self.dispatch(&mut session, 9, &index_buffers, &p, retained);
+            p.table_cap = p.cap;
+            b[3] = handle(&self.levels[level].table);
             self.dispatch(&mut session, 7, &b, &p, retained);
             session.shader_to_readback_barrier();
             session.submit();
@@ -319,12 +374,15 @@ impl MultiResolutionMap {
         ext_q: &Quaternion,
         out: &mut Vec<PointXYZINormal>,
         out_gpu: &mut VulkanBuffer,
+        download: &mut [PointNormal],
     ) -> VulkanPlaneTimings {
         let n = u32::try_from(cloud.n).expect("too many query points");
         if n == 0 {
             out.clear();
             return VulkanPlaneTimings::default();
         }
+        assert!(out_gpu.capacity() >= cloud.n && download.len() >= cloud.n);
+        out_gpu.n = cloud.n;
         self.ensure(stream, cloud.n);
         self.scratch.counter.upload(stream, &[n]);
         let mut p = self.params(n, 0);
@@ -341,9 +399,19 @@ impl MultiResolutionMap {
         p.table_cap = self.levels[1].n;
         p.valid_size = self.levels[2].n;
         p.unique_key_count = self.levels[3].n;
+        // Query uses the otherwise-unused sort fields for hash capacities;
+        // level sizes above remain separate from these power-of-two tables.
+        p.cap = self.levels[0].table.n as u32;
+        p.nbtype = self.levels[1].table.n as u32;
+        p.k = self.levels[2].table.n as u32;
+        p.j = self.levels[3].table.n as u32;
         let mut b = self.buffers();
         b[13] = handle(cloud);
         b[1] = handle(&self.scratch.planes);
+        b[3] = handle(&self.levels[0].table);
+        b[0] = handle(&self.levels[1].table);
+        b[2] = handle(&self.levels[2].table);
+        b[14] = handle(&self.levels[3].table);
         for i in 0..4 {
             b[4 + i] = handle(&self.levels[i].cells);
             b[[8, 9, 11, 12][i]] = handle(&self.levels[i].fits);
@@ -359,15 +427,25 @@ impl MultiResolutionMap {
         session.barrier();
         session.dispatch(&self.compute, self.compute.plane_count, &b, &p, 1);
         session.shader_to_readback_barrier();
+        // Copy candidates in the same submission as compaction. The count is
+        // read only after its fence signals, avoiding a second transfer submit
+        // and a staging allocation on every registration iteration.
+        session.copy_buffer(
+            handle(out_gpu),
+            handle(&self.scratch.plane_readback),
+            (cloud.n * size_of::<PointNormal>()) as vk::DeviceSize,
+        );
+        session.transfer_to_host_barrier();
         session.submit();
         let kernel_compact_ms = start.elapsed().as_secs_f64() * 1000.;
         let start = Instant::now();
         let count = self.read_count(stream) as usize;
         assert!(count <= cloud.n && count <= out_gpu.n);
-        let mut downloaded = vec![PointNormal::default(); count];
-        out_gpu.download_into(stream, &mut downloaded);
+        self.scratch
+            .plane_readback
+            .download_into(stream, &mut download[..count]);
         out.clear();
-        out.extend(downloaded.into_iter().map(PointXYZINormal::from));
+        out.extend(download[..count].iter().copied().map(PointXYZINormal::from));
         VulkanPlaneTimings {
             kernel_compact_ms,
             download_ms: start.elapsed().as_secs_f64() * 1000.,
@@ -408,5 +486,313 @@ impl MultiResolutionMap {
             }));
         }
         out
+    }
+}
+
+#[cfg(all(test, feature = "vulkan_enable"))]
+mod tests {
+    use super::*;
+    use std::cmp::Ordering;
+
+    #[test]
+    fn nearly_isotropic_covariance_preserves_f64_tangent_split() {
+        let stream = Stream::new();
+        let StreamBackend::Vulkan(context) = &stream.backend else {
+            return;
+        };
+        if !context.precise_multiresolution {
+            return;
+        }
+        let mut map = MultiResolutionMap::new(&stream, 37, 0.5, 10.0);
+        map.levels[0].cells.upload(
+            &stream,
+            &[Cell {
+                count: 20,
+                cov: [0.1, 1e-8, 0.0, 1e-8, 0.1, 0.0, 0.0, 0.0, 1e-7],
+                ..Cell::default()
+            }],
+        );
+        let mut b = map.buffers();
+        b[0] = handle(&map.levels[0].cells);
+        b[1] = handle(&map.levels[0].table);
+        let mut p = map.params(1, 1);
+        p.cap = map.levels[0].table.n as u32;
+        let mut session = map.begin();
+        map.dispatch(&mut session, 9, &b, &p, p.cap);
+        p.k = 1;
+        map.dispatch(&mut session, 9, &b, &p, 1);
+        b[3] = handle(&map.levels[0].table);
+        b[8] = handle(&map.levels[0].fits);
+        p.table_cap = p.cap;
+        map.dispatch(&mut session, 7, &b, &p, 1);
+        session.shader_to_readback_barrier();
+        session.submit();
+        map.levels[0].fits.n = 1;
+        let mut fits = vec![Fit::default(); 1];
+        map.levels[0].fits.download_into(&stream, &mut fits);
+        let fit = fits[0];
+        assert_eq!(fit.status, 2);
+        assert!(fit.normal[2].abs() > 0.999999);
+        let contains = |delta: [f32; 3]| {
+            (0..2).all(|i| {
+                let t = &fit.tangent[3 * i..3 * i + 3];
+                ((t[0] * delta[0] + t[1] * delta[1]) + t[2] * delta[2]).abs() <= fit.extent[i]
+            })
+        };
+        assert!(!contains([0.9, 0.9, 0.0]));
+        assert!(contains([0.9, 0.0, 0.0]));
+    }
+
+    #[test]
+    fn empty_map_queries_do_not_read_uninitialized_hash_tables() {
+        let stream = Stream::new();
+        let StreamBackend::Vulkan(context) = &stream.backend else {
+            return;
+        };
+        if !context.precise_multiresolution {
+            return;
+        }
+        let mut map = MultiResolutionMap::new(&stream, 37, 0.5, 10.0);
+        let points = vec![
+            pelorus_core::PointXYZIT {
+                x: -1.0,
+                y: 2.0,
+                z: 0.0,
+                ..Default::default()
+            };
+            257
+        ];
+        let cloud = VulkanBuffer::from_cloud(&stream, &points);
+        let mut output = VulkanBuffer::new(&stream, size_of::<PointNormal>(), points.len());
+        let mut download = vec![PointNormal::default(); points.len()];
+        let mut planes = vec![PointXYZINormal::default(); points.len()];
+        let t = Vector3::new(0., 0., 0.);
+        let q = Quaternion::default();
+        map.planes(
+            &stream,
+            &cloud,
+            &t,
+            &q,
+            &t,
+            &q,
+            &mut planes,
+            &mut output,
+            &mut download,
+        );
+        assert!(planes.is_empty());
+    }
+
+    #[test]
+    fn hash_index_preserves_colliding_signed_keys() {
+        let stream = Stream::new();
+        let StreamBackend::Vulkan(context) = &stream.backend else {
+            return;
+        };
+        if !context.precise_multiresolution {
+            return;
+        }
+        let hash = |key: [i32; 3]| {
+            let mut h = (key[0] as u32)
+                .wrapping_mul(73856093)
+                .wrapping_add((key[1] as u32).wrapping_mul(471943))
+                .wrapping_add((key[2] as u32).wrapping_mul(83492791));
+            h ^= h >> 16;
+            h = h.wrapping_mul(0x85ebca6b);
+            h ^= h >> 13;
+            h = h.wrapping_mul(0xc2b2ae35);
+            h ^ (h >> 16)
+        };
+        let mut map = MultiResolutionMap::new(&stream, 1025, 0.5, 10.0);
+        let capacity = map.levels[0].table.n as u32;
+        let mask = capacity - 1;
+        let cells: Vec<_> = (i32::MIN..)
+            .map(|x| [x, -17, i32::MAX])
+            .filter(|&key| hash(key) & mask == mask)
+            .take(128)
+            .map(|key| Cell {
+                key,
+                count: 1,
+                ..Cell::default()
+            })
+            .collect();
+        map.ensure(&stream, cells.len());
+        map.levels[0].cells.upload(&stream, &cells);
+        let mut buffers = map.buffers();
+        buffers[0] = handle(&map.levels[0].cells);
+        buffers[1] = handle(&map.levels[0].table);
+        let mut params = map.params(cells.len() as u32, 1);
+        params.cap = capacity;
+        let mut session = map.begin();
+        map.dispatch(&mut session, 9, &buffers, &params, capacity);
+        params.k = 1;
+        map.dispatch(&mut session, 9, &buffers, &params, params.n);
+        session.shader_to_readback_barrier();
+        session.submit();
+        let mut table = vec![0u32; capacity as usize];
+        map.levels[0].table.download_into(&stream, &mut table);
+        assert_eq!(
+            table.iter().filter(|&&i| i != u32::MAX).count(),
+            cells.len()
+        );
+        for (i, cell) in cells.iter().enumerate() {
+            let mut slot = hash(cell.key) & mask;
+            loop {
+                let found = table[slot as usize];
+                assert_ne!(found, u32::MAX, "missing colliding key {:?}", cell.key);
+                if found == i as u32 {
+                    break;
+                }
+                slot = (slot + 1) & mask;
+            }
+        }
+    }
+
+    #[test]
+    fn stable_merge_preserves_equal_key_order_and_payloads() {
+        let stream = Stream::new();
+        let StreamBackend::Vulkan(context) = &stream.backend else {
+            return;
+        };
+        if !context.precise_multiresolution {
+            return;
+        }
+        let mut map = MultiResolutionMap::new(&stream, 37, 0.5, 10.0);
+        for (old_n, batch_n) in [
+            (0, 17),
+            (17, 0),
+            (1, 1),
+            (127, 129),
+            (257, 255),
+            (1023, 2049),
+        ] {
+            let n = old_n + batch_n;
+            map.ensure(&stream, n);
+            let cells = |count, offset| {
+                let mut cells: Vec<_> = (0..count)
+                    .map(|i| Cell {
+                        key: [
+                            if i % 17 == 0 {
+                                i32::MIN
+                            } else if i % 29 == 0 {
+                                i32::MAX
+                            } else {
+                                (i % 13) as i32 - 7
+                            },
+                            (i % 3) as i32 - 1,
+                            0,
+                        ],
+                        scan: (i + offset) as u32,
+                        count: (1u64 << 40) + (i + offset) as u64,
+                        mean: [i as f32, offset as f32, 0.],
+                        ..Cell::default()
+                    })
+                    .collect();
+                cells.sort_by_key(|c| c.key);
+                cells
+            };
+            let old = cells(old_n, 0);
+            let batch = cells(batch_n, old_n);
+            map.scratch.combined.upload(&stream, &old);
+            map.scratch.batches.upload(&stream, &batch);
+            let mut buffers = map.buffers();
+            buffers[0] = handle(&map.scratch.combined);
+            buffers[3] = handle(&map.scratch.batches);
+            buffers[1] = handle(&map.scratch.work);
+            let mut params = map.params(n as u32, 1);
+            params.valid_size = old_n as u32;
+            let mut session = map.begin();
+            map.dispatch(&mut session, 10, &buffers, &params, n as u32);
+            session.shader_to_readback_barrier();
+            session.submit();
+            let mut merged = vec![Cell::default(); n];
+            map.scratch.work.download_into(&stream, &mut merged);
+            let mut expected = old;
+            expected.extend(batch);
+            expected.sort_by_key(|c| c.key);
+            assert_eq!(
+                bytemuck::cast_slice::<Cell, u8>(&merged),
+                bytemuck::cast_slice::<Cell, u8>(&expected),
+                "merge mismatch at {old_n}/{batch_n}"
+            );
+            let mut indices = vec![0u32; n];
+            map.scratch.indices.download_into(&stream, &mut indices);
+            assert_eq!(indices, (0..n as u32).collect::<Vec<_>>());
+        }
+    }
+
+    #[test]
+    fn tiled_sort_preserves_stable_keys_and_exact_eviction_order() {
+        let stream = Stream::new();
+        let StreamBackend::Vulkan(context) = &stream.backend else {
+            return;
+        };
+        if !context.precise_multiresolution {
+            return;
+        }
+        let mut map = MultiResolutionMap::new(&stream, 40003, 0.5, 10.0);
+        let scan = u32::MAX;
+        for n in [1, 17, 255, 256, 257, 1023, 4097, 20037] {
+            map.ensure(&stream, n);
+            let cells: Vec<_> = (0..n)
+                .map(|i| Cell {
+                    key: [
+                        (i.wrapping_mul(2654435761) % 31) as i32 - 15,
+                        (i % 7) as i32 - 3,
+                        (i % 3) as i32 - 1,
+                    ],
+                    scan: (i as u32).wrapping_mul(2246822519),
+                    count: if i % 97 == 0 {
+                        0
+                    } else {
+                        (1u64 << 60) + i as u64
+                    },
+                    ..Cell::default()
+                })
+                .collect();
+            map.scratch.work.upload(&stream, &cells);
+            for eviction in [false, true] {
+                let compare = |a: u32, b: u32| {
+                    let (ca, cb) = (&cells[a as usize], &cells[b as usize]);
+                    match (ca.count != 0, cb.count != 0) {
+                        (true, false) => Ordering::Less,
+                        (false, true) => Ordering::Greater,
+                        _ => {
+                            if eviction {
+                                let pa = u128::from(scan - ca.scan) * u128::from(cb.count);
+                                let pb = u128::from(scan - cb.scan) * u128::from(ca.count);
+                                pb.cmp(&pa).then(ca.key.cmp(&cb.key))
+                            } else {
+                                ca.key.cmp(&cb.key).then(a.cmp(&b))
+                            }
+                        }
+                    }
+                };
+                let mut buffers = map.buffers();
+                buffers[0] = handle(&map.scratch.work);
+                let params = map.params(n as u32, scan);
+                let mut session = map.begin();
+                map.sort(&mut session, &buffers, &params, eviction);
+                session.shader_to_readback_barrier();
+                session.submit();
+                let mut sorted = vec![0u32; params.cap as usize];
+                map.scratch.indices.download_into(&stream, &mut sorted);
+                assert!(sorted[n..].iter().all(|&i| i == u32::MAX));
+                let mut permutation = sorted[..n].to_vec();
+                permutation.sort_unstable();
+                assert_eq!(permutation, (0..n as u32).collect::<Vec<_>>());
+                for pair in sorted[..n].windows(2) {
+                    assert_ne!(
+                        compare(pair[0], pair[1]),
+                        Ordering::Greater,
+                        "wrong order at n={n}, eviction={eviction}: {pair:?}"
+                    );
+                }
+                if !eviction {
+                    let mut expected: Vec<_> = (0..n as u32).collect();
+                    expected.sort_by(|&a, &b| compare(a, b));
+                    assert_eq!(&sorted[..n], expected);
+                }
+            }
+        }
     }
 }

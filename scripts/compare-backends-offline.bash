@@ -323,6 +323,8 @@ run_backend_test() {
         else
             pelorus_args+=(-o parallelism.cpu_only=true)
         fi
+    else
+        pelorus_args+=(-o registration.map.resolution.type=Single)
     fi
 
     # Build before the timed region below. `timeout` is there to catch a hung

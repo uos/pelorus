@@ -13,12 +13,7 @@ pub(crate) struct VulkanContext {
     pub(crate) memory_properties: vk::PhysicalDeviceMemoryProperties,
     pub(crate) submit_lock: Mutex<()>,
     pub(crate) precise_multiresolution: bool,
-    /// Set by `shutdown`. Teardown cannot wait for the `Arc` refcount to reach
-    /// zero: background threads can still hold `Stream`s and `VulkanBuffer`s when
-    /// `main` returns, so the device would outlive the process and the driver
-    /// would tear itself down from `atexit` while its worker threads still run.
-    /// Once this is set the device is gone and every remaining `Drop` skips its
-    /// Vulkan calls.
+    /// Set by `shutdown`. Teardown cannot wait for the `Arc` refcount to reach zero.
     destroyed: std::sync::atomic::AtomicBool,
 }
 
@@ -242,16 +237,7 @@ impl Drop for VulkanContext {
     }
 }
 
-/// The process-wide Vulkan context, behind a `Mutex<Option<..>>` so `shutdown` can
-/// release it. A plain `OnceLock<Arc<..>>` would pin the refcount above zero for the
-/// life of the process (Rust never drops statics), so `VulkanContext::drop` could
-/// never run and the process would reach `exit()` with a live `VkInstance`.
-///
-/// The slot is refilled on demand, so `shutdown` is not permanent: an embedder that
-/// tears down one session and starts another gets a fresh device.
 static GLOBAL_VULKAN_CONTEXT: OnceLock<Mutex<Option<Arc<VulkanContext>>>> = OnceLock::new();
-/// Set once if the device could never be created, so a permanent failure is not
-/// retried (device enumeration is expensive) on every `Stream::new`.
 static VULKAN_UNAVAILABLE: OnceLock<String> = OnceLock::new();
 
 #[cfg(feature = "vulkan_enable")]

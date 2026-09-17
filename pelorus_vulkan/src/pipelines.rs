@@ -327,6 +327,8 @@ pub(crate) fn build_pipelines(context: Arc<VulkanContext>) -> Arc<VulkanComputeP
             "MR_RETAIN",
             "MR_CACHE",
             "MR_QUERY",
+            "MR_INDEX",
+            "MR_STABLE_MERGE",
         ] {
             let spirv = compile_shader(&mut compiler, &source, name, &[(name, None)]);
             let module = create_shader_module(&context.device, &spirv);

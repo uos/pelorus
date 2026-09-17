@@ -1,4 +1,4 @@
-// localmap.cu — CUDA voxel-map kernels.
+// CUDA voxel-map kernels.
 //
 // The map update, LRU ranking, and plane-selection stages mirror the Metal and
 // Vulkan backends while using CUB for sorting and scans.
@@ -19,12 +19,8 @@
 #include <lib.h>
 #include <localmap.cuh>
 
-// ── Constants ─────────────────────────────────────────────────────────────────
-
 static constexpr int      EMPTY_KEY   = INT_MIN;
 static constexpr uint32_t INVALID_IDX = UINT32_MAX;
-
-// ── CUDA error check ──────────────────────────────────────────────────────────
 
 #define CUDA_CHECK(call)                                                       \
     do {                                                                       \
@@ -35,8 +31,6 @@ static constexpr uint32_t INVALID_IDX = UINT32_MAX;
             exit(1);                                                           \
         }                                                                      \
     } while (0)
-
-// ── Device helpers (ported from common.metal) ─────────────────────────────────
 
 __device__ __forceinline__ float3 quat_rotate(float4 q, float3 v) {
     // t = 2 * cross(q.xyz, v)
@@ -123,10 +117,6 @@ __device__ float mahalanobis_sq(float3 diff, const float* __restrict__ L) {
     return diff.x * sol.x + diff.y * sol.y + diff.z * sol.z;
 }
 
-// Explicit 3×3 cofactor inverse — matches nalgebra::Matrix3::try_inverse semantics
-// used by pelorus_localmap::VoxelDistribution::update on the CPU. Cholesky was previously
-// used here but its failure mode (L[i] sq ≤ 0) differs from LU/cofactor and
-// caused the update to fall back to Euclidean Mahalanobis when CPU did not.
 __device__ bool invert_3x3(const float* __restrict__ A, float* __restrict__ inv) {
     const float a = A[0], b = A[1], c = A[2];
     const float d = A[3], e = A[4], f = A[5];
@@ -168,7 +158,6 @@ __device__ void regularize_cov(float* __restrict__ cov) {
     cov[8] += eps;
 }
 
-// Symmetric 3×3 eigenvalues (trigonometric method, ported from common.metal)
 __device__ float3 symmetric_eigen_3x3(const float* __restrict__ A) {
     const float a00 = A[0], a01 = A[1], a02 = A[2];
     const float a11 = A[4], a12 = A[5];
@@ -203,7 +192,7 @@ __device__ float3 symmetric_eigen_3x3(const float* __restrict__ A) {
     return ev;
 }
 
-// Hashmap lookup — returns INVALID_IDX if key not found
+// returns INVALID_IDX if key not found
 __device__ uint32_t hashmap_lookup(const int*      __restrict__ table_keys,
                                    const uint32_t* __restrict__ table_vals,
                                    uint32_t                     table_cap,
@@ -260,7 +249,6 @@ __device__ uint32_t neighbor_cells(uint32_t nbtype, int3 g, int3* out) {
     }
 }
 
-// Pool (merge) two distributions using the parallel-mean formula (common.metal pool_dist)
 __device__ void pool_dist(uint32_t&           acc_count,
                           float*              acc_mean,
                           float*              acc_cov,
@@ -297,15 +285,11 @@ __device__ void pool_dist(uint32_t&           acc_count,
     acc_count   = (uint32_t)total;
 }
 
-// ── GPU Kernels ────────────────────────────────────────────────────────────────
-
-// hashmap.metal: hashmap_init
 __global__ void hashmap_init_kernel(int* table_keys, uint32_t table_cap) {
     uint32_t idx = blockIdx.x * blockDim.x + threadIdx.x;
     if (idx < table_cap) table_keys[idx] = EMPTY_KEY;
 }
 
-// hashmap.metal: rebuild_hashmap_keyed
 __global__ void rebuild_hashmap_keyed_kernel(int*        table_keys,
                                              uint32_t*   table_vals,
                                              const int*  dist_keys,
@@ -328,17 +312,6 @@ __global__ void rebuild_hashmap_keyed_kernel(int*        table_keys,
     }
 }
 
-// Deterministic target-index assignment (three-pass, no atomics):
-//   1. classify_keys_kernel      — hashmap lookup, flag new vs existing.
-//   2. cub::DeviceScan::ExclusiveSum on is_new[] -> new_offset[].
-//   3. assign_new_targets_kernel — each new key maps to a deterministic slot
-//      based on prev add_cursor + its prefix-sum position. Overflow falls back
-//      to the LRU mapping (also a deterministic function of the prefix sum).
-//   4. finalize_cursors_kernel   — single-thread updates d_add_cursor and
-//      d_lru_cursor based on total_new from the last scan element.
-//
-// The result is independent of thread scheduling because every assignment is
-// a pure function of the sorted unique_keys array.
 
 __global__ void classify_keys_kernel(const int*      unique_keys,
                                      const uint32_t* n_unique_ptr,
@@ -438,14 +411,6 @@ __global__ void initialize_lru_mapping_kernel(uint32_t* d_lru_mapping,
     d_lru_mapping[idx] = idx;
 }
 
-// Match pelorus_localmap::Livodish's eviction ranking exactly. Comparing the rational
-// age/point_count scores by division loses ordering precision in f32 and causes
-// the CPU and CUDA maps to retain different voxels after reaching capacity.
-// CPU Livodish and Vulkan only build this order once the map is full, so empty
-// slots are never eviction candidates. CUDA invokes the sort eagerly. Retain
-// identity order while the map is partial, then rank only after it reaches
-// capacity. This prevents a capacity-crossing scan from both filling and
-// evicting the same slot.
 struct LruIndexLess {
     const GpuVoxelDist* dist_buf;
     const uint32_t* d_add_cursor;
@@ -475,8 +440,6 @@ struct LruIndexLess {
     }
 };
 
-// localmap.metal: calculate_keys
-// unique_key_count is used here as cloud_size
 __global__ void calculate_keys_kernel(const Point*      points,
                                       int*              out_keys,
                                       uint32_t*         out_indices,
@@ -497,8 +460,6 @@ __global__ void calculate_keys_kernel(const Point*      points,
     out_indices[idx] = idx;
 }
 
-// localmap.metal: reorder_points — reorder AND transform to global frame
-// unique_key_count is used here as cloud_size
 __global__ void reorder_points_kernel(const Point*      src,
                                       Point*            dst,
                                       const uint32_t*   sorted_indices,
@@ -521,8 +482,6 @@ __global__ void reorder_points_kernel(const Point*      src,
     dst[idx] = p_out;
 }
 
-// localmap.metal: build_voxels — one thread per unique voxel
-// unique_key_count is used here as n_assigned
 __global__ void build_voxels_kernel(const Point*      cloud,
                                     const uint32_t*   run_starts,
                                     const uint32_t*   run_counts,
@@ -912,8 +871,6 @@ static void ensure_cub_temp_storage(CudaMapState* s, size_t required_bytes) {
     }
 }
 
-// ── Public impl functions (declared in localmap.cuh) ─────────────────────────
-
 void init_map_impl(cudaStream_t stream, uint32_t capacity, float voxel_size,
                    float sensitivity, float min_dist, uint32_t nbtype) {
     assert(g_state == nullptr && "init_map_impl called twice");
@@ -1030,27 +987,27 @@ void add_to_map_impl(cudaStream_t stream, Point* points, uint32_t n_points, Pose
     params.dist_cap       = s->dist_cap;
     params._pad1          = 0;
 
-    // ── Step 1: calculate_keys ────────────────────────────────────────────────
+    // Calculate_keys
     calculate_keys_kernel<<<grid_dim(n_points), 256, 0, stream>>>(
         points, s->scratch_keys, s->scratch_indices, params);
 
-    // ── Step 2: Sort (key, index) pairs ───────────────────────────────────────
+    // Sort (key, index) pairs
     temp_storage_bytes = s->cub_temp_storage_bytes;
     cub::DeviceRadixSort::SortPairs(s->d_cub_temp_storage, temp_storage_bytes,
         s->scratch_keys, s->scratch_keys_alt, s->scratch_indices, s->scratch_indices_alt, n_points, 0, 32, stream);
 
-    // ── Step 3: Run-length encode ─────────────────────────────────────────────
+    // Run-length encode
     CUDA_CHECK(cudaMemsetAsync(s->scratch_run_counts, 0, n_points * sizeof(uint32_t), stream));
     temp_storage_bytes = s->cub_temp_storage_bytes;
     cub::DeviceRunLengthEncode::Encode(s->d_cub_temp_storage, temp_storage_bytes,
         s->scratch_keys_alt, s->scratch_unique_keys, s->scratch_run_counts, s->d_num_unique, n_points, stream);
 
-    // ── Step 4: Exclusive scan for run starts ─────────────────────────────────
+    // Exclusive scan for run starts
     temp_storage_bytes = s->cub_temp_storage_bytes;
     cub::DeviceScan::ExclusiveSum(s->d_cub_temp_storage, temp_storage_bytes,
         s->scratch_run_counts, s->scratch_run_starts, n_points, stream);
 
-    // ── Step 5: Assign target indices (deterministic: classify → scan → assign → finalize)
+    // Assign target indices (classify → scan → assign → finalize)
     classify_keys_kernel<<<grid_dim(n_points), 256, 0, stream>>>(
         s->scratch_unique_keys, s->d_num_unique, s->table_keys, s->table_vals, s->table_cap,
         s->scratch_target_indices, s->scratch_update_flags, s->scratch_is_new);
@@ -1068,23 +1025,23 @@ void add_to_map_impl(cudaStream_t stream, Point* points, uint32_t n_points, Pose
         s->d_num_unique, s->scratch_is_new, s->scratch_new_offset,
         s->d_add_cursor, s->d_lru_cursor, s->dist_cap);
 
-    // ── Step 6: reorder_points ────────────────────────────────────────────────
+    // Reorder_points
     reorder_points_kernel<<<grid_dim(n_points), 256, 0, stream>>>(
         points, s->scratch_sorted_points, s->scratch_indices_alt, params);
 
-    // ── Step 7: build_voxels ──────────────────────────────────────────────────
+    // Build_voxels
     build_voxels_kernel<<<grid_dim(n_points), 256, 0, stream>>>(
         s->scratch_sorted_points, s->scratch_run_starts, s->scratch_run_counts,
         s->scratch_unique_keys, s->scratch_target_indices, s->scratch_update_flags,
         s->dist_buf, s->d_num_unique, params);
 
-    // ── Step 8: Rebuild hashmap ───────────────────────────────────────────────
+    // Rebuild hashmap
     hashmap_init_kernel<<<grid_dim(s->table_cap), 256, 0, stream>>>(
         s->table_keys, s->table_cap);
     rebuild_hashmap_keyed_kernel<<<grid_dim(s->dist_cap), 256, 0, stream>>>(
         s->table_keys, s->table_vals, s->dist_keys, s->dist_cap, s->table_cap);
 
-    // ── Step 9: exact CPU-equivalent LRU ranking ──────────────────────────────
+    // LRU ranking
     initialize_lru_mapping_kernel<<<grid_dim(s->dist_cap), 256, 0, stream>>>(
         s->d_lru_mapping, s->dist_cap);
     temp_storage_bytes = s->cub_temp_storage_bytes;
@@ -1214,11 +1171,6 @@ uint32_t get_map_size_impl() {
 void cleanup_map_impl() {
     cleanup_multiresolution_impl();
     if (g_state) {
-        // Do NOT call cudaDeviceSynchronize() here: this is called from an atexit
-        // handler registered via libc::atexit() in Rust. CUDA's own atexit handlers
-        // are registered AFTER ours (LIFO order), so they run BEFORE ours during
-        // process exit — meaning CUDA may already be torn down when we get here.
-        // cudaFree inside ~CudaMapState already ignores cudaErrorCudartUnloading.
         delete g_state;
         g_state = nullptr;
     }

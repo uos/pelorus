@@ -58,6 +58,22 @@ kernel void downsample_rle(
     run_ends[slot] = left;
 }
 
+// Rust computes the CPU medoid distance as separate f32 subtracts, multiplies
+// and adds, associated left to right. `dot(delta, delta)` is a fused dot
+// product, and plain `dx*dx + dy*dy + dz*dz` can still be contracted into
+// FMAs, either of which lands a different last bit. That is enough to break an
+// exact distance tie — a two-point voxel puts both points equidistant from
+// their own midpoint — and pick the wrong medoid. `#pragma clang fp
+// contract(off)` keeps the operation boundaries the CPU has; the CUDA backend
+// needs the same thing and spells it with __fadd_rn/__fmul_rn intrinsics.
+inline float medoid_sq_dist(Point p, float3 center) {
+#pragma clang fp contract(off)
+    float dx = p.x - center.x;
+    float dy = p.y - center.y;
+    float dz = p.z - center.z;
+    return (dx * dx + dy * dy) + dz * dz;
+}
+
 kernel void downsample_medoids(
     device const Point* selected [[buffer(0)]],
     device const uint* sorted_indices [[buffer(1)]],
@@ -83,14 +99,26 @@ kernel void downsample_medoids(
 
     float3 center = sum / float(end - start);
     Point best = selected[sorted_indices[start]];
-    float3 best_delta = float3(best.x, best.y, best.z) - center;
-    float best_dist = dot(best_delta, best_delta);
+    float best_dist = medoid_sq_dist(best, center);
 
     for (uint i = start + 1u; i < end; ++i) {
         Point p = selected[sorted_indices[i]];
-        float3 delta = float3(p.x, p.y, p.z) - center;
-        float dist = dot(delta, delta);
-        if (dist < best_dist) {
+        float dist = medoid_sq_dist(p, center);
+        // Comparing distance alone leaves the winner of a tie decided by the
+        // order the points happen to sit in this run, which is not the order
+        // the CPU reference walks them in. `find_medoid_in_slice` in
+        // pelorus_sync breaks ties lexicographically on
+        // (dist, timestamp, x, y, z, intensity) — a total order, so its result
+        // does not depend on traversal order at all. Mirror it exactly.
+        bool better = dist < best_dist;
+        if (dist == best_dist) {
+            if (p.t != best.t)      better = p.t < best.t;
+            else if (p.x != best.x) better = p.x < best.x;
+            else if (p.y != best.y) better = p.y < best.y;
+            else if (p.z != best.z) better = p.z < best.z;
+            else                    better = p.i < best.i;
+        }
+        if (better) {
             best_dist = dist;
             best = p;
         }

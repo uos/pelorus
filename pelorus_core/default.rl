@@ -10,6 +10,7 @@ registration {
     # both accuracy and runtime, so change it before anything else.
     resolution = 50cm
 
+    # Single | Multi
     # Single: one fixed-resolution map.
     # Multi: scales of 0.5x, 1x, 2x and 4x `resolution`.
     resolution.type = Multi
