@@ -19,13 +19,18 @@ impl ActiveBackend {
     /// Select the best available backend at runtime.
     ///
     /// Precedence:
-    /// 1. `config.cpu_only == true`  → always `Cpu`
-    /// 2. macOS + metal       → `Metal` (Metal is macOS-only; the `target_os` cfg makes this compile-time-safe)
-    /// 3. cuda + device found → `Cuda`
-    /// 4. vulkan + device     → `Vulkan`
-    /// 5. else                → `Cpu`
+    /// 1. Multi-resolution map → `Cpu` (experimental implementation)
+    /// 2. `config.cpu_only == true` → `Cpu`
+    /// 3. macOS + metal       → `Metal` (Metal is macOS-only; the `target_os` cfg makes this compile-time-safe)
+    /// 4. cuda + device found → `Cuda`
+    /// 5. vulkan + device     → `Vulkan`
+    /// 6. else                → `Cpu`
     #[allow(unreachable_code)]
     pub fn detect(config: &LioConfig) -> Self {
+        if config.map_multiresolution {
+            log::info!("Multi-resolution local map selects the CPU backend");
+            return Self::Cpu;
+        }
         if config.cpu_only {
             return Self::Cpu;
         }

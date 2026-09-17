@@ -3,6 +3,7 @@ use kiddo::SquaredEuclidean;
 use localmap::Livodish;
 
 pub mod localmap;
+mod multiresolution;
 use rand_distr::{Distribution, Normal};
 
 use nalgebra::{Point3, Vector3};
@@ -55,6 +56,7 @@ pub struct IVoxHashMap {
     max_map_size: usize,
 
     livodish: localmap::Livodish,
+    multiresolution: Option<multiresolution::MultiResolutionMap>,
     rng: rand_pcg::Pcg64Mcg,
 }
 
@@ -410,6 +412,7 @@ impl IVoxHashMap {
             #[cfg(feature = "nn_kdt")]
             kd_points_lookup: std::collections::HashMap::new(),
             livodish: Livodish::new(capacity, sensitivity, resolution / 4.0),
+            multiresolution: None,
             rng: rand_pcg::Pcg64Mcg::from_os_rng(),
             #[cfg(feature = "nn_kdt")]
             pt_id: 0,
@@ -418,7 +421,29 @@ impl IVoxHashMap {
         }
     }
 
+    /// Enable the experimental CPU hierarchy. Call before inserting map points.
+    pub fn enable_multiresolution(&mut self, capacity: usize, sensitivity: f32) {
+        assert!(
+            !cfg!(feature = "nn_kdt"),
+            "multiresolution is incompatible with nn_kdt"
+        );
+        assert!(
+            self.is_empty(),
+            "enable multiresolution before inserting points"
+        );
+        self.multiresolution = Some(multiresolution::MultiResolutionMap::new(
+            self.resolution,
+            capacity,
+            sensitivity,
+        ));
+        // Release the unused fixed-map storage: capacity is a total cell budget.
+        self.livodish = Livodish::new(0, sensitivity, self.resolution / 4.0);
+    }
+
     pub fn is_empty(&self) -> bool {
+        if let Some(map) = &self.multiresolution {
+            return map.is_empty();
+        }
         #[cfg(feature = "nn_kdt")]
         return self.kd_map.size() == 0;
 
@@ -447,6 +472,10 @@ impl IVoxHashMap {
         execution_mode: ExecutionMode,
     ) -> Option<f64> {
         self.scan_number = scan_id;
+        if let Some(map) = &mut self.multiresolution {
+            map.add(points, transform, scan_id);
+            return None;
+        }
 
         #[cfg(feature = "nn_kdt")]
         {
@@ -762,6 +791,11 @@ impl IVoxHashMap {
     }
 
     pub fn plane_fit_from_distributions(&self, query: &PointXYZ) -> Option<[f32; 4]> {
+        if let Some(map) = &self.multiresolution {
+            let matched = map.query(&Point3::new(query.x, query.y, query.z))?;
+            log::trace!("Multi-resolution correspondence at level {}", matched.level);
+            return Some(matched.plane);
+        }
         let mut merged_dist = VoxelDistribution::new();
 
         let grid = self.pos2grid(query);
@@ -1000,12 +1034,19 @@ impl IVoxHashMap {
     }
 
     pub fn clear(&mut self) {
+        if let Some(map) = &mut self.multiresolution {
+            map.clear();
+            return;
+        }
         self.livodish.clear();
     }
 
     /// Mostly for testing purposes, is not efficient
     #[must_use]
     pub fn get_entire_map(&self) -> Vec<nalgebra::Point3<f32>> {
+        if let Some(map) = &self.multiresolution {
+            return map.distributions().into_iter().map(|d| d.mean).collect();
+        }
         #[cfg(feature = "nn_kdt")]
         {
             return self.kd_points.iter().map(|rc| rc.1).collect();
@@ -1020,12 +1061,30 @@ impl IVoxHashMap {
     #[cfg(not(feature = "nn_kdt"))]
     #[must_use]
     pub fn get_distributions(&self) -> Vec<VoxelDistribution> {
+        if let Some(map) = &self.multiresolution {
+            return map.distributions();
+        }
         self.livodish.get_distributions()
     }
 
     #[cfg(not(feature = "nn_kdt"))]
     #[must_use]
     pub fn get_distributions_with_lru_scores(&self) -> Vec<localmap::VoxelDistributionLru> {
+        if let Some(map) = &self.multiresolution {
+            return map
+                .distributions()
+                .into_iter()
+                .map(|distribution| localmap::VoxelDistributionLru {
+                    lru_score: 1.0
+                        / (1.0
+                            + self
+                                .scan_number
+                                .saturating_sub(distribution.last_updated_at_scan)
+                                as f32),
+                    distribution,
+                })
+                .collect();
+        }
         self.livodish.get_distributions_with_lru_scores()
     }
 }

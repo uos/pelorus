@@ -730,6 +730,9 @@ pub struct LioConfig {
     pub path_qos: Qos,
     pub map_resolution: f64,
     pub map_capacity: usize,
+    /// Experimental CPU map with geometry-selected support at four resolutions.
+    #[serde(default)]
+    pub map_multiresolution: bool,
     pub imu_params: ImuParameters,
     pub lidar_odom_cov: f64,
     pub enable_live_extrinsic_calibration: bool,

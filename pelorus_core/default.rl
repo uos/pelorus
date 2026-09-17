@@ -5,6 +5,10 @@ registration {
     # Feature size used for registration. NOTE: This will heavily affect your registration accuracy and runtime.
     resolution = 50cm
 
+    # Experimental CPU map: support scales of 0.5x, 1x, 2x and 4x resolution.
+    # Capacity is shared across all four levels. Scan downsampling is unchanged.
+    multiresolution = false
+
     # @recommended
     # How many Voxels of the previous defined resolution to save at any time. With Cuda enabled, the capacity will be round up to the next power of 2.
     capacity = 131072

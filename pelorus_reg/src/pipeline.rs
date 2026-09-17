@@ -145,12 +145,15 @@ impl Pipeline {
             UnitQuaternion::from_matrix(&config.imu_params.initial_rotation_lidar_to_imu),
         );
 
-        let ivox = IVoxHashMap::new(
+        let mut ivox = IVoxHashMap::new(
             config.map_resolution as f32,
             config.map_capacity,
             IVoxNearbyType::Nearby26,
             config.dist_update_sensitivity as f32,
         );
+        if config.map_multiresolution {
+            ivox.enable_multiresolution(config.map_capacity, config.dist_update_sensitivity);
+        }
 
         let mut map = RegistrationState::new_with_execution_config(
             ivox,

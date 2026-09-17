@@ -392,6 +392,26 @@ mod override_tests {
     }
 
     #[test]
+    fn multiresolution_is_opt_in_and_preserves_downsampling() {
+        let fixed = config_with("");
+        let adaptive = config_with("registration.map.multiresolution = true\n");
+        assert!(!fixed.map_multiresolution);
+        assert!(adaptive.map_multiresolution);
+        assert_eq!(
+            fixed.sync_params.downsample.voxel_size,
+            adaptive.sync_params.downsample.voxel_size
+        );
+        for source in [
+            "registration.map.multiresolution = true\nregistration.map.capacity = 3\n",
+            "registration.map.multiresolution = true\nregistration.map.resolution = 0m\n",
+        ] {
+            let user = ratslang::compile_code(source).unwrap();
+            let defaults = ratslang::compile_code(DEFAULTS).unwrap();
+            assert!(ast_to_config(defaults, user).is_err());
+        }
+    }
+
+    #[test]
     fn the_imu_time_offset_is_read_in_seconds() {
         assert_eq!(config_with("").sync_params.imu.calibration.time_offset, 0.0);
 
@@ -803,6 +823,7 @@ fn ast_to_config_inner(
         neighbor_max_range,
         map_resolution,
         map_capacity,
+        map_multiresolution,
         dist_update_sensitivity,
         ekf_max_iterations,
     ) = {
@@ -812,14 +833,24 @@ fn ast_to_config_inner(
         let ekf_max_iterations = resolve_var!(registration, "max_iter", as usize, Rhs::Val(Val::NumVal(NumVal::Integer(i))) => { i })?;
 
         let map = registration.filter_ns(&["map"]);
-        let map_resolution = resolve_var!(map, "resolution", as f64, Rhs::Val(Val::UnitedVal(UnitVal::LengthVal(v))) => { v.get::<meter>() })?;
+        let map_resolution: f64 = resolve_var!(map, "resolution", as f64, Rhs::Val(Val::UnitedVal(UnitVal::LengthVal(v))) => { v.get::<meter>() })?;
         let map_capacity = resolve_var!(map, "capacity", as usize, Rhs::Val(Val::NumVal(NumVal::Integer(i))) => {i})?;
+        let map_multiresolution =
+            resolve_var!(map, "multiresolution", as bool, Rhs::Val(Val::BoolVal(b)) => { b })?;
+        if map_multiresolution
+            && (!map_resolution.is_finite() || map_resolution <= 0.0 || map_capacity < 4)
+        {
+            return Err(anyhow!(
+                "multiresolution requires a finite positive map resolution and capacity >= 4"
+            ));
+        }
         let dist_update_sensitivity = resolve_var!(map, "distribution_update_sensitivity", as f32, Rhs::Val(Val::NumVal(NumVal::Floating(i))) => {i as f32} )?;
 
         (
             neighbor_max_range,
             map_resolution,
             map_capacity,
+            map_multiresolution,
             dist_update_sensitivity,
             ekf_max_iterations,
         )
@@ -1533,6 +1564,7 @@ fn ast_to_config_inner(
         neighbor_max_range,
         map_resolution,
         map_capacity,
+        map_multiresolution,
         dist_update_sensitivity,
         ekf_max_iterations,
         lidar_odom_cov,
