@@ -61,3 +61,21 @@ RUSTFLAGS="-C target-cpu=native -C llvm-args=-cost-kind=latency" cargo run --rel
 RUST_BACKTRACE=1 RUST_LOG=debug,minot=off,rat=off,tracing=off,mt_sea=off,h2=off,hyper_util=off,re_sdk=off,re_chunk=off,tower=off,ratpub=off,tonic=off,tonic_web=off cargo mommy run --profile dbg-release --no-default-features --features dev -- online -rc pelorus.rl
 ~~~
 
+
+## docs
+
+> Generate the configuration pages from pelorus_core/default.rl, then build the site into docs/site.
+
+~~~sh
+cargo run -p pelorus_docs
+cd docs && zensical build
+~~~
+
+## docs-serve
+
+> Same as `docs`, but serves the site locally with live reload.
+
+~~~sh
+cargo run -p pelorus_docs
+cd docs && zensical serve
+~~~

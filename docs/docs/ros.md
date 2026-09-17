@@ -1,10 +1,10 @@
-# ROS
+# ROS 2
 
-We support ROS 2 for fast prototyping.
+Pelorus builds as an ordinary ament package, so it fits into a colcon workspace without anything special. Humble, Jazzy and Lyrical are the supported distributions. Prebuilt packages are listed under [installation](install.md).
 
-First, install [Rust](https://www.rust-lang.org/tools/install) if you haven't already.
+## Building from source
 
-Pelorus integrates seamlessly with your standard **ROS 2 CMake** build system.
+Install [Rust](https://www.rust-lang.org/tools/install) first, then:
 
 ```sh
 cd ~/ros2_ws/src
@@ -12,57 +12,44 @@ git clone ssh://git.steado.tech/pelorus.git
 cd ..
 
 rosdep install --from-paths src -y --ignore-src
-
 colcon build --packages-select pelorus
 ```
 
-Building might take a while.
+The first build takes a while.
 
-!!! note "GPU Support"
-
-    Pelorus offers various configurations at compile time. You can set them with CMake arguments via uppercasing and setting the prefix `PELORUS_` like so:
-    ```sh
-    colcon build --packages-select pelorus --cmake-args -D PELORUS_CUDA=ON
-    ```
-
-Available flags for the ROS 2 version are:
-
-**Default flags** (enabled by default, disable all with `-D PELORUS_ALL_DEFAULTS=OFF`):
-- `rayon` use all available CPU cores
-- `rat` synchronize input/output for use with [Minot](https://codeberg.org/stelzo/minot) using the `-r` flag
-- `rerun` compile Rerun visualization support. Activate it at runtime with `--rerun`
-
-**Highlighted flags**:
-- `cuda` use all available CUDA accelerations; searches for your CUDA directory - if not found, please set the `CUDA_HOME` environment variable.
-- `metal` use Apple Metal acceleration on macOS (Apple Silicon)
-- `vulkan` use Vulkan acceleration
-- Rerun's server and map settings live under `output.rerun` in the `.rl` file. Override them per run with `-o`, for example `-o output.rerun.server_addr="192.168.1.2:9876"`.
-
-Now you can use the launch file to start the node but we need a configuration first. For basics of the configuration language itself visit the [Ratslang](https://github.com/stelzo/ratslang) project.
+## Running
 
 ```sh
-# make a config and change the values to your needs, e.g. topic names, frame ids, sensor parameters etc.
+source install/setup.bash
+
+# generate a configuration and set topics, frame IDs and sensor parameters
 ros2 run pelorus pelorus config generate recommended > pelorus.rl
 
-# now launch
 ros2 launch pelorus pelorus.launch.py config_path:=pelorus.rl rviz:=false
 ```
 
-## Binaries
+See [configuration](configuration/index.md) for what to put in that file.
 
-The Pelorus beta (0.0.x) is currently available as precompiled binaries for Linux on x86_64 and aarch64 (ARM64).
+## Build options
 
-Since the binaries may have problems during the current beta, we recommend building from source. Follow the related instructions from the other pages for that.
+Compile-time options are CMake arguments, named after the Cargo feature in upper case with a `PELORUS_` prefix:
 
-You can [setup the UOS PPA](https://codeberg.org/uos-robotics/ppa/src/branch/pages/README.md) for the Ubuntu LTS versions to install Pelorus and get updates automatically.
-
-```sh title="ROS 2 package for Lyrical, Jazzy, and Humble"
-sudo apt install ros-$ROS_DISTRO-pelorus
-
-# or with CUDA support
-sudo apt install ros-$ROS_DISTRO-pelorus-cuda12-8
-sudo apt install ros-$ROS_DISTRO-pelorus-cuda13-1
-
-# or with Vulkan support
-sudo apt install ros-$ROS_DISTRO-pelorus-vulkan
+```sh
+colcon build --packages-select pelorus --cmake-args -D PELORUS_CUDA=ON
 ```
+
+`PELORUS_CUDA`, `PELORUS_METAL`, `PELORUS_VULKAN` and `PELORUS_LARGE_PROCESSING_QUEUE` can also be set as environment variables of the same name.
+
+| Option | Effect |
+| --- | --- |
+| `PELORUS_CUDA` | CUDA acceleration. The CUDA directory is searched for, and `CUDA_HOME` overrides the result. |
+| `PELORUS_VULKAN` | Vulkan acceleration. See the [Vulkan prerequisites](install.md#vulkan-prerequisites). |
+| `PELORUS_METAL` | Metal acceleration on macOS with Apple Silicon. |
+| `PELORUS_RERUN` | Compile [Rerun](https://rerun.io/) visualization support, activated at runtime with `--rerun`. |
+| `PELORUS_MIMALLOC` | Use mimalloc as the allocator. |
+| `PELORUS_LARGE_PROCESSING_QUEUE` | Larger internal processing queues. |
+| `PELORUS_NO_VIZ` | Drop visualization support entirely. |
+
+`rat` and `rayon` are on by default. `rat` synchronizes input and output for use with [Minot](https://codeberg.org/stelzo/minot) through the `-r` flag, and `rayon` uses all available CPU cores. Turn both off with `-D PELORUS_ALL_DEFAULTS=OFF`.
+
+Rerun's server address and map settings live under `output.rerun` in the configuration file and can be overridden per run, for example with `-o output.rerun.server_addr="192.168.1.2:9876"`.

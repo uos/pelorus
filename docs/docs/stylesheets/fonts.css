@@ -1,0 +1,35 @@
+/* Lora, served from this site.
+
+   The theme would otherwise pull its fonts from Google on every page load, which
+   is a third-party request we do not need and, for a German university, one with
+   paperwork attached. `font = false` in zensical.template.toml turns that off,
+   which also drops the --md-text-font the theme would have set, so it is set
+   here instead.
+
+   Lora is licensed under the SIL Open Font License 1.1. The licence travels with
+   the files, in fonts/OFL.txt.
+
+   Both files are variable fonts covering weight 400 to 700 on one axis, so the
+   whole range costs two requests. The theme asks for weight 300 in a few places,
+   which Lora does not have; a browser clamps that to 400. */
+
+@font-face {
+  font-family: "Lora";
+  src: url("../fonts/Lora-VariableFont_wght.woff2") format("woff2");
+  font-weight: 400 700;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "Lora";
+  src: url("../fonts/Lora-Italic-VariableFont_wght.woff2") format("woff2");
+  font-weight: 400 700;
+  font-style: italic;
+  font-display: swap;
+}
+
+:root {
+  /* The theme appends its own fallback stack to this. */
+  --md-text-font: "Lora";
+}

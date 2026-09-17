@@ -1,11 +1,18 @@
 #!/usr/bin/env python3
 """
 Validates that packaging files (PKGBUILD, deb metadata, rpm metadata, pyproject.toml)
-have version constraints for minot/minot-cli that match the workspace Cargo.toml dependencies.
+have version constraints for minot/minot-cli and rerun-sdk that match the workspace
+Cargo.toml dependencies.
+
+Constraints derived from Cargo.toml can be repaired with --fix. The versions the
+documentation tells a reader to install cannot: a release has to exist upstream
+before the docs can name it, and this script has no way to know that. Those are
+reported only, which is why --docs-only exists as a pre-flight for a release.
 
 Usage:
-    python3 scripts/check-packaging.py          # check only (exits 1 on mismatch)
-    python3 scripts/check-packaging.py --fix    # automatically fix mismatches
+    python3 scripts/check-packaging.py             # check only (exits 1 on mismatch)
+    python3 scripts/check-packaging.py --fix       # repair what can be derived
+    python3 scripts/check-packaging.py --docs-only # only the checks --fix cannot repair
 """
 
 import sys
@@ -45,27 +52,101 @@ def get_workspace_info(root: Path):
     if not mt_ver:
         raise ValueError("Could not find mt_pubsub / minot dependency version in Cargo.toml workspace.dependencies")
 
-    # Parse semver major/minor
-    match = re.match(r"^(\d+)\.(\d+)(?:\.(\d+))?", mt_ver)
-    if not match:
-        raise ValueError(f"Invalid minot version format: {mt_ver}")
+    min_ver, next_ver = compat_range(mt_ver, "minot")
 
-    major = int(match.group(1))
-    minor = int(match.group(2))
+    # The Rust crate `rerun` and the Python package `rerun-sdk` are cut from the
+    # same release and share version numbers, so the optional dependency that
+    # installs the viewer has to track the crate the CLI is built against.
+    rr_ver = None
+    val = ws_deps.get("rerun")
+    if isinstance(val, str):
+        rr_ver = val
+    elif isinstance(val, dict) and "version" in val:
+        rr_ver = val["version"]
 
-    if major == 0:
-        min_ver = f"0.{minor}.0"
-        next_ver = f"0.{minor + 1}.0"
-    else:
-        min_ver = f"{major}.0.0"
-        next_ver = f"{major + 1}.0.0"
+    if not rr_ver:
+        raise ValueError("Could not find rerun dependency version in Cargo.toml workspace.dependencies")
+
+    rerun_min_ver, rerun_next_ver = compat_range(rr_ver, "rerun")
+
+    # The docs tell people to `cargo install zenohd@...` for the ROS 2 over
+    # Zenoh setup, which has to be the same release line Pelorus links against.
+    zenoh_ver = None
+    val = ws_deps.get("zenoh-buffers")
+    if isinstance(val, str):
+        zenoh_ver = val
+    elif isinstance(val, dict) and "version" in val:
+        zenoh_ver = val["version"]
+
+    if not zenoh_ver:
+        raise ValueError("Could not find zenoh-buffers dependency version in Cargo.toml workspace.dependencies")
 
     return {
         "workspace_ver": workspace_ver,
         "minot_ver": mt_ver,
         "min_ver": min_ver,
         "next_ver": next_ver,
+        "rerun_ver": rr_ver,
+        "rerun_min_ver": rerun_min_ver,
+        "rerun_next_ver": rerun_next_ver,
+        "zenoh_ver": zenoh_ver,
+        "cuda_variants": cuda_variants(root),
     }
+
+
+def cuda_variants(root: Path) -> dict[str, set[str]]:
+    """CUDA variants the release workflow actually builds, as "12-8" and so on.
+
+    The GLIM plugin is kept apart because it is offered for fewer of them: the
+    plugin is a dependency declaration on a libpelorus variant, and GLIM upstream
+    supports a narrower set of CUDA versions than libpelorus is built for.
+
+    Commented-out matrix rows are skipped, so a variant that is on hold does not
+    have to be documented.
+    """
+    release = root / ".forgejo" / "workflows" / "release.yml"
+    if not release.exists():
+        raise ValueError(f"{release} does not exist")
+
+    text = release.read_text(encoding="utf-8")
+
+    general = set()
+    for line in text.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("#"):
+            continue
+        match = re.match(r"^(?:-\s*)?cuda:\s*([0-9]+-[0-9]+)\s*$", stripped)
+        if match:
+            general.add(match.group(1))
+
+    glim = set(re.findall(r'glim_odometry-cuda([0-9]+-[0-9]+)"', text))
+
+    if not general:
+        raise ValueError(f"Could not find any cuda matrix entries in {release}")
+    if not glim:
+        raise ValueError(f"Could not find any glim cuda package names in {release}")
+    return {"general": general, "glim": glim}
+
+
+def major_minor(version: str) -> str:
+    return ".".join(version.lstrip("v").split(".")[:2])
+
+
+def compat_range(version: str, name: str) -> tuple[str, str]:
+    """Semver-compatible range for a dependency, as (minimum, exclusive upper).
+
+    Below 1.0 a minor bump is breaking, so the range is pinned to one minor line.
+    """
+    match = re.match(r"^(\d+)\.(\d+)(?:\.(\d+))?", version)
+    if not match:
+        raise ValueError(f"Invalid {name} version format: {version}")
+
+    major = int(match.group(1))
+    minor = int(match.group(2))
+
+    if major == 0:
+        return f"0.{minor}.0", f"0.{minor + 1}.0"
+    return f"{major}.0.0", f"{major + 1}.0.0"
 
 
 def check_pkgbuild(root: Path, info: dict, fix: bool) -> list[str]:
@@ -211,9 +292,157 @@ def check_pyproject(root: Path, info: dict, fix: bool) -> list[str]:
     return errors
 
 
+def check_rerun_pyproject(root: Path, info: dict, fix: bool) -> list[str]:
+    """The `rerun` optional dependency of pelorus-cli, which installs the viewer.
+
+    This is the one that goes stale unnoticed, because nothing fails to build
+    when it drifts. A user ends up with a viewer that cannot talk to the
+    recording stream the CLI produces.
+    """
+    errors = []
+    pyproject_path = root / "pelorus_cli" / "pyproject.toml"
+    if not pyproject_path.exists():
+        return [f"{pyproject_path} does not exist"]
+
+    content = pyproject_path.read_text(encoding="utf-8")
+    new_content = content
+
+    expected = f"rerun-sdk>={info['rerun_min_ver']},<{info['rerun_next_ver']}"
+
+    match = re.search(r"rerun-sdk[><=0-9.,]+", content)
+    if match:
+        current = match.group(0)
+        if current != expected:
+            msg = (
+                f"pelorus_cli/pyproject.toml rerun extra mismatch:\n"
+                f"  found:    {current}\n"
+                f"  expected: {expected}  (workspace rerun crate is {info['rerun_ver']})"
+            )
+            errors.append(msg)
+            if fix:
+                new_content = new_content.replace(current, expected)
+    else:
+        errors.append("Could not find rerun-sdk dependency in pelorus_cli/pyproject.toml")
+
+    if fix and new_content != content:
+        pyproject_path.write_text(new_content, encoding="utf-8")
+        print(f"Fixed {pyproject_path.relative_to(root)}")
+
+    return errors
+
+
+def check_docs(root: Path, info: dict, fix: bool) -> list[str]:
+    """Versions the documentation tells the reader to install.
+
+    A page that pins a version is making a claim about what works with this
+    checkout, and nothing fails to build when that claim goes stale. The reader
+    is the one who finds out. None of these are rewritten automatically: a
+    version has to exist upstream before the docs can name it, and this script
+    cannot know that.
+    """
+    errors = []
+    docs_dir = root / "docs" / "docs"
+    if not docs_dir.exists():
+        return [f"{docs_dir} does not exist"]
+
+    pages = {path: path.read_text(encoding="utf-8") for path in sorted(docs_dir.rglob("*.md"))}
+
+    def where(pattern: str):
+        """Every page, line number and match for a pattern, so a stale version is
+        reported at the line the reader would have copied."""
+        for path, text in pages.items():
+            for number, line in enumerate(text.splitlines(), start=1):
+                for match in re.finditer(pattern, line):
+                    yield f"{path.relative_to(root)}:{number}", match
+
+    # `cargo install rerun-cli@X.Y.Z`, which has to be the release line the
+    # CLI was compiled against.
+    rerun_line = major_minor(info["rerun_ver"])
+    seen_rerun = False
+    for rel, match in where(r"rerun-cli@([0-9]+\.[0-9]+\.[0-9]+)"):
+        seen_rerun = True
+        if major_minor(match.group(1)) != rerun_line:
+            errors.append(
+                f"{rel} pins rerun-cli@{match.group(1)}, but the workspace rerun "
+                f"crate is {info['rerun_ver']}. Name a published {rerun_line}.x release."
+            )
+    if not seen_rerun:
+        errors.append("No pinned rerun-cli version found in the docs")
+
+    # `cargo install ... minot --tag vX.Y.Z`, which has to be the release the
+    # workspace depends on.
+    #
+    # minot used to publish a separate `-hiroz` tag line for the ROS 2 over
+    # Zenoh build. That line stopped at v0.9.1-hiroz once hiroz support became a
+    # feature of the mainline, so a suffixed tag in the docs now means a stale
+    # command and not a deliberate second line.
+    minot_line = major_minor(info["minot_ver"])
+    seen_minot = False
+    for rel, match in where(r"minot\s+--tag\s+v([0-9]+\.[0-9]+\.[0-9]+)(\S*)"):
+        seen_minot = True
+        version, suffix = match.group(1), match.group(2)
+        if suffix:
+            errors.append(
+                f"{rel} pins the tag v{version}{suffix}. The suffixed minot tags are "
+                f"retired, and hiroz is a feature of the mainline now, so name a "
+                f"{minot_line}.x tag and select the feature instead."
+            )
+        elif major_minor(version) != minot_line:
+            errors.append(
+                f"{rel} installs minot from tag v{version}, but the workspace depends on "
+                f"minot {info['minot_ver']}. Name a {minot_line}.x tag."
+            )
+    if not seen_minot:
+        errors.append("No pinned minot tag found in the docs")
+
+    # `cargo install zenohd@X.Y.Z`, which has to match what Pelorus links.
+    zenoh_line = major_minor(info["zenoh_ver"])
+    for rel, match in where(r"zenohd@([0-9]+\.[0-9]+\.[0-9]+)"):
+        if major_minor(match.group(1)) != zenoh_line:
+            errors.append(
+                f"{rel} pins zenohd@{match.group(1)}, but the workspace links zenoh "
+                f"{info['zenoh_ver']}. Name a {zenoh_line}.x release."
+            )
+
+    # Accelerated package variants, per family. Every variant the release builds
+    # has to be offered, and a variant that is not built must not be. The GLIM
+    # plugin is counted on its own, because it is offered for fewer of them.
+    documented = {"general": set(), "glim": set()}
+    for _, match in where(r"(glim[-_]odometry-)?cuda([0-9]+-[0-9]+)"):
+        family = "glim" if match.group(1) else "general"
+        documented[family].add(match.group(2))
+
+    labels = {
+        "general": "the library, CLI, ROS node and wheels",
+        "glim": "the GLIM plugin",
+    }
+    for family, built in info["cuda_variants"].items():
+        missing = sorted(built - documented[family])
+        if missing:
+            errors.append(
+                f"The release builds CUDA variants of {labels[family]} that the docs "
+                f"never mention: {', '.join(missing)}. Add them to docs/docs/install.md."
+            )
+
+        unbuilt = sorted(documented[family] - built)
+        if unbuilt:
+            errors.append(
+                f"The docs offer CUDA variants of {labels[family]} that the release does "
+                f"not build: {', '.join(unbuilt)}. Remove them from docs/docs/install.md."
+            )
+
+    return errors
+
+
 def main():
     root = Path(__file__).resolve().parent.parent
     fix = "--fix" in sys.argv
+    docs_only = "--docs-only" in sys.argv
+
+    if fix and docs_only:
+        print("ERROR: --fix and --docs-only are mutually exclusive, because the", file=sys.stderr)
+        print("       documentation checks are the ones --fix cannot repair.", file=sys.stderr)
+        sys.exit(2)
 
     try:
         info = get_workspace_info(root)
@@ -223,29 +452,48 @@ def main():
 
     print(f"Workspace version: {info['workspace_ver']}")
     print(f"Minot dependency:  {info['minot_ver']} (expected range: >={info['min_ver']}, <{info['next_ver']})")
+    print(f"Rerun dependency:  {info['rerun_ver']} (expected range: >={info['rerun_min_ver']}, <{info['rerun_next_ver']})")
     print("-" * 60)
 
+    if docs_only:
+        checks = [check_docs]
+    else:
+        checks = [
+            check_pkgbuild,
+            check_pelorus_cli_cargo,
+            check_pyproject,
+            check_rerun_pyproject,
+            check_docs,
+        ]
+
     all_errors = []
-    all_errors.extend(check_pkgbuild(root, info, fix))
-    all_errors.extend(check_pelorus_cli_cargo(root, info, fix))
-    all_errors.extend(check_pyproject(root, info, fix))
+    for check in checks:
+        all_errors.extend(check(root, info, fix))
 
     if fix:
         print("-" * 60)
         print("Re-checking after applying fixes...")
         all_errors = []
-        all_errors.extend(check_pkgbuild(root, info, fix=False))
-        all_errors.extend(check_pelorus_cli_cargo(root, info, fix=False))
-        all_errors.extend(check_pyproject(root, info, fix=False))
+        for check in checks:
+            all_errors.extend(check(root, info, fix=False))
 
     if all_errors:
         print("\nPackaging version validation FAILED:")
         for err in all_errors:
             print(f"\n[!] {err}")
-        print("\nRun `python3 scripts/check-packaging.py --fix` to automatically sync versions.")
+        if docs_only:
+            print("\nThese name versions to install, so fix them by hand. Each has to exist")
+            print("upstream before the docs can point at it.")
+        else:
+            print("\nRun `python3 scripts/check-packaging.py --fix` to sync what can be derived.")
+            print("Anything above naming a version to install has to be fixed by hand.")
         sys.exit(1)
 
-    print("\nAll packaging minot version constraints are valid and in sync!")
+    if docs_only:
+        print("\nEvery version the documentation tells a reader to install is current!")
+        sys.exit(0)
+
+    print("\nAll packaging minot and rerun version constraints are valid and in sync!")
     sys.exit(0)
 
 

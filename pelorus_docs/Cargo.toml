@@ -1,0 +1,13 @@
+[package]
+name = "pelorus_docs"
+description = "Generates the configuration pages of the Pelorus documentation from pelorus_core/default.rl."
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+version.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+publish = false
+
+[dependencies]
+ratslang.workspace = true

@@ -916,9 +916,12 @@ jobs:
           cargo deb --package pelorus_glim_odometry --no-build
           mv target/debian/*.deb dist/${ARCH}/
 
-          # ---- CUDA 13.1
-          DEB_NAME="libpelorus_glim_odometry-cuda13-1"
-          LIB_DEB="libpelorus-cuda13-1"
+          # ---- CUDA 12.8
+          # GLIM upstream supports CUDA 12.6 and 12.8, so the plugin is only
+          # offered against those two libpelorus variants even though libpelorus
+          # itself is also built for 13.1.
+          DEB_NAME="libpelorus_glim_odometry-cuda12-8"
+          LIB_DEB="libpelorus-cuda12-8"
 
           tmp=$(mktemp)
           toml set "$updatetoml" 'package.metadata.deb.name' "$DEB_NAME" >"$tmp"
@@ -958,16 +961,6 @@ jobs:
     strategy:
       matrix:
         # omitting ppc64le and s390x since they probably have other problems than running this software
-        # The aarch64 Linux targets are built natively on an arm64 runner
-        # instead of cross-compiled with zig. Their rustc target specs attach
-        # `-Wl,--fix-cortex-a53-843419` as a pre_link_arg for every cc-driver
-        # linker flavor, and zig's linker rejects it ("unsupported linker arg").
-        # There is no way to switch it off: rustc registers the arg for the lld
-        # flavor as well, so -C linker-flavor / -fuse-ld=lld do not drop it, and
-        # cargo-zigbuild does not filter it out in any released version. Every
-        # other target keeps --zig, which is what gives the x86_64 wheels their
-        # low glibc requirement. aarch64-unknown-linux-gnu additionally needs a
-        # controlled glibc floor, so it lives in `wheels-aarch64-gnu` below.
         include:
           - target: aarch64-apple-darwin # MacOS Apple Silicon
             runner: macos-latest

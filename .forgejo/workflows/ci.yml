@@ -29,6 +29,31 @@ jobs:
           cargo check
           cargo test
 
+  config-docs:
+    runs-on: ubuntu-dev-resolute
+    container:
+      image: docker.io/stelzo/ubuntu-dev:resolute
+    steps:
+      - uses: actions/checkout@v4
+      - name: Generate the documentation
+        run: |
+          set -euo pipefail
+          rustup self update
+          rustup toolchain uninstall stable
+          rustup toolchain install stable
+          rustup default stable
+          rustc --version
+          cargo run -p pelorus_docs
+      - name: Check nothing generated is tracked
+        run: |
+          set -euo pipefail
+          if ! git diff --quiet || [ -n "$(git status --porcelain --untracked-files=normal)" ]; then
+            echo "Generating the documentation changed tracked files or left" >&2
+            echo "untracked ones. Everything it writes belongs in docs/.gitignore." >&2
+            git --no-pager status --short >&2
+            exit 1
+          fi
+
   cuda-build:
     runs-on: ubuntu-dev-resolute
     container:
@@ -135,10 +160,6 @@ jobs:
           cargo check --target x86_64-unknown-linux-musl -p pelorus_cli --no-default-features --features offline-hiroz,processing-time-export,rayon
 
   armv7-gnu-build:
-    # The release `wheels` job cross-compiles armv7-unknown-linux-gnueabihf with
-    # zig. This links for real rather than `cargo check`ing, because every
-    # cross-compilation failure this repo has hit was at the link step, which
-    # `cargo check` never reaches.
     runs-on: ubuntu-dev-resolute
     container:
       image: docker.io/stelzo/ubuntu-dev:resolute
@@ -157,10 +178,6 @@ jobs:
           cargo zigbuild -p pelorus_cli --target armv7-unknown-linux-gnueabihf
 
   ros-debs-build:
-    # Mirrors what the release `ros-debs` job ends up compiling: the deb is built
-    # via CMakeLists.txt -> r2r_cargo.cmake, which invokes cargo with exactly the
-    # feature set below (see r2r_cargo.cmake). Checking it here catches ROS/r2r
-    # build breakage on every push instead of only when a release tag is pushed.
     strategy:
       fail-fast: false
       matrix:
@@ -213,18 +230,6 @@ jobs:
           cargo check -p pelorus_cli --no-default-features --features ros2c,rat,rayon --locked
 
   root-cmake-glim:
-    # Additional coverage for the optional GLIM block in the root CMakeLists,
-    # i.e. the ament/colcon entry point. `glim-build` already compiles and links
-    # the plugin standalone and stays the job that proves it builds; this one
-    # only checks that the ament path wires it up - the dependency probe, the
-    # add_subdirectory, the install rules and the install prefix - so it stops
-    # after `cmake` configure instead of repeating that build.
-    #
-    # Only the "GLIM absent" half runs today: configuring the root CMakeLists
-    # needs ament_cmake plus the message packages, and no image has both ROS and
-    # GLIM - the ROS images have no GLIM, and glim-noble has no /opt/ros (which
-    # is why `glim-build` above never sources a setup.bash). Enabling the row
-    # below needs an image carrying both.
     strategy:
       fail-fast: false
       matrix:
@@ -255,7 +260,7 @@ jobs:
           # The ROS setup scripts read unset variables (AMENT_TRACE_SETUP_FILES
           # and friends), so errexit/nounset have to come off while sourcing.
           set +eu
-          for distro in jazzy humble; do
+          for distro in lyrical jazzy humble; do
             if [ -f "/opt/ros/$distro/setup.bash" ]; then
               . "/opt/ros/$distro/setup.bash"
               export ROS_DISTRO="$distro"

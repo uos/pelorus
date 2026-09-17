@@ -1,3 +1,10 @@
+# Template for zensical.toml.
+#
+# `cargo run -p pelorus_docs` reads this file, fills in the reference entries of
+# the nav table between the pelorus_docs markers, and writes the result to
+# zensical.toml, which is build output and is not committed. Edit this file, not
+# that one.
+
 # ============================================================================
 #
 # The configuration produced by default is meant to highlight the features
@@ -22,19 +29,19 @@ site_description = "Resource-aware Lidar-Inertial Odometry."
 # The site_author attribute. This is used in the HTML head element.
 #
 # Read more: https://zensical.org/docs/setup/basics/#site_author
-site_author = "Christopher 'stelzo' Sieh <stelzo@steado.de>"
+site_author = "stelzo <stelzo@steado.de>"
 
 # The site_url is the canonical URL for your site. When building online
 # documentation you should set this.
 # Read more: https://zensical.org/docs/setup/basics/#site_url
-#site_url = "https://www.example.com/"
+site_url = "https://stelzo.codeberg.page/pelorus/"
 
 # The copyright notice appears in the page footer and can contain an HTML
 # fragment.
 #
 # Read more: https://zensical.org/docs/setup/basics/#copyright
 copyright = """
-Copyright &copy; 2026 The authors
+Copyright &copy; 2026 stelzo
 """
 
 # Zensical supports both implicit navigation and explicitly defined navigation.
@@ -44,10 +51,42 @@ Copyright &copy; 2026 The authors
 # can be defined using TOML syntax.
 #
 # Read more: https://zensical.org/docs/setup/navigation/
-# nav = [
-#   { "Get started" = "index.md" },
-#   { "Markdown in 5min" = "markdown.md" },
-# ]
+#
+# The pages under "Configuration" other than the overview are generated from
+# pelorus_core/default.rl, and so is the list between the pelorus_docs markers
+# below. Whatever is written between them here is replaced.
+nav = [
+  { "Introduction" = "index.md" },
+  { "Installation" = "install.md" },
+  { "Integrations" = [
+    { "ROS 2" = "ros.md" },
+    { "Standalone" = "standalone.md" },
+    { "GLIM" = "glim.md" },
+  ] },
+  { "Configuration" = [
+    "configuration/index.md",
+    { "Starter configuration" = "configuration/recommended.md" },
+    { "Reference" = [
+      # pelorus_docs:begin
+      "configuration/reference/index.md",
+      { "registration" = "configuration/reference/registration.md" },
+      { "preprocessing" = "configuration/reference/preprocessing.md" },
+      { "sensor_drivers" = "configuration/reference/sensor_drivers.md" },
+      { "lidar" = "configuration/reference/lidar.md" },
+      { "imu" = "configuration/reference/imu.md" },
+      { "wheel" = "configuration/reference/wheel.md" },
+      { "output" = "configuration/reference/output.md" },
+      { "parallelism" = "configuration/reference/parallelism.md" },
+      # pelorus_docs:end
+    ] },
+  ] },
+  { "Calibration" = [
+    "calibration/index.md",
+    { "Scale, misalignment and bias" = "calibration/imu-intrinsics.md" },
+    { "Noise densities and random walks" = "calibration/imu-noise.md" },
+    { "LiDAR to IMU extrinsics" = "calibration/extrinsics.md" },
+  ] },
+]
 
 # With the "extra_css" option you can add your own CSS styling to customize
 # your Zensical project according to your needs. You can add any number of
@@ -57,7 +96,11 @@ Copyright &copy; 2026 The authors
 #
 # Read more: https://zensical.org/docs/customization/#additional-css
 #
-#extra_css = ["stylesheets/extra.css"]
+# The configuration reference uses this for its copy-to-clipboard lines.
+extra_css = [
+  "stylesheets/fonts.css",
+  "stylesheets/config-reference.css",
+]
 
 # With the `extra_javascript` option you can add your own JavaScript to your
 # project to customize the behavior according to your needs.
@@ -65,14 +108,31 @@ Copyright &copy; 2026 The authors
 # The path provided should be relative to the "docs_dir".
 #
 # Read more: https://zensical.org/docs/customization/#additional-javascript
-#extra_javascript = ["javascripts/extra.js"]
+extra_javascript = ["javascripts/config-reference.js"]
 
 # ----------------------------------------------------------------------------
 # Section for configuring theme options
 # ----------------------------------------------------------------------------
 [project.theme]
-logo = "images/logo_cropped.jpg"
-favicon = "images/logo_cropped.jpg"
+# Pelorus has no logo yet. Without one, zensical falls back to its own header
+# icon and favicon. Set "logo" and "favicon" here when there is an image to use.
+
+# Do not load any font from Google.
+#
+# The [project.theme.font] option further down cannot be used for this, because
+# naming a font there does three things at once and they cannot be separated:
+# it emits a preconnect to fonts.gstatic.com, a stylesheet link to
+# fonts.googleapis.com that downloads the font, and the --md-text-font the rest
+# of the theme reads. Setting it to Lora would fetch Lora from Google and leave
+# the copy in docs/fonts unused.
+#
+# So the fetch is turned off here and docs/stylesheets/fonts.css supplies the
+# one part that is wanted, --md-text-font, next to the @font-face rules that
+# point at the local files.
+#
+# This has to stay above the palette tables below, otherwise TOML reads it as a
+# key of the last one.
+font = false
 
 # change this to "classic" to use the traditional Material for MkDocs look.
 #variant = "classic"
@@ -95,7 +155,7 @@ favicon = "images/logo_cropped.jpg"
 # - https://zensical.org/docs/setup/logo-and-icons/#favicon
 # - https://developer.mozilla.org/en-US/docs/Glossary/Favicon
 #
-#favicon = "images/logo_cropped.png"
+#favicon = "images/favicon.png"
 
 # Zensical supports more than 60 different languages. This means that the
 # labels and tooltips that Zensical's templates produce are translated.
@@ -290,9 +350,10 @@ accent = "cyan"
 # of suitably licensed fonts. There are options for a normal text font and for
 # a monospaced font used in code blocks.
 # ----------------------------------------------------------------------------
-#[project.theme.font]
-#text = "Inter"
-#code = "Jetbrains Mono"
+# Deliberately left unset. Naming a font here re-enables the Google Fonts
+# request that `font = false` above turns off, whatever the font is. See the
+# comment there. Lora is declared in docs/stylesheets/fonts.css, and code falls
+# back to the theme's own monospace stack.
 
 # ----------------------------------------------------------------------------
 # You can configure your own logo to be shown in the header using the "logo"

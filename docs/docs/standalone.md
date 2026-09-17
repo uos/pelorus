@@ -1,146 +1,201 @@
 # Standalone
 
-Pelorus is build to run on Linux and Mac without additional restrictions. The only dependency is the data source. Given datasets in binary form or your own Mars Rover or SLAM application you can use the C, C++ or Python libraries for an easy integration in existing systems.
+Pelorus runs on Linux and macOS without ROS. The only thing it needs is a source of data, which can be a recording, a live sensor, or your own application feeding it through the C, C++ or Python bindings.
 
-To just get Pelorus running on your system for the first time, we will use the SeaKit framework. It was build during development of Pelorus to fix determinism and efficiency from ROS. Let's start using it for getting quick results and then go further with specialized use cases:
+This page gets Pelorus running on a recording first, then covers the library bindings.
 
-Since SeaKit is in active development, we will just build everything from source. That might sound scary but in the Rust world, it is barely an inconvenience. Install [Rust](https://www.rust-lang.org/tools/install) first, then follow the commands.
+## Running a recording
 
-Install Marina for getting bags:
+The quickest path uses the SeaKit tools, which were built during Pelorus development to fix determinism and efficiency problems we had with ROS. Everything below is installed from source with `cargo install`, so install [Rust](https://www.rust-lang.org/tools/install) first.
+
+**Marina** fetches recordings:
+
 ```sh
 cargo install --git git://git.steado.tech/marina --locked
 
 marina pull wachsbleiche/parking_25:hunter
 ```
-We recommend also adding the [tab completions](https://stelzo.codeberg.page/marina/features/shell/completions.html). As with all SeaKit, you also find the docs via `ssh marina@steado.tech`.
 
-Now install Minot, which is used by Pelorus to read bags and process synchronously.
+We recommend adding the [tab completions](https://stelzo.codeberg.page/marina/features/shell/completions.html). As with all of SeaKit, the documentation is also available over SSH with `ssh marina@steado.tech`.
+
+**Minot** is what Pelorus uses to read bags and process them synchronously:
+
 ```sh
-cargo install --git git://git.steado.tech/minot minot --tag v0.9.1-hiroz --locked
+cargo install --git git://git.steado.tech/minot minot --tag v0.11.1 --locked
 ```
 
-(Optional) Most people like fancy TUIs -- and we do as well. But we also offer good old GUIs for visualization. Install [Rerun](https://rerun.io/) via this command:
+**Rerun** is optional and gives you a GUI for visualization:
+
 ```sh
 cargo install rerun-cli@0.37.2
 ```
 
-Now we are ready to get our Pelorus odometry with the CLI. 
+Then the CLI itself:
+
 ```sh
 cargo install --git ssh://git.steado.tech/pelorus pelorus_cli --locked
 ```
 
-To detect the current shell and install self-refreshing completions for the current user, run:
+That is everything. Run it:
+
+```sh
+pelorus offline wachsbleiche/parking_25:hunter -c $(marina resolve wachsbleiche/parking_25:hunter)/pelorus.rl
+```
+
+### Shell completions
 
 ```sh
 pelorus completions
 ```
 
-Restart the shell afterward. To generate completion files for packaging or a system-wide installation instead, pass the shell explicitly:
+This detects the current shell and installs self-refreshing completions for the current user. Restart the shell afterwards.
 
-=== "Bash"
+??? note "Generating completion files for packaging or a system-wide install"
 
-    === "Linux"
+    Pass the shell explicitly to write the file yourself.
 
-        ~~~bash
-        pelorus completions bash | sudo tee /etc/bash_completion.d/pelorus > /dev/null
-        ~~~
+    === "Bash"
 
-    === "macOS (Homebrew)"
+        === "Linux"
 
-        ~~~bash
-        pelorus completions bash > $(brew --prefix)/etc/bash_completion.d/pelorus
-        ~~~
+            ~~~bash
+            pelorus completions bash | sudo tee /etc/bash_completion.d/pelorus > /dev/null
+            ~~~
 
-    After installing, reload your shell or source the completion file:
+        === "macOS (Homebrew)"
 
-    ~~~bash
-    source /etc/bash_completion.d/pelorus
-    ~~~
+            ~~~bash
+            pelorus completions bash > $(brew --prefix)/etc/bash_completion.d/pelorus
+            ~~~
 
-=== "Zsh"
-
-    === "Linux"
+        Reload your shell afterwards, or source the file:
 
         ~~~bash
-        mkdir -p ~/.zsh/completions
-        pelorus completions zsh > ~/.zsh/completions/_pelorus
+        source /etc/bash_completion.d/pelorus
         ~~~
 
-    === "macOS (Homebrew)"
+    === "Zsh"
+
+        === "Linux"
+
+            ~~~bash
+            mkdir -p ~/.zsh/completions
+            pelorus completions zsh > ~/.zsh/completions/_pelorus
+            ~~~
+
+        === "macOS (Homebrew)"
+
+            ~~~bash
+            pelorus completions zsh > $(brew --prefix)/share/zsh/site-functions/_pelorus
+            ~~~
+
+        Add the following to `~/.zshrc` **before** the `compinit` call:
 
         ~~~bash
-        pelorus completions zsh > $(brew --prefix)/share/zsh/site-functions/_pelorus
+        fpath=(~/.zsh/completions $fpath)
+        autoload -U compinit && compinit
         ~~~
 
-    Add the following lines to your `~/.zshrc` **before** the `compinit` call:
+    === "Fish"
 
-    ~~~bash
-    fpath=(~/.zsh/completions $fpath)
-    autoload -U compinit && compinit
-    ~~~
+        === "Linux"
 
-=== "Fish"
+            ~~~bash
+            pelorus completions fish > ~/.config/fish/completions/pelorus.fish
+            ~~~
 
-    === "Linux"
+        === "macOS (Homebrew)"
 
-        ~~~bash
-        pelorus completions fish > ~/.config/fish/completions/pelorus.fish
-        ~~~
+            ~~~bash
+            pelorus completions fish > $(brew --prefix)/share/fish/completions/pelorus.fish
+            ~~~
 
-    === "macOS (Homebrew)"
+        Fish picks completions up automatically.
 
-        ~~~bash
-        pelorus completions fish > $(brew --prefix)/share/fish/completions/pelorus.fish
-        ~~~
+## Running against ROS 2 without installing ROS 2
 
-    Fish picks up completions automatically.
+Both Minot and Pelorus can speak ROS 2 over the Zenoh middleware, which lets an existing ROS stack talk to a Pelorus build that has no ROS dependency at all. Install both with the Hiroz feature set. Minot is the same release as above, built with different features:
 
-
-That's it. No we will run.
 ```sh
-pelorus offline wachsbleiche/parking_25:hunter -c $(marina resolve wachsbleiche/parking_25:hunter)/pelorus.rl
-```
+cargo install --git git://git.steado.tech/minot minot --tag v0.11.1 --no-default-features --features default-hiroz
 
-!!! note "GPU Support"
-
-    Pelorus offers various configurations at compile time. You can set them with CMake arguments via uppercasing and setting the prefix `PELORUS_` like so:
-    ```sh
-    colcon build --packages-select pelorus --cmake-args -D PELORUS_CUDA=ON
-    ```
-
-
-## Standalone and ROS-compatible
-
-You can run Pelorus with ROS 2 Zenoh middleware compatibility as well. Minot and Pelorus both support them.
-
-Install Minot with Hiroz.
-```sh
-cargo install --git git://git.steado.tech/minot minot --tag v0.9.1-hiroz --no-default-features --features default-hiroz
-```
-
-Install Pelorus with Hiroz.
-```sh
 cargo install --git ssh://git.steado.tech/pelorus pelorus_cli --no-default-features --features rayon,offline-hiroz
 ```
 
-Run a Zenoh Router.
+Start a Zenoh router:
+
 ```sh
 cargo install zenohd@1.9.0
-
 zenohd
 ```
 
-Now run Pelorus in online mode.
+Run Pelorus in online mode and play a bag into it:
+
 ```sh
 pelorus online -c $(marina resolve wachsbleiche/parking_25:hunter)/pelorus.rl
 ```
 
-And play a bag with Minot.
 ```sh
 minot async $(marina resolve wachsbleiche/parking_25:hunter) --clock --rate 1.0
 ```
 
-Now you can open RViz in a ROS-enabled shell and see the results.
+RViz, started from a ROS-enabled shell, then shows the result:
+
 ```sh
 rviz2 -d ./pelorus_cli/rviz/lio.rviz
 ```
+
+## C and C++ library
+
+The C library is built and installed with CMake and ships a C++ header alongside the C one.
+
+```sh
+cd pelorus_c
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+cmake --build build -j
+sudo cmake --install build
+```
+
+Acceleration backends are CMake options on this build:
+
+| Option | Effect |
+| --- | --- |
+| `PELORUS_FEATURE_CUDA` | CUDA acceleration |
+| `PELORUS_FEATURE_VULKAN` | Vulkan acceleration, see the [prerequisites](install.md#vulkan-prerequisites) |
+| `PELORUS_FEATURE_METAL` | Metal acceleration, macOS only |
+| `PELORUS_FEATURE_RAYON` | CPU parallelism, on by default |
+| `PELORUS_FEATURE_LARGE_PROCESSING_QUEUE` | Larger internal processing queues |
+
+```sh
+cmake -S . -B build -DPELORUS_FEATURE_CUDA=ON
+```
+
+In your own project, link against the installed package:
+
+```cmake
+find_package(pelorus REQUIRED)
+
+add_executable(my_app main.c)
+target_link_libraries(my_app pelorus::pelorus)
+```
+
+`pkg-config` and `add_subdirectory` both work as well. Include `pelorus.h` from C and `pelorus.hpp` from C++, where the header adds helpers for Eigen and PCL. Working examples for the synchronous and the callback-driven API are in `pelorus_c/examples`, including one that feeds Eigen and PCL types directly.
+
+## Python
+
+The Python package is on [PyPI](install.md#python) and takes the same configuration file as everything else. It is the fastest way to try an idea against a recording.
+
+```sh
+uv venv
+uv pip install "pelorus[all]"
+```
+
+`pelorus` is a library, so it goes into an environment. The `pelorus` command
+comes from a separate package, `pelorus-cli`, which the `all` extra pulls in.
+
+Examples covering the blocking API, the callback API and reading from an MCAP bag are in `pelorus_py/examples`.
+
+## Where to look next
+
+- [Configuration](configuration/index.md) for the file every mode reads.
+- [Calibration](calibration/index.md) once the pipeline runs and you want the drift gone.

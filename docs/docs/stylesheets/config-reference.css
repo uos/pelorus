@@ -1,0 +1,120 @@
+/* Layout and copy buttons for the generated configuration reference pages.
+   Colours come from the theme, so this follows light and dark. */
+
+/* ---------------------------------------------------------------------------
+   Headings
+   ---------------------------------------------------------------------------
+   Every heading on these pages is a configuration key, so wrapping each one in
+   a code chip made them all look alike and flattened the nesting. Dropping the
+   chip lets the heading level carry the hierarchy again, while the monospace
+   face still says "this is a key".                                          */
+
+.md-typeset .rl-block > code,
+.md-typeset .rl-key > code {
+  padding: 0;
+  background: none;
+  color: inherit;
+  font-size: inherit;
+  overflow-wrap: anywhere;
+}
+
+/* A block opens a group of options and gets the heavier rule. */
+.md-typeset .rl-block {
+  margin-top: 3em;
+  padding-top: 0.9em;
+  border-top: 2px solid var(--md-default-fg-color--lighter);
+  color: var(--md-default-fg-color);
+}
+
+/* An option, with its copy line and prose belonging to it, gets a light rule
+   to close off the option before it. */
+.md-typeset .rl-key {
+  margin-top: 2.2em;
+  margin-bottom: 0.5em;
+  padding-top: 0.9em;
+  border-top: 1px solid var(--md-default-fg-color--lightest);
+  font-weight: 600;
+}
+
+/* The first option under a block heading is already separated by it. */
+.md-typeset .rl-block + .rl-key {
+  margin-top: 1em;
+  padding-top: 0;
+  border-top: none;
+}
+
+/* ---------------------------------------------------------------------------
+   The line to copy
+   ---------------------------------------------------------------------------
+   It belongs to the heading above it, so it sits tight under it and keeps a
+   clear gap to the prose below.                                             */
+
+.rl-assignment {
+  margin: 0 0 1.1em;
+}
+
+.rl-copy {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 0.6em;
+  max-width: 100%;
+  padding: 0.4em 0.7em;
+  border: 1px solid var(--md-default-fg-color--lightest);
+  border-radius: 0.2rem;
+  background-color: var(--md-code-bg-color);
+  color: var(--md-code-fg-color);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition: border-color 125ms, background-color 125ms;
+}
+
+.rl-copy:hover,
+.rl-copy:focus-visible {
+  border-color: var(--md-accent-fg-color);
+}
+
+.rl-copy > code {
+  padding: 0;
+  background: none;
+  /* A matrix is longer than the column, so it wraps here. A code fence would
+     clip it instead. */
+  overflow-wrap: anywhere;
+}
+
+/* Copy glyph, replaced by the result of the last attempt. */
+.rl-copy::after {
+  content: "⧉";
+  flex: none;
+  align-self: center;
+  opacity: 0.6;
+  font-size: 0.9em;
+}
+
+.rl-copy:hover::after {
+  opacity: 1;
+}
+
+.rl-copy[data-state="copied"] {
+  border-color: var(--md-accent-fg-color);
+}
+
+.rl-copy[data-state="copied"]::after {
+  content: "copied";
+  opacity: 1;
+  color: var(--md-accent-fg-color);
+  font-size: 0.7em;
+  letter-spacing: 0.02em;
+}
+
+.rl-copy[data-state="failed"]::after {
+  content: "press ctrl+c";
+  opacity: 1;
+  font-size: 0.7em;
+}
+
+@media print {
+  .rl-copy::after {
+    content: "";
+  }
+}

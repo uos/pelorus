@@ -4,7 +4,7 @@ name: rerun-version
 
 on:
   schedule:
-    # Every Monday at 06:17 UTC.
+    # Every Monday at 06:17.
     - cron: "17 6 * * 1"
   workflow_dispatch:
 

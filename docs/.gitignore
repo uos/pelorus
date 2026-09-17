@@ -1,1 +1,4 @@
 .venv
+zensical.toml
+docs/configuration/recommended.md
+docs/configuration/reference/

@@ -1,100 +1,144 @@
+# How each new scan is aligned to the map. This covers the voxel grid the map is
+# stored in and the iterated extended Kalman filter update that matches a scan
+# against it.
 registration {
   map {
 
     # @recommended
-    # Feature size used for registration. NOTE: This will heavily affect your registration accuracy and runtime.
+    # Edge length of one voxel, which is also the size of the smallest feature
+    # registration can resolve. This is the option with the largest effect on
+    # both accuracy and runtime, so change it before anything else.
     resolution = 50cm
 
     # @recommended
-    # How many Voxels of the previous defined resolution to save at any time. With Cuda enabled, the capacity will be round up to the next power of 2.
+    # How many voxels of the resolution above the map holds at any time. Once it
+    # is full, older voxels are dropped, so memory stays bounded on a long run.
+    # With CUDA enabled this is rounded up to the next power of two.
     capacity = 131072
    
-    # Magic weighting value for handling the sensivity to new scans. The higher this value, the sensitive is it to brand new scans.
+    # How strongly a new scan moves the distribution stored in a voxel. Higher
+    # values track changes in the environment faster and keep less history.
     distribution_update_sensitivity = 10.0
   }
 
   # Maximum IEKF correction iterations per scan.
   max_iter = 4
 
-  # Maximum distance to any neighbor. Default is mostly ok if you do not drastically reduce the map resolution.
+  # Largest distance at which a map voxel is still considered a neighbor of a
+  # point. The default is fine unless you reduce map.resolution by a lot.
   neighbors_max_range = 5m
 }
 
+# What happens to a scan between arriving and being registered. Filters drop
+# points before they cost anything downstream, so anything excluded here is work
+# the registration never has to do.
 preprocessing {
+  # Reduces the number of points that reach the registration.
   downsample {
     # @recommended
-    # Output the full undistorted cloud on the cloud output topic.
+    # Publish the full undistorted cloud on the output topic. This changes only
+    # what is published. Registration always uses the downsampled cloud.
     bypass_output_downsample = true
 
     # @recommended
     # Downsample the incoming scan by keeping only every n-th point. 1 means no points are skipped.
     point_skip = 1
 
-    # Where to run preprocessing downsampling. Backend uses the active acceleration backend when available; Cpu always uses the CPU path.
+    # Where the downsampling runs. Backend uses the active acceleration backend
+    # when one is available, CPU always uses the CPU path.
     # CPU | Backend
     backend = CPU
 
-    # Estimated sizes of features in the incoming scan, expressed as a factor of registration.map.resolution. Expected values are between 0.0 and 1.0.
+    # Expected feature size in the incoming scan, as a factor of
+    # registration.map.resolution. Values between 0.0 and 1.0 are expected.
     query_resolution_factor = 0.5
   }
 
-  # Assume the first n scans are recorded while standing still. This fixes non-repetitive patterns because the method heavily depends on spatial resolution.
+  # How many scans at the very start are merged into one before registration
+  # begins. A single scan from a non-repetitive scan pattern covers too little of
+  # the surroundings to build a map from, so the platform has to stand still
+  # until this many scans have arrived.
   initial_scan_accumulate = 3
 
+  # Point filters. Each one is skipped while it is left at its default, and a
+  # point has to pass all of them to reach the registration.
   filter {
     bounding_box {
-      # The Bounding Box is built from MIN_{x, y, z} and MAX_{x, y, z}. Empty ranges mean maximum or minimum limits, so ".." is an infinitely large Bounding Box.
-      
-      # <MIN_x>..<MAX_x>, Example 1m..3m
+      # Keeps points inside an axis-aligned box, given as one range per axis in
+      # the LiDAR frame. An open end means no limit on that side, so the default
+      # ".." on all three axes is a box of infinite size and keeps everything.
+
+      # Range along x, for example 1m..3m.
       x = ..
 
-      # <MIN_y>..<MAX_y>, Example 2m..
+      # Range along y, for example 2m.. for everything beyond 2 metres.
       y = ..
-      
-      # <MIN_z>..<MAX_z>, Example 4cm..100m
+
+      # Range along z, for example 4cm..100m.
       z = ..
 
-      # if true, we only accept points inside this bounding_box
+      # Keep the points outside the box instead of the ones inside it.
       invert = false
     }
 
     distance {
-      # Example ..2m (up to 2m from origin) or 1cm..4m (everything from 1cm to 4m distance)
+      # Keeps points whose distance from the sensor origin falls in this range.
+      # The default drops everything closer than 4 metres, which is usually the
+      # robot itself.
+
+      # For example ..2m for everything up to 2 metres, or 1cm..4m for a band.
       range = 4m..
 
-      # if true we only accept points outside the range
+      # Keep the points outside the range instead of the ones inside it.
       invert = false
     }
 
     horizontal_fov {
+      # Keeps points within a horizontal angular sector, measured around the
+      # forward axis below. Useful where part of the field of view is permanently
+      # blocked, for example by a mast or an arm.
+
+      # Whether this filter runs at all. The remaining options in this block have
+      # no effect while it is false.
       enable = false
 
-      # Degrees, Example 10..42
+      # Angular range in degrees, for example 10..42.
       degrees = ..
 
-      # Axis to determine where field of view ranges start and end.
+      # Axis the angular range is measured from, as [x, y] in the LiDAR frame.
       forward = [1.0, 0.0]
 
-      # if true we only accept points outside the range
+      # Keep the points outside the sector instead of the ones inside it.
       invert = false
     }
 
     polygon_2d {
-      # 2D coordinates of each vertex. Example [ [1.0m, -1.5m], [-1.0m, 1.5m], [0m, 0m] ]
+      # Keeps points inside an arbitrary polygon in the ground plane, for cases
+      # a box or a sector cannot describe.
+
+      # Vertices in order, for example [ [1.0m, -1.5m], [-1.0m, 1.5m], [0m, 0m] ].
+      # An empty list disables the filter.
       coords = []
 
-      # If set to a TF frame, the polygon is transformed to that frame first. This enables global scan boundaries in any global coordinate system given by TF.
+      # TF frame the coordinates are given in. When set, the polygon is
+      # transformed into the sensor frame before it is applied, which makes it
+      # possible to express a boundary that stays fixed in the world while the
+      # robot moves. Empty means the coordinates are in the LiDAR frame.
       global_zero_frame = ""
 
-      # if true we only accept points outside the polygon
+      # Keep the points outside the polygon instead of the ones inside it.
       invert = false
     }
 
     intensity {
-      # Floating range normalized to 0..1.0
+      # Keeps points whose intensity falls in this range. Useful for dropping
+      # returns from retroreflective surfaces, which saturate and report a
+      # geometry that is not there.
+
+      # Range, normalized to 0.0..1.0.
       values = ..
 
-      # if true we only accept points outside the range
+      # Keep the points outside the range instead of the ones inside it.
       invert = false
     }
     
@@ -102,6 +146,11 @@ preprocessing {
 
 }
 
+# Devices Pelorus talks to directly instead of subscribing to a topic. These
+# deliver both a point cloud and IMU measurements over the same connection, so
+# they cannot live under `lidar` or `imu` alone. A driver here only starts when
+# `lidar.driver.type` or `imu.driver.type` selects it, and requires a build with
+# the matching feature.
 sensor_drivers {
   ouster {
     # Sensor hostname or address used only to read metadata over HTTP. The
@@ -109,7 +158,7 @@ sensor_drivers {
     hostname = "os.local"
 
     # Optional Ouster metadata JSON file. Empty fetches live metadata from
-    # hostname; a file is useful for deterministic replay and offline testing.
+    # hostname. A file is useful for deterministic replay and offline testing.
     metadata_path = ""
 
     # Local receive address and the sensor's configured UDP destination ports.
@@ -125,16 +174,23 @@ sensor_drivers {
     imu_frame_id = "os_imu"
 
     timestamp {
-      # Ptp | Host. Ptp requires TIME_FROM_PTP_1588 sensor configuration and
-      # validates sensor timestamps against host UTC. Host preserves relative
-      # sensor timing while anchoring each scan or IMU packet at receive time.
+      # Ptp | Host
+      # Ptp requires TIME_FROM_PTP_1588 sensor configuration and validates sensor
+      # timestamps against host UTC. Host preserves relative sensor timing while
+      # anchoring each scan or IMU packet at receive time.
       mode = Ptp
+
+      # Largest accepted difference between sensor UTC and host UTC in Ptp mode.
       max_host_skew = 20ms
+
+      # How long to wait for usable packets before giving up. If the clock mode
+      # above cannot be satisfied, Pelorus fails startup and says so.
       startup_timeout = 15s
     }
   }
 }
 
+# Where point clouds come from and what Pelorus may assume about them.
 lidar {
   driver {
     # Disabled | Velodyne | Ouster
@@ -144,6 +200,8 @@ lidar {
     type = Disabled
 
     velodyne {
+      # UDP connection to a Velodyne sensor. Only used when type = Velodyne.
+
       # Vlp16 | Vlp32c | PuckLite | PuckHiRes
       # The configured model must match the product identifier in received packets.
       model = Vlp32c
@@ -158,8 +216,9 @@ lidar {
       # UDP position/NMEA packet port. Must be in 1..=65535 and differ from data_port.
       position_port = 8308
 
-      # Optional sender-address filter. Empty accepts packets from any device;
-      # otherwise this must be an IPv4 or IPv6 address, for example "192.168.1.201".
+      # Optional sender-address filter. Empty accepts packets from any device.
+      # Otherwise this must be an IPv4 or IPv6 address, for example
+      # "192.168.1.201".
       device_ip = ""
 
       # Frame assigned to native scans. Coordinates follow ROS REP-103:
@@ -187,40 +246,55 @@ lidar {
         allow_host_hour_anchor = true
 
         # Maximum accepted absolute difference between reconstructed sensor UTC and
-        # host UTC. Must be positive. Used by Sensor mode; Host mode already uses host time.
+        # host UTC. Must be positive. Used by Sensor mode. Host mode already uses
+        # host time.
         max_host_skew = 20ms
 
-        # Maximum positive duration to wait for usable packets/timestamps during
-        # startup. Pelorus fails startup instead of silently changing clock modes.
+        # Maximum positive duration to wait for usable packets or timestamps
+        # during startup. If the configured clock mode cannot be satisfied,
+        # Pelorus fails startup and says so.
         startup_timeout = 15s
       }
     }
   }
   # @recommended
+  # Topic carrying sensor_msgs/msg/PointCloud2. Ignored while lidar.driver.type
+  # selects an in-process driver.
   topic = "/ouster/points"
 
-  # PointCloud2 | Compressed. Selects the input message type when using mt_pubsub.
-  # Compressed requires the default-enabled `compressed-pointcloud` Cargo feature.
-  # Other communication backends always subscribe to PointCloud2.
+  # PointCloud2 | Compressed
+  # Selects the input message type when using mt_pubsub. Compressed requires the
+  # default-enabled `compressed-pointcloud` Cargo feature. Other communication
+  # backends always subscribe to PointCloud2.
   subscriber_mode = PointCloud2
 
   # @recommended
-  # Use the vendor specific cloud format timestamps for deskewing
-  # Possible values: Velodyne | Ouster | Livox | Robosense | LivoxMid360 | Hesai | Blickfeld | SickMultiScan | NoTimestamp
+  # Vendor whose per-point timestamp layout the incoming cloud uses. Pelorus
+  # needs this to deskew a scan, since the points of one revolution are measured
+  # at different times. NoTimestamp treats the scan as if it were instantaneous,
+  # which visibly smears geometry as soon as the platform moves.
+  # Velodyne | Ouster | Livox | Robosense | LivoxMid360 | Hesai | Blickfeld | SickMultiScan | NoTimestamp
   vendor = NoTimestamp
 
   # @recommended
-  # Reliable | BestEffort | SystemDefault. Any other setting than Reliable is undefined behavior.
-  qos.reliability = Reliable 
+  # Reliable | BestEffort | SystemDefault
+  # Anything other than Reliable drops messages under load and is not supported.
+  qos.reliability = Reliable
 
-  # Weight for ICP correction in the IEKF
+  # How far the filter trusts the scan match against the map. Lower values pull
+  # the estimate harder towards the registration result.
   covariance = 0.001
 
- # If true, use incoming Lidar messages as a forced sync trigger. Note: This looses accuracy but some outer libraries work better with this mode.
+  # Use incoming LiDAR messages as a forced synchronization trigger. This costs
+  # accuracy, but some surrounding libraries work better with it.
   as_sync = false
 }
 
 
+# Where IMU measurements come from and how far they can be trusted. This also
+# holds the transform to the LiDAR. Both that transform and the noise figures
+# are measurements, and the calibration section of the documentation covers how
+# to take them.
 imu {
   driver {
     # Disabled | Xsens | Ouster
@@ -230,6 +304,8 @@ imu {
     type = Disabled
 
     xsens {
+      # Serial connection to an Xsens MTi. Only used when type = Xsens.
+
       # Serial device path. A stable /dev/serial/by-id/... path is recommended over
       # /dev/ttyUSB0 because USB enumeration order can change between boots.
       port = "/dev/ttyUSB0"
@@ -265,32 +341,46 @@ imu {
         mode = Utc
 
         # Maximum accepted absolute difference between Xsens UTC and host UTC.
-        # Must be positive. Used by Utc mode; Host mode already uses host time.
+        # Must be positive. Used by Utc mode. Host mode already uses host time.
         max_host_skew = 20ms
 
-        # Maximum positive duration to wait for usable MTData2 input during startup.
-        # Pelorus fails startup instead of silently changing from Utc to Host.
+        # Maximum positive duration to wait for usable MTData2 input during
+        # startup. If Utc cannot be satisfied, Pelorus fails startup and says so.
         startup_timeout = 15s
       }
     }
   }
 
   # @recommended
+  # Topic carrying sensor_msgs/msg/Imu. Ignored while imu.driver.type selects an
+  # in-process driver. This has to be the raw device output. Calibrating against
+  # an orientation-filtered topic produces a wrong result.
   topic = "/ouster/imu"
 
   # @recommended
-  # Reliable | BestEffort | SystemDefault. Any other setting than Reliable is undefined behavior.
+  # Reliable | BestEffort | SystemDefault
+  # Anything other than Reliable drops messages under load and is not supported.
   qos.reliability = Reliable
 
+  # How long to collect IMU measurements before the first scan is processed.
+  # These samples give the filter its initial gravity direction, so the platform
+  # has to stand still for at least this long after start-up.
   initial_setup = 100ms
 
   # @recommended
   from_lidar_transform {
+    # Where the IMU sits relative to the LiDAR. Measure this. A value taken from
+    # a drawing is often a few millimetres out, and a wrong lever arm shows up as
+    # drift that scales with how hard the platform turns. See the calibration
+    # section of the documentation.
 
-    # Ignore the next manual translation and use the TF tree instead. The lookup will be once with receiving the first IMU message.
+    # Look the transform up in the TF tree instead of using the values below.
+    # The lookup happens once, when the first IMU message arrives.
     use_tf_tree = false
 
-    # lidar -> imu
+    # Transform from the LiDAR frame into the IMU frame, so a point in LiDAR
+    # coordinates becomes a point in IMU coordinates. `dedrunk extrinsics`
+    # prints both values in this form, ready to paste.
     translation = [-6.253mm, 11.775mm, 28.535mm]
     rotation = [  [1.0, 0.0, 0.0],
                   [0.0, 1.0, 0.0],
@@ -302,9 +392,9 @@ imu {
     # This is refinement, not calibration: the filter needs a starting guess
     # close enough to converge, and the extrinsic is only observable while the
     # platform is actually being excited. On a robot that mostly drives
-    # straight it will drift on the unobservable directions rather than
-    # improve. Leave it off unless you know the motion excites all axes, and
-    # check the result against what you started with.
+    # straight it will drift along the unobservable directions and get worse.
+    # Leave it off unless you know the motion excites all axes, and check the
+    # result against what you started with.
     estimate_online = false
   }
 
@@ -314,29 +404,50 @@ imu {
   # This exists to produce a trajectory for calibrating the IMU against, which
   # is circular if the IMU helped produce it. It is not a navigation mode: with
   # no IMU the gravity direction is unobservable, so roll and pitch are
-  # relative to wherever the sensor started rather than to level, and there is
+  # relative to wherever the sensor started and not to level, and there is
   # nothing to carry the estimate through a stretch where the geometry is
   # degenerate. The covariances below stop describing sensor noise and start
   # describing how much the constant-twist model can be trusted, so raise them.
   lidar_only = false
 
-  # CreateOrientationOnly | FilterAccelerationAndCreateOrientation | FilterAccelerationOnly | Disable (recommended when using on-device filtering in the driver)
+  # CreateOrientationOnly | FilterAccelerationAndCreateOrientation | FilterAccelerationOnly | Disable
+  # Orientation filtering Pelorus applies to incoming IMU measurements. Leave it
+  # at Disable when the driver or the device already filters, which is the usual
+  # case. The result is published on output.imu_ahrs_filtered_topic and is never
+  # fed back into the odometry.
   ahrs_filtering.method = Disable
 
-  # Initial guess in m/s^2 for initialization.
+  # Magnitude of gravity in m/s^2, used as the starting point for the filter.
+  # 9.81 is close enough everywhere on Earth. The filter refines it from there.
   gravity = 9.81
 
+  # How far the filter trusts the IMU between LiDAR corrections. Larger values
+  # mean less trust, so the scan match pulls the estimate further on each update.
+  #
+  # The defaults are the FAST-LIO tuning values and are not a noise model of any
+  # particular sensor. `calibration.noise_from_file` below replaces them with
+  # figures measured from your own IMU.
   covariance_gyroscope = 0.1
+
+  # Process noise on the gyroscope bias, i.e. how fast the filter lets that bias
+  # wander.
   covariance_gyroscope_bias = 0.0001
 
+  # How far the filter trusts the accelerometer between LiDAR corrections.
   covariance_acceleration = 0.1
+
+  # Process noise on the accelerometer bias.
   covariance_acceleration_bias = 0.0001
 
+  # Corrections applied to every IMU sample before the filter sees it.
   calibration {
-    # Take a few measurements first without rotating in the beginning to smooth out rotations.
+    # Measure the gyroscope bias at start-up and subtract it. The platform has to
+    # stand still while the first `samples` measurements arrive. Stored bias
+    # figures drift with temperature and between power cycles, so a value
+    # measured at start-up is more accurate than one read from a file.
     gyroscope = true
-    
-    # Use this many measurements for the gyroscope
+
+    # How many measurements the start-up bias estimate averages over.
     samples = 100
 
     # Kalibr-format IMU calibration to apply to every sample: scale factors,
@@ -350,8 +461,8 @@ imu {
 
     # Take the four covariances above from parameter_file instead of the
     # constants, deriving them from its measured noise densities and bias
-    # random walks. Needs a file that carries the stochastic half too, i.e.
-    # one from `dedrunk merge`; `dedrunk intrinsics` alone does not.
+    # random walks. This needs a file that carries the stochastic half too, so
+    # one from `dedrunk merge`. `dedrunk intrinsics` alone does not produce one.
     #
     # Off by default because it moves numbers the odometry is tuned around.
     # Both the derived and the configured values are logged at startup, so the
@@ -379,80 +490,110 @@ imu {
 
 }
 
+# An optional third source of motion. Wheel odometry constrains the estimate
+# along the directions the platform can actually move, which helps most where the
+# geometry is degenerate, such as in a long corridor.
 wheel {
-  # Processing odometry messages is not tested enough yet, thus experimental.
+  # Topic carrying nav_msgs/msg/Odometry. Wheel odometry is experimental and has
+  # not seen enough testing to be recommended, which is why the default topic
+  # name is one nothing publishes on.
   topic = "/odom_experimental"
 
   # Reliable | BestEffort | SystemDefault
-  qos.reliability = Reliable 
+  # QoS the wheel odometry topic is subscribed with.
+  qos.reliability = Reliable
 
+  # Orientation of the wheel odometry frame relative to the IMU. Only the
+  # rotation is needed, because the translation cancels out of a velocity
+  # constraint.
   to_imu_transform {
-    # Ignore the next manual translation and use the TF tree instead. The lookup will be once with receiving the first odom message.
+    # Look the rotation up in the TF tree instead of using the value below. The
+    # lookup happens once, when the first odometry message arrives.
     use_tf_tree = false
 
-    # Rotation Matrix Wheel_to_IMU
+    # Rotation from the wheel odometry frame into the IMU frame.
     rotation = [ [1.0, 0.0, 0.0],
                  [0.0, 1.0, 0.0],
                  [0.0, 0.0, 1.0] ]
   }
 
-  # Weight for Odometry correction in the IEKF. If not given, the covariance provided in the Odometry message will be used.
+  # How far the filter trusts the wheel odometry. Left unset, the covariance
+  # carried in the Odometry message is used instead.
   # covariance = 0.001
 
-  # Standard deviation for kinematic constraints in undistortion (lower = stronger constraints)
+  # Standard deviation of the kinematic constraints applied during undistortion.
+  # Lower values constrain harder.
   kinematic_constraint_std = 0.001
 
   # @recommended
-  # Full3D | Differential | Holonomic2D | Ackermann. Applies kinematic constraints on the IEKF.
+  # Full3D | Differential | Holonomic2D | Ackermann
+  # Which directions of motion the platform is capable of. Anything other than
+  # Full3D constrains the IEKF accordingly.
   kinematic_model = Full3D
   
   # @recommended
-  # Ackermann steering configuration (only used when kinematic_model = Ackermann)
-  ackermann.imu_to_rear_axle = [0.0m, 0.0m, 0.0m] # Offset from IMU to rear axle center in imu frame
+  # Offset from the IMU to the centre of the rear axle, in the IMU frame. Only
+  # used when kinematic_model is Ackermann.
+  ackermann.imu_to_rear_axle = [0.0m, 0.0m, 0.0m]
 }
 
+# What Pelorus publishes and where it publishes it. This covers the topics and
+# their QoS, the frames poses are expressed in, the terminal interface and the
+# Rerun visualization.
 output {
 
   # @recommended
-  # Lidar | ImuAndLidar. ImuAndLidar adds low-latency IMU predictions between Lidar corrections.
+  # Lidar | ImuAndLidar
+  # How often odometry is published. ImuAndLidar adds low-latency IMU predictions
+  # between the LiDAR corrections, published at the IMU rate.
   odometry_rate = Lidar
 
-  # PointCloud2 | Compressed. Selects the registered-cloud message type when using mt_pubsub.
-  # Compressed requires the default-enabled `compressed-pointcloud` Cargo feature.
-  # The topic name stays "registered" in either mode.
+  # PointCloud2 | Compressed
+  # Selects the registered-cloud message type when using mt_pubsub. Compressed
+  # requires the default-enabled `compressed-pointcloud` Cargo feature. The topic
+  # name stays "registered" in either mode.
   publisher_mode = PointCloud2
 
+  # What Pelorus prints while it runs.
   terminal {
     # @recommended
     # Show the interactive TUI with position, velocity, and performance metrics.
     # Set to false for non-interactive sessions.
     ui = true
 
-    # Show timing metrics and debug output in the terminal.
+    # Print timing metrics for each pipeline stage. This is what to turn on when
+    # Pelorus is not keeping up with the sensor.
     debug = false
 
-    # Refresh rate for debug terminal output in frames per second
+    # Refresh rate of the debug output, in frames per second.
     debug_fps = 1
 
-    # Debounce time for specific warnings
+    # Shortest interval at which a repeating warning is printed again, so that a
+    # condition holding for a whole run does not fill the terminal.
     warning_debounce = 1s
      
     # @recommended
-    # Log level (Trace, Debug, Info, Warn, Error)
+    # Trace | Debug | Info | Warn | Error
+    # Everything at this level and above is logged.
     log_level = Warn
   }
 
   # @recommended
-  # Which frame to publish the TF messages to
+  # Frame the estimated poses and the TF messages are expressed in. It is placed
+  # wherever the sensor was at start-up, so it is a local frame and carries no
+  # relation to any map or world frame that already exists in your TF tree.
   global_frame = "lio_init"
 
   # @recommended
   base_link {
-    # If not empty, the odometry and TF will be published for this frame instead of the Lidar frame.
+    # Frame the odometry and TF are published for. Empty publishes the pose of
+    # the LiDAR itself. Set it to your robot's body frame to have Pelorus apply
+    # the transform below and publish that pose.
     frame_id = ""
 
     from_lidar_transform {
-      # Ignore the next manual translation and use the TF tree instead. The lookup will be once with receiving the first sensor message.
+      # Look the transform up in the TF tree instead of using the values below.
+      # The lookup happens once, when the first sensor message arrives.
       use_tf_tree = false
 
       # Pose of the Lidar in the base_link frame.
@@ -463,58 +604,79 @@ output {
     }
   }
 
+  # Live visualization. Pelorus sends to a Rerun viewer that is already running.
+  # It never starts one itself, and sends nothing unless --rerun is passed.
   rerun {
-    # Address of an already running Rerun server. Visualization is activated with --rerun.
+    # Address of the running Rerun server.
     server_addr = "127.0.0.1:9876"
 
     # Periodic snapshot of the whole registration map, colored by relevance score.
     # Off by default. Large maps can be expensive to render.
     map {
+      # Whether the map snapshot is sent at all. The two options below have no
+      # effect while this is false.
       enabled = false
-      # Minimum time between snapshots.
+
+      # Shortest interval between two snapshots.
       publish_interval = 1s
-      # Ellipsoid size, scaled by each voxel's covariance.
+
+      # Size of the ellipsoid drawn per voxel, scaled by that voxel's covariance.
       visual_scale = 3.0
     }
   }
 
   # Reliable | BestEffort | SystemDefault
+  # QoS of the LiDAR-rate odometry topic.
   lio_odometry_msg_qos = Reliable
 
   # Reliable | BestEffort | SystemDefault
+  # QoS of the LiDAR-rate path topic. The path is a visualization aid, so
+  # dropping messages under load is usually acceptable.
   lio_path_msg_qos = SystemDefault
 
   # Reliable | BestEffort | SystemDefault
+  # QoS of the IMU-rate odometry topic, published when output.odometry_rate is
+  # ImuAndLidar.
   imu_odometry_msg_qos = SystemDefault
 
   # Reliable | BestEffort | SystemDefault
+  # QoS of the IMU-rate path topic.
   imu_path_msg_qos = SystemDefault
 
   # Reliable | BestEffort | SystemDefault
+  # QoS of the AHRS-filtered IMU topic, published when imu.ahrs_filtering.method
+  # is anything but Disable.
   imu_ahrs_filtered_msg_qos = Reliable
 
-  # AHRS filtered output relative to the pelorus topic namespace.
+  # Topic the AHRS-filtered IMU output is published on, relative to
+  # logger_prefix. Only used when imu.ahrs_filtering.method is not Disable.
   imu_ahrs_filtered_topic = "imu/filtered"
 
+  # Namespace every published topic and every log line is prefixed with.
   logger_prefix = "pelorus"
 }
 
+# How much of the machine Pelorus is allowed to use. It also decides between the
+# single-core and the multi-core implementation of each pipeline stage.
 parallelism {
   # @recommended
-  # Maximum number of CPU threads used for parallel processing.
-  # Set to `all` to use all available cores or specify a number like `4` for a fixed number.
-  # High numbers will result in more substantial CPU load.
+  # Upper bound on the CPU threads used for parallel processing. `all` uses every
+  # available core. Pelorus is meant to leave room for whatever else runs on the
+  # machine, so raising this trades headroom for latency.
   num_threads = 3
 
   # Force CPU-only processing regardless of available GPU backends.
   cpu_only = false
 
   # @recommended
-  # Auto benchmarks both modes at runtime. Other options overwrite automatic decisions.
-  # This is recommended when measuring computational footprint or runtime for scientific papers.
-  # Setting num_threads to 1 will still use rayon implementations. To truly run single-core,
-  # disable the rayon feature or set various pipeline steps to SingleCore with this setting.
   # Auto | SingleCore | Rayon
+  # How each pipeline stage picks between the single-core and the rayon
+  # implementation. Auto measures both at runtime and keeps whichever wins. Pick
+  # one of the other two when the execution path has to stay fixed, for example
+  # when reporting runtime figures in a paper.
+  #
+  # num_threads = 1 still runs the rayon implementation with one thread. Setting
+  # this to SingleCore is what actually takes rayon out of the path.
   execution_mode = Auto
 
   # Number of standard errors by which one CPU execution mode must beat the other

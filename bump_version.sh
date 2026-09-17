@@ -23,6 +23,17 @@ cd "$SCRIPT_DIR"
 DETECTED_VERSION="$(grep -m1 '^version = ' Cargo.toml | sed 's/version = "\(.*\)"/\1/')"
 echo "Bumping to: $NEW_VERSION (detected current: $DETECTED_VERSION)"
 
+# The versions the docs tell a reader to install cannot be repaired
+# automatically, so they are checked before anything is written. Failing here
+# leaves the tree untouched; failing halfway through would leave it half bumped.
+echo ""
+echo "── Checking the versions the docs tell people to install ─────────────"
+if ! python3 scripts/check-packaging.py --docs-only; then
+    echo "" >&2
+    echo "Nothing has been changed. Fix the docs above, then run this again." >&2
+    exit 1
+fi
+
 # Portable sed -i
 sed_i() {
     if [[ "$OSTYPE" == "darwin"* ]]; then
@@ -51,7 +62,9 @@ sed_i "s/^pkgver=.*/pkgver=${NEW_VERSION}/" \
 sed_i "s/^pkgrel=.*/pkgrel=1/" \
     packaging/arch-bin/PKGBUILD
 
-# Synchronize minot dependency version constraints across packaging manifests
+# Synchronize the dependency constraints that are derived from Cargo.toml
+echo ""
+echo "── Syncing packaging dependency constraints ──────────────────────────"
 python3 scripts/check-packaging.py --fix
 
 echo ""
