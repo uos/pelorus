@@ -1045,7 +1045,11 @@ impl IVoxHashMap {
     #[must_use]
     pub fn get_entire_map(&self) -> Vec<nalgebra::Point3<f32>> {
         if let Some(map) = &self.multiresolution {
-            return map.distributions().into_iter().map(|d| d.mean).collect();
+            return map
+                .distributions_with_levels()
+                .into_iter()
+                .map(|(d, _)| d.mean)
+                .collect();
         }
         #[cfg(feature = "nn_kdt")]
         {

@@ -259,8 +259,9 @@ lidar {
 
     robosense {
       # UDP connection to a RoboSense solid-state sensor. Only used when
-      # type = Robosense. The mechanical units (RS-16, RS-32, Helios, Bpearl)
-      # speak a different packet format and are not handled by this driver.
+      # lidar.driver.type selects Robosense. The mechanical units (RS-16,
+      # RS-32, Helios, Bpearl) speak a different packet format and are not
+      # handled by this driver.
 
       # M1 | M2 | E1 | Mx
       # These differ in packet length and per-point layout, so a mismatch is
