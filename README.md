@@ -11,7 +11,7 @@ Supporting various 3D Lidar sensors, IMUs, odometry sources and kinematic models
 
 Scale your compute down to single-core CPU usage or up to full parallel compute on CPU and **GPU**, supporting NVIDIA, AMD, Intel and Apple Silicon.
 
-## Ways to use Pelorus
+## Ways to use
 
 Pick whichever fits your stack. All of them support both CPU-only and GPU-accelerated setups:
 
@@ -30,15 +30,15 @@ First, install **[Rust](https://www.rust-lang.org/tools/install)** if you haven'
 Pelorus builds with your standard **ROS 2 CMake** toolchain.
 
 ```sh
-cd ~/ros2_ws/src
-git clone git@gitlabti.informatik.uni-osnabrueck.de:chsieh/pelorus.git
-cd ..
+# add the UOS PPA
+curl -fsSL "https://uos-robotics.codeberg.page/ppa/ubuntu/key.gpg" | gpg --dearmor \
+  | sudo tee /usr/share/keyrings/uos-archive-keyring.gpg >/dev/null
+echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/uos-archive-keyring.gpg] https://uos-robotics.codeberg.page/ppa/ubuntu $(. /etc/os-release && echo $UBUNTU_CODENAME) main" \
+  | sudo tee /etc/apt/sources.list.d/uos.list
+sudo apt update
 
-rosdep install --from-paths src -y --ignore-src
-
-colcon build --packages-select pelorus
-
-source install/setup.bash
+# available for Humble, Jazzy and Lyrical
+sudo apt install ros-$ROS_DISTRO-pelorus
 
 # make a config and change the values to your needs, e.g. topic names, frame ids, sensor parameters etc.
 ros2 run pelorus pelorus config generate recommended > pelorus.rl
@@ -47,17 +47,10 @@ ros2 run pelorus pelorus config generate recommended > pelorus.rl
 ros2 launch pelorus pelorus.launch.py config_path:=pelorus.rl rviz:=false
 ```
 
-
-## Standalone quick start (no ROS 2)
-
-`pelorus_cli` builds with [Minot](https://uos.github.io/minot/) pub/sub support by default, so you can run the full pipeline without a ROS 2 installation.
-
-First, install [Rust](https://www.rust-lang.org/tools/install), then Minot and the Pelorus CLI:
+## Standalone quick start
 
 ```sh
-cargo install --git git://git.steado.tech/minot minot --tag v0.9.1-hiroz --locked
-
-cargo install --git ssh://git.steado.tech/pelorus pelorus_cli --locked
+uv pip install "pelorus[all]"
 ```
 
 Generate a config, then run it against a recorded MCAP bag:
@@ -68,17 +61,9 @@ pelorus config generate recommended > pelorus.rl
 pelorus offline path/to/your.mcap -c pelorus.rl
 ```
 
-Or process a live sensor stream instead of a bag:
-
-```sh
-pelorus online -c pelorus.rl
-```
-
 See the [standalone docs](https://stelzo.codeberg.page/pelorus/standalone/) for pulling sample bags with Marina, running Zenoh/ROS-compatible middleware, and visualizing results with Rerun or RViz.
 
 Please see the **[docs](https://stelzo.codeberg.page/pelorus/)** for more info about ROS, standalone usage, libraries, [sensor/IMU calibration](https://stelzo.codeberg.page/pelorus/calibration/) and [configuration](https://stelzo.codeberg.page/pelorus/configuration/).
-
-For Vulkan acceleration, follow the [Vulkan installation and GPU verification guide](https://stelzo.codeberg.page/pelorus/install/#vulkan-prerequisites), including the NVIDIA Vulkan driver requirement for compute-only systems.
 
 ## Development
 

@@ -19,6 +19,6 @@ mask --help
 
 For proper visualisations, the development environment uses `rerun`. It's recommended to run it in the background.
 ```sh
-cargo binstall rerun-cli --version '~0.24'
+cargo binstall rerun-cli
 rerun
 ```
