@@ -7,6 +7,10 @@ class Pelorus < Formula
   version "VERSION_PLACEHOLDER"
   license any_of: ["MIT", "Apache-2.0"]
 
+  depends_on "minot"
+  depends_on "dedrunk"
+  depends_on "marina"
+
   on_macos do
     on_arm do
       url "https://uos-robotics.codeberg.page/ppa/bin/pelorus-#{version}-macos-arm64.tar.gz"

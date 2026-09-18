@@ -35,15 +35,7 @@ install(DIRECTORY pelorus_cli/rviz
   DESTINATION share/${PROJECT_NAME}
 )
 
-# ---------------------------------------------------------------------------
 # Optional GLIM odometry plugin.
-#
-# GLIM, GTSAM and gtsam_points are heavy system dependencies that most people
-# building the ROS node do not have installed. So they are probed for instead of
-# required: when they are all present the plugin is built and installed into the
-# colcon prefix alongside the node, and when they are not the node still builds
-# exactly as before and we only print a note saying what was missing.
-# ---------------------------------------------------------------------------
 option(PELORUS_BUILD_GLIM
   "Build the GLIM odometry plugin when GLIM and its dependencies are found" ON)
 

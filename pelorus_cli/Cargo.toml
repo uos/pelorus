@@ -212,7 +212,7 @@ ratslang.workspace = true
 
 [package.metadata.deb]
 name = "pelorus"
-depends = "minot (>= 0.11.0), minot (<< 0.12.0~)"
+depends = "minot (>= 0.11.0), minot (<< 0.12.0~), dedrunk, marina"
 section = "science"
 priority = "optional"
 assets = [["target/release/pelorus", "usr/bin/pelorus", "755"]]
