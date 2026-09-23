@@ -117,7 +117,7 @@ hiroz-msgs = { version = "0.2.0", git = "https://github.com/ZettaScaleLabs/hiroz
 hiroz-protocol = { version = "0.2.0", git = "https://github.com/ZettaScaleLabs/hiroz.git", tag = "v0.2.0", default-features = false }
 zenoh-buffers = "1.9.0"
 tokio = { version = "1.49", default-features = false }
-rerun = { version = "0.37", default-features = false, features = [
+rerun = { version = "0.38", default-features = false, features = [
   "sdk",
   "glam",
 ] }

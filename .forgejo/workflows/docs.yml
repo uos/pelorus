@@ -1,0 +1,44 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/SchemaStore/schemastore/refs/heads/master/src/schemas/json/github-workflow.json
+# Docs Workflow for Pelorus. The schema is used until there is one for Forgejo.
+# The site is only redeployed for tagged releases, so it matches the latest released version.
+# ci.yml still builds the docs on every push as a check.
+
+name: Docs
+
+on:
+  push:
+    tags:
+      - v*
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: ubuntu-dev-resolute
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build the documentation
+        run: |
+          set -euo pipefail
+          rustup default stable
+          cargo run -p pelorus_docs
+          cd docs && uvx zensical build --clean
+      - name: Deploy to Codeberg Pages
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          REPO="${FORGEJO_REPOSITORY:-${GITHUB_REPOSITORY}}"
+          SERVER="${FORGEJO_SERVER_URL:-https://codeberg.org}"
+          TMP="$(mktemp -d)"
+          cp -a docs/site/. "$TMP/"
+          git config --global user.email "$(git log -1 --pretty=format:'%ae')"
+          git config --global user.name "$(git log -1 --pretty=format:'%an')"
+          git checkout --orphan pages
+          git rm -rf .
+          # Drop ignored build output (target/, generated pages) so only the site is committed.
+          git clean -fdxq
+          cp -a "$TMP"/. .
+          touch .nojekyll
+          git add -A
+          git commit -m "docs: deploy ${FORGEJO_REF_NAME:-${GITHUB_REF_NAME}}" || exit 0
+          git push --force "https://oauth2:${GITHUB_TOKEN}@${SERVER#https://}/${REPO}.git" HEAD:pages

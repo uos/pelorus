@@ -27,7 +27,7 @@ cargo install --git git://git.steado.tech/minot minot --tag v0.11.1 --locked
 **Rerun** is optional and gives you a GUI for visualization:
 
 ```sh
-cargo install rerun-cli@0.37.2
+cargo install rerun-cli@0.38.0
 ```
 
 Then the CLI itself:

@@ -22,7 +22,7 @@ classifiers = [
 dependencies = ["minot-cli>=0.11.0,<0.12.0"]
 
 [project.optional-dependencies]
-rerun = ["rerun-sdk>=0.37.0,<0.38.0"]
+rerun = ["rerun-sdk>=0.38.0,<0.39.0"]
 
 [tool.maturin]
 bindings = "bin"
