@@ -88,11 +88,7 @@ Everything highlighted can run on the GPU. Each of those stages has a CUDA, a Vu
 The map holds a [fixed number of voxels](configuration/reference/registration.md#registration-map-capacity)
 and evicts using a least-relevance criterion. Memory is therefore bounded by configuration. That is what makes a long run on a Jetson predictable.
 
-The correction is an [iterated equivariant kalman filter filter](https://arxiv.org/abs/2409.06948). The error is a group
-element (the linearisation) depends on the state only through equivariant quantities, which is what holds the filter together through abrupt motion.
-
-Wheel odometry or kinematic constraints can be folded in as a third source, which helps most where the
-geometry is degenerate, such as a long corridor. Wheel odometry is still unstable due to a lack of test data.
+The state is estimated through an [iterated equivariant kalman filter](https://arxiv.org/abs/2409.06948). Wheel odometry or kinematic constraints can be added for additional constraints, which helps most where the geometry is degenerate, such as a long corridor. Wheel odometry is still unstable due to a lack of test data.
 
 
 ## Getting started

@@ -8,7 +8,19 @@
 
 ## Ubuntu packages
 
-[Set up the steado PPA](https://ppa.steado.tech/) for your Ubuntu LTS version to install Pelorus and receive updates automatically. Every package comes in a plain CPU build and in CUDA and Vulkan variants.
+Install Pelorus from the [steado PPA](https://ppa.steado.tech/) for your Ubuntu LTS version and receive updates automatically. Every package comes in a plain CPU build and in CUDA and Vulkan variants.
+
+??? note "Set up the PPA"
+
+    Run this once on Ubuntu 22.04, 24.04 or 26.04.
+
+    ~~~sh
+    curl -fsSL "https://ppa.steado.tech/ubuntu/key.gpg" | gpg --dearmor \
+      | sudo tee /usr/share/keyrings/steado-archive-keyring.gpg >/dev/null
+    echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/steado-archive-keyring.gpg] https://ppa.steado.tech/ubuntu $(. /etc/os-release && echo $UBUNTU_CODENAME) main" \
+      | sudo tee /etc/apt/sources.list.d/steado.list
+    sudo apt update
+    ~~~
 
 === "ROS 2 node"
 
@@ -72,8 +84,8 @@ curl -LsSf https://astral.sh/uv/install.sh | sh
 === "The `pelorus` command"
 
     `uv tool` installs applications, so the package to name here is
-    `pelorus-cli`. The `rerun` extra adds the Rerun viewer, and the CLI's
-    `output.rerun = true` config setting needs it.
+    `pelorus-cli`. The `rerun` extra adds the Rerun viewer, so we can use
+    `output.rerun = true`.
 
     ~~~sh
     uv tool install "pelorus-cli[rerun]"
@@ -113,15 +125,9 @@ curl -LsSf https://astral.sh/uv/install.sh | sh
     dependency. The extras are `mcap` for bag reading, `cli` for the executable,
     and `all` for both.
 
-!!! warning "Why `uv tool install pelorus[all]` fails"
+## Vulkan from source
 
-    `pelorus` is a library and ships no executables, so `uv tool` refuses it with
-    `No executables are provided by package pelorus`. Use `pelorus-cli` for the
-    command and `uv pip install` for the library.
-
-## Vulkan prerequisites
-
-Vulkan needs both the loader and a working driver for your GPU. A working CUDA installation, or `nvidia-smi` producing output, does not establish Vulkan support.
+Vulkan needs some runtime dependencies to run on your GPU. A working CUDA installation, or `nvidia-smi` producing output, does not automatically provide Vulkan support.
 
 ```sh
 sudo apt update

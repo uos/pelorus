@@ -29,14 +29,22 @@ First, install **[Rust](https://www.rust-lang.org/tools/install)** if you haven'
 
 Pelorus builds with your standard **ROS 2 CMake** toolchain.
 
+<details>
+<summary>Set up the PPA</summary>
+
+Add the [steado PPA](https://ppa.steado.tech/).
+
 ```sh
-# add the steado PPA
 curl -fsSL "https://ppa.steado.tech/ubuntu/key.gpg" | gpg --dearmor \
   | sudo tee /usr/share/keyrings/steado-archive-keyring.gpg >/dev/null
 echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/steado-archive-keyring.gpg] https://ppa.steado.tech/ubuntu $(. /etc/os-release && echo $UBUNTU_CODENAME) main" \
   | sudo tee /etc/apt/sources.list.d/steado.list
 sudo apt update
+```
 
+</details>
+
+```sh
 # available for Humble, Jazzy and Lyrical
 sudo apt install ros-$ROS_DISTRO-pelorus
 

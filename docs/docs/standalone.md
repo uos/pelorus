@@ -6,37 +6,22 @@ This page gets Pelorus running on a recording first, then covers the library bin
 
 ## Running a recording
 
-The quickest path uses the SeaKit tools, which were built during Pelorus development to fix determinism and efficiency problems we had with ROS. Everything below is installed from source with `cargo install`, so install [Rust](https://www.rust-lang.org/tools/install) first.
+The quickest path uses the SeaKit tools, which we built during Pelorus' development to fix determinism and efficiency problems we had with ROS. [Installing Pelorus with uv](./index.md#how-to-run) gives you everything you need at once. This includes:
 
-**Marina** fetches recordings:
+- `marina` manages bags
+- `dedrunk` for IMU intrinsics and IMU-Lidar extrinsics
+- `minot` for synchronized playback of bags
+
+First we get our dataset:
 
 ```sh
-cargo install --git git://git.steado.tech/marina --locked
-
 marina pull wachsbleiche/parking_25:hunter
 ```
 
-We recommend adding the [tab completions](https://stelzo.codeberg.page/marina/features/shell/completions.html). As with all of SeaKit, the documentation is also available over SSH with `ssh marina@steado.tech`.
+!!! tip
+    Just run `marina` without any additional command for a TUI of available datasets and `marina completions` to install autocompletions in your shell.
 
-**Minot** is what Pelorus uses to read bags and process them synchronously:
-
-```sh
-cargo install --git git://git.steado.tech/minot minot --tag v0.11.1 --locked
-```
-
-**Rerun** is optional and gives you a GUI for visualization:
-
-```sh
-cargo install rerun-cli@0.38.0
-```
-
-Then the CLI itself:
-
-```sh
-cargo install --git ssh://git.steado.tech/pelorus pelorus_cli --locked
-```
-
-That is everything. Run it:
+Now run it:
 
 ```sh
 pelorus offline wachsbleiche/parking_25:hunter -c $(marina resolve wachsbleiche/parking_25:hunter)/pelorus.rl
@@ -50,76 +35,16 @@ pelorus completions
 
 This detects the current shell and installs self-refreshing completions for the current user. Restart the shell afterwards.
 
-??? note "Generating completion files for packaging or a system-wide install"
+## Running with ROS 2 Zenoh Middleware
 
-    Pass the shell explicitly to write the file yourself.
+Thanks to [hiroz](https://github.com/ZettaScaleLabs/hiroz) we can run connect to other ROS 2 nodes without needing a ROS installation.
 
-    === "Bash"
-
-        === "Linux"
-
-            ~~~bash
-            pelorus completions bash | sudo tee /etc/bash_completion.d/pelorus > /dev/null
-            ~~~
-
-        === "macOS (Homebrew)"
-
-            ~~~bash
-            pelorus completions bash > $(brew --prefix)/etc/bash_completion.d/pelorus
-            ~~~
-
-        Reload your shell afterwards, or source the file:
-
-        ~~~bash
-        source /etc/bash_completion.d/pelorus
-        ~~~
-
-    === "Zsh"
-
-        === "Linux"
-
-            ~~~bash
-            mkdir -p ~/.zsh/completions
-            pelorus completions zsh > ~/.zsh/completions/_pelorus
-            ~~~
-
-        === "macOS (Homebrew)"
-
-            ~~~bash
-            pelorus completions zsh > $(brew --prefix)/share/zsh/site-functions/_pelorus
-            ~~~
-
-        Add the following to `~/.zshrc` **before** the `compinit` call:
-
-        ~~~bash
-        fpath=(~/.zsh/completions $fpath)
-        autoload -U compinit && compinit
-        ~~~
-
-    === "Fish"
-
-        === "Linux"
-
-            ~~~bash
-            pelorus completions fish > ~/.config/fish/completions/pelorus.fish
-            ~~~
-
-        === "macOS (Homebrew)"
-
-            ~~~bash
-            pelorus completions fish > $(brew --prefix)/share/fish/completions/pelorus.fish
-            ~~~
-
-        Fish picks completions up automatically.
-
-## Running against ROS 2 without installing ROS 2
-
-Both Minot and Pelorus can speak ROS 2 over the Zenoh middleware, which lets an existing ROS stack talk to a Pelorus build that has no ROS dependency at all. Install both with the Hiroz feature set. Minot is the same release as above, built with different features:
+First uninstall the default `minot` and `pelorus` CLI. We need to set some feature flags. You'll need Rust to be installed for this.
 
 ```sh
-cargo install --git git://git.steado.tech/minot minot --tag v0.11.1 --no-default-features --features default-hiroz
+cargo install --git https://codeberg.org/stelzo/minot minot --tag v0.12.0 --no-default-features --features default-hiroz
 
-cargo install --git ssh://git.steado.tech/pelorus pelorus_cli --no-default-features --features rayon,offline-hiroz
+cargo install --git https://codeberg.org/stelzo/pelorus pelorus_cli --no-default-features --features rayon,offline-hiroz
 ```
 
 Start a Zenoh router:
@@ -129,12 +54,13 @@ cargo install zenohd@1.9.0
 zenohd
 ```
 
-Run Pelorus in online mode and play a bag into it:
+Run Pelorus in online mode...
 
 ```sh
 pelorus online -c $(marina resolve wachsbleiche/parking_25:hunter)/pelorus.rl
 ```
 
+... and play a bag into it
 ```sh
 minot async $(marina resolve wachsbleiche/parking_25:hunter) --clock --rate 1.0
 ```
@@ -161,7 +87,7 @@ Acceleration backends are CMake options on this build:
 | Option | Effect |
 | --- | --- |
 | `PELORUS_FEATURE_CUDA` | CUDA acceleration |
-| `PELORUS_FEATURE_VULKAN` | Vulkan acceleration, see the [prerequisites](install.md#vulkan-prerequisites) |
+| `PELORUS_FEATURE_VULKAN` | Vulkan acceleration, see the [prerequisites](install.md#vulkan-from-source) |
 | `PELORUS_FEATURE_METAL` | Metal acceleration, macOS only |
 | `PELORUS_FEATURE_RAYON` | CPU parallelism, on by default |
 | `PELORUS_FEATURE_LARGE_PROCESSING_QUEUE` | Larger internal processing queues |
@@ -195,7 +121,3 @@ comes from a separate package, `pelorus-cli`, which the `all` extra pulls in.
 
 Examples covering the blocking API, the callback API and reading from an MCAP bag are in `pelorus_py/examples`.
 
-## Where to look next
-
-- [Configuration](configuration/index.md) for the file every mode reads.
-- [Calibration](calibration/index.md) once the pipeline runs and you want the drift gone.
