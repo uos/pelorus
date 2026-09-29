@@ -56,8 +56,7 @@ pelorus_metal = { path = "pelorus_metal", version = "0.0.8" }
 pelorus_vulkan = { path = "pelorus_vulkan", version = "0.0.8", default-features = false }
 pelorus_drivers = { path = "pelorus_drivers", version = "0.0.8", default-features = false }
 
-transforms_io = { version = "0.5.4", default-features = false }
-transforms_io_hiroz = { version = "0.5", git = "https://codeberg.org/stelzo/transforms_io", tag = "v0.5.4" }
+transforms_io = { version = "0.6.0", default-features = false }
 ros_pointcloud2 = { version = "1.0.0-rc.5", features = [
   "derive",
   "r2r",
@@ -66,10 +65,10 @@ ros_pointcloud2 = { version = "1.0.0-rc.5", features = [
   "nalgebra",
 ] }
 ratslang = "0.4.3"
-mt_pubsub = "0.11.1"
-mt_service = "0.11.1"
-mt_log = { version = "0.11.1", features = ["tui", "env"] }
-mt_rat = "0.11.1"
+mt_pubsub = "0.12.0"
+mt_service = "0.12.0"
+mt_log = { version = "0.12.0", features = ["tui", "env"] }
+mt_rat = "0.12.0"
 cloudini = { version = "0.3.2", default-features = false, features = ["ros"] }
 imu-calib = "0.3"
 ros2-interfaces-jazzy-serde = { version = "0.0.5", features = [
@@ -102,11 +101,11 @@ faer = { version = "0.24", default-features = false, features = [
 ] }
 r2r = { version = "0.9.7" }
 ros2-client = { version = "0.10" }
-hiroz = { version = "0.2.0", git = "https://github.com/ZettaScaleLabs/hiroz.git", tag = "v0.2.0", default-features = false, features = [
+hiroz = { version = "0.2.0", default-features = false, features = [
   "rmw-zenoh",
   "jazzy",
 ] }
-hiroz-msgs = { version = "0.2.0", git = "https://github.com/ZettaScaleLabs/hiroz.git", tag = "v0.2.0", default-features = false, features = [
+hiroz-msgs = { version = "0.2.0", default-features = false, features = [
   "std_msgs",
   "geometry_msgs",
   "sensor_msgs",
@@ -114,7 +113,7 @@ hiroz-msgs = { version = "0.2.0", git = "https://github.com/ZettaScaleLabs/hiroz
   "tf2_msgs",
   "jazzy",
 ] }
-hiroz-protocol = { version = "0.2.0", git = "https://github.com/ZettaScaleLabs/hiroz.git", tag = "v0.2.0", default-features = false }
+hiroz-protocol = { version = "0.2.0", default-features = false }
 zenoh-buffers = "1.9.0"
 tokio = { version = "1.49", default-features = false }
 rerun = { version = "0.38", default-features = false, features = [
@@ -212,7 +211,7 @@ inherits = "release"
 [profile.dev.package.backtrace]
 opt-level = 3
 
-[patch.crates-io]
+# [patch.crates-io]
 # imu-calib 0.4 is not published yet; drop this once it is.
 # imu-calib = { path = "../imu-calib" }
 # ros_pointcloud2 = { path = "../ros_pointcloud2/ros_pointcloud2" }
@@ -220,7 +219,6 @@ opt-level = 3
 # mt_service = { path = "../minot/mt_service" }
 # mt_rat = { path = "../minot/mt_rat" }
 # mt_log = { path = "../minot/mt_log" }
-# transforms_io = { path = "../transforms_io" }
 # ros_pointcloud2 = { git = "ssh://git@git.steado.tech/ros_pointcloud2.git", branch = "main" }
 # mt_pubsub = { git = "ssh://git@git.steado.tech/minot.git", branch = "hiroz" }
 # mt_rat = { git = "ssh://git@git.steado.tech/minot.git", branch = "hiroz" }
@@ -228,4 +226,3 @@ opt-level = 3
 
 # [patch."https://codeberg.org/stelzo/transforms_io"]
 # transforms_io = { path = "../transforms_io" }
-# transforms_io_hiroz = { path = "../transforms_io/transforms_io_hiroz" }

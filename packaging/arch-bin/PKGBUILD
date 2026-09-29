@@ -10,15 +10,15 @@ depends=('libgcc' 'glibc' 'minot>=0.11.0' 'minot<0.12.0' 'dedrunk' 'marina')
 makedepends=()
 options=('!lto' '!strip' '!debug')
 source_x86_64=(
-  "$pkgname-$pkgver-bin.deb::https://uos-robotics.codeberg.page/ppa/ubuntu/pool/main/noble/pelorus_$pkgver-1_amd64.deb"
-  "$pkgname-$pkgver-bin-lib.deb::https://uos-robotics.codeberg.page/ppa/ubuntu/pool/main/noble/libpelorus_$pkgver-1_amd64.deb"
-  "$pkgname-$pkgver-bin-dev.deb::https://uos-robotics.codeberg.page/ppa/ubuntu/pool/main/noble/libpelorus-dev_$pkgver-1_amd64.deb"
+  "$pkgname-$pkgver-bin.deb::https://ppa.steado.tech/ubuntu/pool/main/noble/pelorus_$pkgver-1_amd64.deb"
+  "$pkgname-$pkgver-bin-lib.deb::https://ppa.steado.tech/ubuntu/pool/main/noble/libpelorus_$pkgver-1_amd64.deb"
+  "$pkgname-$pkgver-bin-dev.deb::https://ppa.steado.tech/ubuntu/pool/main/noble/libpelorus-dev_$pkgver-1_amd64.deb"
 )
 sha256sums_x86_64=('SKIP' 'SKIP' 'SKIP')
 source_aarch64=(
-  "$pkgname-$pkgver-bin.deb::https://uos-robotics.codeberg.page/ppa/ubuntu/pool/main/noble/pelorus_$pkgver-1_arm64.deb"
-  "$pkgname-$pkgver-bin-lib.deb::https://uos-robotics.codeberg.page/ppa/ubuntu/pool/main/noble/libpelorus_$pkgver-1_arm64.deb"
-  "$pkgname-$pkgver-bin-dev.deb::https://uos-robotics.codeberg.page/ppa/ubuntu/pool/main/noble/libpelorus-dev_$pkgver-1_arm64.deb"
+  "$pkgname-$pkgver-bin.deb::https://ppa.steado.tech/ubuntu/pool/main/noble/pelorus_$pkgver-1_arm64.deb"
+  "$pkgname-$pkgver-bin-lib.deb::https://ppa.steado.tech/ubuntu/pool/main/noble/libpelorus_$pkgver-1_arm64.deb"
+  "$pkgname-$pkgver-bin-dev.deb::https://ppa.steado.tech/ubuntu/pool/main/noble/libpelorus-dev_$pkgver-1_arm64.deb"
 )
 sha256sums_aarch64=('SKIP' 'SKIP' 'SKIP')
 noextract=("$pkgname-$pkgver-bin.deb" "$pkgname-$pkgver-bin-lib.deb" "$pkgname-$pkgver-bin-dev.deb")

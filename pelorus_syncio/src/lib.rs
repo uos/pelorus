@@ -321,6 +321,15 @@ mod startup_tf_tests {
         assert!(gate.resolve(None, None));
     }
 }
+/// How long a replayed scan waits for its sensor TF before it is dropped.
+#[cfg(any(
+    feature = "ros2-client",
+    feature = "mt_pubsub",
+    feature = "r2r",
+    feature = "hiroz"
+))]
+const REPLAY_SENSOR_TF_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+
 pub type StartupTfCallback = Arc<
     Mutex<
         dyn FnMut(Option<nalgebra::Isometry3<f64>>, Option<nalgebra::Isometry3<f64>>) + Send + Sync,
@@ -438,6 +447,9 @@ fn minot_sd_start_timestamp() -> rat::NetArray<f64> {
 pub struct State {
     startup_tf: Option<Arc<Mutex<TfStartup>>>,
     startup_base_frame: Option<String>,
+    /// Managed replay sends each scan exactly once and waits for it to be processed. A scan
+    /// that arrives before its sensor TF must then wait for the TF instead of being dropped.
+    wait_for_sensor_tf: bool,
     pub global_polygon: Option<Vec<nalgebra::Point2<f32>>>,
     pub sensor_tf: Option<nalgebra::geometry::Isometry3<f32>>,
     pub imu_tf: Option<nalgebra::geometry::Isometry3<f64>>,
@@ -469,9 +481,15 @@ impl State {
         realtime_imu_callback: Option<pelorus_sync::RealtimeImuCallback>,
         realtime_lidar_barrier_callback: Option<pelorus_sync::RealtimeLidarBarrierCallback>,
     ) -> anyhow::Result<Self> {
+        let wait_for_sensor_tf = matches!(
+            imu_sync_mode,
+            pelorus_sync::ImuSyncMode::DemandDrivenReplay { .. }
+                | pelorus_sync::ImuSyncMode::Disabled { lossless: true }
+        );
         Ok(State {
             startup_tf: None,
             startup_base_frame: None,
+            wait_for_sensor_tf,
             #[cfg(feature = "rerun")]
             rec,
             global_polygon: None,
@@ -580,6 +598,21 @@ fn cloud_callback(
         return Ok(());
     }
     {
+        let wait_for_sensor_tf = state.lock().unwrap().wait_for_sensor_tf;
+        // Live input drops a scan whose sensor TF is still missing and tries again with the next
+        // one. Managed replay only moves on after this scan, so it keeps looking up for a while.
+        let lookup_sensor_tf = |target: &str, source: &str| {
+            let deadline = std::time::Instant::now() + REPLAY_SENSOR_TF_TIMEOUT;
+            loop {
+                match tf_listener.lookup_transform(target, source, duplicate_timestamp(&in_stamp)) {
+                    Ok(tf) => break Ok(tf),
+                    Err(_) if wait_for_sensor_tf && std::time::Instant::now() < deadline => {
+                        std::thread::sleep(std::time::Duration::from_millis(10));
+                    }
+                    Err(error) => break Err(error),
+                }
+            }
+        };
         let (imu_tf, sensor_tf) = {
             let (imu_tf_override, global_zero_frame, _, sensor_tf) = {
                 let mut state = state.lock().unwrap();
@@ -639,14 +672,17 @@ fn cloud_callback(
                             return Ok(());
                         }
                         Some(first_imu_tf_frame) => {
-                            let tf = match tf_listener.lookup_transform(
+                            let tf = match lookup_sensor_tf(
                                 &first_imu_tf_frame,
                                 &orig_header.frame_id,
-                                duplicate_timestamp(&in_stamp),
                             ) {
                                 Ok(tf) => tf,
                                 Err(error) => {
-                                    debug!("Waiting for IMU-to-Lidar TF: {error}");
+                                    if wait_for_sensor_tf {
+                                        warn!("Dropping scan, IMU-to-Lidar TF is missing: {error}");
+                                    } else {
+                                        debug!("Waiting for IMU-to-Lidar TF: {error}");
+                                    }
                                     return Ok(());
                                 }
                             };
@@ -686,14 +722,14 @@ fn cloud_callback(
         };
         if let Some(startup) = startup {
             let base = if let Some(frame) = base_frame {
-                let tf = match tf_listener.lookup_transform(
-                    &frame,
-                    &orig_header.frame_id,
-                    duplicate_timestamp(&in_stamp),
-                ) {
+                let tf = match lookup_sensor_tf(&frame, &orig_header.frame_id) {
                     Ok(tf) => tf,
                     Err(error) => {
-                        debug!("Waiting for base-to-Lidar TF: {error}");
+                        if wait_for_sensor_tf {
+                            warn!("Dropping scan, base-to-Lidar TF is missing: {error}");
+                        } else {
+                            debug!("Waiting for base-to-Lidar TF: {error}");
+                        }
                         return Ok(());
                     }
                 };
@@ -1221,10 +1257,11 @@ impl SyncNode {
         let tf_listener = Arc::new(tf_r2r::TfListener::new(node));
 
         #[cfg(feature = "mt_pubsub")]
+        // BestEffort would skip the backlog of a burst and lose static transforms for good.
         let tf_listener = Arc::new(tf_lh::TfListener::new(
             node,
             rt.clone(),
-            mt_pubsub::Qos::BestEffort,
+            mt_pubsub::Qos::TryReliable,
         ));
 
         #[cfg(feature = "hiroz")]

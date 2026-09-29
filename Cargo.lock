@@ -2714,7 +2714,8 @@ checksum = "7f24254aa9a54b5c858eaee2f5bccdb46aaf0e486a595ed5fd8f86ba55232a70"
 [[package]]
 name = "hiroz"
 version = "0.2.0"
-source = "git+https://github.com/ZettaScaleLabs/hiroz.git?tag=v0.2.0#8ece001ad1014b5e464954b25b30d0adde2615c1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "01faafa7d00a8a89d8f2d8eb3b35c1e7a72eca3d5205ec7d52f40b1cb6bde4c0"
 dependencies = [
  "byteorder",
  "clap",
@@ -2748,7 +2749,8 @@ dependencies = [
 [[package]]
 name = "hiroz-cdr"
 version = "0.2.0"
-source = "git+https://github.com/ZettaScaleLabs/hiroz.git?tag=v0.2.0#8ece001ad1014b5e464954b25b30d0adde2615c1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "69398421bf7e64822904d8a4744186af65c56fce141756965c86ad27565c2e43"
 dependencies = [
  "bytemuck",
  "byteorder",
@@ -2760,7 +2762,8 @@ dependencies = [
 [[package]]
 name = "hiroz-codegen"
 version = "0.2.0"
-source = "git+https://github.com/ZettaScaleLabs/hiroz.git?tag=v0.2.0#8ece001ad1014b5e464954b25b30d0adde2615c1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5ead8754b67b3b6ee782825ea0b405bcc718d6f6b5d1352cf6e3013bd0771711"
 dependencies = [
  "anyhow",
  "hex",
@@ -2777,7 +2780,8 @@ dependencies = [
 [[package]]
 name = "hiroz-derive"
 version = "0.2.0"
-source = "git+https://github.com/ZettaScaleLabs/hiroz.git?tag=v0.2.0#8ece001ad1014b5e464954b25b30d0adde2615c1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8b666d2b633c396be85316f0542fa6f4aa835aa871fe8a0ada3abf0ceb8aaead"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -2787,7 +2791,8 @@ dependencies = [
 [[package]]
 name = "hiroz-msgs"
 version = "0.2.0"
-source = "git+https://github.com/ZettaScaleLabs/hiroz.git?tag=v0.2.0#8ece001ad1014b5e464954b25b30d0adde2615c1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bdcda553a7f2a20d06f986082e8aa3773423c8099b06bdf3061e0d3a9aa9269f"
 dependencies = [
  "anyhow",
  "bytemuck",
@@ -2806,7 +2811,8 @@ dependencies = [
 [[package]]
 name = "hiroz-protocol"
 version = "0.2.0"
-source = "git+https://github.com/ZettaScaleLabs/hiroz.git?tag=v0.2.0#8ece001ad1014b5e464954b25b30d0adde2615c1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4eb54ca97b7899a8a21cc6fed0e1a4136b9f2df27b5729d816c2053451847279"
 dependencies = [
  "zenoh",
 ]
@@ -2814,7 +2820,8 @@ dependencies = [
 [[package]]
 name = "hiroz-schema"
 version = "0.2.0"
-source = "git+https://github.com/ZettaScaleLabs/hiroz.git?tag=v0.2.0#8ece001ad1014b5e464954b25b30d0adde2615c1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0ce82f490ac00135896d594fa84f673e02b11a084d9280a6c5881e50473aa497"
 dependencies = [
  "hex",
  "serde",
@@ -4071,9 +4078,9 @@ dependencies = [
 
 [[package]]
 name = "mt_coord"
-version = "0.11.2"
+version = "0.12.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9db4c531afb05a3b4d74247e2d2fa57957897fcde2bd4e21b2be3b3e36d6bcd4"
+checksum = "b722d928c83a847e7a1d8ca4d62adcaef89e77738d23298ee9ed8c47b3727d9d"
 dependencies = [
  "anyhow",
  "fs2",
@@ -4087,9 +4094,9 @@ dependencies = [
 
 [[package]]
 name = "mt_log"
-version = "0.11.2"
+version = "0.12.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d4934a3292e5005a2bdb694ed54593048e1959316a3f9477b50f3ce1d22a390d"
+checksum = "99273081b2f2b97e2cefd953f79f59c024a45ef49c389e5a3c8cd5f4a92272ec"
 dependencies = [
  "env_filter",
  "env_logger",
@@ -4101,9 +4108,9 @@ dependencies = [
 
 [[package]]
 name = "mt_net"
-version = "0.11.2"
+version = "0.12.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2d9ae1a1b5fcafe8dcaa3c6018153d0a295733f958209d14214071544c9b71b4"
+checksum = "300e102abeb3664c5df78440d3af0f1e534036adcb8a254c7621991270aa1f8e"
 dependencies = [
  "anyhow",
  "rkyv",
@@ -4113,9 +4120,9 @@ dependencies = [
 
 [[package]]
 name = "mt_pubsub"
-version = "0.11.2"
+version = "0.12.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a7a723c99922bd3d3800a9778075064199c5023101dd93e17864e87ce8d6da2e"
+checksum = "b5615e4fc4fbffdc4809952618fe35c5039b2bc90d7976576cb661bacfe790ca"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -4133,9 +4140,9 @@ dependencies = [
 
 [[package]]
 name = "mt_rat"
-version = "0.11.2"
+version = "0.12.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "73d65742af6bdf484c1d7bf53d324d813386d7aaabce205251f7d311996a0871"
+checksum = "3cf2a57535acec6a2c06fd177def9c03b50b3e8e24b2ab3981650c5ccc34a5e9"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -4150,9 +4157,9 @@ dependencies = [
 
 [[package]]
 name = "mt_scope"
-version = "0.11.2"
+version = "0.12.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "094a47e67e467598c4ffcbd481f712c8b9778f92198786d6177771cbe0f5cde5"
+checksum = "589be553f161dc8bace5018c30520705e87fa3f35ef99c869ae3e461fb8faa63"
 dependencies = [
  "anyhow",
  "env_logger",
@@ -4165,9 +4172,9 @@ dependencies = [
 
 [[package]]
 name = "mt_sea"
-version = "0.11.2"
+version = "0.12.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "47f97dd47a875585b8a2c981f5c27e8397be08e5ff23f2e63e23c4e96e47f5a3"
+checksum = "55b0e8972fbb00712a031e64b615b4935e0f4632b27c34bc558a720c5c3bd5fa"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -4184,9 +4191,9 @@ dependencies = [
 
 [[package]]
 name = "mt_service"
-version = "0.11.2"
+version = "0.12.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "869014f3d205c361e7d87483be3e88acc8c8c3f98c7c62779596d2773c857218"
+checksum = "b71c9728ad62d2ec93c7370c8a9fb29db7bd8f17b817d9602d9eb7c61b5c014f"
 dependencies = [
  "anyhow",
  "log",
@@ -5350,8 +5357,7 @@ dependencies = [
  "ros_pointcloud2",
  "thiserror 2.0.20",
  "tokio",
- "transforms_io 0.5.4 (registry+https://github.com/rust-lang/crates.io-index)",
- "transforms_io_hiroz",
+ "transforms_io",
  "zenoh-buffers",
 ]
 
@@ -9265,11 +9271,13 @@ dependencies = [
 
 [[package]]
 name = "transforms_io"
-version = "0.5.4"
+version = "0.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ab15e78f0db414df4ccdf4c984b6c269370618af7e11e5a754f32cab1df3586d"
+checksum = "26fd2bfe6f00e29098ee00682c2e1c53234cc44b950f2fe6a7b383199281f12f"
 dependencies = [
  "futures-lite",
+ "hiroz",
+ "hiroz-msgs",
  "log",
  "mt_pubsub",
  "nalgebra 0.35.0",
@@ -9280,35 +9288,6 @@ dependencies = [
  "thiserror 2.0.20",
  "tokio",
  "transforms",
-]
-
-[[package]]
-name = "transforms_io"
-version = "0.5.4"
-source = "git+https://codeberg.org/stelzo/transforms_io?tag=v0.5.4#93b4ee9afe7f9e59ff4fecc28b8016082641b1f1"
-dependencies = [
- "futures-lite",
- "log",
- "mt_pubsub",
- "nalgebra 0.35.0",
- "ros2-interfaces-jazzy-rkyv",
- "thiserror 2.0.20",
- "tokio",
- "transforms",
-]
-
-[[package]]
-name = "transforms_io_hiroz"
-version = "0.5.1"
-source = "git+https://codeberg.org/stelzo/transforms_io?tag=v0.5.4#93b4ee9afe7f9e59ff4fecc28b8016082641b1f1"
-dependencies = [
- "hiroz",
- "hiroz-msgs",
- "log",
- "nalgebra 0.35.0",
- "thiserror 2.0.20",
- "transforms",
- "transforms_io 0.5.4 (git+https://codeberg.org/stelzo/transforms_io?tag=v0.5.4)",
 ]
 
 [[package]]

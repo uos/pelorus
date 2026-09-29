@@ -8,7 +8,7 @@
 
 ## Ubuntu packages
 
-[Set up the UOS PPA](https://codeberg.org/uos-robotics/ppa/src/branch/pages/README.md) for your Ubuntu LTS version to install Pelorus and receive updates automatically. Every package comes in a plain CPU build and in CUDA and Vulkan variants.
+[Set up the steado PPA](https://ppa.steado.tech/) for your Ubuntu LTS version to install Pelorus and receive updates automatically. Every package comes in a plain CPU build and in CUDA and Vulkan variants.
 
 === "ROS 2 node"
 
@@ -79,12 +79,12 @@ curl -LsSf https://astral.sh/uv/install.sh | sh
     uv tool install "pelorus-cli[rerun]"
 
     # or with CUDA support
-    uv tool install "pelorus-cli[rerun]" --extra-index-url https://uos-robotics.codeberg.page/ppa/pelorus/pypi/cuda12-6/simple
-    uv tool install "pelorus-cli[rerun]" --extra-index-url https://uos-robotics.codeberg.page/ppa/pelorus/pypi/cuda12-8/simple
-    uv tool install "pelorus-cli[rerun]" --extra-index-url https://uos-robotics.codeberg.page/ppa/pelorus/pypi/cuda13-1/simple
+    uv tool install "pelorus-cli[rerun]" --extra-index-url https://ppa.steado.tech/whl/cu126/
+    uv tool install "pelorus-cli[rerun]" --extra-index-url https://ppa.steado.tech/whl/cu128/
+    uv tool install "pelorus-cli[rerun]" --extra-index-url https://ppa.steado.tech/whl/cu131/
 
     # or with Vulkan support
-    uv tool install "pelorus-cli[rerun]" --extra-index-url https://codeberg.org/uos-robotics/ppa/raw/branch/main/whl/vulkan/
+    uv tool install "pelorus-cli[rerun]" --extra-index-url https://ppa.steado.tech/whl/vulkan/
     ~~~
 
 === "The Python library"
@@ -98,12 +98,12 @@ curl -LsSf https://astral.sh/uv/install.sh | sh
     uv pip install "pelorus[all]"
 
     # or with CUDA support
-    uv pip install "pelorus[all]" --extra-index-url https://uos-robotics.codeberg.page/ppa/pelorus/pypi/cuda12-6/simple
-    uv pip install "pelorus[all]" --extra-index-url https://uos-robotics.codeberg.page/ppa/pelorus/pypi/cuda12-8/simple
-    uv pip install "pelorus[all]" --extra-index-url https://uos-robotics.codeberg.page/ppa/pelorus/pypi/cuda13-1/simple
+    uv pip install "pelorus[all]" --extra-index-url https://ppa.steado.tech/whl/cu126/
+    uv pip install "pelorus[all]" --extra-index-url https://ppa.steado.tech/whl/cu128/
+    uv pip install "pelorus[all]" --extra-index-url https://ppa.steado.tech/whl/cu131/
 
     # or with Vulkan support
-    uv pip install "pelorus[all]" --extra-index-url https://codeberg.org/uos-robotics/ppa/raw/branch/main/whl/vulkan/
+    uv pip install "pelorus[all]" --extra-index-url https://ppa.steado.tech/whl/vulkan/
 
     # without uv
     pip install "pelorus[all]"

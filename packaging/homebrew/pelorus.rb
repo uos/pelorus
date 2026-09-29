@@ -13,7 +13,7 @@ class Pelorus < Formula
 
   on_macos do
     on_arm do
-      url "https://uos-robotics.codeberg.page/ppa/bin/pelorus-#{version}-macos-arm64.tar.gz"
+      url "https://ppa.steado.tech/bin/pelorus-#{version}-macos-arm64.tar.gz"
       sha256 "ARM_SHA256_PLACEHOLDER"
     end
   end

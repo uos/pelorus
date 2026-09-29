@@ -4848,6 +4848,20 @@ fn build_offline_minot_config(
     imu_topic: &str,
     lidar_only: bool,
 ) -> String {
+    // TF from the bag is always forwarded so configs that use the TF tree resolve their
+    // frames offline. A bag without these topics simply never matches them.
+    let tf_sensors = r#"
+  tf.{
+    _topic = "/tf"
+    _short = "t"
+    _type = Tf
+  }
+  tf_static.{
+    _topic = "/tf_static"
+    _short = "s"
+    _type = Tf
+  }"#;
+
     if lidar_only {
         format!(
             r#"
@@ -4856,17 +4870,18 @@ _bag.{{
     _topic = "{lidar_topic}"
     _short = "l"
     _type = Cloud
-  }}
+  }}{tf_sensors}
 }}
 _start_locked = false
 
 # Lidar-only replay has no IMU subscriber or initialization handshake.
-pf! l 1 tick_end
+# Each tick publishes one cloud together with the TF around it, stopping before the next cloud.
+pf! [l, t, s], l 2 tick_end
 
 reset! "{bagfile_path}"
 
 # Start the feedback loop with the first cloud.
-pf! l 1
+pf! [l, t, s], l 2
 "#
         )
     } else {
@@ -4882,26 +4897,26 @@ _bag.{{
     _topic = "{imu_topic}"
     _short = "i"
     _type = Imu
-  }}
+  }}{tf_sensors}
 }}
 _start_locked = false
 
 # Setting triggers for topics.
-# During IMU bootstrap, advance IMU only. The first active LIO tick
-# advances to one cloud with its surrounding IMUs. After that, each
-# tick_end publishes one cloud and then advances IMUs up to the next
-# cloud without consuming that next cloud.
-pf! i 1 imu_init_tick
-pf! i, l 1 lio_start_tick
+# During IMU bootstrap, advance one IMU (with the TF around it) and stop before the next IMU.
+# The first active LIO tick advances to one cloud with its surrounding IMUs. After that, each
+# tick_end publishes one cloud and then advances IMUs up to the next cloud without consuming
+# that next cloud. TF is sent along with the IMUs.
+pf! [i, t, s], i 2 imu_init_tick
+pf! [i, t, s], l 1 lio_start_tick
 pf! l 1 lio_start_tick
-pf! i, l 1 lio_start_tick
+pf! [i, t, s], l 1 lio_start_tick
 pf! l 1 tick_end
-pf! i, l 1 tick_end
+pf! [i, t, s], l 1 tick_end
 
 reset! "{bagfile_path}"
 
 # Starting the feedback loop by playing the first IMU message (first step is IMU init)
-pf! i 1
+pf! [i, t, s], i 2
 "#
         )
     }
@@ -4917,8 +4932,8 @@ mod offline_minot_config_tests {
             build_offline_minot_config("/tmp/input.mcap", "/lidar/points", "/imu/data", true);
 
         assert!(config.contains("_topic = \"/lidar/points\""));
-        assert!(config.contains("pf! l 1 tick_end"));
-        assert!(config.contains("pf! l 1\n"));
+        assert!(config.contains("pf! [l, t, s], l 2 tick_end"));
+        assert!(config.contains("pf! [l, t, s], l 2\n"));
         assert!(!config.contains("/imu/data"));
         assert!(!config.contains("_type = Imu"));
         assert!(!config.contains("imu_init_tick"));
@@ -4931,10 +4946,26 @@ mod offline_minot_config_tests {
             build_offline_minot_config("/tmp/input.mcap", "/lidar/points", "/imu/data", false);
 
         assert!(config.contains("_topic = \"/imu/data\""));
-        assert!(config.contains("pf! i 1 imu_init_tick"));
-        assert!(config.contains("pf! i, l 1 lio_start_tick"));
-        assert!(config.contains("pf! i, l 1 tick_end"));
-        assert!(config.contains("pf! i 1\n"));
+        assert!(config.contains("pf! [i, t, s], i 2 imu_init_tick"));
+        assert!(config.contains("pf! [i, t, s], l 1 lio_start_tick"));
+        assert!(config.contains("pf! [i, t, s], l 1 tick_end"));
+        assert!(config.contains("pf! [i, t, s], i 2\n"));
+    }
+
+    #[test]
+    fn replay_always_forwards_tf_topics() {
+        for lidar_only in [true, false] {
+            let config = build_offline_minot_config(
+                "/tmp/input.mcap",
+                "/lidar/points",
+                "/imu/data",
+                lidar_only,
+            );
+
+            assert!(config.contains("_topic = \"/tf\""));
+            assert!(config.contains("_topic = \"/tf_static\""));
+            assert_eq!(config.matches("_type = Tf").count(), 2);
+        }
     }
 }
 

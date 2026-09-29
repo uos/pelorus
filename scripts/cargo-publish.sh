@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Automatically prepares manifests by stripping unpublished git dependencies (hiroz).
+# Publishes the workspace crates to crates.io in dependency order.
 
 set -euo pipefail
 
@@ -19,76 +19,6 @@ for arg in "$@"; do
         EXTRA_ARGS+=("$arg")
     fi
 done
-
-echo "==> Preparing workspace manifests for crates.io..."
-
-# Ensure we restore Cargo.toml files upon exit/interruption
-cleanup() {
-    echo "==> Restoring Cargo.toml files..."
-    git checkout Cargo.toml pelorus_syncio/Cargo.toml pelorus_cli/Cargo.toml 2>/dev/null || true
-}
-trap cleanup EXIT INT TERM
-
-# Strip unpublished git dependencies (hiroz) from Cargo manifests
-python3 - <<'EOF'
-def strip_hiroz(content):
-    lines = content.splitlines()
-    out = []
-    i = 0
-    while i < len(lines):
-        line = lines[i]
-        stripped = line.strip()
-        if stripped.startswith("transforms_io =") and "git" in stripped:
-            out.append('transforms_io = "0.3"')
-            bracket_depth = line.count("[") - line.count("]")
-            brace_depth = line.count("{") - line.count("}")
-            while (bracket_depth > 0 or brace_depth > 0) and i + 1 < len(lines):
-                i += 1
-                line = lines[i]
-                bracket_depth += line.count("[") - line.count("]")
-                brace_depth += line.count("{") - line.count("}")
-            i += 1
-            continue
-
-        if any(
-            stripped.startswith(prefix)
-            for prefix in [
-                "hiroz =",
-                "hiroz-msgs =",
-                "hiroz-protocol =",
-                "transforms_io_hiroz =",
-                "offline-hiroz =",
-                "\"transforms_io_hiroz",
-                "\"dep:transforms_io_hiroz",
-                "\"dep:hiroz",
-                "\"pelorus_syncio/hiroz",
-                "\"ros_pointcloud2/hiroz",
-            ]
-        ):
-            bracket_depth = line.count("[") - line.count("]")
-            brace_depth = line.count("{") - line.count("}")
-            while (bracket_depth > 0 or brace_depth > 0) and i + 1 < len(lines):
-                i += 1
-                line = lines[i]
-                bracket_depth += line.count("[") - line.count("]")
-                brace_depth += line.count("{") - line.count("}")
-            i += 1
-            continue
-
-        out.append(line)
-        i += 1
-
-    return "\n".join(out) + "\n"
-
-for path in ["pelorus_syncio/Cargo.toml", "pelorus_cli/Cargo.toml", "Cargo.toml"]:
-    with open(path, "r") as f:
-        c = f.read()
-    c = strip_hiroz(c)
-    with open(path, "w") as f:
-        f.write(c)
-EOF
-
-echo "==> Manifests stripped of unpublished git dependencies."
 
 # Topological publishing order for Pelorus workspace.
 # pelorus_vulkan depends on pelorus_localmap, so pelorus_localmap must publish first.
