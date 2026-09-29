@@ -43,7 +43,7 @@ colcon build --packages-select pelorus --cmake-args -D PELORUS_CUDA=ON
 | Option | Effect |
 | --- | --- |
 | `PELORUS_CUDA` | CUDA acceleration. The CUDA directory is searched for, and `CUDA_HOME` overrides the result. |
-| `PELORUS_VULKAN` | Vulkan acceleration. See the [Vulkan prerequisites](install.md#vulkan-prerequisites). |
+| `PELORUS_VULKAN` | Vulkan acceleration. See the [Vulkan prerequisites](install.md#vulkan-from-source). |
 | `PELORUS_METAL` | Metal acceleration on macOS with Apple Silicon. |
 | `PELORUS_RERUN` | Compile [Rerun](https://rerun.io/) visualization support, activated at runtime with `output.rerun = true`. |
 | `PELORUS_MIMALLOC` | Use mimalloc as the allocator. |

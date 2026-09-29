@@ -53,7 +53,7 @@ Sometimes you'll want to see more than just the odometry. You can enable the loc
 The local map visuals are meant for debugging [local map sizes](configuration/reference/registration.md#registration-map-capacity), since Pelorus' local map (and Pelorus in general) is intended for localization, not mapping. This is odometry after all. For pretty maps with global consistency, you can use the [GLIM plugin](glim.md) or wait for the release of our full SLAM in the coming weeks.
 
 
-## How it works
+## Architecture
 
 <!-- Two things here are deliberate and easy to undo by accident.
 

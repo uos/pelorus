@@ -356,18 +356,16 @@ def check_docs(root: Path, info: dict, fix: bool) -> list[str]:
                     yield f"{path.relative_to(root)}:{number}", match
 
     # `cargo install rerun-cli@X.Y.Z`, which has to be the release line the
-    # CLI was compiled against.
+    # CLI was compiled against. The docs install the viewer through the
+    # `pelorus-cli[rerun]` extra, which check_rerun_pyproject covers, so a
+    # rerun-cli pin is optional here.
     rerun_line = major_minor(info["rerun_ver"])
-    seen_rerun = False
     for rel, match in where(r"rerun-cli@([0-9]+\.[0-9]+\.[0-9]+)"):
-        seen_rerun = True
         if major_minor(match.group(1)) != rerun_line:
             errors.append(
                 f"{rel} pins rerun-cli@{match.group(1)}, but the workspace rerun "
                 f"crate is {info['rerun_ver']}. Name a published {rerun_line}.x release."
             )
-    if not seen_rerun:
-        errors.append("No pinned rerun-cli version found in the docs")
 
     # `cargo install ... minot --tag vX.Y.Z`, which has to be the release the
     # workspace depends on.
