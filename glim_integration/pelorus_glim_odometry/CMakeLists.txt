@@ -17,32 +17,25 @@ if(CMAKE_INSTALL_PREFIX_INITIALIZED_TO_DEFAULT
   set(CMAKE_INSTALL_PREFIX /usr/local CACHE PATH "Default install prefix" FORCE)
 endif()
 
-# Try to find installed pelorus first; fall back to building from source.
-find_package(pelorus QUIET)
+# Always build pelorus_c from this checkout, so the plugin is compiled against the
+# matching C API. An installed pelorus can belong to another version.
+add_subdirectory(../../pelorus_c pelorus_c_build)
 
-if(pelorus_FOUND)
-  # When find_package(pelorus) succeeds, use the libraries it provides
-  set(PELORUS_TARGET ${pelorus_LIBRARIES})
-  message(STATUS "Found installed Pelorus: ${PELORUS_TARGET}")
-else()
-  # Fall back to building from source
-  add_subdirectory(../../pelorus_c pelorus_c_build)
-  
-  set(PELORUS_TARGET "")
-  if(TARGET pelorus::pelorus)
-    set(PELORUS_TARGET pelorus::pelorus)
-  elseif(TARGET pelorus::pelorus_static)
-    set(PELORUS_TARGET pelorus::pelorus_static)
-  elseif(TARGET pelorus)
-    set(PELORUS_TARGET pelorus)
-  elseif(TARGET pelorus_static)
-    set(PELORUS_TARGET pelorus_static)
-  endif()
-
-  if(PELORUS_TARGET STREQUAL "")
-    message(FATAL_ERROR "pelorus library not found. Install pelorus_c (find_package(pelorus)) or keep pelorus_c as a subdirectory.")
-  endif()
+set(PELORUS_TARGET "")
+if(TARGET pelorus::pelorus)
+  set(PELORUS_TARGET pelorus::pelorus)
+elseif(TARGET pelorus::pelorus_static)
+  set(PELORUS_TARGET pelorus::pelorus_static)
+elseif(TARGET pelorus)
+  set(PELORUS_TARGET pelorus)
+elseif(TARGET pelorus_static)
+  set(PELORUS_TARGET pelorus_static)
 endif()
+
+if(PELORUS_TARGET STREQUAL "")
+  message(FATAL_ERROR "pelorus_c did not define a pelorus library target.")
+endif()
+message(STATUS "Building the GLIM plugin against pelorus_c from source: ${PELORUS_TARGET}")
 
 add_library(odometry_estimation_pelorus SHARED
   src/odometry_estimation_pelorus.cpp
