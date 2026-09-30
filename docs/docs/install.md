@@ -29,10 +29,13 @@ Install Pelorus from the [steado PPA](https://ppa.steado.tech/) for your Ubuntu 
     ~~~sh
     sudo apt install ros-$ROS_DISTRO-pelorus
 
-    # or with CUDA support
+    # or with CUDA support on Humble and Jazzy
     sudo apt install ros-$ROS_DISTRO-pelorus-cuda12-6
     sudo apt install ros-$ROS_DISTRO-pelorus-cuda12-8
     sudo apt install ros-$ROS_DISTRO-pelorus-cuda13-1
+
+    # or with CUDA support on Lyrical
+    sudo apt install ros-lyrical-pelorus-cuda13-4
 
     # or with Vulkan support
     sudo apt install ros-$ROS_DISTRO-pelorus-vulkan

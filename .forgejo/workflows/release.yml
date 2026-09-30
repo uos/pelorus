@@ -618,10 +618,15 @@ jobs:
     strategy:
       matrix:
         include:
-          - image: docker.io/stelzo/ubuntu-dev:lyrical-cu12-6
+          # NVIDIA publishes Ubuntu 26.04 images only for CUDA 13.3 and newer, so Lyrical gets 13.4.
+          - image: docker.io/stelzo/ubuntu-dev:lyrical-cu13-4
             repo: resolute
-            cuda: 12-6
+            cuda: 13-4
             runner: ubuntu-latest
+          - image: docker.io/stelzo/ubuntu-dev:lyrical-cu13-4
+            repo: resolute
+            cuda: 13-4
+            runner: ubuntu-latest-arm
           - image: docker.io/stelzo/ubuntu-dev:jazzy-cu12-6
             repo: noble
             cuda: 12-6
@@ -630,10 +635,6 @@ jobs:
             repo: jammy
             cuda: 12-6
             runner: ubuntu-latest
-          - image: docker.io/stelzo/ubuntu-dev:lyrical-cu12-6
-            repo: resolute
-            cuda: 12-6
-            runner: ubuntu-latest-arm
           - image: docker.io/stelzo/ubuntu-dev:jazzy-cu12-6
             repo: noble
             cuda: 12-6
@@ -642,10 +643,6 @@ jobs:
             repo: jammy
             cuda: 12-6
             runner: ubuntu-latest-arm
-          - image: docker.io/stelzo/ubuntu-dev:lyrical-cu12-8
-            repo: resolute
-            cuda: 12-8
-            runner: ubuntu-latest
           - image: docker.io/stelzo/ubuntu-dev:jazzy-cu12-8
             repo: noble
             cuda: 12-8
@@ -654,10 +651,6 @@ jobs:
             repo: jammy
             cuda: 12-8
             runner: ubuntu-latest
-          - image: docker.io/stelzo/ubuntu-dev:lyrical-cu12-8
-            repo: resolute
-            cuda: 12-8
-            runner: ubuntu-latest-arm
           - image: docker.io/stelzo/ubuntu-dev:jazzy-cu12-8
             repo: noble
             cuda: 12-8
@@ -666,10 +659,6 @@ jobs:
             repo: jammy
             cuda: 12-8
             runner: ubuntu-latest-arm
-          - image: docker.io/stelzo/ubuntu-dev:lyrical-cu13-1
-            repo: resolute
-            cuda: 13-1
-            runner: ubuntu-latest
           - image: docker.io/stelzo/ubuntu-dev:jazzy-cu13-1
             repo: noble
             cuda: 13-1
@@ -678,10 +667,6 @@ jobs:
             repo: jammy
             cuda: 13-1
             runner: ubuntu-latest
-          - image: docker.io/stelzo/ubuntu-dev:lyrical-cu13-1
-            repo: resolute
-            cuda: 13-1
-            runner: ubuntu-latest-arm
           - image: docker.io/stelzo/ubuntu-dev:jazzy-cu13-1
             repo: noble
             cuda: 13-1
@@ -1427,7 +1412,7 @@ jobs:
           done
 
           # ros-debs-cuda
-          for cuda in 12-6 12-8 13-1; do
+          for cuda in 12-6 12-8 13-1 13-4; do
             for repo in resolute noble jammy; do
               find "dl/artifacts-ros-debs-${repo}-${cuda}" -name '*.deb' -exec cp {} "staging/${repo}/" \; 2>/dev/null || true
             done
