@@ -109,7 +109,7 @@ target_link_libraries(my_app pelorus::pelorus)
 
 ## Python
 
-The Python package is on [PyPI](install.md#python) and takes the same configuration file as everything else. It is the fastest way to try an idea against a recording.
+The Python package is on [PyPI](install.md#pypi) and takes the same configuration file as everything else. It is the fastest way to try an idea against a recording.
 
 ```sh
 uv venv
