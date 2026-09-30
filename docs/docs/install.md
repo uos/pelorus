@@ -2,7 +2,8 @@
 
 !!! warning "Beta"
 
-    Prebuilt binaries exist for Linux on x86_64 and aarch64, but they are
+    Prebuilt binaries exist for Linux on x86_64 and aarch64 and for macOS on
+    Apple Silicon, but they are
     experimental during the 0.0.x beta. Building from source is the recommended
     path, and each integration page describes how.
 
@@ -71,7 +72,7 @@ Install Pelorus from the [steado PPA](https://ppa.steado.tech/) for your Ubuntu 
     sudo apt install libpelorus-glim-odometry-vulkan
     ~~~
 
-## Python
+## PyPI
 
 Two packages are published on PyPI, and which one you want depends on what you
 are doing. `pelorus` is the library you import. `pelorus-cli` carries the
@@ -127,6 +128,46 @@ curl -LsSf https://astral.sh/uv/install.sh | sh
     Inside a uv project, `uv add "pelorus[all]"` does the same and records the
     dependency. The extras are `mcap` for bag reading, `cli` for the executable,
     and `all` for both.
+
+## macOS
+
+The [uos Homebrew tap](https://github.com/uos/homebrew-tools) carries the CLI
+and the C library for Apple Silicon, built with Metal support. It pulls in
+`minot`, `dedrunk` and `marina` as well.
+
+```sh
+brew install uos/tools/pelorus
+```
+
+## Arch Linux
+
+The [`pelorus-bin`](https://aur.archlinux.org/packages/pelorus-bin) package on
+the AUR installs the CPU build of the CLI and the C library for x86_64 and
+aarch64. Install it with an AUR helper of your choice.
+
+```sh
+yay -S pelorus-bin
+```
+
+## Prebuilt archives
+
+Every [release on Codeberg](https://codeberg.org/stelzo/pelorus/releases)
+comes with `.tar.gz` archives of the CLI and the C library, for amd64 and arm64
+where the platform offers both.
+
+| Archive | Contents |
+| --- | --- |
+| `pelorus-<version>-linux-<series>-<arch>` | CLI and C library for Ubuntu `resolute`, `noble` or `jammy` |
+| `pelorus-<version>-linux-<series>-<arch>-cuda<cuda>` | The same with CUDA 12.6, 12.8 or 13.1, for `noble` and `jammy` |
+| `pelorus-<version>-linux-<series>-<arch>-vulkan` | The same with Vulkan |
+| `pelorus-<version>-linux-musl-<arch>` | Statically linked CLI for any Linux distribution |
+| `pelorus-<version>-linux-musl-dds-<arch>` | Static CLI that runs as a ROS 2 node over DDS |
+| `pelorus-<version>-linux-musl-hiroz-<arch>` | Static CLI that talks to ROS 2 over Zenoh without a ROS installation, see [standalone](standalone.md) |
+| `pelorus-<version>-macos-arm64` | CLI, C library, headers and CMake files for Apple Silicon with Metal |
+| `pelorus-glim-<version>-linux-<series>-<arch>` | GLIM plugin for `noble` and `jammy` |
+
+The musl and macOS archives are mirrored at
+[ppa.steado.tech/bin](https://ppa.steado.tech/bin/).
 
 ## Vulkan from source
 

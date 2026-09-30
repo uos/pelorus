@@ -4,7 +4,11 @@ name: backends
 
 on:
   push:
+    paths-ignore:
+      - "docs/**"
   pull_request:
+    paths-ignore:
+      - "docs/**"
 
 env:
   RUST_FONTCONFIG_DLOPEN: 1

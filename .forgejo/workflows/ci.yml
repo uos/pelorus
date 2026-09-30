@@ -4,6 +4,8 @@ name: ci
 
 on:
   push:
+    paths-ignore:
+      - "docs/**"
 
 env:
   RUST_BACKTRACE: "full"

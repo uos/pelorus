@@ -25,7 +25,7 @@ In a real scenario, Pelorus can run in several ways:
 | **[Python package](standalone.md#python)** | On PyPI, for prototyping and offline processing |
 | **[GLIM plugin](glim.md)** | Odometry source for [GLIM](https://koide3.github.io/glim/) mapping |
 
-Prebuilt packages for Ubuntu and PyPI are listed under [installation](install.md).
+Prebuilt packages for Ubuntu, PyPI, Homebrew and the AUR, and release archives, are listed under [installation](install.md).
 
 All you need to run Pelorus now is the dataset and a configuration for your sensors and topics. For this demo, we will provide everything for you. Pelorus uses SeaKit by default for all its tooling. 
 

@@ -4,34 +4,30 @@ Pelorus can act as the odometry module inside [GLIM](https://koide3.github.io/gl
 
 The plugin links against the Pelorus C library dynamically, so changing the acceleration backend later is a matter of rebuilding `pelorus_c` alone.
 
-## Install the C library
+If you want to install with existing binaries, use the existing [release channels](./install.md).
+
+Otherwise, install from source.
 
 ```sh
-git clone ssh://git.steado.tech/pelorus
-cd pelorus/pelorus_c
-cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
-cmake --build build -j
-sudo cmake --install build
-cd ..
-```
+cd ros2_ws/src
+git clone https://codeberg.org/stelzo/pelorus.git
 
+colcon build --packages-select pelorus --cmake-args -DPELORUS_BUILD_GLIM=ON
+source install/setup.bash
+```
+ 
 Add `-DPELORUS_FEATURE_CUDA=ON`, `-DPELORUS_FEATURE_VULKAN=ON` or `-DPELORUS_FEATURE_METAL=ON` to that configure step for GPU acceleration. The [standalone page](standalone.md#c-and-c-library) lists the rest of the options.
 
-## Build the plugin
+We need to tell GLIM to use our plugin now. 
 
-GLIM has to be installed and sourced in the shell you build this in.
-
+When build from source, the json is in the install folder.
 ```sh
-cd glim_integration/pelorus_glim_odometry
-cmake -S . -B build
-cmake --build build --parallel
-sudo cmake --install build
+sudo ln -s "$(pwd)/install/pelorus/share/pelorus_glim_odometry/config/config_odometry_pelorus.json \
+  /opt/ros/jazzy/share/glim/config/config_odometry_pelorus.json
 ```
 
-## Point GLIM at it
 
-Symlink the installed plugin configuration into GLIM's configuration directory:
-
+If you installed the system library, the json will be in the system folders instead.
 ```sh
 sudo ln -s /usr/local/share/pelorus_glim_odometry/config/config_odometry_pelorus.json \
   /opt/ros/jazzy/share/glim/config/config_odometry_pelorus.json

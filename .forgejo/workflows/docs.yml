@@ -1,14 +1,18 @@
 # yaml-language-server: $schema=https://raw.githubusercontent.com/SchemaStore/schemastore/refs/heads/master/src/schemas/json/github-workflow.json
 # Docs Workflow for Pelorus. The schema is used until there is one for Forgejo.
-# The site is only redeployed for tagged releases, so it matches the latest released version.
-# ci.yml still builds the docs on every push as a check.
+# The site is redeployed for tagged releases and for pushes to main that touch docs/.
+# ci.yml builds the docs as a check on every push that changes more than docs/.
 
 name: Docs
 
 on:
   push:
+    branches:
+      - main
     tags:
       - v*
+    paths:
+      - "docs/**"
   workflow_dispatch:
 
 jobs:
