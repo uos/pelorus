@@ -453,14 +453,16 @@ fn rebuild_gpu_lru_order(
         dummy,
     ];
 
-    let mut params = PushConstants::default();
-    params.dist_cap = dist_cap;
-    params.scan_number = scan_number;
+    let params = PushConstants {
+        dist_cap,
+        scan_number,
+        ..Default::default()
+    };
 
     session.dispatch(compute, compute.lru_score, &all_buffers, &params, dist_cap);
     session.barrier();
 
-    if requires_portable_map_sort(&session.context) {
+    if requires_portable_map_sort(session.context) {
         record_portable_sort(
             session,
             compute,

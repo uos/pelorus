@@ -251,6 +251,11 @@ int32_t pelorus_try_recv(struct PelorusHandle *handle, struct pelorus_odometry *
  *
  * This is the bias-aware counterpart of [`pelorus_try_recv`]. It keeps the
  * original `pelorus_odometry` ABI unchanged.
+ *
+ * # Safety
+ * - `handle` must be a valid pointer returned from `pelorus_create`
+ * - `result` must be a valid pointer to write the result
+ * - `bias` must be a valid pointer to write the IMU bias
  */
 int32_t pelorus_try_recv_with_bias(struct PelorusHandle *handle,
                                    struct pelorus_odometry *result,
@@ -277,6 +282,11 @@ int32_t pelorus_recv(struct PelorusHandle *handle, struct pelorus_odometry *resu
  *
  * This is the bias-aware counterpart of [`pelorus_recv`]. It keeps the
  * original `pelorus_odometry` ABI unchanged.
+ *
+ * # Safety
+ * - `handle` must be a valid pointer returned from `pelorus_create`
+ * - `result` must be a valid pointer to write the result
+ * - `bias` must be a valid pointer to write the IMU bias
  */
 int32_t pelorus_recv_with_bias(struct PelorusHandle *handle,
                                struct pelorus_odometry *result,
@@ -303,6 +313,11 @@ int32_t pelorus_set_callback(struct PelorusHandle *handle,
 /**
  * Set a callback that receives odometry together with the corresponding IMU
  * bias estimate.
+ *
+ * # Safety
+ * - `handle` must be a valid pointer returned from `pelorus_create`
+ * - `callback` must be a valid function pointer or NULL
+ * - `user_data` can be any pointer (including NULL) and will be passed to the callback
  */
 int32_t pelorus_set_callback_with_bias(struct PelorusHandle *handle,
                                        PelorusOdometryWithBiasCallback callback,

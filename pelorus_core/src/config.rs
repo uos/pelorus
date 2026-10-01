@@ -12,11 +12,11 @@ use ratslang::{
 use crate::{
     CoordinateSystem, DownsampleParameters, ImuCalibrationParameters, ImuConfigParameter,
     ImuDriverConfig, ImuDriverType, ImuParameters, KinematicModel, LidarDriverConfig,
-    LidarDriverType, LidarVendor, LioConfig, MadgwickSetting, McapConfig, OdometryRate, OusterConfig,
-    OusterTimestampMode, PassthroughFilterParameters, PointCloudMode, PreprocessingBackend, Qos,
-    Reliability, RerunConfig, RerunMapConfig, RobosenseConfig, RobosenseModel,
-    RobosenseTimestampMode, SensorDriverConfig, SyncNodeParameters, SyncParameters, VelodyneConfig,
-    VelodyneModel, VelodyneTimestampMode, XsensConfig, XsensTimestampMode,
+    LidarDriverType, LidarVendor, LioConfig, MadgwickSetting, McapConfig, OdometryRate,
+    OusterConfig, OusterTimestampMode, PassthroughFilterParameters, PointCloudMode,
+    PreprocessingBackend, Qos, Reliability, RerunConfig, RerunMapConfig, RobosenseConfig,
+    RobosenseModel, RobosenseTimestampMode, SensorDriverConfig, SyncNodeParameters, SyncParameters,
+    VelodyneConfig, VelodyneModel, VelodyneTimestampMode, XsensConfig, XsensTimestampMode,
     adaptive_execution::ExecutionPolicy,
 };
 
@@ -288,10 +288,13 @@ fn derive_noise_covariances(path: &str, inflation: f64) -> anyhow::Result<Derive
     })
 }
 
+/// Config variable names as `(assigned, evaluated)`, used to detect unused variables.
+pub type ConfigUsage = (Vec<String>, Vec<String>);
+
 pub fn ast_to_config_with_usage(
     defaults: Evaluated,
     user: Evaluated,
-) -> anyhow::Result<(LioConfig, (Vec<String>, Vec<String>))> {
+) -> anyhow::Result<(LioConfig, ConfigUsage)> {
     let config = ast_to_config_inner(defaults, user, true, false)?;
     Ok((config.0, config.1))
 }
@@ -300,7 +303,7 @@ pub fn ast_to_config_with_usage(
 pub fn ast_to_config_with_user_usage(
     mut defaults: Evaluated,
     user: Evaluated,
-) -> anyhow::Result<(LioConfig, (Vec<String>, Vec<String>))> {
+) -> anyhow::Result<(LioConfig, ConfigUsage)> {
     // Defaults get shadowed by user values on purpose. Silence their drop warning
     // but keep usage diagnostics for the user config, which is what this helper checks.
     defaults.vars = defaults.vars.with_drop_warning(false);
@@ -566,7 +569,8 @@ mod override_tests {
 
     #[test]
     fn deriving_without_a_calibration_file_is_refused() {
-        let user = ratslang::compile_code("imu.calibration.parameter_file.use_noise = true\n").unwrap();
+        let user =
+            ratslang::compile_code("imu.calibration.parameter_file.use_noise = true\n").unwrap();
         let defaults = ratslang::compile_code(DEFAULTS).unwrap();
         let error = ast_to_config(defaults, user).unwrap_err().to_string();
         assert!(error.contains("parameter_file"), "{error}");
@@ -728,11 +732,7 @@ fn ast_to_config_inner(
     user: Evaluated,
     capture_default_usage: bool,
     capture_user_usage: bool,
-) -> anyhow::Result<(
-    LioConfig,
-    (Vec<String>, Vec<String>),
-    (Vec<String>, Vec<String>),
-)> {
+) -> anyhow::Result<(LioConfig, ConfigUsage, ConfigUsage)> {
     let asts = Asts::new(defaults.vars, user.vars);
 
     fn reliablility_parse(src: &str) -> anyhow::Result<Qos> {
@@ -1096,11 +1096,7 @@ fn ast_to_config_inner(
         let wheel = asts.filter_ns(&["wheel"]);
         let wheel_src_topic = resolve_var!(wheel, "topic", as String, Rhs::Val(Val::StringVal(s)) | Rhs::Path(s) => {s})?;
         let wheel_qos = resolve_var!(wheel, "qos.reliability", as Qos, Rhs::Val(Val::StringVal(s)) | Rhs::Path(s) => {reliablility_parse(&s)?})?;
-        let wheel_odom_cov = match resolve_var!(wheel, "covariance", as f64, Rhs::Val(Val::NumVal(NumVal::Floating(f))) => {f})
-        {
-            Ok(v) => Some(v),
-            Err(_) => None,
-        };
+        let wheel_odom_cov = resolve_var!(wheel, "covariance", as f64, Rhs::Val(Val::NumVal(NumVal::Floating(f))) => {f}).ok();
         let wheel_kinematic_constraint_std = resolve_var!(wheel, "kinematic_constraint_std", as f64, Rhs::Val(Val::NumVal(NumVal::Floating(f))) => {f})?;
 
         let kinematic_model_str: String =
@@ -1279,7 +1275,6 @@ fn ast_to_config_inner(
                 gyro_calibration_samples,
                 imu_intrinsics_calib_file_path,
                 time_offset: imu_time_offset,
-                ..Default::default()
             },
             ..Default::default()
         };
@@ -1346,20 +1341,17 @@ fn ast_to_config_inner(
             let _ = terminal_ns.user.evaluate_stats_only("debug_fps");
             0
         };
-        let warning_debounce = resolve_var!(terminal_ns, "warning_debounce", as f64, Rhs::Val(Val::UnitedVal(UnitVal::TimeVal(v))) => { v.get::<second>() as f64 })?;
+        let warning_debounce = resolve_var!(terminal_ns, "warning_debounce", as f64, Rhs::Val(Val::UnitedVal(UnitVal::TimeVal(v))) => { v.get::<second>() })?;
         // optional log level for terminal/logger
-        let log_level: Option<String> = match resolve_var!(terminal_ns, "log_level", as String, Rhs::Val(Val::StringVal(s)) | Rhs::Path(s) => {s})
-        {
-            Ok(s) => Some(s),
-            Err(_) => None,
-        };
+        let log_level: Option<String> = resolve_var!(terminal_ns, "log_level", as String, Rhs::Val(Val::StringVal(s)) | Rhs::Path(s) => {s}).ok();
         if let Some(ref lvl) = log_level {
             unsafe {
                 std::env::set_var("RUST_LOG", lvl.as_str());
             }
         }
         let rerun_ns = output_ns.filter_ns(&["rerun"]);
-        let rerun_enabled = resolve_var!(output_ns, "rerun", as bool, Rhs::Val(Val::BoolVal(b)) => {b})?;
+        let rerun_enabled =
+            resolve_var!(output_ns, "rerun", as bool, Rhs::Val(Val::BoolVal(b)) => {b})?;
         let rerun_server_addr = resolve_var!(rerun_ns, "server_addr", as String, Rhs::Val(Val::StringVal(s)) | Rhs::Path(s) => {s})?;
         let rerun_map_ns = rerun_ns.filter_ns(&["map"]);
         let rerun_map_enabled =

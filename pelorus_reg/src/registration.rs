@@ -8,7 +8,7 @@ use pelorus_core::adaptive_execution::ExecutionMode;
 #[cfg(feature = "rayon")]
 use pelorus_core::adaptive_execution::{AdaptiveExecutionPlanner, ExecutionMode, HeavyPhase};
 use pelorus_core::timing::RuntimeEvaluator;
-use pelorus_core::{ImuMsg, ImuParameters, KinematicModel, LidarVendor, OdomMsg, PointXYZIT};
+use pelorus_core::{ImuParameters, KinematicModel, PointXYZIT};
 use pelorus_localmap::*;
 use pelorus_sync::LocatedBufferView;
 #[cfg(feature = "rayon")]
@@ -32,6 +32,31 @@ pub enum GpuPlanesBuffer {
     Metal(MetalBuffer),
     #[cfg(feature = "vulkan")]
     Vulkan(VulkanBuffer),
+}
+
+/// Filter and execution settings of a [`RegistrationState`].
+#[derive(Debug, Clone, Copy)]
+pub struct RegistrationSettings {
+    pub gravity: f64,
+    pub laser_point_noise_cov: f64,
+    pub ekf_max_iterations: usize,
+    pub parallelism_decision_threshold_stddevs: f64,
+    pub parallelism_decision_samples_per_mode: usize,
+    pub parallelism_execution_policy: pelorus_core::adaptive_execution::ExecutionPolicy,
+}
+
+impl RegistrationSettings {
+    /// Settings with the default adaptive execution policy.
+    pub fn new(gravity: f64, laser_point_noise_cov: f64, ekf_max_iterations: usize) -> Self {
+        Self {
+            gravity,
+            laser_point_noise_cov,
+            ekf_max_iterations,
+            parallelism_decision_threshold_stddevs: 2.0,
+            parallelism_decision_samples_per_mode: 20,
+            parallelism_execution_policy: pelorus_core::adaptive_execution::ExecutionPolicy::Auto,
+        }
+    }
 }
 
 pub struct RegistrationState {
@@ -151,46 +176,24 @@ impl RegistrationState {
         imu_params: &ImuParameters,
         lidar_to_imu: &Isometry3<f64>,
         base_to_lidar: &Isometry3<f64>,
-        gravity: f64,
-        laser_point_noise_cov: f64,
-        ekf_max_iterations: usize,
+        settings: RegistrationSettings,
         initial_guess: Option<ImuEkfPrediction>,
     ) -> Self {
-        Self::new_with_execution_config(
-            map,
-            imu_params,
-            lidar_to_imu,
-            base_to_lidar,
+        let RegistrationSettings {
             gravity,
             laser_point_noise_cov,
             ekf_max_iterations,
-            initial_guess,
-            2.0,
-            20,
-            pelorus_core::adaptive_execution::ExecutionPolicy::Auto,
-        )
-    }
-
-    pub fn new_with_execution_config(
-        map: IVoxHashMap,
-        imu_params: &ImuParameters,
-        lidar_to_imu: &Isometry3<f64>,
-        base_to_lidar: &Isometry3<f64>,
-        gravity: f64,
-        laser_point_noise_cov: f64,
-        ekf_max_iterations: usize,
-        initial_guess: Option<ImuEkfPrediction>,
-        parallelism_decision_threshold_stddevs: f64,
-        parallelism_decision_samples_per_mode: usize,
-        parallelism_execution_policy: pelorus_core::adaptive_execution::ExecutionPolicy,
-    ) -> Self {
+            parallelism_decision_threshold_stddevs,
+            parallelism_decision_samples_per_mode,
+            parallelism_execution_policy,
+        } = settings;
         #[cfg(not(feature = "rayon"))]
         let _ = (
             parallelism_decision_threshold_stddevs,
             parallelism_decision_samples_per_mode,
             parallelism_execution_policy,
         );
-        let mut ekf = Eqf::new(gravity, base_to_lidar.clone());
+        let mut ekf = Eqf::new(gravity, *base_to_lidar);
         // The configured extrinsic is the starting point either way. This only
         // decides whether the filter is allowed to move it afterwards.
         ekf.extrinsic_est = imu_params.estimate_extrinsic_online;
@@ -218,7 +221,7 @@ impl RegistrationState {
             map,
             laser_point_noise_cov,
             ekf_max_iterations,
-            base_to_lidar: base_to_lidar.clone(),
+            base_to_lidar: *base_to_lidar,
             planes_cpu_buffer: Vec::new(),
             planes_gpu_buffer: None,
             #[cfg(feature = "rayon")]
@@ -416,36 +419,6 @@ pub(crate) fn output_twist_covariance(ekf: &Eqf, output_pose: &Isometry3<f64>) -
     twist_cov
 }
 
-#[cfg(test)]
-mod covariance_tests {
-    use super::*;
-
-    #[test]
-    fn enabled_extrinsic_pose_covariance_uses_the_eqf_anchor() {
-        let mut ekf = Eqf::new(9.81, Isometry3::identity());
-        ekf.extrinsic_est = true;
-        ekf.anchor = Vector3::new(90.0, -40.0, 7.0);
-        ekf.state.pos = Vector3::new(100.0, -35.0, 8.0);
-        ekf.state.offset_t_l_i = Vector3::new(0.2, -0.1, 0.05);
-        ekf.cov = faer::Mat::<f64>::zeros(24, 24);
-        ekf.cov[(6, 6)] = 1.0;
-
-        let covariance = output_pose_covariance(&ekf, &Isometry3::identity());
-        let p_out = ekf.state.pos + ekf.state.rot.matrix() * ekf.state.offset_t_l_i;
-        let jacobian_column = -skew_symmetric_na(&(p_out - ekf.anchor)).column(0);
-        let expected = jacobian_column * jacobian_column.transpose();
-
-        for row in 0..3 {
-            for col in 0..3 {
-                assert!(
-                    (covariance[row * 6 + col] - expected[(row, col)]).abs() < 1e-12,
-                    "anchored extrinsic covariance mismatch at ({row}, {col})"
-                );
-            }
-        }
-    }
-}
-
 fn matrix6_to_array(matrix: SMatrix<f64, 6, 6>) -> [f64; 36] {
     let mut out = [0.0; 36];
     for row in 0..6 {
@@ -459,15 +432,18 @@ fn matrix6_to_array(matrix: SMatrix<f64, 6, 6>) -> [f64; 36] {
 impl crate::Registration for RegistrationState {
     fn register_and_map(
         &mut self,
-        map_only: bool,
-        imu_transform: Isometry3<f64>,
-        cloud: &LocatedBufferView<PointXYZIT>,
-        lidar_timestamp: f64,
-        scan_id: usize,
+        scan: crate::RegistrationScan<'_>,
         ready_for_next: Option<&std::sync::mpsc::Sender<u64>>,
         eval: &mut RuntimeEvaluator,
         backend: &ActiveBackend,
     ) -> anyhow::Result<Option<crate::CloudRegisterResult>> {
+        let crate::RegistrationScan {
+            cloud,
+            imu_transform,
+            lidar_timestamp,
+            scan_id,
+            map_only,
+        } = scan;
         let eval_cb = Arc::new(RwLock::new(&mut *eval));
 
         let map_empty = match backend {
@@ -830,14 +806,20 @@ impl crate::Registration for RegistrationState {
                             let timings = pelorus_cuda::planes_cuda(
                                 stream,
                                 buffer,
-                                &pelorus_cuda::Vector3::new(pose_t.x, pose_t.y, pose_t.z),
-                                &pose_q,
-                                &pelorus_cuda::Vector3::new(
-                                    ekf_state.offset_t_l_i.x,
-                                    ekf_state.offset_t_l_i.y,
-                                    ekf_state.offset_t_l_i.z,
-                                ),
-                                &offset_q,
+                                &pelorus_cuda::Pose {
+                                    position: pelorus_cuda::Vector3::new(
+                                        pose_t.x, pose_t.y, pose_t.z,
+                                    ),
+                                    orientation: pose_q,
+                                },
+                                &pelorus_cuda::Pose {
+                                    position: pelorus_cuda::Vector3::new(
+                                        ekf_state.offset_t_l_i.x,
+                                        ekf_state.offset_t_l_i.y,
+                                        ekf_state.offset_t_l_i.z,
+                                    ),
+                                    orientation: offset_q,
+                                },
                                 planes_buf,
                                 planes_gpu,
                             );
@@ -935,18 +917,26 @@ impl crate::Registration for RegistrationState {
                             let timings = pelorus_vulkan::planes_vulkan(
                                 stream,
                                 buffer,
-                                &pelorus_vulkan::Vector3::new(pose_t.x, pose_t.y, pose_t.z),
-                                &pose_q,
-                                &pelorus_vulkan::Vector3::new(
-                                    ekf_state.offset_t_l_i.x,
-                                    ekf_state.offset_t_l_i.y,
-                                    ekf_state.offset_t_l_i.z,
-                                ),
-                                &offset_q,
+                                &pelorus_vulkan::Pose {
+                                    position: pelorus_vulkan::Vector3::new(
+                                        pose_t.x, pose_t.y, pose_t.z,
+                                    ),
+                                    orientation: pose_q,
+                                },
+                                &pelorus_vulkan::Pose {
+                                    position: pelorus_vulkan::Vector3::new(
+                                        ekf_state.offset_t_l_i.x,
+                                        ekf_state.offset_t_l_i.y,
+                                        ekf_state.offset_t_l_i.z,
+                                    ),
+                                    orientation: offset_q,
+                                },
                                 planes_buf,
                                 planes_gpu,
-                                unsafe { &mut *planes_vulkan_download_buffer_ptr },
-                                unsafe { &mut *planes_vulkan_counter_buffer_ptr },
+                                pelorus_vulkan::VulkanPlaneReadback {
+                                    points: unsafe { &mut *planes_vulkan_download_buffer_ptr },
+                                    counter: unsafe { &mut *planes_vulkan_counter_buffer_ptr },
+                                },
                             );
                             eval_actual.add_external_measurement(
                                 "ekf_correct/model/planes/kernel_compact",
@@ -1098,7 +1088,7 @@ impl crate::Registration for RegistrationState {
                 };
                 let transl = &t_w_l.translation.vector.into();
                 let rot_quat: pelorus_vulkan::Quaternion = {
-                    let mat: Matrix3<f64> = t_w_l.rotation.to_rotation_matrix().matrix().clone();
+                    let mat: Matrix3<f64> = *t_w_l.rotation.to_rotation_matrix().matrix();
                     UnitQuaternion::from_matrix(&mat).into()
                 };
                 pelorus_vulkan::add_to_map(stream, buffer, transl, &rot_quat, scan_id);
@@ -1148,32 +1138,14 @@ impl crate::Registration for RegistrationState {
 
     fn undistort(
         &mut self,
-        imu_msgs: &[ImuMsg],
-        odom_msgs: &[OdomMsg],
+        scan: crate::UndistortScan<'_>,
         kinematic: KinematicModel,
         constraint_std: f64,
-        last_cloud_end_time: f64,
-        cloud_begin_time: f64,
-        cloud_end_time: f64,
-        cloud: &mut Vec<PointXYZIT>,
-        cloud_passthrough: Option<&mut Vec<PointXYZIT>>,
-        lidar_vendor: Option<LidarVendor>,
     ) {
         let mode = self.execution_mode(pelorus_core::adaptive_execution::HeavyPhase::PointDeskew);
-        let measurement = self.imu_processing.undistort(
-            &mut self.ekf,
-            imu_msgs,
-            odom_msgs,
-            kinematic,
-            constraint_std,
-            last_cloud_end_time,
-            cloud_begin_time,
-            cloud_end_time,
-            cloud,
-            cloud_passthrough,
-            lidar_vendor,
-            mode,
-        );
+        let measurement =
+            self.imu_processing
+                .undistort(&mut self.ekf, scan, kinematic, constraint_std, mode);
         if let Some(normalized_duration) = measurement {
             self.record_execution(
                 pelorus_core::adaptive_execution::HeavyPhase::PointDeskew,
@@ -1203,5 +1175,35 @@ impl crate::Registration for RegistrationState {
         self.base_to_lidar = base_to_lidar;
         self.ekf.base_to_lidar = base_to_lidar;
         self.imu_processing.set_base_to_lidar(&base_to_lidar);
+    }
+}
+
+#[cfg(test)]
+mod covariance_tests {
+    use super::*;
+
+    #[test]
+    fn enabled_extrinsic_pose_covariance_uses_the_eqf_anchor() {
+        let mut ekf = Eqf::new(9.81, Isometry3::identity());
+        ekf.extrinsic_est = true;
+        ekf.anchor = Vector3::new(90.0, -40.0, 7.0);
+        ekf.state.pos = Vector3::new(100.0, -35.0, 8.0);
+        ekf.state.offset_t_l_i = Vector3::new(0.2, -0.1, 0.05);
+        ekf.cov = faer::Mat::<f64>::zeros(24, 24);
+        ekf.cov[(6, 6)] = 1.0;
+
+        let covariance = output_pose_covariance(&ekf, &Isometry3::identity());
+        let p_out = ekf.state.pos + ekf.state.rot.matrix() * ekf.state.offset_t_l_i;
+        let jacobian_column = -skew_symmetric_na(&(p_out - ekf.anchor)).column(0);
+        let expected = jacobian_column * jacobian_column.transpose();
+
+        for row in 0..3 {
+            for col in 0..3 {
+                assert!(
+                    (covariance[row * 6 + col] - expected[(row, col)]).abs() < 1e-12,
+                    "anchored extrinsic covariance mismatch at ({row}, {col})"
+                );
+            }
+        }
     }
 }

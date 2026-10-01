@@ -68,14 +68,32 @@ impl Default for ImuEkfPrediction {
     }
 }
 
+/// One preprocessed scan handed to [`Registration::register_and_map`].
+pub struct RegistrationScan<'a> {
+    pub cloud: &'a LocatedBufferView<PointXYZIT>,
+    pub imu_transform: Isometry3<f64>,
+    pub lidar_timestamp: f64,
+    pub scan_id: usize,
+    pub map_only: bool,
+}
+
+/// One scan and the IMU and odometry messages spanning it, handed to
+/// [`Registration::undistort`].
+pub struct UndistortScan<'a> {
+    pub imu_msgs: &'a [ImuMsg],
+    pub odom_msgs: &'a [OdomMsg],
+    pub last_cloud_end_time: f64,
+    pub cloud_begin_time: f64,
+    pub cloud_end_time: f64,
+    pub cloud: &'a mut Vec<PointXYZIT>,
+    pub cloud_passthrough: Option<&'a mut Vec<PointXYZIT>>,
+    pub lidar_vendor: Option<LidarVendor>,
+}
+
 pub trait Registration {
     fn register_and_map(
         &mut self,
-        map_only: bool,
-        imu_transform: Isometry3<f64>,
-        cloud: &LocatedBufferView<PointXYZIT>,
-        lidar_timestamp: f64,
-        scan_id: usize,
+        scan: RegistrationScan<'_>,
         ready_for_next: Option<&std::sync::mpsc::Sender<u64>>,
         eval: &mut RuntimeEvaluator,
         backend: &ActiveBackend,
@@ -88,16 +106,9 @@ pub trait Registration {
     fn get_state(&self) -> ImuEkfPrediction;
     fn undistort(
         &mut self,
-        imu_msgs: &[ImuMsg],
-        odom_msgs: &[OdomMsg],
+        scan: UndistortScan<'_>,
         kinematic: KinematicModel,
         constraint_std: f64,
-        last_cloud_end_time: f64,
-        cloud_begin_time: f64,
-        cloud_end_time: f64,
-        cloud: &mut Vec<PointXYZIT>,
-        cloud_passthrough: Option<&mut Vec<PointXYZIT>>,
-        lidar_vendor: Option<LidarVendor>,
     );
 }
 

@@ -33,12 +33,11 @@ pub(crate) fn install(bin: &str) -> Result<()> {
 }
 
 fn detect_shell() -> Result<Shell> {
-    if let Some(shell) = std::env::var_os("SHELL") {
-        if let Some(shell) = Path::new(&shell).file_name().and_then(|name| name.to_str()) {
-            if let Some(shell) = shell_from_name(shell) {
-                return Ok(shell);
-            }
-        }
+    if let Some(shell) = std::env::var_os("SHELL")
+        && let Some(shell) = Path::new(&shell).file_name().and_then(|name| name.to_str())
+        && let Some(shell) = shell_from_name(shell)
+    {
+        return Ok(shell);
     }
 
     #[cfg(windows)]

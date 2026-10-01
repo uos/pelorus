@@ -4,7 +4,7 @@ use pelorus_core::{ImuMsg, UndistortParameters};
 // TODO gravity is hardcoded on axis z, should be like eth with global gravity
 #[allow(dead_code, unused_variables)]
 pub fn integrate_imu(
-    imu_data: &Vec<ImuMsg>,
+    imu_data: &[ImuMsg],
     start_time: f64,
     config: Option<&UndistortParameters>,
     gravity: f64,

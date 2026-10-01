@@ -25,8 +25,7 @@ pub use context::{
 pub use downsample::{VulkanDownsampleTimings, downsample_points_vulkan};
 pub use map::{
     add_to_map, cleanup_map, get_map, get_map_capacity, get_map_size, get_map_with_recency,
-    init_map, init_map_with_mode,
-    session_release, session_retain, shutdown,
+    init_map, init_map_with_mode, session_release, session_retain, shutdown,
 };
-pub use planes::{VulkanPlaneTimings, planes_vulkan, try_get_gpu_timings};
+pub use planes::{VulkanPlaneReadback, VulkanPlaneTimings, planes_vulkan, try_get_gpu_timings};
 pub use stream::Stream;

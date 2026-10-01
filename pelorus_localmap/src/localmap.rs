@@ -189,10 +189,10 @@ impl Livodish {
     pub fn get_distributions_with_lru_scores(&self) -> Vec<VoxelDistributionLru> {
         let mut ranks = vec![self.capacity; self.capacity];
         for (rank, opt_idx) in self.lru_mapping.iter().enumerate() {
-            if let Some(idx) = opt_idx {
-                if *idx < ranks.len() {
-                    ranks[*idx] = rank;
-                }
+            if let Some(idx) = opt_idx
+                && *idx < ranks.len()
+            {
+                ranks[*idx] = rank;
             }
         }
 

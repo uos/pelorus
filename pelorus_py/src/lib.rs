@@ -389,9 +389,9 @@ impl PelorusHandle {
         let (ready_tx, ready_rx) = mpsc::channel::<u64>();
 
         // Pass the receiver to Synchronizer for proper synchronization
-        let (sync, sync_receiver) = pipeline
-            .create_sync(Some(ready_rx))
-            .map_err(|e| PyRuntimeError::new_err(format!("Failed to initialize Synchronizer: {}", e)))?;
+        let (sync, sync_receiver) = pipeline.create_sync(Some(ready_rx)).map_err(|e| {
+            PyRuntimeError::new_err(format!("Failed to initialize Synchronizer: {}", e))
+        })?;
 
         let (result_tx, result_rx) = mpsc::channel();
 
@@ -527,10 +527,10 @@ impl PelorusHandle {
             }
         }
 
-        if let (Some(cb), Some(buffer)) = (self.imu_init_cb.as_ref(), init_buffer_to_apply) {
-            if !buffer.is_empty() {
-                cb.lock().unwrap()(&buffer);
-            }
+        if let (Some(cb), Some(buffer)) = (self.imu_init_cb.as_ref(), init_buffer_to_apply)
+            && !buffer.is_empty()
+        {
+            cb.lock().unwrap()(&buffer);
         }
 
         let mut sync_guard = self.sync.lock().unwrap();
@@ -767,10 +767,10 @@ impl PelorusHandle {
         }
 
         // If IMU initialization hasn't completed yet (buffer still present), return last known odometry
-        if let Ok(init_state) = self.imu_init_state.lock() {
-            if init_state.buffer.is_some() {
-                // No odometry yet during init. Block until we get one.
-            }
+        if let Ok(init_state) = self.imu_init_state.lock()
+            && init_state.buffer.is_some()
+        {
+            // No odometry yet during init. Block until we get one.
         }
 
         let receiver_arc = Arc::clone(&self.result_receiver);

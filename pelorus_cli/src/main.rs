@@ -756,13 +756,16 @@ struct McapOutputConfig {
 }
 
 fn build_mcap_output_config(config: &LioConfig) -> Option<McapOutputConfig> {
-    build_mcap_output_config_with_filtered_topic(&config.mcap, &config.sync_node_params.imu_filtered_topic)
-        .map(|mut output| {
-            if config.imu_params.lidar_only {
-                output.topics.filtered_imu = None;
-            }
-            output
-        })
+    build_mcap_output_config_with_filtered_topic(
+        &config.mcap,
+        &config.sync_node_params.imu_filtered_topic,
+    )
+    .map(|mut output| {
+        if config.imu_params.lidar_only {
+            output.topics.filtered_imu = None;
+        }
+        output
+    })
 }
 
 fn build_mcap_output_config_with_filtered_topic(
@@ -772,7 +775,11 @@ fn build_mcap_output_config_with_filtered_topic(
     mcap.file
         .as_ref()
         .map(PathBuf::from)
-        .or_else(|| mcap.rosbag_dir.as_ref().map(|dir| rosbag_mcap_path(std::path::Path::new(dir))))
+        .or_else(|| {
+            mcap.rosbag_dir
+                .as_ref()
+                .map(|dir| rosbag_mcap_path(std::path::Path::new(dir)))
+        })
         .map(|path| {
             let filtered_imu_topic = if configured_filtered_imu_topic.is_empty() {
                 "imu/filtered".to_string()
@@ -781,15 +788,13 @@ fn build_mcap_output_config_with_filtered_topic(
             };
             McapOutputConfig {
                 path,
-                rosbag_metadata_path: mcap
-                    .rosbag_metadata
-                    .as_ref()
-                    .map(PathBuf::from)
-                    .or_else(|| {
+                rosbag_metadata_path: mcap.rosbag_metadata.as_ref().map(PathBuf::from).or_else(
+                    || {
                         mcap.rosbag_dir
                             .as_ref()
                             .map(|dir| std::path::Path::new(dir).join("metadata.yaml"))
-                    }),
+                    },
+                ),
                 topics: McapTopics {
                     cloud: normalize_mcap_topic(mcap.cloud_topic.clone()),
                     odom: normalize_mcap_topic(mcap.odom_topic.clone()),
@@ -1332,9 +1337,7 @@ fn log_map_snapshot_to_rerun(
             distribution.mean.z,
         ));
         half_sizes.push(half_size);
-        quaternions.push(glam::Quat::from_xyzw(
-            q.i as f32, q.j as f32, q.k as f32, q.w as f32,
-        ));
+        quaternions.push(glam::Quat::from_xyzw(q.i, q.j, q.k, q.w));
         colors.push(relevance_color(scored.lru_score));
     }
 
@@ -1463,40 +1466,31 @@ fn drain_filtered_imu_mcap(
     Ok(())
 }
 
-fn lio(
-    config: LioConfig,
+/// Everything [`lio_with_ready_signal`] needs besides the [`LioConfig`].
+struct LioRunOptions {
+    ready_signal: Option<std::sync::mpsc::Sender<()>>,
     export_trajectory: Option<String>,
-    #[cfg(feature = "processing-time-export")] export_processing_time: Option<String>,
-    #[cfg(feature = "processing-time-export")] export_raw_processing_time: Option<String>,
+    #[cfg(feature = "processing-time-export")]
+    export_processing_time: Option<String>,
+    #[cfg(feature = "processing-time-export")]
+    export_raw_processing_time: Option<String>,
     synchronous_mode: bool,
-    #[cfg(feature = "r2r")] ros_node_args: RosNodeArgs,
-    #[cfg(feature = "hiroz")] hiroz_node_args: HirozNodeArgs,
+    #[cfg(feature = "r2r")]
+    ros_node_args: RosNodeArgs,
+    #[cfg(feature = "hiroz")]
+    hiroz_node_args: HirozNodeArgs,
+    shared_stats: Option<Arc<SharedStats>>,
+    /// When set to true, the LIO loop exits.
     shutdown_flag: Option<Arc<AtomicBool>>,
+    /// Blocking shutdown signal for pipeline teardown mode.
+    shutdown_request_rx: Option<std::sync::mpsc::Receiver<OfflineShutdownRequest>>,
+    offline_prefetch_scans: usize,
+    replay_tick_owner: ReplayTickOwner,
+    /// Fired once the downstream consumer has registered, so the offline runner
+    /// can hold the bag until Polarstern's subscribers exist.
+    downstream_registered: Option<std::sync::mpsc::Sender<()>>,
     mt_pubsub_local_only: bool,
     output_mcap: Option<McapOutputConfig>,
-) -> Result<(), Box<dyn CoreError>> {
-    lio_with_ready_signal(
-        config,
-        None,
-        export_trajectory,
-        #[cfg(feature = "processing-time-export")]
-        export_processing_time,
-        #[cfg(feature = "processing-time-export")]
-        export_raw_processing_time,
-        synchronous_mode,
-        #[cfg(feature = "r2r")]
-        ros_node_args,
-        #[cfg(feature = "hiroz")]
-        hiroz_node_args,
-        None,
-        shutdown_flag,
-        None,
-        1,
-        ReplayTickOwner::Pelorus,
-        None,
-        mt_pubsub_local_only,
-        output_mcap,
-    )
 }
 
 #[cfg(any(
@@ -1594,12 +1588,9 @@ fn release_minot_ticks(
     #[allow(unused_variables)] synchronous_mode: bool,
     #[allow(unused_variables)] count: usize,
 ) {
-    if shutdown_flag
+    shutdown_flag
         .map(|flag| flag.load(Ordering::Relaxed))
-        .unwrap_or(false)
-    {
-        return;
-    }
+        .unwrap_or(false);
 
     #[cfg(feature = "rat")]
     if synchronous_mode {
@@ -1654,7 +1645,7 @@ async fn release_minot_ticks_async(
 ))]
 fn request_count_after_replay_debt(debt: &AtomicUsize, requested: usize) -> usize {
     let previous = debt
-        .fetch_update(Ordering::AcqRel, Ordering::Acquire, |outstanding| {
+        .try_update(Ordering::AcqRel, Ordering::Acquire, |outstanding| {
             Some(outstanding.saturating_sub(requested))
         })
         .expect("replay tick debt update always succeeds");
@@ -1729,26 +1720,32 @@ fn stats_message(stats: &SharedStats) -> RosString {
 
 fn lio_with_ready_signal(
     mut config: LioConfig,
-    ready_signal: Option<std::sync::mpsc::Sender<()>>,
-    export_trajectory: Option<String>,
-    #[cfg(feature = "processing-time-export")] export_processing_time: Option<String>,
-    #[cfg(feature = "processing-time-export")] export_raw_processing_time: Option<String>,
-    #[allow(unused_variables)] synchronous_mode: bool,
-    #[cfg(feature = "r2r")] ros_node_args: RosNodeArgs,
-    #[cfg(feature = "hiroz")] hiroz_node_args: HirozNodeArgs,
-    shared_stats: Option<Arc<SharedStats>>,
-    // Optional flag that, when set to true, will cause the LIO loop to exit
-    shutdown_flag: Option<Arc<AtomicBool>>,
-    // Optional blocking shutdown signal for pipeline teardown mode.
-    shutdown_request_rx: Option<std::sync::mpsc::Receiver<OfflineShutdownRequest>>,
-    offline_prefetch_scans: usize,
-    replay_tick_owner: ReplayTickOwner,
-    // Fired once the downstream consumer has registered, so the offline runner
-    // can hold the bag until Polarstern's subscribers exist.
-    #[allow(unused_variables)] downstream_registered: Option<std::sync::mpsc::Sender<()>>,
-    #[allow(unused_variables)] mt_pubsub_local_only: bool,
-    output_mcap: Option<McapOutputConfig>,
+    options: LioRunOptions,
 ) -> Result<(), Box<dyn CoreError>> {
+    let LioRunOptions {
+        ready_signal,
+        export_trajectory,
+        #[cfg(feature = "processing-time-export")]
+        export_processing_time,
+        #[cfg(feature = "processing-time-export")]
+        export_raw_processing_time,
+        #[allow(unused_variables)]
+        synchronous_mode,
+        #[cfg(feature = "r2r")]
+        ros_node_args,
+        #[cfg(feature = "hiroz")]
+        hiroz_node_args,
+        shared_stats,
+        shutdown_flag,
+        shutdown_request_rx,
+        offline_prefetch_scans,
+        replay_tick_owner,
+        #[allow(unused_variables)]
+        downstream_registered,
+        #[allow(unused_variables)]
+        mt_pubsub_local_only,
+        output_mcap,
+    } = options;
     let replay_tick_debt = Arc::new(AtomicUsize::new(0));
     // Set from the register handshake before the bag is released, read by the
     // cloud publisher on every frame. Under managed replay no frame can be
@@ -1892,10 +1889,10 @@ fn lio_with_ready_signal(
                                 })?;
                             }
                         }
-                        if effect.request_shutdown {
-                            if let Some(shutdown) = shutdown.as_ref() {
-                                shutdown.store(true, Ordering::SeqCst);
-                            }
+                        if effect.request_shutdown
+                            && let Some(shutdown) = shutdown.as_ref()
+                        {
+                            shutdown.store(true, Ordering::SeqCst);
                         }
                         if effect.completed_frame.is_some() {
                             let request_count =
@@ -1967,10 +1964,8 @@ fn lio_with_ready_signal(
     };
 
     #[cfg(feature = "rat")]
-    if synchronous_mode {
-        if let Some(rt) = rt.as_ref() {
-            rat::init("pelorus", None, Some(Arc::clone(rt))).unwrap();
-        }
+    if synchronous_mode && let Some(rt) = rt.as_ref() {
+        rat::init("pelorus", None, Some(Arc::clone(rt))).unwrap();
     }
 
     #[cfg(feature = "r2r")]
@@ -2065,7 +2060,9 @@ fn lio_with_ready_signal(
 
     #[cfg(not(feature = "rerun"))]
     if config.rerun.enabled {
-        return Err(anyhow!("output.rerun = true requires a build with the 'rerun' feature").into());
+        return Err(
+            anyhow!("output.rerun = true requires a build with the 'rerun' feature").into(),
+        );
     }
 
     #[cfg(not(feature = "rerun"))]
@@ -2224,7 +2221,7 @@ fn lio_with_ready_signal(
         .create_publisher(
             &node
                 .create_topic(
-                    &ros2_client::Name::new(&namespace, "registered").unwrap(),
+                    &ros2_client::Name::new(namespace, "registered").unwrap(),
                     ros2_client::MessageTypeName::new("sensor_msgs", "PointCloud2"),
                     &pelorus_syncio::qos_to_ros2(config.registered_cloud_qos),
                 )
@@ -2232,12 +2229,12 @@ fn lio_with_ready_signal(
             Some(pelorus_syncio::qos_to_ros2(config.registered_cloud_qos)),
         )
         .unwrap();
-    #[cfg(any(feature = "ros2-client"))]
+    #[cfg(feature = "ros2-client")]
     let odom_publisher = node
         .create_publisher(
             &node
                 .create_topic(
-                    &ros2_client::Name::new(&namespace, "odom").unwrap(),
+                    &ros2_client::Name::new(namespace, "odom").unwrap(),
                     ros2_client::MessageTypeName::new("nav_msgs", "Odometry"),
                     &pelorus_syncio::qos_to_ros2(config.odom_qos),
                 )
@@ -2250,7 +2247,7 @@ fn lio_with_ready_signal(
         .create_publisher(
             &node
                 .create_topic(
-                    &ros2_client::Name::new(&namespace, "path").unwrap(),
+                    &ros2_client::Name::new(namespace, "path").unwrap(),
                     ros2_client::MessageTypeName::new("nav_msgs", "Path"),
                     &pelorus_syncio::qos_to_ros2(config.path_qos),
                 )
@@ -2263,7 +2260,7 @@ fn lio_with_ready_signal(
         .create_publisher(
             &node
                 .create_topic(
-                    &ros2_client::Name::new(&namespace, "imu_odom").unwrap(),
+                    &ros2_client::Name::new(namespace, "imu_odom").unwrap(),
                     ros2_client::MessageTypeName::new("nav_msgs", "Odometry"),
                     &pelorus_syncio::qos_to_ros2(config.imu_odom_qos),
                 )
@@ -2667,11 +2664,11 @@ fn lio_with_ready_signal(
 
         let mut trajectory_file = match export_trajectory_for_worker {
             Some(path_str) => {
-                log::info!("Saving trajectory to {}", &path_str);
+                log::info!("Saving trajectory to {}", path_str);
                 match std::fs::File::create(&path_str) {
                     Ok(f) => Some(f),
                     Err(e) => {
-                        log::error!("Failed to create trajectory file {}: {}", &path_str, e);
+                        log::error!("Failed to create trajectory file {}: {}", path_str, e);
                         None
                     }
                 }
@@ -2689,11 +2686,11 @@ fn lio_with_ready_signal(
         #[cfg(feature = "processing-time-export")]
         let mut processing_time_file = match export_processing_time_for_worker {
             Some(path_str) => {
-                log::info!("Saving processing times to {}", &path_str);
+                log::info!("Saving processing times to {}", path_str);
                 match std::fs::File::create(&path_str) {
                     Ok(f) => Some(f),
                     Err(e) => {
-                        log::error!("Failed to create processing time file {}: {}", &path_str, e);
+                        log::error!("Failed to create processing time file {}: {}", path_str, e);
                         None
                     }
                 }
@@ -2703,13 +2700,13 @@ fn lio_with_ready_signal(
         #[cfg(feature = "processing-time-export")]
         let mut raw_processing_time_file = match export_raw_processing_time_for_worker {
             Some(path_str) => {
-                log::info!("Saving raw processing times to {}", &path_str);
+                log::info!("Saving raw processing times to {}", path_str);
                 match std::fs::File::create(&path_str) {
                     Ok(f) => Some(f),
                     Err(e) => {
                         log::error!(
                             "Failed to create raw processing time file {}: {}",
-                            &path_str,
+                            path_str,
                             e
                         );
                         None
@@ -2771,9 +2768,9 @@ fn lio_with_ready_signal(
         loop {
             let sync_tick = match processing_shutdown_flag.as_ref() {
                 Some(flag) => {
-                    let shutdown_requested = flag.load(std::sync::atomic::Ordering::Relaxed);
+                    let shutdown_requested = flag.load(core::sync::atomic::Ordering::Relaxed);
                     let drain_requested =
-                        drain_on_shutdown.load(std::sync::atomic::Ordering::SeqCst);
+                        drain_on_shutdown.load(core::sync::atomic::Ordering::SeqCst);
                     if shutdown_requested || drain_requested {
                         if drain_requested {
                             if !draining_after_end_of_bag {
@@ -2909,48 +2906,48 @@ fn lio_with_ready_signal(
             let orig_frame = sync_tick.cloud_header.frame_id.clone();
             let orig_time = sync_tick.cloud_header.stamp;
             let current_cloud_time = timestamp_to_secs(&sync_tick.odom_time);
-            if let Some(existing_last_scan_time) = last_scan_time {
-                if current_cloud_time < existing_last_scan_time {
-                    let mut map = map.lock().unwrap();
-                    map.clear_localmap(&active_backend);
+            if let Some(existing_last_scan_time) = last_scan_time
+                && current_cloud_time < existing_last_scan_time
+            {
+                let mut map = map.lock().unwrap();
+                map.clear_localmap(&active_backend);
 
-                    info!("Resetting map");
-                    match &active_backend {
-                        ActiveBackend::Cpu => {}
-                        #[cfg(feature = "cuda")]
-                        ActiveBackend::Cuda(stream) => pelorus_cuda::init_map_with_mode(
-                            stream,
-                            config.map_capacity,
-                            config.map_resolution as f32,
-                            config.dist_update_sensitivity,
-                            config.neighbor_max_range as f32,
-                            pelorus_cuda::NeighborType::Neighbor26,
-                            config.map_multiresolution,
-                        ),
-                        #[cfg(feature = "metal")]
-                        ActiveBackend::Metal(stream) => pelorus_metal::init_map_with_mode(
-                            stream,
-                            config.map_capacity,
-                            config.map_resolution as f32,
-                            config.dist_update_sensitivity,
-                            config.neighbor_max_range as f32,
-                            pelorus_metal::NeighborType::Neighbor26,
-                            config.map_multiresolution,
-                        ),
-                        #[cfg(feature = "vulkan")]
-                        ActiveBackend::Vulkan(stream) => pelorus_vulkan::init_map_with_mode(
-                            stream,
-                            config.map_capacity,
-                            config.map_resolution as f32,
-                            config.dist_update_sensitivity,
-                            config.neighbor_max_range as f32,
-                            pelorus_vulkan::NeighborType::Neighbor26,
-                            config.map_multiresolution,
-                        ),
-                    };
-                    t_world = nalgebra::Isometry3::identity();
-                    t_last_current = nalgebra::Isometry3::identity();
-                }
+                info!("Resetting map");
+                match &active_backend {
+                    ActiveBackend::Cpu => {}
+                    #[cfg(feature = "cuda")]
+                    ActiveBackend::Cuda(stream) => pelorus_cuda::init_map_with_mode(
+                        stream,
+                        config.map_capacity,
+                        config.map_resolution as f32,
+                        config.dist_update_sensitivity,
+                        config.neighbor_max_range as f32,
+                        pelorus_cuda::NeighborType::Neighbor26,
+                        config.map_multiresolution,
+                    ),
+                    #[cfg(feature = "metal")]
+                    ActiveBackend::Metal(stream) => pelorus_metal::init_map_with_mode(
+                        stream,
+                        config.map_capacity,
+                        config.map_resolution as f32,
+                        config.dist_update_sensitivity,
+                        config.neighbor_max_range as f32,
+                        pelorus_metal::NeighborType::Neighbor26,
+                        config.map_multiresolution,
+                    ),
+                    #[cfg(feature = "vulkan")]
+                    ActiveBackend::Vulkan(stream) => pelorus_vulkan::init_map_with_mode(
+                        stream,
+                        config.map_capacity,
+                        config.map_resolution as f32,
+                        config.dist_update_sensitivity,
+                        config.neighbor_max_range as f32,
+                        pelorus_vulkan::NeighborType::Neighbor26,
+                        config.map_multiresolution,
+                    ),
+                };
+                t_world = nalgebra::Isometry3::identity();
+                t_last_current = nalgebra::Isometry3::identity();
             }
 
             last_scan_time = Some(timestamp_to_secs(&orig_time));
@@ -3014,11 +3011,13 @@ fn lio_with_ready_signal(
                     ready_for_next_tx.as_ref()
                 };
                 match map.register_and_map(
-                    sync_tick.map_only,
-                    init_guess_lidar,
-                    cloud_for_reg,
-                    current_cloud_time,
-                    sync_tick.scan_id as usize,
+                    pelorus_reg::RegistrationScan {
+                        cloud: cloud_for_reg,
+                        imu_transform: init_guess_lidar,
+                        lidar_timestamp: current_cloud_time,
+                        scan_id: sync_tick.scan_id as usize,
+                        map_only: sync_tick.map_only,
+                    },
                     ready_for_registration,
                     &mut eval,
                     &active_backend,
@@ -3035,7 +3034,7 @@ fn lio_with_ready_signal(
                     drain_filtered_imu_mcap(&mut mcap_writer, &mut filtered_imu_rx)?;
                     if let Some(ready) = registration_ready_tx
                         .as_ref()
-                        .or_else(|| ready_for_next_tx.as_ref())
+                        .or(ready_for_next_tx.as_ref())
                     {
                         let _ = ready.send(sync_tick.scan_id);
                     }
@@ -3071,7 +3070,7 @@ fn lio_with_ready_signal(
                     drain_filtered_imu_mcap(&mut mcap_writer, &mut filtered_imu_rx)?;
                     if let Some(ready) = registration_ready_tx
                         .as_ref()
-                        .or_else(|| ready_for_next_tx.as_ref())
+                        .or(ready_for_next_tx.as_ref())
                     {
                         let _ = ready.send(sync_tick.scan_id);
                     }
@@ -3232,12 +3231,12 @@ fn lio_with_ready_signal(
 
             // Generate prediction-only export samples before serializing this
             // correction, keeping MCAP/TUM/Rerun timelines chronological.
-            if realtime_export_rx.is_some() {
-                if let Some(predictor) = realtime_predictor.as_ref() {
-                    let registration = pipeline.map();
-                    let registration = registration.lock().unwrap();
-                    predictor.prepare_export(&registration, &sync_tick.imu_buffer);
-                }
+            if realtime_export_rx.is_some()
+                && let Some(predictor) = realtime_predictor.as_ref()
+            {
+                let registration = pipeline.map();
+                let registration = registration.lock().unwrap();
+                predictor.prepare_export(&registration, &sync_tick.imu_buffer);
             }
 
             #[cfg(feature = "rerun")]
@@ -3333,7 +3332,7 @@ fn lio_with_ready_signal(
                     Some(last_pose) => {
                         let last_pose = last_pose.pose.clone();
                         let last_pose_position = last_pose.position;
-                        let current_pose_position = pelorus_odom.pose.pose.position.clone();
+                        let current_pose_position = &pelorus_odom.pose.pose.position;
 
                         let distance = nalgebra::distance(
                             &nalgebra::Point3::new(
@@ -3516,15 +3515,15 @@ fn lio_with_ready_signal(
                 child_frame_id: child_frame,
                 transform: Transform {
                     translation: Vector3 {
-                        x: t_world.translation.vector.x as f64,
-                        y: t_world.translation.vector.y as f64,
-                        z: t_world.translation.vector.z as f64,
+                        x: t_world.translation.vector.x,
+                        y: t_world.translation.vector.y,
+                        z: t_world.translation.vector.z,
                     },
                     rotation: Quaternion {
-                        x: t_world.rotation.quaternion().i as f64,
-                        y: t_world.rotation.quaternion().j as f64,
-                        z: t_world.rotation.quaternion().k as f64,
-                        w: t_world.rotation.quaternion().w as f64,
+                        x: t_world.rotation.quaternion().i,
+                        y: t_world.rotation.quaternion().j,
+                        z: t_world.rotation.quaternion().k,
+                        w: t_world.rotation.quaternion().w,
                     },
                 },
             };
@@ -3590,7 +3589,10 @@ fn lio_with_ready_signal(
                         let lidar_path = Path {
                             header: Header {
                                 frame_id: lidar_path_frame_id.clone(),
-                                stamp: pelorus_odom.header.stamp.clone(),
+                                stamp: Time {
+                                    sec: pelorus_odom.header.stamp.sec,
+                                    nanosec: pelorus_odom.header.stamp.nanosec,
+                                },
                             },
                             poses: lidar_path_poses.iter().skip(skip).cloned().collect(),
                         };
@@ -3649,8 +3651,8 @@ fn lio_with_ready_signal(
             imu_odom.pose.pose.orientation.y = init_guess_lidar.rotation.quaternion().j;
             imu_odom.pose.pose.orientation.z = init_guess_lidar.rotation.quaternion().k;
             imu_odom.pose.pose.orientation.w = init_guess_lidar.rotation.quaternion().w;
-            imu_odom.pose.covariance = pelorus_odom.pose.covariance.clone();
-            imu_odom.twist.covariance = pelorus_odom.twist.covariance.clone();
+            imu_odom.pose.covariance = pelorus_odom.pose.covariance;
+            imu_odom.twist.covariance = pelorus_odom.twist.covariance;
 
             #[cfg(feature = "rerun")]
             if let Some(ref rec) = rec {
@@ -3671,7 +3673,7 @@ fn lio_with_ready_signal(
                     .map(|v: PointXYZI| {
                         let color = gradient.eval_continuous(v.intensity as f64 / 255.0);
                         let v = t_world_lidar_rerun * nalgebra::Point3::new(v.x, v.y, v.z);
-                        let pos = glam::Vec3::new(v.x as f32, v.y as f32, v.z as f32);
+                        let pos = glam::Vec3::new(v.x, v.y, v.z);
                         let color_rgb = [color.r, color.g, color.b];
 
                         (pos, color_rgb)
@@ -3738,7 +3740,7 @@ fn lio_with_ready_signal(
                         for (v, level, last_scan) in total_map {
                             let level = (level as usize).min(LEVELS - 1);
                             let v = ros_to_rerun.cast().transform_point(&v);
-                            let pos = glam::Vec3::new(v.x as f32, v.y as f32, v.z as f32);
+                            let pos = glam::Vec3::new(v.x, v.y, v.z);
                             positions[level].push(pos);
                             ages[level].push(current_scan.saturating_sub(last_scan as u64));
                         }
@@ -3836,7 +3838,7 @@ fn lio_with_ready_signal(
                             )
                         }));
                     let lidar_path_strips =
-                        rerun::LineStrips3D::new(std::iter::once(lidar_path_strip))
+                        rerun::LineStrips3D::new(core::iter::once(lidar_path_strip))
                             .with_colors([rerun::Color::from_rgb(255, 128, 0)]); // Orange color for lidar path
 
                     if let Err(err) = rec.log("world/lidar_path", &lidar_path_strips) {
@@ -3848,7 +3850,7 @@ fn lio_with_ready_signal(
                     let lidar_path = Path {
                         header: Header {
                             frame_id: lidar_path_frame_id.clone(),
-                            stamp: pelorus_odom.header.stamp.clone(),
+                            stamp: pelorus_odom.header.stamp,
                         },
                         poses: lidar_path_poses.iter().cloned().collect(),
                     };
@@ -3891,13 +3893,9 @@ fn lio_with_ready_signal(
             #[cfg(feature = "processing-time-export")]
             if let Some(raw_processing_time_file) = raw_processing_time_file.as_mut() {
                 let raw_processing_time_ns = (iteration_time_ms * 1_000_000.0).round() as u128;
-                let content_to_write =
-                    format!("{current_cloud_time} {raw_processing_time_ns}\n");
+                let content_to_write = format!("{current_cloud_time} {raw_processing_time_ns}\n");
 
-                std::io::Write::write_all(
-                    raw_processing_time_file,
-                    content_to_write.as_bytes(),
-                )?;
+                std::io::Write::write_all(raw_processing_time_file, content_to_write.as_bytes())?;
             }
 
             const NAME: &str = "Pelorus";
@@ -3926,34 +3924,34 @@ fn lio_with_ready_signal(
             }
 
             #[cfg(feature = "hiroz")]
-            if let Some(ref stats) = shared_stats {
-                if last_stats_pub.elapsed() >= Duration::from_millis(250) {
-                    last_stats_pub = std::time::Instant::now();
-                    stats.update_system_stats();
-                    let msg = stats_message(stats);
-                    let _ = rt
-                        .as_ref()
-                        .expect("rt always exists with hiroz feat")
-                        .block_on(async { stats_publisher.async_publish(&msg).await });
-                }
+            if let Some(ref stats) = shared_stats
+                && last_stats_pub.elapsed() >= Duration::from_millis(250)
+            {
+                last_stats_pub = std::time::Instant::now();
+                stats.update_system_stats();
+                let msg = stats_message(stats);
+                let _ = rt
+                    .as_ref()
+                    .expect("rt always exists with hiroz feat")
+                    .block_on(async { stats_publisher.async_publish(&msg).await });
             }
 
             // Debug output (non-TUI timing metrics)
-            if let Some(debug_interval) = debug_render_interval {
-                if last_render.elapsed() > debug_interval {
-                    last_render = std::time::Instant::now();
-                    // Only print debug output if TUI is not running
-                    // TUI runs when show_tui is true AND we're in a terminal
-                    let tui_is_running = config.show_tui && std::io::stdout().is_terminal();
-                    if !tui_is_running {
-                        println!(
-                            "{}[2J{}[1;L{}\n{}",
-                            27 as char,
-                            27 as char,
-                            &NAME,
-                            eval.render()
-                        );
-                    }
+            if let Some(debug_interval) = debug_render_interval
+                && last_render.elapsed() > debug_interval
+            {
+                last_render = std::time::Instant::now();
+                // Only print debug output if TUI is not running
+                // TUI runs when show_tui is true AND we're in a terminal
+                let tui_is_running = config.show_tui && std::io::stdout().is_terminal();
+                if !tui_is_running {
+                    println!(
+                        "{}[2J{}[1;L{}\n{}",
+                        27 as char,
+                        27 as char,
+                        NAME,
+                        eval.render()
+                    );
                 }
             }
 
@@ -3976,7 +3974,7 @@ fn lio_with_ready_signal(
         pipeline.release_gpu_buffers();
         #[cfg(feature = "vulkan")]
         if matches!(active_backend, ActiveBackend::Vulkan(_)) {
-            drop(std::mem::replace(
+            drop(core::mem::replace(
                 &mut persistent_cloud_buf,
                 LocatedBufferView::Ram(Vec::new()),
             ));
@@ -4041,11 +4039,11 @@ fn lio_with_ready_signal(
                 info!("Processing thread finished in mt_pubsub spinner");
                 break;
             }
-            if let Some(ref flag) = spinner_shutdown_flag {
-                if flag.load(Ordering::Relaxed) {
-                    info!("Shutdown flag detected in mt_pubsub spinner");
-                    break;
-                }
+            if let Some(ref flag) = spinner_shutdown_flag
+                && flag.load(Ordering::Relaxed)
+            {
+                info!("Shutdown flag detected in mt_pubsub spinner");
+                break;
             }
             std::thread::sleep(Duration::from_millis(100));
         }
@@ -4063,22 +4061,19 @@ fn lio_with_ready_signal(
         let spinner_shutdown = shutdown_flag.clone();
         let _spinner_handle = std::thread::spawn(move || {
             future::block_on(async {
-                match node.spinner().unwrap().spin().await {
-                    Err(e) => {
-                        error!("Node did not exit successfully {e}");
-                    }
-                    Ok(_) => {}
+                if let Err(e) = node.spinner().unwrap().spin().await {
+                    error!("Node did not exit successfully {e}");
                 }
             });
         });
 
         // Monitor shutdown flag and wait for processing to complete
         loop {
-            if let Some(ref flag) = spinner_shutdown {
-                if flag.load(Ordering::Relaxed) {
-                    info!("Shutdown flag detected, waiting for processing thread");
-                    break;
-                }
+            if let Some(ref flag) = spinner_shutdown
+                && flag.load(Ordering::Relaxed)
+            {
+                info!("Shutdown flag detected, waiting for processing thread");
+                break;
             }
             if processing_handle.is_finished() {
                 info!("Processing thread finished");
@@ -4124,11 +4119,11 @@ fn lio_with_ready_signal(
                 info!("Processing thread finished in Hiroz backend");
                 break;
             }
-            if let Some(ref flag) = spinner_shutdown_flag {
-                if flag.load(Ordering::Relaxed) {
-                    info!("Shutdown flag detected in Hiroz backend");
-                    break;
-                }
+            if let Some(ref flag) = spinner_shutdown_flag
+                && flag.load(Ordering::Relaxed)
+            {
+                info!("Shutdown flag detected in Hiroz backend");
+                break;
             }
             std::thread::sleep(Duration::from_millis(100));
         }
@@ -4162,19 +4157,7 @@ fn lio_with_ready_signal(
 )))]
 fn lio_with_ready_signal(
     _config: LioConfig,
-    _ready_signal: Option<std::sync::mpsc::Sender<()>>,
-    _export_trajectory: Option<String>,
-    #[cfg(feature = "processing-time-export")] _export_processing_time: Option<String>,
-    #[cfg(feature = "processing-time-export")] _export_raw_processing_time: Option<String>,
-    _synchronous_mode: bool,
-    _shared_stats: Option<Arc<SharedStats>>,
-    _shutdown_flag: Option<Arc<AtomicBool>>,
-    _shutdown_request_rx: Option<std::sync::mpsc::Receiver<OfflineShutdownRequest>>,
-    _offline_prefetch_scans: usize,
-    _replay_tick_owner: ReplayTickOwner,
-    _downstream_registered: Option<std::sync::mpsc::Sender<()>>,
-    _mt_pubsub_local_only: bool,
-    _output_mcap: Option<McapOutputConfig>,
+    _options: LioRunOptions,
 ) -> Result<(), Box<dyn CoreError>> {
     Err(anyhow!(
         "No IO backend is enabled. Rebuild with one of: offline, mt_pubsub, ros2-client, r2r, or hiroz."
@@ -4192,7 +4175,6 @@ enum OfflineRuntimeEvent {
     LioExited(Result<(), String>),
 }
 
-#[cfg_attr(not(feature = "rat"), allow(dead_code))]
 #[derive(Clone, Copy, Debug)]
 #[allow(dead_code)]
 enum OfflineShutdownRequest {
@@ -5157,8 +5139,7 @@ fn main() -> Result<(), Box<dyn CoreError>> {
                 #[cfg(feature = "processing-time-export")]
                 let lio_export_processing_time = config_args.export_processing_time.clone();
                 #[cfg(feature = "processing-time-export")]
-                let lio_export_raw_processing_time =
-                    config_args.export_raw_processing_time.clone();
+                let lio_export_raw_processing_time = config_args.export_raw_processing_time.clone();
                 let lio_sync = config_args.rat;
                 let lio_stats = Some(shared_stats);
                 let lio_output_mcap = output_mcap_config.clone();
@@ -5180,25 +5161,27 @@ fn main() -> Result<(), Box<dyn CoreError>> {
                 let lio_handle = std::thread::spawn(move || -> Result<(), String> {
                     lio_with_ready_signal(
                         lio_config,
-                        None,
-                        lio_export,
-                        #[cfg(feature = "processing-time-export")]
-                        lio_export_processing_time,
-                        #[cfg(feature = "processing-time-export")]
-                        lio_export_raw_processing_time,
-                        lio_sync,
-                        #[cfg(feature = "r2r")]
-                        lio_ros_node_args,
-                        #[cfg(feature = "hiroz")]
-                        lio_hiroz_node_args,
-                        lio_stats,
-                        Some(lio_shutdown_flag_for_thread),
-                        None,
-                        1,
-                        ReplayTickOwner::Pelorus,
-                        None,
-                        lio_local_only,
-                        lio_output_mcap,
+                        LioRunOptions {
+                            ready_signal: None,
+                            export_trajectory: lio_export,
+                            #[cfg(feature = "processing-time-export")]
+                            export_processing_time: lio_export_processing_time,
+                            #[cfg(feature = "processing-time-export")]
+                            export_raw_processing_time: lio_export_raw_processing_time,
+                            synchronous_mode: lio_sync,
+                            #[cfg(feature = "r2r")]
+                            ros_node_args: lio_ros_node_args,
+                            #[cfg(feature = "hiroz")]
+                            hiroz_node_args: lio_hiroz_node_args,
+                            shared_stats: lio_stats,
+                            shutdown_flag: Some(lio_shutdown_flag_for_thread),
+                            shutdown_request_rx: None,
+                            offline_prefetch_scans: 1,
+                            replay_tick_owner: ReplayTickOwner::Pelorus,
+                            downstream_registered: None,
+                            mt_pubsub_local_only: lio_local_only,
+                            output_mcap: lio_output_mcap,
+                        },
                     )
                     .map_err(|e| e.to_string())
                 });
@@ -5239,27 +5222,35 @@ fn main() -> Result<(), Box<dyn CoreError>> {
             } else {
                 let lio_shutdown_flag = Arc::new(AtomicBool::new(false));
                 install_online_shutdown_signal_handler(Arc::clone(&lio_shutdown_flag));
-                lio(
+                lio_with_ready_signal(
                     config,
-                    config_args.export_trajectory,
-                    #[cfg(feature = "processing-time-export")]
-                    config_args.export_processing_time,
-                    #[cfg(feature = "processing-time-export")]
-                    config_args.export_raw_processing_time,
-                    config_args.rat,
-                    #[cfg(feature = "r2r")]
-                    RosNodeArgs {
-                        node_name: config_args.node_name,
-                        namespace: config_args.namespace,
+                    LioRunOptions {
+                        ready_signal: None,
+                        export_trajectory: config_args.export_trajectory,
+                        #[cfg(feature = "processing-time-export")]
+                        export_processing_time: config_args.export_processing_time,
+                        #[cfg(feature = "processing-time-export")]
+                        export_raw_processing_time: config_args.export_raw_processing_time,
+                        synchronous_mode: config_args.rat,
+                        #[cfg(feature = "r2r")]
+                        ros_node_args: RosNodeArgs {
+                            node_name: config_args.node_name,
+                            namespace: config_args.namespace,
+                        },
+                        #[cfg(feature = "hiroz")]
+                        hiroz_node_args: HirozNodeArgs {
+                            mode: config_args.hiroz_mode,
+                            endpoints: config_args.hiroz_endpoint,
+                        },
+                        shared_stats: None,
+                        shutdown_flag: Some(lio_shutdown_flag),
+                        shutdown_request_rx: None,
+                        offline_prefetch_scans: 1,
+                        replay_tick_owner: ReplayTickOwner::Pelorus,
+                        downstream_registered: None,
+                        mt_pubsub_local_only: config_args.local_only,
+                        output_mcap: output_mcap_config,
                     },
-                    #[cfg(feature = "hiroz")]
-                    HirozNodeArgs {
-                        mode: config_args.hiroz_mode,
-                        endpoints: config_args.hiroz_endpoint,
-                    },
-                    Some(lio_shutdown_flag),
-                    config_args.local_only,
-                    output_mcap_config,
                 )
             }
         }
@@ -5380,8 +5371,7 @@ fn main() -> Result<(), Box<dyn CoreError>> {
             #[cfg(feature = "processing-time-export")]
             let export_processing_time_path_for_run = export_processing_time_path.clone();
             #[cfg(feature = "processing-time-export")]
-            let export_raw_processing_time_path_for_run =
-                export_raw_processing_time_path.clone();
+            let export_raw_processing_time_path_for_run = export_raw_processing_time_path.clone();
             let offline_local_only = !offline_args.open_router;
             let run_offline_logic = || -> anyhow::Result<()> {
                 let startup_started = std::time::Instant::now();
@@ -5503,11 +5493,9 @@ fn main() -> Result<(), Box<dyn CoreError>> {
 
                                 if line.contains(
                                     "Waiting for input on stdin before execution (--sync mode)",
-                                ) {
-                                    if !ready_notified_stdout.swap(true, Ordering::SeqCst) {
-                                        let _ =
-                                            runtime_tx_stdout.send(OfflineRuntimeEvent::MinotReady);
-                                    }
+                                ) && !ready_notified_stdout.swap(true, Ordering::SeqCst)
+                                {
+                                    let _ = runtime_tx_stdout.send(OfflineRuntimeEvent::MinotReady);
                                 }
                             }
                             Err(e) => {
@@ -5541,11 +5529,9 @@ fn main() -> Result<(), Box<dyn CoreError>> {
                                 // Unrelated log messages mentioning stdin are not readiness.
                                 if line.contains(
                                     "Waiting for input on stdin before execution (--sync mode)",
-                                ) {
-                                    if !ready_notified_stderr.swap(true, Ordering::SeqCst) {
-                                        let _ =
-                                            runtime_tx_stderr.send(OfflineRuntimeEvent::MinotReady);
-                                    }
+                                ) && !ready_notified_stderr.swap(true, Ordering::SeqCst)
+                                {
+                                    let _ = runtime_tx_stderr.send(OfflineRuntimeEvent::MinotReady);
                                 }
                             }
                             Err(e) => {
@@ -5644,31 +5630,34 @@ fn main() -> Result<(), Box<dyn CoreError>> {
                     let result = std::panic::catch_unwind(AssertUnwindSafe(|| {
                         lio_with_ready_signal(
                             config,
-                            Some(pelorus_ready_tx),
-                            export_trajectory_path_for_run.clone(),
-                            #[cfg(feature = "processing-time-export")]
-                            export_processing_time_path_for_run.clone(),
-                            #[cfg(feature = "processing-time-export")]
-                            export_raw_processing_time_path_for_run.clone(),
-                            synchronous_mode,
-                            #[cfg(feature = "r2r")]
-                            RosNodeArgs {
-                                node_name: "pelorus".to_string(),
-                                namespace: "pelorus".to_string(),
+                            LioRunOptions {
+                                ready_signal: Some(pelorus_ready_tx),
+                                export_trajectory: export_trajectory_path_for_run.clone(),
+                                #[cfg(feature = "processing-time-export")]
+                                export_processing_time: export_processing_time_path_for_run.clone(),
+                                #[cfg(feature = "processing-time-export")]
+                                export_raw_processing_time: export_raw_processing_time_path_for_run
+                                    .clone(),
+                                synchronous_mode,
+                                #[cfg(feature = "r2r")]
+                                ros_node_args: RosNodeArgs {
+                                    node_name: "pelorus".to_string(),
+                                    namespace: "pelorus".to_string(),
+                                },
+                                #[cfg(feature = "hiroz")]
+                                hiroz_node_args: HirozNodeArgs {
+                                    mode: "peer".to_string(),
+                                    endpoints: Vec::new(),
+                                },
+                                shared_stats: Some(shared_stats_for_lio),
+                                shutdown_flag: Some(lio_shutdown_flag_for_thread),
+                                shutdown_request_rx: Some(lio_stop_rx),
+                                offline_prefetch_scans,
+                                replay_tick_owner,
+                                downstream_registered: downstream_registered_tx,
+                                mt_pubsub_local_only: lio_local_only,
+                                output_mcap: output_mcap_config_for_run,
                             },
-                            #[cfg(feature = "hiroz")]
-                            HirozNodeArgs {
-                                mode: "peer".to_string(),
-                                endpoints: Vec::new(),
-                            },
-                            Some(shared_stats_for_lio),
-                            Some(lio_shutdown_flag_for_thread),
-                            Some(lio_stop_rx),
-                            offline_prefetch_scans,
-                            replay_tick_owner,
-                            downstream_registered_tx,
-                            lio_local_only,
-                            output_mcap_config_for_run,
                         )
                     }))
                     .map_err(|_| "LIO thread panicked".to_string())

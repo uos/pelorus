@@ -3,7 +3,10 @@
 use nalgebra::Isometry3;
 use pelorus_core::timing::RuntimeEvaluator;
 use pelorus_core::{ImuParameters, PointXYZIT};
-use pelorus_reg::{ActiveBackend, Registration, registration::RegistrationState};
+use pelorus_reg::{
+    ActiveBackend, Registration, RegistrationScan,
+    registration::{RegistrationSettings, RegistrationState},
+};
 use pelorus_sync::LocatedBufferView;
 use serde::{Deserialize, Serialize};
 use pelorus_localmap::{IVoxHashMap, IVoxNearbyType};
@@ -114,9 +117,7 @@ fn test_backends() {
         &params,
         &lidar_to_imu,
         &base_to_lidar,
-        9.81,
-        0.001,
-        5,
+        RegistrationSettings::new(9.81, 0.001, 5),
         None,
     );
 
@@ -198,11 +199,13 @@ fn test_backends() {
 
     let _ = state
         .register_and_map(
-            true,
-            imu_transform,
-            &simple_view,
-            0.0,
-            1,
+            RegistrationScan {
+                cloud: &simple_view,
+                imu_transform,
+                lidar_timestamp: 0.0,
+                scan_id: 1,
+                map_only: true,
+            },
             None,
             &mut eval,
             &active_backend,
@@ -211,11 +214,13 @@ fn test_backends() {
 
     let _ = state
         .register_and_map(
-            false,
-            imu_transform,
-            &complex_view,
-            0.1,
-            2,
+            RegistrationScan {
+                cloud: &complex_view,
+                imu_transform,
+                lidar_timestamp: 0.1,
+                scan_id: 2,
+                map_only: false,
+            },
             None,
             &mut eval,
             &active_backend,
@@ -369,10 +374,14 @@ fn test_planes_direct_equivalency_cuda() {
     pelorus_cuda::planes_cuda(
         &stream,
         query_buf,
-        &pelorus_cuda::Vector3::new(0.0, 0.0, 0.0),
-        &pelorus_cuda::Quaternion::default(),
-        &pelorus_cuda::Vector3::new(0.0, 0.0, 0.0),
-        &pelorus_cuda::Quaternion::default(),
+        &pelorus_cuda::Pose {
+            position: pelorus_cuda::Vector3::new(0.0, 0.0, 0.0),
+            orientation: pelorus_cuda::Quaternion::default(),
+        },
+        &pelorus_cuda::Pose {
+            position: pelorus_cuda::Vector3::new(0.0, 0.0, 0.0),
+            orientation: pelorus_cuda::Quaternion::default(),
+        },
         &mut cuda_planes_out,
         &mut cuda_planes_gpu,
     );
@@ -484,10 +493,14 @@ fn test_planes_after_voxel_update_cuda() {
     pelorus_cuda::planes_cuda(
         &stream,
         cloud_buf,
-        &zero_t,
-        &identity_q,
-        &zero_t,
-        &identity_q,
+        &pelorus_cuda::Pose {
+            position: zero_t,
+            orientation: identity_q,
+        },
+        &pelorus_cuda::Pose {
+            position: zero_t,
+            orientation: identity_q,
+        },
         &mut cuda_out,
         &mut cuda_gpu_out,
     );
@@ -751,14 +764,20 @@ fn test_planes_direct_equivalency_vulkan() {
     pelorus_vulkan::planes_vulkan(
         &stream,
         query_buf,
-        &pelorus_vulkan::Vector3::new(0.0, 0.0, 0.0),
-        &pelorus_vulkan::Quaternion::default(),
-        &pelorus_vulkan::Vector3::new(0.0, 0.0, 0.0),
-        &pelorus_vulkan::Quaternion::default(),
+        &pelorus_vulkan::Pose {
+            position: pelorus_vulkan::Vector3::new(0.0, 0.0, 0.0),
+            orientation: pelorus_vulkan::Quaternion::default(),
+        },
+        &pelorus_vulkan::Pose {
+            position: pelorus_vulkan::Vector3::new(0.0, 0.0, 0.0),
+            orientation: pelorus_vulkan::Quaternion::default(),
+        },
         &mut vulkan_planes_out,
         &mut vulkan_planes_gpu,
-        &mut vulkan_download,
-        &mut vulkan_counter,
+        pelorus_vulkan::VulkanPlaneReadback {
+            points: &mut vulkan_download,
+            counter: &mut vulkan_counter,
+        },
     );
     pelorus_vulkan::cleanup_map();
 
@@ -870,14 +889,20 @@ fn test_planes_after_voxel_update_vulkan() {
     pelorus_vulkan::planes_vulkan(
         &stream,
         cloud_buf,
-        &zero_t,
-        &identity_q,
-        &zero_t,
-        &identity_q,
+        &pelorus_vulkan::Pose {
+            position: zero_t,
+            orientation: identity_q,
+        },
+        &pelorus_vulkan::Pose {
+            position: zero_t,
+            orientation: identity_q,
+        },
         &mut vulkan_out,
         &mut vulkan_gpu_out,
-        &mut vulkan_download,
-        &mut vulkan_counter,
+        pelorus_vulkan::VulkanPlaneReadback {
+            points: &mut vulkan_download,
+            counter: &mut vulkan_counter,
+        },
     );
     pelorus_vulkan::cleanup_map();
 
@@ -1020,14 +1045,20 @@ fn test_planes_transformed_extrinsic_equivalency_vulkan() {
     pelorus_vulkan::planes_vulkan(
         &stream,
         query_buf,
-        &query_pose_t,
-        &query_pose_q,
-        &offset_t,
-        &offset_q,
+        &pelorus_vulkan::Pose {
+            position: query_pose_t,
+            orientation: query_pose_q,
+        },
+        &pelorus_vulkan::Pose {
+            position: offset_t,
+            orientation: offset_q,
+        },
         &mut vulkan_out,
         &mut vulkan_gpu_out,
-        &mut vulkan_download,
-        &mut vulkan_counter,
+        pelorus_vulkan::VulkanPlaneReadback {
+            points: &mut vulkan_download,
+            counter: &mut vulkan_counter,
+        },
     );
     pelorus_vulkan::cleanup_map();
 
@@ -1155,14 +1186,20 @@ fn test_planes_after_moved_voxel_update_vulkan() {
     pelorus_vulkan::planes_vulkan(
         &stream,
         cloud_buf,
-        &second_t,
-        &second_q,
-        &zero_t,
-        &identity_q,
+        &pelorus_vulkan::Pose {
+            position: second_t,
+            orientation: second_q,
+        },
+        &pelorus_vulkan::Pose {
+            position: zero_t,
+            orientation: identity_q,
+        },
         &mut vulkan_out,
         &mut vulkan_gpu_out,
-        &mut vulkan_download,
-        &mut vulkan_counter,
+        pelorus_vulkan::VulkanPlaneReadback {
+            points: &mut vulkan_download,
+            counter: &mut vulkan_counter,
+        },
     );
     pelorus_vulkan::cleanup_map();
 
@@ -1541,7 +1578,20 @@ fn multiresolution_cuda_matches_cpu_geometry_and_capacity() {
             queries.len(),
         );
         let mut gpu = vec![PointXYZINormal::default(); queries.len()];
-        pelorus_cuda::planes_cuda(&stream, &input, &t, &q, &t, &q, &mut gpu, &mut output);
+        pelorus_cuda::planes_cuda(
+            &stream,
+            &input,
+            &pelorus_cuda::Pose {
+                position: t,
+                orientation: q,
+            },
+            &pelorus_cuda::Pose {
+                position: t,
+                orientation: q,
+            },
+            &mut gpu,
+            &mut output,
+        );
         assert!(gpu.is_empty(), "empty multiresolution map produced planes");
         // Force scratch growth on a batch that contributes no cells. Neither
         // an empty update nor an all-invalid update may alter stored statistics.
@@ -1596,7 +1646,20 @@ fn multiresolution_cuda_matches_cpu_geometry_and_capacity() {
             queries.len(),
         );
         let mut gpu = vec![PointXYZINormal::default(); queries.len()];
-        pelorus_cuda::planes_cuda(&stream, &input, &t, &q, &t, &q, &mut gpu, &mut output);
+        pelorus_cuda::planes_cuda(
+            &stream,
+            &input,
+            &pelorus_cuda::Pose {
+                position: t,
+                orientation: q,
+            },
+            &pelorus_cuda::Pose {
+                position: t,
+                orientation: q,
+            },
+            &mut gpu,
+            &mut output,
+        );
         let expected: Vec<_> = queries
             .iter()
             .filter_map(|p| {
@@ -1651,14 +1714,12 @@ fn multiresolution_vulkan_matches_cpu_geometry_and_capacity() {
         }
     }
     cloud.push(point(f32::NAN, 0.0, 0.0));
-    let queries = vec![
-        point(-1.0, -0.3, -0.07),
+    let queries = [point(-1.0, -0.3, -0.07),
         point(1.0, 0.3, 0.08),
         point(10.03, 0.0, 0.11),
         point(0.01, 0.8, 0.9),
         point(100.0, 100.0, 100.0),
-        point(f32::NAN, 0.0, 0.0),
-    ];
+        point(f32::NAN, 0.0, 0.0)];
     // A non-power-of-two budget also tests per-level remainders and eviction.
     for capacity in [12003, 37] {
         pelorus_vulkan::cleanup_map();
@@ -1737,14 +1798,20 @@ fn multiresolution_vulkan_matches_cpu_geometry_and_capacity() {
             pelorus_vulkan::planes_vulkan(
                 &stream,
                 &input,
-                &t,
-                &q,
-                &t,
-                &q,
+                &pelorus_vulkan::Pose {
+                    position: t,
+                    orientation: q,
+                },
+                &pelorus_vulkan::Pose {
+                    position: t,
+                    orientation: q,
+                },
                 &mut gpu,
                 &mut output,
-                &mut downloaded,
-                &mut counter,
+                pelorus_vulkan::VulkanPlaneReadback {
+                    points: &mut downloaded,
+                    counter: &mut counter,
+                },
             );
             let expected: Vec<_> = queries
                 .iter()

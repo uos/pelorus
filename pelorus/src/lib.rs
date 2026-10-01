@@ -33,7 +33,7 @@ use nalgebra::{Isometry3, Matrix3, SMatrix};
 use pelorus_core::config::{ast_to_config, layer_overrides};
 use pelorus_core::{ImuMsg, LidarVendor, LioConfig, OdomMsg, SyncProcessedCloud};
 use pelorus_reg::pipeline::{PelorusOutput, Pipeline};
-use pelorus_sync::Synchronizer;
+use pelorus_sync::{ImuInitCallback, Synchronizer};
 use ros_pointcloud2::prelude::*;
 use ros2_interfaces_jazzy_serde::sensor_msgs::msg::{PointCloud2, PointField};
 
@@ -59,6 +59,34 @@ pub struct Pcloud2Field {
     pub name: String,
     pub offset: u32,
     pub datatype: u8,
+}
+
+/// A PointCloud2-style cloud for [`Handle::add_pointcloud_raw`].
+pub struct RawPointCloud<'a> {
+    pub header_sec: i32,
+    pub header_nanosec: u32,
+    pub width: u32,
+    pub fields: &'a [Pcloud2Field],
+    pub point_step: u32,
+    pub row_step: u32,
+    pub data: &'a [u8],
+    pub is_dense: bool,
+}
+
+/// An IMU measurement for [`Handle::add_imu`].
+///
+/// All covariance arrays are row-major.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ImuMeasurement {
+    pub timestamp_sec: i32,
+    pub timestamp_nanosec: u32,
+    /// Orientation quaternion `[w, x, y, z]`.
+    pub orientation: [f64; 4],
+    pub orientation_covariance: [f64; 9],
+    pub angular_velocity: [f64; 3],
+    pub angular_velocity_covariance: [f64; 9],
+    pub linear_acceleration: [f64; 3],
+    pub linear_acceleration_covariance: [f64; 9],
 }
 
 /// A single output point with XYZ coordinates and intensity.
@@ -112,12 +140,15 @@ struct ImuInitState {
     buffer: Option<Vec<ImuMsg>>,
 }
 
+type OdometryCallback = Arc<dyn Fn(Odometry) + Send + Sync>;
+type SharedOdometryCallback = Arc<Mutex<Option<OdometryCallback>>>;
+
 struct ProcessingThread {
     pipeline: Pipeline,
     sync_receiver: mpsc::Receiver<SyncProcessedCloud>,
     result_sender: mpsc::Sender<PelorusOutput>,
     ready_for_next: mpsc::Sender<u64>,
-    callback: Arc<Mutex<Option<Arc<dyn Fn(Odometry) + Send + Sync>>>>,
+    callback: SharedOdometryCallback,
     shutdown: Arc<AtomicBool>,
     config: LioConfig,
     ext_lidar_to_imu: Isometry3<f64>,
@@ -298,7 +329,7 @@ fn is_config_url(location: &str) -> bool {
 fn read_config_source(location: &str) -> anyhow::Result<String> {
     if is_config_url(location) {
         let agent: ureq::Agent = ureq::Agent::config_builder()
-            .timeout_global(Some(std::time::Duration::from_secs(30)))
+            .timeout_global(Some(core::time::Duration::from_secs(30)))
             .build()
             .into();
         return agent
@@ -439,8 +470,8 @@ fn configure_thread_pool(num_threads: usize) {
 pub struct Handle {
     sync: Arc<Mutex<Option<Synchronizer>>>,
     result_receiver: mpsc::Receiver<PelorusOutput>,
-    callback: Arc<Mutex<Option<Arc<dyn Fn(Odometry) + Send + Sync>>>>,
-    imu_init_cb: Option<Arc<Mutex<dyn FnMut(&[ImuMsg]) + Send + Sync>>>,
+    callback: SharedOdometryCallback,
+    imu_init_cb: Option<ImuInitCallback>,
     imu_init_state: Arc<Mutex<ImuInitState>>,
     imu_predictor_init_time_sec: f64,
     _processing_thread: Option<thread::JoinHandle<()>>,
@@ -488,8 +519,7 @@ impl Handle {
         let (sync, sync_receiver) = pipeline.create_sync(Some(ready_rx))?;
         let (result_tx, result_rx) = mpsc::channel();
 
-        let callback: Arc<Mutex<Option<Arc<dyn Fn(Odometry) + Send + Sync>>>> =
-            Arc::new(Mutex::new(None));
+        let callback: SharedOdometryCallback = Arc::new(Mutex::new(None));
         let shutdown = Arc::new(AtomicBool::new(false));
         let ext_lidar_to_imu = pipeline.ext();
 
@@ -525,19 +555,17 @@ impl Handle {
     }
 
     /// Add an IMU measurement.
-    ///
-    /// `orientation` is `[w, x, y, z]`.  All covariance arrays are row-major.
-    pub fn add_imu(
-        &self,
-        timestamp_sec: i32,
-        timestamp_nanosec: u32,
-        orientation: [f64; 4],
-        orientation_covariance: [f64; 9],
-        angular_velocity: [f64; 3],
-        angular_velocity_covariance: [f64; 9],
-        linear_acceleration: [f64; 3],
-        linear_acceleration_covariance: [f64; 9],
-    ) -> Result<(), Error> {
+    pub fn add_imu(&self, imu: ImuMeasurement) -> Result<(), Error> {
+        let ImuMeasurement {
+            timestamp_sec,
+            timestamp_nanosec,
+            orientation,
+            orientation_covariance,
+            angular_velocity,
+            angular_velocity_covariance,
+            linear_acceleration,
+            linear_acceleration_covariance,
+        } = imu;
         let timestamp = timestamp_sec as f64 + (timestamp_nanosec as f64 / 1e9);
         let imu_msg = ImuMsg {
             stamp: ros_pointcloud2::ros::TimeMsg {
@@ -588,10 +616,10 @@ impl Handle {
             }
         }
 
-        if let (Some(cb), Some(buffer)) = (self.imu_init_cb.as_ref(), init_buffer_to_apply) {
-            if !buffer.is_empty() {
-                cb.lock().unwrap()(&buffer);
-            }
+        if let (Some(cb), Some(buffer)) = (self.imu_init_cb.as_ref(), init_buffer_to_apply)
+            && !buffer.is_empty()
+        {
+            cb.lock().unwrap()(&buffer);
         }
 
         let mut sync_guard = self.sync.lock().unwrap();
@@ -694,17 +722,17 @@ impl Handle {
     /// or [`add_points_xyzt`](Handle::add_points_xyzt).
     ///
     /// Returns the scan ID assigned to this cloud or fails if Handle is closed.
-    pub fn add_pointcloud_raw(
-        &self,
-        header_sec: i32,
-        header_nanosec: u32,
-        width: u32,
-        fields: &[Pcloud2Field],
-        point_step: u32,
-        row_step: u32,
-        data: &[u8],
-        is_dense: bool,
-    ) -> Result<u64, Error> {
+    pub fn add_pointcloud_raw(&self, cloud: RawPointCloud<'_>) -> Result<u64, Error> {
+        let RawPointCloud {
+            header_sec,
+            header_nanosec,
+            width,
+            fields,
+            point_step,
+            row_step,
+            data,
+            is_dense,
+        } = cloud;
         let ros_fields: Vec<PointField> = fields
             .iter()
             .map(|f| PointField {

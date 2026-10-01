@@ -309,7 +309,7 @@ impl RuntimeEvaluator {
 
         // determine window size from first evaluation or default, then build table headers
         let window_n = sorted_evals
-            .get(0)
+            .first()
             .map(|e| e.filter.window_size as usize)
             .unwrap_or(10);
         let table: Vec<String> = vec![
@@ -322,7 +322,7 @@ impl RuntimeEvaluator {
         let field_count: usize = table.len();
 
         let impacts: Vec<f64> = sorted_evals.iter().map(|e| e.impact_score()).collect();
-        let max_impact = impacts.iter().cloned().fold(0. / 0., f64::max).max(1.0);
+        let max_impact = impacts.iter().cloned().fold(f64::NAN, f64::max).max(1.0);
 
         let impact_map: std::collections::HashMap<String, f64> = sorted_evals
             .iter()
@@ -362,15 +362,15 @@ impl RuntimeEvaluator {
         for ef in sorted_evals.iter() {
             let depth = ef.name.matches('/').count();
             let indent = depth * 2;
-            let display_name = ef.name.split('/').last().unwrap_or(&ef.name);
+            let display_name = ef.name.split('/').next_back().unwrap_or(&ef.name);
             name_width = std::cmp::max(name_width, display_name.len() + indent);
         }
         name_width = std::cmp::max(name_width, table[0].len());
-        let name_width = std::cmp::min(std::cmp::max(name_width, 10), 24); // cap between 10 and 24
+        let name_width = name_width.clamp(10, 24);
 
         let mut max_numeric_header = 0usize;
-        for i in 1..field_count {
-            max_numeric_header = std::cmp::max(max_numeric_header, table[i].len());
+        for label in &table[1..field_count] {
+            max_numeric_header = std::cmp::max(max_numeric_header, label.len());
         }
         let num_width = std::cmp::max(8usize, max_numeric_header); // narrower numeric columns
 
@@ -382,8 +382,7 @@ impl RuntimeEvaluator {
             name_width = name_width
         ));
         ss.push_str(" | ");
-        for i in 1..field_count {
-            let label = &table[i];
+        for (i, label) in table.iter().enumerate().take(field_count).skip(1) {
             let padding = num_width.saturating_sub(label.len());
             let left = padding / 2;
             let right = padding - left;
@@ -413,7 +412,7 @@ impl RuntimeEvaluator {
         let mut total_run_avg_micros: u128 = 0;
         let mut total_variance: f64 = 0.0; // sum of variances
         for ef in sorted_evals.iter().filter(|e| !e.name.contains('/')) {
-            let avg = (ef.sum_time / ef.num_measurements as u32).as_micros() as u128;
+            let avg = (ef.sum_time / ef.num_measurements as u32).as_micros();
             let run_avg = ef.filter.mean as u128;
             total_avg_micros += avg;
             total_run_avg_micros += run_avg;
@@ -511,7 +510,7 @@ impl RuntimeEvaluator {
             // Calculate indentation based on hierarchy depth
             let depth = ef.name.matches('/').count();
             let indent = "  ".repeat(depth);
-            let display_name = ef.name.split('/').last().unwrap_or(&ef.name);
+            let display_name = ef.name.split('/').next_back().unwrap_or(&ef.name);
             let formatted_name = format!("{}{}", indent, display_name);
 
             ss.push_str(&format!(

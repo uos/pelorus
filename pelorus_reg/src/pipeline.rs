@@ -2,7 +2,10 @@ use std::sync::{Arc, Mutex};
 #[cfg(feature = "processing-time-export")]
 use std::time::Instant;
 
-use crate::{ActiveBackend, Registration, registration::RegistrationState};
+use crate::{
+    ActiveBackend, Registration,
+    registration::{RegistrationSettings, RegistrationState},
+};
 use anyhow::anyhow;
 use either::Either;
 use nalgebra::{Isometry3, Translation3, UnitQuaternion};
@@ -11,7 +14,9 @@ use pelorus_core::{
     LioConfig, OdomMsg, PointXYZIT, SyncProcessedCloud,
 };
 use pelorus_localmap::{IVoxHashMap, IVoxNearbyType};
-use pelorus_sync::{ImuSyncMode, LocatedBufferView, Synchronizer};
+use pelorus_sync::{
+    ImuInitCallback, ImuSyncMode, LocatedBufferView, Synchronizer, SynchronizerHooks,
+};
 
 /// How densely the constant-twist model is sampled into IMU messages. It only
 /// has to be fine enough that the rotation between two samples stays small.
@@ -21,19 +26,10 @@ const IMU_SYNTHESIS_RATE: f64 = 200.0;
 const CUDA_CLOUD_BUFFER_PIPELINE_DEPTH: usize = 2;
 
 #[cfg(feature = "cuda")]
+#[derive(Default)]
 struct CudaCloudUploadBuffers {
     buffers: [Option<LocatedBufferView<PointXYZIT>>; CUDA_CLOUD_BUFFER_PIPELINE_DEPTH],
     next_slot: usize,
-}
-
-#[cfg(feature = "cuda")]
-impl Default for CudaCloudUploadBuffers {
-    fn default() -> Self {
-        Self {
-            buffers: [None, None],
-            next_slot: 0,
-        }
-    }
 }
 
 #[cfg(feature = "cuda")]
@@ -152,24 +148,30 @@ impl Pipeline {
             config.map_resolution as f32,
             config.map_capacity,
             IVoxNearbyType::Nearby26,
-            config.dist_update_sensitivity as f32,
+            config.dist_update_sensitivity,
         );
         if config.map_multiresolution {
             ivox.enable_multiresolution(config.map_capacity, config.dist_update_sensitivity);
         }
 
-        let mut map = RegistrationState::new_with_execution_config(
+        let mut map = RegistrationState::new(
             ivox,
             &config.imu_params,
             &ext_lidar_to_imu,
             &config.base_to_lidar,
-            config.sync_params.imu.gravity,
-            config.lidar_odom_cov,
-            config.ekf_max_iterations,
+            RegistrationSettings {
+                gravity: config.sync_params.imu.gravity,
+                laser_point_noise_cov: config.lidar_odom_cov,
+                ekf_max_iterations: config.ekf_max_iterations,
+                parallelism_decision_threshold_stddevs: config
+                    .sync_params
+                    .parallelism_decision_threshold_stddevs,
+                parallelism_decision_samples_per_mode: config
+                    .sync_params
+                    .parallelism_decision_samples_per_mode,
+                parallelism_execution_policy: config.sync_params.parallelism_execution_policy,
+            },
             None,
-            config.sync_params.parallelism_decision_threshold_stddevs,
-            config.sync_params.parallelism_decision_samples_per_mode,
-            config.sync_params.parallelism_execution_policy,
         );
 
         if config.imu_params.lidar_only {
@@ -234,7 +236,7 @@ impl Pipeline {
         self.config.imu_params.kinematic_model
     }
 
-    pub fn build_init_callback(&self) -> Arc<Mutex<dyn FnMut(&[ImuMsg]) + Send + Sync>> {
+    pub fn build_init_callback(&self) -> ImuInitCallback {
         let map = self.map();
         let lidar_only = self.config.imu_params.lidar_only;
         Arc::new(Mutex::new(move |msg: &[ImuMsg]| {
@@ -242,7 +244,7 @@ impl Pipeline {
                 return;
             }
             let mut map = map.lock().unwrap();
-            let _ = map.init_imu_ekf(&msg);
+            let _ = map.init_imu_ekf(msg);
         }))
     }
 
@@ -284,16 +286,18 @@ impl Pipeline {
                     imu_msgs
                 };
                 map.undistort(
-                    &imu_msgs,
-                    odom_msgs,
+                    crate::UndistortScan {
+                        imu_msgs,
+                        odom_msgs,
+                        last_cloud_end_time,
+                        cloud_begin_time,
+                        cloud_end_time,
+                        cloud,
+                        cloud_passthrough,
+                        lidar_vendor: Some(lidar_vendor),
+                    },
                     kinematic_model,
                     constraint_std,
-                    last_cloud_end_time,
-                    cloud_begin_time,
-                    cloud_end_time,
-                    cloud,
-                    cloud_passthrough,
-                    Some(lidar_vendor),
                 );
                 let pose = map.get_state().pose;
 
@@ -341,11 +345,13 @@ impl Pipeline {
                 let mut map = self.map.lock().unwrap();
                 let ext = map.get_state().lidar_imu_extrinsic;
                 match map.register_and_map(
-                    processed.should_map_only,
-                    ext,
-                    cloud_view,
-                    lidar_timestamp,
-                    processed.scan_id as usize,
+                    crate::RegistrationScan {
+                        cloud: cloud_view,
+                        imu_transform: ext,
+                        lidar_timestamp,
+                        scan_id: processed.scan_id as usize,
+                        map_only: processed.should_map_only,
+                    },
                     ready_for_next,
                     &mut eval,
                     &self.active_backend,
@@ -405,11 +411,13 @@ impl Pipeline {
                 let mut map = self.map.lock().unwrap();
                 let ext = map.get_state().lidar_imu_extrinsic;
                 match map.register_and_map(
-                    processed.should_map_only,
-                    ext,
-                    cloud_view,
-                    lidar_timestamp,
-                    processed.scan_id as usize,
+                    crate::RegistrationScan {
+                        cloud: cloud_view,
+                        imu_transform: ext,
+                        lidar_timestamp,
+                        scan_id: processed.scan_id as usize,
+                        map_only: processed.should_map_only,
+                    },
                     ready_for_next,
                     &mut eval,
                     &self.active_backend,
@@ -469,11 +477,13 @@ impl Pipeline {
                 let mut map = self.map.lock().unwrap();
                 let ext = map.get_state().lidar_imu_extrinsic;
                 match map.register_and_map(
-                    processed.should_map_only,
-                    ext,
-                    cloud_view,
-                    lidar_timestamp,
-                    processed.scan_id as usize,
+                    crate::RegistrationScan {
+                        cloud: cloud_view,
+                        imu_transform: ext,
+                        lidar_timestamp,
+                        scan_id: processed.scan_id as usize,
+                        map_only: processed.should_map_only,
+                    },
                     ready_for_next,
                     &mut eval,
                     &self.active_backend,
@@ -521,11 +531,13 @@ impl Pipeline {
             let mut map = self.map.lock().unwrap();
             let ext = map.get_state().lidar_imu_extrinsic;
             match map.register_and_map(
-                processed.should_map_only,
-                ext,
-                &cloud_view,
-                lidar_timestamp,
-                processed.scan_id as usize,
+                crate::RegistrationScan {
+                    cloud: &cloud_view,
+                    imu_transform: ext,
+                    lidar_timestamp,
+                    scan_id: processed.scan_id as usize,
+                    map_only: processed.should_map_only,
+                },
                 ready_for_next,
                 &mut eval,
                 &self.active_backend,
@@ -594,13 +606,14 @@ impl Pipeline {
             madgwick_filter,
             &imu_calib,
             params,
-            undistort,
-            init_guess,
             params.lidar_vendor,
-            ready_for_next,
             imu_sync_mode,
-            None,
-            None,
+            SynchronizerHooks {
+                imu_pose_prediction_undistort: undistort,
+                imu_pose_prediction_init_guess: init_guess,
+                ready_for_next,
+                ..Default::default()
+            },
         )?;
 
         let rx = sync

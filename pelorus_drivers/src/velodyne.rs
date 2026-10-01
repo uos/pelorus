@@ -84,12 +84,11 @@ pub fn run(
     }
     while !stop.load(Ordering::Acquire) {
         while let Ok((512, from)) = position.recv_from(&mut pos_bytes) {
-            if expected.is_none_or(|ip| ip == from.ip()) {
-                if let Ok(p) = velodyne_lidar::PositionPacket::from_slice(&pos_bytes) {
-                    if let Some(epoch) = parse_rmc(&p.nmea) {
-                        utc_anchor = Some((epoch, p.toh));
-                    }
-                }
+            if expected.is_none_or(|ip| ip == from.ip())
+                && let Ok(p) = velodyne_lidar::PositionPacket::from_slice(&pos_bytes)
+                && let Some(epoch) = parse_rmc(&p.nmea)
+            {
+                utc_anchor = Some((epoch, p.toh));
             }
         }
         let (n, from) = match socket.recv_from(&mut bytes) {

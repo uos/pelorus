@@ -312,7 +312,7 @@ pub struct SickMultiScanPoint {
 
 impl PointXYZITimestamp<5> for SickMultiScanPoint {
     fn intensity(&self) -> f32 {
-        self.i as f32 / 65535.0
+        self.i / 65535.0
     }
 
     fn timestamp(&self) -> f64 {
@@ -802,21 +802,11 @@ pub struct LioConfig {
     pub num_threads: usize,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 pub struct SensorDriverConfig {
     pub lidar: LidarDriverConfig,
     pub imu: ImuDriverConfig,
     pub ouster: OusterConfig,
-}
-
-impl Default for SensorDriverConfig {
-    fn default() -> Self {
-        Self {
-            lidar: Default::default(),
-            imu: Default::default(),
-            ouster: Default::default(),
-        }
-    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
@@ -877,33 +867,16 @@ pub enum CoordinateSystem {
     Nwu,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 pub struct LidarDriverConfig {
     pub driver_type: LidarDriverType,
     pub velodyne: VelodyneConfig,
     pub robosense: RobosenseConfig,
 }
-impl Default for LidarDriverConfig {
-    fn default() -> Self {
-        Self {
-            driver_type: Default::default(),
-            velodyne: Default::default(),
-            robosense: Default::default(),
-        }
-    }
-}
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 pub struct ImuDriverConfig {
     pub driver_type: ImuDriverType,
     pub xsens: XsensConfig,
-}
-impl Default for ImuDriverConfig {
-    fn default() -> Self {
-        Self {
-            driver_type: Default::default(),
-            xsens: Default::default(),
-        }
-    }
 }
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct VelodyneConfig {

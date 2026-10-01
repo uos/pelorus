@@ -251,6 +251,7 @@ impl MultiResolutionMap {
         }
     }
 
+    #[cfg(not(feature = "nn_kdt"))]
     pub fn distributions(&self) -> Vec<VoxelDistribution> {
         // Visualize the base-resolution layer without duplicating pyramid points.
         self.levels[1]
@@ -448,4 +449,3 @@ impl MultiResolutionMap {
         selected
     }
 }
-

@@ -11,13 +11,13 @@ use rand::{Rng, SeedableRng};
 
 use nalgebra::{Cholesky, Matrix3};
 use pelorus_core::adaptive_execution::ExecutionMode;
-#[cfg(feature = "rayon")]
+#[cfg(all(feature = "rayon", not(feature = "nn_kdt")))]
 use rayon::slice::ParallelSliceMut;
 use ros_pointcloud2::points::PointXYZ;
 
 use serde::{Deserialize, Serialize};
 
-#[cfg(feature = "rayon")]
+#[cfg(all(feature = "rayon", not(feature = "nn_kdt")))]
 fn sort_unstable_by_key<T, K, F>(slice: &mut [T], f: F, mode: ExecutionMode)
 where
     T: Send,
@@ -30,7 +30,7 @@ where
     }
 }
 
-#[cfg(not(feature = "rayon"))]
+#[cfg(all(not(feature = "rayon"), not(feature = "nn_kdt")))]
 fn sort_unstable_by_key<T, K, F>(slice: &mut [T], f: F, _mode: ExecutionMode)
 where
     K: Ord,
@@ -423,10 +423,9 @@ impl IVoxHashMap {
 
     /// Enable the experimental CPU hierarchy. Call before inserting map points.
     pub fn enable_multiresolution(&mut self, capacity: usize, sensitivity: f32) {
-        assert!(
-            !cfg!(feature = "nn_kdt"),
-            "multiresolution is incompatible with nn_kdt"
-        );
+        if cfg!(feature = "nn_kdt") {
+            panic!("multiresolution is incompatible with nn_kdt");
+        }
         assert!(
             self.is_empty(),
             "enable multiresolution before inserting points"
@@ -479,8 +478,10 @@ impl IVoxHashMap {
 
         #[cfg(feature = "nn_kdt")]
         {
+            // The kd-tree map has no parallel insertion path.
+            let _ = execution_mode;
             if self.scan_number == 1 {
-                points.into_iter().for_each(|point| {
+                points.iter().for_each(|point| {
                     let point_global = transform
                         .transform_point(&nalgebra::Point3::new(point.x, point.y, point.z).cast());
                     if self
@@ -491,7 +492,7 @@ impl IVoxHashMap {
                                 point_global.y as f32,
                                 point_global.z as f32,
                             ],
-                            (self.resolution * self.resolution) as f32,
+                            self.resolution * self.resolution,
                             std::num::NonZero::new(1).unwrap(),
                             false,
                         )
@@ -514,7 +515,7 @@ impl IVoxHashMap {
             } else {
                 // check if any point is closer than 25cm, if not, add to tree
                 let f = points
-                    .into_iter() // TODO as par iter
+                    .iter() // TODO as par iter
                     .filter(|point| {
                         let point_global = transform.transform_point(
                             &nalgebra::Point3::new(point.x, point.y, point.z).cast(),
@@ -526,7 +527,7 @@ impl IVoxHashMap {
                                     point_global.y as f32,
                                     point_global.z as f32,
                                 ],
-                                (self.resolution * self.resolution) as f32,
+                                self.resolution * self.resolution,
                                 std::num::NonZero::new(1).unwrap(),
                                 false,
                             )
@@ -633,7 +634,7 @@ impl IVoxHashMap {
             let build_started = std::time::Instant::now();
             self.livodish.build(self.scan_number, execution_mode);
             adaptive_nanos += build_started.elapsed().as_nanos() as f64;
-            return Some(adaptive_nanos / points.len().max(1) as f64);
+            Some(adaptive_nanos / points.len().max(1) as f64)
         }
 
         #[cfg(feature = "nn_kdt")]
@@ -690,12 +691,13 @@ impl IVoxHashMap {
             for g in grids {
                 let k = Self::hash_grid(g);
 
-                if let Some(dist) = self.livodish.find(&k) {
-                    if dist.point_count > 0 && num_cached < MAX_NEIGHBORS {
-                        cached_neighbors[num_cached] = Some(dist);
-                        total_density += dist.point_count;
-                        num_cached += 1;
-                    }
+                if let Some(dist) = self.livodish.find(&k)
+                    && dist.point_count > 0
+                    && num_cached < MAX_NEIGHBORS
+                {
+                    cached_neighbors[num_cached] = Some(dist);
+                    total_density += dist.point_count;
+                    num_cached += 1;
                 }
             }
         };
@@ -716,12 +718,12 @@ impl IVoxHashMap {
         let mut current_found_count = 0;
 
         let mut sampled_out = [Point3::default(); MAX_NEIGHBORS];
-        for i in 0..num_cached {
+        for cached in &cached_neighbors[..num_cached] {
             if current_found_count >= k {
                 break;
             }
 
-            if let Some(dist) = cached_neighbors[i] {
+            if let Some(dist) = *cached {
                 let relative_density = dist.point_count as f64 / total_density as f64;
                 let mut sample_count = (relative_density * k as f64).round() as usize;
 
@@ -1053,7 +1055,7 @@ impl IVoxHashMap {
         }
         #[cfg(feature = "nn_kdt")]
         {
-            return self.kd_points.iter().map(|rc| rc.1).collect();
+            self.kd_points.iter().map(|rc| rc.1).collect()
         }
 
         #[cfg(not(feature = "nn_kdt"))]

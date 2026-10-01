@@ -6,7 +6,7 @@ use crate::map::vk_buffer_handle as handle;
 use crate::pipelines::{PushConstants, THREADS_PER_GROUP, VulkanComputePipelines, build_pipelines};
 use crate::planes::VulkanPlaneTimings;
 use crate::stream::{Stream, StreamBackend};
-use crate::types::{PointNormal, Quaternion, Vector3};
+use crate::types::{PointNormal, Pose, Quaternion, Vector3};
 use ash::vk;
 use bytemuck::{Pod, Zeroable};
 use ros_pointcloud2::points::PointXYZINormal;
@@ -57,6 +57,14 @@ struct Scratch {
     poses: VulkanBuffer,
     cap: usize,
 }
+
+/// Lidar-frame query points and the poses that move them into the map frame.
+pub(crate) struct PlaneQuery<'a> {
+    pub(crate) cloud: &'a VulkanBuffer,
+    pub(crate) pose: &'a Pose,
+    pub(crate) lidar_to_imu: &'a Pose,
+}
+
 pub(crate) struct MultiResolutionMap {
     pub(crate) context: Arc<VulkanContext>,
     compute: Arc<VulkanComputePipelines>,
@@ -367,15 +375,23 @@ impl MultiResolutionMap {
     pub(crate) fn planes(
         &mut self,
         stream: &Stream,
-        cloud: &VulkanBuffer,
-        t: &Vector3,
-        q: &Quaternion,
-        ext_t: &Vector3,
-        ext_q: &Quaternion,
+        query: PlaneQuery<'_>,
         out: &mut Vec<PointXYZINormal>,
         out_gpu: &mut VulkanBuffer,
         download: &mut [PointNormal],
     ) -> VulkanPlaneTimings {
+        let PlaneQuery {
+            cloud,
+            pose: Pose {
+                position: t,
+                orientation: q,
+            },
+            lidar_to_imu:
+                Pose {
+                    position: ext_t,
+                    orientation: ext_q,
+                },
+        } = query;
         let n = u32::try_from(cloud.n).expect("too many query points");
         if n == 0 {
             out.clear();
@@ -566,15 +582,17 @@ mod tests {
         let mut output = VulkanBuffer::new(&stream, size_of::<PointNormal>(), points.len());
         let mut download = vec![PointNormal::default(); points.len()];
         let mut planes = vec![PointXYZINormal::default(); points.len()];
-        let t = Vector3::new(0., 0., 0.);
-        let q = Quaternion::default();
+        let pose = Pose {
+            position: Vector3::new(0., 0., 0.),
+            orientation: Quaternion::default(),
+        };
         map.planes(
             &stream,
-            &cloud,
-            &t,
-            &q,
-            &t,
-            &q,
+            PlaneQuery {
+                cloud: &cloud,
+                pose: &pose,
+                lidar_to_imu: &pose,
+            },
             &mut planes,
             &mut output,
             &mut download,

@@ -28,8 +28,14 @@ pub struct Stream {
     stream: Arc<Inner>,
 }
 
-unsafe impl Send for Stream {}
-unsafe impl Sync for Stream {}
+unsafe impl Send for Inner {}
+unsafe impl Sync for Inner {}
+
+impl Default for Stream {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 impl Stream {
     pub fn new() -> Self {
@@ -605,23 +611,15 @@ pub struct CudaPlaneTimings {
 pub fn planes_cuda(
     stream: &Stream,
     cloud: &CudaBuffer,
-    ekf_pose_t: &Vector3,
-    ekf_pose_r: &Quaternion,
-    ekf_imu_offset_t: &Vector3,
-    ekf_imu_offset_r: &Quaternion,
+    pose: &Pose,
+    lidar_to_imu: &Pose,
     out_buff: &mut Vec<PointXYZINormal>,
     out_buff_gpu: &mut CudaBuffer,
 ) -> CudaPlaneTimings {
     assert!(out_buff.len() >= cloud.n);
 
-    let lidar_to_imu = Pose {
-        position: *ekf_imu_offset_t,
-        orientation: *ekf_imu_offset_r,
-    };
-    let pose = Pose {
-        position: *ekf_pose_t,
-        orientation: *ekf_pose_r,
-    };
+    let lidar_to_imu = *lidar_to_imu;
+    let pose = *pose;
 
     const {
         assert!(size_of::<ffi::Point>() == size_of::<PointXYZIT>());

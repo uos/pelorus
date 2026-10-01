@@ -339,6 +339,15 @@ pub type StartupTfCallback = Arc<
 /// Defer initialization without blocking the IMU ingress/replay thread. Replay
 /// must be allowed to deliver the first cloud so its sensor frame can be resolved.
 struct TfStartup {
+    #[cfg_attr(
+        not(any(
+            feature = "ros2-client",
+            feature = "mt_pubsub",
+            feature = "r2r",
+            feature = "hiroz"
+        )),
+        allow(dead_code)
+    )]
     apply: StartupTfCallback,
     initialize: Option<ImuInitCallback>,
     pending: Option<Vec<ImuMsg>>,
@@ -360,6 +369,15 @@ impl TfStartup {
         }
     }
 
+    #[cfg_attr(
+        not(any(
+            feature = "ros2-client",
+            feature = "mt_pubsub",
+            feature = "r2r",
+            feature = "hiroz"
+        )),
+        allow(dead_code)
+    )]
     fn resolve(
         &mut self,
         imu: Option<nalgebra::Isometry3<f64>>,
@@ -449,6 +467,15 @@ pub struct State {
     startup_base_frame: Option<String>,
     /// Managed replay sends each scan exactly once and waits for it to be processed. A scan
     /// that arrives before its sensor TF must then wait for the TF instead of being dropped.
+    #[cfg_attr(
+        not(any(
+            feature = "ros2-client",
+            feature = "mt_pubsub",
+            feature = "r2r",
+            feature = "hiroz"
+        )),
+        allow(dead_code)
+    )]
     wait_for_sensor_tf: bool,
     pub global_polygon: Option<Vec<nalgebra::Point2<f32>>>,
     pub sensor_tf: Option<nalgebra::geometry::Isometry3<f32>>,
@@ -473,13 +500,9 @@ pub struct State {
 impl State {
     pub fn new(
         config: &SyncParameters,
-        imu_pose_prediction_undistort: Option<Box<ImuPredictorUndistort>>,
-        imu_pose_prediction_init_guess: Option<Box<ImuPredictor>>,
         #[cfg(feature = "rerun")] rec: Option<Arc<rerun::RecordingStream>>,
-        ready_for_next: Option<std::sync::mpsc::Receiver<u64>>,
         imu_sync_mode: pelorus_sync::ImuSyncMode,
-        realtime_imu_callback: Option<pelorus_sync::RealtimeImuCallback>,
-        realtime_lidar_barrier_callback: Option<pelorus_sync::RealtimeLidarBarrierCallback>,
+        hooks: pelorus_sync::SynchronizerHooks,
     ) -> anyhow::Result<Self> {
         let wait_for_sensor_tf = matches!(
             imu_sync_mode,
@@ -500,13 +523,9 @@ impl State {
                 config.imu.madgwick_setting,
                 &config.imu.calibration,
                 config,
-                imu_pose_prediction_undistort,
-                imu_pose_prediction_init_guess,
                 config.lidar_vendor,
-                ready_for_next,
                 imu_sync_mode,
-                realtime_imu_callback,
-                realtime_lidar_barrier_callback,
+                hooks,
             )?)),
             sync_params: config.clone(),
             #[cfg(any(
@@ -764,11 +783,11 @@ fn cloud_callback(
             let mut state = state.lock().unwrap();
             let header = in_msg.header();
             let time = timestamp_to_secs(&header.stamp);
-            if let Some(last_lidar_time) = state.last_lidar_time {
-                if time < last_lidar_time {
-                    // Skip out of order cloud
-                    return Ok(());
-                }
+            if let Some(last_lidar_time) = state.last_lidar_time
+                && time < last_lidar_time
+            {
+                // Skip out of order cloud
+                return Ok(());
             }
             state.last_lidar_time.replace(time);
             state.sensor_tf = Some(sensor_tf);
@@ -1275,14 +1294,16 @@ impl SyncNode {
 
         let mut state = State::new(
             params,
-            inputs.imu_pose_prediction_undistort,
-            inputs.imu_pose_prediction_init_guess,
             #[cfg(feature = "rerun")]
             rec.clone(),
-            inputs.ready_for_next,
             inputs.imu_sync_mode,
-            inputs.realtime_imu_callback,
-            inputs.realtime_lidar_barrier_callback,
+            pelorus_sync::SynchronizerHooks {
+                imu_pose_prediction_undistort: inputs.imu_pose_prediction_undistort,
+                imu_pose_prediction_init_guess: inputs.imu_pose_prediction_init_guess,
+                ready_for_next: inputs.ready_for_next,
+                realtime_imu_callback: inputs.realtime_imu_callback,
+                realtime_lidar_barrier_callback: inputs.realtime_lidar_barrier_callback,
+            },
         )?;
         state.startup_tf = startup_tf;
         state.startup_base_frame = inputs.startup_base_frame;
@@ -1333,7 +1354,7 @@ impl SyncNode {
                     .create_topic(
                         &ros2_client::Name::new(
                             &split_namespace_topic(&node_params.cloud_src_topic).0,
-                            &split_namespace_topic(&node_params.cloud_src_topic)
+                            split_namespace_topic(&node_params.cloud_src_topic)
                                 .1
                                 .trim_start_matches("/"),
                         )
@@ -1740,7 +1761,7 @@ impl SyncNode {
                     .create_topic(
                         &ros2_client::Name::new(
                             &split_namespace_topic(&node_params.imu_src_topic).0,
-                            &split_namespace_topic(&node_params.imu_src_topic)
+                            split_namespace_topic(&node_params.imu_src_topic)
                                 .1
                                 .trim_start_matches("/"),
                         )
@@ -1780,7 +1801,7 @@ impl SyncNode {
                         .create_topic(
                             &ros2_client::Name::new(
                                 &split_namespace_topic(&node_params.imu_filtered_topic).0,
-                                &split_namespace_topic(&node_params.imu_filtered_topic)
+                                split_namespace_topic(&node_params.imu_filtered_topic)
                                     .1
                                     .trim_start_matches("/"),
                             )
@@ -2193,10 +2214,10 @@ impl SyncNode {
     }
 
     pub fn request_shutdown(&self) {
-        if let Ok(state) = self.state.lock() {
-            if let Ok(mut sync) = state.sync.lock() {
-                sync.shutdown();
-            }
+        if let Ok(state) = self.state.lock()
+            && let Ok(mut sync) = state.sync.lock()
+        {
+            sync.shutdown();
         }
     }
 

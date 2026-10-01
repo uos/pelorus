@@ -196,6 +196,12 @@ pub struct SharedStats {
     last_cpu_macos: Arc<Mutex<Option<(u64, f64)>>>,
 }
 
+impl Default for SharedStats {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl SharedStats {
     pub fn new() -> Self {
         let num_cores = num_cpus::get();
@@ -292,10 +298,10 @@ impl SharedStats {
         }
 
         let mut timestamps = self.scan_data_timestamps.lock().unwrap();
-        if let Some(&last) = timestamps.last() {
-            if stamp_sec <= last {
-                return;
-            }
+        if let Some(&last) = timestamps.last()
+            && stamp_sec <= last
+        {
+            return;
         }
         timestamps.push(stamp_sec);
 
@@ -474,14 +480,13 @@ fn get_ram_usage_mb() -> f64 {
     {
         if let Ok(content) = std::fs::read_to_string("/proc/self/status") {
             for line in content.lines() {
-                if let Some(rest) = line.strip_prefix("VmRSS:") {
-                    if let Some(kb) = rest
+                if let Some(rest) = line.strip_prefix("VmRSS:")
+                    && let Some(kb) = rest
                         .split_whitespace()
                         .next()
                         .and_then(|v| v.parse::<f64>().ok())
-                    {
-                        return kb / 1024.0;
-                    }
+                {
+                    return kb / 1024.0;
                 }
             }
         }
@@ -639,18 +644,17 @@ fn get_nvidia_gpu_stats() -> (f64, f64, f64) {
         ])
         .output();
 
-    if let Ok(output) = output {
-        if output.status.success() {
-            if let Ok(stdout) = std::str::from_utf8(&output.stdout) {
-                let parts: Vec<&str> = stdout.trim().split(',').map(|s| s.trim()).collect();
-                if parts.len() >= 3 {
-                    return (
-                        parts[0].parse().unwrap_or(0.0),
-                        parts[1].parse().unwrap_or(0.0),
-                        parts[2].parse().unwrap_or(0.0),
-                    );
-                }
-            }
+    if let Ok(output) = output
+        && output.status.success()
+        && let Ok(stdout) = std::str::from_utf8(&output.stdout)
+    {
+        let parts: Vec<&str> = stdout.trim().split(',').map(|s| s.trim()).collect();
+        if parts.len() >= 3 {
+            return (
+                parts[0].parse().unwrap_or(0.0),
+                parts[1].parse().unwrap_or(0.0),
+                parts[2].parse().unwrap_or(0.0),
+            );
         }
     }
     (0.0, 0.0, 0.0)
@@ -669,6 +673,27 @@ const DOCKED_HELP_PANEL_MIN_WIDTH: u16 = 38;
 const DOCKED_HELP_PANEL_MAX_WIDTH: u16 = 72;
 const TRAJECTORY_HINT_PANEL_WIDTH: u16 = 34;
 const TRAJECTORY_HINT_MIN_TOTAL_WIDTH: u16 = 90;
+
+/// One projection of the trajectory panel and what to draw around it.
+#[derive(Clone, Copy)]
+struct TrajectoryView<'a> {
+    title: &'a str,
+    axis_h: usize,
+    axis_v: usize,
+    show_top_stats: bool,
+    show_left_divider: bool,
+    show_rt_stat: bool,
+}
+
+/// Tab state that decides which hints the help bar shows.
+#[derive(Clone, Copy)]
+struct HelpBarContext {
+    active_tab: Tab,
+    logs_integrated: bool,
+    show_trajectory_tab: bool,
+    show_logs_tab: bool,
+    trajectory_visible: bool,
+}
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Tab {
@@ -957,10 +982,8 @@ impl StatsTui {
                     self.log_view.to_end();
                 }
             }
-            KeyCode::Char('m') => {
-                if self.logs_controls_active(visibility) {
-                    self.show_minot_logs = !self.show_minot_logs;
-                }
+            KeyCode::Char('m') if self.logs_controls_active(visibility) => {
+                self.show_minot_logs = !self.show_minot_logs;
             }
             _ => {}
         }
@@ -1265,27 +1288,27 @@ impl StatsTui {
                 self.render(f, &stats);
             })?;
 
-            if event::poll(Duration::from_millis(50))? {
-                if let Event::Key(key) = event::read()? {
-                    let size = terminal.size()?;
-                    let area = Rect::new(0, 0, size.width, size.height);
-                    if self.process_key_event(key, area) == KeyAction::Exit {
-                        disable_raw_mode()?;
-                        execute!(terminal.backend_mut(), LeaveAlternateScreen, cursor::Show)?;
-                        self.shutdown_tx.as_ref().map(|sender| sender.send(()));
-                        return Ok(());
-                    }
+            if event::poll(Duration::from_millis(50))?
+                && let Event::Key(key) = event::read()?
+            {
+                let size = terminal.size()?;
+                let area = Rect::new(0, 0, size.width, size.height);
+                if self.process_key_event(key, area) == KeyAction::Exit {
+                    disable_raw_mode()?;
+                    execute!(terminal.backend_mut(), LeaveAlternateScreen, cursor::Show)?;
+                    self.shutdown_tx.as_ref().map(|sender| sender.send(()));
+                    return Ok(());
                 }
             }
 
-            if let Some(rx) = &self.stop_rx {
-                if rx.try_recv().is_ok() {
-                    // External shutdown requested. Forward to main via shutdown_tx and exit.
-                    if let Some(tx) = &self.shutdown_tx {
-                        let _ = tx.send(());
-                    }
-                    break;
+            if let Some(rx) = &self.stop_rx
+                && rx.try_recv().is_ok()
+            {
+                // External shutdown requested. Forward to main via shutdown_tx and exit.
+                if let Some(tx) = &self.shutdown_tx {
+                    let _ = tx.send(());
                 }
+                break;
             }
         }
 
@@ -1369,11 +1392,13 @@ impl StatsTui {
             self.render_help_bar_context(
                 f,
                 layout.help,
-                effective_tab,
-                logs_integrated,
-                visibility.show_trajectory_tab,
-                visibility.show_logs_tab,
-                true,
+                HelpBarContext {
+                    active_tab: effective_tab,
+                    logs_integrated,
+                    show_trajectory_tab: visibility.show_trajectory_tab,
+                    show_logs_tab: visibility.show_logs_tab,
+                    trajectory_visible: true,
+                },
             );
             self.render_help_overlay(
                 f,
@@ -1443,11 +1468,13 @@ impl StatsTui {
             self.render_help_bar_context(
                 f,
                 layout.help,
-                effective_tab,
-                logs_integrated,
-                visibility.show_trajectory_tab,
-                visibility.show_logs_tab,
-                effective_tab == Tab::Trajectory,
+                HelpBarContext {
+                    active_tab: effective_tab,
+                    logs_integrated,
+                    show_trajectory_tab: visibility.show_trajectory_tab,
+                    show_logs_tab: visibility.show_logs_tab,
+                    trajectory_visible: effective_tab == Tab::Trajectory,
+                },
             );
             self.render_help_overlay(
                 f,
@@ -1689,12 +1716,14 @@ impl StatsTui {
                     f,
                     chunks[0],
                     stats,
-                    "Top (X-Y)",
-                    0,
-                    1,
-                    false,
-                    left_divider,
-                    show_rt_stat,
+                    TrajectoryView {
+                        title: "Top (X-Y)",
+                        axis_h: 0,
+                        axis_v: 1,
+                        show_top_stats: false,
+                        show_left_divider: left_divider,
+                        show_rt_stat,
+                    },
                 );
 
                 // Right: Side view (X-Z) + shared top stats overlay
@@ -1702,12 +1731,14 @@ impl StatsTui {
                     f,
                     chunks[1],
                     stats,
-                    "Side (X-Z)",
-                    0,
-                    2,
-                    true,
-                    true,
-                    show_rt_stat,
+                    TrajectoryView {
+                        title: "Side (X-Z)",
+                        axis_h: 0,
+                        axis_v: 2,
+                        show_top_stats: true,
+                        show_left_divider: true,
+                        show_rt_stat,
+                    },
                 );
             }
             TrajectoryPaneMode::LeftOnly => {
@@ -1715,12 +1746,14 @@ impl StatsTui {
                     f,
                     area,
                     stats,
-                    "Top (X-Y)",
-                    0,
-                    1,
-                    true,
-                    left_divider,
-                    show_rt_stat,
+                    TrajectoryView {
+                        title: "Top (X-Y)",
+                        axis_h: 0,
+                        axis_v: 1,
+                        show_top_stats: true,
+                        show_left_divider: left_divider,
+                        show_rt_stat,
+                    },
                 );
             }
             TrajectoryPaneMode::RightOnly => {
@@ -1728,12 +1761,14 @@ impl StatsTui {
                     f,
                     area,
                     stats,
-                    "Side (X-Z)",
-                    0,
-                    2,
-                    true,
-                    left_divider,
-                    show_rt_stat,
+                    TrajectoryView {
+                        title: "Side (X-Z)",
+                        axis_h: 0,
+                        axis_v: 2,
+                        show_top_stats: true,
+                        show_left_divider: left_divider,
+                        show_rt_stat,
+                    },
                 );
             }
         }
@@ -1744,13 +1779,16 @@ impl StatsTui {
         f: &mut ratatui::Frame,
         area: Rect,
         stats: &TuiStats,
-        title: &str,
-        axis_h: usize,
-        axis_v: usize,
-        show_top_stats: bool,
-        show_left_divider: bool,
-        show_rt_stat: bool,
+        view: TrajectoryView<'_>,
     ) {
+        let TrajectoryView {
+            title,
+            axis_h,
+            axis_v,
+            show_top_stats,
+            show_left_divider,
+            show_rt_stat,
+        } = view;
         let panel_borders = if show_left_divider {
             Borders::LEFT
         } else {
@@ -2384,16 +2422,14 @@ impl StatsTui {
         mt_log::pane::render(f, area, &visible, &self.log_view, title);
     }
 
-    fn render_help_bar_context(
-        &self,
-        f: &mut ratatui::Frame,
-        area: Rect,
-        active_tab: Tab,
-        logs_integrated: bool,
-        show_trajectory_tab: bool,
-        show_logs_tab: bool,
-        trajectory_visible: bool,
-    ) {
+    fn render_help_bar_context(&self, f: &mut ratatui::Frame, area: Rect, ctx: HelpBarContext) {
+        let HelpBarContext {
+            active_tab,
+            logs_integrated,
+            show_trajectory_tab,
+            show_logs_tab,
+            trajectory_visible,
+        } = ctx;
         f.render_widget(Block::default().style(Self::status_bar_style()), area);
 
         let tab_hint = match (show_trajectory_tab, show_logs_tab) {

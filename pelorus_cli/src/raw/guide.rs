@@ -48,11 +48,6 @@ impl Guide {
         matches!(status, Status::Done)
     }
 
-    /// Orientations captured so far, for the closing summary.
-    pub fn captured(&self) -> usize {
-        self.session.captured_poses()
-    }
-
     fn show(&mut self, status: Status) {
         let phase = match status {
             Status::Initialising { .. } => "init",

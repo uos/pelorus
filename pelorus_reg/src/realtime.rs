@@ -232,7 +232,7 @@ fn worker(
         imu: ImuProcessing::new(&config.imu_params, &lidar_to_imu, &config.base_to_lidar),
         seeded: false,
         history: VecDeque::new(),
-        params: config.imu_params.clone(),
+        params: config.imu_params,
         base_to_lidar: config.base_to_lidar,
         output_base: config.base_link_frame.is_some(),
     });
@@ -241,10 +241,11 @@ fn worker(
         match command {
             Command::Imu(imu) => {
                 push_history(&mut state.history, imu.clone());
-                if state.seeded && !paused.load(Ordering::Acquire) {
-                    if let Some(prediction) = state.predict(&imu) {
-                        let _ = output_tx.try_send(prediction);
-                    }
+                if state.seeded
+                    && !paused.load(Ordering::Acquire)
+                    && let Some(prediction) = state.predict(&imu)
+                {
+                    let _ = output_tx.try_send(prediction);
                 }
             }
             Command::PrepareExport(snapshot, imu_msgs, completed) => {
@@ -275,7 +276,7 @@ fn worker(
             Command::Corrected(snapshot, completed) => {
                 state.install(snapshot);
                 let previous_pending = pending_corrections
-                    .fetch_update(Ordering::AcqRel, Ordering::Acquire, |pending| {
+                    .try_update(Ordering::AcqRel, Ordering::Acquire, |pending| {
                         Some(pending.saturating_sub(1))
                     })
                     .unwrap_or(0);
@@ -384,7 +385,7 @@ impl WorkerState {
             self.params.kinematic_constraint_std,
         );
         self.imu.update_realtime_tail(tail, self.ekf.state);
-        Some(self.output(tail.stamp.clone()))
+        Some(self.output(tail.stamp))
     }
 
     fn output(&self, stamp: TimeMsg) -> RealtimePrediction {

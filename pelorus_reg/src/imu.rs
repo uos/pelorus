@@ -5,7 +5,7 @@ use nalgebra::*;
 use pelorus_core::log_debouncer::should_log_once_default;
 use pelorus_core::{
     COV_IMU_BIAS_DEFAULT, COV_IMU_RAW_DEFAULT, ImuMsg, ImuParameters, KinematicModel, LidarVendor,
-    OdomMsg, PointXYZIT, adaptive_execution::ExecutionMode, timestamp_to_secs,
+    PointXYZIT, adaptive_execution::ExecutionMode, timestamp_to_secs,
 };
 #[cfg(feature = "rayon")]
 use rayon::prelude::*;
@@ -281,18 +281,21 @@ impl ImuProcessing {
     pub fn undistort(
         &mut self,
         ekf: &mut Eqf,
-        imu_msgs: &[crate::ImuMsg],
-        odom_msgs: &[OdomMsg],
+        scan: crate::UndistortScan<'_>,
         kinematic: KinematicModel,
         constraint_std: f64,
-        last_cloud_end_time: f64,
-        cloud_begin_time: f64,
-        mut cloud_end_time: f64,
-        cloud: &mut Vec<PointXYZIT>,
-        cloud_passthrough: Option<&mut Vec<PointXYZIT>>,
-        lidar_vendor: Option<LidarVendor>,
         execution_mode: ExecutionMode,
     ) -> Option<f64> {
+        let crate::UndistortScan {
+            imu_msgs,
+            odom_msgs,
+            last_cloud_end_time,
+            cloud_begin_time,
+            mut cloud_end_time,
+            cloud,
+            cloud_passthrough,
+            lidar_vendor,
+        } = scan;
         debug_assert!(!imu_msgs.is_empty());
         debug_assert!(last_cloud_end_time > 0.0);
         debug_assert!(cloud_begin_time > 0.0);
@@ -326,9 +329,7 @@ impl ImuProcessing {
 
         let mut all_imus = std::iter::once(&self.last_imu).chain(imu_msgs.iter());
 
-        let Some(mut head) = all_imus.next() else {
-            return None;
-        };
+        let mut head = all_imus.next()?;
 
         // Keep odometry corrections in lockstep with IMU prediction.
         ekf.last_time = last_cloud_end_time;
@@ -388,10 +389,8 @@ impl ImuProcessing {
                     _ = self.predict(ekf, avr_x, angvel_avr, dt_pred);
                     // Enforce kinematic constraints after prediction segment
                     ekf.correct_kinematics(kinematic, tail.angular_velocity.into(), constraint_std);
-                } else if dt_pred < 0.0 {
-                    if should_log_once_default("skip_odom_non_positive_dt") {
-                        warn!("Skipping odom fusion with non-positive dt: {dt_pred:.6}");
-                    }
+                } else if dt_pred < 0.0 && should_log_once_default("skip_odom_non_positive_dt") {
+                    warn!("Skipping odom fusion with non-positive dt: {dt_pred:.6}");
                 }
                 ekf.correct_with_body_velocities(*(*odom), kinematic, self.wheel_odom_cov_override);
                 odom_iter.next();
@@ -447,10 +446,8 @@ impl ImuProcessing {
                 // Enforce kinematic constraints after prediction segment
                 let gyro = Vector3::new(angvel_avr_x, angvel_avr_y, angvel_avr_z);
                 ekf.correct_kinematics(kinematic, gyro, constraint_std);
-            } else if dt_pred < 0.0 {
-                if should_log_once_default("skip_odom_non_positive_dt") {
-                    warn!("Skipping odom fusion with non-positive dt: {dt_pred:.6}");
-                }
+            } else if dt_pred < 0.0 && should_log_once_default("skip_odom_non_positive_dt") {
+                warn!("Skipping odom fusion with non-positive dt: {dt_pred:.6}");
             }
 
             ekf.correct_with_body_velocities(*(*odom), kinematic, self.wheel_odom_cov_override);

@@ -3,7 +3,7 @@ use std::ptr;
 use std::slice;
 
 use log::error;
-use pelorus::{Handle, Odometry as RsOdometry, Pcloud2Field};
+use pelorus::{Handle, ImuMeasurement, Odometry as RsOdometry, Pcloud2Field, RawPointCloud};
 
 #[cfg(any(
     all(feature = "cuda", feature = "metal"),
@@ -301,16 +301,16 @@ pub unsafe extern "C" fn pelorus_add_imu(
     }
     let handle = unsafe { &*handle };
     let imu = unsafe { &*imu };
-    match handle.inner.add_imu(
-        imu.timestamp_sec,
-        imu.timestamp_nanosec,
-        imu.orientation,
-        imu.orientation_covariance,
-        imu.angular_velocity,
-        imu.angular_velocity_covariance,
-        imu.linear_acceleration,
-        imu.linear_acceleration_covariance,
-    ) {
+    match handle.inner.add_imu(ImuMeasurement {
+        timestamp_sec: imu.timestamp_sec,
+        timestamp_nanosec: imu.timestamp_nanosec,
+        orientation: imu.orientation,
+        orientation_covariance: imu.orientation_covariance,
+        angular_velocity: imu.angular_velocity,
+        angular_velocity_covariance: imu.angular_velocity_covariance,
+        linear_acceleration: imu.linear_acceleration,
+        linear_acceleration_covariance: imu.linear_acceleration_covariance,
+    }) {
         Ok(()) => 0,
         Err(e) => {
             error!("pelorus_add_imu: {e}");
@@ -382,20 +382,20 @@ pub unsafe extern "C" fn pelorus_add_pointcloud(
         Err(_) => return 0,
     };
     let data = unsafe { slice::from_raw_parts(cloud.data, cloud.data_len) };
-    match handle.inner.add_pointcloud_raw(
-        cloud.header_timestamp_sec,
-        cloud.header_timestamp_nanosec,
-        cloud.width,
-        &[Pcloud2Field {
+    match handle.inner.add_pointcloud_raw(RawPointCloud {
+        header_sec: cloud.header_timestamp_sec,
+        header_nanosec: cloud.header_timestamp_nanosec,
+        width: cloud.width,
+        fields: &[Pcloud2Field {
             name,
             offset: f.offset,
             datatype: f.datatype,
         }],
-        cloud.point_step,
-        cloud.row_step,
+        point_step: cloud.point_step,
+        row_step: cloud.row_step,
         data,
-        cloud.is_dense,
-    ) {
+        is_dense: cloud.is_dense,
+    }) {
         Ok(id) => id,
         Err(e) => {
             error!("pelorus_add_pointcloud: {e}");
@@ -524,6 +524,11 @@ pub unsafe extern "C" fn pelorus_try_recv(
 ///
 /// This is the bias-aware counterpart of [`pelorus_try_recv`]. It keeps the
 /// original `pelorus_odometry` ABI unchanged.
+///
+/// # Safety
+/// - `handle` must be a valid pointer returned from `pelorus_create`
+/// - `result` must be a valid pointer to write the result
+/// - `bias` must be a valid pointer to write the IMU bias
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn pelorus_try_recv_with_bias(
     handle: *mut PelorusHandle,
@@ -583,6 +588,11 @@ pub unsafe extern "C" fn pelorus_recv(
 ///
 /// This is the bias-aware counterpart of [`pelorus_recv`]. It keeps the
 /// original `pelorus_odometry` ABI unchanged.
+///
+/// # Safety
+/// - `handle` must be a valid pointer returned from `pelorus_create`
+/// - `result` must be a valid pointer to write the result
+/// - `bias` must be a valid pointer to write the IMU bias
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn pelorus_recv_with_bias(
     handle: *mut PelorusHandle,
@@ -655,6 +665,11 @@ pub unsafe extern "C" fn pelorus_set_callback(
 
 /// Set a callback that receives odometry together with the corresponding IMU
 /// bias estimate.
+///
+/// # Safety
+/// - `handle` must be a valid pointer returned from `pelorus_create`
+/// - `callback` must be a valid function pointer or NULL
+/// - `user_data` can be any pointer (including NULL) and will be passed to the callback
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn pelorus_set_callback_with_bias(
     handle: *mut PelorusHandle,

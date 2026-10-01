@@ -550,7 +550,7 @@ impl Eqf {
                 ad[(i, 3 + j)] = -s[(i, j)];
             }
         }
-        self.cov = &(&ad * &self.cov) * &ad.transpose();
+        self.cov = &(&ad * &self.cov) * ad.transpose();
         self.anchor = new_anchor;
     }
 
@@ -613,7 +613,7 @@ impl Eqf {
     /// error coordinates about the current state after injecting `dx`.
     fn reset_covariance_after_update(&mut self, base: &StateIKFom, dx: &Mat<f64>) {
         let j_reset = reset_jacobian(base, dx, &self.state, self.extrinsic_est, &self.anchor);
-        self.cov = &(&j_reset * &self.cov) * &j_reset.transpose();
+        self.cov = &(&j_reset * &self.cov) * j_reset.transpose();
     }
 
     pub fn correct_with_body_velocities(

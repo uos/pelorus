@@ -6,7 +6,6 @@ use crate::pipelines::{
 use ash::vk;
 use std::sync::{Arc, Mutex};
 
-
 pub(crate) fn scan_work_items(elements: u32) -> u32 {
     elements.div_ceil(2)
 }

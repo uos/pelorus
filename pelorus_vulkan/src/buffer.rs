@@ -467,7 +467,7 @@ impl Clone for VulkanBuffer {
                 if requested > 0 {
                     submit_copy(context, *buffer, alloc.buffer, requested);
                 }
-                increment_allocation(alloc.allocation_size as u64);
+                increment_allocation(alloc.allocation_size);
                 Self {
                     storage: BufferStorage::Vulkan {
                         context: Arc::clone(context),
@@ -475,7 +475,7 @@ impl Clone for VulkanBuffer {
                         memory: alloc.memory,
                         memory_flags: alloc.memory_flags,
                         mapped_ptr: None,
-                        allocation_size: alloc.allocation_size as u64,
+                        allocation_size: alloc.allocation_size,
                     },
                     element_size: self.element_size,
                     n: self.n,
@@ -585,7 +585,7 @@ impl VulkanBuffer {
                         alloc.allocation_size,
                     )
                 };
-                increment_allocation(alloc.allocation_size as u64);
+                increment_allocation(alloc.allocation_size);
                 Self {
                     storage: BufferStorage::Vulkan {
                         context: Arc::clone(context),
@@ -593,7 +593,7 @@ impl VulkanBuffer {
                         memory: alloc.memory,
                         memory_flags: alloc.memory_flags,
                         mapped_ptr,
-                        allocation_size: alloc.allocation_size as u64,
+                        allocation_size: alloc.allocation_size,
                     },
                     element_size,
                     n,

@@ -21,7 +21,7 @@ use pelorus_core::{
     LidarVendor, LivoxMid360Point, LivoxMid360PointNoIntensity, LivoxPoint, LivoxPointNoIntensity,
     LivoxPointOffsetTime, LivoxPointOffsetTimeNoIntensity, MadgwickSetting, OdomMsg, OusterPoint,
     OusterPointNoIntensity, PointXYZ, PointXYZI, PointXYZIT, PointXYZITimestamp, PointXYZIntensity,
-    SyncParameters, SyncProcessedCloud, RobosensePoint, RobosensePointNoIntensity, Twist,
+    RobosensePoint, RobosensePointNoIntensity, SyncParameters, SyncProcessedCloud, Twist,
     VelodynePoint, VelodynePointNoIntensity, time_msg_from_secs, timing::RuntimeEvaluator,
 };
 
@@ -41,6 +41,24 @@ use anyhow::Result;
 use either::Either::{Left, Right};
 use ros_pointcloud2::prelude::*;
 pub use ros_pointcloud2::ros::TimeMsg;
+
+/// Preprocessed scan handed to the sync worker, as
+/// `((downsampled, passthrough, first_ts, last_ts, header), scan_id, received_at, runtime_eval)`.
+pub type FilteredCloudMsg = (
+    (
+        Vec<PointXYZIT>,
+        Option<Vec<PointXYZIT>>,
+        f64,
+        f64,
+        HeaderMsg,
+    ),
+    u64,
+    Instant,
+    RuntimeEvaluator,
+);
+
+/// Hook that receives the IMU batch used for initialization.
+pub type ImuInitCallback = Arc<std::sync::Mutex<dyn FnMut(&[ImuMsg]) + Send + Sync>>;
 
 /// Output-only hook invoked after calibration and AHRS filtering.
 pub type RealtimeImuCallback = Arc<dyn Fn(ImuMsg) + Send + Sync>;
@@ -303,7 +321,7 @@ impl<T> LocatedBufferView<T> {
     #[cfg(feature = "cuda")]
     pub fn copy_from_slice_cuda(stream: &pelorus_cuda::Stream, src: &[PointXYZIT]) -> Self {
         Self::Cuda {
-            buffer: CudaBuffer::from_cloud(&stream, src),
+            buffer: CudaBuffer::from_cloud(stream, src),
         }
     }
     #[cfg(feature = "metal")]
@@ -321,19 +339,16 @@ impl<T> LocatedBufferView<T> {
 
     #[cfg(feature = "cuda")]
     pub fn realloc_if_needed_cuda(&mut self, stream: &pelorus_cuda::Stream, len: usize) {
-        match self {
-            LocatedBufferView::Cuda { buffer } => {
-                if buffer.n < len {
-                    *buffer = pelorus_cuda::CudaBuffer::new(
-                        stream,
-                        size_of::<T>(),
-                        (len as f32 * 1.2) as usize,
-                    );
-                } else {
-                    buffer.n = len;
-                }
+        if let LocatedBufferView::Cuda { buffer } = self {
+            if buffer.n < len {
+                *buffer = pelorus_cuda::CudaBuffer::new(
+                    stream,
+                    size_of::<T>(),
+                    (len as f32 * 1.2) as usize,
+                );
+            } else {
+                buffer.n = len;
             }
-            _ => {}
         }
     }
 
@@ -355,15 +370,11 @@ impl<T> LocatedBufferView<T> {
     }
     #[cfg(feature = "vulkan")]
     pub fn realloc_if_needed_vulkan(&mut self, stream: &pelorus_vulkan::Stream, len: usize) {
-        match self {
-            LocatedBufferView::Vulkan { buffer } => {
-                if buffer.capacity() < len {
-                    *buffer =
-                        VulkanBuffer::new(stream, size_of::<T>(), (len as f32 * 1.2) as usize);
-                }
-                buffer.n = len;
+        if let LocatedBufferView::Vulkan { buffer } = self {
+            if buffer.capacity() < len {
+                *buffer = VulkanBuffer::new(stream, size_of::<T>(), (len as f32 * 1.2) as usize);
             }
-            _ => {}
+            buffer.n = len;
         }
     }
 
@@ -402,6 +413,10 @@ impl<T> LocatedBufferView<T> {
             LocatedBufferView::Vulkan { buffer } => buffer.n,
         }
     }
+
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
 }
 
 #[cfg(test)]
@@ -421,8 +436,10 @@ mod tests {
     }
 
     fn no_timestamp_params() -> SyncParameters {
-        let mut params = SyncParameters::default();
-        params.lidar_vendor = LidarVendor::NoTimestamp;
+        let mut params = SyncParameters {
+            lidar_vendor: LidarVendor::NoTimestamp,
+            ..Default::default()
+        };
         params.downsample.voxel_size = 0.01;
         params.downsample.point_skip = 1;
         params.downsample.backend = pelorus_core::PreprocessingBackend::Cpu;
@@ -516,13 +533,15 @@ mod tests {
 
     fn cpu_downsample_reference(points: &[PointXYZIT]) -> Vec<PointXYZIT> {
         let mut eval = RuntimeEvaluator::new();
-        let mut keyed_points = Vec::new();
+        let mut buffers = DownsampleBuffers {
+            filtered_cloud: points.to_vec(),
+            ..Default::default()
+        };
         let mut downsampled = Vec::new();
         cpu_downsample(
-            points,
+            &mut buffers,
             1,
             1.0,
-            &mut keyed_points,
             &mut downsampled,
             true,
             &mut eval,
@@ -625,13 +644,12 @@ mod tests {
             params.imu.madgwick_setting,
             &params.imu.calibration,
             &params,
-            Some(undistort),
-            None,
             params.lidar_vendor,
-            None,
             ImuSyncMode::Disabled { lossless: true },
-            None,
-            None,
+            SynchronizerHooks {
+                imu_pose_prediction_undistort: Some(undistort),
+                ..Default::default()
+            },
         )
         .unwrap();
         assert!(sync.lossless_replay);
@@ -681,18 +699,22 @@ mod tests {
 
         let mut previous_lidar_end = 0.0;
         Synchronizer::sync_lidar_imu_worker(
-            0,
+            SyncWorkerSettings {
+                initial_scan_accumulate: 0,
+                gravity: 9.81,
+                imu_intrinsic_calibration_given: false,
+                lidar_vendor: LidarVendor::Robosense,
+            },
             &mut previous_lidar_end,
-            9.81,
-            lidar_rx,
-            None,
-            odom_rx,
-            &synced_tx,
-            false,
+            SyncWorkerChannels {
+                lidar: lidar_rx,
+                imu: None,
+                odom: odom_rx,
+                synced: &synced_tx,
+                ready_for_next: None,
+            },
             ImuProcess::new(9.81, false),
             None,
-            None,
-            LidarVendor::Robosense,
             None,
             ImuSyncMode::Disabled { lossless: false },
         );
@@ -761,18 +783,22 @@ mod tests {
 
         let mut previous_lidar_end = 0.0;
         Synchronizer::sync_lidar_imu_worker(
-            0,
+            SyncWorkerSettings {
+                initial_scan_accumulate: 0,
+                gravity: 9.81,
+                imu_intrinsic_calibration_given: false,
+                lidar_vendor: LidarVendor::Robosense,
+            },
             &mut previous_lidar_end,
-            9.81,
-            lidar_rx,
-            None,
-            odom_rx,
-            &synced_tx,
-            false,
+            SyncWorkerChannels {
+                lidar: lidar_rx,
+                imu: None,
+                odom: odom_rx,
+                synced: &synced_tx,
+                ready_for_next: None,
+            },
             ImuProcess::new(9.81, false),
             None,
-            None,
-            LidarVendor::Robosense,
             None,
             ImuSyncMode::Disabled { lossless: false },
         );
@@ -820,18 +846,22 @@ mod tests {
 
         let mut previous_lidar_end = 0.0;
         Synchronizer::sync_lidar_imu_worker(
-            2,
+            SyncWorkerSettings {
+                initial_scan_accumulate: 2,
+                gravity: 9.81,
+                imu_intrinsic_calibration_given: false,
+                lidar_vendor: LidarVendor::NoTimestamp,
+            },
             &mut previous_lidar_end,
-            9.81,
-            lidar_rx,
-            None,
-            odom_rx,
-            &synced_tx,
-            false,
+            SyncWorkerChannels {
+                lidar: lidar_rx,
+                imu: None,
+                odom: odom_rx,
+                synced: &synced_tx,
+                ready_for_next: None,
+            },
             ImuProcess::new(9.81, false),
             None,
-            None,
-            LidarVendor::NoTimestamp,
             None,
             ImuSyncMode::Disabled { lossless: false },
         );
@@ -1007,7 +1037,10 @@ mod tests {
         assert!(first.len() > 1000, "expected a substantial cloud");
         for attempt in 1..8 {
             let (again, _) = pelorus_metal::downsample_points_metal(&stream, &points, 1, 1.0);
-            assert_eq!(again, first, "Metal downsample differed on attempt {attempt}");
+            assert_eq!(
+                again, first,
+                "Metal downsample differed on attempt {attempt}"
+            );
         }
     }
 }
@@ -1315,11 +1348,13 @@ fn cpu_key_downsample(
         #[cfg(feature = "rayon")]
         match mode {
             ExecutionMode::Sequential => {
-                keyed_points.extend(filtered_cloud.iter().enumerate().filter_map(
-                    |(idx, point)| {
-                        (idx % point_skip == 0).then(|| key_downsample_point(point, voxel_size))
-                    },
-                ));
+                keyed_points.extend(
+                    filtered_cloud
+                        .iter()
+                        .enumerate()
+                        .filter(|&(idx, _point)| idx % point_skip == 0)
+                        .map(|(_idx, point)| key_downsample_point(point, voxel_size)),
+                );
             }
             ExecutionMode::Rayon => {
                 keyed_points.par_extend(filtered_cloud.par_iter().enumerate().filter_map(
@@ -1334,9 +1369,8 @@ fn cpu_key_downsample(
             filtered_cloud
                 .iter()
                 .enumerate()
-                .filter_map(|(idx, point)| {
-                    (idx % point_skip == 0).then(|| key_downsample_point(point, voxel_size))
-                }),
+                .filter(|&(idx, _)| idx % point_skip == 0)
+                .map(|(_, point)| key_downsample_point(point, voxel_size)),
         );
     }
     eval.stop("filter_downsample/filter_map_down")?;
@@ -1346,7 +1380,7 @@ fn cpu_key_downsample(
 
 #[inline]
 fn cpu_reduce_downsample(
-    keyed_points: &mut Vec<KeyedPoint>,
+    keyed_points: &mut [KeyedPoint],
     downsampled: &mut Vec<PointXYZIT>,
     sort_by_timestamp: bool,
     eval: &mut RuntimeEvaluator,
@@ -1375,29 +1409,34 @@ fn cpu_reduce_downsample(
 
 #[inline]
 fn cpu_downsample(
-    filtered_cloud: &[PointXYZIT],
+    buffers: &mut DownsampleBuffers,
     point_skip: usize,
     voxel_size: f32,
-    keyed_points: &mut Vec<KeyedPoint>,
     downsampled: &mut Vec<PointXYZIT>,
     sort_by_timestamp: bool,
     eval: &mut RuntimeEvaluator,
     mode: ExecutionMode,
 ) -> Result<()> {
     cpu_key_downsample(
-        filtered_cloud,
+        &buffers.filtered_cloud,
         point_skip,
         voxel_size,
-        keyed_points,
+        &mut buffers.keyed_points,
         eval,
         mode,
     )?;
-    cpu_reduce_downsample(keyed_points, downsampled, sort_by_timestamp, eval, mode)
+    cpu_reduce_downsample(
+        &mut buffers.keyed_points,
+        downsampled,
+        sort_by_timestamp,
+        eval,
+        mode,
+    )
 }
 
 #[inline]
 fn sort_bypass_cloud(
-    filtered_cloud: &mut Vec<PointXYZIT>,
+    filtered_cloud: &mut [PointXYZIT],
     eval: &mut RuntimeEvaluator,
     mode: ExecutionMode,
 ) -> Result<()> {
@@ -1511,7 +1550,6 @@ fn try_cuda_downsample_from_filtered(
             gpu_timestamp_key_build_us: ms_to_us(timings.timestamp_key_build_ms),
             gpu_timestamp_sort_us: ms_to_us(timings.timestamp_sort_ms),
             gpu_download_us: ms_to_us(timings.download_ms),
-            ..Default::default()
         };
         (downsampled, timings)
     }))
@@ -1548,7 +1586,6 @@ fn try_metal_downsample_from_filtered(
             gpu_timestamp_key_build_us: ms_to_us(timings.timestamp_key_build_ms),
             gpu_timestamp_sort_us: ms_to_us(timings.timestamp_sort_ms),
             gpu_download_us: ms_to_us(timings.download_ms),
-            ..Default::default()
         };
         (downsampled, timings)
     }))
@@ -1589,7 +1626,6 @@ fn try_vulkan_downsample_from_filtered(
             gpu_timestamp_key_build_us: ms_to_us(timings.timestamp_key_build_ms),
             gpu_timestamp_sort_us: ms_to_us(timings.timestamp_sort_ms),
             gpu_download_us: ms_to_us(timings.download_ms),
-            ..Default::default()
         };
         (downsampled, timings)
     }))
@@ -1614,13 +1650,7 @@ fn filter_downsample_with_fallback<
         Err(e) => {
             let error_str = format!("{:?}", e);
             if error_str.contains("Some fields") && (error_str.contains("intensity")) {
-                filter_downsample::<N_FALLBACK, PFallback>(
-                    cloud,
-                    sync_params,
-                    eval,
-                    buffers,
-                    mode,
-                )
+                filter_downsample::<N_FALLBACK, PFallback>(cloud, sync_params, eval, buffers, mode)
             } else {
                 Err(e)
             }
@@ -1695,12 +1725,8 @@ fn filter_downsample<const N: usize, P: PointXYZITimestamp<N>>(
         buffers,
         true,
         |p| {
-            internal_point_timestamp(
-                p.timestamp(),
-                sync_params.lidar_vendor,
-                scan_reference_time,
-            )
-            .map(|timestamp| PointXYZIT::from_p(p.xyz(), p.intensity(), timestamp as f32))
+            internal_point_timestamp(p.timestamp(), sync_params.lidar_vendor, scan_reference_time)
+                .map(|timestamp| PointXYZIT::from_p(p.xyz(), p.intensity(), timestamp as f32))
         },
         mode,
     )
@@ -1912,10 +1938,9 @@ fn filter_downsample_inner<const N: usize, P: PointConvertible<N> + Send + Sync>
             raw_out = Some(std::mem::take(&mut buffers.filtered_cloud));
         } else {
             cpu_downsample(
-                &buffers.filtered_cloud,
+                buffers,
                 point_skip,
                 voxel_size,
-                &mut buffers.keyed_points,
                 &mut downsampled,
                 sort_by_timestamp,
                 eval,
@@ -1964,7 +1989,7 @@ impl ImuIntrinsicCorrection {
         Ok(Self {
             corrector,
             intrinsics,
-            warmup: (recalibrate_gyro && gyro_samples > 0).then(|| GyroBiasWarmup {
+            warmup: (recalibrate_gyro && gyro_samples > 0).then_some(GyroBiasWarmup {
                 remaining: gyro_samples,
                 accel_sum: [0.0; 3],
                 gyro_sum: [0.0; 3],
@@ -2020,6 +2045,37 @@ impl ImuIntrinsicCorrection {
     }
 }
 
+/// Pose predictors, pacing channel and output hooks that connect a
+/// [`Synchronizer`] to the registration stage.
+#[derive(Default)]
+pub struct SynchronizerHooks {
+    pub imu_pose_prediction_undistort: Option<Box<ImuPredictorUndistort>>,
+    pub imu_pose_prediction_init_guess: Option<Box<ImuPredictor>>,
+    /// Receives the id of each scan once registration finished it.
+    pub ready_for_next: Option<std::sync::mpsc::Receiver<u64>>,
+    pub realtime_imu_callback: Option<RealtimeImuCallback>,
+    pub realtime_lidar_barrier_callback: Option<RealtimeLidarBarrierCallback>,
+}
+
+/// Fixed settings of the sync worker.
+#[derive(Debug, Clone, Copy)]
+pub struct SyncWorkerSettings {
+    pub initial_scan_accumulate: usize,
+    pub gravity: f64,
+    pub imu_intrinsic_calibration_given: bool,
+    pub lidar_vendor: LidarVendor,
+}
+
+/// Input and output channels of the sync worker.
+pub struct SyncWorkerChannels<'a> {
+    pub lidar: std::sync::mpsc::Receiver<FilteredCloudMsg>,
+    pub imu: Option<std::sync::mpsc::Receiver<ImuMsg>>,
+    pub odom: std::sync::mpsc::Receiver<OdomMsg>,
+    pub synced: &'a std::sync::mpsc::SyncSender<SyncProcessedCloud>,
+    /// Receives the id of each scan once registration finished it.
+    pub ready_for_next: Option<std::sync::mpsc::Receiver<u64>>,
+}
+
 pub struct Synchronizer {
     preproc_sender: Option<std::sync::mpsc::SyncSender<LabeledPointCloud2Msg>>,
     preproc_queue_depth: Arc<AtomicUsize>,
@@ -2046,14 +2102,17 @@ impl Synchronizer {
         madgwick_filter: MadgwickSetting,
         imu_intrinsic_calibration_params: &ImuCalibrationParameters,
         params: &SyncParameters,
-        imu_pose_prediction_undistort: Option<Box<ImuPredictorUndistort>>,
-        imu_pose_prediction_init_guess: Option<Box<ImuPredictor>>,
         lidar_vendor: LidarVendor,
-        ready_for_next: Option<std::sync::mpsc::Receiver<u64>>,
         imu_sync_mode: ImuSyncMode,
-        realtime_imu_callback: Option<RealtimeImuCallback>,
-        realtime_lidar_barrier_callback: Option<RealtimeLidarBarrierCallback>,
+        hooks: SynchronizerHooks,
     ) -> anyhow::Result<Self> {
+        let SynchronizerHooks {
+            imu_pose_prediction_undistort,
+            imu_pose_prediction_init_guess,
+            ready_for_next,
+            realtime_imu_callback,
+            realtime_lidar_barrier_callback,
+        } = hooks;
         let imu_disabled = matches!(&imu_sync_mode, ImuSyncMode::Disabled { .. });
         // Lidar-only input has no IMU stream to pace it. Apply backpressure at
         // the preprocessing queue instead of silently dropping scans when a
@@ -2091,19 +2150,8 @@ impl Synchronizer {
             std::sync::mpsc::SyncSender<OdomMsg>,
             std::sync::mpsc::Receiver<OdomMsg>,
         ) = std::sync::mpsc::sync_channel(ODOM_QUEUE_CAP);
-        // filtered_cloud carries: (cloud_meta (downsampled, output, first_ts, last_ts, header), scan_id, received_at, runtime_eval)
-        let (filtered_cloud_tx, filtered_cloud_rx) = std::sync::mpsc::sync_channel::<(
-            (
-                Vec<PointXYZIT>,
-                Option<Vec<PointXYZIT>>,
-                f64,
-                f64,
-                HeaderMsg,
-            ),
-            u64,
-            Instant,
-            RuntimeEvaluator,
-        )>(FILTERED_CLOUD_QUEUE_CAP);
+        let (filtered_cloud_tx, filtered_cloud_rx) =
+            std::sync::mpsc::sync_channel::<FilteredCloudMsg>(FILTERED_CLOUD_QUEUE_CAP);
         let (synced_cloud_imu_tx, synced_cloud_imu_rx) =
             std::sync::mpsc::sync_channel(SYNCED_CLOUD_QUEUE_CAP);
 
@@ -2125,19 +2173,23 @@ impl Synchronizer {
             };
 
             Self::sync_lidar_imu_worker(
-                initial_scan_accumulate,
+                SyncWorkerSettings {
+                    initial_scan_accumulate,
+                    gravity,
+                    imu_intrinsic_calibration_given: intrinsic_given,
+                    lidar_vendor,
+                },
                 &mut last_lidar_frame_time,
-                gravity,
-                filtered_cloud_rx,
-                imu_rx,
-                odom_rx,
-                &synced_cloud_imu_tx,
-                intrinsic_given,
+                SyncWorkerChannels {
+                    lidar: filtered_cloud_rx,
+                    imu: imu_rx,
+                    odom: odom_rx,
+                    synced: &synced_cloud_imu_tx,
+                    ready_for_next,
+                },
                 imu_process,
                 imu_pose_prediction_undistort,
                 imu_pose_prediction_init_guess,
-                lidar_vendor,
-                ready_for_next,
                 imu_sync_mode,
             )
         });
@@ -2156,7 +2208,7 @@ impl Synchronizer {
             );
             while let Ok(labeled) = preproc_rx.recv() {
                 preproc_queue_depth_worker
-                    .fetch_update(Ordering::AcqRel, Ordering::Acquire, |depth| {
+                    .try_update(Ordering::AcqRel, Ordering::Acquire, |depth| {
                         Some(depth.saturating_sub(1))
                     })
                     .ok();
@@ -2567,32 +2619,27 @@ impl Synchronizer {
     /// Syncs lidar, imu, and odometry data by using the timestamps from the headers and timestamps in the lidar message.
     /// A lidar message is therefore mapped to multiple imu/odometry messages that happened in between the previous end stamp and end stamp of the last point in the lidar message.
     pub fn sync_lidar_imu_worker(
-        initial_scan_accumulate: usize,
+        settings: SyncWorkerSettings,
         prev_lidar_end_time: &mut f64,
-        gravity: f64,
-        lidar_receiver: std::sync::mpsc::Receiver<(
-            (
-                Vec<PointXYZIT>,
-                Option<Vec<PointXYZIT>>,
-                f64,
-                f64,
-                HeaderMsg,
-            ),
-            u64,
-            Instant,
-            RuntimeEvaluator,
-        )>,
-        imu_receiver: Option<std::sync::mpsc::Receiver<ImuMsg>>,
-        odom_receiver: std::sync::mpsc::Receiver<OdomMsg>,
-        synced_sender: &std::sync::mpsc::SyncSender<SyncProcessedCloud>,
-        imu_intrinsic_calibration_given: bool,
+        channels: SyncWorkerChannels<'_>,
         mut imu_process: ImuProcess,
         imu_pose_prediction_undistort: Option<Box<ImuPredictorUndistort>>,
         imu_pose_prediction_init_guess: Option<Box<ImuPredictor>>,
-        lidar_vendor: LidarVendor,
-        ready_for_next: Option<std::sync::mpsc::Receiver<u64>>,
         mut imu_sync_mode: ImuSyncMode,
     ) {
+        let SyncWorkerSettings {
+            initial_scan_accumulate,
+            gravity,
+            imu_intrinsic_calibration_given,
+            lidar_vendor,
+        } = settings;
+        let SyncWorkerChannels {
+            lidar: lidar_receiver,
+            imu: imu_receiver,
+            odom: odom_receiver,
+            synced: synced_sender,
+            ready_for_next,
+        } = channels;
         let mut eval = RuntimeEvaluator::new();
         let mut to_next: Option<ImuMsg> = None;
         let mut awaiting_correction: Option<u64> = None;
@@ -2665,7 +2712,7 @@ impl Synchronizer {
                     *prev_lidar_end_time = lidar_time;
                 }
                 let res = SyncProcessedCloud {
-                    scan_id: scan_id,
+                    scan_id,
                     received_at,
                     cloud: cloud_downsampled,
                     passthrough: cloud_output,
@@ -2819,10 +2866,11 @@ impl Synchronizer {
                     .partial_cmp(&timestamp_to_secs(&b.stamp))
                     .unwrap()
             });
-            if !has_point_timestamps(lidar_vendor) && no_previous_lidar_end_time {
-                if let Some(first_imu) = imu_data.first() {
-                    imu_span_start_time = timestamp_to_secs(&first_imu.stamp);
-                }
+            if !has_point_timestamps(lidar_vendor)
+                && no_previous_lidar_end_time
+                && let Some(first_imu) = imu_data.first()
+            {
+                imu_span_start_time = timestamp_to_secs(&first_imu.stamp);
             }
             odom_data.sort_by(|a, b| {
                 timestamp_to_secs(&a.stamp)
@@ -2863,7 +2911,7 @@ impl Synchronizer {
                 };
 
                 let res = SyncProcessedCloud {
-                    scan_id: scan_id,
+                    scan_id,
                     received_at,
                     cloud: cloud_downsampled,
                     passthrough: cloud_output,
@@ -2957,7 +3005,7 @@ impl Synchronizer {
                     };
 
                     let res = SyncProcessedCloud {
-                        scan_id: scan_id,
+                        scan_id,
                         received_at,
                         cloud: imu_cloud.cloud,
                         passthrough: imu_cloud.cloud_output,

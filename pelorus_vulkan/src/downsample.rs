@@ -281,7 +281,7 @@ pub fn downsample_points_vulkan(
     session.copy_buffer(
         input_upload_b,
         input_b,
-        (filtered_cloud.len() * size_of::<PointXYZIT>()) as vk::DeviceSize,
+        std::mem::size_of_val(filtered_cloud) as vk::DeviceSize,
     );
     session.copy_buffer(
         counter_upload_b,

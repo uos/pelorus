@@ -142,8 +142,10 @@ impl GyrInt {
             let gyr2 = imu.angular_velocity;
             let acc2 = imu.linear_acceleration;
 
-            let mut imu_interpolated = ImuMsg::default();
-            imu_interpolated.stamp = time_msg_from_secs(self.start_stamp);
+            let mut imu_interpolated = ImuMsg {
+                stamp: time_msg_from_secs(self.start_stamp),
+                ..Default::default()
+            };
             imu_interpolated.angular_velocity[0] = w1 * gyr1[0] + w2 * gyr2[0];
             imu_interpolated.angular_velocity[1] = w1 * gyr1[1] + w2 * gyr2[1];
             imu_interpolated.angular_velocity[2] = w1 * gyr1[2] + w2 * gyr2[2];
@@ -321,8 +323,8 @@ impl ImuProcess {
             Some(Left(pose)) => {
                 let rot = Rotation3::from_matrix(pose.pose.rotation.to_rotation_matrix().matrix());
                 let quat = UnitQuaternion::from_rotation_matrix(&rot);
-                let iso = Isometry3::from_parts(pose.pose.translation, quat);
-                iso
+
+                Isometry3::from_parts(pose.pose.translation, quat)
             }
             Some(Right(pose)) => pose,
             None => Isometry3::identity(),

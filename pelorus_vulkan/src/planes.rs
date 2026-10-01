@@ -5,7 +5,7 @@ use crate::map::{
 };
 use crate::pipelines::PushConstants;
 use crate::stream::Stream;
-use crate::types::{NeighborType, PointNormal, Quaternion, Vector3};
+use crate::types::{NeighborType, PointNormal, Pose};
 use ash::vk;
 use pelorus_core::PointXYZIT;
 use pelorus_localmap::IVoxNearbyType;
@@ -18,18 +18,33 @@ pub struct VulkanPlaneTimings {
     pub download_ms: f64,
 }
 
+/// Host-side buffers the Vulkan plane query reads its results back into.
+pub struct VulkanPlaneReadback<'a> {
+    pub points: &'a mut Vec<PointNormal>,
+    pub counter: &'a mut [u32; 3],
+}
+
 pub fn planes_vulkan(
     stream: &Stream,
     cloud: &VulkanBuffer,
-    ekf_pose_t: &Vector3,
-    ekf_pose_r: &Quaternion,
-    ekf_imu_offset_t: &Vector3,
-    ekf_imu_offset_r: &Quaternion,
+    pose: &Pose,
+    lidar_to_imu: &Pose,
     out_buff: &mut Vec<PointXYZINormal>,
     out_buff_gpu: &mut VulkanBuffer,
-    download_buff: &mut Vec<PointNormal>,
-    counter_buff: &mut [u32; 3],
+    readback: VulkanPlaneReadback<'_>,
 ) -> VulkanPlaneTimings {
+    let Pose {
+        position: ekf_pose_t,
+        orientation: ekf_pose_r,
+    } = pose;
+    let Pose {
+        position: ekf_imu_offset_t,
+        orientation: ekf_imu_offset_r,
+    } = lidar_to_imu;
+    let VulkanPlaneReadback {
+        points: download_buff,
+        counter: counter_buff,
+    } = readback;
     assert!(
         out_buff.len() >= cloud.n,
         "output buffer must fit cloud size"
@@ -37,11 +52,11 @@ pub fn planes_vulkan(
     with_state(|state| match &mut state.backend {
         MapBackendState::Multiresolution(map) => map.planes(
             stream,
-            cloud,
-            ekf_pose_t,
-            ekf_pose_r,
-            ekf_imu_offset_t,
-            ekf_imu_offset_r,
+            crate::multiresolution::PlaneQuery {
+                cloud,
+                pose,
+                lidar_to_imu,
+            },
             out_buff,
             out_buff_gpu,
             download_buff,
@@ -359,7 +374,7 @@ pub fn try_get_gpu_timings() -> Option<(f64, f64)> {
                 .pending_planes_timing
                 .load(std::sync::atomic::Ordering::Acquire)
             {
-                if let Some(ms) = get_query_result(&gpu, 0) {
+                if let Some(ms) = get_query_result(gpu, 0) {
                     log::debug!("Vulkan planes GPU timing: {}ms", ms);
                     gpu.pending_planes_timing
                         .store(false, std::sync::atomic::Ordering::Release);
@@ -373,7 +388,7 @@ pub fn try_get_gpu_timings() -> Option<(f64, f64)> {
                 .pending_add_to_map_timing
                 .load(std::sync::atomic::Ordering::Acquire)
             {
-                if let Some(ms) = get_query_result(&gpu, 2) {
+                if let Some(ms) = get_query_result(gpu, 2) {
                     log::debug!("Vulkan add_to_map GPU timing: {}ms", ms);
                     gpu.pending_add_to_map_timing
                         .store(false, std::sync::atomic::Ordering::Release);

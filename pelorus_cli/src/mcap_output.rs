@@ -682,12 +682,18 @@ mod tests {
             frame_id: "lidar".to_string(),
         };
 
-        let mut cloud = PointCloud2::default();
-        cloud.header = header.clone();
-        let mut odom = Odometry::default();
-        odom.header = header.clone();
-        let mut path_msg = NavPath::default();
-        path_msg.header = header.clone();
+        let cloud = PointCloud2 {
+            header: header.clone(),
+            ..Default::default()
+        };
+        let odom = Odometry {
+            header: header.clone(),
+            ..Default::default()
+        };
+        let path_msg = NavPath {
+            header: header.clone(),
+            ..Default::default()
+        };
         let tf = TFMessage {
             transforms: vec![TransformStamped {
                 header: header.clone(),
@@ -695,8 +701,10 @@ mod tests {
                 ..TransformStamped::default()
             }],
         };
-        let mut imu = Imu::default();
-        imu.header = header;
+        let imu = Imu {
+            header,
+            ..Default::default()
+        };
 
         writer.write_cloud(&cloud)?;
         writer.write_odom(&odom)?;
@@ -870,8 +878,10 @@ mod tests {
             stamp,
             frame_id: "lidar".to_string(),
         };
-        let mut cloud = PointCloud2::default();
-        cloud.header = header;
+        let cloud = PointCloud2 {
+            header,
+            ..Default::default()
+        };
 
         writer.write_cloud(&cloud)?;
         writer.finish()?;
