@@ -84,7 +84,7 @@ nav = [
     "calibration/index.md",
     { "Scale, misalignment and bias" = "calibration/imu-intrinsics.md" },
     { "Noise densities and random walks" = "calibration/imu-noise.md" },
-    { "LiDAR to IMU extrinsics" = "calibration/extrinsics.md" },
+    { "Lidar to IMU extrinsics" = "calibration/extrinsics.md" },
   ] },
 ]
 
