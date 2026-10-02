@@ -3651,8 +3651,6 @@ fn lio_with_ready_signal(
             imu_odom.pose.pose.orientation.y = init_guess_lidar.rotation.quaternion().j;
             imu_odom.pose.pose.orientation.z = init_guess_lidar.rotation.quaternion().k;
             imu_odom.pose.pose.orientation.w = init_guess_lidar.rotation.quaternion().w;
-            imu_odom.pose.covariance = pelorus_odom.pose.covariance;
-            imu_odom.twist.covariance = pelorus_odom.twist.covariance;
 
             #[cfg(feature = "rerun")]
             if let Some(ref rec) = rec {
@@ -4093,13 +4091,12 @@ fn lio_with_ready_signal(
     {
         let spin_timeout = Duration::from_millis(10);
         loop {
-            node.spin_once(spin_timeout.clone());
-            if let Some(ref flag) = spinner_shutdown_flag {
-                if flag.load(Ordering::Relaxed) {
+            node.spin_once(spin_timeout);
+            if let Some(ref flag) = spinner_shutdown_flag
+                && flag.load(Ordering::Relaxed) {
                     info!("Shutdown flag detected in r2r spinner");
                     break;
                 }
-            }
             if processing_handle.is_finished() {
                 info!("Processing thread finished");
                 break;
@@ -4567,217 +4564,6 @@ mod vulkan_backend_details_tests {
             driver_version_raw: 0,
         });
         assert_eq!(details, "v1.3.0 - NVIDIA Vulkan GPU");
-    }
-}
-
-#[cfg(test)]
-mod mcap_output_config_tests {
-    use super::*;
-
-    fn config_with_mcap_overrides(overrides: &str) -> LioConfig {
-        let defaults =
-            ratslang::compile_code(include_str!("../../pelorus_core/default.rl")).unwrap();
-        let user = ratslang::compile_code(overrides).unwrap();
-        ast_to_config(defaults, user).unwrap()
-    }
-
-    #[test]
-    fn realtime_tf_matches_realtime_odometry() {
-        let prediction = RealtimePrediction {
-            stamp: pelorus_core::time_msg_from_secs(12.25),
-            pose: Isometry3::from_parts(
-                nalgebra::Translation3::new(1.0, 2.0, 3.0),
-                nalgebra::UnitQuaternion::from_euler_angles(0.1, -0.2, 0.3),
-            ),
-            linear_velocity_body: nalgebra::Vector3::new(4.0, 5.0, 6.0),
-            angular_velocity_body: nalgebra::Vector3::new(0.4, 0.5, 0.6),
-            pose_covariance: [0.0; 36],
-            twist_covariance: [0.0; 36],
-        };
-
-        let odom = realtime_prediction_to_odom(&prediction, "map", "base_link");
-        let tf = realtime_prediction_to_tf(&prediction, "map", "base_link");
-
-        assert_eq!(tf.header.stamp, odom.header.stamp);
-        assert_eq!(tf.header.frame_id, odom.header.frame_id);
-        assert_eq!(tf.child_frame_id, odom.child_frame_id);
-        assert_eq!(tf.transform.translation.x, odom.pose.pose.position.x);
-        assert_eq!(tf.transform.translation.y, odom.pose.pose.position.y);
-        assert_eq!(tf.transform.translation.z, odom.pose.pose.position.z);
-        assert_eq!(tf.transform.rotation.x, odom.pose.pose.orientation.x);
-        assert_eq!(tf.transform.rotation.y, odom.pose.pose.orientation.y);
-        assert_eq!(tf.transform.rotation.z, odom.pose.pose.orientation.z);
-        assert_eq!(tf.transform.rotation.w, odom.pose.pose.orientation.w);
-    }
-
-    #[test]
-    fn plain_online_still_parses_its_pipeline_flags() {
-        let args = Args::parse_from(["pelorus", "online", "--export-trajectory", "/tmp/traj.tum"]);
-        let Command::Online(online) = args.command else {
-            panic!("expected online");
-        };
-        assert!(online.mode.is_none());
-        assert_eq!(
-            online.pipeline.export_trajectory,
-            Some("/tmp/traj.tum".to_string())
-        );
-    }
-
-    #[cfg(feature = "mt_pubsub")]
-    #[test]
-    fn raw_takes_the_sensor_and_its_own_recording_flags() {
-        let args = Args::parse_from([
-            "pelorus",
-            "online",
-            "raw",
-            "imu",
-            "--output-rosbag",
-            "/tmp/imu_bag",
-        ]);
-        let Command::Online(online) = args.command else {
-            panic!("expected online");
-        };
-        let Some(OnlineMode::Raw(raw)) = online.mode else {
-            panic!("expected raw");
-        };
-        assert_eq!(raw.sensor, RawSensor::Imu);
-        assert_eq!(
-            raw.recording.output_rosbag,
-            Some(PathBuf::from("/tmp/imu_bag"))
-        );
-        assert_eq!(raw.recording.mcap_cloud_topic, None);
-        assert_eq!(raw.recording.mcap_imu_topic, None);
-    }
-
-    #[cfg(feature = "mt_pubsub")]
-    #[test]
-    fn raw_imu_takes_the_intrinsics_sub_mode() {
-        let args = Args::parse_from([
-            "pelorus",
-            "online",
-            "raw",
-            "imu",
-            "intrinsics",
-            "--output-rosbag",
-            "/tmp/imu_poses",
-        ]);
-        let Command::Online(online) = args.command else {
-            panic!("expected online");
-        };
-        let Some(OnlineMode::Raw(raw)) = online.mode else {
-            panic!("expected raw");
-        };
-        assert_eq!(raw.sensor, RawSensor::Imu);
-        let Some(RawMode::Intrinsics(intrinsics)) = raw.mode else {
-            panic!("expected the intrinsics sub-mode");
-        };
-        assert_eq!(intrinsics.poses, 12);
-        assert_eq!(
-            raw.recording.output_rosbag,
-            Some(PathBuf::from("/tmp/imu_poses"))
-        );
-    }
-
-    #[cfg(feature = "mt_pubsub")]
-    #[test]
-    fn pipeline_flags_cannot_be_combined_with_raw() {
-        assert!(
-            Args::try_parse_from(["pelorus", "online", "--export-trajectory", "raw", "imu"])
-                .is_err()
-        );
-    }
-
-    #[test]
-    fn builds_direct_mcap_output_without_metadata_by_default() {
-        let config = config_with_mcap_overrides("output.mcap.file = \"out.mcap\"");
-
-        let output =
-            build_mcap_output_config_with_filtered_topic(&config.mcap, "imu/ahrs").unwrap();
-
-        assert_eq!(output.path, PathBuf::from("out.mcap"));
-        assert_eq!(output.rosbag_metadata_path, None);
-        assert_eq!(output.topics.filtered_imu.as_deref(), Some("/imu/ahrs"));
-    }
-
-    #[test]
-    fn builds_rosbag_directory_paths() {
-        let config = config_with_mcap_overrides("output.mcap.rosbag_dir = \"bags/run1\"");
-
-        let output =
-            build_mcap_output_config_with_filtered_topic(&config.mcap, "imu/ahrs").unwrap();
-
-        assert_eq!(output.path, PathBuf::from("bags/run1/run1.mcap"));
-        assert_eq!(
-            output.rosbag_metadata_path,
-            Some(PathBuf::from("bags/run1/metadata.yaml"))
-        );
-    }
-
-    #[test]
-    fn file_and_rosbag_dir_are_mutually_exclusive() {
-        let defaults =
-            ratslang::compile_code(include_str!("../../pelorus_core/default.rl")).unwrap();
-        let user = ratslang::compile_code(
-            "output.mcap.file = \"out.mcap\"\noutput.mcap.rosbag_dir = \"bags/run1\"",
-        )
-        .unwrap();
-        assert!(ast_to_config(defaults, user).is_err());
-    }
-
-    #[test]
-    fn rosbag_metadata_requires_file_not_rosbag_dir() {
-        let defaults =
-            ratslang::compile_code(include_str!("../../pelorus_core/default.rl")).unwrap();
-        let user = ratslang::compile_code(
-            "output.mcap.rosbag_dir = \"bags/run1\"\noutput.mcap.rosbag_metadata = \"meta.yaml\"",
-        )
-        .unwrap();
-        assert!(ast_to_config(defaults, user).is_err());
-    }
-
-    #[test]
-    fn normalizes_topic_overrides() {
-        let config = config_with_mcap_overrides(
-            "output.mcap.file = \"out.mcap\"\n\
-             output.mcap.cloud_topic = \"cloud\"\n\
-             output.mcap.odom_topic = \"odom\"\n\
-             output.mcap.path_topic = \"path\"\n\
-             output.mcap.tf_topic = \"tf\"",
-        );
-
-        let output =
-            build_mcap_output_config_with_filtered_topic(&config.mcap, "imu/custom").unwrap();
-
-        assert_eq!(output.topics.cloud, "/cloud");
-        assert_eq!(output.topics.odom, "/odom");
-        assert_eq!(output.topics.path, "/path");
-        assert_eq!(output.topics.tf, "/tf");
-        assert_eq!(output.topics.filtered_imu.as_deref(), Some("/imu/custom"));
-    }
-
-    #[test]
-    fn uses_default_filtered_imu_topic_when_configured_topic_is_empty() {
-        let config = config_with_mcap_overrides("output.mcap.file = \"out.mcap\"");
-
-        let output = build_mcap_output_config_with_filtered_topic(&config.mcap, "").unwrap();
-
-        assert_eq!(output.topics.filtered_imu.as_deref(), Some("/imu/filtered"));
-    }
-
-    #[test]
-    fn lidar_only_mcap_omits_imu_even_with_a_topic_override() {
-        let config = config_with_mcap_overrides(
-            "output.mcap.file = \"out.mcap\"\n\
-             imu.lidar_only = true\n\
-             output.mcap.cloud_topic = \"custom\"",
-        );
-
-        let output = build_mcap_output_config(&config).unwrap();
-        assert!(output.topics.filtered_imu.is_none());
-        assert_eq!(
-            output.topics.cloud,
-            normalize_mcap_topic(config.mcap.cloud_topic)
-        );
     }
 }
 
@@ -5941,18 +5727,16 @@ fn main() -> Result<(), Box<dyn CoreError>> {
                 while start.elapsed() < timeout {
                     node.spin_once(Duration::from_millis(10));
 
-                    if lidar_frame.is_none() {
-                        if let Ok(f) = lidar_rx.try_recv() {
+                    if lidar_frame.is_none()
+                        && let Ok(f) = lidar_rx.try_recv() {
                             eprintln!("Lidar frame ID: {}", f);
                             lidar_frame = Some(f);
                         }
-                    }
-                    if imu_frame.is_none() {
-                        if let Ok(f) = imu_rx.try_recv() {
+                    if imu_frame.is_none()
+                        && let Ok(f) = imu_rx.try_recv() {
                             eprintln!("IMU frame ID: {}", f);
                             imu_frame = Some(f);
                         }
-                    }
                     if lidar_frame.is_some() && imu_frame.is_some() {
                         break;
                     }
@@ -6150,5 +5934,217 @@ fn main() -> Result<(), Box<dyn CoreError>> {
                 Ok(())
             }
         },
+    }
+}
+
+#[cfg(test)]
+mod mcap_output_config_tests {
+    use super::*;
+
+    fn config_with_mcap_overrides(overrides: &str) -> LioConfig {
+        let defaults =
+            ratslang::compile_code(include_str!("../../pelorus_core/default.rl")).unwrap();
+        let user = ratslang::compile_code(overrides).unwrap();
+        ast_to_config(defaults, user).unwrap()
+    }
+
+    #[test]
+    fn realtime_tf_matches_realtime_odometry() {
+        let prediction = RealtimePrediction {
+            stamp: pelorus_core::time_msg_from_secs(12.25),
+            pose: Isometry3::from_parts(
+                nalgebra::Translation3::new(1.0, 2.0, 3.0),
+                nalgebra::UnitQuaternion::from_euler_angles(0.1, -0.2, 0.3),
+            ),
+            linear_velocity_body: nalgebra::Vector3::new(4.0, 5.0, 6.0),
+            angular_velocity_body: nalgebra::Vector3::new(0.4, 0.5, 0.6),
+            pose_covariance: [0.0; 36],
+            twist_covariance: [0.0; 36],
+        };
+
+        let odom = realtime_prediction_to_odom(&prediction, "map", "base_link");
+        let tf = realtime_prediction_to_tf(&prediction, "map", "base_link");
+
+        assert_eq!(tf.header.stamp.sec, odom.header.stamp.sec);
+        assert_eq!(tf.header.stamp.nanosec, odom.header.stamp.nanosec);
+        assert_eq!(tf.header.frame_id, odom.header.frame_id);
+        assert_eq!(tf.child_frame_id, odom.child_frame_id);
+        assert_eq!(tf.transform.translation.x, odom.pose.pose.position.x);
+        assert_eq!(tf.transform.translation.y, odom.pose.pose.position.y);
+        assert_eq!(tf.transform.translation.z, odom.pose.pose.position.z);
+        assert_eq!(tf.transform.rotation.x, odom.pose.pose.orientation.x);
+        assert_eq!(tf.transform.rotation.y, odom.pose.pose.orientation.y);
+        assert_eq!(tf.transform.rotation.z, odom.pose.pose.orientation.z);
+        assert_eq!(tf.transform.rotation.w, odom.pose.pose.orientation.w);
+    }
+
+    #[test]
+    fn plain_online_still_parses_its_pipeline_flags() {
+        let args = Args::parse_from(["pelorus", "online", "--export-trajectory", "/tmp/traj.tum"]);
+        let Command::Online(online) = args.command else {
+            panic!("expected online");
+        };
+        assert!(online.mode.is_none());
+        assert_eq!(
+            online.pipeline.export_trajectory,
+            Some("/tmp/traj.tum".to_string())
+        );
+    }
+
+    #[cfg(feature = "mt_pubsub")]
+    #[test]
+    fn raw_takes_the_sensor_and_its_own_recording_flags() {
+        let args = Args::parse_from([
+            "pelorus",
+            "online",
+            "raw",
+            "imu",
+            "--output-rosbag",
+            "/tmp/imu_bag",
+        ]);
+        let Command::Online(online) = args.command else {
+            panic!("expected online");
+        };
+        let Some(OnlineMode::Raw(raw)) = online.mode else {
+            panic!("expected raw");
+        };
+        assert_eq!(raw.sensor, RawSensor::Imu);
+        assert_eq!(
+            raw.recording.output_rosbag,
+            Some(PathBuf::from("/tmp/imu_bag"))
+        );
+        assert_eq!(raw.recording.mcap_cloud_topic, None);
+        assert_eq!(raw.recording.mcap_imu_topic, None);
+    }
+
+    #[cfg(feature = "mt_pubsub")]
+    #[test]
+    fn raw_imu_takes_the_intrinsics_sub_mode() {
+        let args = Args::parse_from([
+            "pelorus",
+            "online",
+            "raw",
+            "imu",
+            "intrinsics",
+            "--output-rosbag",
+            "/tmp/imu_poses",
+        ]);
+        let Command::Online(online) = args.command else {
+            panic!("expected online");
+        };
+        let Some(OnlineMode::Raw(raw)) = online.mode else {
+            panic!("expected raw");
+        };
+        assert_eq!(raw.sensor, RawSensor::Imu);
+        let Some(RawMode::Intrinsics(intrinsics)) = raw.mode else {
+            panic!("expected the intrinsics sub-mode");
+        };
+        assert_eq!(intrinsics.poses, 12);
+        assert_eq!(
+            raw.recording.output_rosbag,
+            Some(PathBuf::from("/tmp/imu_poses"))
+        );
+    }
+
+    #[cfg(feature = "mt_pubsub")]
+    #[test]
+    fn pipeline_flags_cannot_be_combined_with_raw() {
+        assert!(
+            Args::try_parse_from(["pelorus", "online", "--export-trajectory", "raw", "imu"])
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn builds_direct_mcap_output_without_metadata_by_default() {
+        let config = config_with_mcap_overrides("output.mcap.file = \"out.mcap\"");
+
+        let output =
+            build_mcap_output_config_with_filtered_topic(&config.mcap, "imu/ahrs").unwrap();
+
+        assert_eq!(output.path, PathBuf::from("out.mcap"));
+        assert_eq!(output.rosbag_metadata_path, None);
+        assert_eq!(output.topics.filtered_imu.as_deref(), Some("/imu/ahrs"));
+    }
+
+    #[test]
+    fn builds_rosbag_directory_paths() {
+        let config = config_with_mcap_overrides("output.mcap.rosbag_dir = \"bags/run1\"");
+
+        let output =
+            build_mcap_output_config_with_filtered_topic(&config.mcap, "imu/ahrs").unwrap();
+
+        assert_eq!(output.path, PathBuf::from("bags/run1/run1.mcap"));
+        assert_eq!(
+            output.rosbag_metadata_path,
+            Some(PathBuf::from("bags/run1/metadata.yaml"))
+        );
+    }
+
+    #[test]
+    fn file_and_rosbag_dir_are_mutually_exclusive() {
+        let defaults =
+            ratslang::compile_code(include_str!("../../pelorus_core/default.rl")).unwrap();
+        let user = ratslang::compile_code(
+            "output.mcap.file = \"out.mcap\"\noutput.mcap.rosbag_dir = \"bags/run1\"",
+        )
+        .unwrap();
+        assert!(ast_to_config(defaults, user).is_err());
+    }
+
+    #[test]
+    fn rosbag_metadata_requires_file_not_rosbag_dir() {
+        let defaults =
+            ratslang::compile_code(include_str!("../../pelorus_core/default.rl")).unwrap();
+        let user = ratslang::compile_code(
+            "output.mcap.rosbag_dir = \"bags/run1\"\noutput.mcap.rosbag_metadata = \"meta.yaml\"",
+        )
+        .unwrap();
+        assert!(ast_to_config(defaults, user).is_err());
+    }
+
+    #[test]
+    fn normalizes_topic_overrides() {
+        let config = config_with_mcap_overrides(
+            "output.mcap.file = \"out.mcap\"\n\
+             output.mcap.cloud_topic = \"cloud\"\n\
+             output.mcap.odom_topic = \"odom\"\n\
+             output.mcap.path_topic = \"path\"\n\
+             output.mcap.tf_topic = \"tf\"",
+        );
+
+        let output =
+            build_mcap_output_config_with_filtered_topic(&config.mcap, "imu/custom").unwrap();
+
+        assert_eq!(output.topics.cloud, "/cloud");
+        assert_eq!(output.topics.odom, "/odom");
+        assert_eq!(output.topics.path, "/path");
+        assert_eq!(output.topics.tf, "/tf");
+        assert_eq!(output.topics.filtered_imu.as_deref(), Some("/imu/custom"));
+    }
+
+    #[test]
+    fn uses_default_filtered_imu_topic_when_configured_topic_is_empty() {
+        let config = config_with_mcap_overrides("output.mcap.file = \"out.mcap\"");
+
+        let output = build_mcap_output_config_with_filtered_topic(&config.mcap, "").unwrap();
+
+        assert_eq!(output.topics.filtered_imu.as_deref(), Some("/imu/filtered"));
+    }
+
+    #[test]
+    fn lidar_only_mcap_omits_imu_even_with_a_topic_override() {
+        let config = config_with_mcap_overrides(
+            "output.mcap.file = \"out.mcap\"\n\
+             imu.lidar_only = true\n\
+             output.mcap.cloud_topic = \"custom\"",
+        );
+
+        let output = build_mcap_output_config(&config).unwrap();
+        assert!(output.topics.filtered_imu.is_none());
+        assert_eq!(
+            output.topics.cloud,
+            normalize_mcap_topic(config.mcap.cloud_topic)
+        );
     }
 }
