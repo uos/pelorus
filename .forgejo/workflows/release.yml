@@ -373,8 +373,24 @@ jobs:
           name: artifacts-rawlibs-${{ matrix.repo }}-cuda${{ matrix.cuda }}
           path: dist/
 
+  clean-2:
+    if: always()
+    needs:
+      - rawlibs-cuda
+    strategy:
+      matrix:
+        include:
+          - runner: macos-latest
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - name: Docker clean
+        run: |
+          docker system prune -af --volumes
+          docker builder prune -af
+
   rawlibs-vulkan:
     needs:
+      - clean-2
       - rawlibs-cuda
     strategy:
       matrix:
@@ -486,6 +502,7 @@ jobs:
           path: dist/
 
   clean-3:
+    if: always()
     needs:
       - rawlibs-vulkan
     strategy:
@@ -496,11 +513,13 @@ jobs:
     steps:
       - name: Docker clean
         run: |
-          docker system prune -af
+          docker system prune -af --volumes
+          docker builder prune -af
 
   ros-debs:
     needs:
       - clean-3
+      - rawlibs-vulkan
     strategy:
       matrix:
         include:
@@ -720,8 +739,24 @@ jobs:
           path: |
             *.deb
 
+  clean-5:
+    if: always()
+    needs:
+      - ros-debs-cuda
+    strategy:
+      matrix:
+        include:
+          - runner: macos-latest
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - name: Docker clean
+        run: |
+          docker system prune -af --volumes
+          docker builder prune -af
+
   ros-debs-vulkan:
     needs:
+      - clean-5
       - ros-debs-cuda
     strategy:
       matrix:
@@ -793,6 +828,7 @@ jobs:
             *.deb
 
   clean-4:
+    if: always()
     needs:
       - ros-debs-vulkan
     strategy:
@@ -803,12 +839,14 @@ jobs:
     steps:
       - name: Docker clean
         run: |
-          docker system prune -af
+          docker system prune -af --volumes
+          docker builder prune -af
 
   glim:
     needs:
       - clean-4
       - rawlibs
+      - ros-debs-vulkan
     strategy:
       matrix:
         include:
@@ -1122,8 +1160,24 @@ jobs:
           name: wheels-cuda${{ matrix.cuda }}
           path: target/wheels
 
+  clean-6:
+    if: always()
+    needs:
+      - wheels-cuda
+    strategy:
+      matrix:
+        include:
+          - runner: macos-latest
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - name: Docker clean
+        run: |
+          docker system prune -af --volumes
+          docker builder prune -af
+
   wheels-vulkan:
     needs:
+      - clean-6
       - wheels-cuda
     strategy:
       matrix:
@@ -1162,6 +1216,7 @@ jobs:
           path: target/wheels
 
   clean-7:
+    if: always()
     needs:
       - wheels-vulkan
     strategy:
@@ -1171,7 +1226,9 @@ jobs:
     runs-on: ${{ matrix.runner }}
     steps:
       - name: Docker clean
-        run: docker system prune -af
+        run: |
+          docker system prune -af --volumes
+          docker builder prune -af
 
   tarball:
     needs:
@@ -1293,6 +1350,21 @@ jobs:
         with:
           name: release-tarballs
           path: release/
+
+  clean-final:
+    if: always()
+    needs:
+      - tarball
+    strategy:
+      matrix:
+        include:
+          - runner: macos-latest
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - name: Docker clean
+        run: |
+          docker system prune -af --volumes
+          docker builder prune -af
 
   release:
     needs:
