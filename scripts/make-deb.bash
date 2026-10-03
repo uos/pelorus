@@ -42,4 +42,9 @@ if [ "${PELORUS_CUDA:-}" = 1 ]; then
     perl -pi -e 's/^(\s*dh_shlibdeps\b[^\n]*)/$1 || true/' debian/rules
 fi
 
+# dpkg-buildflags enables -flto=auto on newer Ubuntu releases. The C++ deps built
+# by cargo build scripts (shaderc-sys) then link with LTO under cargo's jobserver,
+# which crashes lto1 in GCC 15
+export DEB_BUILD_MAINT_OPTIONS="${DEB_BUILD_MAINT_OPTIONS:+$DEB_BUILD_MAINT_OPTIONS }optimize=-lto"
+
 dpkg-buildpackage -us -uc
