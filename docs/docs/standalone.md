@@ -42,7 +42,7 @@ Thanks to [hiroz](https://github.com/ZettaScaleLabs/hiroz) we can run connect to
 First uninstall the default `minot` and `pelorus` CLI. We need to set some feature flags. You'll need Rust to be installed for this.
 
 ```sh
-cargo install --git https://codeberg.org/stelzo/minot minot --tag v0.12.0 --no-default-features --features default-hiroz
+cargo install minot --no-default-features --features default-hiroz
 
 cargo install --git https://codeberg.org/stelzo/pelorus pelorus_cli --no-default-features --features rayon,offline-hiroz
 ```
@@ -50,7 +50,7 @@ cargo install --git https://codeberg.org/stelzo/pelorus pelorus_cli --no-default
 Start a Zenoh router:
 
 ```sh
-cargo install zenohd@1.9.0
+cargo install zenohd@1.10.1
 zenohd
 ```
 
