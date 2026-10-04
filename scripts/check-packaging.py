@@ -368,16 +368,15 @@ def check_docs(root: Path, info: dict, fix: bool) -> list[str]:
             )
 
     # `cargo install ... minot --tag vX.Y.Z`, which has to be the release the
-    # workspace depends on.
+    # workspace depends on. The docs may install minot without a tag, so a pin
+    # is optional here.
     #
     # minot used to publish a separate `-hiroz` tag line for the ROS 2 over
     # Zenoh build. That line stopped at v0.9.1-hiroz once hiroz support became a
     # feature of the mainline, so a suffixed tag in the docs now means a stale
     # command and not a deliberate second line.
     minot_line = major_minor(info["minot_ver"])
-    seen_minot = False
     for rel, match in where(r"minot\s+--tag\s+v([0-9]+\.[0-9]+\.[0-9]+)(\S*)"):
-        seen_minot = True
         version, suffix = match.group(1), match.group(2)
         if suffix:
             errors.append(
@@ -390,9 +389,6 @@ def check_docs(root: Path, info: dict, fix: bool) -> list[str]:
                 f"{rel} installs minot from tag v{version}, but the workspace depends on "
                 f"minot {info['minot_ver']}. Name a {minot_line}.x tag."
             )
-    if not seen_minot:
-        errors.append("No pinned minot tag found in the docs")
-
     # `cargo install zenohd@X.Y.Z`, which has to match what Pelorus links.
     zenoh_line = major_minor(info["zenoh_ver"])
     for rel, match in where(r"zenohd@([0-9]+\.[0-9]+\.[0-9]+)"):
