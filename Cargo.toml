@@ -56,7 +56,7 @@ pelorus_metal = { path = "pelorus_metal", version = "0.0.8" }
 pelorus_vulkan = { path = "pelorus_vulkan", version = "0.0.8", default-features = false }
 pelorus_drivers = { path = "pelorus_drivers", version = "0.0.8", default-features = false }
 
-transforms_io = { version = "0.6.0", default-features = false }
+transforms_io = { version = "0.7.0", default-features = false }
 ros_pointcloud2 = { version = "1.0.0-rc.5", features = [
   "derive",
   "r2r",
@@ -65,10 +65,10 @@ ros_pointcloud2 = { version = "1.0.0-rc.5", features = [
   "nalgebra",
 ] }
 ratslang = "0.4.3"
-mt_pubsub = "0.12.0"
-mt_service = "0.12.0"
-mt_log = { version = "0.12.0", features = ["tui", "env"] }
-mt_rat = "0.12.0"
+mt_pubsub = "0.13.0"
+mt_service = "0.13.0"
+mt_log = { version = "0.13.0", features = ["tui", "env"] }
+mt_rat = "0.13.0"
 cloudini = { version = "0.3.2", default-features = false, features = ["ros"] }
 imu-calib = "0.3"
 ros2-interfaces-jazzy-serde = { version = "0.0.5", features = [
