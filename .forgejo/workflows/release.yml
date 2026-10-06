@@ -1058,6 +1058,24 @@ jobs:
           name: wheels
           path: target/wheels
 
+  # Source distributions, pip builds from source when no wheel matches.
+  sdist:
+    needs:
+      - sanity
+    runs-on: ubuntu-dev-resolute
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build sdists
+        run: |
+          set -euo pipefail
+          maturin sdist --manifest-path pelorus_cli/Cargo.toml --out target/wheels
+          maturin sdist --manifest-path pelorus_py/Cargo.toml --out target/wheels
+      - name: Upload sdists
+        uses: actions/upload-artifact@v3
+        with:
+          name: wheels
+          path: target/wheels
+
   wheels-aarch64-gnu:
     # Split out of `wheels` because this target needs both a native arm64 build
     # (zig cannot link aarch64, see the note there) and a pinned glibc floor.
@@ -1674,9 +1692,10 @@ jobs:
   publish-pypi:
     needs:
       - release
+      - sdist
     runs-on: ubuntu-dev-resolute
     steps:
-      - name: Download CPU wheels
+      - name: Download CPU wheels and sdists
         uses: actions/download-artifact@v3
         with:
           name: wheels
@@ -1689,8 +1708,8 @@ jobs:
         run: |
           set -euo pipefail
 
-          echo "=== Wheels to publish ==="
-          ls -lh dist/*.whl 2>/dev/null || true
+          echo "=== Python distributions to publish ==="
+          ls -lh dist/*.whl dist/*.tar.gz 2>/dev/null || true
 
           twine upload \
             --username __token__ \
@@ -1698,22 +1717,22 @@ jobs:
             --non-interactive \
             --skip-existing \
             --verbose \
-            dist/*.whl
+            dist/*.whl dist/*.tar.gz
 
           echo "Published to PyPI."
 
-  # publish-crates:
-  #   needs:
-  #     - release
-  #   runs-on: ubuntu-dev-resolute
-  #   if: startsWith(github.ref, 'refs/tags/')
-  #   steps:
-  #     - uses: actions/checkout@v4
-  #     - name: Dependencies
-  #       run: apt-get update && apt-get install -y pkg-config libssl-dev
-  #     - name: Publish to crates.io
-  #       env:
-  #         CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
-  #       run: |
-  #         set -euo pipefail
-  #         bash ./scripts/cargo-publish.sh
+  publish-crates:
+    needs:
+      - release
+    runs-on: ubuntu-dev-resolute
+    if: startsWith(github.ref, 'refs/tags/')
+    steps:
+      - uses: actions/checkout@v4
+      - name: Dependencies
+        run: apt-get update && apt-get install -y pkg-config libssl-dev
+      - name: Publish to crates.io
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        run: |
+          set -euo pipefail
+          bash ./scripts/cargo-publish.sh
