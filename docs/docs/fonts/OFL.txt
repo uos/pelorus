@@ -1,4 +1,6 @@
-Copyright 2011 The Lora Project Authors (https://github.com/cyrealtype/Lora-Cyrillic), with Reserved Font Name "Lora".
+Copyright 2020 The Newsreader Project Authors (https://github.com/productiontype/Newsreader)
+Copyright 2026 Nico Verbruggen (https://github.com/nicoverbruggen/readerly)
+Copyright 2026 Nico Verbruggen (https://github.com/nicoverbruggen/libron), with Reserved Font Name "Libron".
 
 This Font Software is licensed under the SIL Open Font License, Version 1.1.
 This license is copied below, and is also available with a FAQ at:

@@ -123,7 +123,7 @@ extra_javascript = ["javascripts/config-reference.js"]
 # naming a font there does three things at once and they cannot be separated:
 # it emits a preconnect to fonts.gstatic.com, a stylesheet link to
 # fonts.googleapis.com that downloads the font, and the --md-text-font the rest
-# of the theme reads. Setting it to Lora would fetch Lora from Google and leave
+# of the theme reads. Setting it to Libron would fetch Libron from Google and leave
 # the copy in docs/fonts unused.
 #
 # So the fetch is turned off here and docs/stylesheets/fonts.css supplies the
@@ -352,7 +352,7 @@ accent = "cyan"
 # ----------------------------------------------------------------------------
 # Deliberately left unset. Naming a font here re-enables the Google Fonts
 # request that `font = false` above turns off, whatever the font is. See the
-# comment there. Lora is declared in docs/stylesheets/fonts.css, and code falls
+# comment there. Libron is declared in docs/stylesheets/fonts.css, and code falls
 # back to the theme's own monospace stack.
 
 # ----------------------------------------------------------------------------
