@@ -46,8 +46,11 @@ const KINEMATIC_MAX_GAIN: f64 = 0.8;
 /// Filter state. The index ranges are the layout of the 24-dimensional error
 /// vector used by the covariance, the Jacobians, [`compensate`] and [`box_minus`].
 ///
+/// Rotation indices use target frame first, source frame second:
+/// `v_A = R_AB * v_B`, so `R_AB` maps coordinates from frame B to frame A.
+///
 /// - pos (0-2): position in world frame
-/// - rot (3-5): rotation SO3 (world to IMU)
+/// - rot (3-5): rotation SO3 (IMU to world, R_WI)
 /// - offset_R_L_I (6-8): lidar-to-IMU rotation extrinsic
 /// - offset_T_L_I (9-11): lidar-to-IMU translation extrinsic
 /// - vel (12-14): velocity in world frame
@@ -57,7 +60,7 @@ const KINEMATIC_MAX_GAIN: f64 = 0.8;
 #[derive(Clone, Debug, Copy)]
 pub struct StateIKFom {
     pub pos: Vector3<f64>,          // position in world frame
-    pub rot: SO3,                   // rotation: world to IMU (T_W_I rotation part)
+    pub rot: SO3,                   // R_W_I: IMU to world rotation (T_W_I rotation part)
     pub offset_r_l_i: SO3,          // R_I_L: lidar to IMU rotation (extrinsic calibration)
     pub offset_t_l_i: Vector3<f64>, // t_I_L: lidar to IMU translation (extrinsic calibration)
     pub vel: Vector3<f64>,          // velocity in world frame
@@ -903,11 +906,11 @@ impl Eqf {
         // Current Lidar-to-IMU rotation (R_IL from state)
         let r_il = self.state.offset_r_l_i.matrix();
 
-        // Static Base-to-Lidar (R_BL from config)
+        // Static Lidar-to-Base rotation (R_BL from config)
         let r_bl_rot = self.base_to_lidar.rotation.to_rotation_matrix();
         let r_bl = r_bl_rot.matrix();
 
-        // Compute Base-to-IMU rotation: R_BI = R_BL * R_LI = R_BL * R_IL^T
+        // Compute IMU-to-Base rotation: R_BI = R_BL * R_LI = R_BL * R_IL^T
         let r_bi = r_bl * r_il.transpose();
 
         // Compute World-to-Base rotation: R_BW = R_BI * R_IW
