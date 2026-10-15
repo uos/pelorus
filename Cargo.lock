@@ -861,6 +861,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1fd0f2584146f6f2ef48085050886acf353beff7305ebd1ae69500e27c67f64b"
 
 [[package]]
+name = "byteorder-lite"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8f1fe948ff07f4bd06c30984e69f5b4899c516a3ef74f34df92a2df2ab535495"
+
+[[package]]
 name = "bytes"
 version = "1.12.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2121,6 +2127,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "da7c62ceae207dd37ea5b845da6a0696c799f85e97da1ab5b7910be3c1c80223"
 
 [[package]]
+name = "fdeflate"
+version = "0.3.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1e6853b52649d4ac5c0bd02320cddc5ba956bdb407c4b75a2c6b75bf51500f8c"
+dependencies = [
+ "simd-adler32",
+]
+
+[[package]]
 name = "filedescriptor"
 version = "0.8.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3089,6 +3104,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "image"
+version = "0.25.10"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "85ab80394333c02fe689eaf900ab500fbd0c2213da414687ebf995a65d5a6104"
+dependencies = [
+ "bytemuck",
+ "byteorder-lite",
+ "moxcms",
+ "num-traits",
+ "png",
+ "zune-core",
+ "zune-jpeg",
+]
+
+[[package]]
 name = "imu-calib"
 version = "0.3.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3987,6 +4017,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1fa76a2c86f704bdb222d66965fb3d63269ce38518b83cb0575fca855ebb6316"
 dependencies = [
  "adler2",
+ "simd-adler32",
 ]
 
 [[package]]
@@ -4078,10 +4109,18 @@ dependencies = [
 ]
 
 [[package]]
-name = "mt_coord"
-version = "0.13.0"
+name = "moxcms"
+version = "0.8.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "47bb94069ede2c2d8c0f3e752ba21b29a0816a86bc2c5689012190ab74cf0fe8"
+checksum = "bb85c154ba489f01b25c0d36ae69a87e4a1c73a72631fc6c0eb6dde34a73e44b"
+dependencies = [
+ "num-traits",
+ "pxfm",
+]
+
+[[package]]
+name = "mt_coord"
+version = "0.13.1"
 dependencies = [
  "anyhow",
  "fs2",
@@ -4095,9 +4134,7 @@ dependencies = [
 
 [[package]]
 name = "mt_log"
-version = "0.13.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "eb5f33d522ca2c73677a60b71fed2178a356d91538e2a37ad3f941c8a2d1b275"
+version = "0.13.1"
 dependencies = [
  "env_filter",
  "env_logger",
@@ -4109,11 +4146,10 @@ dependencies = [
 
 [[package]]
 name = "mt_net"
-version = "0.13.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "087e61997cce05eef83f6371d5f679ebe3a25c10ea352185acc79fc7a2b440fb"
+version = "0.13.1"
 dependencies = [
  "anyhow",
+ "image",
  "rkyv",
  "ros2-interfaces-jazzy-rkyv",
  "serde",
@@ -4121,9 +4157,7 @@ dependencies = [
 
 [[package]]
 name = "mt_pubsub"
-version = "0.13.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4f0630e329e65d69ba2c25678460c29143be437c5c93f6e74e4c402ffe4bd79d"
+version = "0.13.1"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -4135,15 +4169,15 @@ dependencies = [
  "nalgebra 0.35.0",
  "rkyv",
  "ros2-interfaces-jazzy-rkyv",
+ "serde_json",
  "tokio",
  "tokio-util",
+ "zenoh",
 ]
 
 [[package]]
 name = "mt_rat"
-version = "0.13.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d9da9e32980c605a855161d6f853c0f8aa91843180dde55c1eea4a67805ec250"
+version = "0.13.1"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -4158,9 +4192,7 @@ dependencies = [
 
 [[package]]
 name = "mt_scope"
-version = "0.13.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "13c4d1921cbab7342cb1d12dbfceeafe04dccc4f7a43624d0ac54bacdf847bac"
+version = "0.13.1"
 dependencies = [
  "anyhow",
  "env_logger",
@@ -4173,9 +4205,7 @@ dependencies = [
 
 [[package]]
 name = "mt_sea"
-version = "0.13.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2c571d02288eb4fb9147aec04a44eb44f0799255c51d7685b88307933bf53bc2"
+version = "0.13.1"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -4192,9 +4222,7 @@ dependencies = [
 
 [[package]]
 name = "mt_service"
-version = "0.13.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "fce6a66afc8a3f2e09ba9a6119c79770ac1e8a73b88b8bcf6c4f9b3d4d850afc"
+version = "0.13.1"
 dependencies = [
  "anyhow",
  "log",
@@ -4750,7 +4778,7 @@ checksum = "7aac2e6a6e4468ffa092ad43c39b81c79196c2bb773b8db4085f695efe3bba17"
 dependencies = [
  "libc",
  "ndarray 0.17.2",
- "num-complex 0.4.6",
+ "num-complex 0.2.4",
  "num-integer",
  "num-traits",
  "pyo3",
@@ -5696,6 +5724,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "png"
+version = "0.18.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "60769b8b31b2a9f263dae2776c37b1b28ae246943cf719eb6946a1db05128a61"
+dependencies = [
+ "bitflags 2.13.2",
+ "crc32fast",
+ "fdeflate",
+ "flate2",
+ "miniz_oxide 0.8.9",
+]
+
+[[package]]
 name = "poll-promise"
 version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5911,6 +5952,12 @@ name = "pulp-wasm-simd-flag"
 version = "0.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1d8f70e07b9c3962945a74e59ca1c511bba65b6419468acc217c457d93f3c740"
+
+[[package]]
+name = "pxfm"
+version = "0.1.30"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d55d956fa96f5ec02be2e13af0e20391a5aa83d6a074e3ad368959d0fab299ea"
 
 [[package]]
 name = "pyo3"
@@ -9285,8 +9332,6 @@ dependencies = [
 [[package]]
 name = "transforms_io"
 version = "0.7.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8249cf5d1d3c4759c12d273d3cc67115d35594c02883f890f5cbc1587a3bffa3"
 dependencies = [
  "futures-lite",
  "hiroz",
@@ -11073,4 +11118,19 @@ checksum = "0ef0a8027ec3ee71300ab3bcbcd0393f434aa72b91ca6d635a39941deae8eea0"
 dependencies = [
  "cc",
  "pkg-config",
+]
+
+[[package]]
+name = "zune-core"
+version = "0.5.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d56377fd46368984a170bc5aac5567e52ca5da874caa60bea39fcbca78fb658b"
+
+[[package]]
+name = "zune-jpeg"
+version = "0.5.15"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "27bc9d5b815bc103f142aa054f561d9187d191692ec7c2d1e2b4737f8dbd7296"
+dependencies = [
+ "zune-core",
 ]

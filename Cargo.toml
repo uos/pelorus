@@ -211,14 +211,15 @@ inherits = "release"
 [profile.dev.package.backtrace]
 opt-level = 3
 
-# [patch.crates-io]
+[patch.crates-io]
 # imu-calib 0.4 is not published yet; drop this once it is.
 # imu-calib = { path = "../imu-calib" }
 # ros_pointcloud2 = { path = "../ros_pointcloud2/ros_pointcloud2" }
-# mt_pubsub = { path = "../minot/mt_pubsub" }
-# mt_service = { path = "../minot/mt_service" }
-# mt_rat = { path = "../minot/mt_rat" }
-# mt_log = { path = "../minot/mt_log" }
+mt_pubsub = { path = "../minot/mt_pubsub" }
+mt_service = { path = "../minot/mt_service" }
+mt_rat = { path = "../minot/mt_rat" }
+mt_log = { path = "../minot/mt_log" }
+transforms_io = { path = "../transforms_io" }
 # ros_pointcloud2 = { git = "ssh://git@git.steado.tech/ros_pointcloud2.git", branch = "main" }
 # mt_pubsub = { git = "ssh://git@git.steado.tech/minot.git", branch = "hiroz" }
 # mt_rat = { git = "ssh://git@git.steado.tech/minot.git", branch = "hiroz" }

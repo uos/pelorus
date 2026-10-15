@@ -60,6 +60,7 @@ pub struct RawOptions {
     pub mcap_cloud_topic: Option<String>,
     pub mcap_imu_topic: Option<String>,
     pub local_only: bool,
+    pub coord_mode: crate::pubsub::PubSubCoordMode,
     pub yes: bool,
 }
 

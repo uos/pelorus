@@ -218,7 +218,7 @@ pub fn run(config: LioConfig, options: RawOptions, shutdown: Arc<AtomicBool>) ->
         rt.block_on(async {
             let node_config = mt_pubsub::NodeConfig::new("pelorus_raw_node")
                 .mode(mt_pubsub::Qos::Reliable)
-                .coord_mode(mt_pubsub::CoordMode::AutoStart)
+                .coord_mode(options.coord_mode.into())
                 .local_only(options.local_only);
             mt_pubsub::Node::create(node_config).await
         })

@@ -248,6 +248,7 @@ use std::path::PathBuf;
 
 use pelorus_cli::mcap_output::{McapOutputWriter, McapTopics};
 use pelorus_cli::output_target::{normalize_mcap_topic, prepare_output_targets, rosbag_mcap_path};
+use pelorus_cli::pubsub::PubSubCoordMode;
 use pelorus_cli::raw::RawSensor;
 #[cfg(feature = "rat")]
 use pelorus_cli::stats_tui::relay_child_line;
@@ -406,6 +407,10 @@ pub struct RawArgs {
     #[arg(long, default_value_t = false)]
     pub local_only: bool,
 
+    /// Pub/sub coordination. Must match the mode of the nodes Pelorus talks to.
+    #[arg(long, value_enum, default_value_t = PubSubCoordMode::Peer)]
+    pub coord_mode: PubSubCoordMode,
+
     #[command(flatten)]
     pub recording: RawRecordingArgs,
 
@@ -548,6 +553,10 @@ pub struct OfflineArgs {
     #[arg(long, default_value_t = false)]
     pub open_router: bool,
 
+    /// Pub/sub coordination of Pelorus and of the Minot turbine it spawns.
+    #[arg(long, value_enum, default_value_t = PubSubCoordMode::Peer)]
+    pub coord_mode: PubSubCoordMode,
+
     /// Answer yes to overwrite prompts.
     #[arg(short = 'y', long, default_value_t = false)]
     pub yes: bool,
@@ -621,6 +630,10 @@ pub struct ConfigArgs {
     /// Restrict Pelorus pub/sub communication to this host.
     #[arg(long, default_value_t = false)]
     pub local_only: bool,
+
+    /// Pub/sub coordination. Must match the mode of the nodes Pelorus talks to.
+    #[arg(long, value_enum, default_value_t = PubSubCoordMode::Peer)]
+    pub coord_mode: PubSubCoordMode,
 
     /// ROS node name used by the r2r backend.
     #[cfg(feature = "r2r")]
@@ -1490,6 +1503,7 @@ struct LioRunOptions {
     /// can hold the bag until Polarstern's subscribers exist.
     downstream_registered: Option<std::sync::mpsc::Sender<()>>,
     mt_pubsub_local_only: bool,
+    mt_pubsub_coord_mode: PubSubCoordMode,
     output_mcap: Option<McapOutputConfig>,
 }
 
@@ -1744,6 +1758,8 @@ fn lio_with_ready_signal(
         downstream_registered,
         #[allow(unused_variables)]
         mt_pubsub_local_only,
+        #[allow(unused_variables)]
+        mt_pubsub_coord_mode,
         output_mcap,
     } = options;
     let replay_tick_debt = Arc::new(AtomicUsize::new(0));
@@ -1801,7 +1817,7 @@ fn lio_with_ready_signal(
             .block_on(async {
                 let node_config = mt_pubsub::NodeConfig::new("pelorus_node")
                     .mode(mt_pubsub::Qos::Reliable)
-                    .coord_mode(mt_pubsub::CoordMode::AutoStart)
+                    .coord_mode(mt_pubsub_coord_mode.into())
                     .local_only(mt_pubsub_local_only);
 
                 Node::create(node_config).await
@@ -1983,13 +1999,24 @@ fn lio_with_ready_signal(
     #[cfg(feature = "ros2-client")]
     let tf_broadcaster = Arc::new(TfBroadcaster::new(&mut node));
     #[cfg(feature = "mt_pubsub")]
-    let tf_broadcaster = Arc::new(TfBroadcaster::new(
-        rt.as_ref()
+    let tf_broadcaster = {
+        let rt = rt
+            .as_ref()
             .expect("rt always exists with mt_pubsub feat")
-            .clone(),
-        mt_pubsub_local_only,
-        mt_pubsub::Qos::Reliable,
-    ));
+            .clone();
+        // Publish TF in the same network as Pelorus' other topics.
+        let coord_mode = match mt_pubsub_coord_mode {
+            // Local-only runs share the coordinator Pelorus or Minot already started.
+            PubSubCoordMode::Autostart if mt_pubsub_local_only => mt_pubsub::CoordMode::External,
+            mode => mode.into(),
+        };
+        Arc::new(TfBroadcaster::with_coord_mode(
+            rt,
+            mt_pubsub_local_only,
+            mt_pubsub::Qos::Reliable,
+            coord_mode,
+        ))
+    };
     #[cfg(feature = "hiroz")]
     let tf_broadcaster = Arc::new(
         TfBroadcaster::new(&node)
@@ -4793,6 +4820,7 @@ fn run_raw(
         mcap_cloud_topic: args.recording.mcap_cloud_topic,
         mcap_imu_topic: args.recording.mcap_imu_topic,
         local_only: args.local_only,
+        coord_mode: args.coord_mode,
         yes: args.yes,
     };
 
@@ -4930,6 +4958,7 @@ fn main() -> Result<(), Box<dyn CoreError>> {
                 let lio_stats = Some(shared_stats);
                 let lio_output_mcap = output_mcap_config.clone();
                 let lio_local_only = config_args.local_only;
+                let lio_coord_mode = config_args.coord_mode;
                 #[cfg(feature = "r2r")]
                 let lio_ros_node_args = RosNodeArgs {
                     node_name: config_args.node_name.clone(),
@@ -4966,6 +4995,7 @@ fn main() -> Result<(), Box<dyn CoreError>> {
                             replay_tick_owner: ReplayTickOwner::Pelorus,
                             downstream_registered: None,
                             mt_pubsub_local_only: lio_local_only,
+                            mt_pubsub_coord_mode: lio_coord_mode,
                             output_mcap: lio_output_mcap,
                         },
                     )
@@ -5035,6 +5065,7 @@ fn main() -> Result<(), Box<dyn CoreError>> {
                         replay_tick_owner: ReplayTickOwner::Pelorus,
                         downstream_registered: None,
                         mt_pubsub_local_only: config_args.local_only,
+                        mt_pubsub_coord_mode: config_args.coord_mode,
                         output_mcap: output_mcap_config,
                     },
                 )
@@ -5218,6 +5249,11 @@ fn main() -> Result<(), Box<dyn CoreError>> {
                 if offline_local_only {
                     minot_command.arg("--local-only");
                 }
+                // The turbine must publish in the mode Pelorus subscribes with.
+                minot_command.env(
+                    "wind_ratpub_coord_mode",
+                    offline_args.coord_mode.minot_turbine_env(),
+                );
 
                 #[cfg(unix)]
                 if !offline_args.polarstern {
@@ -5410,6 +5446,7 @@ fn main() -> Result<(), Box<dyn CoreError>> {
                     };
                 let output_mcap_config_for_run = output_mcap_config.clone();
                 let lio_local_only = offline_local_only;
+                let lio_coord_mode = offline_args.coord_mode;
 
                 let lio_handle = std::thread::spawn(move || {
                     let synchronous_mode = config.sync_node_params.synchronous_mode;
@@ -5442,6 +5479,7 @@ fn main() -> Result<(), Box<dyn CoreError>> {
                                 replay_tick_owner,
                                 downstream_registered: downstream_registered_tx,
                                 mt_pubsub_local_only: lio_local_only,
+                                mt_pubsub_coord_mode: lio_coord_mode,
                                 output_mcap: output_mcap_config_for_run,
                             },
                         )
