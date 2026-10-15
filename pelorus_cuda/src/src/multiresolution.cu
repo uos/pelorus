@@ -44,6 +44,10 @@ template <class T> struct Buffer {
     capacity = n + n / 2 + 1;
     MR_CHECK(cudaMalloc(&p, capacity * sizeof(T)));
   }
+  void swap(Buffer &other) {
+    std::swap(p, other.p);
+    std::swap(capacity, other.capacity);
+  }
 };
 struct Dist {
   uint64_t count;
@@ -64,27 +68,53 @@ struct Fit {
   int status;
   float mean[3], normal[3], tangent[2][3], extent[2], quality, d;
 };
+// Fit of a cell that is absent from the map, cached for one map version.
+// state = version << 1 | ready; a slot of an older version counts as empty, so
+// the cache never has to be cleared.
+struct MissSlot {
+  uint32_t state;
+  int3 key;
+  Fit fit;
+};
+struct MissWork {
+  uint32_t level, slot;
+  int3 key;
+};
 struct Level {
   Cell *cells;
   Fit *fits;
   int *table;
   uint32_t n, table_n;
   float resolution;
+  MissSlot *miss;
+  uint32_t miss_n;
 };
 struct Storage {
-  Buffer<Cell> cells;
-  Buffer<Fit> fits;
-  Buffer<int> table;
-  uint32_t n = 0, budget = 0, table_n = 0;
+  // *_next hold the level while a scan is merged, so unchanged fits can be
+  // carried over from the previous version instead of being recomputed.
+  Buffer<Cell> cells, cells_next;
+  Buffer<Fit> fits, fits_next;
+  Buffer<int> table, table_next;
+  Buffer<unsigned char> dirty;
+  Buffer<MissSlot> miss;
+  uint32_t n = 0, budget = 0, table_n = 0, miss_n = 0;
 };
+struct EvictKey;
 struct State {
   Storage level[4];
   float base, sensitivity;
   uint32_t capacity;
+  // Map version for the miss caches, advanced after every map update.
+  uint32_t version = 1;
   Buffer<Sample> samples, valid_samples;
   Buffer<Cell> batches, parents, scratch, merged;
   Buffer<PointNormal> planes;
   Buffer<unsigned char> flags;
+  Buffer<MissWork> work;
+  Buffer<uint32_t> counters;
+  Buffer<EvictKey> evict;
+  Buffer<unsigned char> evicted;
+  Buffer<Cell> evicted_cells;
 };
 static State *state = nullptr;
 __host__ __device__ bool less(int3 a, int3 b) {
@@ -294,24 +324,52 @@ __global__ void combine(const Cell *in, uint32_t n, Cell *out, bool temporal,
   }
   out[i] = c;
 }
+// The fields eviction ranks by, so it sorts 32 instead of 80 bytes per cell.
+struct EvictKey {
+  uint64_t count;
+  uint32_t age;
+  int3 key;
+  uint32_t index;
+};
 // Exact 128-bit age/support products, including a coordinate tie break.
-struct EvictLess {
-  uint32_t scan;
-  __host__ __device__ bool operator()(const Cell &a, const Cell &b) const {
-    uint64_t age_a = scan >= a.d.scan ? scan - a.d.scan : 0,
-             age_b = scan >= b.d.scan ? scan - b.d.scan : 0;
-    uint64_t lo_a = age_a * b.d.count, lo_b = age_b * a.d.count, hi_a, hi_b;
+struct EvictKeyLess {
+  __host__ __device__ bool operator()(const EvictKey &a,
+                                      const EvictKey &b) const {
+    uint64_t age_a = a.age, age_b = b.age;
+    uint64_t lo_a = age_a * b.count, lo_b = age_b * a.count, hi_a, hi_b;
 #ifdef __CUDA_ARCH__
-    hi_a = __umul64hi(age_a, b.d.count);
-    hi_b = __umul64hi(age_b, a.d.count);
+    hi_a = __umul64hi(age_a, b.count);
+    hi_b = __umul64hi(age_b, a.count);
 #else
-    hi_a = uint64_t((__uint128_t(age_a) * b.d.count) >> 64);
-    hi_b = uint64_t((__uint128_t(age_b) * a.d.count) >> 64);
+    hi_a = uint64_t((__uint128_t(age_a) * b.count) >> 64);
+    hi_b = uint64_t((__uint128_t(age_b) * a.count) >> 64);
 #endif
     if (hi_a != hi_b)
       return hi_a > hi_b;
     return lo_a != lo_b ? lo_a > lo_b : less(a.key, b.key);
   }
+};
+__global__ void evict_keys(const Cell *cells, uint32_t n, uint32_t scan,
+                           EvictKey *out) {
+  uint32_t i = blockIdx.x * blockDim.x + threadIdx.x;
+  if (i >= n)
+    return;
+  const Cell &c = cells[i];
+  out[i] = EvictKey{c.d.count, scan >= c.d.scan ? scan - c.d.scan : 0u, c.key,
+                    i};
+}
+// Flags the evicted cells and lists them for mark_dirty.
+__global__ void flag_evicted(const EvictKey *keys, uint32_t excess,
+                             const Cell *cells, unsigned char *evicted,
+                             Cell *evicted_cells) {
+  uint32_t i = blockIdx.x * blockDim.x + threadIdx.x;
+  if (i >= excess)
+    return;
+  evicted[keys[i].index] = 1;
+  evicted_cells[i] = cells[keys[i].index];
+}
+struct NotFlagged {
+  __host__ __device__ bool operator()(unsigned char a) const { return a == 0; }
 };
 
 
@@ -404,10 +462,54 @@ __device__ Fit neighborhood(Level l, int3 key, float base) {
       }
   return fit(d, base);
 }
-__global__ void cache_fits(Level l, float base) {
+// A fit only depends on the 27 cells around its key. Marks every cell of the
+// new level version next to a cell that was updated, inserted or evicted.
+__global__ void mark_dirty(const Cell *changed, uint32_t n, Level next,
+                           unsigned char *dirty) {
   uint32_t i = blockIdx.x * blockDim.x + threadIdx.x;
-  if (i < l.n)
-    l.fits[i] = neighborhood(l, l.cells[i].key, base);
+  if (i >= n)
+    return;
+  int3 key = changed[i].key;
+  for (int x = -1; x <= 1; ++x)
+    for (int y = -1; y <= 1; ++y)
+      for (int z = -1; z <= 1; ++z) {
+        int j = lookup(next, make_int3(neighbor(key.x, x), neighbor(key.y, y),
+                                       neighbor(key.z, z)));
+        if (j >= 0)
+          dirty[j] = 1;
+      }
+}
+// Carries unchanged fits over from the previous level version and refits the
+// rest. Gives the same fits as refitting every cell of the new version.
+__global__ void refresh_fits(Level prev, Level next, const unsigned char *dirty,
+                             float base) {
+  uint32_t i = blockIdx.x * blockDim.x + threadIdx.x;
+  if (i >= next.n)
+    return;
+  int3 key = next.cells[i].key;
+  if (!dirty[i]) {
+    int j = lookup(prev, key);
+    if (j >= 0) {
+      next.fits[i] = prev.fits[j];
+      return;
+    }
+  }
+  next.fits[i] = neighborhood(next, key, base);
+}
+// Neighborhood fits of absent cells do not change while the map is unchanged,
+// but the iterated correction queries them up to max_iter + 1 times per scan.
+constexpr int MISS_PROBES = 32;
+__device__ const Fit *cached_miss(Level l, int3 key, uint32_t version) {
+  uint32_t slot = hash(key) & (l.miss_n - 1);
+  for (int probe = 0; probe < MISS_PROBES; ++probe) {
+    uint32_t st = l.miss[slot].state;
+    if ((st >> 1) != version)
+      return nullptr;
+    if ((st & 1) && equal(l.miss[slot].key, key))
+      return &l.miss[slot].fit;
+    slot = (slot + 1) & (l.miss_n - 1);
+  }
+  return nullptr;
 }
 __device__ void transform_f32(Pose pose, const float *p, float *out) {
   float x = float(pose.orientation.x), y = float(pose.orientation.y),
@@ -418,9 +520,69 @@ __device__ void transform_f32(Pose pose, const float *p, float *out) {
   out[1] = p[1] + w * ty + (z * tx - x * tz) + float(pose.position.y);
   out[2] = p[2] + w * tz + (x * ty - y * tx) + float(pose.position.z);
 }
+// Pass 1: claims a miss-cache slot for every absent cell a point could query on
+// any level and lists it once, so pass 2 computes each fit a single time in a
+// kernel where all threads take the same path.
+__global__ void collect_misses(const Point *cloud, uint32_t n, Pose ext,
+                               Pose pose, Level l0, Level l1, Level l2,
+                               Level l3, uint32_t version, MissWork *work,
+                               uint32_t work_cap, uint32_t *work_count) {
+  uint32_t i = blockIdx.x * blockDim.x + threadIdx.x;
+  if (i >= n)
+    return;
+  float local[3] = {cloud[i].x, cloud[i].y, cloud[i].z}, imu[3], world[3];
+  transform_f32(ext, local, imu);
+  transform_f32(pose, imu, world);
+  if (!isfinite(world[0]) || !isfinite(world[1]) || !isfinite(world[2]))
+    return;
+  Level levels[4] = {l0, l1, l2, l3};
+  for (int level = 0; level < 4; ++level) {
+    Level l = levels[level];
+    int3 k = grid(world, l.resolution);
+    if (lookup(l, k) >= 0)
+      continue;
+    uint32_t slot = hash(k) & (l.miss_n - 1);
+    for (int probe = 0; probe < MISS_PROBES; ++probe) {
+      volatile MissSlot *s = l.miss + slot;
+      uint32_t st = s->state;
+      if ((st >> 1) != version) {
+        // Empty for this map version: claim it, still not ready.
+        if (atomicCAS(&l.miss[slot].state, st, version << 1) == st) {
+          l.miss[slot].key = k;
+          uint32_t w = atomicAdd(work_count, 1u);
+          // A full list leaves the slot unready; pass 3 then fits inline.
+          if (w < work_cap)
+            work[w] = MissWork{uint32_t(level), slot, k};
+          break;
+        }
+        continue; // lost the race for this slot, look at it again
+      }
+      // Claimed in this version. A slot claimed in this launch may still show
+      // an older key, which at worst lists a key twice or leaves it to pass 3.
+      if (s->key.x == k.x && s->key.y == k.y && s->key.z == k.z)
+        break;
+      slot = (slot + 1) & (l.miss_n - 1);
+    }
+  }
+}
+// Pass 2: one fit per listed absent cell.
+__global__ void compute_misses(const MissWork *work, const uint32_t *work_count,
+                               uint32_t work_cap, Level l0, Level l1, Level l2,
+                               Level l3, float base, uint32_t version) {
+  uint32_t i = blockIdx.x * blockDim.x + threadIdx.x;
+  if (i >= min(*work_count, work_cap))
+    return;
+  MissWork w = work[i];
+  Level levels[4] = {l0, l1, l2, l3};
+  Level l = levels[w.level];
+  l.miss[w.slot].fit = neighborhood(l, w.key, base);
+  l.miss[w.slot].state = (version << 1) | 1;
+}
+// Pass 3: plane selection, reading absent-cell fits from the cache.
 __global__ void query(const Point *cloud, uint32_t n, Pose ext, Pose pose,
                       Level l0, Level l1, Level l2, Level l3, float base,
-                      PointNormal *out, unsigned char *flags) {
+                      uint32_t version, PointNormal *out,
+                      unsigned char *flags) {
   uint32_t i = blockIdx.x * blockDim.x + threadIdx.x;
   if (i >= n)
     return;
@@ -436,11 +598,15 @@ __global__ void query(const Point *cloud, uint32_t n, Pose ext, Pose pose,
     Level l = levels[level];
     int3 k = grid(world, l.resolution);
     int cell = lookup(l, k);
-    Fit f = cell >= 0 ? l.fits[cell] : neighborhood(l, k, base);
-    if (f.status == 0)
+    Fit f;
+    if (cell >= 0) {
+      f = l.fits[cell];
+    } else {
+      const Fit *cached = cached_miss(l, k, version);
+      f = cached ? *cached : neighborhood(l, k, base);
+    }
+    if (f.status != 2)
       continue;
-    if (f.status == 1)
-      break;
     float delta[3];
     for (int k = 0; k < 3; ++k)
       delta[k] = world[k] - f.mean[k];
@@ -482,8 +648,15 @@ static int blocks(uint32_t n) { return (n + 255) / 256; }
 static Level view(int i) {
   auto &s = *state;
   auto &l = s.level[i];
-  return {l.cells.p, l.fits.p,  l.table.p,
-          l.n,       l.table_n, s.base * (.5f * float(1 << i))};
+  return {l.cells.p, l.fits.p, l.table.p, l.n, l.table_n,
+          s.base * (.5f * float(1 << i)), l.miss.p, l.miss_n};
+}
+// The level version being built while a scan is merged.
+static Level view_next(int i, uint32_t n) {
+  auto &s = *state;
+  auto &l = s.level[i];
+  return {l.cells_next.p, l.fits_next.p, l.table_next.p, n, l.table_n,
+          s.base * (.5f * float(1 << i)), l.miss.p, l.miss_n};
 }
 } // namespace mr
 
@@ -496,17 +669,26 @@ void init_multiresolution_impl(uint32_t capacity, float base,
   s.capacity = capacity;
   s.base = base;
   s.sensitivity = sensitivity;
+  s.counters.reserve(1);
   for (int i = 0; i < 4; ++i) {
     auto &l = s.level[i];
     l.budget = capacity / 4 + uint32_t(i < int(capacity % 4));
     l.cells.reserve(l.budget);
+    l.cells_next.reserve(l.budget);
     l.fits.reserve(l.budget);
+    l.fits_next.reserve(l.budget);
+    l.dirty.reserve(l.budget);
     // Power-of-two tables avoid integer division on every neighborhood probe.
     l.table_n = 1;
     while (l.table_n < 2 * l.budget)
       l.table_n *= 2;
     l.table.reserve(l.table_n);
+    l.table_next.reserve(l.table_n);
     MR_CHECK(cudaMemset(l.table.p, 255, size_t(l.table_n) * sizeof(int)));
+    // State 0 belongs to version 0, which is never current: all slots empty.
+    l.miss_n = l.table_n;
+    l.miss.reserve(l.miss_n);
+    MR_CHECK(cudaMemset(l.miss.p, 0, size_t(l.miss_n) * sizeof(mr::MissSlot)));
   }
 }
 void add_multiresolution_impl(cudaStream_t stream, Point *points, uint32_t n,
@@ -562,22 +744,56 @@ void add_multiresolution_impl(cudaStream_t stream, Point *points, uint32_t n,
                                      s.scratch.p, ValidCell{}) -
                      s.scratch.p;
     uint32_t excess = count > l.budget ? count - l.budget : 0;
-    if (excess)
-      thrust::sort(policy, s.scratch.p, s.scratch.p + count, EvictLess{scan});
-    l.n = count - excess;
-    MR_CHECK(cudaMemcpyAsync(l.cells.p, s.scratch.p + excess,
-                             l.n * sizeof(Cell), cudaMemcpyDeviceToDevice,
+    uint32_t n_next = count - excess;
+    if (excess) {
+      // Rank compact keys instead of whole cells, then drop the evicted cells
+      // with an order-preserving compaction: the merge is already key-sorted,
+      // so no second sort is needed.
+      s.evict.reserve(count);
+      s.evicted.reserve(count);
+      s.evicted_cells.reserve(excess);
+      evict_keys<<<blocks(count), 256, 0, stream>>>(s.scratch.p, count, scan,
+                                                    s.evict.p);
+      thrust::sort(policy, s.evict.p, s.evict.p + count, EvictKeyLess{});
+      MR_CHECK(cudaMemsetAsync(s.evicted.p, 0, count, stream));
+      flag_evicted<<<blocks(excess), 256, 0, stream>>>(
+          s.evict.p, excess, s.scratch.p, s.evicted.p, s.evicted_cells.p);
+      uint32_t kept = thrust::copy_if(policy, s.scratch.p, s.scratch.p + count,
+                                      s.evicted.p, l.cells_next.p,
+                                      NotFlagged{}) -
+                      l.cells_next.p;
+      assert(kept == n_next);
+      (void)kept;
+    } else {
+      MR_CHECK(cudaMemcpyAsync(l.cells_next.p, s.scratch.p,
+                               n_next * sizeof(Cell), cudaMemcpyDeviceToDevice,
+                               stream));
+    }
+    Level prev = view(i), next = view_next(i, n_next);
+    MR_CHECK(cudaMemsetAsync(next.table, 255, next.table_n * sizeof(int),
                              stream));
-    // Without eviction, compaction preserved the merge's sorted key order.
-    if (excess)
-      thrust::sort(policy, l.cells.p, l.cells.p + l.n, CellLess{});
-    Level v = view(i);
-    MR_CHECK(cudaMemsetAsync(v.table, 255, v.table_n * sizeof(int), stream));
-    index_cells<<<blocks(l.n), 256, 0, stream>>>(v);
-    cache_fits<<<blocks(l.n), 256, 0, stream>>>(v, s.base);
+    if (n_next)
+      index_cells<<<blocks(n_next), 256, 0, stream>>>(next);
+    // Only fits next to this scan's updates, insertions and evictions change.
+    MR_CHECK(cudaMemsetAsync(l.dirty.p, 0, n_next, stream));
+    if (batches && n_next)
+      mark_dirty<<<blocks(batches), 256, 0, stream>>>(s.batches.p, batches,
+                                                      next, l.dirty.p);
+    if (excess && n_next)
+      mark_dirty<<<blocks(excess), 256, 0, stream>>>(s.evicted_cells.p, excess, next,
+                                                     l.dirty.p);
+    if (n_next)
+      refresh_fits<<<blocks(n_next), 256, 0, stream>>>(prev, next, l.dirty.p,
+                                                       s.base);
+    l.cells.swap(l.cells_next);
+    l.fits.swap(l.fits_next);
+    l.table.swap(l.table_next);
+    l.n = n_next;
   }
   MR_CHECK(cudaGetLastError());
   MR_CHECK(cudaStreamSynchronize(stream));
+  // The map changed, so cached fits of absent cells are stale.
+  ++s.version;
 }
 uint32_t planes_multiresolution_impl(cudaStream_t stream, Point *cloud,
                                      uint32_t n, Pose ext, Pose pose,
@@ -588,9 +804,18 @@ uint32_t planes_multiresolution_impl(cudaStream_t stream, Point *cloud,
   auto &s = *state;
   s.planes.reserve(n);
   s.flags.reserve(n);
+  uint32_t work_cap = 4 * n;
+  s.work.reserve(work_cap);
+  MR_CHECK(cudaMemsetAsync(s.counters.p, 0, sizeof(uint32_t), stream));
+  collect_misses<<<blocks(n), 256, 0, stream>>>(
+      cloud, n, ext, pose, view(0), view(1), view(2), view(3), s.version,
+      s.work.p, work_cap, s.counters.p);
+  compute_misses<<<blocks(work_cap), 256, 0, stream>>>(
+      s.work.p, s.counters.p, work_cap, view(0), view(1), view(2), view(3),
+      s.base, s.version);
   query<<<blocks(n), 256, 0, stream>>>(cloud, n, ext, pose, view(0), view(1),
-                                       view(2), view(3), s.base, s.planes.p,
-                                       s.flags.p);
+                                       view(2), view(3), s.base, s.version,
+                                       s.planes.p, s.flags.p);
   uint32_t count =
       thrust::copy_if(thrust::cuda::par_nosync.on(stream), s.planes.p,
                       s.planes.p + n, s.flags.p, out, Flag{}) -

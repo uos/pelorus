@@ -23,7 +23,7 @@ use faer::linalg::solvers::DenseSolveCore;
 use faer::prelude::{Reborrow, ReborrowMut};
 use faer::{Col, Mat};
 use log::{error, warn};
-use nalgebra::Vector3; // Keep for sophus_lie interface
+use nalgebra::{DMatrix, Vector3}; // Keep Vector3 for sophus_lie interface
 use pelorus_core::{
     KinematicModel, OdomMsg, log_debouncer::should_log_once_default, timing::RuntimeEvaluator,
 };
@@ -621,6 +621,7 @@ impl Eqf {
         odom: OdomMsg,
         kinematic: KinematicModel,
         cov_override: Option<f64>,
+        gyro_measurement: Vector3<f64>,
     ) {
         if !self.initialized {
             return;
@@ -640,60 +641,159 @@ impl Eqf {
         }
         self.last_time = t;
 
-        let base_cov = cov_override.unwrap_or_else(|| {
-            let cov_x = odom.twist_cov[0];
-            let cov_y = odom.twist_cov[4];
-            let cov_z = odom.twist_cov[8];
-            cov_x.max(cov_y).max(cov_z).max(0.001)
-        });
+        let components: &[usize] = match kinematic {
+            KinematicModel::Differential | KinematicModel::Ackermann { .. } => &[0],
+            KinematicModel::Holonomic2D => &[0, 1],
+            KinematicModel::Full3D => &[0, 1, 2],
+        };
 
-        let adjusted_base_cov = base_cov * (1.0 + dt_gap * 5.0);
-        let r_wi = self.state.rot.matrix();
-
-        // Current Lidar-to-IMU rotation (R_IL from state)
-        let r_il = self.state.offset_r_l_i.matrix();
-
-        // Static Base-to-Lidar (R_BL from config)
-        let r_bl_rot = self.base_to_lidar.rotation.to_rotation_matrix();
-        let r_bl = r_bl_rot.matrix();
-
-        // Compute Base-to-IMU rotation: R_BI = R_BL * R_IL^T
-        let r_bi = r_bl * r_il.transpose();
-
-        // Compute Base-to-World rotation: R_WB = R_WI * R_BI^T
-        let r_wb = r_wi * r_bi.transpose();
-
-        // Measurement is in Base frame, transform to World frame
-        let v_meas_world = r_wb * odom.twist_linear;
-
-        match kinematic {
-            KinematicModel::Differential | KinematicModel::Ackermann { .. } => {
-                self.correct_velocity_component(0, v_meas_world.x, adjusted_base_cov);
+        let covariance_scale = 1.0 + dt_gap * 5.0;
+        let mut measurement_cov = DMatrix::<f64>::zeros(components.len(), components.len());
+        if let Some(variance) = cov_override {
+            if !variance.is_finite() || variance <= 0.0 {
+                warn!("Invalid wheel odometry covariance override");
+                return;
             }
-
-            KinematicModel::Holonomic2D => {
-                self.correct_velocity_component(0, v_meas_world.x, adjusted_base_cov);
-                self.correct_velocity_component(1, v_meas_world.y, adjusted_base_cov);
+            for diagonal in 0..components.len() {
+                measurement_cov[(diagonal, diagonal)] = variance * covariance_scale;
             }
-
-            KinematicModel::Full3D => {
-                self.correct_velocity_component(0, v_meas_world.x, adjusted_base_cov);
-                self.correct_velocity_component(1, v_meas_world.y, adjusted_base_cov);
-                self.correct_velocity_component(2, v_meas_world.z, adjusted_base_cov);
+        } else {
+            // geometry_msgs/TwistWithCovariance is row-major in the order
+            // [linear xyz, angular xyz], so the linear diagonal is 0, 7, 14.
+            for (row, &source_row) in components.iter().enumerate() {
+                for (col, &source_col) in components.iter().enumerate() {
+                    let lhs = odom.twist_cov[source_row * 6 + source_col];
+                    let rhs = odom.twist_cov[source_col * 6 + source_row];
+                    measurement_cov[(row, col)] = if lhs.is_finite() && rhs.is_finite() {
+                        0.5 * (lhs + rhs) * covariance_scale
+                    } else {
+                        0.0
+                    };
+                }
+                if !measurement_cov[(row, row)].is_finite() || measurement_cov[(row, row)] < 0.001 {
+                    measurement_cov[(row, row)] = 0.001 * covariance_scale;
+                }
             }
         }
+
+        // Whiten the selected velocity observation so correlated covariance can
+        // still be applied through the scalar Joseph-form correction below.
+        let whitener = measurement_cov
+            .clone()
+            .cholesky()
+            .and_then(|chol| chol.l().try_inverse())
+            .unwrap_or_else(|| {
+                if should_log_once_default("wheel_odom_covariance_not_positive_definite") {
+                    warn!("Wheel odometry covariance is not positive definite; using its diagonal");
+                }
+                DMatrix::from_diagonal(&measurement_cov.diagonal().map(|v| 1.0 / v.sqrt()))
+            });
+
+        for whitened_row in 0..components.len() {
+            // Re-linearize after every scalar update. This preserves the usual
+            // sequential-EKF behavior while supporting a correlated input covariance.
+            let predicted = self.predict_odom_velocity(&odom, kinematic, gyro_measurement);
+            let mut residual = 0.0;
+            for (col, &component) in components.iter().enumerate() {
+                residual += whitener[(whitened_row, col)]
+                    * (odom.twist_linear[component] - predicted[component]);
+            }
+
+            let h = self.odom_velocity_jacobian_row(
+                &odom,
+                kinematic,
+                gyro_measurement,
+                components,
+                whitener.row(whitened_row).iter().copied(),
+            );
+            self.apply_scalar_constraint(h, residual, 1.0, None, false);
+        }
+    }
+
+    /// Predict the velocity reported by wheel odometry in its own measurement frame.
+    fn predict_odom_velocity(
+        &self,
+        odom: &OdomMsg,
+        kinematic: KinematicModel,
+        gyro_measurement: Vector3<f64>,
+    ) -> Vector3<f64> {
+        self.predict_odom_velocity_for_state(&self.state, odom, kinematic, gyro_measurement)
+    }
+
+    fn predict_odom_velocity_for_state(
+        &self,
+        state: &StateIKFom,
+        odom: &OdomMsg,
+        kinematic: KinematicModel,
+        gyro_measurement: Vector3<f64>,
+    ) -> Vector3<f64> {
+        let r_il = state.offset_r_l_i.matrix();
+        let r_bl = self.base_to_lidar.rotation.to_rotation_matrix();
+        let p_i_ref = match kinematic {
+            KinematicModel::Ackermann { imu_to_rear_axle } => imu_to_rear_axle,
+            _ => {
+                let t_bl = self.base_to_lidar.translation.vector;
+                state.offset_t_l_i - r_il * r_bl.matrix().transpose() * t_bl
+            }
+        };
+
+        let omega_i = gyro_measurement - state.bg;
+        let v_ref_i = state.rot.matrix().transpose() * state.vel + omega_i.cross(&p_i_ref);
+        odom.twist_frame_to_imu.transpose() * v_ref_i
+    }
+
+    /// Linearize a whitened wheel-velocity row in the EqF error coordinates.
+    ///
+    /// Numerical differentiation is intentional here: it includes the cancellation
+    /// of global rotation error in a body-velocity observation as well as gyro-bias,
+    /// lever-arm, and online-extrinsic terms under the exact `compensate` action.
+    fn odom_velocity_jacobian_row(
+        &self,
+        odom: &OdomMsg,
+        kinematic: KinematicModel,
+        gyro_measurement: Vector3<f64>,
+        components: &[usize],
+        weights: impl Iterator<Item = f64>,
+    ) -> Col<f64> {
+        const EPS: f64 = 1e-6;
+        let weights: Vec<f64> = weights.collect();
+        let mut h = Col::<f64>::zeros(24);
+        let mut delta = Mat::<f64>::zeros(24, 1);
+
+        for column in 0..24 {
+            delta[(column, 0)] = EPS;
+            let high_state = compensate(&self.state, &delta, self.extrinsic_est, &self.anchor);
+            let high = self.predict_odom_velocity_for_state(
+                &high_state,
+                odom,
+                kinematic,
+                gyro_measurement,
+            );
+
+            delta[(column, 0)] = -EPS;
+            let low_state = compensate(&self.state, &delta, self.extrinsic_est, &self.anchor);
+            let low =
+                self.predict_odom_velocity_for_state(&low_state, odom, kinematic, gyro_measurement);
+            delta[(column, 0)] = 0.0;
+
+            for (&component, &weight) in components.iter().zip(weights.iter()) {
+                h[column] += weight * (high[component] - low[component]) / (2.0 * EPS);
+            }
+        }
+        h
     }
 
     /// Fuse one scalar measurement whose Jacobian is `h`.
     ///
-    /// Lidar correction owns position and rotation. `max_gain` can damp the
-    /// model-based non-holonomic constraints.
+    /// `lock_pose` keeps model-only non-holonomic constraints from directly
+    /// moving the Lidar pose. `max_gain` can damp those synthetic constraints.
     fn apply_scalar_constraint(
         &mut self,
         h: Col<f64>,
         residual: f64,
         r_var: f64,
         max_gain: Option<f64>,
+        lock_pose: bool,
     ) {
         // Compute innovation variance: h^T * P * h + r_var
         let h_t = h.transpose();
@@ -714,13 +814,12 @@ impl Eqf {
         // Kalman gain: K = P * h / s (result is 24x1)
         let mut k = &cov_h / s;
 
-        // zero out parts that must never be changed by this measurement
-        // (pos and rotation live in the first 6 entries)
-        for i in 0..3 {
-            k[i] = 0.0; // pos
-        }
-        for i in 3..6 {
-            k[i] = 0.0; // rotation
+        if lock_pose {
+            // Model-only non-holonomic constraints should not directly move the
+            // Lidar pose. Actual wheel observations use the complete Kalman gain.
+            for i in 0..6 {
+                k[i] = 0.0;
+            }
         }
 
         // automatic damping - cap the norm of the gain (prevents gigantic jumps)
@@ -787,39 +886,6 @@ impl Eqf {
         self.reset_covariance_after_update(&state_before, &dx_mat);
     }
 
-    /// Fuse one component of a world-frame velocity measurement.
-    ///
-    /// Under the equivariant error the world velocity perturbs as
-    /// `v <- dv + exp(dtheta) v`, so the measurement couples to the rotation
-    /// error through `-hat(v)` as well as to the velocity error itself. Routing
-    /// this through [`Self::apply_scalar_constraint`] keeps the injection in the
-    /// same frame as the rest of the filter.
-    fn correct_velocity_component(
-        &mut self,
-        component: usize,
-        measured_value: f64,
-        noise_cov: f64,
-    ) {
-        if component > 2 {
-            return;
-        }
-
-        let residual = measured_value - self.state.vel[component];
-        if !residual.is_finite() {
-            warn!("Non-finite residual in velocity[{component}] correction");
-            return;
-        }
-
-        let vel_skew = skew_symmetric_na(&self.state.vel);
-        let mut h = Col::<f64>::zeros(24);
-        for j in 0..3 {
-            h[3 + j] = -vel_skew[(component, j)];
-        }
-        h[12 + component] = 1.0;
-
-        self.apply_scalar_constraint(h, residual, noise_cov, None);
-    }
-
     pub fn correct_kinematics(
         &mut self,
         model_type: KinematicModel,
@@ -876,7 +942,13 @@ impl Eqf {
                 for j in 0..3 {
                     h_lat[12 + j] = r_bw[(1, j)];
                 }
-                self.apply_scalar_constraint(h_lat, -v_ref_base.y, r_var, Some(KINEMATIC_MAX_GAIN));
+                self.apply_scalar_constraint(
+                    h_lat,
+                    -v_ref_base.y,
+                    r_var,
+                    Some(KINEMATIC_MAX_GAIN),
+                    true,
+                );
 
                 // vertical (z) constraint
                 let mut h_vert = Col::<f64>::zeros(24);
@@ -889,6 +961,7 @@ impl Eqf {
                     -v_ref_base.z,
                     r_var,
                     Some(KINEMATIC_MAX_GAIN),
+                    true,
                 );
             }
             KinematicModel::Holonomic2D => {
@@ -902,6 +975,7 @@ impl Eqf {
                     -v_ref_base.z,
                     r_var,
                     Some(KINEMATIC_MAX_GAIN),
+                    true,
                 );
             }
 
@@ -1163,5 +1237,115 @@ impl Eqf {
         );
         self.reset_covariance_after_update(&state_propagated, &dx_total);
         eval.stop("ekf_correct/cov").unwrap();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use nalgebra::{Isometry3, Matrix3};
+    use pelorus_core::time_msg_from_secs;
+
+    fn odom(linear: Vector3<f64>, frame_to_imu: Matrix3<f64>) -> OdomMsg {
+        let mut covariance = [0.0; 36];
+        covariance[0] = 0.01;
+        covariance[7] = 0.01;
+        covariance[14] = 0.01;
+        OdomMsg {
+            twist_linear: linear,
+            twist_angular: Vector3::zeros(),
+            twist_cov: covariance,
+            twist_frame_to_imu: frame_to_imu,
+            stamp: time_msg_from_secs(0.0),
+        }
+    }
+
+    fn initialized_filter() -> Eqf {
+        let mut filter = Eqf::new(9.81, Isometry3::identity());
+        filter.initialized = true;
+        filter
+    }
+
+    #[test]
+    fn body_velocity_jacobian_cancels_global_rotation_error() {
+        let mut filter = initialized_filter();
+        filter.state.rot = SO3::exp(Vector3::new(0.2, -0.1, 0.7));
+        filter.state.vel = Vector3::new(2.0, -0.4, 0.3);
+        let measurement = odom(Vector3::zeros(), Matrix3::identity());
+
+        let h = filter.odom_velocity_jacobian_row(
+            &measurement,
+            KinematicModel::Differential,
+            Vector3::zeros(),
+            &[0],
+            std::iter::once(1.0),
+        );
+
+        for index in 3..6 {
+            assert!(
+                h[index].abs() < 1e-8,
+                "rotation column {index}: {}",
+                h[index]
+            );
+        }
+        let expected_matrix = filter.state.rot.matrix().transpose();
+        let expected = expected_matrix.row(0);
+        for index in 0..3 {
+            assert!((h[12 + index] - expected[index]).abs() < 1e-8);
+        }
+    }
+
+    #[test]
+    fn differential_odom_corrects_forward_axis_not_world_x() {
+        let mut filter = initialized_filter();
+        filter.state.rot = SO3::exp(Vector3::new(0.0, 0.0, std::f64::consts::FRAC_PI_2));
+        let measurement = odom(Vector3::new(1.0, 0.0, 0.0), Matrix3::identity());
+
+        filter.correct_with_body_velocities(
+            measurement,
+            KinematicModel::Differential,
+            None,
+            Vector3::zeros(),
+        );
+
+        assert!(filter.state.vel.y > 0.9);
+        assert!(filter.state.vel.x.abs() < 1e-8);
+    }
+
+    #[test]
+    fn configured_odom_frame_rotation_is_respected() {
+        let mut filter = initialized_filter();
+        let frame_to_imu =
+            nalgebra::Rotation3::from_axis_angle(&Vector3::z_axis(), std::f64::consts::FRAC_PI_2)
+                .into_inner();
+        let measurement = odom(Vector3::new(1.0, 0.0, 0.0), frame_to_imu);
+
+        filter.correct_with_body_velocities(
+            measurement,
+            KinematicModel::Differential,
+            None,
+            Vector3::zeros(),
+        );
+
+        assert!(filter.state.vel.y > 0.9);
+        assert!(filter.state.vel.x.abs() < 1e-8);
+    }
+
+    #[test]
+    fn linear_y_variance_comes_from_ros_covariance_index_seven() {
+        let mut filter = initialized_filter();
+        let mut measurement = odom(Vector3::new(0.0, 1.0, 0.0), Matrix3::identity());
+        measurement.twist_cov[4] = 1e-6;
+        measurement.twist_cov[7] = 100.0;
+
+        filter.correct_with_body_velocities(
+            measurement,
+            KinematicModel::Holonomic2D,
+            None,
+            Vector3::zeros(),
+        );
+
+        assert!(filter.state.vel.y > 0.0);
+        assert!(filter.state.vel.y < 0.02);
     }
 }

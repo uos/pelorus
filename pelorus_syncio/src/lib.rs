@@ -1564,7 +1564,8 @@ impl SyncNode {
             std::thread::spawn(move || {
                 wheel_sub_rt.block_on(async {
                     while let Some(msg) = wheel_subscriber.next().await {
-                        // Transform odom to IMU frame and send to sync for sync'd processing
+                        // Keep the twist and its covariance in the odometry frame. The filter
+                        // needs the frame rotation to form a consistent body-velocity residual.
 
                         use pelorus_core::OdomMsg;
                         let v = nalgebra::Vector3::new(
@@ -1572,16 +1573,15 @@ impl SyncNode {
                             msg.twist.twist.linear.y,
                             msg.twist.twist.linear.z,
                         );
-                        let t = ext.transform_vector(&v);
-
                         let odom_msg = OdomMsg {
-                            twist_linear: t,
+                            twist_linear: v,
                             twist_angular: nalgebra::Vector3::new(
                                 msg.twist.twist.angular.x,
                                 msg.twist.twist.angular.y,
                                 msg.twist.twist.angular.z,
                             ),
                             twist_cov: msg.twist.covariance,
+                            twist_frame_to_imu: *ext.rotation.to_rotation_matrix().matrix(),
                             stamp: pelorus_sync::TimeMsg {
                                 sec: msg.header.stamp.sec,
                                 nanosec: msg.header.stamp.nanosec,
@@ -1607,7 +1607,8 @@ impl SyncNode {
                     wheel_subscriber
                         .for_each(|msg| {
                             let mut odom_msg = odom_to_sync(msg);
-                            odom_msg.twist_linear = ext.transform_vector(&odom_msg.twist_linear);
+                            odom_msg.twist_frame_to_imu =
+                                *ext.rotation.to_rotation_matrix().matrix();
                             let state_lock = state_wheel.lock().unwrap();
                             state_lock.sync.lock().unwrap().add_odom(odom_msg);
                         })
@@ -1634,7 +1635,7 @@ impl SyncNode {
                         );
                     }
                     let mut odom_msg = odom_to_sync(msg);
-                    odom_msg.twist_linear = ext.transform_vector(&odom_msg.twist_linear);
+                    odom_msg.twist_frame_to_imu = *ext.rotation.to_rotation_matrix().matrix();
                     let state_lock = state_wheel.lock().unwrap();
                     state_lock.sync.lock().unwrap().add_odom(odom_msg);
                 }
@@ -2364,6 +2365,7 @@ fn odom_to_sync(msg: Odometry) -> OdomMsg {
             msg.twist.covariance[34],
             msg.twist.covariance[35],
         ],
+        twist_frame_to_imu: nalgebra::Matrix3::identity(),
         stamp: ros_pointcloud2::ros::TimeMsg {
             sec: msg.header.stamp.sec,
             nanosec: msg.header.stamp.nanosec,

@@ -647,6 +647,9 @@ impl Handle {
                 twist_angular[2],
             ),
             twist_cov: twist_covariance,
+            // Programmatic inputs are interpreted in the IMU frame. ROS users can
+            // configure the wheel-to-IMU rotation on the synchronized input path.
+            twist_frame_to_imu: nalgebra::Matrix3::identity(),
             stamp: ros_pointcloud2::ros::TimeMsg {
                 sec: timestamp_sec,
                 nanosec: timestamp_nanosec,

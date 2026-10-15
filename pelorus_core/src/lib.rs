@@ -1283,9 +1283,12 @@ pub fn time_msg_from_secs(secs: f64) -> crate::TimeMsg {
 
 #[derive(Debug, Clone, Copy)]
 pub struct OdomMsg {
+    /// Linear velocity expressed in the odometry measurement frame.
     pub twist_linear: nalgebra::Vector3<f64>,
     pub twist_angular: nalgebra::Vector3<f64>,
     pub twist_cov: [f64; 36],
+    /// Rotation taking vectors from the odometry measurement frame to the IMU frame.
+    pub twist_frame_to_imu: nalgebra::Matrix3<f64>,
 
     pub stamp: crate::TimeMsg,
 }

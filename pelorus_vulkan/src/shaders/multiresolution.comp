@@ -20,24 +20,49 @@ struct MRFit {
   float quality;
   float d;
 };
-#ifdef MR_QUERY
+// Kernels that read all four levels through their hash tables.
+#if defined(MR_QUERY) || defined(MR_COLLECT) || defined(MR_MISS)
+#define MR_LEVELS
+#endif
+// Fit of a cell that is absent from a level, cached for one map version.
+// state = version << 1 | ready; a slot of an older version counts as empty, so
+// the cache never has to be cleared.
+struct MRMissSlot {
+  uint state;
+  ivec3 key;
+  MRFit fit;
+};
+struct MRMissWork {
+  uint level;
+  uint slot;
+  ivec3 key;
+};
+#ifdef MR_COLLECT
+// Other invocations claim slots concurrently.
+#define MISS_QUALIFIER coherent volatile
+#else
+#define MISS_QUALIFIER
+#endif
+#ifdef MR_LEVELS
 layout(std430, set = 0, binding = 0) readonly buffer Table1 { uint table1[]; };
 #else
 layout(scalar, set = 0, binding = 0) buffer InputCells { MRCell input_cells[]; };
 #endif
 #ifdef MR_QUERY
 layout(std430, set = 0, binding = 1) buffer OutputNormals { PointNormal output_normals[]; };
+#elif defined(MR_LEVELS)
+layout(scalar, set = 0, binding = 1) buffer MissWork { MRMissWork miss_work[]; };
 #elif defined(MR_INDEX)
 layout(std430, set = 0, binding = 1) buffer IndexTable { uint table0[]; };
 #else
 layout(scalar, set = 0, binding = 1) buffer OutputCells { MRCell output_cells[]; };
 #endif
-#ifdef MR_QUERY
+#ifdef MR_LEVELS
 layout(std430, set = 0, binding = 2) readonly buffer Table2 { uint table2[]; };
 #else
 layout(std430, set = 0, binding = 2) buffer SortIndices { uint indices[]; };
 #endif
-#if defined(MR_QUERY) || defined(MR_CACHE)
+#if defined(MR_LEVELS) || defined(MR_CACHE)
 layout(std430, set = 0, binding = 3) readonly buffer Table0 { uint table0[]; };
 #else
 layout(scalar, set = 0, binding = 3) readonly buffer SecondaryCells { MRCell secondary_cells[]; };
@@ -52,13 +77,23 @@ layout(std430, set = 0, binding = 10) buffer Counter { uint count; };
 layout(scalar, set = 0, binding = 11) readonly buffer Fit2 { MRFit fits2[]; };
 layout(scalar, set = 0, binding = 12) readonly buffer Fit3 { MRFit fits3[]; };
 layout(std430, set = 0, binding = 13) buffer Cloud { Point cloud[]; };
-#ifdef MR_QUERY
+#ifdef MR_LEVELS
 layout(std430, set = 0, binding = 14) readonly buffer Table3 { uint table3[]; };
 #else
 layout(std430, set = 0, binding = 14) readonly buffer Poses { double pose_data[]; };
 #endif
 layout(std430, set = 0, binding = 15) buffer Flags { uint flags[]; };
+#ifdef MR_LEVELS
+// One cache for all levels; level l owns the slots after miss_base(l).
+layout(scalar, set = 0, binding = 16) MISS_QUALIFIER buffer MissSlots { MRMissSlot miss[]; };
+// Number of listed misses.
+layout(std430, set = 0, binding = 17) buffer MissCounter { uint miss_work_count; };
+#elif defined(MR_CACHE)
+// Hash table of the previous level version (cells1, fits1).
+layout(std430, set = 0, binding = 16) readonly buffer PreviousTable { uint table_previous[]; };
+#else
 layout(std430, set = 0, binding = 16) readonly buffer Offsets { uint offsets[]; };
+#endif
 
 bool key_less(ivec3 a, ivec3 b) {
   return a.x != b.x ? a.x < b.x : a.y != b.y ? a.y < b.y : a.z < b.z;
@@ -250,14 +285,18 @@ uint mr_hash(ivec3 key) {
   h *= 0xc2b2ae35u;
   return h ^ (h >> 16);
 }
-#if defined(MR_QUERY) || defined(MR_CACHE)
+#ifdef MR_LEVELS
+// Power-of-two hash table sizes, passed in the otherwise-unused sort fields.
+uint table_capacity(uint l) { return l == 0 ? pc.cap : l == 1 ? pc.nbtype : l == 2 ? pc.k : pc.j; }
+#endif
+#if defined(MR_LEVELS) || defined(MR_CACHE)
 int find_cell(uint l, ivec3 key) {
 #ifdef MR_CACHE
   uint capacity = pc.table_cap;
 #else
   if (level_size(l) == 0)
     return -1;
-  uint capacity = l == 0 ? pc.cap : l == 1 ? pc.nbtype : l == 2 ? pc.k : pc.j;
+  uint capacity = table_capacity(l);
 #endif
   uint slot = mr_hash(key) & (capacity - 1);
   for (uint probe = 0; probe < capacity; probe++) {
@@ -294,6 +333,49 @@ MRFit mr_neighborhood(uint l, ivec3 key) {
         }
       }
   return mr_fit(pooled);
+}
+#endif
+#ifdef MR_CACHE
+// Looks a key up in the previous version of the level.
+int find_previous(ivec3 key) {
+  if (pc.valid_size == 0)
+    return -1;
+  uint slot = mr_hash(key) & (pc.table_cap - 1);
+  for (uint probe = 0; probe < pc.table_cap; probe++) {
+    uint index = table_previous[slot];
+    if (index == 0xffffffffu)
+      return -1;
+    if (key_equal(cells1[index].key, key))
+      return int(index);
+    slot = (slot + 1) & (pc.table_cap - 1);
+  }
+  return -1;
+}
+#endif
+#ifdef MR_LEVELS
+// Neighborhood fits of absent cells do not change while the map is unchanged,
+// but the iterated correction queries them up to max_iter + 1 times per scan.
+// pc.scan_number carries the map version.
+const uint MISS_PROBES = 32;
+uint miss_base(uint l) {
+  uint base = 0;
+  for (uint m = 0; m < l; m++)
+    base += table_capacity(m);
+  return base;
+}
+#endif
+#ifdef MR_QUERY
+int cached_miss(uint l, ivec3 key) {
+  uint capacity = table_capacity(l), base = miss_base(l), slot = mr_hash(key) & (capacity - 1);
+  for (uint probe = 0; probe < MISS_PROBES; probe++) {
+    uint state = miss[base + slot].state;
+    if ((state >> 1) != pc.scan_number)
+      return -1;
+    if ((state & 1) != 0 && key_equal(miss[base + slot].key, key))
+      return int(base + slot);
+    slot = (slot + 1) & (capacity - 1);
+  }
+  return -1;
 }
 #endif
 // Exact age/support comparisons: each 64-bit count times 32-bit age gives a
@@ -491,6 +573,18 @@ void main() {
     return;
   output_cells[i] = input_cells[indices[i + pc.valid_size]];
 #endif
+#ifdef MR_EVICT
+  // indices ranks the merged cells by eviction order and the first valid_size
+  // are evicted. Flags the kept cells for an order-preserving compaction of the
+  // key-sorted merge and lists the evicted ones, whose neighbors need new fits.
+  if (i >= pc.n)
+    return;
+  uint source = indices[i];
+  bool evicted = i < pc.valid_size;
+  flags[source] = evicted ? 0 : 1;
+  if (evicted)
+    output_cells[i] = input_cells[source];
+#endif
 #ifdef MR_INDEX
   if (pc.k == 0) {
     if (i < pc.cap)
@@ -504,9 +598,99 @@ void main() {
 #ifdef MR_CACHE
   if (i >= pc.n)
     return;
-  fits0[i] = mr_neighborhood(0, input_cells[i].key);
+  // A fit only depends on the 27 cells around its key. pc.j selects: 0 fits
+  // every cell, 1 clears the dirty flags, 2 marks the cells next to the changed
+  // cells in cells0 (updated, inserted or evicted), 3 carries clean fits over
+  // from the previous version (cells1, fits1, pc.valid_size cells) and refits
+  // the rest, which gives the same fits as mode 0.
+  if (pc.j == 1) {
+    flags[i] = 0;
+    return;
+  }
+  if (pc.j == 2) {
+    ivec3 key = cells0[i].key;
+    for (int x = -1; x <= 1; x++)
+      for (int y = -1; y <= 1; y++)
+        for (int z = -1; z <= 1; z++) {
+          int j = find_cell(0, ivec3(neighbor(key.x, x), neighbor(key.y, y), neighbor(key.z, z)));
+          if (j >= 0)
+            flags[j] = 1;
+        }
+    return;
+  }
+  ivec3 key = input_cells[i].key;
+  if (pc.j == 3 && flags[i] == 0) {
+    int j = find_previous(key);
+    if (j >= 0) {
+      fits0[i] = fits1[j];
+      return;
+    }
+  }
+  fits0[i] = mr_neighborhood(0, key);
+#endif
+#ifdef MR_COLLECT
+  // Pass 1: claims a miss-cache slot for every absent cell a point could query
+  // on any level and lists it once, so pass 2 computes each fit a single time
+  // in a dispatch where all invocations take the same path.
+  if (i >= pc.n)
+    return;
+  Point p = cloud[i];
+  vec3 imu = iso_transform(pc.lidar_to_imu_quat, pc.lidar_to_imu_pos, vec3(p.x, p.y, p.z));
+  vec3 w = iso_transform(pc.pose_quat, pc.pose_trans, imu);
+  float world[3] = float[3](w.x, w.y, w.z);
+  if (any(isnan(w)) || any(isinf(w)))
+    return;
+  for (uint l = 0; l < 4; l++) {
+    ivec3 key = mr_grid(world, pc.resolution * (.5 * float(1u << l)));
+    if (find_cell(l, key) >= 0)
+      continue;
+    uint capacity = table_capacity(l), base = miss_base(l), slot = mr_hash(key) & (capacity - 1);
+    for (uint probe = 0; probe < MISS_PROBES; probe++) {
+      uint state = miss[base + slot].state;
+      if ((state >> 1) != pc.scan_number) {
+        // Empty for this map version: claim it, still not ready.
+        if (atomicCompSwap(miss[base + slot].state, state, pc.scan_number << 1) == state) {
+          miss[base + slot].key = key;
+          uint item = atomicAdd(miss_work_count, 1u);
+          // A full list leaves the slot unready; pass 3 then fits inline.
+          if (item < 4 * pc.n) {
+            miss_work[item].level = l;
+            miss_work[item].slot = base + slot;
+            miss_work[item].key = key;
+          }
+          break;
+        }
+        continue; // lost the race for this slot, look at it again
+      }
+      // Claimed in this version. A slot claimed in this dispatch may still
+      // show an older key, which at worst lists a key twice or leaves it to
+      // pass 3.
+      if (key_equal(miss[base + slot].key, key))
+        break;
+      slot = (slot + 1) & (capacity - 1);
+    }
+  }
+#endif
+#ifdef MR_MISS
+  // Version 0 is never current: its dispatch clears the cache and counter.
+  if (pc.scan_number == 0) {
+    if (i < pc.n)
+      miss[i].state = 0;
+    if (i == 0)
+      miss_work_count = 0;
+  }
+  // Pass 2: one fit per listed absent cell.
+  if (pc.scan_number == 0 || i >= min(miss_work_count, 4 * pc.n))
+    return;
+  MRMissWork item = miss_work[i];
+  miss[item.slot].fit = mr_neighborhood(item.level, item.key);
+  miss[item.slot].state = (pc.scan_number << 1) | 1;
 #endif
 #ifdef MR_QUERY
+  // Pass 3: plane selection, reading absent-cell fits from the cache. The
+  // collection pass of the next query counts its misses from zero.
+  if (i == 0)
+    miss_work_count = 0;
   if (i >= pc.n)
     return;
   flags[i] = 0;
@@ -534,15 +718,16 @@ void main() {
     float r = pc.resolution * (.5 * float(1u << l));
     ivec3 key = mr_grid(world, r);
     int cell = find_cell(l, key);
-    MRFit f = cell >= 0 ? (l == 0   ? fits0[cell]
-                           : l == 1 ? fits1[cell]
-                           : l == 2 ? fits2[cell]
-                                    : fits3[cell])
-                        : mr_neighborhood(l, key);
-    if (f.status == 0)
+    MRFit f;
+    if (cell >= 0)
+      f = l == 0 ? fits0[cell] : l == 1 ? fits1[cell] : l == 2 ? fits2[cell] : fits3[cell];
+    else {
+      // Fits inline if the collection pass could not cache it, so results are exact.
+      int cached = cached_miss(l, key);
+      f = cached >= 0 ? miss[cached].fit : mr_neighborhood(l, key);
+    }
+    if (f.status != 2)
       continue;
-    if (f.status == 1)
-      break;
     float delta[3], t0[3], t1[3];
     for (int k = 0; k < 3; k++) {
       delta[k] = world[k] - f.mean[k];

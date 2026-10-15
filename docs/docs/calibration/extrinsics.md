@@ -1,6 +1,6 @@
 # Lidar to IMU extrinsics
 
-dedrunk estimates the transform between Lidar and IMU, the time offset, gravity and both biases from a recording of the two sensors moving together. It follows [Zhu, Ren and Zhang, "Robust Real-time LiDAR-inertial Initialization", IROS 2022](https://arxiv.org/abs/2202.11006).
+dedrunk estimates the transform between Lidar and IMU, the time offset, gravity and both biases from a recording of the two sensors moving together. It follows [Zhu, Ren and Zhang, "Robust Real-time Lidar-inertial Initialization", IROS 2022](https://arxiv.org/abs/2202.11006).
 
 It needs a Lidar-only trajectory, because Lidar-inertial poses already assume an extrinsic:
 

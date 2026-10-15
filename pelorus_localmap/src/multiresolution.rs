@@ -4,11 +4,53 @@
 use nalgebra::{Isometry3, Matrix3, Point3, Vector3};
 use pelorus_core::PointXYZIT;
 use rustc_hash::FxHashMap;
-use std::sync::OnceLock;
+use std::hash::{BuildHasher, BuildHasherDefault};
+use std::sync::{OnceLock, RwLock};
 
 use crate::VoxelDistribution;
 
 type Grid = (i32, i32, i32);
+
+const MISS_SHARDS: usize = 16;
+
+/// Fits of cells that are absent from a level, valid until the next map update.
+/// The iterated correction queries the same absent cells up to max_iter + 1 times
+/// per scan, and the fit only depends on the key and the unchanged map.
+struct MissCache {
+    shards: [RwLock<FxHashMap<Grid, Option<PlaneMatch>>>; MISS_SHARDS],
+}
+
+impl MissCache {
+    fn new() -> Self {
+        Self {
+            shards: std::array::from_fn(|_| RwLock::new(FxHashMap::default())),
+        }
+    }
+
+    fn shard(&self, key: &Grid) -> &RwLock<FxHashMap<Grid, Option<PlaneMatch>>> {
+        let hash = BuildHasherDefault::<rustc_hash::FxHasher>::default().hash_one(key);
+        &self.shards[(hash >> 32) as usize % MISS_SHARDS]
+    }
+
+    fn get_or_insert(
+        &self,
+        key: Grid,
+        fit: impl FnOnce() -> Option<PlaneMatch>,
+    ) -> Option<PlaneMatch> {
+        let shard = self.shard(&key);
+        if let Some(cached) = shard.read().unwrap().get(&key) {
+            return *cached;
+        }
+        let computed = fit();
+        *shard.write().unwrap().entry(key).or_insert(computed)
+    }
+
+    fn clear(&mut self) {
+        for shard in &mut self.shards {
+            shard.get_mut().unwrap().clear();
+        }
+    }
+}
 
 fn plane_eigen(covariance: Matrix3<f32>) -> (Vector3<f32>, Matrix3<f32>) {
     let mut a = covariance.cast::<f64>();
@@ -60,21 +102,81 @@ fn plane_eigen(covariance: Matrix3<f32>) -> (Vector3<f32>, Matrix3<f32>) {
     )
 }
 
+fn saturating_u32(value: impl TryInto<u32>) -> u32 {
+    value.try_into().unwrap_or(u32::MAX)
+}
+
+/// Moments of one map cell. Correspondences only read the moments, so the
+/// Cholesky factor that [`VoxelDistribution`] keeps for sampling is not stored.
+/// Counts and scan numbers fit in 32 bits, which keeps a cell small on
+/// memory-constrained targets.
+#[derive(Clone, Copy, Debug)]
+struct CellDistribution {
+    mean: Point3<f32>,
+    covariance: Matrix3<f32>,
+    point_count: u32,
+    last_updated_at_scan: u32,
+}
+
+impl CellDistribution {
+    fn from_voxel(distribution: &VoxelDistribution) -> Self {
+        Self {
+            mean: distribution.mean,
+            covariance: distribution.covariance,
+            point_count: saturating_u32(distribution.point_count),
+            last_updated_at_scan: saturating_u32(distribution.last_updated_at_scan),
+        }
+    }
+
+    /// Moments only. The identity factor is never read by pooling or fitting.
+    fn to_voxel(self) -> VoxelDistribution {
+        VoxelDistribution {
+            transform: Matrix3::identity(),
+            point_count: self.point_count.into(),
+            mean: self.mean,
+            covariance: self.covariance,
+            last_updated_at_scan: self.last_updated_at_scan as usize,
+        }
+    }
+
+    /// Full distribution for callers outside the map, with its Cholesky factor.
+    fn export(self) -> VoxelDistribution {
+        let mut distribution = self.to_voxel();
+        if let Some(chol) = nalgebra::Cholesky::new(self.covariance) {
+            distribution.transform = chol.l();
+        }
+        distribution
+    }
+}
+
 fn update_distribution(
-    a: &mut VoxelDistribution,
+    a: &mut CellDistribution,
     b: &VoxelDistribution,
     sensitivity: f32,
-    scan: usize,
+    scan: u32,
 ) {
     if b.point_count == 0 {
         return;
     }
     a.last_updated_at_scan = scan;
+    // Ablation: plain count-weighted merging, as for the registration neighborhood,
+    // without the maturity-weighted kernel.
+    #[cfg(feature = "plain-update")]
+    {
+        let _ = sensitivity;
+        let mut pooled = a.to_voxel();
+        pooled.pool(*b);
+        *a = CellDistribution {
+            last_updated_at_scan: scan,
+            ..CellDistribution::from_voxel(&pooled)
+        };
+        return;
+    }
+    #[allow(unreachable_code)]
     if a.point_count == 0 {
         a.mean = b.mean;
         a.covariance = b.covariance;
-        a.point_count = b.point_count;
-        a.transform = b.transform;
+        a.point_count = saturating_u32(b.point_count);
         return;
     }
     let delta = a.mean - b.mean;
@@ -95,7 +197,13 @@ fn update_distribution(
         let x0 = (y0 - (l10 * x1 + l20 * x2)) / l00;
         m = dot(delta, Vector3::new(x0, x1, x2));
     }
-    let alpha = (-m / (2.0 * (sensitivity / (a.point_count as f32).ln().max(1.0)))).exp();
+    // The kernel narrows as the voxel matures.
+    #[cfg(not(feature = "no-maturity-decay"))]
+    let maturity_decay = (a.point_count as f32).ln().max(1.0);
+    // Ablation: constant kernel width, independent of the voxel's maturity.
+    #[cfg(feature = "no-maturity-decay")]
+    let maturity_decay = 1.0;
+    let alpha = (-m / (2.0 * (sensitivity / maturity_decay))).exp();
     if alpha < 1e-5 {
         return;
     }
@@ -110,63 +218,145 @@ fn update_distribution(
                 + alpha * oma * (delta[r] * delta[c]);
         }
     }
-    a.point_count += b.point_count;
-    if let Some(chol) = nalgebra::Cholesky::new(a.covariance) {
-        a.transform = chol.l();
-    }
+    a.point_count = a.point_count.saturating_add(saturating_u32(b.point_count));
 }
 
 struct Cell {
-    distribution: VoxelDistribution,
-    neighborhood: OnceLock<Result<PlaneMatch, FitFailure>>,
+    distribution: CellDistribution,
+    neighborhood: OnceLock<Option<PlaneMatch>>,
 }
 
-#[derive(Clone, Copy, Debug)]
-enum FitFailure {
-    InsufficientSupport,
-    ConflictingGeometry,
-}
-
+/// Cells live in a vector reserved once at `capacity`; the hash map only maps a
+/// grid key to a slot. A scan's new cells are ranked against the existing ones
+/// before insertion, so a level never holds more than `capacity` cells and
+/// neither allocation grows during a run. The index keeps at least half of its
+/// slots free, so tombstones from evictions are rehashed in place instead of
+/// doubling the table.
 struct Level {
     resolution: f32,
     capacity: usize,
-    cells: FxHashMap<Grid, Cell>,
+    index: FxHashMap<Grid, u32>,
+    keys: Vec<Grid>,
+    cells: Vec<Cell>,
+    miss: MissCache,
 }
 
 impl Level {
+    fn new(resolution: f32, capacity: usize) -> Self {
+        Self {
+            resolution,
+            capacity,
+            index: FxHashMap::with_capacity_and_hasher(2 * capacity, Default::default()),
+            keys: Vec::with_capacity(capacity),
+            cells: Vec::with_capacity(capacity),
+            miss: MissCache::new(),
+        }
+    }
+
+    fn get(&self, key: &Grid) -> Option<&Cell> {
+        self.index.get(key).map(|&slot| &self.cells[slot as usize])
+    }
+
+    fn len(&self) -> usize {
+        self.cells.len()
+    }
+
+    fn clear(&mut self) {
+        self.index.clear();
+        self.keys.clear();
+        self.cells.clear();
+        self.miss.clear();
+    }
+
+    fn remove(&mut self, key: &Grid) {
+        let Some(slot) = self.index.remove(key) else {
+            return;
+        };
+        let slot = slot as usize;
+        self.keys.swap_remove(slot);
+        self.cells.swap_remove(slot);
+        if slot < self.keys.len() {
+            self.index.insert(self.keys[slot], slot as u32);
+        }
+    }
+
+    /// Fuses one scan into the level. Existing cells are updated first, then the
+    /// scan's new cells compete with all cells for the capacity, exactly as if they
+    /// were inserted and trimmed afterwards, but without exceeding the capacity.
+    fn insert_scan(
+        &mut self,
+        batches: &[(Grid, VoxelDistribution)],
+        scan: usize,
+        sensitivity: f32,
+    ) {
+        let scan = saturating_u32(scan);
+        let mut new_cells = Vec::new();
+        for &(key, batch) in batches {
+            match self.index.get(&key) {
+                Some(&slot) => update_distribution(
+                    &mut self.cells[slot as usize].distribution,
+                    &batch,
+                    sensitivity,
+                    scan,
+                ),
+                None => new_cells.push((key, CellDistribution::from_voxel(&batch))),
+            }
+        }
+        let excess = (self.len() + new_cells.len()).saturating_sub(self.capacity);
+        let mut skipped = rustc_hash::FxHashSet::default();
+        if excess > 0 {
+            let rank = |key: Grid, d: &CellDistribution| {
+                (
+                    key,
+                    scan.saturating_sub(d.last_updated_at_scan) as u128,
+                    d.point_count.max(1) as u128,
+                )
+            };
+            let mut ranks: Vec<_> = self
+                .keys
+                .iter()
+                .zip(&self.cells)
+                .map(|(&key, cell)| rank(key, &cell.distribution))
+                .chain(new_cells.iter().map(|(key, d)| rank(*key, d)))
+                .collect();
+            // Same age / support principle as the fixed map. Coordinate tie breaking
+            // makes eviction independent of hash iteration and thread scheduling.
+            // Ablation: plain LRU, evict by age alone and ignore support.
+            #[cfg(feature = "lru-eviction")]
+            ranks.select_nth_unstable_by(excess - 1, |a, b| {
+                b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0))
+            });
+            #[cfg(not(feature = "lru-eviction"))]
+            ranks.select_nth_unstable_by(excess - 1, |a, b| {
+                (b.1 * a.2).cmp(&(a.1 * b.2)).then_with(|| a.0.cmp(&b.0))
+            });
+            for (key, _, _) in &ranks[..excess] {
+                if self.index.contains_key(key) {
+                    self.remove(key);
+                } else {
+                    skipped.insert(*key);
+                }
+            }
+        }
+        for (key, distribution) in new_cells {
+            if skipped.contains(&key) {
+                continue;
+            }
+            self.index.insert(key, self.cells.len() as u32);
+            self.keys.push(key);
+            self.cells.push(Cell {
+                distribution,
+                neighborhood: OnceLock::new(),
+            });
+        }
+    }
+
     fn grid(&self, point: &Point3<f32>) -> Grid {
         (
             (point.x / self.resolution).floor() as i32,
             (point.y / self.resolution).floor() as i32,
             (point.z / self.resolution).floor() as i32,
         )
-    }
-
-    fn trim(&mut self, scan: usize) {
-        let excess = self.cells.len().saturating_sub(self.capacity);
-        if excess == 0 {
-            return;
-        }
-        // Same age / support principle as the fixed map. Coordinate tie breaking
-        // makes eviction independent of hash iteration and thread scheduling.
-        let mut ranks: Vec<_> = self
-            .cells
-            .iter()
-            .map(|(&key, cell)| {
-                let d = &cell.distribution;
-                (
-                    key,
-                    scan.saturating_sub(d.last_updated_at_scan) as u128,
-                    d.point_count.max(1) as u128,
-                )
-            })
-            .collect();
-        ranks.select_nth_unstable_by(excess, |a, b| {
-            (b.1 * a.2).cmp(&(a.1 * b.2)).then_with(|| a.0.cmp(&b.0))
-        });
-        for (key, _, _) in &ranks[..excess] {
-            self.cells.remove(key);
-        }
     }
 
     fn neighborhood(&self, point: &Point3<f32>) -> VoxelDistribution {
@@ -180,8 +370,8 @@ impl Level {
                         grid.1.saturating_add(y),
                         grid.2.saturating_add(z),
                     );
-                    if let Some(cell) = self.cells.get(&key) {
-                        pooled.pool(cell.distribution);
+                    if let Some(cell) = self.get(&key) {
+                        pooled.pool(cell.distribution.to_voxel());
                     }
                 }
             }
@@ -193,17 +383,20 @@ impl Level {
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct PlaneMatch {
     pub plane: [f32; 4],
-    pub level: usize,
+    pub level: u8,
     mean: Point3<f32>,
-    normal: Vector3<f32>,
     tangents: [Vector3<f32>; 2],
     extents: [f32; 2],
     normal_quality: f32,
 }
 
 impl PlaneMatch {
+    fn normal(&self) -> Vector3<f32> {
+        Vector3::new(self.plane[0], self.plane[1], self.plane[2])
+    }
+
     fn agrees_with_normal(&self, other: &Self) -> bool {
-        let cosine = self.normal.dot(&other.normal).abs().min(1.0);
+        let cosine = self.normal().dot(&other.normal()).abs().min(1.0);
         // Squared sine is sign-invariant and approximates squared angular
         // disagreement for close normals. Confident fits should not rotate
         // merely because a larger support still passes the broad angle cap.
@@ -231,10 +424,11 @@ impl MultiResolutionMap {
         assert!(resolution.is_finite() && resolution > 0.0);
         assert!(capacity >= 4);
         Self {
-            levels: std::array::from_fn(|index| Level {
-                resolution: resolution * [0.5, 1.0, 2.0, 4.0][index],
-                capacity: capacity / 4 + usize::from(index < capacity % 4),
-                cells: FxHashMap::default(),
+            levels: std::array::from_fn(|index| {
+                Level::new(
+                    resolution * [0.5, 1.0, 2.0, 4.0][index],
+                    capacity / 4 + usize::from(index < capacity % 4),
+                )
             }),
             sensitivity,
             max_thickness: resolution * 0.15,
@@ -242,12 +436,12 @@ impl MultiResolutionMap {
     }
 
     pub fn is_empty(&self) -> bool {
-        self.levels.iter().all(|level| level.cells.is_empty())
+        self.levels.iter().all(|level| level.len() == 0)
     }
 
     pub fn clear(&mut self) {
         for level in &mut self.levels {
-            level.cells.clear();
+            level.clear();
         }
     }
 
@@ -256,8 +450,8 @@ impl MultiResolutionMap {
         // Visualize the base-resolution layer without duplicating pyramid points.
         self.levels[1]
             .cells
-            .values()
-            .map(|c| c.distribution)
+            .iter()
+            .map(|c| c.distribution.export())
             .collect()
     }
 
@@ -269,7 +463,7 @@ impl MultiResolutionMap {
         self.levels
             .iter()
             .enumerate()
-            .flat_map(|(level, l)| l.cells.values().map(move |c| (c.distribution, level as u8)))
+            .flat_map(|(level, l)| l.cells.iter().map(move |c| (c.distribution.export(), level as u8)))
             .collect()
     }
 
@@ -334,52 +528,35 @@ impl MultiResolutionMap {
                     })
                     .collect();
             }
-            for &(key, batch) in &batches {
-                match level.cells.entry(key) {
-                    std::collections::hash_map::Entry::Vacant(entry) => {
-                        entry.insert(Cell {
-                            distribution: batch,
-                            neighborhood: OnceLock::new(),
-                        });
-                    }
-                    std::collections::hash_map::Entry::Occupied(mut entry) => {
-                        update_distribution(
-                            &mut entry.get_mut().distribution,
-                            &batch,
-                            self.sensitivity,
-                            scan,
-                        );
-                    }
-                }
-            }
-            level.trim(scan);
+            level.insert_scan(&batches, scan, self.sensitivity);
             // Fits depend on neighboring cells too: invalidate after all updates
             // and evictions, before the next scan's parallel correspondence search.
-            for cell in level.cells.values_mut() {
+            for cell in level.cells.iter_mut() {
                 cell.neighborhood.take();
             }
+            level.miss.clear();
         }
     }
 
-    fn fit(&self, distribution: VoxelDistribution, level: usize) -> Result<PlaneMatch, FitFailure> {
+    fn fit(&self, distribution: VoxelDistribution, level: u8) -> Option<PlaneMatch> {
         if distribution.point_count < 6 {
-            return Err(FitFailure::InsufficientSupport);
+            return None;
         }
         if !distribution.covariance.iter().all(|v| v.is_finite()) {
-            return Err(FitFailure::ConflictingGeometry);
+            return None;
         }
         let (eigenvalues, eigenvectors) = plane_eigen(distribution.covariance);
         let [small, middle, large] = [0, 1, 2];
         let thickness = eigenvalues[small].max(0.0);
         let spread = eigenvalues[middle];
         if !spread.is_finite() || !eigenvalues[large].is_finite() {
-            return Err(FitFailure::ConflictingGeometry);
+            return None;
         }
         if spread < 1e-4 {
-            return Err(FitFailure::InsufficientSupport);
+            return None;
         }
         if thickness > self.max_thickness.powi(2) || thickness > 0.1 * spread {
-            return Err(FitFailure::ConflictingGeometry);
+            return None;
         }
         let normal = eigenvectors.column(small).into_owned();
         // Restrict association to the observed finite patch in both tangent
@@ -398,11 +575,10 @@ impl MultiResolutionMap {
                 + 1.0 / (eigenvalues[large] - thickness).max(1e-6));
         // Registration applies its range-dependent residual gate as before.
         let d = -normal.dot(&distribution.mean.coords);
-        Ok(PlaneMatch {
+        Some(PlaneMatch {
             plane: [normal.x, normal.y, normal.z, d],
             level,
             mean: distribution.mean,
-            normal,
             tangents,
             extents,
             normal_quality,
@@ -414,28 +590,35 @@ impl MultiResolutionMap {
             return None;
         }
         let mut selected: Option<PlaneMatch> = None;
-        for (index, level) in self.levels.iter().enumerate() {
-            let candidate = if let Some(cell) = level.cells.get(&level.grid(point)) {
+        for (index, level) in (0u8..).zip(&self.levels) {
+            let key = level.grid(point);
+            let candidate = if let Some(cell) = level.get(&key) {
                 *cell
                     .neighborhood
                     .get_or_init(|| self.fit(level.neighborhood(point), index))
             } else {
-                self.fit(level.neighborhood(point), index)
+                level
+                    .miss
+                    .get_or_insert(key, || self.fit(level.neighborhood(point), index))
             };
-            let candidate = match candidate {
-                Ok(candidate) => candidate,
-                Err(FitFailure::InsufficientSupport) => continue,
-                Err(FitFailure::ConflictingGeometry) => break,
+            // A thick or degenerate fine cell (an edge, a pole) still lets a
+            // coarser level supply the plane it is part of.
+            let Some(candidate) = candidate else {
+                continue;
             };
             if !candidate.contains_projection(point) {
                 continue;
             }
+            // Ablation: the finest valid level wins, coarser levels are never consulted.
+            #[cfg(feature = "no-level-consistency")]
+            return Some(candidate);
+            #[allow(unreachable_code)]
             if let Some(finer) = selected {
                 // Do not let a larger neighborhood rotate or shift a supported
                 // local surface. Normal signs are arbitrary.
                 if !finer.agrees_with_normal(&candidate)
-                    || finer.normal.dot(&(candidate.mean - finer.mean)).abs() > self.max_thickness
-                    || candidate.normal.dot(&(finer.mean - candidate.mean)).abs()
+                    || finer.normal().dot(&(candidate.mean - finer.mean)).abs() > self.max_thickness
+                    || candidate.normal().dot(&(finer.mean - candidate.mean)).abs()
                         > self.max_thickness
                 {
                     break;
@@ -447,5 +630,67 @@ impl MultiResolutionMap {
             selected = Some(candidate);
         }
         selected
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // Old but well supported (S = 10 / 100), recent but sparse (S = 2 / 1), fresh (S = 0).
+    fn trimmed_level() -> Level {
+        let mut level = Level::new(1.0, 2);
+        for (x, scan, point_count) in [(0, 0, 100), (1, 8, 1), (2, 10, 1)] {
+            let distribution = VoxelDistribution {
+                point_count,
+                last_updated_at_scan: scan,
+                ..VoxelDistribution::new()
+            };
+            level.insert_scan(&[((x, 0, 0), distribution)], scan, 10.0);
+        }
+        assert_eq!(level.len(), 2);
+        level
+    }
+
+    #[test]
+    fn level_never_exceeds_capacity() {
+        let mut level = Level::new(1.0, 3);
+        let reserved = (level.index.capacity(), level.cells.capacity());
+        for scan in 0..50 {
+            let batches: Vec<_> = (0..5)
+                .map(|i| {
+                    let distribution = VoxelDistribution {
+                        point_count: 1 + i as u64,
+                        last_updated_at_scan: scan,
+                        ..VoxelDistribution::new()
+                    };
+                    ((scan as i32 * 5 + i, 0, 0), distribution)
+                })
+                .collect();
+            level.insert_scan(&batches, scan, 10.0);
+            assert!(level.len() <= 3);
+            for (slot, key) in level.keys.iter().enumerate() {
+                assert_eq!(level.index[key] as usize, slot);
+            }
+        }
+        assert_eq!((level.index.capacity(), level.cells.capacity()), reserved);
+    }
+
+    #[cfg(not(feature = "lru-eviction"))]
+    #[test]
+    fn trim_evicts_highest_age_per_support() {
+        let level = trimmed_level();
+        assert!(level.get(&(0, 0, 0)).is_some());
+        assert!(level.get(&(1, 0, 0)).is_none());
+        assert!(level.get(&(2, 0, 0)).is_some());
+    }
+
+    #[cfg(feature = "lru-eviction")]
+    #[test]
+    fn trim_evicts_least_recently_updated() {
+        let level = trimmed_level();
+        assert!(level.get(&(0, 0, 0)).is_none());
+        assert!(level.get(&(1, 0, 0)).is_some());
+        assert!(level.get(&(2, 0, 0)).is_some());
     }
 }

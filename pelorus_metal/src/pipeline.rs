@@ -29,9 +29,12 @@ pub struct Pipelines {
     pub downsample_rle: Retained<ProtocolObject<dyn MTLComputePipelineState>>,
     pub downsample_medoids: Retained<ProtocolObject<dyn MTLComputePipelineState>>,
     pub mr_query: Retained<ProtocolObject<dyn MTLComputePipelineState>>,
-    pub mr_cache_fits: Retained<ProtocolObject<dyn MTLComputePipelineState>>,
     pub mr_table_init: Retained<ProtocolObject<dyn MTLComputePipelineState>>,
     pub mr_table_build: Retained<ProtocolObject<dyn MTLComputePipelineState>>,
+    pub mr_mark_dirty: Retained<ProtocolObject<dyn MTLComputePipelineState>>,
+    pub mr_refresh_fits: Retained<ProtocolObject<dyn MTLComputePipelineState>>,
+    pub mr_collect_misses: Retained<ProtocolObject<dyn MTLComputePipelineState>>,
+    pub mr_compute_misses: Retained<ProtocolObject<dyn MTLComputePipelineState>>,
 }
 
 unsafe impl Send for Pipelines {}
@@ -85,9 +88,12 @@ impl Pipelines {
             downsample_rle: make("downsample_rle"),
             downsample_medoids: make("downsample_medoids"),
             mr_query: make("mr_query"),
-            mr_cache_fits: make("mr_cache_fits"),
             mr_table_init: make("mr_table_init"),
             mr_table_build: make("mr_table_build"),
+            mr_mark_dirty: make("mr_mark_dirty"),
+            mr_refresh_fits: make("mr_refresh_fits"),
+            mr_collect_misses: make("mr_collect_misses"),
+            mr_compute_misses: make("mr_compute_misses"),
         }
     }
 }

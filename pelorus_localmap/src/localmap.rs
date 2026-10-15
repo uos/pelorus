@@ -38,7 +38,8 @@ struct Value((i32, VoxelDistribution));
 struct SortKey {
     index: usize,
     temporal_dist: u64, // Numerator
-    point_count: u64,   // Denominator
+    #[cfg_attr(feature = "lru-eviction", allow(dead_code))]
+    point_count: u64, // Denominator
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -270,6 +271,11 @@ impl Livodish {
             .filter_map(update_key)
             .for_each(drop);
 
+        // Ablation: plain LRU, evict the voxel updated longest ago first, ignoring support.
+        #[cfg(feature = "lru-eviction")]
+        let cmp = |a: &SortKey, b: &SortKey| b.temporal_dist.cmp(&a.temporal_dist);
+
+        #[cfg(not(feature = "lru-eviction"))]
         let cmp = |a: &SortKey, b: &SortKey| {
             if a.point_count == 0 && b.point_count == 0 {
                 return std::cmp::Ordering::Equal;
@@ -294,5 +300,49 @@ impl Livodish {
         for (i, key) in self.lru_mapping_keys.iter().enumerate() {
             unsafe { *self.lru_mapping.get_unchecked_mut(i) = Some(key.index) };
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // Old but well supported (S = 10 / 100), recent but sparse (S = 2 / 1), then a new voxel.
+    fn evicted_map() -> Livodish {
+        let mut map = Livodish::new(2, 1.0, 0.0);
+        for (hash, last_updated_at_scan, point_count) in [(0, 0, 100), (1, 8, 1)] {
+            let dist = VoxelDistribution {
+                point_count,
+                last_updated_at_scan,
+                ..VoxelDistribution::new()
+            };
+            map.add(dist, hash, last_updated_at_scan, ExecutionMode::Sequential);
+        }
+        map.build(10, ExecutionMode::Sequential);
+        let fresh = VoxelDistribution {
+            point_count: 1,
+            last_updated_at_scan: 10,
+            ..VoxelDistribution::new()
+        };
+        map.add(fresh, 2, 10, ExecutionMode::Sequential);
+        map
+    }
+
+    #[cfg(not(feature = "lru-eviction"))]
+    #[test]
+    fn evicts_highest_age_per_support() {
+        let map = evicted_map();
+        assert!(map.find(&0).is_some());
+        assert!(map.find(&1).is_none());
+        assert!(map.find(&2).is_some());
+    }
+
+    #[cfg(feature = "lru-eviction")]
+    #[test]
+    fn evicts_least_recently_updated() {
+        let map = evicted_map();
+        assert!(map.find(&0).is_none());
+        assert!(map.find(&1).is_some());
+        assert!(map.find(&2).is_some());
     }
 }

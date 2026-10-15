@@ -159,6 +159,12 @@ vulkan = [
 # Lidar + IMU with naiive kdtree for neighborsearch. Currently slow and unstable. Use only with good reason.
 kdtree = ["pelorus_reg/nn_kdt"]
 
+# Ablation: plain LRU local-map eviction (least recently updated first) instead of age / support relevance. CPU maps only.
+lru-eviction = ["pelorus_reg/lru-eviction", "pelorus_localmap/lru-eviction"]
+plain-update = ["pelorus_reg/plain-update", "pelorus_localmap/plain-update"]
+no-maturity-decay = ["pelorus_reg/no-maturity-decay", "pelorus_localmap/no-maturity-decay"]
+no-level-consistency = ["pelorus_reg/no-level-consistency", "pelorus_localmap/no-level-consistency"]
+
 # Enables synchronization with a bagfile using Minot (https://uos.github.io/minot/)
 offline = ["mt_pubsub", "rat"]
 

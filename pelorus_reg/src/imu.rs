@@ -363,21 +363,8 @@ impl ImuProcessing {
             let avr_x = [acc_avr_x, acc_avr_y, acc_avr_z];
             let angvel_avr = [angvel_avr_x, angvel_avr_y, angvel_avr_z];
 
-            // Calculate dt to this IMU message. If the message arrives before last_cloud_end_time,
-            // we predict from last_cloud_end_time (to account for the gap). Otherwise predict from head.
-            let dt = if head_stamp < last_cloud_end_time {
-                tail_stamp - last_cloud_end_time
-            } else {
-                tail_stamp - head_stamp
-            };
-
-            if dt > 0.0 {
-                _ = self.predict(ekf, avr_x, angvel_avr, dt);
-                // Enforce kinematic constraints after prediction
-                ekf.correct_kinematics(kinematic, tail.angular_velocity.into(), constraint_std);
-            }
-
-            // Inject odometry corrections that fall inside this IMU interval.
+            // Process events in timestamp order: advance to each odometry sample,
+            // correct there, and only then finish the interval at the IMU sample.
             while let Some(odom) = odom_iter.peek() {
                 let odom_time = timestamp_to_secs(&odom.stamp);
                 if odom_time > tail_stamp {
@@ -389,10 +376,19 @@ impl ImuProcessing {
                     _ = self.predict(ekf, avr_x, angvel_avr, dt_pred);
                     // Enforce kinematic constraints after prediction segment
                     ekf.correct_kinematics(kinematic, tail.angular_velocity.into(), constraint_std);
-                } else if dt_pred < 0.0 && should_log_once_default("skip_odom_non_positive_dt") {
-                    warn!("Skipping odom fusion with non-positive dt: {dt_pred:.6}");
+                } else if dt_pred < 0.0 {
+                    if should_log_once_default("skip_odom_non_positive_dt") {
+                        warn!("Skipping stale odom sample with dt: {dt_pred:.6}");
+                    }
+                    odom_iter.next();
+                    continue;
                 }
-                ekf.correct_with_body_velocities(*(*odom), kinematic, self.wheel_odom_cov_override);
+                ekf.correct_with_body_velocities(
+                    *(*odom),
+                    kinematic,
+                    self.wheel_odom_cov_override,
+                    Vector3::new(angvel_avr_x, angvel_avr_y, angvel_avr_z),
+                );
                 odom_iter.next();
             }
 
@@ -446,11 +442,20 @@ impl ImuProcessing {
                 // Enforce kinematic constraints after prediction segment
                 let gyro = Vector3::new(angvel_avr_x, angvel_avr_y, angvel_avr_z);
                 ekf.correct_kinematics(kinematic, gyro, constraint_std);
-            } else if dt_pred < 0.0 && should_log_once_default("skip_odom_non_positive_dt") {
-                warn!("Skipping odom fusion with non-positive dt: {dt_pred:.6}");
+            } else if dt_pred < 0.0 {
+                if should_log_once_default("skip_odom_non_positive_dt") {
+                    warn!("Skipping stale odom sample with dt: {dt_pred:.6}");
+                }
+                odom_iter.next();
+                continue;
             }
 
-            ekf.correct_with_body_velocities(*(*odom), kinematic, self.wheel_odom_cov_override);
+            ekf.correct_with_body_velocities(
+                *(*odom),
+                kinematic,
+                self.wheel_odom_cov_override,
+                Vector3::new(angvel_avr_x, angvel_avr_y, angvel_avr_z),
+            );
             odom_iter.next();
         }
 

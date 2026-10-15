@@ -30,9 +30,9 @@ struct MRQueryParams {
     uint table_cap;
     uint n;
     uint level_sizes[4];
-    uint fitcache_cap;
-    uint fitcache_gen;
-    uint fitcache_epoch;
+    uint miss_cap;
+    uint miss_version;
+    uint work_cap;
     uint _pad2;
 };
 
@@ -125,8 +125,8 @@ inline float3 mr_eigenvector(thread const float* cov, float lambda) {
 }
 
 // Fit a plane to a pooled cell. Mirrors `mr_fit` in the Vulkan/CUDA kernels:
-// status 0 = insufficient support, 1 = conflicting/degenerate (stop the
-// caller's level search), 2 = usable plane.
+// status 0 = insufficient support, 1 = conflicting/degenerate, 2 = usable
+// plane. The caller moves on to the next coarser level unless the status is 2.
 inline MRFit mr_fit(thread const MRCell& cell, float resolution) {
     MRFit f;
     f.status = 0;
@@ -210,16 +210,26 @@ inline MRFit mr_neighborhood(device const MRCell* cells, device const uint* tabl
 }
 
 // Must match `pelorus_metal::multiresolution::CacheParams` exactly (16 bytes).
+// `prev_n` is only read by `mr_refresh_fits`.
 struct MRCacheParams {
     uint n;
     float resolution;
     uint cap;
-    uint _pad;
+    uint prev_n;
 };
 
-constant uint MR_FC_FREE    = 0u;
-constant uint MR_FC_WRITING = 1u;
-constant uint MR_FC_GEN_BIAS = 2u;
+// Miss cache: neighborhood fits of cells that are absent from a level, valid
+// for one map version. Mirrors the CUDA backend. Per slot, `miss_state` holds
+// version << 1 | ready; a slot of an older version counts as empty, so the
+// cache never has to be cleared. `miss_keys` holds (level, x, y, z).
+constant uint MR_MISS_PROBES = 32u;
+
+// Must match `pelorus_metal::multiresolution::MissWork` (20 bytes).
+struct MRMissWork {
+    uint level;
+    uint slot;
+    int key[3];
+};
 
 inline uint mr_fc_slot(uint level, thread const int* key, uint cap) {
     uint h = hash_fn(hash_grid(int3(key[0], key[1], key[2])));
@@ -258,17 +268,164 @@ kernel void mr_table_build(
     }
 }
 
-kernel void mr_cache_fits(
-    device const MRCell*     cells [[buffer(0)]],
-    device MRFit*            fits  [[buffer(1)]],
-    device const uint*       table [[buffer(2)]],
-    constant MRCacheParams&  p     [[buffer(3)]],
+// A fit only depends on the 27 cells around its key. Marks every cell of the
+// new level version next to a key that was updated, inserted or evicted in
+// this scan. `changed` holds 4 ints (x, y, z, unused) per key; p.n = #keys.
+kernel void mr_mark_dirty(
+    device const int*        changed [[buffer(0)]],
+    device const MRCell*     cells   [[buffer(1)]],
+    device const uint*       table   [[buffer(2)]],
+    device uint*             dirty   [[buffer(3)]],
+    constant MRCacheParams&  p       [[buffer(4)]],
     uint i [[thread_position_in_grid]])
 {
     if (i >= p.n) return;
-    // mr_neighborhood takes a thread-address-space key.
+    int key[3] = {changed[i * 4u + 0u], changed[i * 4u + 1u], changed[i * 4u + 2u]};
+    for (int dx = -1; dx <= 1; dx++)
+        for (int dy = -1; dy <= 1; dy++)
+            for (int dz = -1; dz <= 1; dz++) {
+                int k[3] = {mr_neighbor(key[0], dx), mr_neighbor(key[1], dy), mr_neighbor(key[2], dz)};
+                int j = mr_find_cell(cells, table, p.cap, k);
+                if (j >= 0) dirty[j] = 1u;
+            }
+}
+
+// Carries unchanged fits over from the previous level version and refits the
+// rest. Gives the same fits as fitting every cell of the new version.
+kernel void mr_refresh_fits(
+    device const MRCell*     prev_cells [[buffer(0)]],
+    device const MRFit*      prev_fits  [[buffer(1)]],
+    device const uint*       prev_table [[buffer(2)]],
+    device const MRCell*     cells      [[buffer(3)]],
+    device MRFit*            fits       [[buffer(4)]],
+    device const uint*       table      [[buffer(5)]],
+    device const uint*       dirty      [[buffer(6)]],
+    constant MRCacheParams&  p          [[buffer(7)]],
+    uint i [[thread_position_in_grid]])
+{
+    if (i >= p.n) return;
     int key[3] = {cells[i].key[0], cells[i].key[1], cells[i].key[2]};
+    if (dirty[i] == 0u && p.prev_n > 0u) {
+        int j = mr_find_cell(prev_cells, prev_table, p.cap, key);
+        if (j >= 0) {
+            fits[i] = prev_fits[j];
+            return;
+        }
+    }
     fits[i] = mr_neighborhood(cells, table, p.cap, p.n, key, p.resolution);
+}
+
+// Miss pass 1: claims a miss-cache slot for every absent cell a point could
+// query on any level and lists it once, so pass 2 computes each fit a single
+// time. The point transform and level search mirror `mr_query` exactly.
+kernel void mr_collect_misses(
+    device const Point*    cloud      [[buffer(0)]],
+    device const MRCell*   cells0     [[buffer(1)]],
+    device const MRCell*   cells1     [[buffer(2)]],
+    device const MRCell*   cells2     [[buffer(3)]],
+    device const MRCell*   cells3     [[buffer(4)]],
+    device const uint*     table0     [[buffer(5)]],
+    device const uint*     table1     [[buffer(6)]],
+    device const uint*     table2     [[buffer(7)]],
+    device const uint*     table3     [[buffer(8)]],
+    device atomic_uint*    miss_state [[buffer(9)]],
+    device int*            miss_keys  [[buffer(10)]],
+    device MRMissWork*     work       [[buffer(11)]],
+    device atomic_uint*    work_count [[buffer(12)]],
+    constant MRQueryParams& p         [[buffer(13)]],
+    uint idx [[thread_position_in_grid]])
+{
+    if (idx >= p.n || p.miss_cap == 0u) return;
+
+    Point pt = cloud[idx];
+    float3 local3 = float3(pt.x, pt.y, pt.z);
+    float4 ext_q = float4(p.lidar_to_imu_quat[0], p.lidar_to_imu_quat[1], p.lidar_to_imu_quat[2], p.lidar_to_imu_quat[3]);
+    float3 ext_t = float3(p.lidar_to_imu_pos[0], p.lidar_to_imu_pos[1], p.lidar_to_imu_pos[2]);
+    float4 q = float4(p.pose_quat[0], p.pose_quat[1], p.pose_quat[2], p.pose_quat[3]);
+    float3 t = float3(p.pose_trans[0], p.pose_trans[1], p.pose_trans[2]);
+    float3 imu = iso_transform(ext_q, ext_t, local3);
+    float3 world3 = iso_transform(q, t, imu);
+    if (any(isnan(world3)) || any(isinf(world3))) return;
+    float world[3] = {world3.x, world3.y, world3.z};
+
+    for (uint l = 0; l < 4; l++) {
+        float r = p.resolution * (.5 * float(1u << l));
+        int key[3];
+        mr_grid(world, r, key);
+        uint cap = p.table_cap;
+        if (p.level_sizes[l] == 0) continue;
+
+        int cell = -1;
+        if (l == 0) cell = mr_find_cell(cells0, table0, cap, key);
+        else if (l == 1) cell = mr_find_cell(cells1, table1, cap, key);
+        else if (l == 2) cell = mr_find_cell(cells2, table2, cap, key);
+        else cell = mr_find_cell(cells3, table3, cap, key);
+        if (cell >= 0) continue;
+
+        uint slot = mr_fc_slot(l, key, p.miss_cap);
+        for (uint probe = 0; probe < MR_MISS_PROBES; ++probe) {
+            uint st = atomic_load_explicit(&miss_state[slot], memory_order_relaxed);
+            if ((st >> 1) != p.miss_version) {
+                // Empty for this map version: claim it, still not ready.
+                if (atomic_compare_exchange_weak_explicit(&miss_state[slot], &st,
+                                                          p.miss_version << 1,
+                                                          memory_order_relaxed,
+                                                          memory_order_relaxed)) {
+                    miss_keys[slot * 4u + 0u] = int(l);
+                    miss_keys[slot * 4u + 1u] = key[0];
+                    miss_keys[slot * 4u + 2u] = key[1];
+                    miss_keys[slot * 4u + 3u] = key[2];
+                    uint w = atomic_fetch_add_explicit(work_count, 1u, memory_order_relaxed);
+                    // A full list leaves the slot unready; mr_query then fits inline.
+                    if (w < p.work_cap) {
+                        MRMissWork item;
+                        item.level = l;
+                        item.slot = slot;
+                        item.key[0] = key[0]; item.key[1] = key[1]; item.key[2] = key[2];
+                        work[w] = item;
+                    }
+                    break;
+                }
+                continue; // lost the race for this slot, look at it again
+            }
+            // Claimed in this version. A slot claimed in this dispatch may
+            // still show an older key, which at worst lists a key twice or
+            // leaves it to mr_query's inline fallback.
+            if (mr_fc_key_eq(&miss_keys[slot * 4u], l, key)) break;
+            slot = (slot + 1u) & (p.miss_cap - 1u);
+        }
+    }
+}
+
+// Miss pass 2: one fit per listed absent cell.
+kernel void mr_compute_misses(
+    device const MRMissWork* work       [[buffer(0)]],
+    device const uint*       work_count [[buffer(1)]],
+    device const MRCell*     cells0     [[buffer(2)]],
+    device const MRCell*     cells1     [[buffer(3)]],
+    device const MRCell*     cells2     [[buffer(4)]],
+    device const MRCell*     cells3     [[buffer(5)]],
+    device const uint*       table0     [[buffer(6)]],
+    device const uint*       table1     [[buffer(7)]],
+    device const uint*       table2     [[buffer(8)]],
+    device const uint*       table3     [[buffer(9)]],
+    device atomic_uint*      miss_state [[buffer(10)]],
+    device MRFit*            miss_fits  [[buffer(11)]],
+    constant MRQueryParams&  p          [[buffer(12)]],
+    uint i [[thread_position_in_grid]])
+{
+    if (i >= min(*work_count, p.work_cap)) return;
+    MRMissWork w = work[i];
+    int key[3] = {w.key[0], w.key[1], w.key[2]};
+    uint cap = p.table_cap;
+    uint ln = p.level_sizes[w.level];
+    MRFit f;
+    if (w.level == 0) f = mr_neighborhood(cells0, table0, cap, ln, key, p.resolution);
+    else if (w.level == 1) f = mr_neighborhood(cells1, table1, cap, ln, key, p.resolution);
+    else if (w.level == 2) f = mr_neighborhood(cells2, table2, cap, ln, key, p.resolution);
+    else f = mr_neighborhood(cells3, table3, cap, ln, key, p.resolution);
+    miss_fits[w.slot] = f;
+    atomic_store_explicit(&miss_state[w.slot], (p.miss_version << 1) | 1u, memory_order_relaxed);
 }
 
 kernel void mr_query(
@@ -285,9 +442,9 @@ kernel void mr_query(
     device const uint*     table1   [[buffer(10)]],
     device const uint*     table2   [[buffer(11)]],
     device const uint*     table3   [[buffer(12)]],
-    device atomic_uint*    fc_flags [[buffer(13)]],
-    device int*            fc_keys  [[buffer(14)]],
-    device MRFit*          fc_fits  [[buffer(15)]],
+    device atomic_uint*    miss_state [[buffer(13)]],
+    device const int*      miss_keys  [[buffer(14)]],
+    device const MRFit*    miss_fits  [[buffer(15)]],
     device PointNormal*    out_buff [[buffer(16)]],
     constant MRQueryParams& p       [[buffer(17)]],
     uint idx [[thread_position_in_grid]])
@@ -340,31 +497,24 @@ kernel void mr_query(
             else if (l == 2) f = fits2[cell];
             else f = fits3[cell];
         } else {
-            uint fcap = p.fitcache_cap;
+            // Read the fit of the absent cell from the miss cache filled by
+            // mr_collect_misses/mr_compute_misses; fit inline if not cached,
+            // so the result is always exact.
             bool hit = false;
-            uint free_slot = 0xffffffffu;
-            if (fcap > 0u) {
-                uint slot = mr_fc_slot(l, key, fcap);
-                for (uint probe = 0; probe < 16u; ++probe) {
-                    uint fl = atomic_load_explicit(&fc_flags[slot], memory_order_relaxed);
-                    if (fl == MR_FC_FREE) {
-                        if (free_slot == 0xffffffffu) free_slot = slot;
+            uint mcap = p.miss_cap;
+            if (mcap > 0u) {
+                uint slot = mr_fc_slot(l, key, mcap);
+                for (uint probe = 0; probe < MR_MISS_PROBES; ++probe) {
+                    uint st = atomic_load_explicit(&miss_state[slot], memory_order_relaxed);
+                    // Slots are claimed front to back along the probe chain,
+                    // so an empty one ends the search.
+                    if ((st >> 1) != p.miss_version) break;
+                    if ((st & 1u) != 0u && mr_fc_key_eq(&miss_keys[slot * 4u], l, key)) {
+                        f = miss_fits[slot];
+                        hit = true;
                         break;
                     }
-                    if (fl != MR_FC_WRITING) {
-                        uint gen = fl - MR_FC_GEN_BIAS;
-                        if (gen < p.fitcache_epoch) {
-                            // Left over from an earlier scan: reusable, but
-                            // keep probing in case this key is further along.
-                            if (free_slot == 0xffffffffu) free_slot = slot;
-                        } else if (gen < p.fitcache_gen
-                                   && mr_fc_key_eq(&fc_keys[slot * 4u], l, key)) {
-                            f = fc_fits[slot];
-                            hit = true;
-                            break;
-                        }
-                    }
-                    slot = (slot + 1u) & (fcap - 1u);
+                    slot = (slot + 1u) & (mcap - 1u);
                 }
             }
             if (!hit) {
@@ -372,32 +522,10 @@ kernel void mr_query(
                 else if (l == 1) f = mr_neighborhood(cells1, table1, cap, ln, key, p.resolution);
                 else if (l == 2) f = mr_neighborhood(cells2, table2, cap, ln, key, p.resolution);
                 else f = mr_neighborhood(cells3, table3, cap, ln, key, p.resolution);
-                if (free_slot != 0xffffffffu) {
-                    uint expected = atomic_load_explicit(&fc_flags[free_slot],
-                                                         memory_order_relaxed);
-                    bool claimable = expected == MR_FC_FREE
-                        || (expected != MR_FC_WRITING
-                            && expected - MR_FC_GEN_BIAS < p.fitcache_epoch);
-                    if (claimable && atomic_compare_exchange_weak_explicit(
-                            &fc_flags[free_slot], &expected, MR_FC_WRITING,
-                            memory_order_relaxed, memory_order_relaxed)) {
-                        fc_keys[free_slot * 4u + 0u] = int(l);
-                        fc_keys[free_slot * 4u + 1u] = key[0];
-                        fc_keys[free_slot * 4u + 2u] = key[1];
-                        fc_keys[free_slot * 4u + 3u] = key[2];
-                        fc_fits[free_slot] = f;
-                        // Tagged with this dispatch's generation, so only a
-                        // later dispatch will read it.
-                        atomic_store_explicit(&fc_flags[free_slot],
-                                              p.fitcache_gen + MR_FC_GEN_BIAS,
-                                              memory_order_relaxed);
-                    }
-                }
             }
         }
 
-        if (f.status == 0) continue;
-        if (f.status == 1) break;
+        if (f.status != 2) continue;
 
         float delta[3], t0[3], t1[3];
         for (int k = 0; k < 3; k++) {

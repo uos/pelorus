@@ -35,15 +35,24 @@ struct Fit {
     d: f32,
 }
 const _: () = assert!(size_of::<Cell>() == 72 && size_of::<Fit>() == 68);
+// MRMissSlot (state, key, fit) and MRMissWork (level, slot, key) in scalar layout.
+const MISS_SLOT_SIZE: usize = 4 + 12 + size_of::<Fit>();
+const MISS_WORK_SIZE: usize = 4 + 4 + 12;
 struct Level {
     cells: VulkanBuffer,
     fits: VulkanBuffer,
     table: VulkanBuffer,
+    // The *_next buffers hold the level while a scan is merged, so unchanged
+    // fits can be carried over from the previous version instead of refitted.
+    cells_next: VulkanBuffer,
+    fits_next: VulkanBuffer,
+    table_next: VulkanBuffer,
     n: u32,
     budget: u32,
 }
 struct Scratch {
     work: VulkanBuffer,
+    miss_work: VulkanBuffer,
     reduced: VulkanBuffer,
     batches: VulkanBuffer,
     combined: VulkanBuffer,
@@ -71,6 +80,15 @@ pub(crate) struct MultiResolutionMap {
     resources: Mutex<ComputeCommandResources>,
     levels: [Level; 4],
     scratch: Scratch,
+    // Fits of absent cells for all levels, valid for one map version.
+    miss: VulkanBuffer,
+    // Number of listed misses.
+    miss_counter: VulkanBuffer,
+    // Map version for the miss cache, advanced after every map update.
+    version: u32,
+    // Tests skip filling the cache, so the query fits every absent cell inline.
+    #[cfg(test)]
+    bypass_miss_cache: bool,
     base: f32,
     sensitivity: f32,
 }
@@ -88,25 +106,37 @@ impl MultiResolutionMap {
         );
         let compute = build_pipelines(Arc::clone(context));
         let alloc = |size, n| VulkanBuffer::new_device_local_required(stream, size, n);
-        let levels = std::array::from_fn(|i| {
+        let levels: [Level; 4] = std::array::from_fn(|i| {
             let budget = capacity / 4 + usize::from(i < capacity % 4);
+            let table_n = budget.next_power_of_two() * 2;
             Level {
                 cells: alloc(size_of::<Cell>(), budget),
                 fits: alloc(size_of::<Fit>(), budget),
-                table: alloc(4, budget.next_power_of_two() * 2),
+                table: alloc(4, table_n),
+                cells_next: alloc(size_of::<Cell>(), budget),
+                fits_next: alloc(size_of::<Fit>(), budget),
+                table_next: alloc(4, table_n),
                 n: 0,
                 budget: budget as u32,
             }
         });
-        Self {
+        // Each level caches as many absent cells as its hash table has slots.
+        let miss_n = levels.iter().map(|l| l.table.n).sum::<usize>();
+        let map = Self {
             context: Arc::clone(context),
             resources: Mutex::new(ComputeCommandResources::new(context, &compute)),
             compute,
             levels,
+            miss: alloc(MISS_SLOT_SIZE, miss_n),
+            miss_counter: alloc(4, 1),
+            version: 1,
+            #[cfg(test)]
+            bypass_miss_cache: false,
             base,
             sensitivity,
             scratch: Scratch {
                 work: alloc(size_of::<Cell>(), 1),
+                miss_work: alloc(MISS_WORK_SIZE, 1),
                 reduced: alloc(size_of::<Cell>(), 1),
                 batches: alloc(size_of::<Cell>(), 1),
                 combined: alloc(size_of::<Cell>(), 1),
@@ -124,7 +154,16 @@ impl MultiResolutionMap {
                 poses: VulkanBuffer::new_host_visible(stream, 8, 7),
                 cap: 1,
             },
-        }
+        };
+        // A dispatch for version 0, which is never current, clears the cache.
+        let mut b = map.buffers();
+        b[16] = handle(&map.miss);
+        b[17] = handle(&map.miss_counter);
+        let p = map.params(miss_n as u32, 0);
+        let mut session = map.begin();
+        map.dispatch(&mut session, 13, &b, &p, p.n);
+        session.submit();
+        map
     }
     fn ensure(&mut self, stream: &Stream, n: usize) {
         let cap = n.max(1).next_power_of_two();
@@ -133,6 +172,9 @@ impl MultiResolutionMap {
         }
         let alloc = |size| VulkanBuffer::new_device_local_required(stream, size, cap);
         self.scratch.work = alloc(size_of::<Cell>());
+        // Up to four absent cells per query point.
+        self.scratch.miss_work =
+            VulkanBuffer::new_device_local_required(stream, MISS_WORK_SIZE, 4 * cap);
         self.scratch.reduced = alloc(size_of::<Cell>());
         self.scratch.batches = alloc(size_of::<Cell>());
         self.scratch.combined = alloc(size_of::<Cell>());
@@ -336,41 +378,72 @@ impl MultiResolutionMap {
             let merged_n = self.read_count(stream);
             let excess = merged_n.saturating_sub(self.levels[level].budget);
             let retained = merged_n - excess;
+            let l = &self.levels[level];
             let mut b = self.buffers();
             b[0] = handle(&self.scratch.combined);
-            b[1] = handle(&self.scratch.work);
+            b[1] = handle(&l.cells_next);
             let mut p = self.params(merged_n, scan);
             let mut session = self.begin();
             if excess > 0 {
+                // Rank the merged cells by eviction order, then drop the evicted
+                // ones with an order-preserving compaction: the merge is already
+                // key-sorted, so no second sort is needed. The counter still
+                // holds merged_n for the prefix sum.
                 self.sort(&mut session, &b, &p, true);
                 p.valid_size = excess;
-                self.dispatch(&mut session, 6, &b, &p, retained);
-                p = self.params(retained, scan);
-                b[0] = handle(&self.scratch.work);
-                b[1] = handle(&self.levels[level].cells);
-                self.sort(&mut session, &b, &p, false);
-                self.dispatch(&mut session, 6, &b, &p, retained);
+                let mut evict = b;
+                evict[1] = handle(&self.scratch.work);
+                self.dispatch(&mut session, 11, &evict, &p, merged_n);
+                self.prefix(&mut session, &b, &p);
+                self.dispatch(&mut session, 3, &b, &p, merged_n);
             } else {
                 p.valid_size = merged_n;
-                b[1] = handle(&self.levels[level].cells);
                 self.dispatch(&mut session, 5, &b, &p, merged_n);
             }
-            b[0] = handle(&self.levels[level].cells);
-            b[8] = handle(&self.levels[level].fits);
             p = self.params(retained, scan);
-            p.cap = self.levels[level].table.n as u32;
+            p.cap = l.table_next.n as u32;
             let mut index_buffers = b;
-            index_buffers[1] = handle(&self.levels[level].table);
+            index_buffers[0] = handle(&l.cells_next);
+            index_buffers[1] = handle(&l.table_next);
             self.dispatch(&mut session, 9, &index_buffers, &p, p.cap);
             p.k = 1;
             self.dispatch(&mut session, 9, &index_buffers, &p, retained);
-            p.table_cap = p.cap;
-            b[3] = handle(&self.levels[level].table);
-            self.dispatch(&mut session, 7, &b, &p, retained);
+            // Only fits next to this scan's updates, insertions and evictions
+            // change; flags marks them dirty.
+            let mut fit = self.buffers();
+            fit[0] = handle(&l.cells_next);
+            fit[3] = handle(&l.table_next);
+            fit[8] = handle(&l.fits_next);
+            fit[5] = handle(&l.cells);
+            fit[9] = handle(&l.fits);
+            fit[16] = handle(&l.table);
+            p = self.params(retained, scan);
+            p.table_cap = l.table_next.n as u32;
+            p.j = 1;
+            self.dispatch(&mut session, 7, &fit, &p, retained);
+            p.j = 2;
+            for (changed, n) in [
+                (&self.scratch.batches, batch_n),
+                (&self.scratch.work, excess),
+            ] {
+                fit[4] = handle(changed);
+                p.n = n;
+                self.dispatch(&mut session, 7, &fit, &p, n);
+            }
+            p.j = 3;
+            p.n = retained;
+            p.valid_size = l.n;
+            self.dispatch(&mut session, 7, &fit, &p, retained);
             session.shader_to_readback_barrier();
             session.submit();
-            self.levels[level].n = retained;
+            let l = &mut self.levels[level];
+            std::mem::swap(&mut l.cells, &mut l.cells_next);
+            std::mem::swap(&mut l.fits, &mut l.fits_next);
+            std::mem::swap(&mut l.table, &mut l.table_next);
+            l.n = retained;
         }
+        // The map changed, so cached fits of absent cells are stale.
+        self.version += 1;
     }
     pub(crate) fn planes(
         &mut self,
@@ -432,9 +505,27 @@ impl MultiResolutionMap {
             b[4 + i] = handle(&self.levels[i].cells);
             b[[8, 9, 11, 12][i]] = handle(&self.levels[i].fits);
         }
+        // Bindings 16 and 17 are free in the query itself and hold the miss
+        // cache; the version selects its valid slots.
+        let mut query = b;
+        query[16] = handle(&self.miss);
+        query[17] = handle(&self.miss_counter);
+        let mut collect = query;
+        collect[1] = handle(&self.scratch.miss_work);
+        p.scan_number = self.version;
         let start = Instant::now();
         let mut session = self.begin();
-        self.dispatch(&mut session, 8, &b, &p, n);
+        // Absent cells are listed and fitted once per map version, so the query
+        // does not diverge on inline fits in every registration iteration.
+        #[cfg(test)]
+        let fill_cache = !self.bypass_miss_cache;
+        #[cfg(not(test))]
+        let fill_cache = true;
+        if fill_cache {
+            self.dispatch(&mut session, 12, &collect, &p, n);
+            self.dispatch(&mut session, 13, &collect, &p, 4 * n);
+        }
+        self.dispatch(&mut session, 8, &query, &p, n);
         self.prefix(&mut session, &b, &p);
         let mut compact = b;
         compact[15] = handle(&self.scratch.planes);
@@ -812,5 +903,136 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn carried_fits_evictions_and_cached_misses_match_full_recompute() {
+        let stream = Stream::new();
+        let StreamBackend::Vulkan(context) = &stream.backend else {
+            return;
+        };
+        if !context.precise_multiresolution {
+            return;
+        }
+        let mut map = MultiResolutionMap::new(&stream, 3001, 0.5, 10.0);
+        // A floor and two walls with deterministic noise, seen from a sensor
+        // that moves, so cells are updated, inserted and evicted every scan.
+        // Every other scan only covers a small patch, so most fits carry over.
+        let mut seed = 0x9e3779b9u32;
+        let mut noise = move || {
+            seed ^= seed << 13;
+            seed ^= seed >> 17;
+            seed ^= seed << 5;
+            seed as f32 / u32::MAX as f32 - 0.5
+        };
+        let pose = Pose {
+            position: Vector3::new(0., 0., 0.),
+            orientation: Quaternion::default(),
+        };
+        for scan in 1..=12u32 {
+            let points: Vec<_> = (0..6000)
+                .map(|i| {
+                    let extent = if scan % 2 == 0 { 3. } else { 20. };
+                    let (u, v) = (extent * noise(), extent * noise());
+                    let e = 0.02 * noise();
+                    let (x, y, z) = match i % 3 {
+                        0 => (u, v, -1.5 + e),
+                        1 => (6. + e, u, 2. * v.abs() / 10. - 1.5),
+                        _ => (u, -7. + e, 2. * v.abs() / 10. - 1.5),
+                    };
+                    pelorus_core::PointXYZIT {
+                        x,
+                        y,
+                        z,
+                        ..Default::default()
+                    }
+                })
+                .collect();
+            let cloud = VulkanBuffer::from_cloud(&stream, &points);
+            let t = Vector3::new(1.5 * f64::from(scan), 0.2 * f64::from(scan), 0.);
+            let q = Quaternion::new(
+                0.,
+                0.,
+                (0.05 * f64::from(scan)).sin(),
+                (0.05 * f64::from(scan)).cos(),
+            );
+            map.add(&stream, &cloud, &t, &q, scan);
+            // flags still holds the dirty cells of the last level.
+            let mut dirty = vec![0u32; map.levels[3].n as usize];
+            map.scratch.flags.download_into(&stream, &mut dirty);
+            let clean = dirty.iter().filter(|&&d| d == 0).count();
+            assert!(
+                scan % 2 == 1 || clean > 0,
+                "nothing carried over in scan {scan}"
+            );
+            // Independent of the comparison kernels: a full refit of every level.
+            for l in &map.levels {
+                let n = l.n as usize;
+                let full = VulkanBuffer::new(&stream, size_of::<Fit>(), n.max(1));
+                let mut b = map.buffers();
+                b[0] = handle(&l.cells);
+                b[3] = handle(&l.table);
+                b[8] = handle(&full);
+                let mut p = map.params(l.n, scan);
+                p.table_cap = l.table.n as u32;
+                let mut session = map.begin();
+                map.dispatch(&mut session, 7, &b, &p, l.n);
+                session.shader_to_readback_barrier();
+                session.submit();
+                let (mut carried, mut expected) =
+                    (vec![Fit::default(); n], vec![Fit::default(); n]);
+                l.fits.download_into(&stream, &mut carried);
+                full.download_into(&stream, &mut expected);
+                assert_eq!(
+                    bytemuck::cast_slice::<Fit, u8>(&carried),
+                    bytemuck::cast_slice::<Fit, u8>(&expected),
+                    "carried fits differ after scan {scan}"
+                );
+                let mut cells = vec![Cell::default(); n];
+                l.cells.download_into(&stream, &mut cells);
+                assert!(cells.windows(2).all(|w| w[0].key < w[1].key));
+            }
+            // Repeated queries within one map version read the cached fits. The
+            // last one runs in a version without cached fits and fits inline.
+            let query = VulkanBuffer::from_cloud(&stream, &points[..2000]);
+            let mut results = Vec::new();
+            for inline in [false, false, true] {
+                if inline {
+                    map.version += 1;
+                    map.bypass_miss_cache = true;
+                }
+                let mut output = VulkanBuffer::new(&stream, size_of::<PointNormal>(), 2000);
+                let mut download = vec![PointNormal::default(); 2000];
+                let mut planes = Vec::new();
+                let sensor = Pose {
+                    position: t,
+                    orientation: q,
+                };
+                map.planes(
+                    &stream,
+                    PlaneQuery {
+                        cloud: &query,
+                        pose: &sensor,
+                        lidar_to_imu: &pose,
+                    },
+                    &mut planes,
+                    &mut output,
+                    &mut download,
+                );
+                map.bypass_miss_cache = false;
+                download.truncate(planes.len());
+                results.push(download);
+            }
+            for cached in &results[..2] {
+                assert_eq!(
+                    bytemuck::cast_slice::<PointNormal, u8>(cached),
+                    bytemuck::cast_slice::<PointNormal, u8>(&results[2]),
+                    "cached absent-cell fits differ after scan {scan}"
+                );
+            }
+            assert!(!results[0].is_empty());
+        }
+        // The budget was reached, so cells were evicted.
+        assert!(map.levels.iter().any(|l| l.n == l.budget));
     }
 }

@@ -25,6 +25,10 @@ def _launch_pelorus(context):
     if export_trajectory:
         arguments.extend(["--export-trajectory", export_trajectory])
 
+    export_latency = LaunchConfiguration("export_latency").perform(context)
+    if export_latency:
+        arguments.extend(["--export-latency", export_latency])
+
     export_processing_time = LaunchConfiguration("export_processing_time").perform(context)
     if export_processing_time:
         arguments.extend(["--export-processing-time", export_processing_time])
@@ -94,9 +98,14 @@ def generate_launch_description():
                 description="Optional path to write a TUM trajectory file.",
             ),
             DeclareLaunchArgument(
+                "export_latency",
+                default_value="",
+                description="Optional path to write end-to-end latency samples (scan arrival to registered cloud).",
+            ),
+            DeclareLaunchArgument(
                 "export_processing_time",
                 default_value="",
-                description="Optional path to write processing time samples.",
+                description="Optional path to write processing time samples (summed compute time).",
             ),
             DeclareLaunchArgument(
                 "rviz",

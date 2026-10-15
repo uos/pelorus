@@ -560,9 +560,10 @@ wheel {
   # QoS the wheel odometry topic is subscribed with.
   qos.reliability = Reliable
 
-  # Orientation of the wheel odometry frame relative to the IMU. Only the
-  # rotation is needed, because the translation cancels out of a velocity
-  # constraint.
+  # Orientation of the wheel odometry frame relative to the IMU. The velocity
+  # and its covariance stay in this frame until the filter evaluates the
+  # observation. The reference-point offset is taken from the platform
+  # base/Lidar/IMU calibration (or ackermann.imu_to_rear_axle).
   to_imu_transform {
     # Look the rotation up in the TF tree instead of using the value below. The
     # lookup happens once, when the first odometry message arrives.

@@ -40,6 +40,10 @@ rayon = [
     "pelorus_vulkan?/rayon",
 ]
 nn_kdt = ["pelorus_localmap/nn_kdt"]
+lru-eviction = ["pelorus_localmap/lru-eviction"]
+plain-update = ["pelorus_localmap/plain-update"]
+no-maturity-decay = ["pelorus_localmap/no-maturity-decay"]
+no-level-consistency = ["pelorus_localmap/no-level-consistency"]
 cuda = ["dep:pelorus_cuda", "pelorus_cuda/cuda_available", "pelorus_cuda/cuda_enable", "pelorus_sync/cuda"]
 metal = ["dep:pelorus_metal", "pelorus_metal/metal_available", "pelorus_metal/metal_enable", "pelorus_sync/metal"]
 vulkan = ["dep:pelorus_vulkan", "pelorus_vulkan/vulkan_available", "pelorus_vulkan/vulkan_enable", "pelorus_sync/vulkan"]
