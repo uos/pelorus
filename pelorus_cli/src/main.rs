@@ -574,6 +574,46 @@ pub struct OfflineArgs {
     /// next steady-state offline scan is released.
     #[arg(long, default_value_t = false)]
     pub polarstern: bool,
+
+    /// Also replay an extra bag topic, for consumers outside Pelorus such as
+    /// Polarstern's camera colorization. `TYPE:TOPIC` with TYPE one of `image`,
+    /// `compressed` or `camera-info`. Repeatable.
+    ///
+    /// Forwarded topics follow the TF schedule: they are published in bag order
+    /// together with the IMU and TF around each cloud, and never hold a scan.
+    #[arg(long = "forward-topic", value_name = "TYPE:TOPIC", value_parser = parse_forwarded_topic)]
+    pub forward_topics: Vec<ForwardedTopic>,
+}
+
+/// A bag topic replayed next to the sensors Pelorus itself consumes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ForwardedTopic {
+    /// Minot's `_type` for the topic.
+    pub minot_type: &'static str,
+    pub topic: String,
+}
+
+fn parse_forwarded_topic(value: &str) -> Result<ForwardedTopic, String> {
+    let (kind, topic) = value
+        .split_once(':')
+        .ok_or_else(|| format!("'{value}' is not TYPE:TOPIC"))?;
+    let minot_type = match kind {
+        "image" => "Image",
+        "compressed" => "ImageCompressed",
+        "camera-info" => "CameraInfo",
+        other => {
+            return Err(format!(
+                "unknown topic type '{other}'; expected image, compressed or camera-info"
+            ));
+        }
+    };
+    if topic.is_empty() || topic.contains('"') || topic.contains(char::is_whitespace) {
+        return Err(format!("'{topic}' is not a usable topic name"));
+    }
+    Ok(ForwardedTopic {
+        minot_type,
+        topic: topic.to_owned(),
+    })
 }
 
 #[derive(Debug, Clone, Parser)]
@@ -1866,6 +1906,12 @@ fn lio_with_ready_signal(
         let callback_shutdown = shutdown_flag.clone();
         let callback_compressed = Arc::clone(&publish_compressed_clouds);
         let callback_replay_tick_debt = Arc::clone(&replay_tick_debt);
+        // Every acknowledgement pays for exactly one scan, which would leave
+        // Minot's round trip on the critical path of every frame. The first one
+        // therefore pays for `prefetch_scans`, so the preprocessing side finds the
+        // next scans already waiting, as it does when Pelorus owns the replay.
+        let callback_prefill_pending = Arc::new(AtomicBool::new(true));
+        let callback_prefetch_scans = offline_prefetch_scans.max(1);
         // Registering unlocks the bag exactly once. The offline runner holds
         // Minot in `--sync` until then, so no frame can be produced before the
         // consumer's subscribers exist.
@@ -1880,6 +1926,8 @@ fn lio_with_ready_signal(
                     let registered = Arc::clone(&callback_registered);
                     let compressed = Arc::clone(&callback_compressed);
                     let replay_tick_debt = Arc::clone(&callback_replay_tick_debt);
+                    let prefill_pending = Arc::clone(&callback_prefill_pending);
+                    let prefetch_scans = callback_prefetch_scans;
                     async move {
                         debug!("managed downstream request: {request:?}");
                         let effect = state
@@ -1916,8 +1964,13 @@ fn lio_with_ready_signal(
                             shutdown.store(true, Ordering::SeqCst);
                         }
                         if effect.completed_frame.is_some() {
+                            let desired = if prefill_pending.swap(false, Ordering::AcqRel) {
+                                prefetch_scans
+                            } else {
+                                1
+                            };
                             let request_count =
-                                request_count_after_replay_debt(&replay_tick_debt, 1);
+                                request_count_after_replay_debt(&replay_tick_debt, desired);
                             if request_count > 0 {
                                 release_minot_ticks_async(
                                     shutdown.as_ref(),
@@ -4648,6 +4701,31 @@ fn build_offline_minot_config(
     imu_topic: &str,
     lidar_only: bool,
 ) -> String {
+    build_offline_minot_config_with_topics(bagfile_path, lidar_topic, imu_topic, lidar_only, &[])
+}
+
+/// [`build_offline_minot_config`] plus extra bag topics.
+///
+/// Every `pf!` line that carries TF carries the extra topics too, so they are
+/// published in bag order between two clouds and never decide when a scan is
+/// released.
+#[cfg(feature = "rat")]
+fn build_offline_minot_config_with_topics(
+    bagfile_path: &str,
+    lidar_topic: &str,
+    imu_topic: &str,
+    lidar_only: bool,
+    forwarded: &[ForwardedTopic],
+) -> String {
+    let mut extra_sensors = String::new();
+    let mut extra_ids = String::new();
+    for (index, forward) in forwarded.iter().enumerate() {
+        extra_sensors.push_str(&format!(
+            "\n  fwd{index}.{{\n    _topic = \"{}\"\n    _short = \"x{index}\"\n    _type = {}\n  }}",
+            forward.topic, forward.minot_type
+        ));
+        extra_ids.push_str(&format!(", x{index}"));
+    }
     // TF from the bag is always forwarded so configs that use the TF tree resolve their
     // frames offline. A bag without these topics simply never matches them.
     let tf_sensors = r#"
@@ -4662,7 +4740,7 @@ fn build_offline_minot_config(
     _type = Tf
   }"#;
 
-    if lidar_only {
+    let script = if lidar_only {
         format!(
             r#"
 _bag.{{
@@ -4670,7 +4748,7 @@ _bag.{{
     _topic = "{lidar_topic}"
     _short = "l"
     _type = Cloud
-  }}{tf_sensors}
+  }}{tf_sensors}{extra_sensors}
 }}
 _start_locked = false
 
@@ -4697,7 +4775,7 @@ _bag.{{
     _topic = "{imu_topic}"
     _short = "i"
     _type = Imu
-  }}{tf_sensors}
+  }}{tf_sensors}{extra_sensors}
 }}
 _start_locked = false
 
@@ -4719,12 +4797,15 @@ reset! "{bagfile_path}"
 pf! [i, t, s], i 2
 "#
         )
-    }
+    };
+    script
+        .replace("[l, t, s]", &format!("[l, t, s{extra_ids}]"))
+        .replace("[i, t, s]", &format!("[i, t, s{extra_ids}]"))
 }
 
 #[cfg(all(test, feature = "rat"))]
 mod offline_minot_config_tests {
-    use super::build_offline_minot_config;
+    use super::{ForwardedTopic, build_offline_minot_config, build_offline_minot_config_with_topics};
 
     #[test]
     fn lidar_only_replay_requests_clouds_without_declaring_imu() {
@@ -4750,6 +4831,61 @@ mod offline_minot_config_tests {
         assert!(config.contains("pf! [i, t, s], l 1 lio_start_tick"));
         assert!(config.contains("pf! [i, t, s], l 1 tick_end"));
         assert!(config.contains("pf! [i, t, s], i 2\n"));
+    }
+
+    #[test]
+    fn forwarded_topics_ride_with_tf_and_never_hold_a_scan() {
+        let forwarded = [
+            ForwardedTopic {
+                minot_type: "ImageCompressed",
+                topic: "/cam/image_raw/compressed".into(),
+            },
+            ForwardedTopic {
+                minot_type: "CameraInfo",
+                topic: "/cam/camera_info".into(),
+            },
+        ];
+        for lidar_only in [true, false] {
+            let config = build_offline_minot_config_with_topics(
+                "/tmp/input.mcap",
+                "/lidar/points",
+                "/imu/data",
+                lidar_only,
+                &forwarded,
+            );
+            assert!(config.contains("_topic = \"/cam/image_raw/compressed\""));
+            assert!(config.contains("_type = ImageCompressed"));
+            assert!(config.contains("_short = \"x1\""));
+            assert!(config.contains("_type = CameraInfo"));
+            assert!(!config.contains("[l, t, s]") && !config.contains("[i, t, s]"));
+            let tick = if lidar_only {
+                "pf! [l, t, s, x0, x1], l 2 tick_end"
+            } else {
+                "pf! [i, t, s, x0, x1], l 1 tick_end"
+            };
+            assert!(config.contains(tick), "{config}");
+            // Nothing forwarded: byte for byte the established schedule.
+            assert_eq!(
+                build_offline_minot_config("/tmp/input.mcap", "/lidar/points", "/imu/data", lidar_only),
+                build_offline_minot_config_with_topics(
+                    "/tmp/input.mcap", "/lidar/points", "/imu/data", lidar_only, &[]
+                )
+            );
+        }
+    }
+
+    #[test]
+    fn forward_topic_arguments_are_parsed_and_validated() {
+        use super::parse_forwarded_topic;
+        assert_eq!(
+            parse_forwarded_topic("compressed:/a/b").unwrap(),
+            ForwardedTopic { minot_type: "ImageCompressed", topic: "/a/b".into() }
+        );
+        assert_eq!(parse_forwarded_topic("image:/x").unwrap().minot_type, "Image");
+        assert_eq!(parse_forwarded_topic("camera-info:/x").unwrap().minot_type, "CameraInfo");
+        for bad in ["/no/type", "depth:/x", "image:", "image:/a b", "image:/a\"b"] {
+            assert!(parse_forwarded_topic(bad).is_err(), "{bad}");
+        }
     }
 
     #[test]
@@ -5156,11 +5292,12 @@ fn main() -> Result<(), Box<dyn CoreError>> {
             let bagfile_label = bagfile_path.clone();
             shared_stats.set_bagfile(bagfile_label);
 
-            let mt_content = build_offline_minot_config(
+            let mt_content = build_offline_minot_config_with_topics(
                 &bagfile_path,
                 lidar_topic,
                 imu_topic,
                 config.imu_params.lidar_only,
+                &offline_args.forward_topics,
             );
 
             // Start TUI immediately so we can see what's happening

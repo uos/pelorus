@@ -736,18 +736,9 @@ void main() {
     }
     if (abs(mr_dot(delta, t0)) > f.extent[0] || abs(mr_dot(delta, t1)) > f.extent[1])
       continue;
-    if (selected.status == 2) {
-      float cosine = min(abs(mr_dot(selected.normal, f.normal)), 1);
-      for (int k = 0; k < 3; k++)
-        delta[k] = f.mean[k] - selected.mean[k];
-      if (cosine < .98 || 1 - cosine * cosine > selected.quality + f.quality ||
-          abs(mr_dot(selected.normal, delta)) > pc.resolution * .15 ||
-          abs(mr_dot(f.normal, delta)) > pc.resolution * .15)
-        break;
-      if (f.quality >= selected.quality)
-        continue;
-    }
+    // The finest level with a valid plane supplies the residual.
     selected = f;
+    break;
   }
   if (selected.status != 2)
     return;

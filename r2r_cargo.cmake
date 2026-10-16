@@ -165,14 +165,6 @@ function(r2r_cargo)
          AND NOT "$ENV{PELORUS_NO_MATURITY_DECAY}" STREQUAL "OFF")
     list(APPEND FEATURES "no-maturity-decay")
   endif()
-  if(PELORUS_NO_LEVEL_CONSISTENCY)
-    list(APPEND FEATURES "no-level-consistency")
-  elseif(DEFINED ENV{PELORUS_NO_LEVEL_CONSISTENCY}
-         AND NOT "$ENV{PELORUS_NO_LEVEL_CONSISTENCY}" STREQUAL ""
-         AND NOT "$ENV{PELORUS_NO_LEVEL_CONSISTENCY}" STREQUAL "0"
-         AND NOT "$ENV{PELORUS_NO_LEVEL_CONSISTENCY}" STREQUAL "OFF")
-    list(APPEND FEATURES "no-level-consistency")
-  endif()
 
 
   string(JOIN "," FEATURES_STR ${FEATURES})

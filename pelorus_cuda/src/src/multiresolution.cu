@@ -66,7 +66,7 @@ struct Sample {
 struct Fit {
   // 0: insufficient, 1: conflicting, 2: plane
   int status;
-  float mean[3], normal[3], tangent[2][3], extent[2], quality, d;
+  float mean[3], normal[3], tangent[2][3], extent[2], d;
 };
 // Fit of a cell that is absent from the map, cached for one map version.
 // state = version << 1 | ready; a slot of an older version counts as empty, so
@@ -444,9 +444,6 @@ __device__ Fit fit(Dist d, float base) {
   }
   f.extent[0] = 3 * sqrtf(fmaxf(middle, 0)) + base * .5f;
   f.extent[1] = 3 * sqrtf(fmaxf(large, 0)) + base * .5f;
-  float noise = base * .04f;
-  f.quality = (small + noise * noise) * (1 / fmaxf(middle - small, 1e-6f) +
-                                         1 / fmaxf(large - small, 1e-6f));
   f.d = -dot(f.normal, f.mean);
   return f;
 }
@@ -593,6 +590,8 @@ __global__ void query(const Point *cloud, uint32_t n, Pose ext, Pose pose,
   if (!isfinite(world[0]) || !isfinite(world[1]) || !isfinite(world[2]))
     return;
   Level levels[4] = {l0, l1, l2, l3};
+  // The finest level with a valid plane supplies the residual. Coarser levels
+  // only step in where the finer ones are sparse or degenerate.
   Fit selected{};
   for (int level = 0; level < 4; ++level) {
     Level l = levels[level];
@@ -613,18 +612,8 @@ __global__ void query(const Point *cloud, uint32_t n, Pose ext, Pose pose,
     if (fabsf(dot(delta, f.tangent[0])) > f.extent[0] ||
         fabsf(dot(delta, f.tangent[1])) > f.extent[1])
       continue;
-    if (selected.status == 2) {
-      float cosine = fminf(fabsf(dot(selected.normal, f.normal)), 1);
-      for (int k = 0; k < 3; ++k)
-        delta[k] = f.mean[k] - selected.mean[k];
-      if (cosine < .98f || 1 - cosine * cosine > selected.quality + f.quality ||
-          fabsf(dot(selected.normal, delta)) > base * .15f ||
-          fabsf(dot(f.normal, delta)) > base * .15f)
-        break;
-      if (f.quality >= selected.quality)
-        continue;
-    }
     selected = f;
+    break;
   }
   if (selected.status != 2)
     return;

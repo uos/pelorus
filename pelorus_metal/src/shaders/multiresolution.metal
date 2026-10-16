@@ -537,19 +537,9 @@ kernel void mr_query(
         float proj_t1 = delta[0] * t1[0] + delta[1] * t1[1] + delta[2] * t1[2];
         if (fabs(proj_t0) > f.extent[0] || fabs(proj_t1) > f.extent[1]) continue;
 
-        if (selected.status == 2) {
-            float cosine = min(fabs(selected.normal[0] * f.normal[0] + selected.normal[1] * f.normal[1] +
-                                     selected.normal[2] * f.normal[2]), 1.0f);
-            float d2[3];
-            for (int k = 0; k < 3; k++) d2[k] = f.mean[k] - selected.mean[k];
-            float dn_sel = selected.normal[0] * d2[0] + selected.normal[1] * d2[1] + selected.normal[2] * d2[2];
-            float dn_f = f.normal[0] * d2[0] + f.normal[1] * d2[1] + f.normal[2] * d2[2];
-            if (cosine < .98 || 1.0 - cosine * cosine > selected.quality + f.quality ||
-                fabs(dn_sel) > p.resolution * .15 || fabs(dn_f) > p.resolution * .15)
-                break;
-            if (f.quality >= selected.quality) continue;
-        }
+        // The finest level with a valid plane supplies the residual.
         selected = f;
+        break;
     }
 
     if (selected.status != 2) return;

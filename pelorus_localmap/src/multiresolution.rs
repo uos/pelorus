@@ -387,22 +387,9 @@ pub(crate) struct PlaneMatch {
     mean: Point3<f32>,
     tangents: [Vector3<f32>; 2],
     extents: [f32; 2],
-    normal_quality: f32,
 }
 
 impl PlaneMatch {
-    fn normal(&self) -> Vector3<f32> {
-        Vector3::new(self.plane[0], self.plane[1], self.plane[2])
-    }
-
-    fn agrees_with_normal(&self, other: &Self) -> bool {
-        let cosine = self.normal().dot(&other.normal()).abs().min(1.0);
-        // Squared sine is sign-invariant and approximates squared angular
-        // disagreement for close normals. Confident fits should not rotate
-        // merely because a larger support still passes the broad angle cap.
-        cosine >= 0.98 && 1.0 - cosine * cosine <= self.normal_quality + other.normal_quality
-    }
-
     fn contains_projection(&self, query: &Point3<f32>) -> bool {
         let delta = query - self.mean;
         self.tangents
@@ -564,15 +551,6 @@ impl MultiResolutionMap {
         let tangents = [middle, large].map(|i| eigenvectors.column(i).into_owned());
         let extents = [middle, large]
             .map(|i| 3.0 * eigenvalues[i].max(0.0).sqrt() + self.levels[0].resolution);
-        // Prefer a well-constrained normal, not just a large support region.
-        // This is a geometric quality proxy, not calibrated plane uncertainty:
-        // robust temporal blending makes point_count unsuitable as an IID count.
-        // The noise floor prevents nearly rank-two tiny patches winning solely
-        // because their measured thickness rounded to zero.
-        let noise_floor = (self.levels[1].resolution * 0.04).powi(2);
-        let normal_quality = (thickness + noise_floor)
-            * (1.0 / (eigenvalues[middle] - thickness).max(1e-6)
-                + 1.0 / (eigenvalues[large] - thickness).max(1e-6));
         // Registration applies its range-dependent residual gate as before.
         let d = -normal.dot(&distribution.mean.coords);
         Some(PlaneMatch {
@@ -581,7 +559,6 @@ impl MultiResolutionMap {
             mean: distribution.mean,
             tangents,
             extents,
-            normal_quality,
         })
     }
 
@@ -589,7 +566,8 @@ impl MultiResolutionMap {
         if !point.coords.iter().all(|x| x.is_finite()) {
             return None;
         }
-        let mut selected: Option<PlaneMatch> = None;
+        // The finest level with a valid plane supplies the residual. Coarser
+        // levels only step in where the finer ones are sparse or degenerate.
         for (index, level) in (0u8..).zip(&self.levels) {
             let key = level.grid(point);
             let candidate = if let Some(cell) = level.get(&key) {
@@ -606,30 +584,11 @@ impl MultiResolutionMap {
             let Some(candidate) = candidate else {
                 continue;
             };
-            if !candidate.contains_projection(point) {
-                continue;
+            if candidate.contains_projection(point) {
+                return Some(candidate);
             }
-            // Ablation: the finest valid level wins, coarser levels are never consulted.
-            #[cfg(feature = "no-level-consistency")]
-            return Some(candidate);
-            #[allow(unreachable_code)]
-            if let Some(finer) = selected {
-                // Do not let a larger neighborhood rotate or shift a supported
-                // local surface. Normal signs are arbitrary.
-                if !finer.agrees_with_normal(&candidate)
-                    || finer.normal().dot(&(candidate.mean - finer.mean)).abs() > self.max_thickness
-                    || candidate.normal().dot(&(finer.mean - candidate.mean)).abs()
-                        > self.max_thickness
-                {
-                    break;
-                }
-                if candidate.normal_quality >= finer.normal_quality {
-                    continue;
-                }
-            }
-            selected = Some(candidate);
         }
-        selected
+        None
     }
 }
 
