@@ -1,10 +1,12 @@
 use rkyv::{Archive, Deserialize as RkyvDeserialize, Serialize as RkyvSerialize};
 use serde::{Deserialize, Serialize};
 
-pub const PROTOCOL_VERSION: u32 = 2;
+pub const PROTOCOL_VERSION: u32 = 3;
 pub const REGISTERED_FRAME_TOPIC: &str = "pelorus/registered_frame";
 pub const DOWNSTREAM_CONTROL_SERVICE: &str = "pelorus/downstream_control";
 pub const DOWNSTREAM_READY_TOPIC: &str = "pelorus/downstream_ready";
+pub const REPLAY_FINISHED_TOPIC: &str = "pelorus/replay_finished";
+pub const STREAM_ENDED_TOPIC: &str = "pelorus/stream_ended";
 /// Topic carrying registered clouds as plain `PointCloud2`.
 pub const REGISTERED_CLOUD_TOPIC: &str = "registered";
 
@@ -167,6 +169,39 @@ pub enum DownstreamRequest {
     },
 }
 
+/// Published once by Pelorus when a managed replay has reached the end of the
+/// bag and every scan Minot replayed has been registered or given up on.
+///
+/// No frame follows. The consumer finishes once it has completed
+/// `last_scan_id`, or at once when it is `None`, and then sends
+/// [`DownstreamRequest::Shutdown`]. Pelorus stays up until it does, so the
+/// consumer never has to guess from silence that the replay is over.
+#[derive(
+    Archive, RkyvSerialize, RkyvDeserialize, Serialize, Deserialize, Debug, Clone, PartialEq, Eq,
+)]
+pub struct ReplayFinished {
+    pub protocol_version: u32,
+    /// The last authoritative frame Pelorus published, if any.
+    pub last_scan_id: Option<u64>,
+}
+
+/// Published once per forwarded topic (`--forward-topic`) when Minot has
+/// replayed the last message of it in the bag, before that message itself.
+/// A topic the bag does not have ends with zero messages, right at the start.
+///
+/// Topics travel separately, so the messages may still be on their way: a
+/// consumer that counts what it receives on `topic` has the complete stream
+/// once it has `messages` of them, and can stop waiting for more without
+/// waiting for the end of the whole replay.
+#[derive(
+    Archive, RkyvSerialize, RkyvDeserialize, Serialize, Deserialize, Debug, Clone, PartialEq, Eq,
+)]
+pub struct StreamEnded {
+    pub protocol_version: u32,
+    pub topic: String,
+    pub messages: u64,
+}
+
 /// Repeated by Pelorus after its managed downstream service subscriber is
 /// active and until the user registers successfully.
 #[derive(
@@ -256,6 +291,13 @@ impl DownstreamGate {
             preferred_cloud_encoding,
             negotiated_cloud_encoding: CloudEncoding::BASELINE,
             last_completed_scan_id: None,
+        }
+    }
+
+    /// The bag is fully replayed and no further frame will be published.
+    pub fn finish_replay(&mut self) {
+        if self.replay_state == ReplayState::Running {
+            self.replay_state = ReplayState::EndOfBag;
         }
     }
 

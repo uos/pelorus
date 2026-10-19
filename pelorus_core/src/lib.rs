@@ -734,6 +734,36 @@ pub struct McapConfig {
     pub rosbag_metadata: Option<String>,
 }
 
+/// Files Pelorus writes while it runs. `None` writes nothing; an empty path
+/// is named after the current time.
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct ExportConfig {
+    pub trajectory: Option<String>,
+    pub latency: Option<String>,
+    pub processing_time: Option<String>,
+}
+
+/// How `pelorus offline` runs.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct OfflineConfig {
+    /// Stay up after the bag is processed, until Ctrl-C.
+    pub keep_open: bool,
+    /// Let Minot and Pelorus pub/sub use non-local networking.
+    pub open_router: bool,
+    /// Keep a streamed dataset's blocks and promote it locally.
+    pub cache_stream: bool,
+}
+
+impl Default for OfflineConfig {
+    fn default() -> Self {
+        Self {
+            keep_open: false,
+            open_router: false,
+            cache_stream: true,
+        }
+    }
+}
+
 impl Default for McapConfig {
     fn default() -> Self {
         Self {
@@ -795,6 +825,8 @@ pub struct LioConfig {
     pub dist_update_sensitivity: f32,
     pub rerun: RerunConfig,
     pub mcap: McapConfig,
+    pub export: ExportConfig,
+    pub offline: OfflineConfig,
     pub base_link_frame: Option<String>,
     pub base_to_lidar: Isometry3<f64>,
     pub base_to_lidar_tf_override: bool,

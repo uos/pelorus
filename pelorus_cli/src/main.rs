@@ -499,61 +499,9 @@ pub struct OfflineArgs {
     #[arg(long)]
     pub registry: Option<String>,
 
-    /// Stream a remote dataset without caching blocks or promoting it locally.
-    #[arg(long)]
-    pub no_cache_stream: bool,
-
     /// Path to the Minot binary
     #[arg(short, long, default_value = "minot")]
     pub minot_path: PathBuf,
-
-    /// Export a TUM trajectory file.
-    /// If not provided, trajectory is not exported.
-    /// If provided without value, automatically generates a filename.
-    /// If provided with a path, exports to that exact location.
-    #[arg(
-        short,
-        long,
-        value_name = "PATH",
-        num_args = 0..=1,
-        default_missing_value = ""
-    )]
-    pub export_trajectory: Option<String>,
-
-    /// Export end-to-end latency samples as timestamp and nanoseconds:
-    /// wall-clock time from the arrival of the scan message until its
-    /// registered cloud is ready, including queueing and the wait for IMU
-    /// measurements that cover the scan.
-    /// If not provided, latencies are not exported.
-    /// If provided without value, automatically generates a filename.
-    /// If provided with a path, exports to that exact location.
-    #[cfg(feature = "processing-time-export")]
-    #[arg(
-        long,
-        value_name = "PATH",
-        num_args = 0..=1,
-        default_missing_value = ""
-    )]
-    pub export_latency: Option<String>,
-
-    /// Export processing time samples as timestamp and nanoseconds: the
-    /// summed top-level profiler time actually spent computing the tick.
-    /// Unlike --export-latency, this excludes queueing and waiting.
-    /// If not provided, processing times are not exported.
-    /// If provided without value, automatically generates a filename.
-    /// If provided with a path, exports to that exact location.
-    #[cfg(feature = "processing-time-export")]
-    #[arg(
-        long,
-        value_name = "PATH",
-        num_args = 0..=1,
-        default_missing_value = ""
-    )]
-    pub export_processing_time: Option<String>,
-
-    /// Allow Minot and Pelorus pub/sub to use non-local networking in offline mode.
-    #[arg(long, default_value_t = false)]
-    pub open_router: bool,
 
     /// Pub/sub coordination of Pelorus and of the Minot turbine it spawns.
     #[arg(long, value_enum, default_value_t = PubSubCoordMode::Peer)]
@@ -622,50 +570,6 @@ pub struct ConfigArgs {
     /// If not provided, only the default configuration will be used
     #[arg(short, long)]
     pub config_path: Option<PathBuf>,
-
-    /// Export a TUM trajectory file.
-    /// If not provided, trajectory is not exported.
-    /// If provided without value, automatically generates a filename.
-    /// If provided with a path, exports to that exact location.
-    #[arg(
-        short,
-        long,
-        value_name = "PATH",
-        num_args = 0..=1,
-        default_missing_value = ""
-    )]
-    pub export_trajectory: Option<String>,
-
-    /// Export end-to-end latency samples as timestamp and nanoseconds:
-    /// wall-clock time from the arrival of the scan message until its
-    /// registered cloud is ready, including queueing and the wait for IMU
-    /// measurements that cover the scan.
-    /// If not provided, latencies are not exported.
-    /// If provided without value, automatically generates a filename.
-    /// If provided with a path, exports to that exact location.
-    #[cfg(feature = "processing-time-export")]
-    #[arg(
-        long,
-        value_name = "PATH",
-        num_args = 0..=1,
-        default_missing_value = ""
-    )]
-    pub export_latency: Option<String>,
-
-    /// Export processing time samples as timestamp and nanoseconds: the
-    /// summed top-level profiler time actually spent computing the tick.
-    /// Unlike --export-latency, this excludes queueing and waiting.
-    /// If not provided, processing times are not exported.
-    /// If provided without value, automatically generates a filename.
-    /// If provided with a path, exports to that exact location.
-    #[cfg(feature = "processing-time-export")]
-    #[arg(
-        long,
-        value_name = "PATH",
-        num_args = 0..=1,
-        default_missing_value = ""
-    )]
-    pub export_processing_time: Option<String>,
 
     /// Publish tick_end checkpoint using ratlib from Minot.
     #[arg(short, long)]
@@ -1549,6 +1453,12 @@ struct LioRunOptions {
     mt_pubsub_local_only: bool,
     mt_pubsub_coord_mode: PubSubCoordMode,
     output_mcap: Option<McapOutputConfig>,
+    /// Stay up after the replay is processed until shut down.
+    keep_open: bool,
+    /// Forwarded topics Minot has replayed completely, with their message
+    /// counts, to pass on to the downstream consumer.
+    #[cfg_attr(not(feature = "mt_pubsub"), allow(dead_code))]
+    stream_ends: Option<tokio::sync::mpsc::UnboundedReceiver<(String, u64)>>,
 }
 
 #[cfg(any(
@@ -1806,6 +1716,10 @@ fn lio_with_ready_signal(
         #[allow(unused_variables)]
         mt_pubsub_coord_mode,
         output_mcap,
+        #[allow(unused_variables)]
+        keep_open,
+        #[allow(unused_variables)]
+        stream_ends,
     } = options;
     let replay_tick_debt = Arc::new(AtomicUsize::new(0));
     // Set from the register handshake before the bag is released, read by the
@@ -1870,6 +1784,17 @@ fn lio_with_ready_signal(
             .map_err(|err| anyhow!("Failed to create mt_pubsub node: {err}"))?,
     );
 
+    // Set once a downstream consumer owns the replay: the gate to report the
+    // end of the bag in, and where to announce it.
+    #[cfg(feature = "mt_pubsub")]
+    let mut downstream_finish: Option<(
+        Arc<std::sync::Mutex<pelorus_protocol::DownstreamGate>>,
+        mt_pubsub::Publisher<pelorus_protocol::ReplayFinished>,
+    )> = None;
+    // The last authoritative frame published, plus one; zero before the first.
+    #[cfg(feature = "mt_pubsub")]
+    let last_published_frame = Arc::new(std::sync::atomic::AtomicU64::new(0));
+
     // Gate replay on consumer attachment and per-frame completion.
     #[cfg(feature = "mt_pubsub")]
     if replay_tick_owner.is_downstream() {
@@ -1902,6 +1827,45 @@ fn lio_with_ready_signal(
                 pelorus_protocol::DOWNSTREAM_READY_TOPIC.to_owned(),
                 mt_pubsub::Qos::Reliable,
             ))?;
+        // Subscribed by the consumer before it registers, like every frame topic.
+        let replay_finished_publisher = rt
+            .as_ref()
+            .expect("rt always exists with mt_pubsub feat")
+            .block_on(node.create_publisher::<pelorus_protocol::ReplayFinished>(
+                pelorus_protocol::REPLAY_FINISHED_TOPIC.to_owned(),
+                mt_pubsub::Qos::Reliable,
+            ))?;
+        downstream_finish = Some((Arc::clone(&state), replay_finished_publisher));
+        // Stream ends reach the consumer once it is registered and listening,
+        // whenever Minot reports them.
+        let (consumer_registered_tx, mut consumer_registered) = tokio::sync::watch::channel(false);
+        let consumer_registered_tx = Arc::new(consumer_registered_tx);
+        if let Some(mut stream_ends) = stream_ends {
+            let stream_ended_publisher = rt
+                .as_ref()
+                .expect("rt always exists with mt_pubsub feat")
+                .block_on(node.create_publisher::<pelorus_protocol::StreamEnded>(
+                    pelorus_protocol::STREAM_ENDED_TOPIC.to_owned(),
+                    mt_pubsub::Qos::Reliable,
+                ))?;
+            rt.as_ref()
+                .expect("rt always exists with mt_pubsub feat")
+                .spawn(async move {
+                    if consumer_registered.wait_for(|registered| *registered).await.is_err() {
+                        return;
+                    }
+                    while let Some((topic, messages)) = stream_ends.recv().await {
+                        let ended = pelorus_protocol::StreamEnded {
+                            protocol_version: pelorus_protocol::PROTOCOL_VERSION,
+                            topic,
+                            messages,
+                        };
+                        if let Err(error) = stream_ended_publisher.publish(&ended).await {
+                            warn!("Failed to announce the end of {}: {error}", ended.topic);
+                        }
+                    }
+                });
+        }
         let callback_state = Arc::clone(&state);
         let callback_shutdown = shutdown_flag.clone();
         let callback_compressed = Arc::clone(&publish_compressed_clouds);
@@ -1916,6 +1880,7 @@ fn lio_with_ready_signal(
         // Minot in `--sync` until then, so no frame can be produced before the
         // consumer's subscribers exist.
         let callback_registered = Arc::new(std::sync::Mutex::new(downstream_registered));
+        let callback_consumer_registered = Arc::clone(&consumer_registered_tx);
         rt.as_ref()
             .expect("rt always exists with mt_pubsub feat")
             .spawn(mt_service::ServiceServer::start(
@@ -1924,6 +1889,7 @@ fn lio_with_ready_signal(
                     let state = Arc::clone(&callback_state);
                     let shutdown = callback_shutdown.clone();
                     let registered = Arc::clone(&callback_registered);
+                    let consumer_registered = Arc::clone(&callback_consumer_registered);
                     let compressed = Arc::clone(&callback_compressed);
                     let replay_tick_debt = Arc::clone(&callback_replay_tick_debt);
                     let prefill_pending = Arc::clone(&callback_prefill_pending);
@@ -1945,6 +1911,7 @@ fn lio_with_ready_signal(
                             );
                         }
                         if effect.unlock_replay {
+                            consumer_registered.send_replace(true);
                             let sender = registered
                                 .lock()
                                 .map_err(|_| {
@@ -2284,11 +2251,20 @@ fn lio_with_ready_signal(
         let node_for_stop = Arc::clone(&sync_node);
         let drain_on_shutdown_for_stop = Arc::clone(&drain_on_shutdown);
         let shutdown_flag_for_stop = shutdown_flag.clone();
+        let replay_cloud_topic = config.sync_node_params.cloud_src_topic.clone();
+        let replay_imu_topic = config.sync_node_params.imu_src_topic.clone();
         std::thread::spawn(move || {
             if let Ok(request) = stop_rx.recv() {
                 match request {
-                    OfflineShutdownRequest::DrainAfterEndOfBag => {
+                    OfflineShutdownRequest::DrainAfterEndOfBag(replayed) => {
+                        let count = |topic: &str| replayed.get(topic).copied().unwrap_or(0);
+                        let clouds = count(&replay_cloud_topic);
+                        let imus = count(&replay_imu_topic);
+                        info!(
+                            "Minot replayed {clouds} clouds on {replay_cloud_topic} and {imus} IMU samples on {replay_imu_topic}"
+                        );
                         drain_on_shutdown_for_stop.store(true, Ordering::SeqCst);
+                        node_for_stop.finish_replay(clouds, imus);
                     }
                     OfflineShutdownRequest::Immediate => {
                         node_for_stop.request_shutdown();
@@ -2614,6 +2590,23 @@ fn lio_with_ready_signal(
     let processing_tick_debt = Arc::clone(&replay_tick_debt);
     #[cfg(feature = "mt_pubsub")]
     let marker_compressed_clouds = Arc::clone(&publish_compressed_clouds);
+    #[cfg(feature = "mt_pubsub")]
+    let processing_last_published_frame = Arc::clone(&last_published_frame);
+    #[cfg(feature = "mt_pubsub")]
+    let processing_drain_on_shutdown = Arc::clone(&drain_on_shutdown);
+    #[cfg(feature = "mt_pubsub")]
+    let finish_rt = rt.clone();
+    // The pub/sub nodes live until Pelorus is done, not just until the
+    // processing thread is. Reliable peers take a vanished peer as a failure
+    // and shut down with it, so dropping a node when the replay is drained
+    // would tear down the consumer, and Pelorus's own publishers, before the
+    // end could be announced.
+    #[cfg(feature = "mt_pubsub")]
+    let _sync_node_alive = Arc::clone(&sync_node);
+    #[cfg(feature = "mt_pubsub")]
+    let _node_alive = Arc::clone(&node);
+    #[cfg(feature = "mt_pubsub")]
+    let _tf_broadcaster_alive = Arc::clone(&tf_broadcaster);
     let export_trajectory_for_worker = export_trajectory.clone();
     #[cfg(feature = "processing-time-export")]
     let export_latency_for_worker = export_latency.clone();
@@ -2857,17 +2850,19 @@ fn lio_with_ready_signal(
                     let drain_requested =
                         drain_on_shutdown.load(core::sync::atomic::Ordering::SeqCst);
                     if shutdown_requested || drain_requested {
-                        if drain_requested {
+                        if drain_requested && !shutdown_requested {
                             if !draining_after_end_of_bag {
                                 draining_after_end_of_bag = true;
-                                info!(
-                                    "Shutdown requested after end-of-bag hint. Draining queued scans"
-                                );
+                                info!("End of bag: processing every scan Minot replayed");
                             }
+                            // The synchronizer closes its output once every replayed
+                            // message has arrived and been handled, so the drain ends on
+                            // that and not on a quiet period. The timeout only lets an
+                            // interrupt through.
                             match synced_rx.recv_timeout(Duration::from_millis(50)) {
                                 Ok(t) => t,
-                                Err(std::sync::mpsc::RecvTimeoutError::Timeout)
-                                | Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => continue,
+                                Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
                                     if let Some(ref sync_node) = sync_node {
                                         sync_node.request_shutdown();
                                     }
@@ -2876,7 +2871,7 @@ fn lio_with_ready_signal(
                                     drop(ready_for_next_tx.take());
                                     drop(sync_node.take());
                                     info!(
-                                        "Shutdown requested after end-of-bag hint, queue drained, exiting processing loop"
+                                        "End of bag: every replayed scan is processed, exiting processing loop"
                                     );
                                     break;
                                 }
@@ -3881,6 +3876,7 @@ fn lio_with_ready_signal(
                         .publish(&marker)
                         .await
                         .expect("Failed to publish registered frame marker");
+                    processing_last_published_frame.store(sync_tick.scan_id + 1, Ordering::Release);
                 });
             #[cfg(not(feature = "mt_pubsub"))]
             {
@@ -4130,11 +4126,48 @@ fn lio_with_ready_signal(
             }
             std::thread::sleep(Duration::from_millis(100));
         }
-        return match processing_handle.join() {
+        let processed = match processing_handle.join() {
             Ok(Ok(())) => Ok(()),
-            Ok(Err(err)) => Err(err.into()),
-            Err(_) => Err(anyhow!("LIO processing thread panicked").into()),
+            Ok(Err(err)) => Err(err),
+            Err(_) => Err(anyhow!("LIO processing thread panicked")),
         };
+        let shut_down = || {
+            spinner_shutdown_flag
+                .as_ref()
+                .is_some_and(|flag| flag.load(Ordering::Relaxed))
+        };
+        // The bag ran out, as opposed to a shutdown request or a failure.
+        let replay_finished = processed.is_ok()
+            && processing_drain_on_shutdown.load(Ordering::SeqCst)
+            && !shut_down();
+        let mut wait_for_shutdown = replay_finished && keep_open;
+        if replay_finished && let Some((gate, publisher)) = downstream_finish.as_ref() {
+            let last_scan_id = last_published_frame.load(Ordering::Acquire).checked_sub(1);
+            if let Ok(mut gate) = gate.lock() {
+                gate.finish_replay();
+            }
+            let finished = pelorus_protocol::ReplayFinished {
+                protocol_version: pelorus_protocol::PROTOCOL_VERSION,
+                last_scan_id,
+            };
+            finish_rt
+                .as_ref()
+                .expect("rt always exists with mt_pubsub feat")
+                .block_on(publisher.publish(&finished))
+                .map_err(|err| anyhow!("Failed to announce the end of the replay: {err}"))?;
+            info!(
+                "Replay finished after frame {last_scan_id:?}; waiting for the consumer to shut down"
+            );
+            // The consumer may still be working through the last frames and
+            // asks for them by scan id, so stay up until it says it is done.
+            wait_for_shutdown = true;
+        } else if wait_for_shutdown {
+            info!("Replay finished; keeping Pelorus open. Press Ctrl-C to exit");
+        }
+        while wait_for_shutdown && !shut_down() {
+            std::thread::sleep(Duration::from_millis(100));
+        }
+        return processed.map_err(Into::into);
     }
 
     #[cfg(feature = "ros2-client")]
@@ -4252,16 +4285,46 @@ fn lio_with_ready_signal(
 enum OfflineRuntimeEvent {
     TuiShutdownRequested,
     MinotReady,
-    MinotEndOfBag,
+    /// What Minot reports to have replayed, when it does.
+    MinotEndOfBag(Option<ReplayedCounts>),
     MinotExited(std::io::Result<std::process::ExitStatus>),
     LioExited(Result<(), String>),
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 #[allow(dead_code)]
 enum OfflineShutdownRequest {
     Immediate,
-    DrainAfterEndOfBag,
+    /// Minot is at the end of the bag after replaying these messages. Finish
+    /// once all of them have arrived and been processed.
+    DrainAfterEndOfBag(ReplayedCounts),
+}
+
+/// Messages Minot replayed, by topic.
+type ReplayedCounts = std::collections::BTreeMap<String, u64>;
+
+/// Minot's `stream TOPIC ended after N messages` line.
+#[cfg_attr(not(feature = "rat"), allow(dead_code))]
+fn parse_minot_stream_end(line: &str) -> Option<(String, u64)> {
+    let (before, after) = line.split_once(" ended after ")?;
+    let (_, topic) = before.rsplit_once("stream ")?;
+    let count = after.split_whitespace().next()?;
+    if topic.is_empty() || topic.contains(char::is_whitespace) {
+        return None;
+    }
+    Some((topic.to_owned(), count.parse().ok()?))
+}
+
+/// The `replayed` list of Minot's end-of-bag line: `...; replayed /a=1 /b=2`.
+#[cfg_attr(not(feature = "rat"), allow(dead_code))]
+fn parse_minot_replayed(line: &str) -> Option<ReplayedCounts> {
+    let (_, list) = line.split_once("; replayed")?;
+    list.split_whitespace()
+        .map(|pair| {
+            let (topic, count) = pair.rsplit_once('=')?;
+            Some((topic.to_owned(), count.parse().ok()?))
+        })
+        .collect()
 }
 
 #[cfg(feature = "rat")]
@@ -4694,7 +4757,7 @@ fn canonicalize_bagfile_path(path: &std::path::Path) -> anyhow::Result<PathBuf> 
     })
 }
 
-#[cfg(feature = "rat")]
+#[cfg(all(test, feature = "rat"))]
 fn build_offline_minot_config(
     bagfile_path: &str,
     lidar_topic: &str,
@@ -4721,23 +4784,30 @@ fn build_offline_minot_config_with_topics(
     let mut extra_ids = String::new();
     for (index, forward) in forwarded.iter().enumerate() {
         extra_sensors.push_str(&format!(
-            "\n  fwd{index}.{{\n    _topic = \"{}\"\n    _short = \"x{index}\"\n    _type = {}\n  }}",
+            "\n  fwd{index}.{{\n    _topic = \"{}\"\n    _short = \"x{index}\"\n    _type = {}\n    _passive = true\n  }}",
             forward.topic, forward.minot_type
         ));
         extra_ids.push_str(&format!(", x{index}"));
     }
     // TF from the bag is always forwarded so configs that use the TF tree resolve their
     // frames offline. A bag without these topics simply never matches them.
+    //
+    // TF and forwarded topics are passive: they travel with the IMU in bag order
+    // but never keep Minot's IMU query alive. A bag whose IMU stream ends before
+    // its camera or TF streams would otherwise keep answering with only those,
+    // never reach its end, and leave the last scan waiting for IMU for ever.
     let tf_sensors = r#"
   tf.{
     _topic = "/tf"
     _short = "t"
     _type = Tf
+    _passive = true
   }
   tf_static.{
     _topic = "/tf_static"
     _short = "s"
     _type = Tf
+    _passive = true
   }"#;
 
     let script = if lidar_only {
@@ -4857,6 +4927,7 @@ mod offline_minot_config_tests {
             assert!(config.contains("_type = ImageCompressed"));
             assert!(config.contains("_short = \"x1\""));
             assert!(config.contains("_type = CameraInfo"));
+            assert_eq!(config.matches("_passive = true").count(), 4, "{config}");
             assert!(!config.contains("[l, t, s]") && !config.contains("[i, t, s]"));
             let tick = if lidar_only {
                 "pf! [l, t, s, x0, x1], l 2 tick_end"
@@ -4866,12 +4937,56 @@ mod offline_minot_config_tests {
             assert!(config.contains(tick), "{config}");
             // Nothing forwarded: byte for byte the established schedule.
             assert_eq!(
-                build_offline_minot_config("/tmp/input.mcap", "/lidar/points", "/imu/data", lidar_only),
+                build_offline_minot_config(
+                    "/tmp/input.mcap",
+                    "/lidar/points",
+                    "/imu/data",
+                    lidar_only
+                ),
                 build_offline_minot_config_with_topics(
-                    "/tmp/input.mcap", "/lidar/points", "/imu/data", lidar_only, &[]
+                    "/tmp/input.mcap",
+                    "/lidar/points",
+                    "/imu/data",
+                    lidar_only,
+                    &[]
                 )
             );
         }
+    }
+
+    #[test]
+    fn minot_stream_end_line_names_the_topic_and_its_count() {
+        use super::parse_minot_stream_end;
+        let line = r#"{"lvl":"INFO","src":"Minot","tgt":"minot::replay","msg":"stream /boxi/alphasense/left/image_raw/compressed ended after 4380 messages"}"#;
+        assert_eq!(
+            parse_minot_stream_end(line),
+            Some(("/boxi/alphasense/left/image_raw/compressed".to_owned(), 4380))
+        );
+        assert_eq!(
+            parse_minot_stream_end("[INFO] [Minot] minot::replay: stream /cam ended after 0 messages"),
+            Some(("/cam".to_owned(), 0))
+        );
+        assert_eq!(parse_minot_stream_end("reached end of bagfile"), None);
+    }
+
+    #[test]
+    fn minot_end_of_bag_line_reports_what_was_replayed() {
+        use super::parse_minot_replayed;
+        let line = "[Minot] minot::app: reached end of bagfile with no more matching messages; replayed /boxi/hesai/points=2317 /boxi/stim320/imu=117999 /tf_static=1";
+        let replayed = parse_minot_replayed(line).unwrap();
+        assert_eq!(replayed["/boxi/hesai/points"], 2317);
+        assert_eq!(replayed["/boxi/stim320/imu"], 117999);
+        assert_eq!(replayed.len(), 3);
+        // Nothing replayed is still a report; a line without one is not.
+        assert!(
+            parse_minot_replayed("end of bagfile; replayed")
+                .unwrap()
+                .is_empty()
+        );
+        assert!(
+            parse_minot_replayed("reached end of bagfile with no more matching messages").is_none()
+        );
+        assert!(parse_minot_replayed("end of bagfile; replayed /a=x").is_none());
     }
 
     #[test]
@@ -4879,11 +4994,26 @@ mod offline_minot_config_tests {
         use super::parse_forwarded_topic;
         assert_eq!(
             parse_forwarded_topic("compressed:/a/b").unwrap(),
-            ForwardedTopic { minot_type: "ImageCompressed", topic: "/a/b".into() }
+            ForwardedTopic {
+                minot_type: "ImageCompressed",
+                topic: "/a/b".into()
+            }
         );
-        assert_eq!(parse_forwarded_topic("image:/x").unwrap().minot_type, "Image");
-        assert_eq!(parse_forwarded_topic("camera-info:/x").unwrap().minot_type, "CameraInfo");
-        for bad in ["/no/type", "depth:/x", "image:", "image:/a b", "image:/a\"b"] {
+        assert_eq!(
+            parse_forwarded_topic("image:/x").unwrap().minot_type,
+            "Image"
+        );
+        assert_eq!(
+            parse_forwarded_topic("camera-info:/x").unwrap().minot_type,
+            "CameraInfo"
+        );
+        for bad in [
+            "/no/type",
+            "depth:/x",
+            "image:",
+            "image:/a b",
+            "image:/a\"b",
+        ] {
             assert!(parse_forwarded_topic(bad).is_err(), "{bad}");
         }
     }
@@ -5090,11 +5220,11 @@ fn main() -> Result<(), Box<dyn CoreError>> {
                     let _ = tui.run();
                 });
                 let lio_config = config.clone();
-                let lio_export = config_args.export_trajectory.clone();
+                let lio_export = config.export.trajectory.clone();
                 #[cfg(feature = "processing-time-export")]
-                let lio_export_latency = config_args.export_latency.clone();
+                let lio_export_latency = config.export.latency.clone();
                 #[cfg(feature = "processing-time-export")]
-                let lio_export_processing_time = config_args.export_processing_time.clone();
+                let lio_export_processing_time = config.export.processing_time.clone();
                 let lio_sync = config_args.rat;
                 let lio_stats = Some(shared_stats);
                 let lio_output_mcap = output_mcap_config.clone();
@@ -5138,6 +5268,8 @@ fn main() -> Result<(), Box<dyn CoreError>> {
                             mt_pubsub_local_only: lio_local_only,
                             mt_pubsub_coord_mode: lio_coord_mode,
                             output_mcap: lio_output_mcap,
+                            keep_open: false,
+                            stream_ends: None,
                         },
                     )
                     .map_err(|e| e.to_string())
@@ -5179,15 +5311,16 @@ fn main() -> Result<(), Box<dyn CoreError>> {
             } else {
                 let lio_shutdown_flag = Arc::new(AtomicBool::new(false));
                 install_online_shutdown_signal_handler(Arc::clone(&lio_shutdown_flag));
+                let export = config.export.clone();
                 lio_with_ready_signal(
                     config,
                     LioRunOptions {
                         ready_signal: None,
-                        export_trajectory: config_args.export_trajectory,
+                        export_trajectory: export.trajectory,
                         #[cfg(feature = "processing-time-export")]
-                        export_latency: config_args.export_latency,
+                        export_latency: export.latency,
                         #[cfg(feature = "processing-time-export")]
-                        export_processing_time: config_args.export_processing_time,
+                        export_processing_time: export.processing_time,
                         synchronous_mode: config_args.rat,
                         #[cfg(feature = "r2r")]
                         ros_node_args: RosNodeArgs {
@@ -5208,6 +5341,8 @@ fn main() -> Result<(), Box<dyn CoreError>> {
                         mt_pubsub_local_only: config_args.local_only,
                         mt_pubsub_coord_mode: config_args.coord_mode,
                         output_mcap: output_mcap_config,
+                        keep_open: false,
+                        stream_ends: None,
                     },
                 )
             }
@@ -5318,13 +5453,13 @@ fn main() -> Result<(), Box<dyn CoreError>> {
 
             // Define the main logic as a closure/block to easily handle errors and cleanup
             let export_trajectory_path =
-                resolve_export_trajectory_path(offline_args.export_trajectory.clone());
+                resolve_export_trajectory_path(config.export.trajectory.clone());
             #[cfg(feature = "processing-time-export")]
             let export_latency_path =
-                resolve_export_timing_path(offline_args.export_latency.clone(), "latency");
+                resolve_export_timing_path(config.export.latency.clone(), "latency");
             #[cfg(feature = "processing-time-export")]
             let export_processing_time_path = resolve_export_timing_path(
-                offline_args.export_processing_time.clone(),
+                config.export.processing_time.clone(),
                 "processing_time",
             );
             let export_trajectory_path_for_run = export_trajectory_path.clone();
@@ -5332,7 +5467,7 @@ fn main() -> Result<(), Box<dyn CoreError>> {
             let export_latency_path_for_run = export_latency_path.clone();
             #[cfg(feature = "processing-time-export")]
             let export_processing_time_path_for_run = export_processing_time_path.clone();
-            let offline_local_only = !offline_args.open_router;
+            let offline_local_only = !config.offline.open_router;
             let run_offline_logic = || -> anyhow::Result<()> {
                 let startup_started = std::time::Instant::now();
                 install_shutdown_signal_handlers();
@@ -5382,13 +5517,22 @@ fn main() -> Result<(), Box<dyn CoreError>> {
                 if let Some(registry) = &offline_args.registry {
                     minot_command.arg("--registry").arg(registry);
                 }
-                if offline_args.no_cache_stream {
+                if !config.offline.cache_stream {
                     minot_command.arg("--no-cache-stream");
                 }
                 // Request structured child-process log records from Minot.
                 for (key, value) in mt_log::child_env("Minot") {
                     minot_command.env(key, value);
                 }
+                // Minot's replay reports are protocol, whatever the configured
+                // level: they are relayed, and filtered, as our own records.
+                minot_command.env(
+                    "RUST_LOG",
+                    format!(
+                        "{},minot::replay=info",
+                        std::env::var("RUST_LOG").unwrap_or_else(|_| "info".to_owned())
+                    ),
+                );
                 if offline_local_only {
                     minot_command.arg("--local-only");
                 }
@@ -5437,6 +5581,25 @@ fn main() -> Result<(), Box<dyn CoreError>> {
 
                 let (runtime_tx, runtime_rx) = std::sync::mpsc::channel::<OfflineRuntimeEvent>();
                 let ready_notified = Arc::new(AtomicBool::new(false));
+                // Ends of the forwarded streams, for the downstream consumer.
+                let forwarded_topics: Arc<std::collections::BTreeSet<String>> = Arc::new(
+                    offline_args
+                        .forward_topics
+                        .iter()
+                        .map(|forward| forward.topic.clone())
+                        .collect(),
+                );
+                let (stream_end_tx, stream_end_rx) = tokio::sync::mpsc::unbounded_channel();
+                let mut lio_stream_ends = Some(stream_end_rx);
+                let forward_stream_end = move |line: &str| {
+                    if let Some((topic, messages)) = parse_minot_stream_end(line)
+                        && forwarded_topics.contains(&topic)
+                    {
+                        let _ = stream_end_tx.send((topic, messages));
+                    }
+                };
+                let forward_stream_end_stdout = forward_stream_end.clone();
+                let forward_stream_end_stderr = forward_stream_end;
 
                 // Thread for stdout
                 let runtime_tx_stdout = runtime_tx.clone();
@@ -5451,9 +5614,12 @@ fn main() -> Result<(), Box<dyn CoreError>> {
                                     relay_child_line(trimmed, "Minot");
                                 }
 
+                                forward_stream_end_stdout(&line);
                                 if line.to_lowercase().contains("end of bagfile") {
                                     let _ =
-                                        runtime_tx_stdout.send(OfflineRuntimeEvent::MinotEndOfBag);
+                                        runtime_tx_stdout.send(OfflineRuntimeEvent::MinotEndOfBag(
+                                            parse_minot_replayed(&line),
+                                        ));
                                 }
 
                                 if line.contains(
@@ -5484,9 +5650,12 @@ fn main() -> Result<(), Box<dyn CoreError>> {
                                     relay_child_line(trimmed, "Minot");
                                 }
 
+                                forward_stream_end_stderr(&line);
                                 if line.to_lowercase().contains("end of bagfile") {
                                     let _ =
-                                        runtime_tx_stderr.send(OfflineRuntimeEvent::MinotEndOfBag);
+                                        runtime_tx_stderr.send(OfflineRuntimeEvent::MinotEndOfBag(
+                                            parse_minot_replayed(&line),
+                                        ));
                                 }
 
                                 // Minot emits this only after its coordinator connection and
@@ -5555,7 +5724,8 @@ fn main() -> Result<(), Box<dyn CoreError>> {
                             }
                             return Err(anyhow!("Failed to wait on Minot: {}", e));
                         }
-                        OfflineRuntimeEvent::MinotEndOfBag | OfflineRuntimeEvent::LioExited(_) => {}
+                        OfflineRuntimeEvent::MinotEndOfBag(_)
+                        | OfflineRuntimeEvent::LioExited(_) => {}
                     }
                 }
 
@@ -5589,6 +5759,7 @@ fn main() -> Result<(), Box<dyn CoreError>> {
                     };
                 let output_mcap_config_for_run = output_mcap_config.clone();
                 let lio_local_only = offline_local_only;
+                let lio_keep_open = config.offline.keep_open;
                 let lio_coord_mode = offline_args.coord_mode;
 
                 let lio_handle = std::thread::spawn(move || {
@@ -5623,6 +5794,8 @@ fn main() -> Result<(), Box<dyn CoreError>> {
                                 mt_pubsub_local_only: lio_local_only,
                                 mt_pubsub_coord_mode: lio_coord_mode,
                                 output_mcap: output_mcap_config_for_run,
+                                keep_open: lio_keep_open,
+                                stream_ends: lio_stream_ends.take(),
                             },
                         )
                     }))
@@ -5680,21 +5853,35 @@ fn main() -> Result<(), Box<dyn CoreError>> {
                     match recv_offline_runtime_event(&runtime_rx, &mut signal_handled)? {
                         OfflineRuntimeEvent::TuiShutdownRequested => {
                             user_shutdown_requested = true;
-                            if !lio_shutdown_requested {
-                                // User interrupt path:
-                                // 1) request internal shutdown,
-                                // 2) finish current in-flight frame,
-                                // 3) terminate Minot only after LIO exits.
-                                lio_shutdown_flag.store(true, Ordering::SeqCst);
-                                lio_shutdown_requested = true;
-                            }
+                            // User interrupt path:
+                            // 1) request internal shutdown,
+                            // 2) finish current in-flight frame,
+                            // 3) terminate Minot only after LIO exits.
+                            // Also after the end of the bag: a drain or a
+                            // kept-open Pelorus must still stop on request.
+                            lio_shutdown_flag.store(true, Ordering::SeqCst);
+                            lio_shutdown_requested = true;
                         }
-                        OfflineRuntimeEvent::MinotEndOfBag => {
-                            info!("Minot reached end of bagfile");
+                        OfflineRuntimeEvent::MinotEndOfBag(replayed) => {
                             if !lio_shutdown_requested {
-                                let _ =
-                                    lio_stop_tx.send(OfflineShutdownRequest::DrainAfterEndOfBag);
                                 lio_shutdown_requested = true;
+                                match replayed {
+                                    Some(replayed) => {
+                                        info!("Minot reached end of bagfile");
+                                        let _ = lio_stop_tx.send(
+                                            OfflineShutdownRequest::DrainAfterEndOfBag(replayed),
+                                        );
+                                    }
+                                    None => {
+                                        // Without the counts there is no telling when the last
+                                        // scan has arrived. Guessing from a quiet period would
+                                        // make the last frames depend on timing.
+                                        error!(
+                                            "Minot reached the end of the bag without reporting what it replayed. Update Minot; stopping without processing the scans still queued"
+                                        );
+                                        let _ = lio_stop_tx.send(OfflineShutdownRequest::Immediate);
+                                    }
+                                }
                             }
                         }
                         OfflineRuntimeEvent::MinotExited(status) => {
@@ -6160,15 +6347,12 @@ mod mcap_output_config_tests {
 
     #[test]
     fn plain_online_still_parses_its_pipeline_flags() {
-        let args = Args::parse_from(["pelorus", "online", "--export-trajectory", "/tmp/traj.tum"]);
+        let args = Args::parse_from(["pelorus", "online", "--local-only"]);
         let Command::Online(online) = args.command else {
             panic!("expected online");
         };
         assert!(online.mode.is_none());
-        assert_eq!(
-            online.pipeline.export_trajectory,
-            Some("/tmp/traj.tum".to_string())
-        );
+        assert!(online.pipeline.local_only);
     }
 
     #[cfg(feature = "mt_pubsub")]
@@ -6230,7 +6414,7 @@ mod mcap_output_config_tests {
     #[test]
     fn pipeline_flags_cannot_be_combined_with_raw() {
         assert!(
-            Args::try_parse_from(["pelorus", "online", "--export-trajectory", "raw", "imu"])
+            Args::try_parse_from(["pelorus", "online", "--local-only", "raw", "imu"])
                 .is_err()
         );
     }

@@ -21,17 +21,12 @@ def _launch_pelorus(context):
     if config_path:
         arguments.extend(["--config-path", config_path])
 
-    export_trajectory = LaunchConfiguration("export_trajectory").perform(context)
-    if export_trajectory:
-        arguments.extend(["--export-trajectory", export_trajectory])
-
-    export_latency = LaunchConfiguration("export_latency").perform(context)
-    if export_latency:
-        arguments.extend(["--export-latency", export_latency])
-
-    export_processing_time = LaunchConfiguration("export_processing_time").perform(context)
-    if export_processing_time:
-        arguments.extend(["--export-processing-time", export_processing_time])
+    # The exports are settings (output.trajectory, output.latency, ...); "auto" names the file
+    # after the current time.
+    for key in ("trajectory", "latency", "processing_time"):
+        path = LaunchConfiguration(f"export_{key}").perform(context)
+        if path:
+            arguments.extend(["-o", f'output.{key}="{path}"'])
 
     cpu_only = LaunchConfiguration("cpu_only").perform(context).lower()
     if cpu_only in ("1", "true", "yes", "on"):

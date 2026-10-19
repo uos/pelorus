@@ -2800,7 +2800,9 @@ impl Synchronizer {
                                     imu_receiver.recv()
                                 }
                                 Err(std::sync::mpsc::TryRecvError::Disconnected) => {
-                                    error!("Imu receiver closed");
+                                    info!(
+                                        "Replay input closed: scan {scan_id} has no IMU after its end, stopping"
+                                    );
                                     return;
                                 }
                             }
@@ -2809,6 +2811,16 @@ impl Synchronizer {
 
                     let imu = match imu {
                         Ok(imu) => imu,
+                        Err(_)
+                            if matches!(imu_sync_mode, ImuSyncMode::DemandDrivenReplay { .. }) =>
+                        {
+                            // The replay closed the inputs once everything it sent
+                            // had arrived, so this scan's IMU can never come.
+                            info!(
+                                "Replay input closed: scan {scan_id} has no IMU after its end, stopping"
+                            );
+                            return;
+                        }
                         Err(e) => {
                             error!("Imu receiver closed: {e}");
                             return;
@@ -2852,11 +2864,10 @@ impl Synchronizer {
                         }
                         odom_data.push(odom);
                     }
-                    Err(std::sync::mpsc::TryRecvError::Empty) => break,
-                    Err(std::sync::mpsc::TryRecvError::Disconnected) => {
-                        //error!("Odom receiver closed"); TODO maybe is an issue?
-                        return;
-                    }
+                    // Closed inputs end the odometry, not the scans already
+                    // queued: those still finish with the IMU they have.
+                    Err(std::sync::mpsc::TryRecvError::Empty)
+                    | Err(std::sync::mpsc::TryRecvError::Disconnected) => break,
                 }
             }
 

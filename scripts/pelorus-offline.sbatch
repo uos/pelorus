@@ -140,7 +140,7 @@ RUN_CMD=(
     -c "$CONFIG"
     --minot-path "$MINOT_PATH"
     "$BAGFILE"
-    --export-trajectory "$TRAJECTORY"
+    -o "output.trajectory=\"$TRAJECTORY\""
     "${CPU_ONLY_ARGS[@]}"
 )
 

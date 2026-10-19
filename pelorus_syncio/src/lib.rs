@@ -874,8 +874,88 @@ fn cloud_callback(
     Ok(())
 }
 
+/// Counts the bag messages handed to the synchronizer during a Minot replay.
+///
+/// At the end of the bag Minot reports how many clouds and IMU samples it
+/// replayed. Once exactly that many have been handed over, the synchronizer's
+/// inputs are closed: it finishes everything already queued, gives up on a
+/// scan whose IMU can no longer arrive, and then closes its output. The end of
+/// a replay is therefore decided by what was sent, not by a quiet period.
+pub struct ReplayInputs {
+    sync: Arc<Mutex<pelorus_sync::Synchronizer>>,
+    imu_ingress: bool,
+    state: Mutex<ReplayInputsState>,
+}
+
+#[derive(Default)]
+struct ReplayInputsState {
+    clouds: u64,
+    imus: u64,
+    expected: Option<(u64, u64)>,
+    closed: bool,
+}
+
+impl ReplayInputs {
+    fn new(sync: Arc<Mutex<pelorus_sync::Synchronizer>>, imu_ingress: bool) -> Self {
+        Self {
+            sync,
+            imu_ingress,
+            state: Mutex::new(ReplayInputsState::default()),
+        }
+    }
+
+    /// A cloud was handed to the synchronizer, or dropped before it.
+    #[cfg_attr(not(feature = "mt_pubsub"), allow(dead_code))]
+    fn cloud_handled(&self) {
+        let mut state = self.state.lock().unwrap();
+        state.clouds += 1;
+        self.close_when_complete(&mut state);
+    }
+
+    /// An IMU sample was handed to the synchronizer.
+    #[cfg_attr(not(feature = "mt_pubsub"), allow(dead_code))]
+    fn imu_handled(&self) {
+        let mut state = self.state.lock().unwrap();
+        state.imus += 1;
+        self.close_when_complete(&mut state);
+    }
+
+    /// Minot replayed `clouds` clouds and `imus` IMU samples in total.
+    fn expect(&self, clouds: u64, imus: u64) {
+        let mut state = self.state.lock().unwrap();
+        // Without IMU ingress nobody counts IMU samples, and none are needed.
+        let imus = if self.imu_ingress { imus } else { 0 };
+        if let Some(previous) = state.expected
+            && previous != (clouds, imus)
+        {
+            warn!(
+                "Minot reported {clouds} clouds and {imus} IMU samples after reporting {} and {}",
+                previous.0, previous.1
+            );
+        }
+        state.expected = Some((clouds, imus));
+        self.close_when_complete(&mut state);
+    }
+
+    fn close_when_complete(&self, state: &mut ReplayInputsState) {
+        let Some((clouds, imus)) = state.expected else {
+            return;
+        };
+        if state.closed || state.clouds < clouds || state.imus < imus {
+            return;
+        }
+        state.closed = true;
+        info!(
+            "All {} replayed clouds and {} IMU samples received; closing the synchronizer's inputs",
+            state.clouds, state.imus
+        );
+        self.sync.lock().unwrap().shutdown();
+    }
+}
+
 pub struct SyncNode {
     pub state: Arc<std::sync::Mutex<State>>,
+    replay_inputs: Arc<ReplayInputs>,
     #[cfg(feature = "ros2-client")]
     pub tf_listener: Arc<tf::TfListener>,
     #[cfg(feature = "mt_pubsub")]
@@ -1441,6 +1521,24 @@ impl SyncNode {
 
         // Share with cloud callback, TODO maybe the only one who needs it, so remove mutex and arc?
         let state = Arc::new(std::sync::Mutex::new(state));
+        #[cfg(any(
+            feature = "ros2-client",
+            feature = "mt_pubsub",
+            feature = "r2r",
+            feature = "hiroz"
+        ))]
+        let replay_inputs_imu_ingress = enable_imu_ingress;
+        #[cfg(not(any(
+            feature = "ros2-client",
+            feature = "mt_pubsub",
+            feature = "r2r",
+            feature = "hiroz"
+        )))]
+        let replay_inputs_imu_ingress = false;
+        let replay_inputs = Arc::new(ReplayInputs::new(
+            Arc::clone(&state.lock().unwrap().sync),
+            replay_inputs_imu_ingress,
+        ));
 
         #[cfg(all(
             not(feature = "no-imu-sync"),
@@ -1646,6 +1744,7 @@ impl SyncNode {
         #[cfg(feature = "mt_pubsub")]
         {
             let cloud_sub_rt = Arc::clone(&rt);
+            let cloud_replay_inputs = Arc::clone(&replay_inputs);
             std::thread::spawn(move || {
                 cloud_sub_rt.block_on(async {
                     loop {
@@ -1701,6 +1800,7 @@ impl SyncNode {
                                 error!("{:?}", e);
                             }
                         }
+                        cloud_replay_inputs.cloud_handled();
                     }
                 })
             });
@@ -1958,6 +2058,7 @@ impl SyncNode {
             });
 
             let imu_imu_init_state = imu_init_state.clone();
+            let imu_replay_inputs = Arc::clone(&replay_inputs);
             std::thread::spawn(move || {
                 let imu_pose_predictor_init = imu_pose_predictor_init.clone();
                 while let Some(msg) = imu_sub_rt.block_on(imu_sub.next()) {
@@ -2024,6 +2125,7 @@ impl SyncNode {
                     {
                         let _ = sender.send(filtered);
                     }
+                    imu_replay_inputs.imu_handled();
                 }
             });
         }
@@ -2195,6 +2297,7 @@ impl SyncNode {
         Ok((
             Self {
                 state,
+                replay_inputs,
                 #[cfg(any(
                     feature = "ros2-client",
                     feature = "mt_pubsub",
@@ -2212,6 +2315,13 @@ impl SyncNode {
             },
             rx,
         ))
+    }
+
+    /// The replay is over: Minot sent `clouds` clouds and `imus` IMU samples in
+    /// total. The synchronizer finishes once all of them have arrived and been
+    /// processed, and then closes its output.
+    pub fn finish_replay(&self, clouds: u64, imus: u64) {
+        self.replay_inputs.expect(clouds, imus);
     }
 
     pub fn request_shutdown(&self) {

@@ -406,6 +406,39 @@ mod override_tests {
     }
 
     #[test]
+    fn renamed_export_settings_name_their_new_key() {
+        let defaults = ratslang::compile_code(DEFAULTS).unwrap();
+        let user = ratslang::compile_code("output.export.latency = \"run.txt\"").unwrap();
+        let message = format!("{:#}", ast_to_config(defaults, user).err().unwrap());
+        assert!(message.contains("'output.export.latency' is now 'output.latency'"), "{message}");
+    }
+
+    #[test]
+    fn exports_and_offline_settings_have_the_names_polarstern_uses() {
+        let config = config_with("");
+        assert!(config.export.trajectory.is_none());
+        assert!(config.export.latency.is_none() && config.export.processing_time.is_none());
+        assert!(!config.offline.keep_open && !config.offline.open_router);
+        assert!(config.offline.cache_stream);
+
+        let config = config_with(
+            r#"
+output.trajectory = "run.tum"
+output.processing_time = "auto"
+offline.keep_open = true
+offline.open_router = true
+offline.cache_stream = false
+"#,
+        );
+        assert_eq!(config.export.trajectory.as_deref(), Some("run.tum"));
+        // "auto" is the empty path the exporter names after the current time.
+        assert_eq!(config.export.processing_time.as_deref(), Some(""));
+        assert!(config.export.latency.is_none());
+        assert!(config.offline.keep_open && config.offline.open_router);
+        assert!(!config.offline.cache_stream);
+    }
+
+    #[test]
     fn multiresolution_is_the_default_and_can_be_opted_out_without_changing_downsampling() {
         let adaptive = config_with("");
         let fixed = config_with("registration.map.resolution.type = Single\n");
@@ -1644,10 +1677,31 @@ fn ast_to_config_inner(
         )
     };
 
+    // "" writes nothing, "auto" names the file after the current time.
+    let export_ns = asts.filter_ns(&["output"]);
+    let export_path = |value: String| match value.as_str() {
+        "" => None,
+        "auto" => Some(String::new()),
+        _ => Some(value),
+    };
+    let export = crate::ExportConfig {
+        trajectory: export_path(resolve_var!(export_ns, "trajectory", as String, Rhs::Val(Val::StringVal(s)) | Rhs::Path(s) => {s})?),
+        latency: export_path(resolve_var!(export_ns, "latency", as String, Rhs::Val(Val::StringVal(s)) | Rhs::Path(s) => {s})?),
+        processing_time: export_path(resolve_var!(export_ns, "processing_time", as String, Rhs::Val(Val::StringVal(s)) | Rhs::Path(s) => {s})?),
+    };
+    let offline_ns = asts.filter_ns(&["offline"]);
+    let offline = crate::OfflineConfig {
+        keep_open: resolve_var!(offline_ns, "keep_open", as bool, Rhs::Val(Val::BoolVal(b)) => {b})?,
+        open_router: resolve_var!(offline_ns, "open_router", as bool, Rhs::Val(Val::BoolVal(b)) => {b})?,
+        cache_stream: resolve_var!(offline_ns, "cache_stream", as bool, Rhs::Val(Val::BoolVal(b)) => {b})?,
+    };
+
     let final_config = LioConfig {
         sensor_drivers,
         rerun,
         mcap,
+        export,
+        offline,
         neighbor_max_range,
         map_resolution,
         map_capacity,
@@ -1723,5 +1777,31 @@ fn ast_to_config_inner(
         (vec![], vec![])
     };
 
+    reject_renamed_keys(&asts.user.usage_vars().0)?;
     Ok((final_config, default_usage_info, user_usage_info))
+}
+
+/// Settings that moved, as `(old, new)`. An old name is an error rather than
+/// the usual unknown-variable warning: a config still using one would quietly
+/// stop writing its files.
+const RENAMED_KEYS: &[(&str, &str)] = &[
+    ("output.export.trajectory", "output.trajectory"),
+    ("output.export.latency", "output.latency"),
+    ("output.export.processing_time", "output.processing_time"),
+];
+
+fn reject_renamed_keys(assigned: &[String]) -> anyhow::Result<()> {
+    let moved = RENAMED_KEYS
+        .iter()
+        .filter(|(old, _)| assigned.iter().any(|key| key == old))
+        .map(|(old, new)| format!("'{old}' is now '{new}'"))
+        .collect::<Vec<_>>();
+    if !moved.is_empty() {
+        return Err(anyhow!(
+            "renamed setting{}: {}",
+            if moved.len() == 1 { "" } else { "s" },
+            moved.join(", ")
+        ));
+    }
+    Ok(())
 }

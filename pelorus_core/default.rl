@@ -734,6 +734,36 @@ output {
     path_topic = "/path"
     tf_topic = "/tf"
   }
+
+  # Text files written while Pelorus runs. Empty writes nothing; "auto" names
+  # the file after the current time, in the working directory.
+  # TUM trajectory of the base link, one pose per scan (and per IMU sample
+  # with odometry_rate = ImuAndLidar).
+  trajectory = ""
+
+  # Builds with the processing-time-export feature only. End-to-end latency
+  # per scan, wall clock from its arrival until its registered cloud is
+  # ready, as sensor timestamp and nanoseconds.
+  latency = ""
+
+  # Builds with the processing-time-export feature only. Time actually spent
+  # computing each scan, without queueing and waiting.
+  processing_time = ""
+}
+
+# How `pelorus offline` runs.
+offline {
+  # Stay up after the bag is processed, still publishing and serving, so a
+  # viewer can keep showing the result. Exit with Ctrl-C.
+  keep_open = false
+
+  # Let Minot and Pelorus pub/sub use non-local networking, for example to
+  # attach a viewer from another machine.
+  open_router = false
+
+  # Keep the blocks of a streamed Marina dataset and promote it locally.
+  # False streams without retaining anything.
+  cache_stream = true
 }
 
 # How much of the machine Pelorus is allowed to use. It also decides between the

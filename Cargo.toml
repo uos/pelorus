@@ -215,11 +215,17 @@ opt-level = 3
 # imu-calib 0.4 is not published yet; drop this once it is.
 # imu-calib = { path = "../imu-calib" }
 # ros_pointcloud2 = { path = "../ros_pointcloud2/ros_pointcloud2" }
-mt_pubsub = { path = "../minot/mt_pubsub" }
-mt_service = { path = "../minot/mt_service" }
-mt_rat = { path = "../minot/mt_rat" }
-mt_log = { path = "../minot/mt_log" }
-transforms_io = { path = "../transforms_io" }
+mt_pubsub = { git = "https://git.steado.tech/minot.git", branch = "main" }
+mt_service = { git = "https://git.steado.tech/minot.git", branch = "main" }
+mt_rat = { git = "https://git.steado.tech/minot.git", branch = "main" }
+mt_log = { git = "https://git.steado.tech/minot.git", branch = "main" }
+transforms_io = { git = "https://git.steado.tech/transforms_io.git", branch = "main" }
+# For local development against sibling checkouts:
+# mt_pubsub = { path = "../minot/mt_pubsub" }
+# mt_service = { path = "../minot/mt_service" }
+# mt_rat = { path = "../minot/mt_rat" }
+# mt_log = { path = "../minot/mt_log" }
+# transforms_io = { path = "../transforms_io" }
 # ros_pointcloud2 = { git = "ssh://git@git.steado.tech/ros_pointcloud2.git", branch = "main" }
 # mt_pubsub = { git = "ssh://git@git.steado.tech/minot.git", branch = "hiroz" }
 # mt_rat = { git = "ssh://git@git.steado.tech/minot.git", branch = "hiroz" }

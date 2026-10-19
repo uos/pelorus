@@ -309,7 +309,7 @@ run_backend_test() {
     if [[ -n "$feature_flag" ]]; then
         cargo_flags+=(--features "$feature_flag")
     fi
-    local -a pelorus_args=(offline -c "$CONFIG_FILE" "$BAGFILE" --export-trajectory "$output_file")
+    local -a pelorus_args=(offline -c "$CONFIG_FILE" "$BAGFILE" -o "output.trajectory=\"$output_file\"")
     if [[ "$MULTIRESOLUTION" == true ]]; then
         case "$backend_name" in
             CPU|Rayon|CUDA|Vulkan|Metal) ;;

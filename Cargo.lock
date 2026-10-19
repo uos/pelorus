@@ -4121,6 +4121,7 @@ dependencies = [
 [[package]]
 name = "mt_coord"
 version = "0.13.1"
+source = "git+https://git.steado.tech/minot.git?branch=main#801efb6c86e76b2f216a06b412ec25cbcac57354"
 dependencies = [
  "anyhow",
  "fs2",
@@ -4135,6 +4136,7 @@ dependencies = [
 [[package]]
 name = "mt_log"
 version = "0.13.1"
+source = "git+https://git.steado.tech/minot.git?branch=main#801efb6c86e76b2f216a06b412ec25cbcac57354"
 dependencies = [
  "env_filter",
  "env_logger",
@@ -4147,6 +4149,7 @@ dependencies = [
 [[package]]
 name = "mt_net"
 version = "0.13.1"
+source = "git+https://git.steado.tech/minot.git?branch=main#801efb6c86e76b2f216a06b412ec25cbcac57354"
 dependencies = [
  "anyhow",
  "image",
@@ -4158,6 +4161,7 @@ dependencies = [
 [[package]]
 name = "mt_pubsub"
 version = "0.13.1"
+source = "git+https://git.steado.tech/minot.git?branch=main#801efb6c86e76b2f216a06b412ec25cbcac57354"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -4178,6 +4182,7 @@ dependencies = [
 [[package]]
 name = "mt_rat"
 version = "0.13.1"
+source = "git+https://git.steado.tech/minot.git?branch=main#801efb6c86e76b2f216a06b412ec25cbcac57354"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -4193,6 +4198,7 @@ dependencies = [
 [[package]]
 name = "mt_scope"
 version = "0.13.1"
+source = "git+https://git.steado.tech/minot.git?branch=main#801efb6c86e76b2f216a06b412ec25cbcac57354"
 dependencies = [
  "anyhow",
  "env_logger",
@@ -4206,6 +4212,7 @@ dependencies = [
 [[package]]
 name = "mt_sea"
 version = "0.13.1"
+source = "git+https://git.steado.tech/minot.git?branch=main#801efb6c86e76b2f216a06b412ec25cbcac57354"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -4223,6 +4230,7 @@ dependencies = [
 [[package]]
 name = "mt_service"
 version = "0.13.1"
+source = "git+https://git.steado.tech/minot.git?branch=main#801efb6c86e76b2f216a06b412ec25cbcac57354"
 dependencies = [
  "anyhow",
  "log",
@@ -4778,7 +4786,7 @@ checksum = "7aac2e6a6e4468ffa092ad43c39b81c79196c2bb773b8db4085f695efe3bba17"
 dependencies = [
  "libc",
  "ndarray 0.17.2",
- "num-complex 0.2.4",
+ "num-complex 0.4.6",
  "num-integer",
  "num-traits",
  "pyo3",
@@ -9332,6 +9340,7 @@ dependencies = [
 [[package]]
 name = "transforms_io"
 version = "0.7.0"
+source = "git+https://git.steado.tech/transforms_io.git?branch=main#19fbbe07e5c178a1de0b296997f607c045522d18"
 dependencies = [
  "futures-lite",
  "hiroz",
