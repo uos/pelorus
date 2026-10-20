@@ -210,6 +210,25 @@ pub const IMU_MSG: MsgSchema = MsgSchema {
     definition: IMU_SCHEMA,
 };
 
+/// QoS a ROS 2 publisher of static transforms offers, as rosbag2 records it:
+/// `transient_local` with depth one, so `ros2 bag play` latches the message
+/// and a subscriber that joins late still receives it.
+const LATCHED_QOS: &str = "- history: keep_last
+  depth: 1
+  reliability: reliable
+  durability: transient_local
+  deadline:
+    sec: 0
+    nsec: 0
+  lifespan:
+    sec: 0
+    nsec: 0
+  liveliness: automatic
+  liveliness_lease_duration:
+    sec: 0
+    nsec: 0
+  avoid_ros_namespace_conventions: false";
+
 /// Handle for a topic registered with [`McapWriter::add_topic`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TopicId(usize);
@@ -220,6 +239,8 @@ struct TopicEntry {
     channel: u16,
     sequence: u32,
     message_count: u64,
+    /// Offered QoS profiles in rosbag2's YAML form, or `None` for the default.
+    qos: Option<&'static str>,
 }
 
 /// Writes CDR-encoded ROS 2 messages to an MCAP file, optionally accompanied by
@@ -280,6 +301,21 @@ impl<W: Write + Seek> McapWriter<W> {
     ///
     /// Registration order is the order topics appear in `metadata.yaml`.
     pub fn add_topic(&mut self, topic: &str, schema: MsgSchema) -> Result<TopicId> {
+        self.add_topic_with_qos(topic, schema, None)
+    }
+
+    /// Registers a topic recorded as latched, like `/tf_static`, so playback
+    /// offers it `transient_local` again.
+    pub fn add_latched_topic(&mut self, topic: &str, schema: MsgSchema) -> Result<TopicId> {
+        self.add_topic_with_qos(topic, schema, Some(LATCHED_QOS))
+    }
+
+    fn add_topic_with_qos(
+        &mut self,
+        topic: &str,
+        schema: MsgSchema,
+        qos: Option<&'static str>,
+    ) -> Result<TopicId> {
         let schema_id = match self.schemas.get(schema.name) {
             Some(id) => *id,
             None => {
@@ -290,15 +326,20 @@ impl<W: Write + Seek> McapWriter<W> {
                 id
             }
         };
-        let channel = self
-            .writer
-            .add_channel(schema_id, topic, "cdr", &BTreeMap::new())?;
+        // rosbag2 reads the QoS from the channel when there is no
+        // metadata.yaml, so it is recorded in both places.
+        let mut metadata = BTreeMap::new();
+        if let Some(qos) = qos {
+            metadata.insert("offered_qos_profiles".to_string(), qos.to_string());
+        }
+        let channel = self.writer.add_channel(schema_id, topic, "cdr", &metadata)?;
         self.topics.push(TopicEntry {
             name: topic.to_string(),
             ros_type: schema.name,
             channel,
             sequence: 0,
             message_count: 0,
+            qos,
         });
         Ok(TopicId(self.topics.len() - 1))
     }
@@ -352,6 +393,9 @@ pub struct McapTopics {
     pub odom: String,
     pub path: String,
     pub tf: String,
+    /// Static transforms: the base link to Lidar extrinsic, when Pelorus
+    /// reports poses for a base link other than the Lidar frame.
+    pub tf_static: String,
     /// Omitted for Lidar-only output, including its channel and schema.
     pub filtered_imu: Option<String>,
 }
@@ -364,6 +408,7 @@ pub struct McapOutputWriter<W: Write + Seek> {
     odom: TopicId,
     path: TopicId,
     tf: TopicId,
+    tf_static: TopicId,
     filtered_imu: Option<TopicId>,
 }
 
@@ -387,6 +432,7 @@ impl<W: Write + Seek> McapOutputWriter<W> {
         let odom = inner.add_topic(&topics.odom, ODOMETRY_MSG)?;
         let path = inner.add_topic(&topics.path, PATH_MSG)?;
         let tf = inner.add_topic(&topics.tf, TF_MSG)?;
+        let tf_static = inner.add_latched_topic(&topics.tf_static, TF_MSG)?;
         let filtered_imu = topics
             .filtered_imu
             .as_deref()
@@ -398,6 +444,7 @@ impl<W: Write + Seek> McapOutputWriter<W> {
             odom,
             path,
             tf,
+            tf_static,
             filtered_imu,
         })
     }
@@ -424,6 +471,18 @@ impl<W: Write + Seek> McapOutputWriter<W> {
             .map(|tf| stamp_to_nanos(&tf.header.stamp))
             .unwrap_or(0);
         self.inner.write(self.tf, msg, time)
+    }
+
+    /// Record static transforms. Written before the first cloud, so a reader
+    /// can resolve the cloud's frame from the very first message on.
+    pub fn write_tf_static(&mut self, msg: &TFMessage) -> Result<()> {
+        let time = msg
+            .transforms
+            .iter()
+            .map(|tf| stamp_to_nanos(&tf.header.stamp))
+            .min()
+            .unwrap_or(0);
+        self.inner.write(self.tf_static, msg, time)
     }
 
     pub fn write_filtered_imu(&mut self, msg: &Imu) -> Result<()> {
@@ -550,6 +609,7 @@ fn write_rosbag_metadata<W: Write + Seek>(
             &mut metadata,
             &topic.name,
             topic.ros_type,
+            topic.qos,
             topic.message_count,
         );
     }
@@ -591,12 +651,26 @@ fn write_rosbag_metadata<W: Write + Seek>(
     })
 }
 
-fn append_topic_metadata(metadata: &mut String, name: &str, ty: &str, message_count: u64) {
+fn append_topic_metadata(
+    metadata: &mut String,
+    name: &str,
+    ty: &str,
+    qos: Option<&str>,
+    message_count: u64,
+) {
     metadata.push_str("    - topic_metadata:\n");
     metadata.push_str(&format!("        name: {}\n", yaml_quote(name)));
     metadata.push_str(&format!("        type: {}\n", yaml_quote(ty)));
     metadata.push_str("        serialization_format: cdr\n");
-    metadata.push_str("        offered_qos_profiles: []\n");
+    match qos {
+        Some(qos) => {
+            metadata.push_str("        offered_qos_profiles:\n");
+            for line in qos.lines() {
+                metadata.push_str(&format!("          {line}\n"));
+            }
+        }
+        None => metadata.push_str("        offered_qos_profiles: []\n"),
+    }
     metadata.push_str("        type_description_hash: \"\"\n");
     metadata.push_str(&format!("      message_count: {message_count}\n"));
 }
@@ -625,6 +699,7 @@ mod tests {
             odom: "/odom_out".to_string(),
             path: "/path_out".to_string(),
             tf: "/tf_out".to_string(),
+            tf_static: "/tf_static_out".to_string(),
             filtered_imu: None,
         };
         let mut writer = McapOutputWriter::create(&path, &topics, Some(metadata_path.clone()))?;
@@ -638,7 +713,7 @@ mod tests {
         std::fs::remove_file(&path)?;
         std::fs::remove_file(&metadata_path)?;
         let summary = mcap::Summary::read(&data)?.expect("MCAP summary");
-        assert_eq!(summary.channels.len(), 4);
+        assert_eq!(summary.channels.len(), 5);
         assert!(
             summary
                 .schemas
@@ -668,6 +743,7 @@ mod tests {
             odom: "/odom_out".to_string(),
             path: "/path_out".to_string(),
             tf: "/tf_out".to_string(),
+            tf_static: "/tf_static_out".to_string(),
             filtered_imu: Some("/imu_out".to_string()),
         };
 
@@ -733,6 +809,78 @@ mod tests {
     }
 
     #[test]
+    fn the_static_extrinsic_is_recorded_latched_before_the_first_cloud() -> Result<()> {
+        let nonce = nonce()?;
+        let path = std::env::temp_dir().join(format!("pelorus_mcap_tf_static_{nonce}.mcap"));
+        let metadata_path =
+            std::env::temp_dir().join(format!("pelorus_mcap_tf_static_{nonce}.yaml"));
+        let topics = McapTopics {
+            cloud: "/registered".to_string(),
+            odom: "/odom".to_string(),
+            path: "/path".to_string(),
+            tf: "/tf".to_string(),
+            tf_static: "/tf_static".to_string(),
+            filtered_imu: None,
+        };
+        let mut writer = McapOutputWriter::create(&path, &topics, Some(metadata_path.clone()))?;
+
+        let stamp = Time { sec: 7, nanosec: 0 };
+        let extrinsic = TFMessage {
+            transforms: vec![TransformStamped {
+                header: Header {
+                    stamp: stamp.clone(),
+                    frame_id: "base".to_string(),
+                },
+                child_frame_id: "hesai_lidar".to_string(),
+                ..TransformStamped::default()
+            }],
+        };
+        writer.write_tf_static(&extrinsic)?;
+        writer.write_cloud(&PointCloud2 {
+            header: Header {
+                stamp,
+                frame_id: "hesai_lidar".to_string(),
+            },
+            ..Default::default()
+        })?;
+        writer.finish()?;
+
+        let data = std::fs::read(&path)?;
+        let metadata = std::fs::read_to_string(&metadata_path)?;
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_file(&metadata_path);
+
+        let messages =
+            mcap::MessageStream::new(&data)?.collect::<std::result::Result<Vec<_>, _>>()?;
+        let topics = messages
+            .iter()
+            .map(|message| message.channel.topic.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(topics, ["/tf_static", "/registered"]);
+        let recorded: TFMessage = cdr::deserialize(&messages[0].data)?;
+        assert_eq!(recorded.transforms[0].header.frame_id, "base");
+        assert_eq!(recorded.transforms[0].child_frame_id, "hesai_lidar");
+        assert_eq!(messages[0].log_time, 7_000_000_000);
+
+        // Latched for playback, both in the channel and in metadata.yaml.
+        let qos = messages[0]
+            .channel
+            .metadata
+            .get("offered_qos_profiles")
+            .expect("the static channel carries its QoS");
+        assert!(qos.contains("durability: transient_local"), "{qos}");
+        let static_entry = metadata
+            .split("- topic_metadata:")
+            .find(|entry| entry.contains("'/tf_static'"))
+            .expect("metadata lists /tf_static");
+        assert!(static_entry.contains("durability: transient_local"), "{static_entry}");
+        assert!(static_entry.contains("message_count: 1"), "{static_entry}");
+        // Every other topic keeps the default QoS.
+        assert!(!messages[1].channel.metadata.contains_key("offered_qos_profiles"));
+        Ok(())
+    }
+
+    #[test]
     fn odometry_metadata_still_lists_every_offered_topic() -> Result<()> {
         let nonce = nonce()?;
         let path = std::env::temp_dir().join(format!("pelorus_mcap_offered_{nonce}.mcap"));
@@ -743,6 +891,7 @@ mod tests {
             odom: "/odom_out".to_string(),
             path: "/path_out".to_string(),
             tf: "/tf_out".to_string(),
+            tf_static: "/tf_static_out".to_string(),
             filtered_imu: Some("/imu_out".to_string()),
         };
         let mut writer = McapOutputWriter::create(&path, &topics, Some(metadata_path.clone()))?;
@@ -865,6 +1014,7 @@ mod tests {
             odom: "/odom_out".to_string(),
             path: "/path_out".to_string(),
             tf: "/tf_out".to_string(),
+            tf_static: "/tf_static_out".to_string(),
             filtered_imu: Some("/imu_out".to_string()),
         };
 

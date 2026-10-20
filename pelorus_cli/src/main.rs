@@ -761,6 +761,7 @@ fn build_mcap_output_config_with_filtered_topic(
                     odom: normalize_mcap_topic(mcap.odom_topic.clone()),
                     path: normalize_mcap_topic(mcap.path_topic.clone()),
                     tf: normalize_mcap_topic(mcap.tf_topic.clone()),
+                    tf_static: "/tf_static".to_string(),
                     filtered_imu: Some(normalize_mcap_topic(filtered_imu_topic)),
                 },
             }
@@ -3221,6 +3222,12 @@ fn lio_with_ready_signal(
                         },
                     },
                 };
+                // The bag needs the extrinsic just as much: without it nothing
+                // connects the cloud's Lidar frame to the base link the
+                // recorded /tf moves. Written ahead of this frame's cloud.
+                if let Some(writer) = mcap_writer.as_mut() {
+                    writer.write_tf_static(&serde_tf_message(&base_to_lidar_tf))?;
+                }
                 #[cfg(feature = "mt_pubsub")]
                 {
                     let inner_tf_broad = Arc::clone(&tf_broadcaster);
