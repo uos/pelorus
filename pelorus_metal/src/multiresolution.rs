@@ -49,10 +49,9 @@ struct Fit {
     normal: [f32; 3],
     tangent: [f32; 6],
     extent: [f32; 2],
-    quality: f32,
     d: f32,
 }
-const _: () = assert!(size_of::<Fit>() == 68);
+const _: () = assert!(size_of::<Fit>() == 64);
 impl Default for Fit {
     fn default() -> Self {
         Zeroable::zeroed()
@@ -343,9 +342,6 @@ fn fit(cell: &Cell, resolution: f32) -> Fit {
     }
     f.extent[0] = 3.0 * middle.max(0.0).sqrt() + resolution * 0.5;
     f.extent[1] = 3.0 * large.max(0.0).sqrt() + resolution * 0.5;
-    let noise = resolution * 0.04;
-    f.quality =
-        (small + noise * noise) * (1.0 / (middle - small).max(1e-6) + 1.0 / (large - small).max(1e-6));
     f.d = -(f.normal[0] * f.mean[0] + f.normal[1] * f.mean[1] + f.normal[2] * f.mean[2]);
     f
 }

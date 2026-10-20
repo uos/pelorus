@@ -31,10 +31,9 @@ struct Fit {
     normal: [f32; 3],
     tangent: [f32; 6],
     extent: [f32; 2],
-    quality: f32,
     d: f32,
 }
-const _: () = assert!(size_of::<Cell>() == 72 && size_of::<Fit>() == 68);
+const _: () = assert!(size_of::<Cell>() == 72 && size_of::<Fit>() == 64);
 // MRMissSlot (state, key, fit) and MRMissWork (level, slot, key) in scalar layout.
 const MISS_SLOT_SIZE: usize = 4 + 12 + size_of::<Fit>();
 const MISS_WORK_SIZE: usize = 4 + 4 + 12;

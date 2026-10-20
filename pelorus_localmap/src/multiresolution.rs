@@ -198,11 +198,7 @@ fn update_distribution(
         m = dot(delta, Vector3::new(x0, x1, x2));
     }
     // The kernel narrows as the voxel matures.
-    #[cfg(not(feature = "no-maturity-decay"))]
     let maturity_decay = (a.point_count as f32).ln().max(1.0);
-    // Ablation: constant kernel width, independent of the voxel's maturity.
-    #[cfg(feature = "no-maturity-decay")]
-    let maturity_decay = 1.0;
     let alpha = (-m / (2.0 * (sensitivity / maturity_decay))).exp();
     if alpha < 1e-5 {
         return;

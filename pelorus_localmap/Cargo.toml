@@ -35,4 +35,3 @@ lru-eviction = []
 # Ablation: fuse scans into map cells by plain count-weighted merging instead of the maturity-weighted update.
 plain-update = []
 # Ablation: keep the update kernel width constant instead of narrowing it with the voxel's maturity.
-no-maturity-decay = []

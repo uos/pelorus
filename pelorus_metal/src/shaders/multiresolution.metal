@@ -14,7 +14,6 @@ struct MRFit {
     float normal[3];
     float tangent[6];
     float extent[2];
-    float quality;
     float d;
 };
 
@@ -132,7 +131,7 @@ inline MRFit mr_fit(thread const MRCell& cell, float resolution) {
     f.status = 0;
     for (int i = 0; i < 3; i++) { f.mean[i] = 0; f.normal[i] = 0; }
     for (int i = 0; i < 6; i++) f.tangent[i] = 0;
-    f.extent[0] = 0; f.extent[1] = 0; f.quality = 0; f.d = 0;
+    f.extent[0] = 0; f.extent[1] = 0; f.d = 0;
     if (cell.count < 6) return f;
     f.status = 1;
 
@@ -179,9 +178,6 @@ inline MRFit mr_fit(thread const MRCell& cell, float resolution) {
     f.tangent[3] = tangent1.x; f.tangent[4] = tangent1.y; f.tangent[5] = tangent1.z;
     f.extent[0] = 3.0 * sqrt(max(middle, 0.0f)) + resolution * .5;
     f.extent[1] = 3.0 * sqrt(max(large, 0.0f)) + resolution * .5;
-    float noise = resolution * .04;
-    f.quality = (small + noise * noise) *
-        (1.0 / max(middle - small, 1e-6f) + 1.0 / max(large - small, 1e-6f));
     f.d = -(normal.x * f.mean[0] + normal.y * f.mean[1] + normal.z * f.mean[2]);
     return f;
 }

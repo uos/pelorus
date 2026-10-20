@@ -157,14 +157,6 @@ function(r2r_cargo)
          AND NOT "$ENV{PELORUS_PLAIN_UPDATE}" STREQUAL "OFF")
     list(APPEND FEATURES "plain-update")
   endif()
-  if(PELORUS_NO_MATURITY_DECAY)
-    list(APPEND FEATURES "no-maturity-decay")
-  elseif(DEFINED ENV{PELORUS_NO_MATURITY_DECAY}
-         AND NOT "$ENV{PELORUS_NO_MATURITY_DECAY}" STREQUAL ""
-         AND NOT "$ENV{PELORUS_NO_MATURITY_DECAY}" STREQUAL "0"
-         AND NOT "$ENV{PELORUS_NO_MATURITY_DECAY}" STREQUAL "OFF")
-    list(APPEND FEATURES "no-maturity-decay")
-  endif()
 
 
   string(JOIN "," FEATURES_STR ${FEATURES})
