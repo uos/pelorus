@@ -1794,7 +1794,7 @@ fn lio_with_ready_signal(
     )> = None;
     // The last authoritative frame published, plus one; zero before the first.
     #[cfg(feature = "mt_pubsub")]
-    let last_published_frame = Arc::new(std::sync::atomic::AtomicU64::new(0));
+    let last_published_frame = Arc::new(core::sync::atomic::AtomicU64::new(0));
 
     // Gate replay on consumer attachment and per-frame completion.
     #[cfg(feature = "mt_pubsub")]
@@ -3273,18 +3273,10 @@ fn lio_with_ready_signal(
             pelorus_odom.pose.pose.orientation.z = t_world.rotation.k;
             pelorus_odom.pose.pose.orientation.w = t_world.rotation.w;
 
-            let lin_vel_body = t_world.rotation.inverse() * ekf_state.linear_velocity;
+            let (lin_vel_body, ang_vel_body) = ekf_state.body_twist(&t_world);
             pelorus_odom.twist.twist.linear.x = lin_vel_body.x;
             pelorus_odom.twist.twist.linear.y = lin_vel_body.y;
             pelorus_odom.twist.twist.linear.z = lin_vel_body.z;
-
-            let r_b_l = if config.base_link_frame.is_some() {
-                config.base_to_lidar.rotation.inverse()
-            } else {
-                UnitQuaternion::identity()
-            };
-            let r_l_i = ekf_state.lidar_imu_extrinsic.rotation.inverse();
-            let ang_vel_body = (r_b_l * r_l_i) * ekf_state.angular_velocity;
             pelorus_odom.twist.twist.angular.x = ang_vel_body.x;
             pelorus_odom.twist.twist.angular.y = ang_vel_body.y;
             pelorus_odom.twist.twist.angular.z = ang_vel_body.z;
@@ -4174,6 +4166,10 @@ fn lio_with_ready_signal(
         while wait_for_shutdown && !shut_down() {
             std::thread::sleep(Duration::from_millis(100));
         }
+        #[allow(
+            clippy::needless_return,
+            reason = "the backend blocks below follow when another backend feature is enabled too"
+        )]
         return processed.map_err(Into::into);
     }
 
@@ -4308,7 +4304,7 @@ enum OfflineShutdownRequest {
 }
 
 /// Messages Minot replayed, by topic.
-type ReplayedCounts = std::collections::BTreeMap<String, u64>;
+type ReplayedCounts = alloc::collections::BTreeMap<String, u64>;
 
 /// Minot's `stream TOPIC ended after N messages` line.
 #[cfg_attr(not(feature = "rat"), allow(dead_code))]
@@ -5356,6 +5352,22 @@ fn main() -> Result<(), Box<dyn CoreError>> {
         }
         #[cfg(feature = "rat")]
         Command::Offline(offline_args) => {
+            // A replay is a whole stack of its own: a coordinator, Minot, and
+            // whoever listens. Each takes a Minot port and domain no other
+            // replay on this machine holds, so they cannot mix. A parent that
+            // already chose (Polarstern, or the environment) is kept to.
+            #[cfg(feature = "mt_pubsub")]
+            let _network = {
+                let claim = mt_pubsub::claim_network()
+                    .map_err(|e| anyhow!("Failed to claim a Minot network: {e}"))?;
+                info!("{}", claim.describe());
+                if !claim.was_given() {
+                    // SAFETY: nothing but the logger has started a thread yet,
+                    // and the logger does not read the environment.
+                    unsafe { claim.apply_to_process() };
+                }
+                claim
+            };
             let shared_stats = Arc::new(SharedStats::new());
             shared_stats.set_mode("Offline");
             let stats_for_tui = shared_stats.clone();
@@ -5505,7 +5517,9 @@ fn main() -> Result<(), Box<dyn CoreError>> {
                     (runtime, node)
                 };
 
-                let mt_file_path = std::env::temp_dir().join("pelorus_offline.mt");
+                // Per process: replays running side by side each have their own.
+                let mt_file_path =
+                    std::env::temp_dir().join(format!("pelorus_offline_{}.mt", std::process::id()));
                 fs::write(&mt_file_path, mt_content)
                     .map_err(|e| anyhow!("Failed to write .mt file: {}", e))?;
 
@@ -5589,7 +5603,7 @@ fn main() -> Result<(), Box<dyn CoreError>> {
                 let (runtime_tx, runtime_rx) = std::sync::mpsc::channel::<OfflineRuntimeEvent>();
                 let ready_notified = Arc::new(AtomicBool::new(false));
                 // Ends of the forwarded streams, for the downstream consumer.
-                let forwarded_topics: Arc<std::collections::BTreeSet<String>> = Arc::new(
+                let forwarded_topics: Arc<alloc::collections::BTreeSet<String>> = Arc::new(
                     offline_args
                         .forward_topics
                         .iter()

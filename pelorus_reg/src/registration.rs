@@ -330,12 +330,13 @@ impl RegistrationState {
         output_pose_covariance(&self.ekf, lidar_to_output)
     }
 
+    /// Twist covariance of the IMU frame itself.
     pub fn get_twist_covariance_6x6(&self) -> [f64; 36] {
-        self.get_output_twist_covariance(&Isometry3::identity())
+        self.get_output_twist_covariance(&crate::Registration::get_state(self).pose)
     }
 
     pub fn get_output_twist_covariance(&self, output_pose: &Isometry3<f64>) -> [f64; 36] {
-        output_twist_covariance(&self.ekf, output_pose)
+        output_twist_covariance(&self.ekf, output_pose, &self.imu_processing.ekf_cov_gyr)
     }
 }
 
@@ -375,48 +376,70 @@ pub(crate) fn output_pose_covariance(ekf: &Eqf, lidar_to_output: &Isometry3<f64>
         jacobian
             .fixed_view_mut::<3, 3>(3, 6)
             .copy_from(&r_out.transpose());
-    } else {
-        // Extrinsics are not corrected online, so their error keeps the plain
-        // body-frame form used by `box_minus`.
-        jacobian
-            .fixed_view_mut::<3, 3>(0, 6)
-            .copy_from(&(-r_wi * r_il * skew_symmetric_na(&t_lo)));
-        jacobian.fixed_view_mut::<3, 3>(0, 9).copy_from(&r_wi);
-        jacobian
-            .fixed_view_mut::<3, 3>(3, 6)
-            .copy_from(&r_lo.matrix().transpose());
     }
+    // Fixed extrinsics are exact. Their covariance block is only a placeholder
+    // that keeps the filter covariance nonsingular, so it does not enter the
+    // output pose.
 
     let cov = SMatrix::<f64, 24, 24>::from_fn(|row, col| ekf.cov[(row, col)]);
     let output_cov = jacobian * cov * jacobian.transpose();
     matrix6_to_array(output_cov)
 }
 
-pub(crate) fn output_twist_covariance(ekf: &Eqf, output_pose: &Isometry3<f64>) -> [f64; 36] {
-    let r_ow = output_pose.rotation.inverse().to_rotation_matrix();
+/// Covariance of the twist [`crate::ImuEkfPrediction::body_twist`] reports for
+/// `output_pose`. The angular velocity is one gyro sample minus the estimated
+/// bias, so it carries the gyro noise `gyro_noise` (IMU frame) and the bias
+/// uncertainty. The linear velocity carries the same through its lever arm.
+pub(crate) fn output_twist_covariance(
+    ekf: &Eqf,
+    output_pose: &Isometry3<f64>,
+    gyro_noise: &Matrix3<f64>,
+) -> [f64; 36] {
+    let r_ow = *output_pose.rotation.inverse().to_rotation_matrix().matrix();
+    let r_wi = ekf.state.rot.matrix();
+    let lever_arm = output_pose.translation.vector - ekf.state.pos;
+    let lever_arm_hat = skew_symmetric_na(&lever_arm);
 
-    // The equivariant velocity error is v <- dv + exp(dtheta) v, so the world
-    // velocity covariance picks up the rotation block through -hat(v).
-    let mut jacobian = SMatrix::<f64, 3, 24>::zeros();
+    // World-frame twist of the output frame, v_out = v - hat(r) w and
+    // w = R_WI (gyro - bg). The equivariant velocity error is
+    // v <- dv + exp(dtheta) v, so it picks up the rotation block through
+    // -hat(v). The bias error is d_bg = R_WI (bg - bg_hat), so w moves by -d_bg.
+    let mut jacobian = SMatrix::<f64, 6, 24>::zeros();
     jacobian
         .fixed_view_mut::<3, 3>(0, 3)
         .copy_from(&(-skew_symmetric_na(&ekf.state.vel)));
     jacobian
         .fixed_view_mut::<3, 3>(0, 12)
         .copy_from(&Matrix3::identity());
+    jacobian
+        .fixed_view_mut::<3, 3>(0, 15)
+        .copy_from(&lever_arm_hat);
+    jacobian
+        .fixed_view_mut::<3, 3>(3, 15)
+        .copy_from(&(-Matrix3::identity()));
+
+    // The gyro noise enters w directly and v through the lever arm.
+    let mut noise_jacobian = SMatrix::<f64, 6, 3>::zeros();
+    noise_jacobian
+        .fixed_view_mut::<3, 3>(0, 0)
+        .copy_from(&(-lever_arm_hat));
+    noise_jacobian
+        .fixed_view_mut::<3, 3>(3, 0)
+        .copy_from(&Matrix3::identity());
+    let gyro_noise_world = r_wi * gyro_noise * r_wi.transpose();
 
     let cov = SMatrix::<f64, 24, 24>::from_fn(|row, col| ekf.cov[(row, col)]);
-    let velocity_cov_world = jacobian * cov * jacobian.transpose();
-    let velocity_cov_output = r_ow.matrix() * velocity_cov_world * r_ow.matrix().transpose();
+    let twist_cov_world = jacobian * cov * jacobian.transpose()
+        + noise_jacobian * gyro_noise_world * noise_jacobian.transpose();
 
-    let mut twist_cov = [0.0; 36];
-    for i in 0..3 {
-        for j in 0..3 {
-            twist_cov[i * 6 + j] = velocity_cov_output[(i, j)];
-            twist_cov[(i + 3) * 6 + (j + 3)] = 0.0001; // TODO
-        }
-    }
-    twist_cov
+    let mut world_to_output = SMatrix::<f64, 6, 6>::zeros();
+    world_to_output
+        .fixed_view_mut::<3, 3>(0, 0)
+        .copy_from(&r_ow);
+    world_to_output
+        .fixed_view_mut::<3, 3>(3, 3)
+        .copy_from(&r_ow);
+    matrix6_to_array(world_to_output * twist_cov_world * world_to_output.transpose())
 }
 
 fn matrix6_to_array(matrix: SMatrix<f64, 6, 6>) -> [f64; 36] {
@@ -1203,6 +1226,58 @@ mod covariance_tests {
                     (covariance[row * 6 + col] - expected[(row, col)]).abs() < 1e-12,
                     "anchored extrinsic covariance mismatch at ({row}, {col})"
                 );
+            }
+        }
+    }
+
+    #[test]
+    fn fixed_extrinsic_placeholder_does_not_enter_the_pose_covariance() {
+        let mut ekf = Eqf::new(9.81, Isometry3::identity());
+        ekf.extrinsic_est = false;
+        ekf.state.offset_t_l_i = Vector3::new(0.2, -0.1, 0.05);
+        ekf.cov = faer::Mat::<f64>::zeros(24, 24);
+        for index in 6..12 {
+            ekf.cov[(index, index)] = 1.0;
+        }
+        let lidar_to_output = Isometry3::from_parts(
+            Translation3::new(-0.38, 0.0, -0.29),
+            UnitQuaternion::from_euler_angles(0.0, 0.0, std::f64::consts::FRAC_PI_2),
+        );
+
+        let covariance = output_pose_covariance(&ekf, &lidar_to_output);
+
+        assert!(covariance.iter().all(|value| value.abs() < 1e-12));
+    }
+
+    #[test]
+    fn twist_covariance_carries_gyro_noise_and_bias_into_a_yawed_lever_arm_frame() {
+        let mut ekf = Eqf::new(9.81, Isometry3::identity());
+        ekf.cov = faer::Mat::<f64>::zeros(24, 24);
+        for index in 15..18 {
+            ekf.cov[(index, index)] = 0.5;
+        }
+        let gyro_noise = Matrix3::from_diagonal(&Vector3::new(0.25, 0.25, 1.0));
+        // Output 1 m ahead of the IMU along world x, yawed 90 degrees.
+        let output_pose = Isometry3::from_parts(
+            Translation3::new(1.0, 0.0, 0.0),
+            UnitQuaternion::from_euler_angles(0.0, 0.0, std::f64::consts::FRAC_PI_2),
+        );
+
+        let covariance = output_twist_covariance(&ekf, &output_pose, &gyro_noise);
+        let at = |row: usize, col: usize| covariance[row * 6 + col];
+
+        // World angular variances are (0.75, 0.75, 1.5). Yawing swaps x and y.
+        assert!((at(3, 3) - 0.75).abs() < 1e-12);
+        assert!((at(4, 4) - 0.75).abs() < 1e-12);
+        assert!((at(5, 5) - 1.5).abs() < 1e-12);
+        // v_out = -hat(r) w with r = x: only w_y and w_z move it, along world
+        // y and z. The yawed frame's x axis is world y.
+        assert!((at(0, 0) - 1.5).abs() < 1e-12);
+        assert!(at(1, 1).abs() < 1e-12);
+        assert!((at(2, 2) - 0.75).abs() < 1e-12);
+        for row in 0..6 {
+            for col in 0..6 {
+                assert!((at(row, col) - at(col, row)).abs() < 1e-12);
             }
         }
     }

@@ -416,21 +416,14 @@ impl WorkerState {
         } else {
             Isometry3::identity()
         };
-        let linear_velocity_body = pose.rotation.inverse() * state.linear_velocity;
-        let r_b_l = if self.output_base {
-            self.base_to_lidar.rotation.inverse()
-        } else {
-            UnitQuaternion::identity()
-        };
-        let angular_velocity_body =
-            (r_b_l * state.lidar_imu_extrinsic.rotation.inverse()) * state.angular_velocity;
+        let (linear_velocity_body, angular_velocity_body) = state.body_twist(&pose);
         RealtimePrediction {
             stamp,
             pose,
             linear_velocity_body,
             angular_velocity_body,
             pose_covariance: output_pose_covariance(&self.ekf, &lidar_to_output),
-            twist_covariance: output_twist_covariance(&self.ekf, &pose),
+            twist_covariance: output_twist_covariance(&self.ekf, &pose, &self.imu.ekf_cov_gyr),
         }
     }
 }

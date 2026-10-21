@@ -2846,29 +2846,23 @@ impl Synchronizer {
             }
 
             // Populate Odometry with buffered (non-blocking)
-            loop {
-                match odom_receiver.try_recv() {
-                    Ok(odom) => {
-                        let odom_time = timestamp_to_secs(&odom.stamp);
-                        if odom_time < imu_span_start_time {
-                            if should_log_once_default("odom_msg_too_early") {
-                                warn!("Odom msg too early, skipped.");
-                            }
-                            continue;
-                        }
-                        if odom_time > imu_span_end_time {
-                            if should_log_once_default("odom_msg_too_late") {
-                                warn!("Odom msg too late, will be picked up in next frame.");
-                            }
-                            continue;
-                        }
-                        odom_data.push(odom);
+            // Closed inputs end the odometry, not the scans already queued.
+            // Those still finish with the IMU they have.
+            while let Ok(odom) = odom_receiver.try_recv() {
+                let odom_time = timestamp_to_secs(&odom.stamp);
+                if odom_time < imu_span_start_time {
+                    if should_log_once_default("odom_msg_too_early") {
+                        warn!("Odom msg too early, skipped.");
                     }
-                    // Closed inputs end the odometry, not the scans already
-                    // queued: those still finish with the IMU they have.
-                    Err(std::sync::mpsc::TryRecvError::Empty)
-                    | Err(std::sync::mpsc::TryRecvError::Disconnected) => break,
+                    continue;
                 }
+                if odom_time > imu_span_end_time {
+                    if should_log_once_default("odom_msg_too_late") {
+                        warn!("Odom msg too late, will be picked up in next frame.");
+                    }
+                    continue;
+                }
+                odom_data.push(odom);
             }
 
             // Sort buffers with timestamp to ensure correct order

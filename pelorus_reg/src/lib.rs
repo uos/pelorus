@@ -68,6 +68,24 @@ impl Default for ImuEkfPrediction {
     }
 }
 
+impl ImuEkfPrediction {
+    /// Linear and angular velocity of a frame rigidly attached to the IMU,
+    /// expressed in that frame. `output_pose` is the frame's pose in the world
+    /// frame (T_W_O) at the same instant as this state. The linear velocity
+    /// includes the lever arm from the IMU to the frame's origin.
+    pub fn body_twist(&self, output_pose: &Isometry3<f64>) -> (Vector3<f64>, Vector3<f64>) {
+        let angular_velocity_world = self.pose.rotation * self.angular_velocity;
+        let lever_arm_world = output_pose.translation.vector - self.pose.translation.vector;
+        let linear_velocity_world =
+            self.linear_velocity + angular_velocity_world.cross(&lever_arm_world);
+        let world_to_output = output_pose.rotation.inverse();
+        (
+            world_to_output * linear_velocity_world,
+            world_to_output * angular_velocity_world,
+        )
+    }
+}
+
 /// One preprocessed scan handed to [`Registration::register_and_map`].
 pub struct RegistrationScan<'a> {
     pub cloud: &'a LocatedBufferView<PointXYZIT>,
@@ -128,4 +146,34 @@ pub fn backend_session_retain() {
 pub fn backend_session_release() {
     #[cfg(feature = "vulkan")]
     pelorus_vulkan::session_release();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn body_twist_rotates_into_a_yawed_output_frame_and_adds_the_lever_arm() {
+        // IMU at the origin, base 1 m ahead of it along world x and yawed 90
+        // degrees, as with a Lidar mounted sideways on the robot.
+        let imu_pose = Isometry3::identity();
+        let base_pose = Isometry3::from_parts(
+            Translation3::new(1.0, 0.0, 0.0),
+            UnitQuaternion::from_euler_angles(0.0, 0.0, std::f64::consts::FRAC_PI_2),
+        );
+        let state = ImuEkfPrediction {
+            pose: imu_pose,
+            linear_velocity: Vector3::new(1.0, 0.0, 0.0),
+            angular_velocity: Vector3::new(0.1, 0.0, 0.5),
+            ..Default::default()
+        };
+
+        let (linear, angular) = state.body_twist(&base_pose);
+
+        // World omega (0.1, 0, 0.5) seen from a frame yawed +90 degrees.
+        assert!((angular - Vector3::new(0.0, -0.1, 0.5)).norm() < 1e-12);
+        // World velocity (1, 0, 0) + omega x (1, 0, 0) = (1, 0.5, 0), seen
+        // from the same frame.
+        assert!((linear - Vector3::new(0.5, -1.0, 0.0)).norm() < 1e-12);
+    }
 }
