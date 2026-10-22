@@ -887,12 +887,17 @@ pub fn get_map_with_recency() -> Vec<(nalgebra::Point3<f32>, u8, u32)> {
     })
 }
 
+/// Number of map entries, 0 before [`init_map`] as with the other backends.
 pub fn get_map_size() -> u32 {
-    with_state(|state| match &mut state.backend {
+    let mut guard = global_state().lock().expect("vulkan map mutex poisoned");
+    let Some(state) = guard.as_mut() else {
+        return 0;
+    };
+    match &mut state.backend {
         MapBackendState::Multiresolution(map) => map.size(),
         MapBackendState::Host(host) => host.map.get_entire_map().len() as u32,
         MapBackendState::Vulkan(gpu) => gpu.add_cursor.min(gpu.dist_cap),
-    })
+    }
 }
 
 pub fn get_map_capacity() -> u32 {

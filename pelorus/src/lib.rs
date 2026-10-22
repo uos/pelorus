@@ -1226,6 +1226,38 @@ impl Odometer {
     /// }
     /// ```
     pub fn next_scan(&mut self) -> Option<Scan<'_>> {
+        pelorus_core::complete_synchronously(self.next_scan_inner(false))
+    }
+
+    /// Process a scan while allowing asynchronous WebGPU readbacks.
+    /// Use this instead of [`next_scan`](Self::next_scan) after
+    /// [`enable_webgpu`](Self::enable_webgpu). Without WebGPU both behave the same.
+    #[cfg(feature = "webgpu")]
+    pub async fn next_scan_async(&mut self) -> Option<Scan<'_>> {
+        self.next_scan_inner(true).await
+    }
+
+    /// Enable experimental single- or multiresolution GPU correspondence search.
+    /// Failure leaves the existing CPU path available.
+    #[cfg(feature = "webgpu")]
+    pub async fn enable_webgpu(&mut self) -> Result<(), Error> {
+        self.core
+            .as_mut()
+            .expect("the core lives until drop")
+            .enable_webgpu()
+            .await?;
+        Ok(())
+    }
+
+    #[cfg(feature = "webgpu")]
+    pub fn webgpu_status(&self) -> Result<&str, String> {
+        self.core
+            .as_ref()
+            .expect("the core lives until drop")
+            .webgpu_status()
+    }
+
+    async fn next_scan_inner(&mut self, asynchronous: bool) -> Option<Scan<'_>> {
         // The next step overwrites the deskewed cloud the last scan points into.
         self.last_scan = None;
         let core = self.core.as_mut().expect("the core lives until drop");
@@ -1233,7 +1265,12 @@ impl Odometer {
             let processed = self.ingress.next_synced()?;
             #[cfg(feature = "processing-time-export")]
             let started = pelorus_core::Instant::now();
-            match core.step(processed, None) {
+            let step = if asynchronous {
+                core.step_async(processed, None).await
+            } else {
+                core.step(processed, None)
+            };
+            match step {
                 LioStep::Registered(scan) => {
                     #[cfg(feature = "processing-time-export")]
                     {

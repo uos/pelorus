@@ -402,7 +402,41 @@ pub(crate) struct MultiResolutionMap {
     max_thickness: f32,
 }
 
+/// Borrowed moments and original grid keys for one level of the map pyramid.
+pub struct DistributionLevel<'a> {
+    level: &'a Level,
+}
+
+impl DistributionLevel<'_> {
+    pub fn resolution(&self) -> f32 {
+        self.level.resolution
+    }
+
+    pub fn distributions(&self) -> impl Iterator<Item = ([i32; 3], VoxelDistribution)> + '_ {
+        self.level
+            .keys
+            .iter()
+            .zip(&self.level.cells)
+            .map(|(&(x, y, z), cell)| ([x, y, z], cell.distribution.to_voxel()))
+    }
+}
+
+/// Immutable correspondence inputs, in finest-to-coarsest order.
+pub struct MultiResolutionSnapshot<'a> {
+    pub levels: [DistributionLevel<'a>; 4],
+    pub max_thickness: f32,
+}
+
 impl MultiResolutionMap {
+    pub fn snapshot(&self) -> MultiResolutionSnapshot<'_> {
+        MultiResolutionSnapshot {
+            levels: std::array::from_fn(|index| DistributionLevel {
+                level: &self.levels[index],
+            }),
+            max_thickness: self.max_thickness,
+        }
+    }
+
     pub fn new(resolution: f32, capacity: usize, sensitivity: f32) -> Self {
         assert!(resolution.is_finite() && resolution > 0.0);
         assert!(capacity >= 4);
@@ -591,6 +625,30 @@ impl MultiResolutionMap {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn sparse_plane_fixtures_select_each_pyramid_level() {
+        for (expected_level, spacing) in [0.073, 0.31, 0.67, 1.31].into_iter().enumerate() {
+            let mut map = MultiResolutionMap::new(0.5, 2048, 0.01);
+            let scene: Vec<_> = (-8..=8)
+                .flat_map(|x| {
+                    (-8..=8).map(move |y| {
+                        let x = x as f32 * spacing + 0.031;
+                        let y = y as f32 * spacing - 0.047;
+                        PointXYZIT {
+                            x,
+                            y,
+                            z: 1.123 + 0.12 * x - 0.07 * y,
+                            ..Default::default()
+                        }
+                    })
+                })
+                .collect();
+            map.add(&scene, &Isometry3::identity(), 0);
+            let query = Point3::new(0.031, -0.047, 1.123 + 0.12 * 0.031 + 0.07 * 0.047);
+            assert_eq!(map.query(&query).unwrap().level as usize, expected_level);
+        }
+    }
 
     // Old but well supported (S = 10 / 100), recent but sparse (S = 2 / 1), fresh (S = 0).
     fn trimmed_level() -> Level {

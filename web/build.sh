@@ -12,7 +12,7 @@ web="$(cd "$(dirname "$0")" && pwd)"
 root="$(dirname "$web")"
 wasm_bindgen="${WASM_BINDGEN:-wasm-bindgen}"
 
-cargo build --manifest-path "$root/Cargo.toml" -p pelorus_web --release \
+cargo build --manifest-path "$root/Cargo.toml" -p pelorus_web --release --features webgpu \
   --target wasm32-unknown-unknown
 "$wasm_bindgen" --target web --out-dir "$web/pkg" \
   "$root/target/wasm32-unknown-unknown/release/pelorus_web.wasm"

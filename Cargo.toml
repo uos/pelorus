@@ -4,6 +4,7 @@ members = [
   "pelorus_cuda",
   "pelorus_metal",
   "pelorus_vulkan",
+  "pelorus_wgpu",
   "pelorus_cli",
   "pelorus_docs",
   "pelorus_protocol",
@@ -37,6 +38,7 @@ include = [
   "**/*.cpp",
   "**/*.metal",
   "**/*.comp",
+  "**/*.wgsl",
   "**/LICENSE*",
 ]
 keywords = ["robotics"]
@@ -58,6 +60,7 @@ pelorus_localmap = { path = "pelorus_localmap", version = "0.0.9", default-featu
 pelorus_cuda = { path = "pelorus_cuda", version = "0.0.9", default-features = false }
 pelorus_metal = { path = "pelorus_metal", version = "0.0.9" }
 pelorus_vulkan = { path = "pelorus_vulkan", version = "0.0.9", default-features = false }
+pelorus_wgpu = { path = "pelorus_wgpu", version = "0.0.9" }
 pelorus_drivers = { path = "pelorus_drivers", version = "0.0.9", default-features = false }
 
 transforms_io = { version = "0.7.0", default-features = false }
@@ -75,7 +78,7 @@ mt_log = { version = "0.13.0", features = ["tui", "env"] }
 mt_rat = { version = "0.13.0", default-features = false }
 cloudini = { version = "0.3.2", default-features = false, features = ["ros"] }
 imu-calib = "0.3"
-ros2-interfaces-jazzy-serde = { version = "0.0.5", default-features = false, features = [
+ros2-interfaces-jazzy-serde = { version = "0.0.6", default-features = false, features = [
   "std_msgs",
   "geometry_msgs",
   "nav_msgs",
@@ -181,7 +184,11 @@ cbindgen = "0.29"
 serde_json = "1.0.149"
 mimalloc = { version = "0.1.48", default-features = false }
 colorous = "1.0"
-ratatui = { version = "0.30", default-features = false, features = ["std", "layout-cache", "underline-color"] }
+ratatui = { version = "0.30", default-features = false, features = [
+  "std",
+  "layout-cache",
+  "underline-color",
+] }
 crossterm = "0.29"
 num_cpus = "1.16"
 ndarray = "0.17"

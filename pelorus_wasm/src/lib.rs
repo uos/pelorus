@@ -207,6 +207,54 @@ impl Odometer {
         self.inner.next_scan().map(|scan| Scan::from(&scan))
     }
 
+    /// Enable GPU correspondence search. Rejects unsupported configurations;
+    /// callers can catch that rejection and continue using CPU processing.
+    #[cfg(feature = "webgpu")]
+    #[wasm_bindgen(js_name = enableWebGpu)]
+    pub async fn enable_webgpu(&mut self) -> Result<(), JsError> {
+        #[cfg(target_arch = "wasm32")]
+        {
+            use std::future::{Future, poll_fn};
+            use std::task::Poll;
+            let mut initialization = std::pin::pin!(self.inner.enable_webgpu());
+            let mut timeout = std::pin::pin!(gloo_timers::future::TimeoutFuture::new(15_000));
+            // Cancel inside Rust so the mutable odometer borrow is released before
+            // JavaScript catches the rejection and resumes CPU processing.
+            poll_fn(|cx| {
+                if let Poll::Ready(result) = initialization.as_mut().poll(cx) {
+                    return Poll::Ready(result.map_err(js_error));
+                }
+                if timeout.as_mut().poll(cx).is_ready() {
+                    return Poll::Ready(Err(js_error(
+                        "WebGPU initialization timed out after 15 seconds",
+                    )));
+                }
+                Poll::Pending
+            })
+            .await
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        self.inner.enable_webgpu().await.map_err(js_error)
+    }
+
+    #[cfg(feature = "webgpu")]
+    #[wasm_bindgen(js_name = webGpuStatus)]
+    pub fn webgpu_status(&self) -> Result<String, JsError> {
+        self.inner
+            .webgpu_status()
+            .map(str::to_owned)
+            .map_err(js_error)
+    }
+
+    #[cfg(feature = "webgpu")]
+    #[wasm_bindgen(js_name = nextScanAsync)]
+    pub async fn next_scan_async(&mut self) -> Option<Scan> {
+        self.inner
+            .next_scan_async()
+            .await
+            .map(|scan| Scan::from(&scan))
+    }
+
     /// The deskewed points of the scan the last [`nextScan`](Self::next_scan)
     /// returned, in the Lidar frame, with [`POINT_STRIDE`] values per point:
     /// x, y, z, intensity and the time within the scan.

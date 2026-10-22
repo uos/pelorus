@@ -5,8 +5,8 @@
 //! pose with its covariances. Every driver of the CLI runs this step, so they
 //! produce the same trajectory for the same input.
 
-use std::sync::{Arc, Mutex};
 use pelorus_core::Instant;
+use std::sync::{Arc, Mutex};
 
 use log::info;
 use nalgebra::{Isometry3, Translation3, UnitQuaternion};
@@ -72,6 +72,8 @@ pub struct LioCore {
     pipeline: Pipeline,
     map: Arc<Mutex<RegistrationState>>,
     active_backend: ActiveBackend,
+    #[cfg(feature = "webgpu")]
+    webgpu: Option<pelorus_wgpu::Correspondence>,
     t_world: Isometry3<f64>,
     t_last_current: Isometry3<f64>,
     last_scan_time: Option<f64>,
@@ -160,6 +162,8 @@ impl LioCore {
             pipeline,
             map,
             active_backend,
+            #[cfg(feature = "webgpu")]
+            webgpu: None,
             t_world: Isometry3::identity(),
             t_last_current: Isometry3::identity(),
             last_scan_time: None,
@@ -235,6 +239,59 @@ impl LioCore {
         &mut self,
         processed: SyncProcessedCloud,
         ready_for_next: Option<&std::sync::mpsc::Sender<u64>>,
+    ) -> LioStep {
+        pelorus_core::complete_synchronously(self.step_inner(processed, ready_for_next, false))
+    }
+
+    /// Async scan processing; enables browser GPU readbacks when configured.
+    pub async fn step_async(
+        &mut self,
+        processed: SyncProcessedCloud,
+        ready_for_next: Option<&std::sync::mpsc::Sender<u64>>,
+    ) -> LioStep {
+        self.step_inner(processed, ready_for_next, true).await
+    }
+
+    #[cfg(feature = "webgpu")]
+    pub async fn enable_webgpu(&mut self) -> anyhow::Result<()> {
+        anyhow::ensure!(!self.config.cpu_only, "CPU-only mode is configured");
+        anyhow::ensure!(
+            matches!(self.active_backend, ActiveBackend::Cpu),
+            "a native GPU backend is already active"
+        );
+        {
+            let state = self.map.lock().unwrap();
+            anyhow::ensure!(
+                state.map.multiresolution_snapshot().is_some()
+                    || state.map.single_resolution_snapshot().is_some(),
+                "WebGPU requires a multiresolution or single-resolution Nearby26 map"
+            );
+        }
+        self.webgpu = Some(pelorus_wgpu::Correspondence::new().await?);
+        Ok(())
+    }
+
+    #[cfg(feature = "webgpu")]
+    pub fn webgpu_status(&self) -> Result<&str, String> {
+        let gpu = self
+            .webgpu
+            .as_ref()
+            .ok_or_else(|| "WebGPU is not enabled".to_owned())?;
+        match gpu.failure() {
+            Some(error) => Err(error),
+            None => Ok(gpu.adapter_name()),
+        }
+    }
+
+    // A scan updates the map atomically for the predictor thread, as in the
+    // synchronous path. The only await is the WebGPU readback, and no other task
+    // contends for the map in the meantime.
+    #[expect(clippy::await_holding_lock)]
+    async fn step_inner(
+        &mut self,
+        processed: SyncProcessedCloud,
+        ready_for_next: Option<&std::sync::mpsc::Sender<u64>>,
+        _use_webgpu: bool,
     ) -> LioStep {
         let SyncProcessedCloud {
             scan_id,
@@ -323,18 +380,27 @@ impl LioCore {
                 #[allow(unreachable_patterns)]
                 _ => &self.persistent_cloud_buf,
             };
-            match map.register_and_map(
-                RegistrationScan {
-                    cloud: cloud_for_reg,
-                    imu_transform: init_guess_lidar,
-                    lidar_timestamp: current_cloud_time,
-                    scan_id: scan_id as usize,
-                    map_only: should_map_only,
-                },
-                ready_for_next,
-                &mut self.eval,
-                &self.active_backend,
-            ) {
+            match map
+                .register_and_map_async(
+                    RegistrationScan {
+                        cloud: cloud_for_reg,
+                        imu_transform: init_guess_lidar,
+                        lidar_timestamp: current_cloud_time,
+                        scan_id: scan_id as usize,
+                        map_only: should_map_only,
+                    },
+                    ready_for_next,
+                    &mut self.eval,
+                    &self.active_backend,
+                    #[cfg(feature = "webgpu")]
+                    if _use_webgpu {
+                        self.webgpu.as_mut().filter(|gpu| gpu.failure().is_none())
+                    } else {
+                        None
+                    },
+                )
+                .await
+            {
                 Ok(Some(pose)) => Ok(Some((pose, map.get_state()))),
                 Ok(None) => Ok(None),
                 Err(err) => Err(err),

@@ -1,0 +1,23 @@
+[package]
+name = "pelorus_wgpu"
+description = "Experimental WebGPU correspondence search for Pelorus."
+version.workspace = true
+edition.workspace = true
+repository.workspace = true
+license.workspace = true
+include.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+wgpu = { version = "29", default-features = false, features = ["std", "wgsl", "webgpu", "vulkan", "metal", "dx12"] }
+bytemuck.workspace = true
+anyhow.workspace = true
+nalgebra.workspace = true
+pelorus_core.workspace = true
+pelorus_localmap.workspace = true
+ros_pointcloud2.workspace = true
+futures-channel = "0.3"
+
+[dev-dependencies]
+futures-lite.workspace = true
+naga = { version = "29", features = ["wgsl-in"] }

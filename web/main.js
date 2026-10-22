@@ -111,7 +111,29 @@ function showTopics(topics) {
   status("Choose the topics and a configuration, then start.");
 }
 
-function start(play) {
+/**
+ * Pick the processing backend for this browser. A hardware WebGPU adapter
+ * selects WebGPU, anything else runs on the WebAssembly CPU path. The worker
+ * still falls back to CPU if WebGPU fails to start later on.
+ */
+async function probeBackend() {
+  try {
+    // Adapter discovery can hang on some systems, so it gets a deadline.
+    const adapter = await Promise.race([
+      navigator.gpu?.requestAdapter({ powerPreference: "high-performance" }) ?? null,
+      new Promise((resolve) => setTimeout(() => resolve(null), 3000)),
+    ]);
+    // A software adapter is slower than the CPU path.
+    if (!adapter || (adapter.info?.isFallbackAdapter ?? adapter.isFallbackAdapter)) return "cpu";
+    return "webgpu";
+  } catch {
+    return "cpu";
+  }
+}
+const backend = probeBackend();
+
+async function start(play) {
+  play = { backend: await backend, ...play };
   currentPlay = play;
   worker.postMessage({ type: "play", ...play });
 }
@@ -193,7 +215,11 @@ async function onWorkerMessage(event) {
         break;
       case "started":
         // A restart keeps the view.
-        if (app) break;
+        if (app) {
+          app.setBackend(message.backend);
+          if (message.fallback) app.log("warn", message.fallback);
+          break;
+        }
         $("start").hidden = true;
         $("run").hidden = false;
         // The replay gets its own history entry, so the back button or gesture
@@ -215,6 +241,8 @@ async function onWorkerMessage(event) {
           matchMedia("(max-width: 700px)").matches ? 11 : 14,
         );
         setLayout(cloudView ? "split" : "tui-only");
+        app.setBackend(message.backend);
+        if (message.fallback) app.log("warn", message.fallback);
         for (const [level, text] of earlyLogs.splice(0)) app.log(level, text);
         app.log("info", `Replaying ${bagName}. Press Space to restart, q to stop, ? for help.`);
         break;
@@ -222,6 +250,10 @@ async function onWorkerMessage(event) {
         app.pushScan(message.values, message.ms);
         cloudView?.addScan(message.points, [message.values[1], message.values[2], message.values[3]]);
         updateLegend();
+        break;
+      case "backend":
+        app.setBackend(message.backend);
+        if (message.fallback) app.log("warn", message.fallback);
         break;
       case "progress":
         log("info", `Replayed ${Math.round(message.value * 100)} % of the bag`);
@@ -364,7 +396,8 @@ for (const button of $("layout").querySelectorAll("button")) {
   };
 }
 
-async function fetchWithProgress(url) {
+/** Fetch a file and report the received fraction, or null without a known size, and the bytes. */
+async function fetchWithProgress(url, onProgress) {
   const response = await fetch(url);
   if (!response.ok) throw new Error(`could not load ${url}: ${response.status}`);
   const total = Number(response.headers.get("content-length")) || 0;
@@ -376,27 +409,41 @@ async function fetchWithProgress(url) {
     if (done) break;
     parts.push(value);
     received += value.length;
-    status(
-      total
-        ? `Downloading the demo bag: ${Math.round((received / total) * 100)} %`
-        : `Downloading the demo bag: ${(received / 1e6).toFixed(0)} MB`,
-    );
+    onProgress(total ? received / total : null, received);
   }
   return new Blob(parts);
 }
 
-/** Download a demo bag and replay it with its topics and configuration. */
-async function runDemo(demo, buttons) {
+/**
+ * Download a demo bag and replay it with its topics and configuration. The
+ * clicked Run button fills up with the download and shows its progress.
+ */
+async function runDemo(demo, button, buttons) {
   statusId = "demo-status";
+  status("");
+  for (const other of buttons) other.disabled = true;
+  button.classList.add("loading");
+  button.setAttribute("aria-busy", "true");
+  const show = (fraction, text) => {
+    button.style.setProperty("--progress", `${fraction * 100}%`);
+    button.textContent = text;
+  };
+  show(0, "0 %");
   try {
-    for (const button of buttons) button.disabled = true;
-    const blob = await fetchWithProgress(demo.url);
-    status("Reading the demo bag");
+    const blob = await fetchWithProgress(demo.url, (fraction, received) =>
+      fraction === null
+        ? show(0, `${(received / 1e6).toFixed(0)} MB`)
+        : show(fraction, `${Math.floor(fraction * 100)} %`),
+    );
+    show(1, "Opening");
     bagName = demo.name;
     pendingPlay = { cloud: demo.cloud, imu: demo.imu, config: await loadConfig(demo.config) };
     open(blob);
   } catch (error) {
-    for (const button of buttons) button.disabled = false;
+    button.classList.remove("loading");
+    button.removeAttribute("aria-busy");
+    button.textContent = "Run";
+    for (const other of buttons) other.disabled = false;
     status(`Error: ${error.message}`);
   }
 }
@@ -421,7 +468,7 @@ async function runDemo(demo, buttons) {
       button.textContent = "Run";
       button.setAttribute("aria-label", `Run the ${demo.title} demo`);
       demo.name = `${group.dataset.split(",")[0]} ${demo.title}`;
-      button.onclick = () => runDemo(demo, buttons);
+      button.onclick = () => runDemo(demo, button, buttons);
       buttons.push(button);
       item.append(text, button);
       $("demos").append(item);

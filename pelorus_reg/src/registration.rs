@@ -452,13 +452,14 @@ fn matrix6_to_array(matrix: SMatrix<f64, 6, 6>) -> [f64; 36] {
     out
 }
 
-impl crate::Registration for RegistrationState {
-    fn register_and_map(
+impl RegistrationState {
+    pub async fn register_and_map_async(
         &mut self,
         scan: crate::RegistrationScan<'_>,
         ready_for_next: Option<&std::sync::mpsc::Sender<u64>>,
         eval: &mut RuntimeEvaluator,
         backend: &ActiveBackend,
+        #[cfg(feature = "webgpu")] mut webgpu: Option<&mut pelorus_wgpu::Correspondence>,
     ) -> anyhow::Result<Option<crate::CloudRegisterResult>> {
         let crate::RegistrationScan {
             cloud,
@@ -650,20 +651,65 @@ impl crate::Registration for RegistrationState {
             self.ekf.set_anchor(anchor_pos);
             let anchor = self.ekf.anchor;
 
-            self.ekf.correct(
+            #[cfg(feature = "webgpu")]
+            if let Some(gpu) = webgpu.as_deref_mut() {
+                let prepared = match cloud {
+                    LocatedBufferView::Ram(points) if matches!(backend, ActiveBackend::Cpu) => {
+                        gpu.prepare(&self.map, points)
+                    }
+                    _ => Err(anyhow::anyhow!("WebGPU requires a CPU map and cloud")),
+                };
+                if let Err(error) = prepared {
+                    log::warn!("WebGPU disabled; using CPU correspondences: {error:#}");
+                    gpu.disable(error);
+                    webgpu = None;
+                }
+            }
+
+            let correction = self.ekf.correct_async(
                 self.laser_point_noise_cov,
                 lidar_timestamp,
                 self.ekf_max_iterations,
                 eval_cb.clone(),
-                move |ekf_state: &crate::eqf::StateIKFom,
-                      valid: &mut bool,
-                      _converged: bool,
-                      h: &mut faer::Col<f64>,
-                      h_x: &mut faer::Mat<f64>,
-                      num_measurements: &mut usize| {
+                async move |ekf_state: &crate::eqf::StateIKFom,
+                            valid: &mut bool,
+                            _converged: bool,
+                            h: &mut faer::Col<f64>,
+                            h_x: &mut faer::Mat<f64>,
+                            num_measurements: &mut usize| {
+                    eval_cb_inner
+                        .write()
+                        .unwrap()
+                        .start("ekf_correct/model/planes")
+                        .unwrap();
+                    #[cfg(feature = "webgpu")]
+                    let used_webgpu = if let Some(gpu) = webgpu.as_deref_mut() {
+                        let pose = Isometry3::from_parts(
+                            Translation3::from(ekf_state.pos),
+                            UnitQuaternion::from_matrix(&ekf_state.rot.matrix()),
+                        );
+                        let offset = Isometry3::from_parts(
+                            Translation3::from(ekf_state.offset_t_l_i),
+                            UnitQuaternion::from_matrix(&ekf_state.offset_r_l_i.matrix()),
+                        );
+                        // The filter awaits this callback before touching its buffers again.
+                        let out = unsafe { &mut *planes_cpu_buffer_ptr };
+                        match gpu.query(&pose, &offset, out).await {
+                            Ok(()) => true,
+                            Err(error) => {
+                                log::warn!("WebGPU disabled; using CPU correspondences: {error:#}");
+                                gpu.disable(error);
+                                webgpu = None;
+                                false
+                            }
+                        }
+                    } else {
+                        false
+                    };
+                    #[cfg(not(feature = "webgpu"))]
+                    let used_webgpu = false;
                     let mut eval_guard = eval_cb_inner.write().unwrap();
                     let eval_actual = &mut **eval_guard;
-                    eval_actual.start("ekf_correct/model/planes").unwrap();
 
                     // Try to retrieve previous GPU timing measurements (non-blocking)
                     let gpu_timings = match backend {
@@ -690,6 +736,7 @@ impl crate::Registration for RegistrationState {
                     // Recompute planes on every EqF iteration - correspondence must be
                     // updated as the state estimate changes.
                     let planes: &mut Vec<PointXYZINormal> = match backend {
+                        ActiveBackend::Cpu if used_webgpu => unsafe { &mut *planes_cpu_buffer_ptr },
                         ActiveBackend::Cpu => {
                             #[allow(irrefutable_let_patterns)]
                             let LocatedBufferView::Ram(cloud_pts) = cloud else {
@@ -700,14 +747,6 @@ impl crate::Registration for RegistrationState {
                             let planes_buf = unsafe { &mut *planes_cpu_buffer_ptr };
                             planes_buf.clear();
                             let map = unsafe { &*map_ptr };
-                            #[cfg(feature = "rayon")]
-                            let mode = execution_planner
-                                .lock()
-                                .unwrap()
-                                .mode_for(HeavyPhase::PlaneCorrespondence);
-                            #[cfg(feature = "rayon")]
-                            let started = pelorus_core::Instant::now();
-
                             // Match the GPU backends' f32 transform precision so CPU↔GPU
                             // plane selection stays numerically equivalent. GPU shaders do
                             // the lidar→imu→world transform in f32, via UnitQuaternion cast
@@ -766,6 +805,14 @@ impl crate::Registration for RegistrationState {
                                     ))
                                 }
                             };
+                            #[cfg(feature = "rayon")]
+                            let mode = execution_planner
+                                .lock()
+                                .unwrap()
+                                .mode_for(HeavyPhase::PlaneCorrespondence);
+                            #[cfg(feature = "rayon")]
+                            let started = pelorus_core::Instant::now();
+
                             #[cfg(feature = "rayon")]
                             match mode {
                                 ExecutionMode::Sequential => {
@@ -1042,6 +1089,7 @@ impl crate::Registration for RegistrationState {
                     eval_actual.stop("ekf_correct/model/jacobian").unwrap();
                 },
             );
+            correction.await;
             eval_cb.write().unwrap().stop("ekf_correct").unwrap();
         };
 
@@ -1132,6 +1180,25 @@ impl crate::Registration for RegistrationState {
             base_pose: t_w_b,
             avg_iterations: None,
         }))
+    }
+}
+
+impl crate::Registration for RegistrationState {
+    fn register_and_map(
+        &mut self,
+        scan: crate::RegistrationScan<'_>,
+        ready_for_next: Option<&std::sync::mpsc::Sender<u64>>,
+        eval: &mut RuntimeEvaluator,
+        backend: &ActiveBackend,
+    ) -> anyhow::Result<Option<crate::CloudRegisterResult>> {
+        pelorus_core::complete_synchronously(self.register_and_map_async(
+            scan,
+            ready_for_next,
+            eval,
+            backend,
+            #[cfg(feature = "webgpu")]
+            None,
+        ))
     }
 
     fn requested_register_and_map_cloud_type(&self) -> LocatedBufferView<PointXYZ> {

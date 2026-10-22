@@ -14,7 +14,11 @@ rust-version.workspace = true
 [lib]
 crate-type = ["cdylib", "rlib"]
 
+[features]
+webgpu = ["pelorus/webgpu", "dep:wasm-bindgen-futures", "dep:gloo-timers"]
+
 [dependencies]
+wasm-bindgen-futures = { version = "0.4", optional = true }
 pelorus.workspace = true
 bytemuck.workspace = true
 wasm-bindgen = "0.2.129"
@@ -27,5 +31,14 @@ ros_pointcloud2.workspace = true
 cloudini.workspace = true
 rustc-hash.workspace = true
 
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+gloo-timers = { version = "0.3", features = ["futures"], optional = true }
+
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
 anyhow.workspace = true
+futures-lite.workspace = true
+serde_json.workspace = true
+
+[[example]]
+name = "benchmark_wgpu"
+required-features = ["webgpu"]

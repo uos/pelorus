@@ -1003,6 +1003,32 @@ impl Eqf {
             &mut usize,    // num_measurements - actual number of valid measurements
         ),
     ) {
+        pelorus_core::complete_synchronously(self.correct_async(
+            measurement_noise_cov,
+            measurement_time,
+            max_iter,
+            eval,
+            async |state, valid, converged, h, h_x, count| {
+                model(state, valid, converged, h, h_x, count);
+            },
+        ));
+    }
+
+    pub async fn correct_async(
+        &mut self,
+        measurement_noise_cov: f64,
+        measurement_time: f64,
+        max_iter: usize,
+        eval: std::sync::Arc<std::sync::RwLock<&mut RuntimeEvaluator>>,
+        mut model: impl AsyncFnMut(
+            &StateIKFom,
+            &mut bool,     // valid
+            bool,          // converge (for re-searching correspondences if needed)
+            &mut Col<f64>, // residual h
+            &mut Mat<f64>, // jacobian H (m x 12, sparse)
+            &mut usize,    // num_measurements - actual number of valid measurements
+        ),
+    ) {
         self.last_time = measurement_time;
 
         // Keep Jacobian moment arms local to the robot for numerical precision.
@@ -1043,7 +1069,8 @@ impl Eqf {
                 &mut self.h,
                 &mut self.h_x,
                 &mut num_measurements,
-            );
+            )
+            .await;
 
             let mut eval = eval.write().unwrap();
             eval.stop("ekf_correct/it/model").unwrap();

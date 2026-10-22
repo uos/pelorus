@@ -14,6 +14,9 @@ rust-version.workspace = true
 [lib]
 crate-type = ["cdylib", "rlib"]
 
+[features]
+webgpu = ["pelorus_wasm/webgpu"]
+
 [dependencies]
 pelorus_wasm = { path = "../pelorus_wasm" }
 pelorus_tui.workspace = true

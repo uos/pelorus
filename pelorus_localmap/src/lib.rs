@@ -11,6 +11,7 @@ use localmap::Livodish;
 
 pub mod localmap;
 mod multiresolution;
+pub use multiresolution::{DistributionLevel, MultiResolutionSnapshot};
 use rand_distr::{Distribution, Normal};
 
 use nalgebra::{Point3, Vector3};
@@ -406,6 +407,26 @@ fn hash(point: &Point3<f32>, voxel_size: f32) -> i32 {
 }
 
 impl IVoxHashMap {
+    /// Snapshot all pyramid levels without re-hashing distribution means or
+    /// populating the CPU correspondence cache.
+    pub fn multiresolution_snapshot(&self) -> Option<MultiResolutionSnapshot<'_>> {
+        self.multiresolution.as_ref().map(|map| map.snapshot())
+    }
+
+    /// Snapshot source for the experimental single-resolution WebGPU search.
+    /// `None` means the map uses an unsupported representation or neighborhood.
+    pub fn single_resolution_snapshot(
+        &self,
+    ) -> Option<(f32, impl Iterator<Item = (i32, &VoxelDistribution)>)> {
+        if cfg!(feature = "nn_kdt")
+            || self.multiresolution.is_some()
+            || !matches!(self.nearby_type, IVoxNearbyType::Nearby26)
+        {
+            return None;
+        }
+        Some((self.resolution, self.livodish.keyed_distributions()))
+    }
+
     pub fn new(resolution: f32, capacity: usize, nbtype: IVoxNearbyType, sensitivity: f32) -> Self {
         Self {
             nearby_type: nbtype,

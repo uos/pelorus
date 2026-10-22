@@ -28,6 +28,7 @@ thiserror.workspace = true
 rayon = { workspace = true, optional = true }
 
 [features]
+webgpu = ["pelorus_reg/webgpu"]
 default = ["rayon", "threads", "http-config"]
 # Load `.rl` configurations from HTTP(S) URLs.
 http-config = ["dep:ureq"]

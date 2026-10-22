@@ -187,6 +187,15 @@ impl Livodish {
             .collect()
     }
 
+    /// Export the stored keys as well as the distributions. Re-hashing a mean
+    /// can change its key after weighted updates move it across a cell boundary.
+    pub fn keyed_distributions(&self) -> impl Iterator<Item = (i32, &VoxelDistribution)> {
+        self.buffer.iter().filter_map(|entry| {
+            let Value((key, distribution)) = entry.as_ref()?;
+            Some((*key, distribution))
+        })
+    }
+
     pub fn get_distributions_with_lru_scores(&self) -> Vec<VoxelDistributionLru> {
         let mut ranks = vec![self.capacity; self.capacity];
         for (rank, opt_idx) in self.lru_mapping.iter().enumerate() {

@@ -17,6 +17,7 @@ pelorus_sync = { workspace = true, default-features = false }
 pelorus_cuda = { workspace = true, optional = true }
 pelorus_metal = { workspace = true, optional = true }
 pelorus_vulkan = { workspace = true, optional = true }
+pelorus_wgpu = { workspace = true, optional = true }
 ros_pointcloud2.workspace = true
 anyhow.workspace = true
 nalgebra.workspace = true
@@ -28,6 +29,7 @@ serde.workspace = true
 either.workspace = true
 
 [features]
+webgpu = ["dep:pelorus_wgpu"]
 default = ["rayon", "threads"]
 # The threaded synchronizer and the realtime predictor.
 threads = ["pelorus_sync/threads"]
@@ -50,4 +52,5 @@ metal = ["dep:pelorus_metal", "pelorus_metal/metal_available", "pelorus_metal/me
 vulkan = ["dep:pelorus_vulkan", "pelorus_vulkan/vulkan_available", "pelorus_vulkan/vulkan_enable", "pelorus_sync/vulkan"]
 
 [dev-dependencies]
+futures-lite.workspace = true
 serde_json.workspace = true

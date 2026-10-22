@@ -1339,3 +1339,20 @@ pub struct OdomMsg {
 
     pub stamp: crate::TimeMsg,
 }
+
+/// Complete a synchronous path shared with an async implementation.
+///
+/// The caller must select a path without asynchronous I/O. In particular, GPU
+/// browser readbacks must be awaited rather than passed to this function.
+#[doc(hidden)]
+pub fn complete_synchronously<F: std::future::Future>(future: F) -> F::Output {
+    use std::task::{Context, Poll, Waker};
+    let mut future = std::pin::pin!(future);
+    match future
+        .as_mut()
+        .poll(&mut Context::from_waker(Waker::noop()))
+    {
+        Poll::Ready(value) => value,
+        Poll::Pending => panic!("asynchronous operation requires the async entrypoint"),
+    }
+}

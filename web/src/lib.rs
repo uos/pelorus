@@ -289,7 +289,7 @@ impl WebApp {
         console_error_panic_hook::set_once();
         let logs = Arc::new(LogBuffer::new("pelorus"));
         let stats = TuiStats {
-            mode: "Browser".to_owned(),
+            mode: "Offline".to_owned(),
             bagfile: Some(bag.to_owned()),
             backend: "WebAssembly".to_owned(),
             lidar_vendor: lidar_vendor.and_then(|name| parse_vendor(&name)),
@@ -376,6 +376,14 @@ impl WebApp {
     /// view's tab and zoom stay.
     pub fn restart(&self) {
         self.state.borrow_mut().reset();
+    }
+
+    /// Show the worker's actual processing backend, including a CPU fallback.
+    #[wasm_bindgen(js_name = setBackend)]
+    pub fn set_backend(&self, backend: &str) {
+        let mut state = self.state.borrow_mut();
+        state.stats.backend = backend.to_owned();
+        state.initial_stats.backend = backend.to_owned();
     }
 
     /// Show `message` in the log pane. `level` is `error`, `warn`, `info`,
