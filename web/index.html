@@ -1,0 +1,168 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="dark" />
+    <title>Pelorus</title>
+    <meta
+      name="description"
+      content="Resource-aware Lidar-Inertial Odometry."
+    />
+    <link rel="stylesheet" href="style.css" />
+    <script type="module" src="main.js"></script>
+  </head>
+  <body>
+    <main id="start">
+      <header class="hero">
+        <div class="hero-renders">
+          <figure class="shown">
+            <img src="renders/keble.webp" alt="The map Pelorus builds of Keble College, coloured by lidar intensity" />
+            <figcaption>Keble College, Oxford Spires</figcaption>
+          </figure>
+          <figure>
+            <img src="renders/grandtour-sbb1.webp" alt="The map of a railway line from GrandTour sbb1, coloured by lidar intensity" loading="lazy" />
+            <figcaption>sbb1, GrandTour</figcaption>
+          </figure>
+          <figure>
+            <img src="renders/grandtour-eth1.webp" alt="The map of a street junction from GrandTour eth1, coloured by lidar intensity" loading="lazy" />
+            <figcaption>eth1, GrandTour</figcaption>
+          </figure>
+          <figure>
+            <img src="renders/helipr-town02.webp" alt="The map of a tree-lined street from HeLiPR town02, coloured by lidar intensity" loading="lazy" />
+            <figcaption>town02, HeLiPR</figcaption>
+          </figure>
+        </div>
+        <div class="hero-text">
+          <h1>Pelorus</h1>
+          <p>Resource-Aware Lidar-Inertial Odometry</p>
+          <!-- The arXiv link is a placeholder until the paper is out. The GitHub mirror is not public yet.
+               Logos from Simple Icons 16.33.0 (CC0), the book from Lucide 1.52.0 (ISC). -->
+          <nav class="project-links" aria-label="Project">
+            <a href="https://arxiv.org/abs/0000.00000" title="Paper on arXiv">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M3.8423 0a1.0037 1.0037 0 0 0-.922.6078c-.1536.3687-.0438.6275.2938 1.1113l6.9185 8.3597-1.0223 1.1058a1.0393 1.0393 0 0 0 .003 1.4229l1.2292 1.3135-5.4391 6.4444c-.2803.299-.4538.823-.2971 1.1986a1.0253 1.0253 0 0 0 .9585.635.9133.9133 0 0 0 .6891-.3405l5.783-6.126 7.4902 8.0051a.8527.8527 0 0 0 .6835.2597.9575.9575 0 0 0 .8777-.6138c.1577-.377-.017-.7502-.306-1.1407l-7.0518-8.3418 1.0632-1.13a.9626.9626 0 0 0 .0089-1.3165L4.6336.4639s-.3733-.4535-.768-.463zm0 .272h.0166c.2179.0052.4874.2715.5644.3639l.005.006.0052.0055 10.169 10.9905a.6915.6915 0 0 1-.0072.945l-1.0666 1.133-1.4982-1.7724-8.5994-10.39c-.3286-.472-.352-.6183-.2592-.841a.7307.7307 0 0 1 .6704-.4401Zm14.341 1.5701a.877.877 0 0 0-.6554.2418l-5.6962 6.1584 1.6944 1.8319 5.3089-6.5138c.3251-.4335.479-.6603.3247-1.0292a1.1205 1.1205 0 0 0-.9763-.689zm-7.6557 12.2823 1.3186 1.4135-5.7864 6.1295a.6494.6494 0 0 1-.4959.26.7516.7516 0 0 1-.706-.4669c-.1119-.2682.0359-.6864.2442-.9083l.0051-.0055.0047-.0055z"/></svg><span>arXiv</span>
+            </a>
+            <a href="https://codeberg.org/stelzo/pelorus" title="Code on Codeberg">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M11.999.747A11.974 11.974 0 0 0 0 12.75c0 2.254.635 4.465 1.833 6.376L11.837 6.19c.072-.092.251-.092.323 0l4.178 5.402h-2.992l.065.239h3.113l.882 1.138h-3.674l.103.374h3.86l.777 1.003h-4.358l.135.483h4.593l.695.894h-5.038l.165.589h5.326l.609.785h-5.717l.182.65h6.038l.562.727h-6.397l.183.65h6.717A12.003 12.003 0 0 0 24 12.75 11.977 11.977 0 0 0 11.999.747zm3.654 19.104.182.65h5.326c.173-.204.353-.433.513-.65zm.385 1.377.18.65h3.563c.233-.198.485-.428.712-.65zm.383 1.377.182.648h1.203c.356-.204.685-.412 1.042-.648zz"/></svg><span>Codeberg</span>
+            </a>
+            <a href="https://github.com/uos/pelorus" title="Mirror on GitHub">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M12 .297c-6.63 0-12 5.373-12 12 0 5.303 3.438 9.8 8.205 11.385.6.113.82-.258.82-.577 0-.285-.01-1.04-.015-2.04-3.338.724-4.042-1.61-4.042-1.61C4.422 18.07 3.633 17.7 3.633 17.7c-1.087-.744.084-.729.084-.729 1.205.084 1.838 1.236 1.838 1.236 1.07 1.835 2.809 1.305 3.495.998.108-.776.417-1.305.76-1.605-2.665-.3-5.466-1.332-5.466-5.93 0-1.31.465-2.38 1.235-3.22-.135-.303-.54-1.523.105-3.176 0 0 1.005-.322 3.3 1.23.96-.267 1.98-.399 3-.405 1.02.006 2.04.138 3 .405 2.28-1.552 3.285-1.23 3.285-1.23.645 1.653.24 2.873.12 3.176.765.84 1.23 1.91 1.23 3.22 0 4.61-2.805 5.625-5.475 5.92.42.36.81 1.096.81 2.22 0 1.606-.015 2.896-.015 3.286 0 .315.21.69.825.57C20.565 22.092 24 17.592 24 12.297c0-6.627-5.373-12-12-12"/></svg><span>GitHub</span>
+            </a>
+            <a href="https://stelzo.codeberg.page/pelorus/" title="Documentation">
+              <svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v16"/><path d="M20.001 19A2 2 0 0022 17V5a2 2 0 00-1.999-2L16 3.002A5 5 0 0012 5a5 5 0 00-4-2H4a2 2 0 00-2 2v12a2 2 0 001.999 2H8a5 5 0 014 2 5 5 0 014-2z"/></svg><span>Docs</span>
+            </a>
+          </nav>
+        </div>
+      </header>
+
+      <div class="choices">
+        <section class="choice">
+          <h2>Live Presets</h2>
+          <p>
+            The first seconds of public datasets with Lidar and IMU. Pelorus estimates the
+            motion directly in your browser and builds the map as the scans come in.
+          </p>
+          <ul id="demos"></ul>
+          <p id="demo-status" class="status" role="status"></p>
+        </section>
+
+        <section class="choice">
+          <h2>Run your own recording</h2>
+          <p>
+            Load a ROS 2 MCAP bag with a <code>PointCloud2</code> topic and ideally an
+            <code>Imu</code> topic. Everything is running locally inside this tab, nothing leaves your device. Start the
+            recording with the sensors standing still for a few seconds.
+          </p>
+          <div class="action">
+            <label class="file">
+              <input id="bag-file" type="file" accept=".mcap" />
+              <span>Choose an MCAP file</span>
+            </label>
+          </div>
+          <p id="own-status" class="status" role="status"></p>
+          <div id="own-options" hidden>
+            <label>Point cloud topic <select id="cloud-topic"></select></label>
+            <label>IMU topic <select id="imu-topic"></select></label>
+            <label>Configuration preset <select id="preset"></select></label>
+            <label class="wide">
+              <span>
+                Configuration, explained in the
+                <a href="https://stelzo.codeberg.page/pelorus/configuration/" target="_blank" rel="noopener">configuration reference</a>
+              </span>
+              <textarea
+                id="config"
+                rows="9"
+                wrap="off"
+                spellcheck="false"
+                placeholder="Ratslang settings layered over the defaults, for example lidar.vendor = Ouster"
+              ></textarea>
+            </label>
+            <div class="action wide"><button id="run-own" class="primary">Start the replay</button></div>
+          </div>
+        </section>
+      </div>
+
+
+      <footer>
+        <p>
+          Each demo keeps the first 30 seconds of a recording's lidar and IMU topics, removes
+          point fields Pelorus does not read and stores the clouds compressed with cloudini at
+          1 mm precision.
+        </p>
+        <p>
+          Keble College and the picture above come from the
+          <a href="https://dynamic.robots.ox.ac.uk/datasets/oxford-spires/">Oxford Spires Dataset</a>
+          by the Oxford Robotics Institute, licensed under
+          <a href="https://creativecommons.org/licenses/by-nc-sa/4.0/">CC BY-NC-SA 4.0</a> and
+          shared under the same license. Please cite <em>The Oxford Spires Dataset: Benchmarking
+          Large-Scale LiDAR-Visual Localisation, Reconstruction and Radiance Field Methods</em>
+          (IJRR 2025) when you use it.
+        </p>
+        <p>
+          The HeLiPR sequences come from the
+          <a href="https://sites.google.com/view/heliprdataset">HeLiPR dataset</a> by Seoul
+          National University. Please cite <em>HeLiPR: Heterogeneous LiDAR Dataset for
+          inter-LiDAR Place Recognition under Spatiotemporal Variations</em> (IJRR 2024) when you
+          use them. They keep every third point of the first 20 seconds.
+        </p>
+        <p>
+          The GrandTour missions come from the
+          <a href="https://huggingface.co/datasets/leggedrobotics/grand_tour_dataset">GrandTour dataset</a>
+          by the Robotic Systems Lab at ETH Zurich, licensed under the MIT license. Please cite
+          <em>Boxi: Design Decisions in the Context of Algorithmic Performance for Robotics</em>
+          (RSS 2025) when you use it.
+        </p>
+      </footer>
+    </main>
+
+    <div id="run" class="split" hidden>
+      <div id="tui"></div>
+      <div id="divider" role="separator" title="Drag to resize, double-click to reset"></div>
+      <div id="cloud-pane">
+        <canvas id="cloud"></canvas>
+        <figure id="legend" class="by-height" aria-label="What the point colours mean">
+          <div id="color-by" role="group" aria-label="Colour points by" hidden>
+            <button data-color-by="intensity">Intensity</button>
+            <button data-color-by="height">Height</button>
+          </div>
+          <div class="ramp"></div>
+          <figcaption><span id="legend-low"></span><span id="legend-name"></span><span id="legend-high"></span></figcaption>
+        </figure>
+        <div id="controls">
+          <div id="layout" role="group" aria-label="Layout">
+            <button data-layout="tui-only">TUI</button>
+            <button data-layout="split" aria-pressed="true">Split</button>
+            <button data-layout="cloud-only">3D</button>
+          </div>
+          <button class="touch-only" data-key=" ">Restart</button>
+          <button class="touch-only" data-key="Tab">Next tab</button>
+          <button class="touch-only" data-key="?">Help</button>
+          <button class="touch-only" data-key="q">Back to demos</button>
+          <button class="touch-only" id="follow">Follow</button>
+          <span class="hint mouse">Drag to rotate, right-drag to pan, scroll to zoom, double-click to follow</span>
+          <span class="hint touch">One finger rotates, two fingers zoom and pan</span>
+        </div>
+      </div>
+    </div>
+  </body>
+</html>

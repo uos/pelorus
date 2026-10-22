@@ -8,11 +8,15 @@ registration {
     # Edge length of one voxel, which is also the size of the smallest feature
     # registration can resolve. This is the option with the largest effect on
     # both accuracy and runtime, so change it before anything else.
+    # @type length
+    # @finite true
     resolution = 50cm
 
     # Single | Multi
     # Single: one fixed-resolution map.
     # Multi: scales of 0.5x, 1x, 2x and 4x `resolution`.
+    # @enum single, multi
+    # @enum_case insensitive
     resolution.type = Multi
 
     # @recommended
@@ -20,18 +24,26 @@ registration {
     # is full, older voxels are dropped, so memory stays bounded on a long run.
     # With CUDA enabled and Single resolution this is rounded up to the next
     # power of two. The multiresolution map keeps the exact total instead.
+    # @type integer
+    # @min 0
     capacity = 262144
    
     # How strongly a new scan moves the distribution stored in a voxel. Higher
     # values track changes in the environment faster and keep less history.
+    # @type number
+    # @finite true
     distribution_update_sensitivity = 10.0
   }
 
   # Maximum filter correction iterations per scan.
+  # @type integer
+  # @min 0
   max_iter = 4
 
   # Largest distance at which a map voxel is still considered a neighbor of a
   # point. The default is fine unless you reduce map.resolution by a lot.
+  # @type length
+  # @finite true
   neighbors_max_range = 5m
 }
 
@@ -44,18 +56,25 @@ preprocessing {
     # @recommended
     # Publish the full undistorted cloud on the output topic. This changes only
     # what is published. Registration always uses the downsampled cloud.
+    # @type boolean
     bypass_output_downsample = true
 
     # Downsample the incoming scan by keeping only every n-th point. 1 means no points are skipped.
+    # @type integer
+    # @min 0
     point_skip = 1
 
     # Where the downsampling runs. Backend uses the active acceleration backend
     # when one is available, CPU always uses the CPU path.
     # CPU | Backend
+    # @enum cpu, backend
+    # @enum_case insensitive
     backend = Backend
 
     # Expected feature size in the incoming scan, as a factor of
     # registration.map.resolution. Values between 0.0 and 1.0 are expected.
+    # @type number
+    # @finite true
     query_resolution_factor = 0.5
   }
 
@@ -63,6 +82,8 @@ preprocessing {
   # begins. A single scan from a non-repetitive scan pattern covers too little of
   # the surroundings to build a map from, so the platform has to stand still
   # until this many scans have arrived.
+  # @type integer
+  # @min 0
   initial_scan_accumulate = 3
 
   # Point filters. Each one is skipped while it is left at its default, and a
@@ -74,15 +95,19 @@ preprocessing {
       # ".." on all three axes is a box of infinite size and keeps everything.
 
       # Range along x, for example 1m..3m.
+      # @type range<length>
       x = ..
 
       # Range along y, for example 2m.. for everything beyond 2 metres.
+      # @type range<length>
       y = ..
 
       # Range along z, for example 4cm..100m.
+      # @type range<length>
       z = ..
 
       # Keep the points outside the box instead of the ones inside it.
+      # @type boolean
       invert = false
     }
 
@@ -92,24 +117,31 @@ preprocessing {
       # robot itself.
 
       # For example ..2m for everything up to 2 metres, or 1cm..4m for a band.
+      # @type range<length>
       range = 4m..
 
       # Keep the points outside the range instead of the ones inside it.
+      # @type boolean
       invert = false
     }
 
     # Keeps points within a horizontal angular sector, measured around the
     # forward axis below. Useful where part of the field of view is permanently
     # blocked, for example by a mast or an arm.
+    # @type boolean
     horizontal_fov = false
     horizontal_fov {
       # Angular range in degrees, for example 10..42.
+      # @type range<number>
       degrees = ..
 
       # Axis the angular range is measured from, as [x, y] in the LiDAR frame.
+      # @type array<number>
+      # @finite true
       forward = [1.0, 0.0]
 
       # Keep the points outside the sector instead of the ones inside it.
+      # @type boolean
       invert = false
     }
 
@@ -119,6 +151,8 @@ preprocessing {
 
       # Vertices in order, for example [ [1.0m, -1.5m], [-1.0m, 1.5m], [0m, 0m] ].
       # An empty list disables the filter.
+      # @type array<array<length>>
+      # @finite true
       coords = []
 
       # TF frame the coordinates are given in. When set, the polygon is
@@ -128,6 +162,7 @@ preprocessing {
       global_zero_frame = ""
 
       # Keep the points outside the polygon instead of the ones inside it.
+      # @type boolean
       invert = false
     }
 
@@ -137,9 +172,11 @@ preprocessing {
       # geometry that is not there.
 
       # Range, normalized to 0.0..1.0.
+      # @type range<float>
       values = ..
 
       # Keep the points outside the range instead of the ones inside it.
+      # @type boolean
       invert = false
     }
     
@@ -164,7 +201,13 @@ sensor_drivers {
 
     # Local receive address and the sensor's configured UDP destination ports.
     bind_address = "0.0.0.0"
+    # @type integer
+    # @min 1
+    # @max 65535
     lidar_port = 7502
+    # @type integer
+    # @min 1
+    # @max 65535
     imu_port = 7503
 
     # Optional sender filter. Empty accepts Ouster packets from any address.
@@ -179,13 +222,21 @@ sensor_drivers {
       # Ptp requires TIME_FROM_PTP_1588 sensor configuration and validates sensor
       # timestamps against host UTC. Host preserves relative sensor timing while
       # anchoring each scan or IMU packet at receive time.
+      # @enum ptp, host
+      # @enum_case insensitive
       mode = Ptp
 
       # Largest accepted difference between sensor UTC and host UTC in Ptp mode.
+      # @type time
+      # @finite true
+      # @min_exclusive 0s
       max_host_skew = 20ms
 
       # How long to wait for usable packets before giving up. If the clock mode
       # above cannot be satisfied, Pelorus fails startup and says so.
+      # @type time
+      # @finite true
+      # @min_exclusive 0s
       startup_timeout = 15s
     }
   }
@@ -198,6 +249,8 @@ lidar {
     # Disabled keeps the existing external point-cloud input configured by lidar.topic.
     # Velodyne, Ouster and Robosense enable in-process UDP drivers and require Pelorus
     # to be built with their matching feature (or the aggregate `sensor-drivers` feature).
+    # @enum disabled, velodyne, ouster, robosense
+    # @enum_case insensitive
     type = Disabled
 
     velodyne {
@@ -205,6 +258,8 @@ lidar {
 
       # Vlp16 | Vlp32c | PuckLite | PuckHiRes
       # The configured model must match the product identifier in received packets.
+      # @enum vlp16, vlp32c, pucklite, puckhires
+      # @enum_case insensitive
       model = Vlp32c
 
       # Local IPv4 or IPv6 address on which to receive UDP packets. "0.0.0.0"
@@ -212,9 +267,15 @@ lidar {
       bind_address = "0.0.0.0"
 
       # UDP data-packet port. Must be in 1..=65535 and differ from position_port.
+      # @type integer
+      # @min 1
+      # @max 65535
       data_port = 2368
 
       # UDP position/NMEA packet port. Must be in 1..=65535 and differ from data_port.
+      # @type integer
+      # @min 1
+      # @max 65535
       position_port = 8308
 
       # Optional sender-address filter. Empty accepts packets from any device.
@@ -229,6 +290,8 @@ lidar {
       # Revolution boundary in radians, measured in the sensor azimuth convention.
       # A scan is emitted whenever azimuth crosses this angle. Expected range is
       # 0.0 (inclusive) to 2*pi (exclusive). Ratslang currently has no angle quantity type.
+      # @type number
+      # @finite true
       cut_angle = 0.0
 
       timestamp {
@@ -239,21 +302,30 @@ lidar {
         # Host timestamps packets when they are received and stamps a scan from its
         # first packet. Host is useful when sensor UTC is unavailable, but includes
         # network and scheduling latency. Both modes keep per-point firing offsets.
+        # @enum sensor, host
+        # @enum_case insensitive
         mode = Sensor
 
         # In Sensor mode, permit nearest-host-hour reconstruction when position/NMEA
         # UTC is unavailable. The host clock must be synchronized to the sensor's
         # time reference. This option has no effect in Host mode.
+        # @type boolean
         allow_host_hour_anchor = true
 
         # Maximum accepted absolute difference between reconstructed sensor UTC and
         # host UTC. Must be positive. Used by Sensor mode. Host mode already uses
         # host time.
+        # @type time
+        # @finite true
+        # @min_exclusive 0s
         max_host_skew = 20ms
 
         # Maximum positive duration to wait for usable packets or timestamps
         # during startup. If the configured clock mode cannot be satisfied,
         # Pelorus fails startup and says so.
+        # @type time
+        # @finite true
+        # @min_exclusive 0s
         startup_timeout = 15s
       }
     }
@@ -267,6 +339,8 @@ lidar {
       # M1 | M2 | E1 | Mx
       # These differ in packet length and per-point layout, so a mismatch is
       # rejected on the first packet rather than decoded into noise.
+      # @enum m1, m2, e1, mx
+      # @enum_case insensitive
       model = M1
 
       # Local IPv4 or IPv6 address on which to receive UDP packets. "0.0.0.0"
@@ -274,12 +348,18 @@ lidar {
       bind_address = "0.0.0.0"
 
       # UDP point-data (MSOP) port. Must be in 1..=65535 and differ from difop_port.
+      # @type integer
+      # @min 1
+      # @max 65535
       msop_port = 6699
 
       # UDP device-info (DIFOP) port. Must be in 1..=65535 and differ from msop_port.
       # The driver reads the echo mode from it, which decides whether Mx reports
       # one return per channel or two. Geometry never depends on it: these
       # sensors put the direction of every point in the data packet itself.
+      # @type integer
+      # @min 1
+      # @max 65535
       difop_port = 7788
 
       # Optional sender-address filter. Empty accepts packets from any device.
@@ -297,6 +377,8 @@ lidar {
         # to be time-synchronized, typically over PTP or GPS. Host stamps packets
         # when they are received, which includes network and scheduling latency.
         # Both modes keep per-point measurement offsets.
+        # @enum sensor, host
+        # @enum_case insensitive
         mode = Sensor
 
         # Largest accepted difference between sensor UTC and host UTC in Sensor
@@ -305,11 +387,17 @@ lidar {
         # at startup and only fails later, so the driver also measures the offset
         # over the first seconds of a run and logs what it saw, warning when the
         # observed drift would use up this budget within a minute.
+        # @type time
+        # @finite true
+        # @min_exclusive 0s
         max_host_skew = 20ms
 
         # Maximum positive duration to wait for usable packets during startup.
         # If the configured clock mode cannot be satisfied, Pelorus fails
         # startup and says so.
+        # @type time
+        # @finite true
+        # @min_exclusive 0s
         startup_timeout = 15s
       }
     }
@@ -323,6 +411,8 @@ lidar {
   # Selects the input message type when using mt_pubsub. Compressed requires the
   # default-enabled `compressed-pointcloud` Cargo feature. Other communication
   # backends always subscribe to PointCloud2.
+  # @enum compressed, pointcloud2
+  # @enum_case insensitive
   subscriber_mode = PointCloud2
 
   # @recommended
@@ -331,19 +421,26 @@ lidar {
   # at different times. NoTimestamp treats the scan as if it were instantaneous,
   # which visibly smears geometry as soon as the platform moves.
   # Velodyne | Ouster | Livox | Robosense | LivoxMid360 | Hesai | Blickfeld | SickMultiScan | NoTimestamp
+  # @enum velodyne, ouster, livox, livoxmid360, robosense, hesai, blickfeld, sickmultiscan, notimestamp, no_timestamp, genericnotimestamp, generic_no_timestamp
+  # @enum_case insensitive
   vendor = NoTimestamp
 
   # @recommended
   # Reliable | BestEffort | SystemDefault
   # Anything other than Reliable drops messages under load and is not supported.
+  # @enum besteffort, reliable, systemdefault
+  # @enum_case insensitive
   qos.reliability = Reliable
 
   # How far the filter trusts the scan match against the map. Lower values pull
   # the estimate harder towards the registration result.
+  # @type number
+  # @finite true
   covariance = 0.001
 
   # Use incoming LiDAR messages as a forced synchronization trigger. This costs
   # accuracy, but some surrounding libraries work better with it.
+  # @type boolean
   as_sync = false
 }
 
@@ -358,6 +455,8 @@ imu {
     # Disabled keeps the existing external IMU input configured by imu.topic.
     # Xsens and Ouster enable in-process drivers and require Pelorus to be built with
     # their matching feature (or the aggregate `sensor-drivers` feature).
+    # @enum disabled, xsens, ouster
+    # @enum_case insensitive
     type = Disabled
 
     xsens {
@@ -368,6 +467,9 @@ imu {
       port = "/dev/ttyUSB0"
 
       # Serial baud rate in bits per second. Must be positive and must match the device.
+      # @type integer
+      # @min 1
+      # @max 4294967295
       baudrate = 115200
 
       # Frame assigned to native IMU measurements.
@@ -375,18 +477,24 @@ imu {
 
       # Requested MTData2 output frequency in Hz when configure_device is true.
       # Must be in 1..=2000 and supported by the connected Xsens model and baud rate.
+      # @type integer
+      # @min 1
+      # @max 2000
       output_rate = 400
 
       # Enu | Ned | Nwu
       # World-coordinate convention requested for orientation output:
       # Enu = East-North-Up, Ned = North-East-Down, Nwu = North-West-Up.
       # Acceleration and rate-of-turn remain expressed in the IMU body frame.
+      # @enum enu, ned, nwu
+      # @enum_case insensitive
       coordinate_system = Enu
 
       # If true, put the device in configuration mode, request UTC, calibrated
       # acceleration, rate-of-turn, and quaternion MTData2 fields at output_rate,
       # then return it to measurement mode. If false, the device must already emit
       # all required fields in compatible precision and coordinates.
+      # @type boolean
       configure_device = true
 
       timestamp {
@@ -395,14 +503,22 @@ imu {
         # whose clock differs from the host beyond max_host_skew. Host timestamps a
         # complete decoded frame at receipt time and is useful before GNSS/UTC becomes
         # valid, but includes serial transport and scheduling latency.
+        # @enum utc, host
+        # @enum_case insensitive
         mode = Utc
 
         # Maximum accepted absolute difference between Xsens UTC and host UTC.
         # Must be positive. Used by Utc mode. Host mode already uses host time.
+        # @type time
+        # @finite true
+        # @min_exclusive 0s
         max_host_skew = 20ms
 
         # Maximum positive duration to wait for usable MTData2 input during
         # startup. If Utc cannot be satisfied, Pelorus fails startup and says so.
+        # @type time
+        # @finite true
+        # @min_exclusive 0s
         startup_timeout = 15s
       }
     }
@@ -417,11 +533,15 @@ imu {
   # @recommended
   # Reliable | BestEffort | SystemDefault
   # Anything other than Reliable drops messages under load and is not supported.
+  # @enum besteffort, reliable, systemdefault
+  # @enum_case insensitive
   qos.reliability = Reliable
 
   # How long to collect IMU measurements before the first scan is processed.
   # These samples give the filter its initial gravity direction, so the platform
   # has to stand still for at least this long after start-up.
+  # @type time
+  # @finite true
   initial_setup = 100ms
 
   # @recommended
@@ -433,12 +553,17 @@ imu {
 
     # Look the transform up in the TF tree instead of using the values below.
     # The lookup happens once, when the first IMU message arrives.
+    # @type boolean
     use_tf_tree = false
 
     # Transform from the LiDAR frame into the IMU frame, so a point in LiDAR
     # coordinates becomes a point in IMU coordinates. `dedrunk extrinsics`
     # prints both values in this form, ready to paste.
+    # @type array<length>
+    # @finite true
     translation = [-6.253mm, 11.775mm, 28.535mm]
+    # @type array<array<number>>
+    # @finite true
     rotation = [  [1.0, 0.0, 0.0],
                   [0.0, 1.0, 0.0],
                   [0.0, 0.0, 1.0] ]
@@ -452,6 +577,7 @@ imu {
     # straight it will drift along the unobservable directions and get worse.
     # Leave it off unless you know the motion excites all axes, and check the
     # result against what you started with.
+    # @type boolean
     estimate_online = false
   }
 
@@ -465,6 +591,7 @@ imu {
   # nothing to carry the estimate through a stretch where the geometry is
   # degenerate. The covariances below stop describing sensor noise and start
   # describing how much the constant-twist model can be trusted, so raise them.
+  # @type boolean
   lidar_only = false
 
   # CreateOrientationOnly | FilterAccelerationAndCreateOrientation | FilterAccelerationOnly | Disable
@@ -472,10 +599,14 @@ imu {
   # at Disable when the driver or the device already filters, which is the usual
   # case. The result is published on output.imu_ahrs_filtered_topic and is never
   # fed back into the odometry.
+  # @enum createorientationonly, filteraccelerationandcreateorientation, filteraccelerationonly, disable
+  # @enum_case insensitive
   ahrs_filtering.method = Disable
 
   # Magnitude of gravity in m/s^2, used as the starting point for the filter.
   # 9.81 is close enough everywhere on Earth. The filter refines it from there.
+  # @type number
+  # @finite true
   gravity = 9.81
 
   # How far the filter trusts the IMU between LiDAR corrections. Larger values
@@ -484,16 +615,24 @@ imu {
   # The defaults are the FAST-LIO tuning values and are not a noise model of any
   # particular sensor. `calibration.parameter_file.use_noise` below replaces them
   # with figures measured from your own IMU.
+  # @type number
+  # @finite true
   covariance_gyroscope = 0.1
 
   # Process noise on the gyroscope bias, i.e. how fast the filter lets that bias
   # wander.
+  # @type number
+  # @finite true
   covariance_gyroscope_bias = 0.0001
 
   # How far the filter trusts the accelerometer between LiDAR corrections.
+  # @type number
+  # @finite true
   covariance_acceleration = 0.1
 
   # Process noise on the accelerometer bias.
+  # @type number
+  # @finite true
   covariance_acceleration_bias = 0.0001
 
   # Corrections applied to every IMU sample before the filter sees it.
@@ -502,9 +641,12 @@ imu {
     # stand still while the first `samples` measurements arrive. Stored bias
     # figures drift with temperature and between power cycles, so a value
     # measured at start-up is more accurate than one read from a file.
+    # @type boolean
     gyroscope = true
 
     # How many measurements the start-up bias estimate averages over.
+    # @type integer
+    # @min 0
     gyroscope.samples = 100
 
     # Kalibr-format IMU calibration to apply to every sample: scale factors,
@@ -524,6 +666,7 @@ imu {
     # Off by default because it moves numbers the odometry is tuned around.
     # Both the derived and the configured values are logged at startup, so the
     # ratio for this sensor is visible before you commit to it.
+    # @type boolean
     parameter_file.use_noise = false
 
     # Seconds the IMU clock runs ahead of the Lidar clock, as reported by
@@ -533,6 +676,8 @@ imu {
     # This is a constant skew between the two sensors' clocks, not jitter. It
     # matters most while turning: at 1 rad/s, 10 ms of skew smears the scan by
     # about half a degree, which the registration then has to absorb.
+    # @type time
+    # @finite true
     time_offset = 0s
 
     # Multiplier on the measured densities before they become covariances.
@@ -542,6 +687,9 @@ imu {
     # jitter that dominate it, so the honest noise level in operation is
     # higher than the one on the bench, and no amount of measuring will tell
     # you by how much. The Kalibr wiki suggests 10x or more for MEMS parts.
+    # @type number
+    # @finite true
+    # @min_exclusive 0
     noise_inflation = 10.0
   }
 
@@ -558,6 +706,8 @@ wheel {
 
   # Reliable | BestEffort | SystemDefault
   # QoS the wheel odometry topic is subscribed with.
+  # @enum besteffort, reliable, systemdefault
+  # @enum_case insensitive
   qos.reliability = Reliable
 
   # Orientation of the wheel odometry frame relative to the IMU. The velocity
@@ -567,9 +717,12 @@ wheel {
   to_imu_transform {
     # Look the rotation up in the TF tree instead of using the value below. The
     # lookup happens once, when the first odometry message arrives.
+    # @type boolean
     use_tf_tree = false
 
     # Rotation from the wheel odometry frame into the IMU frame.
+    # @type array<array<number>>
+    # @finite true
     rotation = [ [1.0, 0.0, 0.0],
                  [0.0, 1.0, 0.0],
                  [0.0, 0.0, 1.0] ]
@@ -581,17 +734,23 @@ wheel {
 
   # Standard deviation of the kinematic constraints applied during undistortion.
   # Lower values constrain harder.
+  # @type number
+  # @finite true
   kinematic_constraint_std = 0.001
 
   # @recommended
   # Full3D | Differential | Holonomic2D | Ackermann
   # Which directions of motion the platform is capable of. Anything other than
   # Full3D constrains the IEKF accordingly.
+  # @enum Full3D, Differential, DifferentialDrive, Wheeled2D, Holonomic2D, Holonomic, Ackermann
+  # @enum_case insensitive
   kinematic_model = Full3D
   
   # @recommended
   # Offset from the IMU to the centre of the rear axle, in the IMU frame. Only
   # used when kinematic_model is Ackermann.
+  # @type array<length>
+  # @finite true
   ackermann.imu_to_rear_axle = [0.0m, 0.0m, 0.0m]
 }
 
@@ -604,12 +763,16 @@ output {
   # Lidar | ImuAndLidar
   # How often odometry is published. ImuAndLidar adds low-latency IMU predictions
   # between the LiDAR corrections, published at the IMU rate.
+  # @enum lidar, imuandlidar, imu_and_lidar
+  # @enum_case insensitive
   odometry_rate = Lidar
 
   # PointCloud2 | Compressed
   # Selects the registered-cloud message type when using mt_pubsub. Compressed
   # requires the default-enabled `compressed-pointcloud` Cargo feature. The topic
   # name stays "registered" in either mode.
+  # @enum compressed, pointcloud2
+  # @enum_case insensitive
   publisher_mode = PointCloud2
 
   # What Pelorus prints while it runs.
@@ -617,17 +780,23 @@ output {
     # @recommended
     # Show the interactive TUI with position, velocity, and performance metrics.
     # Set to false for non-interactive sessions.
+    # @type boolean
     ui = true
 
     # Print timing metrics for each pipeline stage. This is what to turn on when
     # Pelorus is not keeping up with the sensor.
+    # @type boolean
     debug = false
 
     # Refresh rate of the debug output, in frames per second.
+    # @type integer
+    # @min 0
     debug_fps = 1
 
     # Shortest interval at which a repeating warning is printed again, so that a
     # condition holding for a whole run does not fill the terminal.
+    # @type time
+    # @finite true
     warning_debounce = 1s
      
     # @recommended
@@ -652,10 +821,15 @@ output {
     from_lidar_transform {
       # Look the transform up in the TF tree instead of using the values below.
       # The lookup happens once, when the first sensor message arrives.
+      # @type boolean
       use_tf_tree = false
 
       # Pose of the Lidar in the base_link frame.
+      # @type array<length>
+      # @finite true
       translation = [0.0mm, 0.0mm, 0.0mm]
+      # @type array<array<number>>
+      # @finite true
       rotation = [ [1.0, 0.0, 0.0],
                    [0.0, 1.0, 0.0],
                    [0.0, 0.0, 1.0] ]
@@ -664,6 +838,7 @@ output {
 
   # Live visualization. Pelorus sends to a Rerun viewer that is already running.
   # It never starts one itself. Requires a build with the `rerun` Cargo feature.
+  # @type boolean
   rerun = false
   rerun {
     # Address of the already running Rerun server to stream visualizations to.
@@ -671,37 +846,54 @@ output {
 
     # Periodic snapshot of the whole registration map, colored by relevance score.
     # Off by default. Large maps can be expensive to render.
+    # @type boolean
     map = false
     map {
       # Shortest interval between two snapshots.
+      # @type time
+      # @finite true
+      # @min 0s
       publish_interval = 1s
 
       # Size of the ellipsoid drawn per voxel, scaled by that voxel's covariance.
+      # @type number
+      # @finite true
+      # @min_exclusive 0
       visual_scale = 3.0
     }
   }
 
   # Reliable | BestEffort | SystemDefault
   # QoS of the LiDAR-rate odometry topic.
+  # @enum besteffort, reliable, systemdefault
+  # @enum_case insensitive
   lio_odometry_msg_qos = Reliable
 
   # Reliable | BestEffort | SystemDefault
   # QoS of the LiDAR-rate path topic. The path is a visualization aid, so
   # dropping messages under load is usually acceptable.
+  # @enum besteffort, reliable, systemdefault
+  # @enum_case insensitive
   lio_path_msg_qos = SystemDefault
 
   # Reliable | BestEffort | SystemDefault
   # QoS of the IMU-rate odometry topic, published when output.odometry_rate is
   # ImuAndLidar.
+  # @enum besteffort, reliable, systemdefault
+  # @enum_case insensitive
   imu_odometry_msg_qos = SystemDefault
 
   # Reliable | BestEffort | SystemDefault
   # QoS of the IMU-rate path topic.
+  # @enum besteffort, reliable, systemdefault
+  # @enum_case insensitive
   imu_path_msg_qos = SystemDefault
 
   # Reliable | BestEffort | SystemDefault
   # QoS of the AHRS-filtered IMU topic, published when imu.ahrs_filtering.method
   # is anything but Disable.
+  # @enum besteffort, reliable, systemdefault
+  # @enum_case insensitive
   imu_ahrs_filtered_msg_qos = Reliable
 
   # Topic the AHRS-filtered IMU output is published on, relative to
@@ -755,14 +947,17 @@ output {
 offline {
   # Stay up after the bag is processed, still publishing and serving, so a
   # viewer can keep showing the result. Exit with Ctrl-C.
+  # @type boolean
   keep_open = false
 
   # Let Minot and Pelorus pub/sub use non-local networking, for example to
   # attach a viewer from another machine.
+  # @type boolean
   open_router = false
 
   # Keep the blocks of a streamed Marina dataset and promote it locally.
   # False streams without retaining anything.
+  # @type boolean
   cache_stream = true
 }
 
@@ -776,6 +971,7 @@ parallelism {
   num_threads = 3
 
   # Force CPU-only processing regardless of available GPU backends.
+  # @type boolean
   cpu_only = false
 
   # @recommended
@@ -787,12 +983,28 @@ parallelism {
   #
   # num_threads = 1 still runs the rayon implementation with one thread. Setting
   # this to SingleCore is what actually takes rayon out of the path.
+  # @enum auto, singlecore, rayon, single_core, single-core
+  # @enum_case insensitive
   execution_mode = Auto
+
+  # Pipelined | Sequential
+  # Pipelined receives input, preprocesses, synchronizes and registers on separate
+  # threads, so consecutive scans overlap. Sequential receives all input on one
+  # thread in arrival order and processes each scan there before taking the next
+  # message, which keeps the processing order fixed.
+  # @enum pipelined, sequential
+  # @enum_case insensitive
+  pipelining = Pipelined
 
   # Number of standard errors by which one CPU execution mode must beat the other
   # before Pelorus decides the execution mode for the next phase.
+  # @type number
+  # @finite true
+  # @min 0
   decision_threshold_stddevs = 2.0
 
   # Number of measurements collected for each mode before a decision is allowed.
+  # @type integer
+  # @min 1
   decision_samples_per_mode = 20
 }

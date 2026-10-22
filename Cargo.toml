@@ -17,6 +17,9 @@ members = [
   "pelorus_drivers",
   "pelorus_localmap",
   "glim_integration/pelorus_glim_odometry",
+  "pelorus_wasm",
+  "pelorus_tui",
+  "web",
 ]
 resolver = "3"
 
@@ -46,6 +49,7 @@ rust-version = "1.96.0"
 [workspace.dependencies]
 pelorus = { package = "pelorus_sdk", path = "pelorus", version = "0.0.9", default-features = false }
 pelorus_core = { path = "pelorus_core", version = "0.0.9" }
+pelorus_tui = { path = "pelorus_tui", version = "0.0.9" }
 pelorus_protocol = { path = "pelorus_protocol", version = "0.0.9" }
 pelorus_reg = { path = "pelorus_reg", version = "0.0.9", default-features = false }
 pelorus_sync = { path = "pelorus_sync", version = "0.0.9", default-features = false }
@@ -64,14 +68,14 @@ ros_pointcloud2 = { version = "1.0.0-rc.5", features = [
   "ros2_interfaces_jazzy_rkyv",
   "nalgebra",
 ] }
-ratslang = "0.4.3"
-mt_pubsub = "0.13.0"
-mt_service = "0.13.0"
+ratslang = { path = "../ratslang/ratslang", features = ["serde"] }
+mt_pubsub = { version = "0.13.0", default-features = false }
+mt_service = { version = "0.13.0", default-features = false }
 mt_log = { version = "0.13.0", features = ["tui", "env"] }
-mt_rat = "0.13.0"
+mt_rat = { version = "0.13.0", default-features = false }
 cloudini = { version = "0.3.2", default-features = false, features = ["ros"] }
 imu-calib = "0.3"
-ros2-interfaces-jazzy-serde = { version = "0.0.5", features = [
+ros2-interfaces-jazzy-serde = { version = "0.0.5", default-features = false, features = [
   "std_msgs",
   "geometry_msgs",
   "nav_msgs",
@@ -134,7 +138,7 @@ either = "1.15"
 log = "0.4"
 env_logger = "0.11.8"
 libc = "0.2"
-rand = "0.9.2"
+rand = { version = "0.9.2", default-features = false }
 rand_pcg = "0.9"
 rand_distr = "0.5.1"
 nohash-hasher = "0.2.0"
@@ -177,7 +181,7 @@ cbindgen = "0.29"
 serde_json = "1.0.149"
 mimalloc = { version = "0.1.48", default-features = false }
 colorous = "1.0"
-ratatui = "0.30"
+ratatui = { version = "0.30", default-features = false, features = ["std", "layout-cache", "underline-color"] }
 crossterm = "0.29"
 num_cpus = "1.16"
 ndarray = "0.17"
@@ -212,13 +216,15 @@ inherits = "release"
 opt-level = 3
 
 [patch.crates-io]
+# Message-only builds avoid the ROS client and DDS runtime.
+ros2-interfaces-jazzy-serde = { path = "../ros2-interfaces-jazzy-serde" }
 # imu-calib 0.4 is not published yet; drop this once it is.
 # imu-calib = { path = "../imu-calib" }
 # ros_pointcloud2 = { path = "../ros_pointcloud2/ros_pointcloud2" }
-mt_pubsub = { git = "https://git.steado.tech/minot.git", branch = "main" }
-mt_service = { git = "https://git.steado.tech/minot.git", branch = "main" }
-mt_rat = { git = "https://git.steado.tech/minot.git", branch = "main" }
-mt_log = { git = "https://git.steado.tech/minot.git", branch = "main" }
+mt_pubsub = { path = "../minot/mt_pubsub" }
+mt_service = { path = "../minot/mt_service" }
+mt_rat = { path = "../minot/mt_rat" }
+mt_log = { path = "../minot/mt_log" }
 transforms_io = { git = "https://git.steado.tech/transforms_io.git", branch = "main" }
 # For local development against sibling checkouts:
 # mt_pubsub = { path = "../minot/mt_pubsub" }

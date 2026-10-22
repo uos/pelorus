@@ -17,8 +17,8 @@ pelorus_syncio = { workspace = true, default-features = false }
 pelorus_cuda = { optional = true, workspace = true }
 pelorus_metal = { optional = true, workspace = true }
 pelorus_vulkan = { optional = true, workspace = true }
-pelorus_sync = { workspace = true, default-features = false }
-pelorus_reg = { workspace = true, default-features = false }
+pelorus_sync = { workspace = true, default-features = false, features = ["threads"] }
+pelorus_reg = { workspace = true, default-features = false, features = ["threads"] }
 pelorus_localmap = { workspace = true, default-features = false }
 ros_pointcloud2.workspace = true
 ros2-client = { workspace = true, optional = true }
@@ -51,7 +51,8 @@ rustc-hash.workspace = true
 ratslang.workspace = true
 petname.workspace = true
 colorous.workspace = true
-ratatui.workspace = true
+ratatui = { workspace = true, features = ["crossterm"] }
+pelorus_tui.workspace = true
 crossterm.workspace = true
 num_cpus.workspace = true
 libc.workspace = true
@@ -118,6 +119,14 @@ mt_pubsub = [
 # Cloudini-compressed point-cloud transport for mt_pubsub. Uses the pure-Rust codec.
 compressed-pointcloud = ["mt_pubsub", "pelorus_syncio/compressed-pointcloud"]
 
+# Restore additional Zenoh transports and authentication when TCP is insufficient.
+minot-full-transports = [
+  "mt_pubsub?/zenoh-defaults",
+  "mt_service?/zenoh-defaults",
+  "mt_rat?/zenoh-defaults",
+  "pelorus_syncio/minot-full-transports",
+]
+
 # Pure Rust ROS 2-compatible communication over Zenoh via Hiroz.
 hiroz = [
   "dep:hiroz",
@@ -160,6 +169,8 @@ vulkan = [
 kdtree = ["pelorus_reg/nn_kdt"]
 
 # Ablation: plain LRU local-map eviction (least recently updated first) instead of age / support relevance. CPU maps only.
+# Seed the map's neighbor sampling from the OS instead of a fixed seed.
+os-rng-seed = ["pelorus_reg/os-rng-seed"]
 lru-eviction = ["pelorus_reg/lru-eviction", "pelorus_localmap/lru-eviction"]
 plain-update = ["pelorus_reg/plain-update", "pelorus_localmap/plain-update"]
 

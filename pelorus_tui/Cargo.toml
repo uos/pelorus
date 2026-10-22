@@ -1,0 +1,17 @@
+[package]
+name = "pelorus_tui"
+description = "Status view of Pelorus Lidar-Inertial Odometry, drawn with ratatui."
+publish = false
+edition.workspace = true
+include.workspace = true
+keywords.workspace = true
+license.workspace = true
+repository.workspace = true
+version.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+pelorus_core.workspace = true
+ratatui.workspace = true
+mt_log.workspace = true

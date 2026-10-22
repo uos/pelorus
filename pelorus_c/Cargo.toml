@@ -16,7 +16,7 @@ name = "pelorus"
 crate-type = ["cdylib", "staticlib"]
 
 [dependencies]
-pelorus = { workspace = true, default-features = false }
+pelorus = { workspace = true, default-features = false, features = ["threads"] }
 log.workspace = true
 
 [build-dependencies]

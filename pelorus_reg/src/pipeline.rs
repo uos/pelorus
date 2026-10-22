@@ -1,12 +1,11 @@
 use std::sync::{Arc, Mutex};
 #[cfg(feature = "processing-time-export")]
-use std::time::Instant;
+use pelorus_core::Instant;
 
 use crate::{
     ActiveBackend, Registration,
     registration::{RegistrationSettings, RegistrationState},
 };
-use anyhow::anyhow;
 use either::Either;
 use nalgebra::{Isometry3, Translation3, UnitQuaternion};
 use pelorus_core::{
@@ -15,8 +14,10 @@ use pelorus_core::{
 };
 use pelorus_localmap::{IVoxHashMap, IVoxNearbyType};
 use pelorus_sync::{
-    ImuInitCallback, ImuSyncMode, LocatedBufferView, Synchronizer, SynchronizerHooks,
+    ImuInitCallback, ImuSyncMode, LocatedBufferView, SteppedSynchronizer, SteppedSynchronizerHooks,
 };
+#[cfg(feature = "threads")]
+use pelorus_sync::{Synchronizer, SynchronizerHooks};
 
 /// How densely the constant-twist model is sampled into IMU messages. It only
 /// has to be fine enough that the rotation between two samples stays small.
@@ -583,6 +584,19 @@ impl Pipeline {
         }))
     }
 
+    fn imu_sync_mode(&self) -> ImuSyncMode {
+        if self.config.imu_params.lidar_only {
+            ImuSyncMode::Disabled { lossless: false }
+        } else if self.config.sync_params.lidar_as_sync {
+            ImuSyncMode::LidarDriven
+        } else {
+            ImuSyncMode::Continuous
+        }
+    }
+
+    /// Synchronizer that runs on its own threads and hands each synchronized
+    /// scan to the returned channel.
+    #[cfg(feature = "threads")]
     pub fn create_sync(
         &self,
         ready_for_next: Option<std::sync::mpsc::Receiver<u64>>,
@@ -593,14 +607,7 @@ impl Pipeline {
         let imu_calib = params.imu.calibration.clone();
         let undistort = Some(self.build_undistort());
         let init_guess = Some(self.build_init_guess());
-
-        let imu_sync_mode = if self.config.imu_params.lidar_only {
-            ImuSyncMode::Disabled { lossless: false }
-        } else if params.lidar_as_sync {
-            ImuSyncMode::LidarDriven
-        } else {
-            ImuSyncMode::Continuous
-        };
+        let imu_sync_mode = self.imu_sync_mode();
         let mut sync = Synchronizer::create(
             gravity,
             madgwick_filter,
@@ -618,8 +625,24 @@ impl Pipeline {
 
         let rx = sync
             .get_chan()
-            .ok_or_else(|| anyhow!("Synchronizer channel is not available"))?;
+            .ok_or_else(|| anyhow::anyhow!("Synchronizer channel is not available"))?;
 
         Ok((sync, rx))
+    }
+
+    /// Synchronizer that runs on the calling thread. Register every scan it
+    /// returns before asking it for the next one.
+    pub fn create_stepped_sync(&self) -> anyhow::Result<SteppedSynchronizer> {
+        let params = &self.config.sync_params;
+        SteppedSynchronizer::create(
+            params,
+            params.lidar_vendor,
+            self.imu_sync_mode(),
+            SteppedSynchronizerHooks {
+                imu_pose_prediction_undistort: Some(self.build_undistort()),
+                imu_pose_prediction_init_guess: Some(self.build_init_guess()),
+                ..Default::default()
+            },
+        )
     }
 }

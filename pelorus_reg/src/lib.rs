@@ -10,7 +10,9 @@ pub mod lidar_only;
 pub use backend::ActiveBackend;
 pub mod eqf;
 pub mod imu;
+pub mod lio;
 pub mod pipeline;
+#[cfg(feature = "threads")]
 pub mod realtime;
 pub mod registration;
 use anyhow::Result;

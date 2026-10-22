@@ -17,8 +17,8 @@ crate-type = ["cdylib"]
 
 [dependencies]
 pelorus_core.workspace = true
-pelorus_reg = { workspace = true, default-features = false }
-pelorus_sync = { workspace = true, default-features = false }
+pelorus_reg = { workspace = true, default-features = false, features = ["threads"] }
+pelorus_sync = { workspace = true, default-features = false, features = ["threads"] }
 pelorus_localmap = { workspace = true, default-features = false }
 ros_pointcloud2.workspace = true
 ros2-interfaces-jazzy-serde.workspace = true

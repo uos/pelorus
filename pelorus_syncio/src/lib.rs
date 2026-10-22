@@ -1,3 +1,5 @@
+#[cfg(feature = "mt_pubsub")]
+pub mod sequential;
 #[cfg(feature = "ros2-client")]
 pub mod tf;
 #[cfg(feature = "hiroz")]
@@ -15,12 +17,6 @@ use log::{debug, error, info, warn};
 use pelorus_core::OdomMsg;
 #[cfg(feature = "mt_pubsub")]
 use pelorus_core::PointCloudMode;
-#[cfg(any(
-    feature = "ros2-client",
-    feature = "mt_pubsub",
-    feature = "r2r",
-    feature = "hiroz"
-))]
 use pelorus_core::SyncProcessedCloud;
 #[cfg(feature = "native-drivers")]
 use pelorus_core::{
@@ -28,8 +24,7 @@ use pelorus_core::{
     time_msg_from_secs,
 };
 use pelorus_core::{
-    ImuMsg, ImuPredictor, ImuPredictorUndistort, LidarVendor, PointXYZIT, SyncNodeParameters,
-    SyncParameters, timing::RuntimeEvaluator,
+    ImuMsg, ImuPredictor, ImuPredictorUndistort, LidarVendor, SyncNodeParameters, SyncParameters,
 };
 #[cfg(feature = "native-drivers")]
 use pelorus_drivers::{DriverError, DriverManager, RawLidarScan, SensorIngress, SensorOutputSink};
@@ -63,9 +58,7 @@ use hiroz::node::ZNode;
 #[cfg(feature = "hiroz")]
 use hiroz_msgs::{
     builtin_interfaces::Time,
-    geometry_msgs::{
-        Point, Pose, PoseWithCovariance, Quaternion, Twist, TwistWithCovariance, Vector3,
-    },
+    geometry_msgs::{Quaternion, Vector3},
     nav_msgs::Odometry,
     sensor_msgs::{Imu, PointCloud2},
     std_msgs::Header,
@@ -82,9 +75,7 @@ use pelorus_sync::PreprocessingPointCloud;
 #[cfg(feature = "r2r")]
 use r2r::{
     builtin_interfaces::msg::Time,
-    geometry_msgs::msg::{
-        Point, Pose, PoseWithCovariance, Quaternion, Twist, TwistWithCovariance, Vector3,
-    },
+    geometry_msgs::msg::{Quaternion, Vector3},
     nav_msgs::msg::Odometry,
     sensor_msgs::msg::{Imu, PointCloud2},
     std_msgs::msg::Header,
@@ -258,9 +249,7 @@ use ros2_client::ros2;
 ))]
 use ros2_interfaces_jazzy_rkyv::{
     builtin_interfaces::msg::Time,
-    geometry_msgs::msg::{
-        Point, Pose, PoseWithCovariance, Quaternion, Twist, TwistWithCovariance, Vector3,
-    },
+    geometry_msgs::msg::{Quaternion, Vector3},
     nav_msgs::msg::Odometry,
     sensor_msgs::msg::{Imu, PointCloud2},
     std_msgs::msg::Header,
@@ -268,9 +257,7 @@ use ros2_interfaces_jazzy_rkyv::{
 #[cfg(all(feature = "ros2-client", not(feature = "r2r")))]
 use ros2_interfaces_jazzy_serde::{
     builtin_interfaces::msg::Time,
-    geometry_msgs::msg::{
-        Point, Pose, PoseWithCovariance, Quaternion, Twist, TwistWithCovariance, Vector3,
-    },
+    geometry_msgs::msg::{Quaternion, Vector3},
     nav_msgs::msg::Odometry,
     sensor_msgs::msg::{Imu, PointCloud2},
     std_msgs::msg::Header,
@@ -541,6 +528,130 @@ impl State {
     }
 }
 
+/// Subscribe to the configured cloud topic in its configured encoding.
+#[cfg(feature = "mt_pubsub")]
+async fn mt_cloud_subscriber(
+    node: &Node,
+    node_params: &SyncNodeParameters,
+) -> anyhow::Result<MtCloudSubscriber> {
+    match node_params.cloud_subscriber_mode {
+        PointCloudMode::PointCloud2 => Ok(MtCloudSubscriber::PointCloud2(
+            node.create_subscriber::<PointCloud2>(
+                node_params.cloud_src_topic.clone(),
+                10,
+                qos_to_mt(node_params.cloud_qos),
+            )
+            .await?,
+        )),
+        #[cfg(feature = "compressed-pointcloud")]
+        PointCloudMode::Compressed => Ok(MtCloudSubscriber::Compressed(
+            node.create_subscriber::<CompressedPointCloud2>(
+                node_params.cloud_src_topic.clone(),
+                10,
+                qos_to_mt(node_params.cloud_qos),
+            )
+            .await?,
+        )),
+        #[cfg(not(feature = "compressed-pointcloud"))]
+        PointCloudMode::Compressed => Err(anyhow!(
+            "Compressed point-cloud input requires the 'compressed-pointcloud' feature"
+        )),
+    }
+}
+
+/// The next cloud of `subscriber`, or `None` once it closed. A local-only
+/// subscriber reads the archived message in place.
+#[cfg(feature = "mt_pubsub")]
+async fn next_mt_cloud(
+    subscriber: &mut MtCloudSubscriber,
+    local_only: bool,
+) -> Option<IncomingMtPointCloud> {
+    match subscriber {
+        MtCloudSubscriber::PointCloud2(subscriber) if local_only => subscriber
+            .next_archived()
+            .await
+            .map(IncomingMtPointCloud::Archived),
+        MtCloudSubscriber::PointCloud2(subscriber) => {
+            subscriber.next().await.map(IncomingMtPointCloud::Owned)
+        }
+        #[cfg(feature = "compressed-pointcloud")]
+        MtCloudSubscriber::Compressed(subscriber) => subscriber
+            .next()
+            .await
+            .map(IncomingMtPointCloud::Compressed),
+    }
+}
+
+/// The header and preprocessing source of a received mt_pubsub cloud.
+#[cfg(feature = "mt_pubsub")]
+fn mt_cloud_source(
+    msg: IncomingMtPointCloud,
+) -> anyhow::Result<(HeaderMsg, Box<dyn PreprocessingPointCloud>)> {
+    Ok(match msg {
+        IncomingMtPointCloud::Owned(msg) => {
+            let msg = impl_ros2_interfaces_jazzy_rkyv::to_pointcloud2_msg(msg);
+            let header = msg.header.clone();
+            (header, Box::new(msg))
+        }
+        IncomingMtPointCloud::Archived(message) => {
+            let header = {
+                let archived = message.archived();
+                ros_pointcloud2::ros::HeaderMsg {
+                    seq: 0,
+                    stamp: ros_pointcloud2::ros::TimeMsg {
+                        sec: archived.header.stamp.sec.into(),
+                        nanosec: archived.header.stamp.nanosec.into(),
+                    },
+                    frame_id: archived.header.frame_id.as_str().to_owned(),
+                }
+            };
+            (header, Box::new(ArchivedPointCloud { message }))
+        }
+        #[cfg(feature = "compressed-pointcloud")]
+        IncomingMtPointCloud::Compressed(message) => {
+            let msg = decompress_cloud(message)
+                .map_err(|error| anyhow!("Failed to decompress Cloudini point cloud: {error}"))?;
+            let header = msg.header.clone();
+            (header, Box::new(msg))
+        }
+    })
+}
+
+/// A received mt_pubsub wheel odometry. The twist and its covariance stay in
+/// the odometry frame, which `frame_to_imu` rotates into the IMU frame, so the
+/// filter can form a consistent body-velocity residual.
+#[cfg(feature = "mt_pubsub")]
+fn mt_odom_to_sync(msg: Odometry, frame_to_imu: nalgebra::Matrix3<f64>) -> pelorus_core::OdomMsg {
+    pelorus_core::OdomMsg {
+        twist_linear: nalgebra::Vector3::new(
+            msg.twist.twist.linear.x,
+            msg.twist.twist.linear.y,
+            msg.twist.twist.linear.z,
+        ),
+        twist_angular: nalgebra::Vector3::new(
+            msg.twist.twist.angular.x,
+            msg.twist.twist.angular.y,
+            msg.twist.twist.angular.z,
+        ),
+        twist_cov: msg.twist.covariance,
+        twist_frame_to_imu: frame_to_imu,
+        stamp: pelorus_sync::TimeMsg {
+            sec: msg.header.stamp.sec,
+            nanosec: msg.header.stamp.nanosec,
+        },
+    }
+}
+
+/// The odometry-to-IMU rotation of a wheel-odometry message.
+#[cfg(feature = "mt_pubsub")]
+fn wheel_to_imu_rotation(params: &SyncParameters) -> nalgebra::Matrix3<f64> {
+    let ext = nalgebra::Isometry3::from_parts(
+        nalgebra::Translation3::new(0.0, 0.0, 0.0),
+        nalgebra::UnitQuaternion::from_matrix(&params.wheel_to_imu_rotation),
+    );
+    *ext.rotation.to_rotation_matrix().matrix()
+}
+
 #[cfg(any(
     feature = "ros2-client",
     feature = "mt_pubsub",
@@ -569,34 +680,7 @@ fn cloud_callback(
     #[cfg(feature = "ros2-client")]
     let in_msg = impl_ros2_interfaces_jazzy_serde::to_pointcloud2_msg(msg);
     #[cfg(feature = "mt_pubsub")]
-    let (orig_header, in_msg): (_, Box<dyn PreprocessingPointCloud>) = match msg {
-        IncomingMtPointCloud::Owned(msg) => {
-            let msg = impl_ros2_interfaces_jazzy_rkyv::to_pointcloud2_msg(msg);
-            let header = msg.header.clone();
-            (header, Box::new(msg))
-        }
-        IncomingMtPointCloud::Archived(message) => {
-            let header = {
-                let archived = message.archived();
-                ros_pointcloud2::ros::HeaderMsg {
-                    seq: 0,
-                    stamp: ros_pointcloud2::ros::TimeMsg {
-                        sec: archived.header.stamp.sec.into(),
-                        nanosec: archived.header.stamp.nanosec.into(),
-                    },
-                    frame_id: archived.header.frame_id.as_str().to_owned(),
-                }
-            };
-            (header, Box::new(ArchivedPointCloud { message }))
-        }
-        #[cfg(feature = "compressed-pointcloud")]
-        IncomingMtPointCloud::Compressed(message) => {
-            let msg = decompress_cloud(message)
-                .map_err(|error| anyhow!("Failed to decompress Cloudini point cloud: {error}"))?;
-            let header = msg.header.clone();
-            (header, Box::new(msg))
-        }
-    };
+    let (orig_header, in_msg) = mt_cloud_source(msg)?;
     #[cfg(feature = "r2r")]
     let in_msg = impl_r2r::to_pointcloud2_msg(msg);
     #[cfg(feature = "hiroz")]
@@ -1217,26 +1301,6 @@ pub fn qos_to_hiroz_static() -> hiroz::qos::QosProfile {
     }
 }
 
-#[derive(Debug)]
-pub struct Tick {
-    pub scan_id: u64,
-    pub received_at: std::time::Instant,
-    pub deskewed_cloud: Vec<PointXYZIT>,
-    pub deskewed_cloud_passthrough: Option<Vec<PointXYZIT>>,
-    pub imu_buffer: Vec<ImuMsg>,
-    pub map_only: bool,
-    pub cloud_header: HeaderMsg,
-    pub odom_time: TimeMsg,
-    #[cfg(any(
-        feature = "ros2-client",
-        feature = "mt_pubsub",
-        feature = "r2r",
-        feature = "hiroz"
-    ))]
-    pub imu_odom: Odometry,
-    pub runtime_eval: RuntimeEvaluator,
-}
-
 #[cfg(feature = "ros2-client")]
 fn split_namespace_topic(input: &str) -> (String, String) {
     let parts: Vec<&str> = input.split('/').collect();
@@ -1298,7 +1362,7 @@ impl SyncNode {
         params: &SyncParameters,
         mut inputs: SyncNodeInputs<'_>,
         #[cfg(feature = "rerun")] rec: Option<Arc<rerun::RecordingStream>>,
-    ) -> anyhow::Result<(Self, std::sync::mpsc::Receiver<Tick>)> {
+    ) -> anyhow::Result<(Self, std::sync::mpsc::Receiver<SyncProcessedCloud>)> {
         let startup_tf = inputs.startup_tf_callback.take().map(|apply| {
             let initialize = inputs.imu_pose_predictor_init.take();
             let initialized = initialize.is_none();
@@ -1388,35 +1452,12 @@ impl SyncNode {
         state.startup_tf = startup_tf;
         state.startup_base_frame = inputs.startup_base_frame;
 
-        #[cfg(any(
-            feature = "ros2-client",
-            feature = "mt_pubsub",
-            feature = "r2r",
-            feature = "hiroz"
-        ))]
-        let chan = {
-            let mut sync = state.sync.lock().unwrap();
-            sync.get_chan().unwrap()
-        };
-
-        let (tx, rx) = std::sync::mpsc::channel();
-        #[cfg(not(any(
-            feature = "ros2-client",
-            feature = "mt_pubsub",
-            feature = "r2r",
-            feature = "hiroz"
-        )))]
-        let _ = tx;
-
-        #[cfg(any(
-            feature = "ros2-client",
-            feature = "mt_pubsub",
-            feature = "r2r",
-            feature = "hiroz"
-        ))]
-        std::thread::spawn(move || {
-            Self::transform_types(tx, chan);
-        });
+        let rx = state
+            .sync
+            .lock()
+            .unwrap()
+            .get_chan()
+            .ok_or_else(|| anyhow::anyhow!("Synchronizer channel is not available"))?;
 
         // first option None = override not set.
         #[cfg(any(
@@ -1452,33 +1493,7 @@ impl SyncNode {
             .subscribe::<PointCloud2>(&node_params.cloud_src_topic, node_params.cloud_qos.into())?;
 
         #[cfg(feature = "mt_pubsub")]
-        let mut cloud_subscriber = rt.block_on(async {
-            match node_params.cloud_subscriber_mode {
-                PointCloudMode::PointCloud2 => {
-                    Ok::<_, anyhow::Error>(MtCloudSubscriber::PointCloud2(
-                        node.create_subscriber::<PointCloud2>(
-                            node_params.cloud_src_topic.clone(),
-                            10,
-                            qos_to_mt(node_params.cloud_qos),
-                        )
-                        .await?,
-                    ))
-                }
-                #[cfg(feature = "compressed-pointcloud")]
-                PointCloudMode::Compressed => Ok(MtCloudSubscriber::Compressed(
-                    node.create_subscriber::<CompressedPointCloud2>(
-                        node_params.cloud_src_topic.clone(),
-                        10,
-                        qos_to_mt(node_params.cloud_qos),
-                    )
-                    .await?,
-                )),
-                #[cfg(not(feature = "compressed-pointcloud"))]
-                PointCloudMode::Compressed => Err(anyhow!(
-                    "Compressed point-cloud input requires the 'compressed-pointcloud' feature"
-                )),
-            }
-        })?;
+        let mut cloud_subscriber = rt.block_on(mt_cloud_subscriber(node, node_params))?;
 
         #[cfg(feature = "hiroz")]
         let cloud_subscriber = {
@@ -1655,36 +1670,11 @@ impl SyncNode {
         {
             let wheel_sub_rt = Arc::clone(&rt);
             let state_wheel = state.clone();
-            let ext = nalgebra::Isometry3::from_parts(
-                nalgebra::Translation3::new(0.0, 0.0, 0.0),
-                nalgebra::UnitQuaternion::from_matrix(&params.wheel_to_imu_rotation),
-            );
+            let frame_to_imu = wheel_to_imu_rotation(params);
             std::thread::spawn(move || {
                 wheel_sub_rt.block_on(async {
                     while let Some(msg) = wheel_subscriber.next().await {
-                        // Keep the twist and its covariance in the odometry frame. The filter
-                        // needs the frame rotation to form a consistent body-velocity residual.
-
-                        use pelorus_core::OdomMsg;
-                        let v = nalgebra::Vector3::new(
-                            msg.twist.twist.linear.x,
-                            msg.twist.twist.linear.y,
-                            msg.twist.twist.linear.z,
-                        );
-                        let odom_msg = OdomMsg {
-                            twist_linear: v,
-                            twist_angular: nalgebra::Vector3::new(
-                                msg.twist.twist.angular.x,
-                                msg.twist.twist.angular.y,
-                                msg.twist.twist.angular.z,
-                            ),
-                            twist_cov: msg.twist.covariance,
-                            twist_frame_to_imu: *ext.rotation.to_rotation_matrix().matrix(),
-                            stamp: pelorus_sync::TimeMsg {
-                                sec: msg.header.stamp.sec,
-                                nanosec: msg.header.stamp.nanosec,
-                            },
-                        };
+                        let odom_msg = mt_odom_to_sync(msg, frame_to_imu);
 
                         // Send to sync's sync worker for synchronized lidar-imu-odom processing
                         let state_lock = state_wheel.lock().unwrap();
@@ -1748,27 +1738,10 @@ impl SyncNode {
             std::thread::spawn(move || {
                 cloud_sub_rt.block_on(async {
                     loop {
-                        let msg = match &mut cloud_subscriber {
-                            MtCloudSubscriber::PointCloud2(subscriber) => {
-                                if mt_pubsub_local_only {
-                                    let Some(message) = subscriber.next_archived().await else {
-                                        break;
-                                    };
-                                    IncomingMtPointCloud::Archived(message)
-                                } else {
-                                    let Some(msg) = subscriber.next().await else {
-                                        break;
-                                    };
-                                    IncomingMtPointCloud::Owned(msg)
-                                }
-                            }
-                            #[cfg(feature = "compressed-pointcloud")]
-                            MtCloudSubscriber::Compressed(subscriber) => {
-                                let Some(msg) = subscriber.next().await else {
-                                    break;
-                                };
-                                IncomingMtPointCloud::Compressed(msg)
-                            }
+                        let Some(msg) =
+                            next_mt_cloud(&mut cloud_subscriber, mt_pubsub_local_only).await
+                        else {
+                            break;
                         };
                         // #[cfg(not(feature = "no-imu-sync"))]
                         // {
@@ -2329,90 +2302,6 @@ impl SyncNode {
             && let Ok(mut sync) = state.sync.lock()
         {
             sync.shutdown();
-        }
-    }
-
-    /// Translates ROS types to Synchronizer Types
-    #[cfg(any(
-        feature = "ros2-client",
-        feature = "mt_pubsub",
-        feature = "r2r",
-        feature = "hiroz"
-    ))]
-    pub fn transform_types(
-        sender: std::sync::mpsc::Sender<Tick>,
-        receiver: std::sync::mpsc::Receiver<SyncProcessedCloud>,
-    ) {
-        while let Ok(synced_data) = receiver.recv() {
-            let pose = PoseWithCovariance {
-                pose: Pose {
-                    position: Point {
-                        x: synced_data.end_of_frame_guess.translation.vector.x,
-                        y: synced_data.end_of_frame_guess.translation.vector.y,
-                        z: synced_data.end_of_frame_guess.translation.vector.z,
-                    },
-                    orientation: Quaternion {
-                        x: synced_data.end_of_frame_guess.rotation.quaternion().i,
-                        y: synced_data.end_of_frame_guess.rotation.quaternion().j,
-                        z: synced_data.end_of_frame_guess.rotation.quaternion().k,
-                        w: synced_data.end_of_frame_guess.rotation.quaternion().w,
-                    },
-                },
-                #[cfg(not(feature = "r2r"))]
-                covariance: synced_data.pose_covariance,
-                #[cfg(feature = "r2r")]
-                covariance: synced_data.pose_covariance.to_vec(),
-            };
-
-            let twist = TwistWithCovariance {
-                twist: Twist {
-                    linear: Vector3 {
-                        x: synced_data.end_of_frame_twist.linear.x,
-                        y: synced_data.end_of_frame_twist.linear.y,
-                        z: synced_data.end_of_frame_twist.linear.z,
-                    },
-                    angular: Vector3 {
-                        x: synced_data.end_of_frame_twist.angular.x,
-                        y: synced_data.end_of_frame_twist.angular.y,
-                        z: synced_data.end_of_frame_twist.angular.z,
-                    },
-                },
-                #[cfg(not(feature = "r2r"))]
-                covariance: synced_data.twist_covariance,
-                #[cfg(feature = "r2r")]
-                covariance: synced_data.twist_covariance.to_vec(),
-            };
-
-            let odom = Odometry {
-                header: Header {
-                    stamp: Time {
-                        sec: synced_data.end_of_frame_time.sec,
-                        nanosec: synced_data.end_of_frame_time.nanosec,
-                    },
-                    frame_id: synced_data.header.frame_id.clone(),
-                },
-                child_frame_id: synced_data.imu_frame,
-                pose,
-                twist,
-            };
-
-            let res = Tick {
-                scan_id: synced_data.scan_id,
-                received_at: synced_data.received_at,
-                map_only: synced_data.should_map_only,
-                deskewed_cloud: synced_data.cloud,
-                deskewed_cloud_passthrough: synced_data.passthrough,
-                imu_buffer: synced_data.imu_buffer,
-                cloud_header: synced_data.header,
-                imu_odom: odom,
-                runtime_eval: synced_data.runtime_eval,
-                odom_time: synced_data.lidar_end_time_abs,
-            };
-
-            if sender.send(res).is_err() {
-                warn!("Closing transform thread.");
-                return;
-            }
         }
     }
 }

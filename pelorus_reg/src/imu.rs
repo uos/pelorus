@@ -42,6 +42,7 @@ pub struct ImuProcessing {
     pub wheel_odom_cov_override: Option<f64>,
 }
 
+#[cfg(feature = "threads")]
 #[derive(Clone)]
 pub(crate) struct ImuPredictionContext {
     pub last_imu: crate::ImuMsg,
@@ -121,6 +122,7 @@ impl Pose6D {
 }
 
 impl ImuProcessing {
+    #[cfg(feature = "threads")]
     pub(crate) fn prediction_context(&self) -> ImuPredictionContext {
         ImuPredictionContext {
             last_imu: self.last_imu.clone(),
@@ -130,6 +132,7 @@ impl ImuProcessing {
         }
     }
 
+    #[cfg(feature = "threads")]
     pub(crate) fn restore_prediction_context(&mut self, context: &ImuPredictionContext) {
         self.last_imu = context.last_imu.clone();
         self.mean_acc = context.mean_acc;
@@ -137,6 +140,7 @@ impl ImuProcessing {
         self.ekf_inited = context.ekf_inited;
     }
 
+    #[cfg(feature = "threads")]
     pub(crate) fn update_realtime_tail(
         &mut self,
         tail: &crate::ImuMsg,
@@ -147,6 +151,7 @@ impl ImuProcessing {
         self.angvel_last = Vector3::from(tail.angular_velocity) - state.bg;
     }
 
+    #[cfg(feature = "threads")]
     pub(crate) fn mean_acc_norm(&self) -> f64 {
         self.mean_acc.norm()
     }
@@ -525,7 +530,7 @@ impl ImuProcessing {
                 point.z = p_compensate.z as f32;
             };
 
-            let started = std::time::Instant::now();
+            let started = pelorus_core::Instant::now();
             #[cfg(feature = "rayon")]
             match execution_mode {
                 ExecutionMode::Sequential => {

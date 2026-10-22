@@ -4,50 +4,19 @@ use ratslang::uom::si::angle::{degree, radian};
 use ratslang::uom::si::f32::Angle;
 use ratslang::uom::si::length::meter;
 use ratslang::uom::si::time::second;
-use ratslang::{
-    Evaluated, NumVal, Rhs, Unit, UnitVal, Val, VariableHistory, resolve_float_range,
-    resolve_length_range_meters_float, resolve_var,
-};
+use ratslang::{Evaluated, VariableHistory};
+use serde::{Deserialize, Deserializer};
 
 use crate::{
     CoordinateSystem, DownsampleParameters, ImuCalibrationParameters, ImuConfigParameter,
     ImuDriverConfig, ImuDriverType, ImuParameters, KinematicModel, LidarDriverConfig,
     LidarDriverType, LidarVendor, LioConfig, MadgwickSetting, McapConfig, OdometryRate,
-    OusterConfig, OusterTimestampMode, PassthroughFilterParameters, PointCloudMode,
+    OusterConfig, OusterTimestampMode, PassthroughFilterParameters, Pipelining, PointCloudMode,
     PreprocessingBackend, Qos, Reliability, RerunConfig, RerunMapConfig, RobosenseConfig,
     RobosenseModel, RobosenseTimestampMode, SensorDriverConfig, SyncNodeParameters, SyncParameters,
     VelodyneConfig, VelodyneModel, VelodyneTimestampMode, XsensConfig, XsensTimestampMode,
     adaptive_execution::ExecutionPolicy,
 };
-
-/// Resolves an angle range (e.g., for FOV).
-/// It assumes input is in degrees and converts it to radians (f32).
-macro_rules! resolve_angle_range {
-    ($ns:expr, $field:expr, $default_from_deg:expr, $default_to_deg:expr) => {{
-        let rhs_val = resolve_var!($ns, $field, as &Rhs, r => {r})?;
-        match rhs_val {
-            Rhs::EmptyRange => {
-                Ok((Angle::new::<degree>($default_from_deg).get::<radian>(), Angle::new::<degree>($default_to_deg).get::<radian>()))
-            },
-            Rhs::Range { from, to } => {
-                let from_deg = match from {
-                    Some(Val::NumVal(NumVal::Floating(f))) => f as f32,
-                    Some(Val::NumVal(NumVal::Integer(i))) => i as f32,
-                    None => $default_from_deg,
-                    _ => return Err(anyhow!(format!("Expected numeric value for 'from' in angle range '{}'", $field))),
-                };
-                 let to_deg = match to {
-                    Some(Val::NumVal(NumVal::Floating(f))) => f as f32,
-                    Some(Val::NumVal(NumVal::Integer(i))) => i as f32,
-                    None => $default_to_deg,
-                    _ => return Err(anyhow!(format!("Expected numeric value for 'to' in angle range '{}'", $field))),
-                };
-                Ok((Angle::new::<degree>(from_deg).get::<radian>(), Angle::new::<degree>(to_deg).get::<radian>()))
-            },
-            _ => Err(anyhow!(format!("Expected a range expression for field '{}'", $field)))
-        }
-    }};
-}
 
 /// A struct that holds the user and default configuration variable maps.
 pub struct Asts {
@@ -58,11 +27,6 @@ pub struct Asts {
 impl Asts {
     pub fn new(defaults: VariableHistory, user: VariableHistory) -> Self {
         Self { user, defaults }
-    }
-
-    /// Creates a new `Asts` struct filtered by a namespace path.
-    fn filter_ns(&self, path: &[&str]) -> Asts {
-        Asts::new(self.defaults.filter_ns(path), self.user.filter_ns(path))
     }
 }
 
@@ -410,7 +374,10 @@ mod override_tests {
         let defaults = ratslang::compile_code(DEFAULTS).unwrap();
         let user = ratslang::compile_code("output.export.latency = \"run.txt\"").unwrap();
         let message = format!("{:#}", ast_to_config(defaults, user).err().unwrap());
-        assert!(message.contains("'output.export.latency' is now 'output.latency'"), "{message}");
+        assert!(
+            message.contains("'output.export.latency' is now 'output.latency'"),
+            "{message}"
+        );
     }
 
     #[test]
@@ -760,6 +727,9 @@ pub fn ast_to_config(mut defaults: Evaluated, user: Evaluated) -> anyhow::Result
     Ok(config)
 }
 
+mod input;
+use input::RawConfig;
+
 fn ast_to_config_inner(
     defaults: Evaluated,
     user: Evaluated,
@@ -767,1016 +737,360 @@ fn ast_to_config_inner(
     capture_user_usage: bool,
 ) -> anyhow::Result<(LioConfig, ConfigUsage, ConfigUsage)> {
     let asts = Asts::new(defaults.vars, user.vars);
-
-    fn reliablility_parse(src: &str) -> anyhow::Result<Qos> {
-        Ok(match src.to_lowercase().as_str() {
-            "besteffort" => Qos::Sensor(Reliability::BestEffort),
-            "reliable" => Qos::Sensor(Reliability::Reliable),
-            "systemdefault" => Qos::SystemDefault,
-            _ => return Err(anyhow!("Unknown reliability setting.")),
-        })
-    }
-
-    fn pointcloud_mode_parse(src: &str) -> anyhow::Result<PointCloudMode> {
-        match src.to_lowercase().as_str() {
-            "compressed" => Ok(PointCloudMode::Compressed),
-            "pointcloud2" => Ok(PointCloudMode::PointCloud2),
-            _ => Err(anyhow!(
-                "Unknown point-cloud mode '{src}'. Expected Compressed or PointCloud2."
-            )),
+    let raw: RawConfig = ratslang::serde::from_variables_with_defaults(&asts.defaults, &asts.user)?;
+    let RawConfig {
+        registration,
+        preprocessing,
+        sensor_drivers,
+        lidar,
+        imu,
+        wheel,
+        output,
+        parallelism,
+        offline,
+    } = raw;
+    // Serde supplies None without visiting absent optional fields. Preserve the
+    // recognized-key probes used by strict CLI override checks.
+    for (key, absent) in [
+        ("wheel.covariance", wheel.covariance.is_none()),
+        (
+            "output.terminal.log_level",
+            output.terminal.log_level.is_none(),
+        ),
+    ] {
+        if absent {
+            let _ = asts.defaults.evaluate_stats_only(key);
+            let _ = asts.user.evaluate_stats_only(key);
         }
     }
+    let map = registration.map;
+    anyhow::ensure!(
+        !map.resolution.r#type
+            || (map.resolution.value.is_finite()
+                && map.resolution.value > 0.0
+                && map.capacity >= 4),
+        "multiresolution requires a finite positive map resolution and capacity >= 4"
+    );
 
-    fn lidar_vendor_parse(src: &str) -> anyhow::Result<LidarVendor> {
-        Ok(match src.to_lowercase().as_str() {
-            "velodyne" => LidarVendor::Velodyne,
-            "ouster" => LidarVendor::Ouster,
-            "livox" => LidarVendor::Livox,
-            "livoxmid360" => LidarVendor::LivoxMid360,
-            "robosense" => LidarVendor::Robosense,
-            "hesai" => LidarVendor::Hesai,
-            "blickfeld" => LidarVendor::Blickfeld,
-            "sickmultiscan" => LidarVendor::SickMultiscan,
-            "notimestamp" | "no_timestamp" | "genericnotimestamp" | "generic_no_timestamp" => {
-                LidarVendor::NoTimestamp
-            }
-            _ => return Err(anyhow!("Unknown Lidar vendor.")),
-        })
+    let vel = lidar.driver.velodyne;
+    let rs = lidar.driver.robosense;
+    let xs = imu.driver.xsens;
+    let ouster = sensor_drivers.ouster;
+    for (name, first_port, second_port) in [
+        ("Velodyne", vel.data_port, vel.position_port),
+        ("Robosense", rs.msop_port, rs.difop_port),
+        ("Ouster", ouster.lidar_port, ouster.imu_port),
+    ] {
+        anyhow::ensure!(first_port != second_port, "{name} ports must be distinct");
     }
-
-    fn ahrs_method_parse(s: &str) -> anyhow::Result<MadgwickSetting> {
-        match s.to_lowercase().as_str() {
-            "createorientationonly" => Ok(MadgwickSetting::CreateOrientationOnly),
-            "filteraccelerationandcreateorientation" => {
-                Ok(MadgwickSetting::FilterAccelerationAndCreateOrientation)
-            }
-            "filteraccelerationonly" => Ok(MadgwickSetting::FilterAccelerationOnly),
-            "disable" => Ok(MadgwickSetting::Disable),
-            _ => Err(anyhow!("Unknown AHRS filtering method: {}", s)),
-        }
+    anyhow::ensure!(
+        !(lidar.driver.r#type == LidarDriverType::Ouster
+            || imu.driver.r#type == ImuDriverType::Ouster)
+            || ouster.metadata_path.is_some()
+            || !ouster.hostname.is_empty(),
+        "Ouster hostname is required when metadata_path is empty"
+    );
+    let sensor_drivers = SensorDriverConfig {
+        lidar: LidarDriverConfig {
+            driver_type: lidar.driver.r#type,
+            velodyne: VelodyneConfig {
+                model: vel.model,
+                bind_address: vel.bind_address,
+                data_port: vel.data_port,
+                position_port: vel.position_port,
+                device_ip: vel.device_ip,
+                frame_id: vel.frame_id,
+                cut_angle_rad: vel.cut_angle,
+                timestamp_mode: vel.timestamp.mode,
+                allow_host_hour_anchor: vel.timestamp.allow_host_hour_anchor,
+                max_host_skew_secs: vel.timestamp.max_host_skew,
+                startup_timeout_secs: vel.timestamp.startup_timeout,
+            },
+            robosense: RobosenseConfig {
+                model: rs.model,
+                bind_address: rs.bind_address,
+                msop_port: rs.msop_port,
+                difop_port: rs.difop_port,
+                device_ip: rs.device_ip,
+                frame_id: rs.frame_id,
+                timestamp_mode: rs.timestamp.mode,
+                max_host_skew_secs: rs.timestamp.max_host_skew,
+                startup_timeout_secs: rs.timestamp.startup_timeout,
+            },
+        },
+        imu: ImuDriverConfig {
+            driver_type: imu.driver.r#type,
+            xsens: XsensConfig {
+                port: xs.port,
+                baudrate: xs.baudrate,
+                output_rate: xs.output_rate,
+                frame_id: xs.frame_id,
+                coordinate_system: xs.coordinate_system,
+                configure_device: xs.configure_device,
+                timestamp_mode: xs.timestamp.mode,
+                max_host_skew_secs: xs.timestamp.max_host_skew,
+                startup_timeout_secs: xs.timestamp.startup_timeout,
+            },
+        },
+        ouster: OusterConfig {
+            hostname: ouster.hostname,
+            metadata_path: ouster.metadata_path,
+            bind_address: ouster.bind_address,
+            lidar_port: ouster.lidar_port,
+            imu_port: ouster.imu_port,
+            device_ip: ouster.device_ip,
+            lidar_frame_id: ouster.lidar_frame_id,
+            imu_frame_id: ouster.imu_frame_id,
+            timestamp_mode: ouster.timestamp.mode,
+            max_host_skew_secs: ouster.timestamp.max_host_skew,
+            startup_timeout_secs: ouster.timestamp.startup_timeout,
+        },
+    };
+    let kinematic_model = match wheel.kinematic_model {
+        KinematicModel::Ackermann { .. } => KinematicModel::Ackermann {
+            imu_to_rear_axle: wheel.ackermann.imu_to_rear_axle,
+        },
+        model => model,
+    };
+    if !matches!(kinematic_model, KinematicModel::Ackermann { .. }) {
+        // Keep inactive known settings recognized by strict CLI override checks.
+        let _ = asts
+            .defaults
+            .evaluate_stats_only("wheel.ackermann.imu_to_rear_axle");
+        let _ = asts
+            .user
+            .evaluate_stats_only("wheel.ackermann.imu_to_rear_axle");
     }
-
-    fn preprocessing_backend_parse(s: &str) -> anyhow::Result<PreprocessingBackend> {
-        match s.to_lowercase().as_str() {
-            "cpu" => Ok(PreprocessingBackend::Cpu),
-            "backend" => Ok(PreprocessingBackend::Backend),
-            _ => Err(anyhow!(
-                "Unknown preprocessing backend: {}. Expected 'Backend' or 'Cpu'.",
-                s
-            )),
-        }
-    }
-
-    fn execution_policy_parse(s: &str) -> anyhow::Result<ExecutionPolicy> {
-        match s.to_lowercase().as_str() {
-            "auto" => Ok(ExecutionPolicy::Auto),
-            "singlecore" | "single_core" | "single-core" => Ok(ExecutionPolicy::SingleCore),
-            "rayon" => Ok(ExecutionPolicy::Rayon),
-            _ => Err(anyhow!(
-                "Unknown parallelism execution mode: {}. Expected 'Auto', 'SingleCore', or 'Rayon'.",
-                s
-            )),
-        }
-    }
-
-    fn kinematic_model_parse(
-        s: &str,
-        ackermann_ns: Option<&Asts>,
-    ) -> anyhow::Result<KinematicModel> {
-        match s.to_lowercase().as_str() {
-            "full3d" => Ok(KinematicModel::Full3D),
-            "differential" | "differentialdrive" | "wheeled2d" => Ok(KinematicModel::Differential),
-            "holonomic2d" | "holonomic" => Ok(KinematicModel::Holonomic2D),
-            "ackermann" => {
-                let ackermann_ns = ackermann_ns.ok_or_else(|| anyhow!("Ackermann kinematic model requires configuration under kinematic_model.ackermann namespace"))?;
-                let imu_to_rear_axle = resolve_var!(ackermann_ns, "imu_to_rear_axle", as Vector3<f64>, Rhs::Array(v) => {
-                    let (Some(x_rhs), Some(y_rhs), Some(z_rhs)) = (v.first(), v.get(1), v.get(2)) else { return Err(anyhow!("Expected three vector components for imu_to_rear_axle")) };
-                    let (Rhs::Val(Val::UnitedVal(UnitVal::LengthVal(x))), Rhs::Val(Val::UnitedVal(UnitVal::LengthVal(y))), Rhs::Val(Val::UnitedVal(UnitVal::LengthVal(z)))) = (&**x_rhs, &**y_rhs, &**z_rhs) else { return Err(anyhow!("All imu_to_rear_axle components must be length values.")) };
-                    Vector3::new(x.get::<meter>(), y.get::<meter>(), z.get::<meter>())
-                })?;
-                Ok(KinematicModel::Ackermann { imu_to_rear_axle })
-            }
-            _ => {
-                if let Some(ack_ns) = ackermann_ns {
-                    let _ = ack_ns.defaults.evaluate_stats_only("imu_to_rear_axle");
-                    let _ = ack_ns.user.evaluate_stats_only("imu_to_rear_axle");
-                }
-                Err(anyhow!("Unknown kinematic model: {}", s))
-            }
-        }
-    }
-
-    let (
-        neighbor_max_range,
-        map_resolution,
-        map_capacity,
-        map_multiresolution,
-        dist_update_sensitivity,
-        ekf_max_iterations,
-    ) = {
-        let registration = asts.filter_ns(&["registration"]);
-        let neighbor_max_range = resolve_var!(registration, "neighbors_max_range", as f64, Rhs::Val(Val::UnitedVal(UnitVal::LengthVal(v))) => { v.get::<meter>() })?;
-
-        let ekf_max_iterations = resolve_var!(registration, "max_iter", as usize, Rhs::Val(Val::NumVal(NumVal::Integer(i))) => { i })?;
-
-        let map = registration.filter_ns(&["map"]);
-        let map_resolution: f64 = resolve_var!(map, "resolution", as f64, Rhs::Val(Val::UnitedVal(UnitVal::LengthVal(v))) => { v.get::<meter>() })?;
-        let map_capacity = resolve_var!(map, "capacity", as usize, Rhs::Val(Val::NumVal(NumVal::Integer(i))) => {i})?;
-        let map_multiresolution = resolve_var!(map, "resolution.type", as bool, Rhs::Val(Val::StringVal(s)) | Rhs::Path(s) => {
-            match s.to_lowercase().as_str() {
-                "single" => false,
-                "multi" => true,
-                _ => return Err(anyhow!("invalid registration.map.resolution.type '{s}'. Expected Single or Multi")),
-            }
-        })?;
-        if map_multiresolution
-            && (!map_resolution.is_finite() || map_resolution <= 0.0 || map_capacity < 4)
+    let (cov_gyr, cov_acc, cov_gyr_bias, cov_acc_bias) = if imu.calibration.parameter_file.use_noise
+    {
+        let path = imu.calibration.parameter_file.value.as_deref().ok_or_else(|| anyhow!(
+            "imu.calibration.parameter_file.use_noise is on but imu.calibration.parameter_file is empty, so there is no file to take the noise parameters from"
+        ))?;
+        let noise = derive_noise_covariances(path, imu.calibration.noise_inflation)?;
+        log::info!(
+            "IMU covariances from {path} (inflation {}x): gyroscope {:.3e} (was {:.3e}), acceleration {:.3e} (was {:.3e}), gyroscope bias {:.3e} (was {:.3e}), acceleration bias {:.3e} (was {:.3e})",
+            imu.calibration.noise_inflation,
+            noise.gyr,
+            imu.covariance_gyroscope,
+            noise.acc,
+            imu.covariance_acceleration,
+            noise.gyr_bias,
+            imu.covariance_gyroscope_bias,
+            noise.acc_bias,
+            imu.covariance_acceleration_bias
+        );
+        (noise.gyr, noise.acc, noise.gyr_bias, noise.acc_bias)
+    } else {
+        (
+            imu.covariance_gyroscope,
+            imu.covariance_acceleration,
+            imu.covariance_gyroscope_bias,
+            imu.covariance_acceleration_bias,
+        )
+    };
+    let (translation, rotation) = if imu.lidar_only {
+        if imu.from_lidar_transform.translation != Vector3::zeros()
+            || imu.from_lidar_transform.rotation != Matrix3::identity()
         {
-            return Err(anyhow!(
-                "multiresolution requires a finite positive map resolution and capacity >= 4"
-            ));
-        }
-        let dist_update_sensitivity = resolve_var!(map, "distribution_update_sensitivity", as f32, Rhs::Val(Val::NumVal(NumVal::Floating(i))) => {i as f32} )?;
-
-        (
-            neighbor_max_range,
-            map_resolution,
-            map_capacity,
-            map_multiresolution,
-            dist_update_sensitivity,
-            ekf_max_iterations,
-        )
-    };
-
-    let sensor_drivers = {
-        let lidar = asts.filter_ns(&["lidar", "driver"]);
-        let vel = lidar.filter_ns(&["velodyne"]);
-        let vel_ts = vel.filter_ns(&["timestamp"]);
-        let lidar_type = resolve_var!(lidar, "type", as LidarDriverType, Rhs::Val(Val::StringVal(s)) => { match s.to_lowercase().as_str() { "disabled" => LidarDriverType::Disabled, "velodyne" => LidarDriverType::Velodyne, "ouster" => LidarDriverType::Ouster, "robosense" => LidarDriverType::Robosense, _ => return Err(anyhow!("invalid lidar.driver.type '{s}'; expected Disabled, Velodyne, Ouster, or Robosense")) } })?;
-        let model = resolve_var!(vel, "model", as VelodyneModel, Rhs::Val(Val::StringVal(s)) => { match s.to_lowercase().as_str() { "vlp16" => VelodyneModel::Vlp16, "vlp32c" => VelodyneModel::Vlp32c, "pucklite" => VelodyneModel::PuckLite, "puckhires" => VelodyneModel::PuckHiRes, _ => return Err(anyhow!("unsupported Velodyne model '{s}'")) } })?;
-        let bind_address: String =
-            resolve_var!(vel, "bind_address", as String, Rhs::Val(Val::StringVal(s)) => {s})?;
-        bind_address
-            .parse::<std::net::IpAddr>()
-            .map_err(|_| anyhow!("lidar.driver.velodyne.bind_address must be an IP address"))?;
-        let data_port = resolve_var!(vel, "data_port", as u16, Rhs::Val(Val::NumVal(NumVal::Integer(i))) => { u16::try_from(i).map_err(|_| anyhow!("Velodyne data_port must be in 1..=65535"))? })?;
-        let position_port = resolve_var!(vel, "position_port", as u16, Rhs::Val(Val::NumVal(NumVal::Integer(i))) => { u16::try_from(i).map_err(|_| anyhow!("Velodyne position_port must be in 1..=65535"))? })?;
-        if data_port == 0 || position_port == 0 || data_port == position_port {
-            return Err(anyhow!("Velodyne ports must be non-zero and distinct"));
-        }
-        let device_ip_raw: String =
-            resolve_var!(vel, "device_ip", as String, Rhs::Val(Val::StringVal(s)) => {s})?;
-        let device_ip = if device_ip_raw.is_empty() {
-            None
-        } else {
-            device_ip_raw
-                .parse::<std::net::IpAddr>()
-                .map_err(|_| anyhow!("lidar.driver.velodyne.device_ip must be an IP address"))?;
-            Some(device_ip_raw)
-        };
-        let v_max_skew = resolve_var!(vel_ts, "max_host_skew", as f64, Rhs::Val(Val::UnitedVal(UnitVal::TimeVal(v))) => {v.get::<second>()})?;
-        let v_timeout = resolve_var!(vel_ts, "startup_timeout", as f64, Rhs::Val(Val::UnitedVal(UnitVal::TimeVal(v))) => {v.get::<second>()})?;
-        let v_timestamp_mode = resolve_var!(vel_ts, "mode", as VelodyneTimestampMode, Rhs::Val(Val::StringVal(s)) => { match s.to_lowercase().as_str() { "sensor" => VelodyneTimestampMode::Sensor, "host" => VelodyneTimestampMode::Host, _ => return Err(anyhow!("Velodyne timestamp mode must be Sensor or Host")) } })?;
-        let rs = lidar.filter_ns(&["robosense"]);
-        let rs_ts = rs.filter_ns(&["timestamp"]);
-        let rs_model = resolve_var!(rs, "model", as RobosenseModel, Rhs::Val(Val::StringVal(s)) => { match s.to_lowercase().as_str() { "m1" => RobosenseModel::M1, "m2" => RobosenseModel::M2, "e1" => RobosenseModel::E1, "mx" => RobosenseModel::Mx, _ => return Err(anyhow!("unsupported Robosense model '{s}'; expected M1, M2, E1, or Mx")) } })?;
-        let rs_bind_address: String =
-            resolve_var!(rs, "bind_address", as String, Rhs::Val(Val::StringVal(s)) => {s})?;
-        rs_bind_address
-            .parse::<std::net::IpAddr>()
-            .map_err(|_| anyhow!("lidar.driver.robosense.bind_address must be an IP address"))?;
-        let rs_msop_port = resolve_var!(rs, "msop_port", as u16, Rhs::Val(Val::NumVal(NumVal::Integer(i))) => { u16::try_from(i).map_err(|_| anyhow!("Robosense msop_port must be in 1..=65535"))? })?;
-        let rs_difop_port = resolve_var!(rs, "difop_port", as u16, Rhs::Val(Val::NumVal(NumVal::Integer(i))) => { u16::try_from(i).map_err(|_| anyhow!("Robosense difop_port must be in 1..=65535"))? })?;
-        if rs_msop_port == 0 || rs_difop_port == 0 || rs_msop_port == rs_difop_port {
-            return Err(anyhow!("Robosense ports must be non-zero and distinct"));
-        }
-        let rs_device_ip_raw: String =
-            resolve_var!(rs, "device_ip", as String, Rhs::Val(Val::StringVal(s)) => {s})?;
-        let rs_device_ip = if rs_device_ip_raw.is_empty() {
-            None
-        } else {
-            rs_device_ip_raw
-                .parse::<std::net::IpAddr>()
-                .map_err(|_| anyhow!("lidar.driver.robosense.device_ip must be an IP address"))?;
-            Some(rs_device_ip_raw)
-        };
-        let rs_max_skew = resolve_var!(rs_ts, "max_host_skew", as f64, Rhs::Val(Val::UnitedVal(UnitVal::TimeVal(v))) => {v.get::<second>()})?;
-        let rs_timeout = resolve_var!(rs_ts, "startup_timeout", as f64, Rhs::Val(Val::UnitedVal(UnitVal::TimeVal(v))) => {v.get::<second>()})?;
-        if rs_max_skew <= 0.0 || rs_timeout <= 0.0 {
-            return Err(anyhow!(
-                "Robosense clock skew and startup timeout values must be positive"
-            ));
-        }
-        let rs_timestamp_mode = resolve_var!(rs_ts, "mode", as RobosenseTimestampMode, Rhs::Val(Val::StringVal(s)) => { match s.to_lowercase().as_str() { "sensor" => RobosenseTimestampMode::Sensor, "host" => RobosenseTimestampMode::Host, _ => return Err(anyhow!("Robosense timestamp mode must be Sensor or Host")) } })?;
-        let imu = asts.filter_ns(&["imu", "driver"]);
-        let xs = imu.filter_ns(&["xsens"]);
-        let xs_ts = xs.filter_ns(&["timestamp"]);
-        let imu_type = resolve_var!(imu, "type", as ImuDriverType, Rhs::Val(Val::StringVal(s)) => { match s.to_lowercase().as_str() { "disabled" => ImuDriverType::Disabled, "xsens" => ImuDriverType::Xsens, "ouster" => ImuDriverType::Ouster, _ => return Err(anyhow!("invalid imu.driver.type '{s}'. Expected Disabled, Xsens, or Ouster")) } })?;
-        let baudrate = resolve_var!(xs, "baudrate", as u32, Rhs::Val(Val::NumVal(NumVal::Integer(i))) => {u32::try_from(i)?})?;
-        let output_rate = resolve_var!(xs, "output_rate", as u32, Rhs::Val(Val::NumVal(NumVal::Integer(i))) => {u32::try_from(i)?})?;
-        if baudrate == 0 || output_rate == 0 || output_rate > 2000 {
-            return Err(anyhow!(
-                "Xsens baudrate and output_rate must be positive. output_rate must not exceed 2000 Hz"
-            ));
-        }
-        let coordinate_system = resolve_var!(xs, "coordinate_system", as CoordinateSystem, Rhs::Val(Val::StringVal(s)) => {match s.to_lowercase().as_str(){"enu"=>CoordinateSystem::Enu,"ned"=>CoordinateSystem::Ned,"nwu"=>CoordinateSystem::Nwu,_=>return Err(anyhow!("invalid Xsens coordinate_system '{s}'"))}})?;
-        let x_max_skew = resolve_var!(xs_ts, "max_host_skew", as f64, Rhs::Val(Val::UnitedVal(UnitVal::TimeVal(v))) => {v.get::<second>()})?;
-        let x_timeout = resolve_var!(xs_ts, "startup_timeout", as f64, Rhs::Val(Val::UnitedVal(UnitVal::TimeVal(v))) => {v.get::<second>()})?;
-        let x_timestamp_mode = resolve_var!(xs_ts, "mode", as XsensTimestampMode, Rhs::Val(Val::StringVal(s)) => { match s.to_lowercase().as_str() { "utc" => XsensTimestampMode::Utc, "host" => XsensTimestampMode::Host, _ => return Err(anyhow!("Xsens timestamp mode must be Utc or Host")) } })?;
-        if v_max_skew <= 0.0 || v_timeout <= 0.0 || x_max_skew <= 0.0 || x_timeout <= 0.0 {
-            return Err(anyhow!(
-                "driver clock skew and startup timeout values must be positive"
-            ));
-        }
-        let ouster = asts.filter_ns(&["sensor_drivers", "ouster"]);
-        let ouster_ts = ouster.filter_ns(&["timestamp"]);
-        let ouster_bind_address: String =
-            resolve_var!(ouster, "bind_address", as String, Rhs::Val(Val::StringVal(s)) => {s})?;
-        ouster_bind_address
-            .parse::<std::net::IpAddr>()
-            .map_err(|_| anyhow!("sensor_drivers.ouster.bind_address must be an IP address"))?;
-        let ouster_lidar_port = resolve_var!(ouster, "lidar_port", as u16, Rhs::Val(Val::NumVal(NumVal::Integer(i))) => { u16::try_from(i).map_err(|_| anyhow!("Ouster lidar_port must be in 1..=65535"))? })?;
-        let ouster_imu_port = resolve_var!(ouster, "imu_port", as u16, Rhs::Val(Val::NumVal(NumVal::Integer(i))) => { u16::try_from(i).map_err(|_| anyhow!("Ouster imu_port must be in 1..=65535"))? })?;
-        if ouster_lidar_port == 0 || ouster_imu_port == 0 || ouster_lidar_port == ouster_imu_port {
-            return Err(anyhow!("Ouster ports must be non-zero and distinct"));
-        }
-        let ouster_device_ip_raw: String =
-            resolve_var!(ouster, "device_ip", as String, Rhs::Val(Val::StringVal(s)) => {s})?;
-        let ouster_device_ip = if ouster_device_ip_raw.is_empty() {
-            None
-        } else {
-            ouster_device_ip_raw
-                .parse::<std::net::IpAddr>()
-                .map_err(|_| anyhow!("sensor_drivers.ouster.device_ip must be an IP address"))?;
-            Some(ouster_device_ip_raw)
-        };
-        let metadata_path: String =
-            resolve_var!(ouster, "metadata_path", as String, Rhs::Val(Val::StringVal(s)) => {s})?;
-        let metadata_path = (!metadata_path.is_empty()).then_some(metadata_path);
-        let ouster_max_skew = resolve_var!(ouster_ts, "max_host_skew", as f64, Rhs::Val(Val::UnitedVal(UnitVal::TimeVal(v))) => {v.get::<second>()})?;
-        let ouster_timeout = resolve_var!(ouster_ts, "startup_timeout", as f64, Rhs::Val(Val::UnitedVal(UnitVal::TimeVal(v))) => {v.get::<second>()})?;
-        if ouster_max_skew <= 0.0 || ouster_timeout <= 0.0 {
-            return Err(anyhow!(
-                "Ouster clock skew and startup timeout values must be positive"
-            ));
-        }
-        let ouster_timestamp_mode = resolve_var!(ouster_ts, "mode", as OusterTimestampMode, Rhs::Val(Val::StringVal(s)) => { match s.to_lowercase().as_str() { "ptp" => OusterTimestampMode::Ptp, "host" => OusterTimestampMode::Host, _ => return Err(anyhow!("Ouster timestamp mode must be Ptp or Host")) } })?;
-        let ouster_hostname: String =
-            resolve_var!(ouster, "hostname", as String, Rhs::Val(Val::StringVal(s)) => {s})?;
-        if (lidar_type == LidarDriverType::Ouster || imu_type == ImuDriverType::Ouster)
-            && metadata_path.is_none()
-            && ouster_hostname.is_empty()
-        {
-            return Err(anyhow!(
-                "Ouster hostname is required when metadata_path is empty"
-            ));
-        }
-
-        SensorDriverConfig {
-            lidar: LidarDriverConfig {
-                driver_type: lidar_type,
-                velodyne: VelodyneConfig {
-                    model,
-                    bind_address,
-                    data_port,
-                    position_port,
-                    device_ip,
-                    frame_id: resolve_var!(vel,"frame_id",as String,Rhs::Val(Val::StringVal(s))=>{s})?,
-                    cut_angle_rad: resolve_var!(vel,"cut_angle",as f64,Rhs::Val(Val::NumVal(NumVal::Floating(v)))=>{v})?,
-                    timestamp_mode: v_timestamp_mode,
-                    allow_host_hour_anchor: resolve_var!(vel_ts,"allow_host_hour_anchor",as bool,Rhs::Val(Val::BoolVal(b))=>{b})?,
-                    max_host_skew_secs: v_max_skew,
-                    startup_timeout_secs: v_timeout,
-                },
-                robosense: RobosenseConfig {
-                    model: rs_model,
-                    bind_address: rs_bind_address,
-                    msop_port: rs_msop_port,
-                    difop_port: rs_difop_port,
-                    device_ip: rs_device_ip,
-                    frame_id: resolve_var!(rs,"frame_id",as String,Rhs::Val(Val::StringVal(s))=>{s})?,
-                    timestamp_mode: rs_timestamp_mode,
-                    max_host_skew_secs: rs_max_skew,
-                    startup_timeout_secs: rs_timeout,
-                },
-            },
-            imu: ImuDriverConfig {
-                driver_type: imu_type,
-                xsens: XsensConfig {
-                    port: resolve_var!(xs,"port",as String,Rhs::Val(Val::StringVal(s))=>{s})?,
-                    baudrate,
-                    frame_id: resolve_var!(xs,"frame_id",as String,Rhs::Val(Val::StringVal(s))=>{s})?,
-                    output_rate,
-                    coordinate_system,
-                    configure_device: resolve_var!(xs,"configure_device",as bool,Rhs::Val(Val::BoolVal(b))=>{b})?,
-                    timestamp_mode: x_timestamp_mode,
-                    max_host_skew_secs: x_max_skew,
-                    startup_timeout_secs: x_timeout,
-                },
-            },
-            ouster: OusterConfig {
-                hostname: ouster_hostname,
-                metadata_path,
-                bind_address: ouster_bind_address,
-                lidar_port: ouster_lidar_port,
-                imu_port: ouster_imu_port,
-                device_ip: ouster_device_ip,
-                lidar_frame_id: resolve_var!(ouster,"lidar_frame_id",as String,Rhs::Val(Val::StringVal(s))=>{s})?,
-                imu_frame_id: resolve_var!(ouster,"imu_frame_id",as String,Rhs::Val(Val::StringVal(s))=>{s})?,
-                timestamp_mode: ouster_timestamp_mode,
-                max_host_skew_secs: ouster_max_skew,
-                startup_timeout_secs: ouster_timeout,
-            },
-        }
-    };
-
-    // --- Lidar Configuration ---
-    let (
-        cloud_src_topic,
-        cloud_qos,
-        cloud_subscriber_mode,
-        lidar_vendor,
-        lidar_odom_cov,
-        lidar_as_sync,
-    ) = {
-        let lidar = asts.filter_ns(&["lidar"]);
-        let cloud_src_topic = resolve_var!(lidar, "topic", as String, Rhs::Val(Val::StringVal(s)) | Rhs::Path(s) => {s})?;
-        let cloud_qos = resolve_var!(lidar, "qos.reliability", as Qos, Rhs::Val(Val::StringVal(s)) | Rhs::Path(s) => {reliablility_parse(&s)?})?;
-        let cloud_subscriber_mode = resolve_var!(lidar, "subscriber_mode", as PointCloudMode, Rhs::Val(Val::StringVal(s)) | Rhs::Path(s) => {pointcloud_mode_parse(&s)?})?;
-        let lidar_vendor = resolve_var!(lidar, "vendor", as LidarVendor, Rhs::Val(Val::StringVal(s)) => {lidar_vendor_parse(&s)?})?;
-        let lidar_odom_cov = resolve_var!(lidar, "covariance", as f64, Rhs::Val(Val::NumVal(NumVal::Floating(f))) => {f})?;
-        let lidar_as_sync =
-            resolve_var!(lidar, "as_sync", as bool, Rhs::Val(Val::BoolVal(b)) => {b})?;
-        (
-            cloud_src_topic,
-            cloud_qos,
-            cloud_subscriber_mode,
-            lidar_vendor,
-            lidar_odom_cov,
-            lidar_as_sync,
-        )
-    };
-
-    let (
-        wheel_src_topic,
-        wheel_qos,
-        wheel_odom_cov,
-        wheel_kinematic_constraint_std,
-        wheel_kinematic_model,
-        wheel_to_imu_tf_override,
-        wheel_to_imu_rotation,
-    ) = {
-        let wheel = asts.filter_ns(&["wheel"]);
-        let wheel_src_topic = resolve_var!(wheel, "topic", as String, Rhs::Val(Val::StringVal(s)) | Rhs::Path(s) => {s})?;
-        let wheel_qos = resolve_var!(wheel, "qos.reliability", as Qos, Rhs::Val(Val::StringVal(s)) | Rhs::Path(s) => {reliablility_parse(&s)?})?;
-        let wheel_odom_cov = resolve_var!(wheel, "covariance", as f64, Rhs::Val(Val::NumVal(NumVal::Floating(f))) => {f}).ok();
-        let wheel_kinematic_constraint_std = resolve_var!(wheel, "kinematic_constraint_std", as f64, Rhs::Val(Val::NumVal(NumVal::Floating(f))) => {f})?;
-
-        let kinematic_model_str: String =
-            resolve_var!(wheel, "kinematic_model", as String, Rhs::Val(Val::StringVal(s)) => {s})?;
-        let ackermann_ns = if kinematic_model_str.to_lowercase() == "ackermann" {
-            Some(wheel.filter_ns(&["ackermann"]))
-        } else {
-            let ack_ns = wheel.filter_ns(&["ackermann"]);
-            let _ = ack_ns.defaults.evaluate_stats_only("imu_to_rear_axle");
-            let _ = ack_ns.user.evaluate_stats_only("imu_to_rear_axle");
-            None
-        };
-        let wheel_kinematic_model =
-            kinematic_model_parse(&kinematic_model_str, ackermann_ns.as_ref())?;
-        let transform = wheel.filter_ns(&["to_imu_transform"]);
-        let wheel_imu_tf_override =
-            resolve_var!(transform, "use_tf_tree", as bool, Rhs::Val(Val::BoolVal(b)) => {b})?;
-        let initial_rotation_odom_to_imu = resolve_var!(transform, "rotation", as Matrix3<f64>, Rhs::Array(rows) => {
-            if rows.len() != 3 { return Err(anyhow!("Rotation matrix must have 3 rows.")) }
-            let mut elements = Vec::with_capacity(9);
-            for row_rhs in rows {
-                let Rhs::Array(cols) = &*row_rhs else { return Err(anyhow!("Expected a row to be an array.")) };
-                if cols.len() != 3 { return Err(anyhow!("Matrix row must have 3 columns.")) }
-                for col_rhs in cols {
-                    let Rhs::Val(Val::NumVal(NumVal::Floating(val))) = &**col_rhs else { return Err(anyhow!("Matrix element must be a float.")) };
-                    elements.push(*val);
-                }
-            }
-            Matrix3::new(elements[0], elements[1], elements[2], elements[3], elements[4], elements[5], elements[6], elements[7], elements[8])
-        })?;
-        (
-            wheel_src_topic,
-            wheel_qos,
-            wheel_odom_cov,
-            wheel_kinematic_constraint_std,
-            wheel_kinematic_model,
-            wheel_imu_tf_override,
-            initial_rotation_odom_to_imu,
-        )
-    };
-
-    let (imu_params, imu_sync_params, imu_node_params) = {
-        let imu = asts.filter_ns(&["imu"]);
-        let imu_src_topic = resolve_var!(imu, "topic", as String, Rhs::Val(Val::StringVal(s)) | Rhs::Path(s) => {s})?;
-        let imu_qos = resolve_var!(imu, "qos.reliability", as Qos, Rhs::Val(Val::StringVal(s)) | Rhs::Path(s) => {reliablility_parse(&s)?})?;
-        let imu_predictor_init_time_sec = resolve_var!(imu, "initial_setup", as f64, Rhs::Val(Val::UnitedVal(UnitVal::TimeVal(v))) => { v.get::<second>() })?;
-
-        let transform = imu.filter_ns(&["from_lidar_transform"]);
-        let imu_lidar_tf_override =
-            resolve_var!(transform, "use_tf_tree", as bool, Rhs::Val(Val::BoolVal(b)) => {b})?;
-        let initial_translation_lidar_to_imu = resolve_var!(transform, "translation", as Vector3<f64>, Rhs::Array(v) => {
-            let (Some(x_rhs), Some(y_rhs), Some(z_rhs)) = (v.first(), v.get(1), v.get(2)) else { return Err(anyhow!("Expected three vector components.")) };
-            let (Rhs::Val(Val::UnitedVal(UnitVal::LengthVal(x))), Rhs::Val(Val::UnitedVal(UnitVal::LengthVal(y))), Rhs::Val(Val::UnitedVal(UnitVal::LengthVal(z)))) = (&**x_rhs, &**y_rhs, &**z_rhs) else { return Err(anyhow!("All components must be length values.")) };
-            let x_m = x.get::<meter>();
-            let y_m = y.get::<meter>();
-            let z_m = z.get::<meter>();
-            Vector3::new(x_m, y_m, z_m)
-        })?;
-        let initial_rotation_lidar_to_imu = resolve_var!(transform, "rotation", as Matrix3<f64>, Rhs::Array(rows) => {
-            if rows.len() != 3 { return Err(anyhow!("Rotation matrix must have 3 rows.")) }
-            let mut elements = Vec::with_capacity(9);
-            for row_rhs in rows {
-                let Rhs::Array(cols) = &*row_rhs else { return Err(anyhow!("Expected a row to be an array.")) };
-                if cols.len() != 3 { return Err(anyhow!("Matrix row must have 3 columns.")) }
-                for col_rhs in cols {
-                    let Rhs::Val(Val::NumVal(NumVal::Floating(val))) = &**col_rhs else { return Err(anyhow!("Matrix element must be a float.")) };
-                    elements.push(*val);
-                }
-            }
-            Matrix3::new(elements[0], elements[1], elements[2], elements[3], elements[4], elements[5], elements[6], elements[7], elements[8])
-        })?;
-
-        let ahrs_filtering = imu.filter_ns(&["ahrs_filtering"]);
-        let madgwick_setting = resolve_var!(ahrs_filtering, "method", as MadgwickSetting, Rhs::Val(Val::StringVal(s)) => {ahrs_method_parse(&s)?})?;
-        let gravity = resolve_var!(imu, "gravity", as f64, Rhs::Val(Val::NumVal(NumVal::Floating(f))) => {f})?;
-
-        let cov_gyr_val = resolve_var!(imu, "covariance_gyroscope", as f64, Rhs::Val(Val::NumVal(NumVal::Floating(f))) => {f})?;
-        let cov_gyr = Vector3::new(cov_gyr_val, cov_gyr_val, cov_gyr_val);
-        let cov_gyr_bias_val = resolve_var!(imu, "covariance_gyroscope_bias", as f64, Rhs::Val(Val::NumVal(NumVal::Floating(f))) => {f})?;
-        let cov_gyr_bias = Vector3::new(cov_gyr_bias_val, cov_gyr_bias_val, cov_gyr_bias_val);
-        let cov_acc_val = resolve_var!(imu, "covariance_acceleration", as f64, Rhs::Val(Val::NumVal(NumVal::Floating(f))) => {f})?;
-        let cov_acc = Vector3::new(cov_acc_val, cov_acc_val, cov_acc_val);
-        let cov_acc_bias_val = resolve_var!(imu, "covariance_acceleration_bias", as f64, Rhs::Val(Val::NumVal(NumVal::Floating(f))) => {f})?;
-        let cov_acc_bias = Vector3::new(cov_acc_bias_val, cov_acc_bias_val, cov_acc_bias_val);
-
-        let from_lidar = imu.filter_ns(&["from_lidar_transform"]);
-        let estimate_extrinsic_online =
-            resolve_var!(from_lidar, "estimate_online", as bool, Rhs::Val(Val::BoolVal(b)) => {b})?;
-        let lidar_only =
-            resolve_var!(imu, "lidar_only", as bool, Rhs::Val(Val::BoolVal(b)) => {b})?;
-
-        let calib = imu.filter_ns(&["calibration"]);
-        let imu_calibrate_gyros =
-            resolve_var!(calib, "gyroscope", as bool, Rhs::Val(Val::BoolVal(b)) => {b})?;
-        let gyro_calibration_samples = resolve_var!(calib, "gyroscope.samples", as usize, Rhs::Val(Val::NumVal(NumVal::Integer(i))) => {i})?;
-        let imu_intrinsics_calib_file_path: Option<String> = resolve_var!(calib, "parameter_file", as Option<String>, Rhs::Val(Val::StringVal(s)) | Rhs::Path(s) => { if s.is_empty() { None } else { Some(s) } })?;
-        let imu_time_offset = resolve_var!(calib, "time_offset", as f64, Rhs::Val(Val::UnitedVal(UnitVal::TimeVal(v))) => { v.get::<second>() })?;
-
-        let noise_from_file = resolve_var!(calib, "parameter_file.use_noise", as bool, Rhs::Val(Val::BoolVal(b)) => {b})?;
-        let noise_inflation = resolve_var!(calib, "noise_inflation", as f64, Rhs::Val(Val::NumVal(nv)) => {
-            match nv {
-                NumVal::Floating(f) => f,
-                NumVal::Integer(i) => i as f64,
-            }
-        })?;
-
-        // Replacing the tuned constants is opt-in, so this only runs when it
-        // was asked for, and says which numbers it swapped.
-        let (cov_gyr, cov_acc, cov_gyr_bias, cov_acc_bias) = if noise_from_file {
-            let path = imu_intrinsics_calib_file_path.as_deref().ok_or_else(|| {
-                anyhow::anyhow!(
-                    "imu.calibration.parameter_file.use_noise is on but imu.calibration.parameter_file \
-                     is empty, so there is no file to take the noise parameters from"
-                )
-            })?;
-            let derived = derive_noise_covariances(path, noise_inflation)?;
             log::info!(
-                "IMU covariances from {path} (inflation {noise_inflation}x): \
-                 gyroscope {:.3e} (was {:.3e}), acceleration {:.3e} (was {:.3e}), \
-                 gyroscope bias {:.3e} (was {:.3e}), acceleration bias {:.3e} (was {:.3e})",
-                derived.gyr,
-                cov_gyr_val,
-                derived.acc,
-                cov_acc_val,
-                derived.gyr_bias,
-                cov_gyr_bias_val,
-                derived.acc_bias,
-                cov_acc_bias_val,
+                "imu.lidar_only is on, so imu.from_lidar_transform is ignored and the trajectory is the Lidar's own."
             );
-            (
-                Vector3::new(derived.gyr, derived.gyr, derived.gyr),
-                Vector3::new(derived.acc, derived.acc, derived.acc),
-                Vector3::new(derived.gyr_bias, derived.gyr_bias, derived.gyr_bias),
-                Vector3::new(derived.acc_bias, derived.acc_bias, derived.acc_bias),
-            )
-        } else {
-            (cov_gyr, cov_acc, cov_gyr_bias, cov_acc_bias)
-        };
-
-        // Lidar-only trajectories use the Lidar frame directly.
-        let (initial_translation_lidar_to_imu, initial_rotation_lidar_to_imu) = if lidar_only {
-            if initial_translation_lidar_to_imu != Vector3::zeros()
-                || initial_rotation_lidar_to_imu != Matrix3::identity()
-            {
-                log::info!(
-                    "imu.lidar_only is on, so imu.from_lidar_transform is ignored and the \
-                     trajectory is the Lidar's own."
-                );
-            }
-            (Vector3::zeros(), Matrix3::identity())
-        } else {
-            (
-                initial_translation_lidar_to_imu,
-                initial_rotation_lidar_to_imu,
-            )
-        };
-
-        let imu_params = ImuParameters {
-            initial_translation_lidar_to_imu,
-            initial_rotation_lidar_to_imu,
-            estimate_extrinsic_online,
-            lidar_only,
-            cov_gyr,
-            cov_gyr_bias,
-            cov_acc,
-            cov_acc_bias,
-            kinematic_constraint_std: wheel_kinematic_constraint_std,
-            kinematic_model: wheel_kinematic_model,
-            wheel_odom_cov_override: wheel_odom_cov,
-        };
-        let imu_sync_params = ImuConfigParameter {
-            madgwick_setting,
-            gravity,
-            calibration: ImuCalibrationParameters {
-                imu_calibrate_gyros,
-                gyro_calibration_samples,
-                imu_intrinsics_calib_file_path,
-                time_offset: imu_time_offset,
-            },
-            ..Default::default()
-        };
-        let imu_node_params = (
-            imu_src_topic,
-            imu_qos,
-            imu_predictor_init_time_sec,
-            imu_lidar_tf_override && !lidar_only,
-        );
-
-        (imu_params, imu_sync_params, imu_node_params)
-    };
-
-    let (
-        imu_filtered_topic,
-        show_tui,
-        debug_fps,
-        map_frame,
-        logger_prefix,
-        odom_qos,
-        odometry_rate,
-        path_qos,
-        imu_odom_qos,
-        imu_path_qos,
-        imu_filtered_qos,
-        warning_debounce,
-        rerun,
-        mcap,
-        base_link_frame,
-        base_to_lidar,
-        base_to_lidar_tf_override,
-        cloud_publisher_mode,
-    ): (
-        _,
-        _,
-        _,
-        _,
-        _,
-        _,
-        OdometryRate,
-        _,
-        _,
-        _,
-        _,
-        _,
-        _,
-        _,
-        Option<String>,
-        nalgebra::Isometry3<f64>,
-        bool,
-        PointCloudMode,
-    ) = {
-        let output_ns = asts.filter_ns(&["output"]);
-        let terminal_ns = output_ns.filter_ns(&["terminal"]);
-        let show_tui: bool =
-            resolve_var!(terminal_ns, "ui", as bool, Rhs::Val(Val::BoolVal(b)) => {b})?;
-        let show_debug: bool =
-            resolve_var!(terminal_ns, "debug", as bool, Rhs::Val(Val::BoolVal(b)) => {b})?;
-        let debug_fps = if show_debug {
-            resolve_var!(terminal_ns, "debug_fps", as i32, Rhs::Val(Val::NumVal(NumVal::Integer(i))) => {i})?
-        } else {
-            // Mark debug_fps as "used" even when debug is disabled
-            let _ = terminal_ns.defaults.evaluate_stats_only("debug_fps");
-            let _ = terminal_ns.user.evaluate_stats_only("debug_fps");
-            0
-        };
-        let warning_debounce = resolve_var!(terminal_ns, "warning_debounce", as f64, Rhs::Val(Val::UnitedVal(UnitVal::TimeVal(v))) => { v.get::<second>() })?;
-        // optional log level for terminal/logger
-        let log_level: Option<String> = resolve_var!(terminal_ns, "log_level", as String, Rhs::Val(Val::StringVal(s)) | Rhs::Path(s) => {s}).ok();
-        if let Some(ref lvl) = log_level {
-            unsafe {
-                std::env::set_var("RUST_LOG", lvl.as_str());
-            }
         }
-        let rerun_ns = output_ns.filter_ns(&["rerun"]);
-        let rerun_enabled =
-            resolve_var!(output_ns, "rerun", as bool, Rhs::Val(Val::BoolVal(b)) => {b})?;
-        let rerun_server_addr = resolve_var!(rerun_ns, "server_addr", as String, Rhs::Val(Val::StringVal(s)) | Rhs::Path(s) => {s})?;
-        let rerun_map_ns = rerun_ns.filter_ns(&["map"]);
-        let rerun_map_enabled =
-            resolve_var!(rerun_ns, "map", as bool, Rhs::Val(Val::BoolVal(b)) => {b})?;
-        let rerun_map_publish_interval_sec: f64 = resolve_var!(rerun_map_ns, "publish_interval", as f64, Rhs::Val(Val::UnitedVal(UnitVal::TimeVal(v))) => {v.get::<second>()})?;
-        let rerun_map_visual_scale: f32 = resolve_var!(rerun_map_ns, "visual_scale", as f32, Rhs::Val(Val::NumVal(NumVal::Floating(v))) => {v as f32})?;
-        if !rerun_map_publish_interval_sec.is_finite() || rerun_map_publish_interval_sec < 0.0 {
-            return Err(anyhow!(
-                "output.rerun.map.publish_interval must be finite and non-negative"
-            ));
-        }
-        if !rerun_map_visual_scale.is_finite() || rerun_map_visual_scale <= 0.0 {
-            return Err(anyhow!(
-                "output.rerun.map.visual_scale must be finite and positive"
-            ));
-        }
-        let rerun = RerunConfig {
-            enabled: rerun_enabled,
-            server_addr: rerun_server_addr,
-            map: RerunMapConfig {
-                enabled: rerun_map_enabled,
-                publish_interval_sec: rerun_map_publish_interval_sec,
-                visual_scale: rerun_map_visual_scale,
-            },
-        };
-
-        let mcap_ns = output_ns.filter_ns(&["mcap"]);
-        let mcap_file: Option<String> = resolve_var!(mcap_ns, "file", as Option<String>, Rhs::Val(Val::StringVal(s)) | Rhs::Path(s) => { if s.is_empty() { None } else { Some(s) } })?;
-        let mcap_rosbag_dir: Option<String> = resolve_var!(mcap_ns, "rosbag_dir", as Option<String>, Rhs::Val(Val::StringVal(s)) | Rhs::Path(s) => { if s.is_empty() { None } else { Some(s) } })?;
-        let mcap_rosbag_metadata: Option<String> = resolve_var!(mcap_ns, "rosbag_metadata", as Option<String>, Rhs::Val(Val::StringVal(s)) | Rhs::Path(s) => { if s.is_empty() { None } else { Some(s) } })?;
-        if mcap_file.is_some() && mcap_rosbag_dir.is_some() {
-            return Err(anyhow!(
-                "output.mcap.file and output.mcap.rosbag_dir are mutually exclusive"
-            ));
-        }
-        if mcap_rosbag_metadata.is_some() && mcap_rosbag_dir.is_some() {
-            return Err(anyhow!(
-                "output.mcap.rosbag_metadata cannot be combined with output.mcap.rosbag_dir; \
-                 rosbag_dir always writes its own metadata.yaml"
-            ));
-        }
-        if mcap_rosbag_metadata.is_some() && mcap_file.is_none() {
-            return Err(anyhow!(
-                "output.mcap.rosbag_metadata requires output.mcap.file"
-            ));
-        }
-        let mcap = McapConfig {
-            cloud_topic: resolve_var!(mcap_ns, "cloud_topic", as String, Rhs::Val(Val::StringVal(s)) | Rhs::Path(s) => {s})?,
-            odom_topic: resolve_var!(mcap_ns, "odom_topic", as String, Rhs::Val(Val::StringVal(s)) | Rhs::Path(s) => {s})?,
-            path_topic: resolve_var!(mcap_ns, "path_topic", as String, Rhs::Val(Val::StringVal(s)) | Rhs::Path(s) => {s})?,
-            tf_topic: resolve_var!(mcap_ns, "tf_topic", as String, Rhs::Val(Val::StringVal(s)) | Rhs::Path(s) => {s})?,
-            file: mcap_file,
-            rosbag_dir: mcap_rosbag_dir,
-            rosbag_metadata: mcap_rosbag_metadata,
-        };
-
-        let map_frame = resolve_var!(output_ns, "global_frame", as String, Rhs::Val(Val::StringVal(s)) | Rhs::Path(s) => {s})?;
-        let logger_prefix = resolve_var!(output_ns, "logger_prefix", as String, Rhs::Val(Val::StringVal(s)) | Rhs::Path(s) => {s})?;
-        let odom_qos = resolve_var!(output_ns, "lio_odometry_msg_qos", as Qos, Rhs::Val(Val::StringVal(s)) => {reliablility_parse(&s)?})?;
-        let odometry_rate = resolve_var!(output_ns, "odometry_rate", as OdometryRate, Rhs::Val(Val::StringVal(s)) | Rhs::Path(s) => {
-            match s.to_lowercase().as_str() {
-                "lidar" => OdometryRate::Lidar,
-                "imuandlidar" | "imu_and_lidar" => OdometryRate::ImuAndLidar,
-                _ => return Err(anyhow!("invalid output.odometry_rate '{s}'. Expected Lidar or ImuAndLidar")),
-            }
-        })?;
-        let imu_filtered_topic = resolve_var!(output_ns, "imu_ahrs_filtered_topic", as String, Rhs::Val(Val::StringVal(s)) | Rhs::Path(s) => {s})?;
-        let path_qos = resolve_var!(output_ns, "lio_path_msg_qos", as Qos, Rhs::Val(Val::StringVal(s)) => {reliablility_parse(&s)?})?;
-        let imu_odom_qos = resolve_var!(output_ns, "imu_odometry_msg_qos", as Qos, Rhs::Val(Val::StringVal(s)) => {reliablility_parse(&s)?})?;
-        let imu_path_qos = resolve_var!(output_ns, "imu_path_msg_qos", as Qos, Rhs::Val(Val::StringVal(s)) => {reliablility_parse(&s)?})?;
-        let imu_filtered_qos = resolve_var!(output_ns, "imu_ahrs_filtered_msg_qos", as Qos, Rhs::Val(Val::StringVal(s)) => {reliablility_parse(&s)?})?;
-        let cloud_publisher_mode = resolve_var!(output_ns, "publisher_mode", as PointCloudMode, Rhs::Val(Val::StringVal(s)) | Rhs::Path(s) => {pointcloud_mode_parse(&s)?})?;
-
-        let base_link_ns = output_ns.filter_ns(&["base_link"]);
-        let base_link_frame = match resolve_var!(base_link_ns, "frame_id", as String, Rhs::Val(Val::StringVal(s)) | Rhs::Path(s) => {s})
-        {
-            Ok(s) => {
-                let s: String = s;
-                if s.is_empty() { None } else { Some(s) }
-            }
-            Err(_) => None,
-        };
-
-        let base_transform_ns = base_link_ns.filter_ns(&["from_lidar_transform"]);
-        let base_to_lidar_tf_override = resolve_var!(base_transform_ns, "use_tf_tree", as bool, Rhs::Val(Val::BoolVal(b)) => {b})?;
-        let base_translation: Vector3<f64> = resolve_var!(base_transform_ns, "translation", as Vector3<f64>, Rhs::Array(v) => {
-            let (Some(x_rhs), Some(y_rhs), Some(z_rhs)) = (v.first(), v.get(1), v.get(2)) else { return Err(anyhow!("Expected three vector components.")) };
-            let (Rhs::Val(Val::UnitedVal(UnitVal::LengthVal(x))), Rhs::Val(Val::UnitedVal(UnitVal::LengthVal(y))), Rhs::Val(Val::UnitedVal(UnitVal::LengthVal(z)))) = (&**x_rhs, &**y_rhs, &**z_rhs) else { return Err(anyhow!("All components must be length values.")) };
-            Vector3::new(x.get::<meter>(), y.get::<meter>(), z.get::<meter>())
-        })?;
-        let base_rotation: Matrix3<f64> = resolve_var!(base_transform_ns, "rotation", as Matrix3<f64>, Rhs::Array(rows) => {
-            if rows.len() != 3 { return Err(anyhow!("Rotation matrix must have 3 rows.")) }
-            let mut elements = Vec::with_capacity(9);
-            for row_rhs in rows {
-                let Rhs::Array(cols) = &*row_rhs else { return Err(anyhow!("Expected a row to be an array.")) };
-                if cols.len() != 3 { return Err(anyhow!("Matrix row must have 3 columns.")) }
-                for col_rhs in cols {
-                    let Rhs::Val(Val::NumVal(NumVal::Floating(val))) = &**col_rhs else { return Err(anyhow!("Matrix element must be a float.")) };
-                    elements.push(*val);
-                }
-            }
-            Matrix3::new(elements[0], elements[1], elements[2], elements[3], elements[4], elements[5], elements[6], elements[7], elements[8])
-        })?;
-        let base_to_lidar = nalgebra::Isometry3::from_parts(
-            nalgebra::Translation3::from(base_translation),
-            nalgebra::UnitQuaternion::from_matrix(&base_rotation),
-        );
-
+        (Vector3::zeros(), Matrix3::identity())
+    } else {
         (
-            imu_filtered_topic,
-            show_tui,
-            debug_fps,
-            map_frame,
-            logger_prefix,
-            odom_qos,
-            odometry_rate,
-            path_qos,
-            imu_odom_qos,
-            imu_path_qos,
-            imu_filtered_qos,
-            warning_debounce,
-            rerun,
-            mcap,
-            base_link_frame,
-            base_to_lidar,
-            base_to_lidar_tf_override,
-            cloud_publisher_mode,
+            imu.from_lidar_transform.translation,
+            imu.from_lidar_transform.rotation,
         )
     };
-
-    let (
-        initial_scan_accumulate,
-        point_skip,
-        preprocessing_backend,
-        query_resolution_factor,
-        bypass_output_downsample,
-        passthrough_filter,
-        global_zero_frame,
-    ) = {
-        let preproc_ns = asts.filter_ns(&["preprocessing"]);
-        let initial_scan_accumulate = resolve_var!(preproc_ns, "initial_scan_accumulate", as usize, Rhs::Val(Val::NumVal(NumVal::Integer(i))) => { i })?;
-        let downsample_ns = preproc_ns.filter_ns(&["downsample"]);
-        let point_skip = resolve_var!(downsample_ns, "point_skip", as usize, Rhs::Val(Val::NumVal(NumVal::Integer(i))) => { i })?;
-        let preprocessing_backend = resolve_var!(downsample_ns, "backend", as PreprocessingBackend, Rhs::Val(Val::StringVal(s)) => { preprocessing_backend_parse(&s)? })?;
-        let bypass_output_downsample = resolve_var!(downsample_ns, "bypass_output_downsample", as bool, Rhs::Val(Val::BoolVal(b)) => { b })?;
-        let query_resolution_factor: f64 = resolve_var!(downsample_ns, "query_resolution_factor", as f64, Rhs::Val(Val::NumVal(NumVal::Floating(v))) => { v })?;
-
-        let filter_ns = preproc_ns.filter_ns(&["filter"]);
-        let bbox_ns = filter_ns.filter_ns(&["bounding_box"]);
-        let (min_x, max_x) = resolve_length_range_meters_float!(bbox_ns, "x", f64::MIN, f64::MAX)?;
-        let (min_y, max_y) = resolve_length_range_meters_float!(bbox_ns, "y", f64::MIN, f64::MAX)?;
-        let (min_z, max_z) = resolve_length_range_meters_float!(bbox_ns, "z", f64::MIN, f64::MAX)?;
-        let min = Vector3::new(min_x, min_y, min_z);
-        let max = Vector3::new(max_x, max_y, max_z);
-        let invert_bounding_box =
-            resolve_var!(bbox_ns, "invert", as bool, Rhs::Val(Val::BoolVal(b)) => {b})?;
-
-        let dist_ns = filter_ns.filter_ns(&["distance"]);
-        let (min_dist, max_dist) =
-            resolve_length_range_meters_float!(dist_ns, "range", 0.0, f64::MAX / 2.5)?;
-        let invert_distance =
-            resolve_var!(dist_ns, "invert", as bool, Rhs::Val(Val::BoolVal(b)) => {b})?;
-
-        let hfov_ns = filter_ns.filter_ns(&["horizontal_fov"]);
-        let (fov_left, fov_right) = resolve_angle_range!(hfov_ns, "degrees", -180.0, 180.0)?;
-        let enable_horizontal_fov =
-            resolve_var!(filter_ns, "horizontal_fov", as bool, Rhs::Val(Val::BoolVal(b)) => {b})?;
-        let invert_fov =
-            resolve_var!(hfov_ns, "invert", as bool, Rhs::Val(Val::BoolVal(b)) => {b})?;
-        let forward = resolve_var!(hfov_ns, "forward", as Vector2<f32>, Rhs::Array(v) => {
-            let (Some(x_rhs), Some(y_rhs)) = (v.first(), v.get(1)) else { return Err(anyhow!("Expected two components for forward vector.")) };
-            let (Rhs::Val(Val::NumVal(NumVal::Floating(x))), Rhs::Val(Val::NumVal(NumVal::Floating(y)))) = (&**x_rhs, &**y_rhs) else { return Err(anyhow!("Forward vector components must be floats.")) };
-            Vector2::new(*x as f32, *y as f32)
-        })?;
-
-        let poly_ns = filter_ns.filter_ns(&["polygon_2d"]);
-        let coords_vec: Vec<Point2<f32>> = resolve_var!(poly_ns, "coords", as Vec<Point2<f32>>, Rhs::Array(points) => {
-            let mut coords = Vec::new();
-            for point_rhs in points {
-                let Rhs::Array(point_coords) = &*point_rhs else { return Err(anyhow!("Expected polygon vertex to be an array [x, y].")) };
-                let (Some(x_rhs), Some(y_rhs)) = (point_coords.first(), point_coords.get(1)) else { return Err(anyhow!("Expected two components [x, y] for polygon vertex.")) };
-                let (Rhs::Val(Val::UnitedVal(UnitVal::LengthVal(x))), Rhs::Val(Val::UnitedVal(UnitVal::LengthVal(y)))) = (&**x_rhs, &**y_rhs) else { return Err(anyhow!("Polygon vertex components must be united values (e.g., in meters).")) };
-                coords.push(Point2::new(x.get::<meter>() as f32, y.get::<meter>() as f32));
-            }
-            coords
-        })?;
-        let polygon = if !coords_vec.is_empty() {
-            Some(coords_vec)
-        } else {
-            None
-        };
-        let invert_polygon =
-            resolve_var!(poly_ns, "invert", as bool, Rhs::Val(Val::BoolVal(b)) => {b})?;
-        let global_zero_frame = resolve_var!(poly_ns, "global_zero_frame", as String, Rhs::Val(Val::StringVal(s)) | Rhs::Path(s) => {s})?;
-
-        let intensity_ns = filter_ns.filter_ns(&["intensity"]);
-        let (min_intensity, max_intensity) =
-            resolve_float_range!(intensity_ns, "values", f64::MIN, f64::MAX)?;
-        let invert_intensity =
-            resolve_var!(intensity_ns, "invert", as bool, Rhs::Val(Val::BoolVal(b)) => {b})?;
-
-        let passthrough_filter = PassthroughFilterParameters {
-            min: min.cast::<f32>(),
-            max: max.cast::<f32>(),
-            invert_bounding_box,
-            min_dist: min_dist as f32,
-            max_dist: max_dist as f32,
-            invert_distance,
-            fov_left,
-            fov_right,
-            forward,
-            enable_horizontal_fov,
-            polygon,
-            invert_polygon,
-            invert_fov,
-            min_intensity: min_intensity as f32,
-            max_intensity: max_intensity as f32,
-            invert_intensity,
-            filter_frame_transform: nalgebra::Isometry3::identity(), // TODO what is this param again? the override for global_zero_frame in tf?
-        };
-        (
-            initial_scan_accumulate,
-            point_skip,
-            preprocessing_backend,
-            query_resolution_factor,
-            bypass_output_downsample,
-            passthrough_filter,
-            global_zero_frame,
-        )
+    let imu_params = ImuParameters {
+        initial_translation_lidar_to_imu: translation,
+        initial_rotation_lidar_to_imu: rotation,
+        estimate_extrinsic_online: imu.from_lidar_transform.estimate_online,
+        lidar_only: imu.lidar_only,
+        cov_gyr: Vector3::repeat(cov_gyr),
+        cov_acc: Vector3::repeat(cov_acc),
+        cov_gyr_bias: Vector3::repeat(cov_gyr_bias),
+        cov_acc_bias: Vector3::repeat(cov_acc_bias),
+        kinematic_constraint_std: wheel.kinematic_constraint_std,
+        kinematic_model,
+        wheel_odom_cov_override: wheel.covariance,
     };
-
-    let (
-        num_threads,
-        cpu_only,
-        parallelism_decision_threshold_stddevs,
-        parallelism_decision_samples_per_mode,
-        parallelism_execution_policy,
-    ) = {
-        let parallelism_ns = asts.filter_ns(&["parallelism"]);
-        let num_threads = {
-            let rhs = resolve_var!(parallelism_ns, "num_threads", as &Rhs, r => { r })?;
-            match rhs {
-                Rhs::Val(Val::NumVal(NumVal::Integer(i))) => i as usize,
-                Rhs::Val(Val::StringVal(s)) if s.eq_ignore_ascii_case("all") => 0usize,
-                _ => {
-                    return Err(anyhow!(
-                        "parallelism.num_threads must be an integer or 'all'"
-                    ));
-                }
-            }
-        };
-        let cpu_only =
-            resolve_var!(parallelism_ns, "cpu_only", as bool, Rhs::Val(Val::BoolVal(b)) => { b })?;
-        let parallelism_execution_policy = resolve_var!(
-            parallelism_ns,
-            "execution_mode",
-            as ExecutionPolicy,
-            Rhs::Val(Val::StringVal(s)) | Rhs::Path(s) => { execution_policy_parse(&s)? }
-        )?;
-        let parallelism_decision_threshold_stddevs: f64 = resolve_var!(
-            parallelism_ns,
-            "decision_threshold_stddevs",
-            as f64,
-            Rhs::Val(Val::NumVal(NumVal::Floating(v))) => { v }
-        )?;
-        if !parallelism_decision_threshold_stddevs.is_finite()
-            || parallelism_decision_threshold_stddevs < 0.0
-        {
-            return Err(anyhow!(
-                "parallelism.decision_threshold_stddevs must be finite and non-negative"
-            ));
-        }
-        let parallelism_decision_samples_per_mode = resolve_var!(
-            parallelism_ns,
-            "decision_samples_per_mode",
-            as usize,
-            Rhs::Val(Val::NumVal(NumVal::Integer(v))) => { v }
-        )?;
-        if parallelism_decision_samples_per_mode == 0 {
-            return Err(anyhow!(
-                "parallelism.decision_samples_per_mode must be greater than zero"
-            ));
-        }
-        (
-            num_threads,
-            cpu_only,
-            parallelism_decision_threshold_stddevs,
-            parallelism_decision_samples_per_mode,
-            parallelism_execution_policy,
-        )
+    let imu_sync_params = ImuConfigParameter {
+        madgwick_setting: imu.ahrs_filtering.method,
+        gravity: imu.gravity,
+        calibration: ImuCalibrationParameters {
+            imu_calibrate_gyros: imu.calibration.gyroscope.value,
+            gyro_calibration_samples: imu.calibration.gyroscope.samples,
+            imu_intrinsics_calib_file_path: imu.calibration.parameter_file.value,
+            time_offset: imu.calibration.time_offset,
+        },
+        ..Default::default()
     };
-
-    // "" writes nothing, "auto" names the file after the current time.
-    let export_ns = asts.filter_ns(&["output"]);
+    let terminal = output.terminal;
+    let debug_fps = if terminal.debug {
+        terminal.debug_fps
+    } else {
+        let _ = asts
+            .defaults
+            .evaluate_stats_only("output.terminal.debug_fps");
+        let _ = asts.user.evaluate_stats_only("output.terminal.debug_fps");
+        0
+    };
+    // Preserve the existing logger integration. The browser has no process environment.
+    #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+    if let Some(level) = terminal.log_level {
+        unsafe {
+            std::env::set_var("RUST_LOG", level);
+        }
+    }
+    let mcap = output.mcap;
+    anyhow::ensure!(
+        mcap.file.is_none() || mcap.rosbag_dir.is_none(),
+        "output.mcap.file and output.mcap.rosbag_dir are mutually exclusive"
+    );
+    anyhow::ensure!(
+        mcap.rosbag_metadata.is_none() || mcap.rosbag_dir.is_none(),
+        "output.mcap.rosbag_metadata cannot be combined with output.mcap.rosbag_dir; rosbag_dir always writes its own metadata.yaml"
+    );
+    anyhow::ensure!(
+        mcap.rosbag_metadata.is_none() || mcap.file.is_some(),
+        "output.mcap.rosbag_metadata requires output.mcap.file"
+    );
+    let mcap = McapConfig {
+        file: mcap.file,
+        rosbag_dir: mcap.rosbag_dir,
+        rosbag_metadata: mcap.rosbag_metadata,
+        cloud_topic: mcap.cloud_topic,
+        odom_topic: mcap.odom_topic,
+        path_topic: mcap.path_topic,
+        tf_topic: mcap.tf_topic,
+    };
+    let filter = preprocessing.filter;
+    let (min_x, max_x) = filter.bounding_box.x.bounds(f64::MIN, f64::MAX);
+    let (min_y, max_y) = filter.bounding_box.y.bounds(f64::MIN, f64::MAX);
+    let (min_z, max_z) = filter.bounding_box.z.bounds(f64::MIN, f64::MAX);
+    let (min_dist, max_dist) = filter.distance.range.bounds(0.0, f64::MAX / 2.5);
+    let (left, right) = filter.horizontal_fov.degrees.bounds(-180.0, 180.0);
+    let (min_intensity, max_intensity) = filter.intensity.values.bounds(f64::MIN, f64::MAX);
+    let passthrough_filter = PassthroughFilterParameters {
+        min: Vector3::new(min_x, min_y, min_z).cast(),
+        max: Vector3::new(max_x, max_y, max_z).cast(),
+        invert_bounding_box: filter.bounding_box.invert,
+        min_dist: min_dist as f32,
+        max_dist: max_dist as f32,
+        invert_distance: filter.distance.invert,
+        fov_left: Angle::new::<degree>(left as f32).get::<radian>(),
+        fov_right: Angle::new::<degree>(right as f32).get::<radian>(),
+        forward: filter.horizontal_fov.forward,
+        enable_horizontal_fov: filter.horizontal_fov.value,
+        invert_fov: filter.horizontal_fov.invert,
+        polygon: (!filter.polygon_2d.coords.is_empty()).then_some(filter.polygon_2d.coords),
+        invert_polygon: filter.polygon_2d.invert,
+        min_intensity: min_intensity as f32,
+        max_intensity: max_intensity as f32,
+        invert_intensity: filter.intensity.invert,
+        filter_frame_transform: nalgebra::Isometry3::identity(),
+    };
     let export_path = |value: String| match value.as_str() {
         "" => None,
         "auto" => Some(String::new()),
         _ => Some(value),
     };
-    let export = crate::ExportConfig {
-        trajectory: export_path(resolve_var!(export_ns, "trajectory", as String, Rhs::Val(Val::StringVal(s)) | Rhs::Path(s) => {s})?),
-        latency: export_path(resolve_var!(export_ns, "latency", as String, Rhs::Val(Val::StringVal(s)) | Rhs::Path(s) => {s})?),
-        processing_time: export_path(resolve_var!(export_ns, "processing_time", as String, Rhs::Val(Val::StringVal(s)) | Rhs::Path(s) => {s})?),
-    };
-    let offline_ns = asts.filter_ns(&["offline"]);
-    let offline = crate::OfflineConfig {
-        keep_open: resolve_var!(offline_ns, "keep_open", as bool, Rhs::Val(Val::BoolVal(b)) => {b})?,
-        open_router: resolve_var!(offline_ns, "open_router", as bool, Rhs::Val(Val::BoolVal(b)) => {b})?,
-        cache_stream: resolve_var!(offline_ns, "cache_stream", as bool, Rhs::Val(Val::BoolVal(b)) => {b})?,
-    };
-
     let final_config = LioConfig {
         sensor_drivers,
-        rerun,
+        rerun: RerunConfig {
+            enabled: output.rerun.value,
+            server_addr: output.rerun.server_addr,
+            map: RerunMapConfig {
+                enabled: output.rerun.map.value,
+                publish_interval_sec: output.rerun.map.publish_interval,
+                visual_scale: output.rerun.map.visual_scale,
+            },
+        },
         mcap,
-        export,
+        export: crate::ExportConfig {
+            trajectory: export_path(output.trajectory),
+            latency: export_path(output.latency),
+            processing_time: export_path(output.processing_time),
+        },
         offline,
-        neighbor_max_range,
-        map_resolution,
-        map_capacity,
-        map_multiresolution,
-        dist_update_sensitivity,
-        ekf_max_iterations,
-        lidar_odom_cov,
-        show_tui,
+        neighbor_max_range: registration.neighbors_max_range,
+        map_resolution: map.resolution.value,
+        map_capacity: map.capacity,
+        map_multiresolution: map.resolution.r#type,
+        dist_update_sensitivity: map.distribution_update_sensitivity,
+        ekf_max_iterations: registration.max_iter,
+        lidar_odom_cov: lidar.covariance,
+        show_tui: terminal.ui,
         debug_fps,
-        odom_qos,
-        odometry_rate,
-        path_qos,
-        imu_odom_qos,
-        imu_path_qos,
+        odom_qos: output.lio_odometry_msg_qos,
+        odometry_rate: output.odometry_rate,
+        path_qos: output.lio_path_msg_qos,
+        imu_odom_qos: output.imu_odometry_msg_qos,
+        imu_path_qos: output.imu_path_msg_qos,
         imu_params,
-        base_link_frame,
-        base_to_lidar,
-        base_to_lidar_tf_override,
-        cpu_only,
+        base_link_frame: output.base_link.frame_id,
+        base_to_lidar: nalgebra::Isometry3::from_parts(
+            nalgebra::Translation3::from(output.base_link.from_lidar_transform.translation),
+            nalgebra::UnitQuaternion::from_matrix(&output.base_link.from_lidar_transform.rotation),
+        ),
+        base_to_lidar_tf_override: output.base_link.from_lidar_transform.use_tf_tree,
+        cpu_only: parallelism.cpu_only,
         sync_node_params: SyncNodeParameters {
-            wheel_qos,
-            wheel_src_topic,
-            cloud_src_topic,
-            cloud_qos,
-            cloud_subscriber_mode,
-            imu_src_topic: imu_node_params.0,
-            imu_qos: imu_node_params.1,
-            imu_predictor_init_time_sec: imu_node_params.2,
-            logger_prefix,
-            imu_filtered_qos,
-            imu_filtered_topic,
+            wheel_qos: wheel.qos.reliability,
+            wheel_src_topic: wheel.topic,
+            cloud_src_topic: lidar.topic,
+            cloud_qos: lidar.qos.reliability,
+            cloud_subscriber_mode: lidar.subscriber_mode,
+            imu_src_topic: imu.topic,
+            imu_qos: imu.qos.reliability,
+            imu_predictor_init_time_sec: imu.initial_setup,
+            logger_prefix: output.logger_prefix,
+            imu_filtered_qos: output.imu_ahrs_filtered_msg_qos,
+            imu_filtered_topic: output.imu_ahrs_filtered_topic,
             synchronous_mode: false,
         },
         sync_params: SyncParameters {
-            lidar_vendor,
-            imu_lidar_tf_override: imu_node_params.3,
-            map_frame,
+            lidar_vendor: lidar.vendor,
+            imu_lidar_tf_override: imu.from_lidar_transform.use_tf_tree && !imu.lidar_only,
+            map_frame: output.global_frame,
             imu: imu_sync_params,
             downsample: DownsampleParameters {
-                voxel_size: (query_resolution_factor * map_resolution) as f32,
-                bypass_output_downsample,
-                point_skip,
-                backend: preprocessing_backend,
+                voxel_size: (preprocessing.downsample.query_resolution_factor
+                    * map.resolution.value) as f32,
+                bypass_output_downsample: preprocessing.downsample.bypass_output_downsample,
+                point_skip: preprocessing.downsample.point_skip,
+                backend: preprocessing.downsample.backend,
             },
             passthrough_filter,
-            global_zero_frame,
-            initial_scan_accumulate,
-            wheel_imu_tf_override: wheel_to_imu_tf_override,
-            wheel_to_imu_rotation,
-            wheel_odom_cov,
-            lidar_as_sync,
-            warning_debounce,
-            parallelism_decision_threshold_stddevs,
-            parallelism_decision_samples_per_mode,
-            parallelism_execution_policy,
+            global_zero_frame: filter.polygon_2d.global_zero_frame,
+            initial_scan_accumulate: preprocessing.initial_scan_accumulate,
+            wheel_imu_tf_override: wheel.to_imu_transform.use_tf_tree,
+            wheel_to_imu_rotation: wheel.to_imu_transform.rotation,
+            wheel_odom_cov: wheel.covariance,
+            lidar_as_sync: lidar.as_sync,
+            warning_debounce: terminal.warning_debounce,
+            parallelism_decision_threshold_stddevs: parallelism.decision_threshold_stddevs,
+            parallelism_decision_samples_per_mode: parallelism.decision_samples_per_mode,
+            parallelism_execution_policy: parallelism.execution_mode,
         },
-        // TODO currently hardcoded
         registered_cloud_qos: Qos::Sensor(Reliability::Reliable),
-        cloud_publisher_mode,
+        cloud_publisher_mode: output.publisher_mode,
         enable_live_extrinsic_calibration: false,
-        num_threads,
+        num_threads: parallelism.num_threads,
+        pipelining: parallelism.pipelining,
     };
-
     let default_usage_info = if capture_default_usage {
         asts.defaults.usage_vars()
     } else {
         (vec![], vec![])
     };
-
     let user_usage_info = if capture_user_usage {
         asts.user.usage_vars()
     } else {
         (vec![], vec![])
     };
-
     reject_renamed_keys(&asts.user.usage_vars().0)?;
     Ok((final_config, default_usage_info, user_usage_info))
 }
@@ -1804,4 +1118,33 @@ fn reject_renamed_keys(assigned: &[String]) -> anyhow::Result<()> {
         ));
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod serde_integration_tests {
+    use super::*;
+    #[test]
+    fn defaults_constrain_unannotated_overrides_and_preserve_unknown_key_tracking() {
+        for source in [
+            "lidar.driver.velodyne.data_port = 0\n",
+            "lidar.driver.robosense.msop_port = 65536\n",
+            "imu.driver.xsens.output_rate = 2001\n",
+            "sensor_drivers.ouster.timestamp.startup_timeout = 0s\n",
+            "output.rerun.map.visual_scale = 0.0\n",
+            "parallelism.decision_samples_per_mode = 0\n",
+            "parallelism.num_threads = -1\n",
+            "imu.from_lidar_transform.translation = [1m, 2m]\n",
+        ] {
+            let defaults = ratslang::compile_code(include_str!("../default.rl")).unwrap();
+            let user = ratslang::compile_code(source).unwrap();
+            assert!(ast_to_config(defaults, user).is_err(), "{source}");
+        }
+        let defaults = ratslang::compile_code(include_str!("../default.rl")).unwrap();
+        let user = ratslang::compile_code("output.odometry_rate = imu_and_lidar\nparallelism.num_threads = All\nunknown.typo = true\n").unwrap();
+        let (config, (assigned, read)) = ast_to_config_with_user_usage(defaults, user).unwrap();
+        assert_eq!(config.odometry_rate, OdometryRate::ImuAndLidar);
+        assert_eq!(config.num_threads, 0);
+        assert!(assigned.contains(&"unknown.typo".into()));
+        assert!(!read.contains(&"unknown.typo".into()));
+    }
 }

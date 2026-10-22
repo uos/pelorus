@@ -34,7 +34,9 @@ metal = ["dep:pelorus_metal", "pelorus_metal/metal_available", "pelorus_metal/me
 vulkan = ["dep:pelorus_vulkan", "pelorus_vulkan/vulkan_available", "pelorus_vulkan/vulkan_enable"]
 no-imu-sync = []
 large-processing-queue = []
-default = ["rayon"]
+default = ["rayon", "threads"]
+# The threaded `Synchronizer`. Without it only the stepped synchronizer is built.
+threads = []
 rayon = [
     "dep:rayon",
     "ros_pointcloud2/rayon",

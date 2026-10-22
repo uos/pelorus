@@ -12,6 +12,8 @@ pub mod timing;
 pub mod log_debouncer;
 
 pub use lie::{SE3, SO3};
+/// Monotonic clock that also works in the browser, where `std::time::Instant` panics.
+pub use web_time::Instant;
 
 /// The reference default configuration, in Ratslang.
 pub const DEFAULT_CONFIG_STR: &str = include_str!("../default.rl");
@@ -797,6 +799,18 @@ impl Default for RerunMapConfig {
     }
 }
 
+/// How Pelorus spreads its work over threads.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum Pipelining {
+    /// Input, preprocessing, synchronization and registration run on their own
+    /// threads, so consecutive scans overlap.
+    #[default]
+    Pipelined,
+    /// One thread receives the input in arrival order and processes each scan
+    /// before it takes the next message.
+    Sequential,
+}
+
 /// Top-level configuration used by both the binary and the FFI layer.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct LioConfig {
@@ -832,6 +846,7 @@ pub struct LioConfig {
     pub base_to_lidar_tf_override: bool,
     pub cpu_only: bool,
     pub num_threads: usize,
+    pub pipelining: Pipelining,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
@@ -1181,7 +1196,7 @@ pub struct ImuPosePrediction {
 #[derive(Debug)]
 pub struct SyncProcessedCloud {
     pub scan_id: u64,
-    pub received_at: std::time::Instant,
+    pub received_at: Instant,
     pub cloud: Vec<PointXYZIT>,
     pub passthrough: Option<Vec<PointXYZIT>>,
     /// IMU measurements synchronized to this Lidar frame.

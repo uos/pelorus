@@ -706,7 +706,7 @@ impl crate::Registration for RegistrationState {
                                 .unwrap()
                                 .mode_for(HeavyPhase::PlaneCorrespondence);
                             #[cfg(feature = "rayon")]
-                            let started = std::time::Instant::now();
+                            let started = pelorus_core::Instant::now();
 
                             // Match the GPU backends' f32 transform precision so CPU↔GPU
                             // plane selection stays numerically equivalent. GPU shaders do

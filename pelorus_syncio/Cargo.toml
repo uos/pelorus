@@ -19,7 +19,7 @@ ros_pointcloud2.workspace = true
 anyhow.workspace = true
 nalgebra.workspace = true
 futures-lite.workspace = true
-pelorus_sync = { workspace = true, default-features = false }
+pelorus_sync = { workspace = true, default-features = false, features = ["threads"] }
 log.workspace = true
 env_logger.workspace = true
 ros2-client = { workspace = true, optional = true }
@@ -33,7 +33,7 @@ hiroz = { workspace = true, optional = true }
 hiroz-msgs = { workspace = true, optional = true }
 hiroz-protocol = { workspace = true, optional = true }
 zenoh-buffers = { workspace = true, optional = true }
-tokio = { workspace = true, optional = true, features = ["rt-multi-thread"] }
+tokio = { workspace = true, optional = true, features = ["rt-multi-thread", "macros", "time"] }
 mt_rat = { workspace = true, optional = true }
 ros2-interfaces-jazzy-rkyv = { workspace = true, optional = true }
 rkyv = { workspace = true, optional = true }
@@ -43,6 +43,7 @@ transforms_io = { workspace = true }
 default = ["rayon", "compressed-pointcloud"]
 rayon = ["pelorus_sync/rayon", "ros_pointcloud2/rayon"]
 rat = ["dep:mt_rat"]
+minot-full-transports = ["mt_pubsub?/zenoh-defaults", "mt_rat?/zenoh-defaults"]
 downsample = ["pelorus_sync/downsample"]
 cuda = ["pelorus_sync/cuda"]
 metal = ["pelorus_sync/metal"]
@@ -71,6 +72,7 @@ mt_pubsub = [
 ros2-client = [
     "dep:ros2-client",
     "dep:ros2-interfaces-jazzy-serde",
+    "ros2-interfaces-jazzy-serde/ros2-client",
     "transforms_io/ros2-client",
 ]
 r2r = ["dep:r2r", "pelorus_core/r2r", "transforms_io/r2r"]

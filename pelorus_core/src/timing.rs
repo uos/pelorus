@@ -95,7 +95,7 @@ const MAX_HISTOGRAM_SIZE: u64 = 10;
 pub struct RuntimeEvaluator {
     evaluations: Vec<EvaluationFormular>,
     histogram: Vec<u64>,
-    start_time: std::time::Instant,
+    start_time: crate::Instant,
 }
 
 impl Default for RuntimeEvaluator {
@@ -103,7 +103,7 @@ impl Default for RuntimeEvaluator {
         Self {
             evaluations: Vec::new(),
             histogram: Vec::new(),
-            start_time: std::time::Instant::now(),
+            start_time: crate::Instant::now(),
         }
     }
 }
@@ -113,7 +113,7 @@ impl RuntimeEvaluator {
         Self {
             evaluations: Vec::new(),
             histogram: vec![0, MAX_HISTOGRAM_SIZE],
-            start_time: std::time::Instant::now(),
+            start_time: crate::Instant::now(),
         }
     }
 
@@ -186,7 +186,7 @@ impl RuntimeEvaluator {
     /// Pauses the time measurements. The time that has past since the last resume is accumulated for every currently measured task.
     /// This method is called at the beginning of every public method.
     fn pause(&mut self) {
-        let stop = std::time::Instant::now();
+        let stop = crate::Instant::now();
         let duration = stop - self.start_time;
 
         for evaluation in self.evaluations.iter_mut().filter(|x| x.active) {
@@ -197,7 +197,7 @@ impl RuntimeEvaluator {
     /// Resumes time measurement from the current instant.
     /// This method is called at the end of every public method.
     fn resume(&mut self) {
-        self.start_time = std::time::Instant::now();
+        self.start_time = crate::Instant::now();
     }
 
     pub fn stop(&mut self, name: &str) -> anyhow::Result<()> {

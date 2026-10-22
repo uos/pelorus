@@ -1,3 +1,10 @@
+#[cfg(all(feature = "os-rng-seed", target_arch = "wasm32", target_os = "unknown"))]
+compile_error!("the os-rng-seed feature is not available in the browser");
+
+/// Seed of the neighbor sampling, so the same input gives the same map.
+#[cfg(not(feature = "os-rng-seed"))]
+const SAMPLING_SEED: u64 = 0x5045_4c4f_5255_5321;
+
 #[cfg(feature = "nn_kdt")]
 use kiddo::SquaredEuclidean;
 use localmap::Livodish;
@@ -413,6 +420,9 @@ impl IVoxHashMap {
             kd_points_lookup: std::collections::HashMap::new(),
             livodish: Livodish::new(capacity, sensitivity, resolution / 4.0),
             multiresolution: None,
+            #[cfg(not(feature = "os-rng-seed"))]
+            rng: rand_pcg::Pcg64Mcg::seed_from_u64(SAMPLING_SEED),
+            #[cfg(feature = "os-rng-seed")]
             rng: rand_pcg::Pcg64Mcg::from_os_rng(),
             #[cfg(feature = "nn_kdt")]
             pt_id: 0,
@@ -579,7 +589,7 @@ impl IVoxHashMap {
                 })
                 .collect::<Vec<_>>();
 
-            let sort_started = std::time::Instant::now();
+            let sort_started = pelorus_core::Instant::now();
             sort_unstable_by_key(&mut keyed_points, |(_, key)| *key, execution_mode);
             let mut adaptive_nanos = sort_started.elapsed().as_nanos() as f64;
 
@@ -631,7 +641,7 @@ impl IVoxHashMap {
             // }
 
             // Re-arranges the map to be ready for new inserts.
-            let build_started = std::time::Instant::now();
+            let build_started = pelorus_core::Instant::now();
             self.livodish.build(self.scan_number, execution_mode);
             adaptive_nanos += build_started.elapsed().as_nanos() as f64;
             Some(adaptive_nanos / points.len().max(1) as f64)

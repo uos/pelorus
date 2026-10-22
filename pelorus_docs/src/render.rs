@@ -161,7 +161,8 @@ fn render_summary_rows(section: &Section, depth: usize, out: &mut String) {
 /// dotted path, as `qos.reliability` is, and dropping the `qos` there would name
 /// something that does not exist.
 fn relative_to<'a>(key: &'a str, section: &Section) -> &'a str {
-    key.strip_prefix(&format!("{}.", section.key)).unwrap_or(key)
+    key.strip_prefix(&format!("{}.", section.key))
+        .unwrap_or(key)
 }
 
 /// Renders a block and everything below it.
@@ -231,6 +232,8 @@ fn render_setting(setting: &Setting, level: usize, out: &mut String) {
         out.push_str(&format!("Accepted values: {}\n\n", values.join(", ")));
     }
 
+    render_constraints(&setting.constraints, out);
+
     if setting.default.is_none() {
         out.push_str(
             "Not set by default. Copy the line above into your configuration to enable it.\n\n",
@@ -239,6 +242,52 @@ fn render_setting(setting: &Setting, level: usize, out: &mut String) {
 
     if setting.recommended {
         out.push_str("Part of the [starter configuration](../recommended.md).\n\n");
+    }
+}
+
+fn render_constraints(rules: &ratslang::Constraints, out: &mut String) {
+    fn type_name(ty: &ratslang::ValueType) -> String {
+        ty.to_string()
+    }
+    let mut rows = Vec::new();
+    if rules.required == Some(true) {
+        rows.push("Required: explicitly assign this setting in user overrides.".into());
+    }
+    if let Some(message) = &rules.deprecated {
+        rows.push(format!("Deprecated: {message}."));
+    }
+    if let Some(target) = &rules.renamed_to {
+        rows.push(format!("Replacement: `{target}`."));
+    }
+    if let Some(ty) = &rules.value_type {
+        rows.push(format!("Type: `{}`.", type_name(ty)));
+    }
+    for (bound, label, exclusive) in [
+        (&rules.minimum, "Minimum", rules.minimum_exclusive),
+        (&rules.maximum, "Maximum", rules.maximum_exclusive),
+    ] {
+        if let Some(bound) = bound {
+            rows.push(format!(
+                "{label}: `{}` ({}).",
+                bound.to_source().expect("validated bound"),
+                if exclusive { "exclusive" } else { "inclusive" }
+            ));
+        }
+    }
+    if rules.finite == Some(true) || rules.minimum.is_some() || rules.maximum.is_some() {
+        rows.push("Numeric values must be finite.".into());
+    }
+    if matches!(rules.value_type, Some(ratslang::ValueType::Array(_)))
+        && (rules.minimum.is_some() || rules.maximum.is_some() || rules.finite == Some(true))
+    {
+        rows.push("Numeric constraints apply to every array element.".into());
+    }
+    if rules.case_insensitive == Some(true) {
+        rows.push("Accepted values are case-insensitive.".into());
+    }
+    if !rows.is_empty() {
+        out.push_str(&rows.join("\n\n"));
+        out.push_str("\n\n");
     }
 }
 
@@ -350,7 +399,9 @@ pub fn splice_nav(template: &str, parsed: &Parsed) -> Result<String, String> {
     let begin = find(NAV_BEGIN)?;
     let end = find(NAV_END)?;
     if end <= begin {
-        return Err(format!("`{NAV_END}` comes before `{NAV_BEGIN}` in zensical.template.toml"));
+        return Err(format!(
+            "`{NAV_END}` comes before `{NAV_BEGIN}` in zensical.template.toml"
+        ));
     }
 
     // Keep whatever indentation the surrounding table uses.
@@ -460,5 +511,54 @@ mod tests {
     #[test]
     fn splicing_the_nav_fails_without_markers() {
         assert!(splice_nav("nav = []\n", &two_blocks()).is_err());
+    }
+}
+
+#[cfg(test)]
+mod constraint_tests {
+    use super::*;
+    #[test]
+    fn reference_pages_render_typed_unit_bounds_arrays_and_enum_rules() {
+        let source = "outer {\n# A block.\n\n# Travel distance.\n# @type length\n# @min_exclusive 1mm\n# @max 2m\ndistance = 50cm\n\n# Color gains.\n# @type array<number>\n# @min_exclusive 0\ngains = [1.0, 1.0, 1.0]\n\n# Execution backend.\n# @enum CPU, Backend\n# @enum_case insensitive\nbackend = CPU\n}\n";
+        let parsed = crate::parse::parse(source).unwrap();
+        let page = render_section_page(&parsed.sections[0]);
+        for text in [
+            "Type: `length`",
+            "Minimum: `1mm` (exclusive)",
+            "Maximum: `2m` (inclusive)",
+            "every array element",
+            "Accepted values: `CPU`, `Backend`",
+            "case-insensitive",
+        ] {
+            assert!(page.contains(text), "{text}: {page}");
+        }
+        assert!(!page.contains("@min"));
+    }
+}
+
+#[cfg(test)]
+mod lifecycle_constraint_tests {
+    use super::*;
+    #[test]
+    fn new_dimensions_and_lifecycle_metadata_render() {
+        let constraints = ratslang::Constraints::from_annotations([
+            "type velocity",
+            "min 1cm/s",
+            "required",
+            "deprecated Use speed",
+            "renamed_to speed",
+        ])
+        .unwrap();
+        let mut output = String::new();
+        render_constraints(&constraints, &mut output);
+        for expected in [
+            "velocity",
+            "1cm/s",
+            "Required",
+            "Deprecated",
+            "Replacement: `speed`",
+        ] {
+            assert!(output.contains(expected), "{output}");
+        }
     }
 }

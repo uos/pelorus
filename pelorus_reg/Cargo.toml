@@ -28,7 +28,9 @@ serde.workspace = true
 either.workspace = true
 
 [features]
-default = ["rayon"]
+default = ["rayon", "threads"]
+# The threaded synchronizer and the realtime predictor.
+threads = ["pelorus_sync/threads"]
 processing-time-export = []
 rayon = [
     "dep:rayon",
@@ -40,6 +42,7 @@ rayon = [
     "pelorus_vulkan?/rayon",
 ]
 nn_kdt = ["pelorus_localmap/nn_kdt"]
+os-rng-seed = ["pelorus_localmap/os-rng-seed"]
 lru-eviction = ["pelorus_localmap/lru-eviction"]
 plain-update = ["pelorus_localmap/plain-update"]
 cuda = ["dep:pelorus_cuda", "pelorus_cuda/cuda_available", "pelorus_cuda/cuda_enable", "pelorus_sync/cuda"]

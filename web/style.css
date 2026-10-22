@@ -1,0 +1,831 @@
+/* Libron, the typeface of the documentation, copied from docs/docs/fonts by
+   build.sh. It is licensed under the SIL Open Font License 1.1, see fonts/OFL.txt. */
+@font-face {
+  font-family: "Libron";
+  src: url("fonts/Libron-Regular.woff2") format("woff2");
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "Libron";
+  src: url("fonts/Libron-Italic.woff2") format("woff2");
+  font-weight: 400;
+  font-style: italic;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "Libron";
+  src: url("fonts/Libron-Bold.woff2") format("woff2");
+  font-weight: 700;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "Libron";
+  src: url("fonts/Libron-BoldItalic.woff2") format("woff2");
+  font-weight: 700;
+  font-style: italic;
+  font-display: swap;
+}
+
+/* The colours of the documentation: its dark "slate" scheme with the teal
+   primary and cyan accent palette (docs/zensical.template.toml). */
+:root {
+  --night: #0b0c0f;
+  --deck: #14171f;
+  --rule: #24272e;
+  --fog: #bbbdc2;
+  --heading: #ffffff;
+  --slate: #83858a;
+  --link: #00ccb8;
+  --primary: #009485;
+  --primary-hover: #26a699;
+  --on-primary: #ffffff;
+  --accent: #00bad6;
+  --text: "Libron", Georgia, "Times New Roman", serif;
+  --mono: ui-monospace, "JetBrains Mono", "Fira Code", Menlo, Consolas, monospace;
+  color-scheme: dark;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+[hidden] {
+  display: none !important;
+}
+
+html,
+body {
+  margin: 0;
+  min-height: 100%;
+  background: var(--night);
+  color: var(--fog);
+  font-family: var(--text);
+  font-size: 17px;
+  line-height: 1.6;
+}
+
+a {
+  color: var(--link);
+  text-underline-offset: 0.15em;
+}
+
+code,
+select,
+textarea {
+  font-family: var(--mono);
+  font-size: 0.88em;
+}
+
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/* Start screen */
+
+.hero {
+  position: relative;
+  height: min(58vh, 560px);
+  min-height: 300px;
+  overflow: hidden;
+  border-bottom: 1px solid var(--rule);
+}
+
+/* Renders of the demos, cross-fading from one to the next. */
+.hero-renders figure {
+  position: absolute;
+  inset: 0;
+  margin: 0;
+  opacity: 0;
+  transition: opacity 1.6s ease;
+}
+
+.hero-renders figure.shown {
+  opacity: 1;
+}
+
+.hero-renders img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  object-position: 55% 40%;
+}
+
+/* Names the recording shown, in the corner the title leaves free. */
+.hero-renders figcaption {
+  position: absolute;
+  z-index: 1;
+  right: 1.5rem;
+  bottom: 1.75rem;
+  color: var(--slate);
+  font-size: 0.8rem;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .hero-renders figure {
+    transition: none;
+  }
+}
+
+@media (max-width: 760px) {
+  .hero-renders figcaption {
+    top: 0.9rem;
+    bottom: auto;
+  }
+}
+
+/* Darkens the render where the title sits. */
+.hero::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(to top, var(--night) 4%, transparent 55%);
+}
+
+.hero-text {
+  position: absolute;
+  z-index: 1;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  max-width: 68rem;
+  margin: 0 auto;
+  padding: 0 1.5rem 1.75rem;
+}
+
+/* Libron's own letterforms carry the title, so it keeps their spacing. */
+h1,
+h2 {
+  color: var(--heading);
+}
+
+h1 {
+  margin: 0;
+  font-size: clamp(3rem, 9vw, 6.5rem);
+  font-weight: 700;
+  line-height: 0.95;
+  letter-spacing: -0.01em;
+}
+
+.hero-text p {
+  margin: 0.6rem 0 0;
+  max-width: 40rem;
+  font-size: 1.15rem;
+}
+
+/* The project's links, as on a paper's project page: one row of equal links. */
+.project-links {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.6rem;
+  margin-top: 1.2rem;
+}
+
+.project-links a {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+  padding: 0.4rem 0.95rem 0.4rem 0.8rem;
+  border: 1px solid var(--link);
+  border-radius: 999px;
+  background: rgb(11 12 15 / 0.65);
+  color: var(--link);
+  font-weight: 700;
+  font-size: 0.95rem;
+  text-decoration: none;
+}
+
+.project-links svg {
+  width: 1.15em;
+  height: 1.15em;
+  flex: none;
+}
+
+.project-links a:hover {
+  background: rgb(0 204 184 / 0.12);
+}
+
+.choices {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 3rem;
+  max-width: 68rem;
+  margin: 0 auto;
+  padding: 2.5rem 1.5rem 0;
+}
+
+.choice h2 {
+  margin: 0 0 0.5rem;
+  font-size: 1.3rem;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+}
+
+.choice p {
+  margin: 0;
+  max-width: 34rem;
+  color: var(--slate);
+}
+
+.choice em,
+.choice code {
+  color: var(--fog);
+}
+
+.action {
+  display: flex;
+  align-items: center;
+  gap: 0.9rem;
+  margin-top: 1.25rem;
+}
+
+/* The demo recordings, one row each with its own Run button. */
+#demos {
+  margin: 1.25rem 0 0;
+  padding: 0;
+  list-style: none;
+  border-top: 1px solid var(--rule);
+}
+
+#demos li {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 0.75rem 0;
+  border-bottom: 1px solid var(--rule);
+}
+
+#demos strong {
+  display: block;
+  font-weight: 700;
+}
+
+/* The dataset a group of demos comes from. */
+#demos .dataset {
+  display: block;
+  padding: 1.1rem 0 0.35rem;
+  color: var(--slate);
+  font-size: 0.85rem;
+}
+
+#demos .dataset:first-child {
+  padding-top: 0.6rem;
+}
+
+#demos span {
+  color: var(--slate);
+  font-size: 0.9rem;
+}
+
+#demos .primary {
+  padding: 0.45rem 1.1rem;
+}
+
+button {
+  font: inherit;
+  cursor: pointer;
+  border-radius: 6px;
+}
+
+.primary {
+  padding: 0.6rem 1.25rem;
+  border: none;
+  background: var(--primary);
+  color: var(--on-primary);
+  font-weight: 700;
+}
+
+.primary:hover {
+  background: var(--primary-hover);
+}
+
+button:disabled {
+  opacity: 0.55;
+  cursor: progress;
+}
+
+/* The file input is hidden behind a button-like label. */
+.file input {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  opacity: 0;
+}
+
+.file span {
+  display: inline-block;
+  padding: 0.55rem 1.15rem;
+  border: 1px solid var(--link);
+  border-radius: 6px;
+  color: var(--link);
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.file span:hover {
+  background: rgb(0 204 184 / 0.1);
+}
+
+.file input:focus-visible + span {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+#own-options {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0.9rem;
+  margin-top: 1.5rem;
+  padding-top: 1.25rem;
+  border-top: 1px solid var(--rule);
+}
+
+#own-options label {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+  color: var(--slate);
+  font-size: 0.9rem;
+}
+
+#own-options .wide {
+  grid-column: 1 / -1;
+}
+
+#own-options .action {
+  margin-top: 0.25rem;
+}
+
+select,
+textarea {
+  width: 100%;
+  padding: 0.45rem 0.55rem;
+  border: 1px solid var(--rule);
+  border-radius: 6px;
+  background: var(--deck);
+  color: var(--fog);
+}
+
+/* Progress and errors, right under the action that started them. */
+.status {
+  margin: 0.75rem 0 0;
+  color: var(--accent);
+  font-size: 0.92rem;
+}
+
+.status:empty {
+  display: none;
+}
+
+/* The rule lines up with the content, not the page padding. */
+footer {
+  width: calc(100% - 3rem);
+  max-width: 65rem;
+  margin: 2rem auto 0;
+  padding: 1.25rem 0 2.5rem;
+  border-top: 1px solid var(--rule);
+}
+
+footer p {
+  max-width: 44rem;
+  margin: 0 0 0.8rem;
+  color: var(--slate);
+  font-size: 0.82rem;
+}
+
+@media (max-width: 760px) {
+  .choices {
+    grid-template-columns: 1fr;
+    gap: 2.25rem;
+  }
+
+  #own-options {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* Run view */
+
+#run {
+  position: fixed;
+  inset: 0;
+  display: grid;
+  /* --split is the share of the first pane, set by dragging the divider. */
+  grid-template-columns: minmax(0, var(--split, 40%)) 1px minmax(0, 1fr);
+  grid-template-rows: minmax(0, 1fr);
+  grid-template-areas: "tui divider cloud";
+  background: var(--night);
+}
+
+#tui {
+  grid-area: tui;
+  position: relative;
+  min-width: 0;
+  min-height: 0;
+  background: var(--night);
+}
+
+#tui canvas,
+#cloud {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+#cloud-pane {
+  grid-area: cloud;
+  position: relative;
+  min-width: 0;
+  min-height: 0;
+}
+
+#cloud {
+  touch-action: none;
+  cursor: grab;
+}
+
+#cloud:active {
+  cursor: grabbing;
+}
+
+/* A one-pixel rule with a wider grab area over the neighbouring panes. */
+#divider {
+  grid-area: divider;
+  position: relative;
+  z-index: 2;
+  background: var(--rule);
+  cursor: col-resize;
+  touch-action: none;
+}
+
+#divider::before {
+  content: "";
+  position: absolute;
+  inset: 0 -5px;
+}
+
+#divider:hover,
+#divider.dragging {
+  background: var(--accent);
+}
+
+/* Explains the colours of the 3D view, and switches between them. */
+#legend {
+  position: absolute;
+  top: 0.9rem;
+  right: 0.9rem;
+  width: 12.5rem;
+  margin: 0;
+  pointer-events: none;
+}
+
+/* The shader's colour map from low to high, filled in by main.js. */
+#legend .ramp {
+  height: 6px;
+  border-radius: 3px;
+}
+
+
+#color-by {
+  display: flex;
+  justify-content: flex-end;
+  margin-bottom: 0.45rem;
+  pointer-events: auto;
+}
+
+#color-by button {
+  padding: 0.15rem 0.55rem;
+  border: 1px solid var(--rule);
+  border-radius: 0;
+  margin-left: -1px;
+  background: rgb(20 23 31 / 0.88);
+  color: var(--slate);
+  font-size: 0.72rem;
+}
+
+#color-by button:first-child {
+  border-radius: 5px 0 0 5px;
+}
+
+#color-by button:last-child {
+  border-radius: 0 5px 5px 0;
+}
+
+#color-by button[aria-pressed="true"] {
+  position: relative;
+  border-color: var(--slate);
+  color: var(--fog);
+}
+
+#legend figcaption {
+  display: flex;
+  justify-content: space-between;
+  margin-top: 0.3rem;
+  color: var(--slate);
+  font-size: 0.72rem;
+}
+
+#controls {
+  position: absolute;
+  left: 0.9rem;
+  right: 0.9rem;
+  bottom: 0.9rem;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem 0.75rem;
+  pointer-events: none;
+}
+
+#controls button {
+  pointer-events: auto;
+  padding: 0.3rem 0.7rem;
+  border: 1px solid var(--rule);
+  background: rgb(20 23 31 / 0.88);
+  color: var(--fog);
+  font-size: 0.82rem;
+  white-space: nowrap;
+}
+
+#controls button:hover {
+  border-color: var(--slate);
+}
+
+/* The layout switch: three joined buttons, the active one in the primary colour. */
+#layout {
+  display: flex;
+  pointer-events: auto;
+}
+
+#layout button {
+  border-radius: 0;
+  margin-left: -1px;
+}
+
+#layout button:first-child {
+  margin-left: 0;
+  border-radius: 6px 0 0 6px;
+}
+
+#layout button:last-child {
+  border-radius: 0 6px 6px 0;
+}
+
+#layout button[aria-pressed="true"] {
+  position: relative;
+  border-color: var(--primary);
+  background: var(--primary);
+  color: var(--on-primary);
+  font-weight: 700;
+}
+
+.hint {
+  margin-left: auto;
+  color: var(--slate);
+  font-size: 0.75rem;
+}
+
+/* A device with a mouse also has a keyboard for the TUI. */
+@media (hover: hover) and (pointer: fine) {
+  .touch-only,
+  .hint.touch {
+    display: none !important;
+  }
+}
+
+@media not ((hover: hover) and (pointer: fine)) {
+  .hint.mouse {
+    display: none;
+  }
+}
+
+/* The TUI keeps its size under the 3D view, so its layout does not jump. */
+#run.cloud-only #cloud-pane {
+  grid-column: 1 / -1;
+  grid-row: 1;
+  z-index: 1;
+}
+
+#run.cloud-only #divider,
+#run.tui-only #divider {
+  display: none;
+}
+
+#run.tui-only {
+  grid-template-columns: minmax(0, 1fr) 0 0;
+}
+
+/* Over the empty end of the TUI's header bar. The 3D pane has no size here,
+   so the controls are placed against the window. */
+#run.tui-only #controls {
+  position: fixed;
+  left: auto;
+  right: 0.4rem;
+  top: 0.15rem;
+  bottom: auto;
+}
+
+#run.tui-only #controls button {
+  padding: 0 0.55rem;
+  font-size: 0.72rem;
+}
+
+#run.tui-only .hint,
+#run.tui-only #legend,
+#run.tui-only #follow {
+  display: none !important;
+}
+
+/* With a mouse the keyboard drives the TUI, so only the layout switch stays. */
+@media (hover: hover) and (pointer: fine) {
+  #run.tui-only .touch-only {
+    display: none;
+  }
+}
+
+/* On touch screens the buttons stay along the bottom, over the TUI's help bar,
+   which lists keys a phone does not have. */
+@media not ((hover: hover) and (pointer: fine)) {
+  #run.tui-only #controls {
+    left: 0;
+    right: 0;
+    top: auto;
+    bottom: 0;
+    padding: 0.45rem 0.5rem;
+    border-top: 1px solid var(--rule);
+    background: var(--night);
+  }
+
+  #run.tui-only #controls button {
+    padding: 0.4rem 0.55rem;
+    font-size: 0.78rem;
+  }
+}
+
+/* Portrait screens, phones in particular: the 3D view on top, the TUI below. */
+@media (max-aspect-ratio: 1/1) {
+  #run {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: minmax(0, var(--split, 55%)) 1px minmax(0, 1fr);
+    grid-template-areas:
+      "cloud"
+      "divider"
+      "tui";
+  }
+
+  #divider {
+    cursor: row-resize;
+  }
+
+  #divider::before {
+    inset: -5px 0;
+  }
+
+  #run.cloud-only #cloud-pane {
+    grid-column: 1;
+    grid-row: 1 / -1;
+  }
+
+  #run.tui-only {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: 0 0 minmax(0, 1fr);
+  }
+}
+
+/* Fingers need a larger grab area and larger buttons. */
+@media (pointer: coarse) {
+  #divider::before {
+    inset: 0 -12px;
+  }
+
+  #controls button {
+    padding: 0.5rem 0.85rem;
+  }
+}
+
+@media (pointer: coarse) and (max-aspect-ratio: 1/1) {
+  #divider::before {
+    inset: -12px 0;
+  }
+}
+
+/* Narrow phones: one row of compact buttons, without the gesture hint. */
+@media (max-width: 600px) {
+  #controls {
+    left: 0.5rem;
+    right: 0.5rem;
+    bottom: 0.5rem;
+    gap: 0.35rem;
+  }
+
+  #controls button {
+    padding: 0.4rem 0.55rem;
+    font-size: 0.78rem;
+  }
+
+  .hint {
+    display: none !important;
+  }
+}
+
+/* Ratslang editor: a highlighted <pre> under a textarea with transparent text. */
+.rl-editor {
+  position: relative;
+}
+
+.rl-editor pre,
+.rl-editor textarea {
+  margin: 0;
+  width: 100%;
+  min-height: 14rem;
+  padding: 0.6rem 0.7rem;
+  border: 1px solid var(--rule);
+  border-radius: 6px;
+  font-family: var(--mono);
+  font-size: 0.85rem;
+  line-height: 1.5;
+  tab-size: 2;
+  white-space: pre;
+  overflow: auto;
+}
+
+/* Follows the textarea's scroll position, so it needs no scrollbars of its own. */
+.rl-editor pre {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  background: var(--deck);
+  color: var(--fog);
+  pointer-events: none;
+}
+
+.rl-editor textarea {
+  position: relative;
+  display: block;
+  resize: vertical;
+  background: transparent;
+  color: transparent;
+  caret-color: var(--fog);
+  scrollbar-color: var(--rule) transparent;
+}
+
+.rl-editor textarea::placeholder {
+  color: var(--slate);
+}
+
+.rl-editor textarea::selection {
+  background: rgb(0 186 214 / 0.3);
+}
+
+.rl-comment {
+  color: var(--slate);
+  font-style: italic;
+}
+
+.rl-annotation {
+  color: #9383e2;
+  font-style: normal;
+}
+
+.rl-string,
+.rl-escape {
+  color: #2fb170;
+}
+
+.rl-number,
+.rl-quantity {
+  color: #e6695b;
+}
+
+.rl-constant {
+  color: #9383e2;
+}
+
+.rl-internal {
+  color: #c973d9;
+  font-style: italic;
+}
+
+.rl-namespace {
+  color: #6791e0;
+}
+
+.rl-value {
+  color: #f06090;
+}
+
+.rl-variable {
+  color: #c4cad8;
+}
+
+.rl-operator,
+.rl-punctuation {
+  color: var(--slate);
+}

@@ -12,6 +12,8 @@
 //! * A comment block followed by a blank line documents the surrounding block.
 //! * A line of the form `# A | B | C` lists the accepted values of the option
 //!   below it and is rendered separately from the prose.
+//! * `# @type`, `# @enum`, `# @min`, `# @max`, exclusive bounds and `# @finite`
+//!   use the compiler constraint parser and are shown separately from prose.
 //! * `# @recommended` marks an option as part of the starter configuration that
 //!   `pelorus config generate recommended` writes.
 
@@ -36,6 +38,8 @@ pub struct Setting {
     pub values: Vec<String>,
     /// Whether the option is part of the generated starter configuration.
     pub recommended: bool,
+    /// Compiler-owned type, enum, numeric, unit and array rules.
+    pub constraints: ratslang::Constraints,
 }
 
 /// A `name { ... }` block.
@@ -142,6 +146,23 @@ impl Parsed {
             }
         };
 
+        match compiled.vars.constraints() {
+            Ok(rules) => {
+                for setting in self.settings() {
+                    if setting.default.is_some()
+                        && setting.constraints
+                            != rules.get(&setting.key).cloned().unwrap_or_default()
+                    {
+                        problems.push(format!(
+                            "`{}` documentation constraints differ from the compiler",
+                            setting.key
+                        ));
+                    }
+                }
+            }
+            Err(error) => problems.push(format!("cannot read constraints: {error}")),
+        }
+
         let (mut assigned, _) = compiled.vars.usage_vars();
         assigned.sort();
         let mut parsed: Vec<String> = self.settings().iter().map(|s| s.key.clone()).collect();
@@ -197,6 +218,7 @@ struct Comment {
     /// Accepted values found on a `# A | B | C` line.
     values: Vec<String>,
     recommended: bool,
+    annotations: Vec<String>,
     /// Text of a trailing `# key = value` line, which marks an option that
     /// ships commented out.
     commented_out: Option<String>,
@@ -206,6 +228,7 @@ impl Comment {
     fn is_empty(&self) -> bool {
         self.doc.is_empty()
             && self.values.is_empty()
+            && self.annotations.is_empty()
             && !self.recommended
             && self.commented_out.is_none()
     }
@@ -213,6 +236,10 @@ impl Comment {
     fn push_line(&mut self, text: &str) {
         if text == "@recommended" {
             self.recommended = true;
+            return;
+        }
+        if let Some(annotation) = text.strip_prefix('@') {
+            self.annotations.push(annotation.to_owned());
             return;
         }
         if text.is_empty() {
@@ -249,13 +276,19 @@ fn parse_values(text: &str) -> Option<Vec<String>> {
     if !text.contains('|') {
         return None;
     }
-    let values: Vec<String> = text.split('|').map(|part| part.trim().to_string()).collect();
+    let values: Vec<String> = text
+        .split('|')
+        .map(|part| part.trim().to_string())
+        .collect();
     if values.len() < 2 {
         return None;
     }
     let looks_like_identifier = |value: &String| {
         !value.is_empty()
-            && value.chars().next().is_some_and(|c| c.is_ascii_alphabetic())
+            && value
+                .chars()
+                .next()
+                .is_some_and(|c| c.is_ascii_alphabetic())
             && value
                 .chars()
                 .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '.')
@@ -316,14 +349,13 @@ pub fn parse(source: &str) -> Result<Parsed, String> {
 
         if line.is_empty() {
             if let Some(comment) = pending.take() {
-                flush_dangling(comment, stack.last_mut().unwrap_or(&mut root));
+                flush_dangling(comment, stack.last_mut().unwrap_or(&mut root))?;
             }
             carried = None;
             continue;
         }
 
         if let Some(text) = line.strip_prefix('#') {
-            carried = None;
             pending
                 .get_or_insert_with(Comment::default)
                 .push_line(text.trim());
@@ -345,7 +377,7 @@ pub fn parse(source: &str) -> Result<Parsed, String> {
 
         if line.starts_with('}') {
             if let Some(comment) = pending.take() {
-                flush_dangling(comment, stack.last_mut().unwrap_or(&mut root));
+                flush_dangling(comment, stack.last_mut().unwrap_or(&mut root))?;
             }
             carried = None;
             let section = stack
@@ -374,13 +406,29 @@ pub fn parse(source: &str) -> Result<Parsed, String> {
 
         let comment = match pending.take() {
             Some(comment) => {
-                let comment = comment.finish();
-                carried = Some(comment.clone());
+                let mut comment = comment.finish();
+                // Annotation-only blocks do not break prose shared by adjacent
+                // settings. Constraints themselves belong to one assignment.
+                if comment.doc.is_empty()
+                    && comment.values.is_empty()
+                    && !comment.annotations.is_empty()
+                {
+                    if let Some(previous) = &carried {
+                        comment.doc = previous.doc.clone();
+                        comment.values = previous.values.clone();
+                        comment.recommended |= previous.recommended;
+                    }
+                }
+                let mut shared = comment.clone();
+                shared.annotations.clear();
+                carried = Some(shared);
                 comment
             }
             None => carried.clone().unwrap_or_default(),
         };
-
+        let constraints =
+            ratslang::Constraints::from_annotations(comment.annotations.iter().map(String::as_str))
+                .map_err(|error| format!("line {index}: {error}"))?;
         let mut doc = comment.doc;
         if let Some(inline) = inline_comment {
             doc.push(inline.to_string());
@@ -392,7 +440,8 @@ pub fn parse(source: &str) -> Result<Parsed, String> {
             default: Some(normalize_value(value)),
             example: None,
             doc,
-            values: comment.values,
+            values: constraints.allowed.clone().unwrap_or(comment.values),
+            constraints,
             recommended: comment.recommended,
         };
         let parent = stack.last_mut().unwrap_or(&mut root);
@@ -420,11 +469,14 @@ pub fn parse(source: &str) -> Result<Parsed, String> {
 
 /// A comment block that turned out not to document an option: either it
 /// describes the surrounding block, or it is an option that ships commented out.
-fn flush_dangling(comment: Comment, parent: &mut Section) {
+fn flush_dangling(comment: Comment, parent: &mut Section) -> Result<(), String> {
     let comment = comment.finish();
     if comment.is_empty() {
-        return;
+        return Ok(());
     }
+    let constraints =
+        ratslang::Constraints::from_annotations(comment.annotations.iter().map(String::as_str))
+            .map_err(|error| error.to_string())?;
     if let Some(assignment) = &comment.commented_out {
         let (name, value) = split_assignment(assignment).expect("checked when collected");
         parent.entries.push(Entry::Setting(Setting {
@@ -432,12 +484,14 @@ fn flush_dangling(comment: Comment, parent: &mut Section) {
             default: None,
             example: Some(normalize_value(value)),
             doc: comment.doc,
-            values: comment.values,
+            values: constraints.allowed.clone().unwrap_or(comment.values),
+            constraints,
             recommended: comment.recommended,
         }));
-        return;
+        return Ok(());
     }
     parent.doc.extend(comment.doc);
+    Ok(())
 }
 
 fn join_key(parent: &str, name: &str) -> String {
@@ -570,5 +624,36 @@ outer {
         let parsed = parse(source).expect("default.rl must parse");
         let problems = parsed.lint(source);
         assert!(problems.is_empty(), "{}", problems.join("\n"));
+    }
+}
+
+#[cfg(test)]
+mod constraint_tests {
+    use super::*;
+    #[test]
+    fn metadata_preserves_shared_prose_but_does_not_leak_bounds() {
+        let source = "outer {\n# A block.\n\n# Shared explanation.\n# @type number\n# @min 1\nfirst = 2\n# @type number\n# @max 10\nsecond = 3\n}\n";
+        let parsed = parse(source).unwrap();
+        let settings = parsed.settings();
+        assert_eq!(settings[0].doc, settings[1].doc);
+        assert!(settings[0].constraints.minimum.is_some());
+        assert!(settings[1].constraints.minimum.is_none());
+        assert!(settings[1].constraints.maximum.is_some());
+        assert!(parsed.lint(source).is_empty());
+    }
+    #[test]
+    fn enums_and_commented_out_constraints_use_the_compiler_parser() {
+        let source = "outer {\n# A block.\n\n# Choose a backend.\n# @enum CPU, Backend\n# @enum_case insensitive\nbackend = CPU\n\n# Optional count.\n# @type integer\n# @min 1\n# count = 3\n\n}\n";
+        let parsed = parse(source).unwrap();
+        assert_eq!(parsed.settings()[0].values, ["CPU", "Backend"]);
+        assert_eq!(parsed.settings()[1].default, None);
+        assert!(parsed.settings()[1].constraints.minimum.is_some());
+        assert!(
+            parsed.settings()[0]
+                .doc
+                .iter()
+                .all(|p| !p.contains("@enum"))
+        );
+        assert!(parse("outer {\n# @min nonsense\nvalue = 1\n}\n").is_err());
     }
 }

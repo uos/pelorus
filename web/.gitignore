@@ -1,0 +1,5 @@
+/pkg/
+/configs/
+/demo/*.mcap
+/syntaxes/
+/fonts/

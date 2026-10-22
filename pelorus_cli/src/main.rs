@@ -46,15 +46,15 @@ use pelorus_core::config::{
     feature = "hiroz"
 ))]
 use pelorus_core::timestamp_to_secs;
+use pelorus_core::{LioConfig, OdometryRate, Pipelining};
+use pelorus_reg::ActiveBackend;
 #[cfg(any(
     feature = "mt_pubsub",
     feature = "ros2-client",
     feature = "r2r",
     feature = "hiroz"
 ))]
-use pelorus_core::timing::RuntimeEvaluator;
-use pelorus_core::{LioConfig, OdometryRate};
-use pelorus_reg::ActiveBackend;
+use pelorus_reg::lio::{LioCore, LioScan, LioStep};
 #[cfg(any(
     feature = "mt_pubsub",
     feature = "ros2-client",
@@ -158,7 +158,7 @@ use mt_pubsub::Node;
     feature = "r2r",
     feature = "hiroz"
 ))]
-use nalgebra::{Isometry3, Translation3, UnitQuaternion};
+use nalgebra::{Isometry3, UnitQuaternion};
 #[cfg(feature = "r2r")]
 #[allow(unused_imports)]
 use r2r::{
@@ -1428,6 +1428,230 @@ fn drain_filtered_imu_mcap(
     Ok(())
 }
 
+/// What a driver still has to do after [`LioCore::step`] and its outputs.
+#[cfg(any(
+    feature = "mt_pubsub",
+    feature = "ros2-client",
+    feature = "r2r",
+    feature = "hiroz"
+))]
+#[derive(Debug, Clone, Copy)]
+enum ScanOutcome {
+    Registered(u64),
+    MapOnly(u64),
+    Failed(u64),
+}
+
+#[cfg(any(
+    feature = "mt_pubsub",
+    feature = "ros2-client",
+    feature = "r2r",
+    feature = "hiroz"
+))]
+impl ScanOutcome {
+    fn of(step: &LioStep) -> Self {
+        match step {
+            LioStep::Registered(scan) => Self::Registered(scan.scan_id),
+            LioStep::MapOnly { scan_id } => Self::MapOnly(*scan_id),
+            LioStep::Failed { scan_id, .. } => Self::Failed(*scan_id),
+        }
+    }
+}
+
+/// Feeds the measured sensor rate of the TUI with a synchronized scan.
+#[cfg(any(
+    feature = "mt_pubsub",
+    feature = "ros2-client",
+    feature = "r2r",
+    feature = "hiroz"
+))]
+fn record_scan_arrival(stats: &SharedStats, processed: &pelorus_core::SyncProcessedCloud) {
+    let stamp_sec = {
+        let s = timestamp_to_secs(&processed.header.stamp);
+        if s > 0.0 {
+            s
+        } else {
+            timestamp_to_secs(&processed.lidar_end_time_abs)
+        }
+    };
+    stats.record_scan_timestamp(stamp_sec);
+}
+
+/// Input of the sequential pipelining mode, read on the processing thread.
+#[cfg(feature = "mt_pubsub")]
+struct SequentialInput {
+    source: pelorus_syncio::sequential::SequentialSource,
+    ingress: pelorus_sync::SteppedIngress,
+}
+
+/// Runtime, hooks and CLI setup of the sequential mode.
+#[cfg(feature = "mt_pubsub")]
+struct SequentialSetup {
+    rt: Arc<tokio::runtime::Runtime>,
+    local_only: bool,
+    /// The TF tree lookup is set up, which the sequential mode does not support.
+    tf_tree: bool,
+    /// A managed downstream owns the replay, which the sequential mode does not support.
+    downstream_owns_replay: bool,
+    imu_sync_mode: ImuSyncMode,
+    realtime_imu_callback: Option<pelorus_sync::RealtimeImuCallback>,
+    realtime_lidar_barrier_callback: Option<pelorus_sync::RealtimeLidarBarrierCallback>,
+}
+
+/// Subscribe to the inputs and build the synchronizer of the sequential mode.
+#[cfg(feature = "mt_pubsub")]
+fn sequential_input_parts(
+    config: &LioConfig,
+    pipeline: &Pipeline,
+    node: &mt_pubsub::Node,
+    setup: SequentialSetup,
+) -> anyhow::Result<SequentialInput> {
+    if setup.tf_tree {
+        anyhow::bail!("parallelism.pipelining = Sequential does not support the TF tree lookup");
+    }
+    if setup.downstream_owns_replay {
+        anyhow::bail!("parallelism.pipelining = Sequential does not support a managed downstream");
+    }
+    if config.sensor_drivers.lidar.driver_type != pelorus_core::LidarDriverType::Disabled
+        || config.sensor_drivers.imu.driver_type != pelorus_core::ImuDriverType::Disabled
+    {
+        anyhow::bail!("parallelism.pipelining = Sequential does not support the native drivers");
+    }
+    let imu_enabled = !config.imu_params.lidar_only;
+    let sync = pelorus_sync::SteppedSynchronizer::create(
+        &config.sync_params,
+        config.sync_params.lidar_vendor,
+        setup.imu_sync_mode,
+        pelorus_sync::SteppedSynchronizerHooks {
+            imu_pose_prediction_undistort: Some(pipeline.build_undistort()),
+            imu_pose_prediction_init_guess: Some(pipeline.build_init_guess()),
+            realtime_imu_callback: setup.realtime_imu_callback,
+            realtime_lidar_barrier_callback: setup.realtime_lidar_barrier_callback,
+        },
+    )?;
+    let ingress = pelorus_sync::SteppedIngress::new(
+        sync,
+        imu_enabled.then(|| pipeline.build_init_callback()),
+        config.sync_node_params.imu_predictor_init_time_sec,
+    );
+    let source = pelorus_syncio::sequential::SequentialSource::new(
+        node,
+        setup.rt,
+        setup.local_only,
+        &config.sync_node_params,
+        &config.sync_params,
+        imu_enabled,
+    )?;
+    Ok(SequentialInput { source, ingress })
+}
+
+/// Shared state of the processing thread that [`run_sequential`] reads.
+#[cfg(feature = "mt_pubsub")]
+struct SequentialRun<'a> {
+    shared_stats: Option<&'a Arc<SharedStats>>,
+    filtered_imu_sender: Option<&'a std::sync::mpsc::Sender<pelorus_core::ImuMsg>>,
+    shutdown_flag: Option<&'a Arc<AtomicBool>>,
+    /// Cloud and IMU counts Minot reports at the end of the bag.
+    replay_expected: &'a std::sync::Mutex<Option<(u64, u64)>>,
+    minot_replay_mode: bool,
+    synchronous_mode: bool,
+    prefetch_scans: u64,
+}
+
+/// Read the inputs one message at a time and register every scan before the
+/// next message is taken.
+///
+/// Under Minot replay this requests the IMU initialization messages, starts
+/// the replay of clouds and keeps `prefetch_scans` clouds requested beyond
+/// the received ones. It returns once every message Minot replayed is
+/// processed, or on shutdown.
+#[cfg(feature = "mt_pubsub")]
+fn run_sequential(
+    source: &mut pelorus_syncio::sequential::SequentialSource,
+    ingress: &mut pelorus_sync::SteppedIngress,
+    core: &mut LioCore,
+    publish_step: &mut impl FnMut(&mut LioCore, LioStep) -> anyhow::Result<()>,
+    run: SequentialRun<'_>,
+) -> anyhow::Result<()> {
+    use pelorus_syncio::sequential::SequentialMessage;
+
+    let imu_enabled = !core.config().imu_params.lidar_only;
+    // Without IMU the Minot program plays the first cloud on its own.
+    let mut lio_started = !imu_enabled;
+    let mut clouds_requested = u64::from(!imu_enabled);
+    let mut clouds_received = 0_u64;
+    let mut imus_received = 0_u64;
+    info!("Sequential pipelining: one thread reads and processes every input");
+    loop {
+        if run
+            .shutdown_flag
+            .is_some_and(|flag| flag.load(Ordering::Relaxed))
+        {
+            info!("Shutdown requested, exiting processing loop");
+            break;
+        }
+        if let Some((clouds, imus)) = *run.replay_expected.lock().unwrap()
+            && clouds_received >= clouds
+            && (!imu_enabled || imus_received >= imus)
+        {
+            info!("End of bag: every replayed scan is processed, exiting processing loop");
+            break;
+        }
+        let Some(message) = source.next(Duration::from_millis(50))? else {
+            continue;
+        };
+        match message {
+            SequentialMessage::Cloud { cloud, .. } => {
+                clouds_received += 1;
+                ingress.push_cloud(cloud, std::time::Instant::now());
+            }
+            SequentialMessage::Imu(imu) => {
+                imus_received += 1;
+                let was_initialized = ingress.imu_initialized();
+                let filtered = ingress.push_imu(imu);
+                if let (Some(filtered), Some(sender)) = (filtered, run.filtered_imu_sender) {
+                    let _ = sender.send(filtered);
+                }
+                #[cfg(feature = "rat")]
+                if !was_initialized {
+                    if ingress.imu_initialized() {
+                        pelorus_syncio::sequential::request_lio_start(run.synchronous_mode);
+                        lio_started = true;
+                        clouds_requested = 1;
+                    } else {
+                        pelorus_syncio::sequential::request_imu_init_step(run.synchronous_mode);
+                    }
+                }
+                #[cfg(not(feature = "rat"))]
+                {
+                    let _ = was_initialized;
+                    lio_started = true;
+                }
+            }
+            SequentialMessage::Wheel(odom) => ingress.push_odom(odom),
+        }
+        while let Some(processed) = ingress.next_synced() {
+            if let Some(stats) = run.shared_stats {
+                record_scan_arrival(stats, &processed);
+            }
+            let step = core.step(processed, None);
+            publish_step(core, step)?;
+        }
+        if run.minot_replay_mode && lio_started {
+            let wanted = clouds_received + run.prefetch_scans;
+            if clouds_requested < wanted {
+                release_minot_ticks(
+                    run.shutdown_flag,
+                    run.synchronous_mode,
+                    (wanted - clouds_requested) as usize,
+                );
+                clouds_requested = wanted;
+            }
+        }
+    }
+    Ok(())
+}
+
 /// Everything [`lio_with_ready_signal`] needs besides the [`LioConfig`].
 struct LioRunOptions {
     ready_signal: Option<std::sync::mpsc::Sender<()>>,
@@ -1689,7 +1913,7 @@ fn stats_message(stats: &SharedStats) -> RosString {
 }
 
 fn lio_with_ready_signal(
-    mut config: LioConfig,
+    config: LioConfig,
     options: LioRunOptions,
 ) -> Result<(), Box<dyn CoreError>> {
     let LioRunOptions {
@@ -2049,7 +2273,7 @@ fn lio_with_ready_signal(
             .map_err(|e| anyhow!("Failed to create Hiroz TF broadcaster: {e}"))?,
     );
 
-    let mut pipeline = Pipeline::new(&config);
+    let pipeline = Pipeline::new(&config);
     let map = pipeline.map();
     let _odom_ext = Isometry3::from_parts(
         nalgebra::Translation3::new(0.0, 0.0, 0.0),
@@ -2208,48 +2432,88 @@ fn lio_with_ready_signal(
         callback
     });
 
-    #[allow(unused_mut)]
-    let (mut sync_node, synced_rx) = SyncNode::new(
-        #[cfg(any(feature = "ros2-client", feature = "r2r"))]
-        &mut node,
-        #[cfg(any(feature = "mt_pubsub", feature = "hiroz"))]
-        &node,
-        #[cfg(any(feature = "mt_pubsub", feature = "hiroz"))]
-        rt.as_ref()
-            .expect("rt always exists with mt_pubsub/hiroz feat")
-            .clone(),
-        #[cfg(feature = "mt_pubsub")]
-        mt_pubsub_local_only,
-        &config.sync_params,
-        SyncNodeInputs {
-            startup_tf_callback,
-            startup_base_frame,
-            node_params: &config.sync_node_params,
-            imu_pose_predictor_init: (!config.imu_params.lidar_only)
-                .then(|| pipeline.build_init_callback()),
-            imu_pose_prediction_undistort: Some(pipeline.build_undistort()),
-            imu_pose_prediction_init_guess: Some(pipeline.build_init_guess()),
-            ready_for_next: Some(ready_for_next_rx),
-            filtered_imu_sender: filtered_imu_tx.clone(),
-            imu_sync_mode,
-            realtime_imu_callback,
-            realtime_lidar_barrier_callback,
-        },
-        #[cfg(feature = "rerun")]
-        rec.clone(),
-    )?;
-    #[cfg(feature = "native-drivers")]
-    {
-        let mut sensor_drivers = config.sensor_drivers.clone();
-        if config.imu_params.lidar_only {
-            sensor_drivers.imu.driver_type = pelorus_core::ImuDriverType::Disabled;
-        }
-        sync_node.start_native_drivers(&sensor_drivers, filtered_imu_tx.clone(), None)?;
+    // Sequential pipelining reads every subscription on the processing thread
+    // instead of starting subscriber and synchronizer threads.
+    let sequential = config.pipelining == Pipelining::Sequential;
+    #[cfg(not(feature = "mt_pubsub"))]
+    if sequential {
+        return Err(
+            anyhow!("parallelism.pipelining = Sequential needs the mt_pubsub backend").into(),
+        );
     }
-    let sync_node = Arc::new(sync_node);
+    #[cfg(feature = "mt_pubsub")]
+    let mut sequential_input = None;
+    let (sync_node, synced_rx) = if sequential {
+        #[cfg(feature = "mt_pubsub")]
+        {
+            sequential_input = Some(sequential_input_parts(
+                &config,
+                &pipeline,
+                &node,
+                SequentialSetup {
+                    rt: rt
+                        .as_ref()
+                        .expect("rt always exists with mt_pubsub feat")
+                        .clone(),
+                    local_only: mt_pubsub_local_only,
+                    tf_tree: startup_tf_callback.is_some(),
+                    downstream_owns_replay: replay_tick_owner.is_downstream(),
+                    imu_sync_mode,
+                    realtime_imu_callback,
+                    realtime_lidar_barrier_callback,
+                },
+            )?);
+            drop(ready_for_next_rx);
+        }
+        (None, None)
+    } else {
+        #[allow(unused_mut)]
+        let (mut sync_node, synced_rx) = SyncNode::new(
+            #[cfg(any(feature = "ros2-client", feature = "r2r"))]
+            &mut node,
+            #[cfg(any(feature = "mt_pubsub", feature = "hiroz"))]
+            &node,
+            #[cfg(any(feature = "mt_pubsub", feature = "hiroz"))]
+            rt.as_ref()
+                .expect("rt always exists with mt_pubsub/hiroz feat")
+                .clone(),
+            #[cfg(feature = "mt_pubsub")]
+            mt_pubsub_local_only,
+            &config.sync_params,
+            SyncNodeInputs {
+                startup_tf_callback,
+                startup_base_frame,
+                node_params: &config.sync_node_params,
+                imu_pose_predictor_init: (!config.imu_params.lidar_only)
+                    .then(|| pipeline.build_init_callback()),
+                imu_pose_prediction_undistort: Some(pipeline.build_undistort()),
+                imu_pose_prediction_init_guess: Some(pipeline.build_init_guess()),
+                ready_for_next: Some(ready_for_next_rx),
+                filtered_imu_sender: filtered_imu_tx.clone(),
+                imu_sync_mode,
+                realtime_imu_callback,
+                realtime_lidar_barrier_callback,
+            },
+            #[cfg(feature = "rerun")]
+            rec.clone(),
+        )?;
+        #[cfg(feature = "native-drivers")]
+        {
+            let mut sensor_drivers = config.sensor_drivers.clone();
+            if config.imu_params.lidar_only {
+                sensor_drivers.imu.driver_type = pelorus_core::ImuDriverType::Disabled;
+            }
+            sync_node.start_native_drivers(&sensor_drivers, filtered_imu_tx.clone(), None)?;
+        }
+        (Some(Arc::new(sync_node)), Some(synced_rx))
+    };
     let drain_on_shutdown = Arc::new(AtomicBool::new(false));
+    // What Minot reports to have replayed, for the sequential mode to know
+    // when every replayed message is processed.
+    let replay_expected: Arc<std::sync::Mutex<Option<(u64, u64)>>> = Arc::default();
     if let Some(stop_rx) = shutdown_request_rx {
-        let node_for_stop = Arc::clone(&sync_node);
+        let node_for_stop = sync_node.clone();
+        let replay_expected_for_stop = Arc::clone(&replay_expected);
         let drain_on_shutdown_for_stop = Arc::clone(&drain_on_shutdown);
         let shutdown_flag_for_stop = shutdown_flag.clone();
         let replay_cloud_topic = config.sync_node_params.cloud_src_topic.clone();
@@ -2265,10 +2529,17 @@ fn lio_with_ready_signal(
                             "Minot replayed {clouds} clouds on {replay_cloud_topic} and {imus} IMU samples on {replay_imu_topic}"
                         );
                         drain_on_shutdown_for_stop.store(true, Ordering::SeqCst);
-                        node_for_stop.finish_replay(clouds, imus);
+                        match node_for_stop.as_ref() {
+                            Some(node) => node.finish_replay(clouds, imus),
+                            None => {
+                                *replay_expected_for_stop.lock().unwrap() = Some((clouds, imus))
+                            }
+                        }
                     }
                     OfflineShutdownRequest::Immediate => {
-                        node_for_stop.request_shutdown();
+                        if let Some(node) = node_for_stop.as_ref() {
+                            node.request_shutdown();
+                        }
                         if let Some(flag) = shutdown_flag_for_stop.as_ref() {
                             flag.store(true, Ordering::SeqCst);
                         }
@@ -2560,8 +2831,6 @@ fn lio_with_ready_signal(
                 }
             })
     });
-    let mut t_world = nalgebra::Isometry3::identity();
-    let mut t_last_current = nalgebra::Isometry3::identity();
     #[cfg(feature = "hiroz")]
     let mut last_stats_pub = std::time::Instant::now();
 
@@ -2569,14 +2838,10 @@ fn lio_with_ready_signal(
     let lidar_path_frame_id = config.sync_params.map_frame.clone();
     let mut last_mcap_path_write_time: Option<u64> = None;
 
-    let mut last_scan_time = None;
-
     #[cfg(not(feature = "no-viz"))]
     let path_update_translate_threshold = 0.05; // default 0.15 meters - TODO config
     #[cfg(not(feature = "no-viz"))]
     let path_update_rotate_threshold = 0.1; // radians (~5.7 degrees) - TODO config
-
-    let mut eval = RuntimeEvaluator::new();
 
     let debug_render_interval = if config.debug_fps == 0 {
         None
@@ -2603,11 +2868,13 @@ fn lio_with_ready_signal(
     // would tear down the consumer, and Pelorus's own publishers, before the
     // end could be announced.
     #[cfg(feature = "mt_pubsub")]
-    let _sync_node_alive = Arc::clone(&sync_node);
+    let _sync_node_alive = sync_node.clone();
     #[cfg(feature = "mt_pubsub")]
     let _node_alive = Arc::clone(&node);
     #[cfg(feature = "mt_pubsub")]
     let _tf_broadcaster_alive = Arc::clone(&tf_broadcaster);
+    #[cfg(feature = "mt_pubsub")]
+    let sequential_filtered_imu_tx = filtered_imu_tx.clone();
     let export_trajectory_for_worker = export_trajectory.clone();
     #[cfg(feature = "processing-time-export")]
     let export_latency_for_worker = export_latency.clone();
@@ -2698,47 +2965,12 @@ fn lio_with_ready_signal(
                 );
             }
         };
-        let mut sync_node = Some(sync_node);
+        let mut sync_node = sync_node;
 
-        let active_backend = ActiveBackend::detect(&config);
-        log_active_backend(&config, &active_backend);
+        let mut core = LioCore::new(config.clone(), pipeline);
+        log_active_backend(&config, core.active_backend());
         if let Some(ref stats) = shared_stats {
-            set_backend_from_runtime(stats, &config, &active_backend);
-        }
-
-        // TODO avoid casting f32, maybe res needs f64?
-        match &active_backend {
-            ActiveBackend::Cpu => {}
-            #[cfg(feature = "cuda")]
-            ActiveBackend::Cuda(stream) => pelorus_cuda::init_map_with_mode(
-                stream,
-                config.map_capacity,
-                config.map_resolution as f32,
-                config.dist_update_sensitivity,
-                config.neighbor_max_range as f32,
-                pelorus_cuda::NeighborType::Neighbor26,
-                config.map_multiresolution,
-            ),
-            #[cfg(feature = "metal")]
-            ActiveBackend::Metal(stream) => pelorus_metal::init_map_with_mode(
-                stream,
-                config.map_capacity,
-                config.map_resolution as f32,
-                config.dist_update_sensitivity,
-                config.neighbor_max_range as f32,
-                pelorus_metal::NeighborType::Neighbor26,
-                config.map_multiresolution,
-            ),
-            #[cfg(feature = "vulkan")]
-            ActiveBackend::Vulkan(stream) => pelorus_vulkan::init_map_with_mode(
-                stream,
-                config.map_capacity,
-                config.map_resolution as f32,
-                config.dist_update_sensitivity,
-                config.neighbor_max_range as f32,
-                pelorus_vulkan::NeighborType::Neighbor26,
-                config.map_multiresolution,
-            ),
+            set_backend_from_runtime(stats, &config, core.active_backend());
         }
 
         let mut trajectory_file = match export_trajectory_for_worker {
@@ -2802,371 +3034,52 @@ fn lio_with_ready_signal(
         let mut static_tf_published = false;
         let mut realtime_export_child_frame: Option<String> = None;
 
-        #[cfg(feature = "cuda")]
-        let mut persistent_cuda_cloud_bufs: Option<
-            [LocatedBufferView<pelorus_core::PointXYZIT>; 2],
-        > = if let ActiveBackend::Cuda(stream) = &active_backend {
-            Some([
-                LocatedBufferView::alloc_points_cuda(stream, 100_000),
-                LocatedBufferView::alloc_points_cuda(stream, 100_000),
-            ])
-        } else {
-            None
-        };
-        #[cfg(feature = "cuda")]
-        let mut persistent_cuda_cloud_buf_idx = 0usize;
-
-        // Reusable buffer for the point cloud on GPU
-        #[allow(unused_mut)]
-        let mut persistent_cloud_buf = match &active_backend {
-            ActiveBackend::Cpu => LocatedBufferView::Ram(Vec::new()),
-            #[cfg(feature = "cuda")]
-            ActiveBackend::Cuda(_) => LocatedBufferView::Ram(Vec::new()),
-            #[cfg(feature = "metal")]
-            ActiveBackend::Metal(stream) => LocatedBufferView::Metal {
-                buffer: pelorus_metal::MetalBuffer::new(
-                    stream,
-                    size_of::<pelorus_core::PointXYZIT>(),
-                    100_000,
-                ),
-            },
-            #[cfg(feature = "vulkan")]
-            ActiveBackend::Vulkan(stream) => LocatedBufferView::Vulkan {
-                buffer: pelorus_vulkan::VulkanBuffer::new(
-                    stream,
-                    size_of::<pelorus_core::PointXYZIT>(),
-                    100_000,
-                ),
-            },
-        };
-
         // Main processing loop. Use recv_timeout when a shutdown flag is provided so we can
         // check for shutdown requests periodically. If no shutdown flag is provided, block
         // on recv() as before.
-        let mut draining_after_end_of_bag = false;
-        loop {
-            let sync_tick = match processing_shutdown_flag.as_ref() {
-                Some(flag) => {
-                    let shutdown_requested = flag.load(core::sync::atomic::Ordering::Relaxed);
-                    let drain_requested =
-                        drain_on_shutdown.load(core::sync::atomic::Ordering::SeqCst);
-                    if shutdown_requested || drain_requested {
-                        if drain_requested && !shutdown_requested {
-                            if !draining_after_end_of_bag {
-                                draining_after_end_of_bag = true;
-                                info!("End of bag: processing every scan Minot replayed");
-                            }
-                            // The synchronizer closes its output once every replayed
-                            // message has arrived and been handled, so the drain ends on
-                            // that and not on a quiet period. The timeout only lets an
-                            // interrupt through.
-                            match synced_rx.recv_timeout(Duration::from_millis(50)) {
-                                Ok(t) => t,
-                                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => continue,
-                                Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
-                                    if let Some(ref sync_node) = sync_node {
-                                        sync_node.request_shutdown();
-                                    }
-                                    // Drop sync gate and node ownership so all producer chains can close.
-                                    drop(registration_ready_tx.take());
-                                    drop(ready_for_next_tx.take());
-                                    drop(sync_node.take());
-                                    info!(
-                                        "End of bag: every replayed scan is processed, exiting processing loop"
-                                    );
-                                    break;
-                                }
-                            }
-                        } else {
-                            if let Some(ref sync_node) = sync_node {
-                                sync_node.request_shutdown();
-                            }
-                            // Drop sync gate and node ownership so all producer chains can close.
-                            drop(registration_ready_tx.take());
-                            drop(ready_for_next_tx.take());
-                            drop(sync_node.take());
-                            info!("Shutdown requested, exiting processing loop");
-                            break;
-                        }
-                    } else {
-                        // Block with a short timeout so we can still respond promptly to shutdown signals.
-                        match synced_rx.recv_timeout(Duration::from_millis(50)) {
-                            Ok(t) => t,
-                            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => continue,
-                            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
-                                info!("synced_rx disconnected, exiting processing loop");
-                                break;
-                            }
-                        }
-                    }
+        // Every output of a registered scan: odometry, path, TF, clouds, MCAP,
+        // trajectory and timing exports, Rerun and the TUI statistics.
+        let mut publish_step = |core: &mut LioCore, step: LioStep| -> anyhow::Result<()> {
+            drain_filtered_imu_mcap(&mut mcap_writer, &mut filtered_imu_rx)?;
+            let scan = match step {
+                LioStep::Registered(scan) => scan,
+                LioStep::MapOnly { .. } => return Ok(()),
+                LioStep::Failed { error, .. } => {
+                    error!("{error}");
+                    return Ok(());
                 }
-                None => match synced_rx.recv() {
-                    Ok(t) => t,
-                    Err(_) => break,
-                },
             };
             #[cfg(feature = "processing-time-export")]
-            let latency_started = latency_file.as_ref().map(|_| sync_tick.received_at);
-            // Record scan arrival for measuring actual sensor rate
-            if config.base_to_lidar_tf_override {
-                config.base_to_lidar = map.lock().unwrap().base_to_lidar;
-            }
-            if let Some(ref stats) = shared_stats {
-                let stamp_sec = {
-                    let s = timestamp_to_secs(&sync_tick.cloud_header.stamp);
-                    if s > 0.0 {
-                        s
-                    } else {
-                        timestamp_to_secs(&sync_tick.odom_time)
-                    }
-                };
-                stats.record_scan_timestamp(stamp_sec);
-            }
-
-            eval.merge(&sync_tick.runtime_eval);
-            drain_filtered_imu_mcap(&mut mcap_writer, &mut filtered_imu_rx)?;
-
-            match &active_backend {
-                ActiveBackend::Cpu => {}
-                #[cfg(feature = "cuda")]
-                ActiveBackend::Cuda(stream) => {
-                    let cuda_cloud_bufs = persistent_cuda_cloud_bufs
-                        .as_mut()
-                        .expect("missing persistent CUDA cloud buffers");
-                    let current_slot = persistent_cuda_cloud_buf_idx;
-                    persistent_cuda_cloud_buf_idx =
-                        (persistent_cuda_cloud_buf_idx + 1) % cuda_cloud_bufs.len();
-
-                    // Uploads and kernels are enqueued on the same stream, so ping-pong slots
-                    // can be reused without forcing a host sync here.
-                    let cuda_cloud = &mut cuda_cloud_bufs[current_slot];
-                    cuda_cloud.realloc_if_needed_cuda(stream, sync_tick.deskewed_cloud.len());
-                    cuda_cloud.upload_from_slice_cuda(stream, sync_tick.deskewed_cloud.as_slice());
-                }
-                #[cfg(feature = "metal")]
-                ActiveBackend::Metal(stream) => {
-                    // Metal uses shared memory. Sync before overwriting to avoid races.
-                    stream.sync();
-                    persistent_cloud_buf
-                        .realloc_if_needed_metal(stream, sync_tick.deskewed_cloud.len());
-                    persistent_cloud_buf
-                        .upload_from_slice_metal(stream, sync_tick.deskewed_cloud.as_slice());
-                }
-                #[cfg(feature = "vulkan")]
-                ActiveBackend::Vulkan(stream) => {
-                    stream.sync();
-                    persistent_cloud_buf
-                        .realloc_if_needed_vulkan(stream, sync_tick.deskewed_cloud.len());
-                    persistent_cloud_buf
-                        .upload_from_slice_vulkan(stream, sync_tick.deskewed_cloud.as_slice());
-                }
-            }
-
-            let ram_cloud;
-            #[allow(unreachable_patterns)]
-            let cloud_for_reg: &LocatedBufferView<pelorus_core::PointXYZIT> = match &active_backend
-            {
-                ActiveBackend::Cpu => {
-                    ram_cloud = LocatedBufferView::Ram(sync_tick.deskewed_cloud);
-                    &ram_cloud
-                }
-                #[cfg(feature = "cuda")]
-                ActiveBackend::Cuda(_) => {
-                    let cuda_cloud_bufs = persistent_cuda_cloud_bufs
-                        .as_ref()
-                        .expect("missing persistent CUDA cloud buffers");
-                    let last_slot = (persistent_cuda_cloud_buf_idx + cuda_cloud_bufs.len() - 1)
-                        % cuda_cloud_bufs.len();
-                    &cuda_cloud_bufs[last_slot]
-                }
-                _ => &persistent_cloud_buf,
-            };
-
-            let cloud_out = sync_tick.deskewed_cloud_passthrough;
-
-            let orig_frame = sync_tick.cloud_header.frame_id.clone();
-            let orig_time = sync_tick.cloud_header.stamp;
-            let current_cloud_time = timestamp_to_secs(&sync_tick.odom_time);
-            if let Some(existing_last_scan_time) = last_scan_time
-                && current_cloud_time < existing_last_scan_time
-            {
-                let mut map = map.lock().unwrap();
-                map.clear_localmap(&active_backend);
-
-                info!("Resetting map");
-                match &active_backend {
-                    ActiveBackend::Cpu => {}
-                    #[cfg(feature = "cuda")]
-                    ActiveBackend::Cuda(stream) => pelorus_cuda::init_map_with_mode(
-                        stream,
-                        config.map_capacity,
-                        config.map_resolution as f32,
-                        config.dist_update_sensitivity,
-                        config.neighbor_max_range as f32,
-                        pelorus_cuda::NeighborType::Neighbor26,
-                        config.map_multiresolution,
-                    ),
-                    #[cfg(feature = "metal")]
-                    ActiveBackend::Metal(stream) => pelorus_metal::init_map_with_mode(
-                        stream,
-                        config.map_capacity,
-                        config.map_resolution as f32,
-                        config.dist_update_sensitivity,
-                        config.neighbor_max_range as f32,
-                        pelorus_metal::NeighborType::Neighbor26,
-                        config.map_multiresolution,
-                    ),
-                    #[cfg(feature = "vulkan")]
-                    ActiveBackend::Vulkan(stream) => pelorus_vulkan::init_map_with_mode(
-                        stream,
-                        config.map_capacity,
-                        config.map_resolution as f32,
-                        config.dist_update_sensitivity,
-                        config.neighbor_max_range as f32,
-                        pelorus_vulkan::NeighborType::Neighbor26,
-                        config.map_multiresolution,
-                    ),
-                };
-                t_world = nalgebra::Isometry3::identity();
-                t_last_current = nalgebra::Isometry3::identity();
-            }
-
-            last_scan_time = Some(timestamp_to_secs(&orig_time));
-
-            // use the last difference if there is no odom from sync
-            let init_guess_lidar = if sync_tick.imu_odom.pose.pose.position.x == 0.0
-                && sync_tick.imu_odom.pose.pose.position.y == 0.0
-                && sync_tick.imu_odom.pose.pose.position.z == 0.0
-            {
-                // sync did not return a orientation (for example when not using IMU at all), use the last difference as guess
-                if sync_tick.imu_odom.pose.pose.orientation.w == 1.0
-                    && sync_tick.imu_odom.pose.pose.orientation.x == 0.0
-                    && sync_tick.imu_odom.pose.pose.orientation.y == 0.0
-                    && sync_tick.imu_odom.pose.pose.orientation.z == 0.0
-                {
-                    t_world * t_last_current
-                } else {
-                    // there is an orientation calculated by sync for undeskewing the cloud, so we can use that
-                    let initial_guess_rotation =
-                        nalgebra::UnitQuaternion::from_quaternion(nalgebra::Quaternion::new(
-                            sync_tick.imu_odom.pose.pose.orientation.w,
-                            sync_tick.imu_odom.pose.pose.orientation.x,
-                            sync_tick.imu_odom.pose.pose.orientation.y,
-                            sync_tick.imu_odom.pose.pose.orientation.z,
-                        ));
-                    let initial_guess_lidar_local = nalgebra::Isometry3::from_parts(
-                        t_last_current.translation,
-                        initial_guess_rotation,
-                    );
-                    t_world * initial_guess_lidar_local
-                }
-            } else {
-                let initial_guess_translation = Translation3::new(
-                    sync_tick.imu_odom.pose.pose.position.x,
-                    sync_tick.imu_odom.pose.pose.position.y,
-                    sync_tick.imu_odom.pose.pose.position.z,
-                );
-
-                let initial_guess_rotation =
-                    nalgebra::UnitQuaternion::from_quaternion(nalgebra::Quaternion::new(
-                        sync_tick.imu_odom.pose.pose.orientation.w,
-                        sync_tick.imu_odom.pose.pose.orientation.x,
-                        sync_tick.imu_odom.pose.pose.orientation.y,
-                        sync_tick.imu_odom.pose.pose.orientation.z,
-                    ));
-
-                // init_guess from sync is IMU pose T_W_I. Convert to Lidar pose T_W_L.
-                nalgebra::Isometry3::from_parts(initial_guess_translation, initial_guess_rotation)
-                    * pipeline.ext()
-            };
-
-            let registration_result = {
-                let mut map = map.lock().unwrap();
-                // This correction barrier orders Synchronizer prediction independently
-                // of downstream backpressure.
-                let ready_for_registration = if relay_minot_replay_on_registration {
-                    registration_ready_tx.as_ref()
-                } else if gate_minot_replay_on_mcap {
-                    None
-                } else {
-                    ready_for_next_tx.as_ref()
-                };
-                match map.register_and_map(
-                    pelorus_reg::RegistrationScan {
-                        cloud: cloud_for_reg,
-                        imu_transform: init_guess_lidar,
-                        lidar_timestamp: current_cloud_time,
-                        scan_id: sync_tick.scan_id as usize,
-                        map_only: sync_tick.map_only,
-                    },
-                    ready_for_registration,
-                    &mut eval,
-                    &active_backend,
-                ) {
-                    Ok(Some(pose)) => Ok(Some((pose, map.get_state()))),
-                    Ok(None) => Ok(None),
-                    Err(err) => Err(err),
-                }
-            };
-
-            let (register_pose, ekf_state) = match registration_result {
-                Ok(Some(result)) => result,
-                Ok(None) => {
-                    drain_filtered_imu_mcap(&mut mcap_writer, &mut filtered_imu_rx)?;
-                    if let Some(ready) = registration_ready_tx
-                        .as_ref()
-                        .or(ready_for_next_tx.as_ref())
-                    {
-                        let _ = ready.send(sync_tick.scan_id);
-                    }
-                    if gate_minot_replay_on_mcap || relay_minot_replay_on_registration {
-                        // The relay only advances Minot when Pelorus owns the
-                        // replay clock, so pay for this initialization scan here.
-                        if downstream_owns_replay {
-                            release_unpublished_scan_tick();
-                        }
-                    } else if minot_replay_mode {
-                        if downstream_owns_replay {
-                            release_unpublished_scan_tick();
-                        } else {
-                            let request_count = if minot_prefill_requested {
-                                1
-                            } else {
-                                minot_prefill_requested = true;
-                                offline_prefetch_scans.max(1)
-                            };
-                            release_minot_ticks(
-                                processing_shutdown_flag.as_ref(),
-                                synchronous_mode,
-                                request_count,
-                            );
-                        }
-                    } else {
-                        release_minot_tick(processing_shutdown_flag.as_ref(), synchronous_mode);
-                    }
-                    continue;
-                } // skip outputting trivial solutions on initialization
-                Err(err) => {
-                    error!("{err}");
-                    drain_filtered_imu_mcap(&mut mcap_writer, &mut filtered_imu_rx)?;
-                    if let Some(ready) = registration_ready_tx
-                        .as_ref()
-                        .or(ready_for_next_tx.as_ref())
-                    {
-                        let _ = ready.send(sync_tick.scan_id);
-                    }
-                    if gate_minot_replay_on_mcap {
-                    } else {
-                        if downstream_owns_replay {
-                            // The failed registration still consumed one scan.
-                            release_unpublished_scan_tick();
-                        } else if !minot_replay_mode {
-                            release_minot_tick(processing_shutdown_flag.as_ref(), synchronous_mode);
-                        }
-                    }
-                    continue;
-                }
-            };
+            let latency_started = latency_file.as_ref().map(|_| scan.received_at);
+            let LioScan {
+                #[cfg(any(
+                    feature = "mt_pubsub",
+                    all(
+                        feature = "rerun",
+                        any(feature = "cuda", feature = "metal", feature = "vulkan")
+                    )
+                ))]
+                scan_id,
+                cloud_header,
+                odom_time,
+                current_cloud_time,
+                imu_buffer,
+                passthrough: cloud_out,
+                #[cfg(feature = "rerun")]
+                register_pose,
+                ekf_state,
+                t_world,
+                init_guess_lidar,
+                pose_covariance: pose_cov_eqf,
+                twist_covariance: twist_cov_eqf,
+                ..
+            } = *scan;
+            let config = core.config();
+            let cloud_for_reg = core.registered_cloud();
+            #[cfg(any(feature = "cuda", feature = "metal", feature = "vulkan"))]
+            let active_backend = core.active_backend();
+            let orig_frame = cloud_header.frame_id.clone();
+            let orig_time = cloud_header.stamp;
 
             // --- Adapting Coordinate Systems ---
             #[cfg(feature = "rerun")]
@@ -3176,8 +3089,6 @@ fn lio_with_ready_signal(
 
             #[cfg(feature = "rerun")]
             let ros_to_rerun = Isometry3::<f64>::identity(); // placeholder for other visualizations if needed
-
-            let old_t_world = t_world;
 
             let child_frame = config
                 .base_link_frame
@@ -3249,19 +3160,10 @@ fn lio_with_ready_signal(
                 static_tf_published = true;
             }
 
-            t_world = if config.base_link_frame.is_some() {
-                register_pose.base_pose
-            } else {
-                register_pose.pose
-            };
-
-            // transformation from the last pose to the current pose in the local frame
-            t_last_current = old_t_world.inverse() * t_world;
-
             let mut pelorus_odom = Odometry::default();
             pelorus_odom.header.stamp = Time {
-                sec: sync_tick.odom_time.sec,
-                nanosec: sync_tick.odom_time.nanosec,
+                sec: odom_time.sec,
+                nanosec: odom_time.nanosec,
             };
             pelorus_odom.header.frame_id = config.sync_params.map_frame.clone();
             pelorus_odom.child_frame_id = child_frame.clone();
@@ -3281,31 +3183,16 @@ fn lio_with_ready_signal(
             pelorus_odom.twist.twist.angular.y = ang_vel_body.y;
             pelorus_odom.twist.twist.angular.z = ang_vel_body.z;
 
+            #[cfg(not(feature = "r2r"))]
             {
-                let (pose_cov_eqf, twist_cov_eqf) = {
-                    let map = pipeline.map();
-                    let guard = map.lock().unwrap();
-                    let lidar_to_child = if config.base_link_frame.is_some() {
-                        config.base_to_lidar.inverse()
-                    } else {
-                        Isometry3::identity()
-                    };
-                    let pose_cov = guard.get_output_pose_covariance(&lidar_to_child);
-                    let tw_cov = guard.get_output_twist_covariance(&t_world);
-                    (pose_cov, tw_cov)
-                };
+                pelorus_odom.pose.covariance = pose_cov_eqf;
+                pelorus_odom.twist.covariance = twist_cov_eqf;
+            }
 
-                #[cfg(not(feature = "r2r"))]
-                {
-                    pelorus_odom.pose.covariance = pose_cov_eqf;
-                    pelorus_odom.twist.covariance = twist_cov_eqf;
-                }
-
-                #[cfg(feature = "r2r")]
-                {
-                    pelorus_odom.pose.covariance = pose_cov_eqf.to_vec();
-                    pelorus_odom.twist.covariance = twist_cov_eqf.to_vec();
-                }
+            #[cfg(feature = "r2r")]
+            {
+                pelorus_odom.pose.covariance = pose_cov_eqf.to_vec();
+                pelorus_odom.twist.covariance = twist_cov_eqf.to_vec();
             }
 
             // Generate prediction-only export samples before serializing this
@@ -3313,9 +3200,9 @@ fn lio_with_ready_signal(
             if realtime_export_rx.is_some()
                 && let Some(predictor) = realtime_predictor.as_ref()
             {
-                let registration = pipeline.map();
+                let registration = core.map();
                 let registration = registration.lock().unwrap();
-                predictor.prepare_export(&registration, &sync_tick.imu_buffer);
+                predictor.prepare_export(&registration, &imu_buffer);
             }
 
             #[cfg(feature = "rerun")]
@@ -3543,8 +3430,8 @@ fn lio_with_ready_signal(
 
             cloud.header.frame_id = orig_frame.clone();
             cloud.header.stamp = Time {
-                sec: sync_tick.odom_time.sec,
-                nanosec: sync_tick.odom_time.nanosec,
+                sec: odom_time.sec,
+                nanosec: odom_time.nanosec,
             };
             #[cfg(feature = "processing-time-export")]
             if let (Some(latency_file), Some(latency_started)) =
@@ -3587,8 +3474,8 @@ fn lio_with_ready_signal(
                 header: Header {
                     frame_id: config.sync_params.map_frame.clone(),
                     stamp: Time {
-                        sec: sync_tick.odom_time.sec,
-                        nanosec: sync_tick.odom_time.nanosec,
+                        sec: odom_time.sec,
+                        nanosec: odom_time.nanosec,
                     },
                 },
                 child_frame_id: child_frame,
@@ -3632,8 +3519,8 @@ fn lio_with_ready_signal(
                     header: Header {
                         frame_id: config.sync_params.map_frame.clone(),
                         stamp: Time {
-                            sec: sync_tick.odom_time.sec,
-                            nanosec: sync_tick.odom_time.nanosec,
+                            sec: odom_time.sec,
+                            nanosec: odom_time.nanosec,
                         },
                     },
                     child_frame_id: pelorus_odom.child_frame_id.clone(),
@@ -3681,26 +3568,6 @@ fn lio_with_ready_signal(
                 writer.write_tf(&serde_tf_message(&mcap_tf))?;
             }
             drain_filtered_imu_mcap(&mut mcap_writer, &mut filtered_imu_rx)?;
-            if gate_minot_replay_on_mcap {
-                if let Some(ready) = registration_ready_tx.as_ref() {
-                    let _ = ready.send(sync_tick.scan_id);
-                }
-            } else if !relay_minot_replay_on_registration
-                && minot_replay_mode
-                && !downstream_owns_replay
-            {
-                let request_count = if minot_prefill_requested {
-                    1
-                } else {
-                    minot_prefill_requested = true;
-                    offline_prefetch_scans.max(1)
-                };
-                release_minot_ticks(
-                    processing_shutdown_flag.as_ref(),
-                    synchronous_mode,
-                    request_count,
-                );
-            }
 
             #[cfg(feature = "rerun")]
             if let Some(ref rec) = rec {
@@ -3784,11 +3651,15 @@ fn lio_with_ready_signal(
                     #[cfg(not(any(feature = "cuda", feature = "metal", feature = "vulkan")))]
                     {
                         if config.map_multiresolution {
-                            let distributions = map.lock().unwrap().get_distributions_with_levels();
+                            let distributions =
+                                core.map().lock().unwrap().get_distributions_with_levels();
                             log_multires_snapshot_to_rerun(rec, distributions, map_config);
                         } else {
-                            let distributions =
-                                map.lock().unwrap().get_distributions_with_lru_scores();
+                            let distributions = core
+                                .map()
+                                .lock()
+                                .unwrap()
+                                .get_distributions_with_lru_scores();
                             log_map_snapshot_to_rerun(rec, distributions, map_config);
                         }
                     }
@@ -3811,7 +3682,7 @@ fn lio_with_ready_signal(
                         // (see `rank_scores_by_recency`). Each level gets its own
                         // entity path so it can be toggled independently in Rerun.
                         const LEVELS: usize = 4;
-                        let current_scan = sync_tick.scan_id;
+                        let current_scan = scan_id;
                         let mut positions: [Vec<glam::Vec3>; LEVELS] = Default::default();
                         let mut ages: [Vec<u64>; LEVELS] = Default::default();
                         for (v, level, last_scan) in total_map {
@@ -3856,7 +3727,7 @@ fn lio_with_ready_signal(
 
                     let marker = pelorus_protocol::RegisteredFrameMarker {
                         protocol_version: pelorus_protocol::PROTOCOL_VERSION,
-                        scan_id: sync_tick.scan_id,
+                        scan_id,
                         timestamp_sec: pelorus_odom.header.stamp.sec,
                         timestamp_nanosec: pelorus_odom.header.stamp.nanosec,
                         // The negotiated encoding, not the configured one: a
@@ -3875,7 +3746,7 @@ fn lio_with_ready_signal(
                         .publish(&marker)
                         .await
                         .expect("Failed to publish registered frame marker");
-                    processing_last_published_frame.store(sync_tick.scan_id + 1, Ordering::Release);
+                    processing_last_published_frame.store(scan_id + 1, Ordering::Release);
                 });
             #[cfg(not(feature = "mt_pubsub"))]
             {
@@ -3890,14 +3761,14 @@ fn lio_with_ready_signal(
 
             #[cfg(feature = "mt_pubsub")]
             if downstream_owns_replay {
-                debug!("published downstream frame {}", sync_tick.scan_id);
+                debug!("published downstream frame {}", scan_id);
             }
 
             // Release the real-time barrier only after the authoritative
             // corrected message has been published. The predictor then
             // replays buffered IMUs and emits one caught-up state.
             if let Some(predictor) = realtime_predictor.as_ref() {
-                let registration = pipeline.map();
+                let registration = core.map();
                 let registration = registration.lock().unwrap();
                 predictor.corrected(&registration);
             }
@@ -3966,7 +3837,7 @@ fn lio_with_ready_signal(
                         .expect("Failed to publish imu odom");
                 });
 
-            let iteration_time_ms = eval.get_sum_of_top_level_times_ms();
+            let iteration_time_ms = core.eval().get_sum_of_top_level_times_ms();
 
             #[cfg(feature = "processing-time-export")]
             if let Some(processing_time_file) = processing_time_file.as_mut() {
@@ -4028,8 +3899,191 @@ fn lio_with_ready_signal(
                         27 as char,
                         27 as char,
                         NAME,
-                        eval.render()
+                        core.eval_mut().render()
                     );
+                }
+            }
+            Ok(())
+        };
+
+        #[cfg(feature = "mt_pubsub")]
+        if let Some(SequentialInput {
+            mut source,
+            mut ingress,
+        }) = sequential_input
+        {
+            run_sequential(
+                &mut source,
+                &mut ingress,
+                &mut core,
+                &mut publish_step,
+                SequentialRun {
+                    shared_stats: shared_stats.as_ref(),
+                    filtered_imu_sender: sequential_filtered_imu_tx.as_ref(),
+                    shutdown_flag: processing_shutdown_flag.as_ref(),
+                    replay_expected: &replay_expected,
+                    minot_replay_mode,
+                    synchronous_mode,
+                    prefetch_scans: offline_prefetch_scans.max(1) as u64,
+                },
+            )?;
+        }
+        // After a sequential run the input is consumed already. The threaded loop
+        // then finds its input closed and goes straight to teardown.
+        let synced_rx = synced_rx.unwrap_or_else(|| std::sync::mpsc::channel().1);
+        let mut draining_after_end_of_bag = false;
+        loop {
+            let processed = match processing_shutdown_flag.as_ref() {
+                Some(flag) => {
+                    let shutdown_requested = flag.load(core::sync::atomic::Ordering::Relaxed);
+                    let drain_requested =
+                        drain_on_shutdown.load(core::sync::atomic::Ordering::SeqCst);
+                    if shutdown_requested || drain_requested {
+                        if drain_requested && !shutdown_requested {
+                            if !draining_after_end_of_bag {
+                                draining_after_end_of_bag = true;
+                                info!("End of bag: processing every scan Minot replayed");
+                            }
+                            // The synchronizer closes its output once every replayed
+                            // message has arrived and been handled, so the drain ends on
+                            // that and not on a quiet period. The timeout only lets an
+                            // interrupt through.
+                            match synced_rx.recv_timeout(Duration::from_millis(50)) {
+                                Ok(t) => t,
+                                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => continue,
+                                Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                                    if let Some(ref sync_node) = sync_node {
+                                        sync_node.request_shutdown();
+                                    }
+                                    // Drop sync gate and node ownership so all producer chains can close.
+                                    drop(registration_ready_tx.take());
+                                    drop(ready_for_next_tx.take());
+                                    drop(sync_node.take());
+                                    info!(
+                                        "End of bag: every replayed scan is processed, exiting processing loop"
+                                    );
+                                    break;
+                                }
+                            }
+                        } else {
+                            if let Some(ref sync_node) = sync_node {
+                                sync_node.request_shutdown();
+                            }
+                            // Drop sync gate and node ownership so all producer chains can close.
+                            drop(registration_ready_tx.take());
+                            drop(ready_for_next_tx.take());
+                            drop(sync_node.take());
+                            info!("Shutdown requested, exiting processing loop");
+                            break;
+                        }
+                    } else {
+                        // Block with a short timeout so we can still respond promptly to shutdown signals.
+                        match synced_rx.recv_timeout(Duration::from_millis(50)) {
+                            Ok(t) => t,
+                            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => continue,
+                            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                                info!("synced_rx disconnected, exiting processing loop");
+                                break;
+                            }
+                        }
+                    }
+                }
+                None => match synced_rx.recv() {
+                    Ok(t) => t,
+                    Err(_) => break,
+                },
+            };
+            // Record scan arrival for measuring actual sensor rate
+            if let Some(ref stats) = shared_stats {
+                record_scan_arrival(stats, &processed);
+            }
+
+            // This correction barrier orders Synchronizer prediction independently
+            // of downstream backpressure.
+            let ready_for_registration = if relay_minot_replay_on_registration {
+                registration_ready_tx.as_ref()
+            } else if gate_minot_replay_on_mcap {
+                None
+            } else {
+                ready_for_next_tx.as_ref()
+            };
+            let step = core.step(processed, ready_for_registration);
+            let outcome = ScanOutcome::of(&step);
+            publish_step(&mut core, step)?;
+            match outcome {
+                ScanOutcome::MapOnly(scan_id) => {
+                    if let Some(ready) = registration_ready_tx
+                        .as_ref()
+                        .or(ready_for_next_tx.as_ref())
+                    {
+                        let _ = ready.send(scan_id);
+                    }
+                    if gate_minot_replay_on_mcap || relay_minot_replay_on_registration {
+                        // The relay only advances Minot when Pelorus owns the
+                        // replay clock, so pay for this initialization scan here.
+                        if downstream_owns_replay {
+                            release_unpublished_scan_tick();
+                        }
+                    } else if minot_replay_mode {
+                        if downstream_owns_replay {
+                            release_unpublished_scan_tick();
+                        } else {
+                            let request_count = if minot_prefill_requested {
+                                1
+                            } else {
+                                minot_prefill_requested = true;
+                                offline_prefetch_scans.max(1)
+                            };
+                            release_minot_ticks(
+                                processing_shutdown_flag.as_ref(),
+                                synchronous_mode,
+                                request_count,
+                            );
+                        }
+                    } else {
+                        release_minot_tick(processing_shutdown_flag.as_ref(), synchronous_mode);
+                    }
+                    continue;
+                } // skip outputting trivial solutions on initialization
+                ScanOutcome::Failed(scan_id) => {
+                    if let Some(ready) = registration_ready_tx
+                        .as_ref()
+                        .or(ready_for_next_tx.as_ref())
+                    {
+                        let _ = ready.send(scan_id);
+                    }
+                    if gate_minot_replay_on_mcap {
+                    } else {
+                        if downstream_owns_replay {
+                            // The failed registration still consumed one scan.
+                            release_unpublished_scan_tick();
+                        } else if !minot_replay_mode {
+                            release_minot_tick(processing_shutdown_flag.as_ref(), synchronous_mode);
+                        }
+                    }
+                    continue;
+                }
+                ScanOutcome::Registered(scan_id) => {
+                    if gate_minot_replay_on_mcap {
+                        if let Some(ready) = registration_ready_tx.as_ref() {
+                            let _ = ready.send(scan_id);
+                        }
+                    } else if !relay_minot_replay_on_registration
+                        && minot_replay_mode
+                        && !downstream_owns_replay
+                    {
+                        let request_count = if minot_prefill_requested {
+                            1
+                        } else {
+                            minot_prefill_requested = true;
+                            offline_prefetch_scans.max(1)
+                        };
+                        release_minot_ticks(
+                            processing_shutdown_flag.as_ref(),
+                            synchronous_mode,
+                            request_count,
+                        );
+                    }
                 }
             }
 
@@ -4044,32 +4098,7 @@ fn lio_with_ready_signal(
             let _ = handle.join();
         }
 
-        // Ensure backend work is quiesced and map state is released before GPU
-        // buffers/contexts in this thread are dropped.
-        active_backend.stream_sync();
-        // Release GPU buffers before the backend tears the device down. Every
-        // child object has to be gone before the device is destroyed.
-        pipeline.release_gpu_buffers();
-        #[cfg(feature = "vulkan")]
-        if matches!(active_backend, ActiveBackend::Vulkan(_)) {
-            drop(core::mem::replace(
-                &mut persistent_cloud_buf,
-                LocatedBufferView::Ram(Vec::new()),
-            ));
-        }
-        match &active_backend {
-            ActiveBackend::Cpu => {}
-            #[cfg(feature = "cuda")]
-            ActiveBackend::Cuda(_) => pelorus_cuda::cleanup_map(),
-            #[cfg(feature = "metal")]
-            ActiveBackend::Metal(_) => pelorus_metal::cleanup_map(),
-            #[cfg(feature = "vulkan")]
-            // Releases the map *and* the downsample state, so the device and
-            // instance are destroyed when `active_backend` drops rather than
-            // being left alive for the NVIDIA driver's atexit handler to race
-            // against its own worker threads.
-            ActiveBackend::Vulkan(_) => pelorus_vulkan::shutdown(),
-        }
+        core.shutdown_process();
         drain_filtered_imu_mcap(&mut mcap_writer, &mut filtered_imu_rx)?;
         if let Some(child_frame) = realtime_export_child_frame.as_deref() {
             drain_realtime_odometry_exports(

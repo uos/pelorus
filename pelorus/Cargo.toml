@@ -21,14 +21,18 @@ ros_pointcloud2.workspace = true
 ros2-interfaces-jazzy-serde.workspace = true
 nalgebra.workspace = true
 anyhow.workspace = true
-ureq.workspace = true
+ureq = { workspace = true, optional = true }
 log.workspace = true
 ratslang.workspace = true
 thiserror.workspace = true
 rayon = { workspace = true, optional = true }
 
 [features]
-default = ["rayon"]
+default = ["rayon", "threads", "http-config"]
+# Load `.rl` configurations from HTTP(S) URLs.
+http-config = ["dep:ureq"]
+# The threaded `Handle`. Without it only the `Odometer` is built.
+threads = ["pelorus_sync/threads", "pelorus_reg/threads"]
 processing-time-export = ["pelorus_reg/processing-time-export"]
 rayon = ["dep:rayon", "pelorus_sync/rayon", "pelorus_reg/rayon", "ros_pointcloud2/rayon"]
 downsample = ["pelorus_sync/downsample"]
@@ -37,5 +41,7 @@ metal = ["pelorus_sync/metal", "pelorus_reg/metal"]
 vulkan = ["pelorus_sync/vulkan", "pelorus_reg/vulkan"]
 no-imu-sync = ["pelorus_sync/no-imu-sync"]
 large-processing-queue = ["pelorus_sync/large-processing-queue"]
+# Seed the map's neighbor sampling from the OS instead of a fixed seed. Native only.
+os-rng-seed = ["pelorus_reg/os-rng-seed"]
 lru-eviction = ["pelorus_reg/lru-eviction"]
 plain-update = ["pelorus_reg/plain-update"]
