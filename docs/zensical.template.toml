@@ -34,7 +34,7 @@ site_author = "stelzo <stelzo@steado.de>"
 # The site_url is the canonical URL for your site. When building online
 # documentation you should set this.
 # Read more: https://zensical.org/docs/setup/basics/#site_url
-site_url = "https://stelzo.codeberg.page/pelorus/"
+site_url = "https://pelorus.steado.tech/docs/"
 
 # Link to the repository in the header, as on the other SeaKit sites.
 repo_url = "https://codeberg.org/stelzo/pelorus"
@@ -117,7 +117,7 @@ extra_javascript = ["javascripts/config-reference.js"]
 # ----------------------------------------------------------------------------
 [project.theme]
 logo = "images/pelorus.svg"
-favicon = "images/pelorus.svg"
+favicon = "images/favicon.svg"
 
 # Do not load any font from Google.
 #

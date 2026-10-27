@@ -1,6 +1,6 @@
 # yaml-language-server: $schema=https://raw.githubusercontent.com/SchemaStore/schemastore/refs/heads/master/src/schemas/json/github-workflow.json
 # Docs Workflow for Pelorus. The schema is used until there is one for Forgejo.
-# The site is redeployed for tagged releases and for pushes to main that touch docs/ or this workflow.
+# The site is deployed to https://pelorus.steado.tech/docs/ and redeployed for tagged releases and for pushes to main that touch docs/ or this workflow.
 # ci.yml builds the docs as a check on every push that changes more than docs/.
 
 name: Docs
@@ -31,9 +31,19 @@ jobs:
           rustc --version
           cargo run -p pelorus_docs
           cd docs && uvx zensical build --clean
-      - name: Deploy to Codeberg Pages
-        uses: https://codeberg.org/git-pages/action@v2
-        with:
-          site: https://${{ forge.repository_owner }}.codeberg.page/pelorus/
-          token: ${{ forge.token }}
-          source: docs/site/
+      - name: Deploy to pelorus.steado.tech/docs
+        env:
+          WEB_DEPLOY_KEY: ${{ secrets.WEB_DEPLOY_KEY }}
+        run: |
+          set -euo pipefail
+          apt-get update -qq
+          apt-get install -y --no-install-recommends rsync openssh-client
+          key="$(mktemp)"
+          hosts="$(mktemp)"
+          trap 'rm -f "$key" "$hosts"' EXIT
+          printf '%s\n' "$WEB_DEPLOY_KEY" >"$key"
+          echo "[pelorus.steado.tech]:2222 ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIBvqpiJdvk+zuDXcjOgNdA3p98+6L7MAnhOEOLrw4phX" >"$hosts"
+          # The key of web.yml, which may only rsync into /var/www/pelorus.steado.tech.
+          rsync -rlt --checksum --delete --delay-updates --chmod=D755,F644 --stats \
+            -e "ssh -p 2222 -i $key -o IdentitiesOnly=yes -o BatchMode=yes -o UserKnownHostsFile=$hosts -o StrictHostKeyChecking=yes" \
+            docs/site/ pelorus-web@pelorus.steado.tech:docs/

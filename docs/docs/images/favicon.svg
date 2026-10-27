@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" fill="none">
+  <!-- pelorus.svg for browser tabs. The logo's light gold disappears on a light
+       tab bar, so light themes get the darker gold of the documentation. -->
+  <style>
+    .ring { stroke: #efd374; }
+    .needle { fill: #efd374; }
+    .shade { fill: #b68e24; }
+    @media (prefers-color-scheme: light) {
+      .ring { stroke: #806308; }
+      .needle { fill: #806308; }
+      .shade { fill: #604906; }
+    }
+  </style>
+  <path class="ring" d="M77 24A42 42 0 1 0 104 51" stroke-width="10" stroke-linecap="round"/>
+  <path class="needle" d="m100 28-26 45-30 11 11-30Z"/>
+  <path class="shade" d="m100 28-36 36-20 20 11-30Z"/>
+</svg>

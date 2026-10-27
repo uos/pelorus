@@ -5,7 +5,7 @@
 **Resource-aware Lidar-Inertial Odometry**, written in Rust, CUDA, Vulkan and Metal. Developed by the Computer Engineering Group at Osnabrück University.
 
 [![License](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue)](#license)
-[![Docs](https://img.shields.io/badge/docs-stelzo.codeberg.page-teal)](https://stelzo.codeberg.page/pelorus/)
+[![Docs](https://img.shields.io/badge/docs-pelorus.steado.tech-e5c65c)](https://pelorus.steado.tech/docs/)
 
 Supporting various 3D Lidar sensors, IMUs, odometry sources and kinematic models, Pelorus provides real-time performance on embedded hardware while pushing state-of-the-art accuracy. The online mode reaches more than 20 Hz odometry on a Jetson Orin Nano with a 128-layer Ouster Lidar, keeping resource usage low so the rest of your application has room to run.
 
@@ -19,11 +19,11 @@ Pick whichever fits your stack. All of them support both CPU-only and GPU-accele
 
 | | |
 |---|---|
-| **[ROS 2 package](https://stelzo.codeberg.page/pelorus/ros/)** | Drop-in integration for existing ROS 2 systems |
-| **[Standalone CLI](https://stelzo.codeberg.page/pelorus/standalone/)** | Offline and online modes, no ROS required |
-| **[C / C++ library](https://stelzo.codeberg.page/pelorus/standalone/)** | CMake integration with Eigen and PCL helpers |
-| **[Python package](https://stelzo.codeberg.page/pelorus/standalone/)** | Published on PyPI for quick prototyping and offline processing |
-| **[GLIM plugin](https://stelzo.codeberg.page/pelorus/glim/)** | Odometry source for [GLIM](https://koide3.github.io/glim/) mapping |
+| **[ROS 2 package](https://pelorus.steado.tech/docs/ros/)** | Drop-in integration for existing ROS 2 systems |
+| **[Standalone CLI](https://pelorus.steado.tech/docs/standalone/)** | Offline and online modes, no ROS required |
+| **[C / C++ library](https://pelorus.steado.tech/docs/standalone/)** | CMake integration with Eigen and PCL helpers |
+| **[Python package](https://pelorus.steado.tech/docs/standalone/)** | Published on PyPI for quick prototyping and offline processing |
+| **[GLIM plugin](https://pelorus.steado.tech/docs/glim/)** | Odometry source for [GLIM](https://koide3.github.io/glim/) mapping |
 
 ## ROS 2 quick start
 
@@ -71,9 +71,9 @@ pelorus config generate recommended > pelorus.rl
 pelorus offline path/to/your.mcap -c pelorus.rl
 ```
 
-See the [standalone docs](https://stelzo.codeberg.page/pelorus/standalone/) for pulling sample bags with Marina, running Zenoh/ROS-compatible middleware, and visualizing results with Rerun or RViz.
+See the [standalone docs](https://pelorus.steado.tech/docs/standalone/) for pulling sample bags with Marina, running Zenoh/ROS-compatible middleware, and visualizing results with Rerun or RViz.
 
-Please see the **[docs](https://stelzo.codeberg.page/pelorus/)** for more info about ROS, standalone usage, libraries, [sensor/IMU calibration](https://stelzo.codeberg.page/pelorus/calibration/) and [configuration](https://stelzo.codeberg.page/pelorus/configuration/).
+Please see the **[docs](https://pelorus.steado.tech/docs/)** for more info about ROS, standalone usage, libraries, [sensor/IMU calibration](https://pelorus.steado.tech/docs/calibration/) and [configuration](https://pelorus.steado.tech/docs/configuration/).
 
 ## Development
 
