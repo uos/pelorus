@@ -1,3 +1,7 @@
+#![cfg_attr(not(feature = "std"), no_std)]
+
+extern crate alloc;
+
 pub mod imu;
 mod naive_preint;
 #[cfg(not(feature = "rayon"))]
@@ -26,17 +30,22 @@ use pelorus_core::{
     VelodynePoint, VelodynePointNoIntensity, time_msg_from_secs, timing::RuntimeEvaluator,
 };
 
+#[cfg(feature = "threads")]
+use ::core::sync::atomic::{AtomicUsize, Ordering};
+use alloc::boxed::Box;
+use alloc::collections::VecDeque;
+use alloc::format;
+use alloc::string::ToString;
+use alloc::sync::Arc;
+use alloc::vec::Vec;
 use pelorus_core::Instant;
 #[cfg(any(feature = "cuda", feature = "metal", feature = "vulkan"))]
 use pelorus_core::PreprocessingBackend;
+use pelorus_core::sync::Mutex;
 #[cfg(feature = "cuda")]
 use pelorus_cuda::CudaBuffer;
 #[cfg(feature = "vulkan")]
 use pelorus_vulkan::VulkanBuffer;
-use std::collections::VecDeque;
-use std::sync::Arc;
-#[cfg(feature = "threads")]
-use std::sync::atomic::{AtomicUsize, Ordering};
 #[cfg(feature = "threads")]
 use std::thread;
 
@@ -61,7 +70,7 @@ pub type FilteredCloudMsg = (
 );
 
 /// Hook that receives the IMU batch used for initialization.
-pub type ImuInitCallback = Arc<std::sync::Mutex<dyn FnMut(&[ImuMsg]) + Send + Sync>>;
+pub type ImuInitCallback = Arc<Mutex<dyn FnMut(&[ImuMsg]) + Send + Sync>>;
 
 /// Output-only hook invoked after calibration and AHRS filtering.
 pub type RealtimeImuCallback = Arc<dyn Fn(ImuMsg) + Send + Sync>;
@@ -97,7 +106,7 @@ const SYNCED_CLOUD_QUEUE_CAP: usize = 1_024;
 fn sort_unstable_by<T, F>(slice: &mut [T], cmp: F, mode: ExecutionMode)
 where
     T: Send,
-    F: Fn(&T, &T) -> std::cmp::Ordering + Sync,
+    F: Fn(&T, &T) -> ::core::cmp::Ordering + Sync,
 {
     match mode {
         ExecutionMode::Sequential => slice.sort_unstable_by(cmp),
@@ -108,7 +117,7 @@ where
 #[cfg(not(feature = "rayon"))]
 fn sort_unstable_by<T, F>(slice: &mut [T], cmp: F, _mode: ExecutionMode)
 where
-    F: Fn(&T, &T) -> std::cmp::Ordering,
+    F: Fn(&T, &T) -> ::core::cmp::Ordering,
 {
     slice.sort_unstable_by(cmp);
 }
@@ -169,8 +178,8 @@ impl BufferStream for pelorus_vulkan::Stream {}
 
 #[inline]
 fn safe_angle(angle: f64) -> f64 {
-    let factor = (angle / (2.0 * std::f64::consts::PI)).floor() as i32;
-    angle - factor as f64 * 2.0 * std::f64::consts::PI
+    let factor = (angle / (2.0 * ::core::f64::consts::PI)).floor() as i32;
+    angle - factor as f64 * 2.0 * ::core::f64::consts::PI
 }
 
 #[inline]
@@ -430,6 +439,7 @@ impl<T> LocatedBufferView<T> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use alloc::vec;
     use ros_pointcloud2::ros::{HeaderMsg, PointFieldMsg, TimeMsg, make_field_name};
     use ros_pointcloud2::{Denseness, Endian, FieldDatatype, PointCloud2MsgBuilder};
     #[cfg(feature = "threads")]
@@ -994,7 +1004,7 @@ mod tests {
                     imu_iter
                         .by_ref()
                         .any(|imu| core.offer_imu(imu))
-                        .then(|| core.finish_scan(std::iter::empty()))
+                        .then(|| core.finish_scan(::core::iter::empty()))
                         .flatten()
                 }
             };
@@ -1007,13 +1017,12 @@ mod tests {
         assert_eq!(previous_lidar_end, core.prev_lidar_end_time());
     }
 
-    fn counting_init() -> (ImuInitCallback, Arc<std::sync::Mutex<Vec<usize>>>) {
-        let calls = Arc::new(std::sync::Mutex::new(Vec::new()));
+    fn counting_init() -> (ImuInitCallback, Arc<Mutex<Vec<usize>>>) {
+        let calls = Arc::new(Mutex::new(Vec::new()));
         let seen = Arc::clone(&calls);
-        let callback: ImuInitCallback =
-            Arc::new(std::sync::Mutex::new(move |msgs: &[ImuMsg]| {
-                seen.lock().unwrap().push(msgs.len());
-            }));
+        let callback: ImuInitCallback = Arc::new(Mutex::new(move |msgs: &[ImuMsg]| {
+            seen.lock().push(msgs.len());
+        }));
         (callback, calls)
     }
 
@@ -1024,7 +1033,7 @@ mod tests {
         for stamp in [10.0, 10.05, 10.09, 10.15, 10.2] {
             window.observe(&test_imu(stamp));
         }
-        assert_eq!(*calls.lock().unwrap(), vec![3]);
+        assert_eq!(*calls.lock(), vec![3]);
         assert!(window.is_complete());
     }
 
@@ -1034,7 +1043,7 @@ mod tests {
         let mut window = ImuInitWindow::new(Some(callback), 0.0);
         window.observe(&test_imu(10.0));
         window.observe(&test_imu(10.1));
-        assert_eq!(*calls.lock().unwrap(), vec![1]);
+        assert_eq!(*calls.lock(), vec![1]);
     }
 
     #[test]
@@ -1044,7 +1053,7 @@ mod tests {
         for stamp in [10.0, 10.05, 5.0, 5.02, 5.15] {
             window.observe(&test_imu(stamp));
         }
-        assert_eq!(*calls.lock().unwrap(), vec![2]);
+        assert_eq!(*calls.lock(), vec![2]);
     }
 
     #[test]
@@ -1347,19 +1356,28 @@ fn find_medoid_in_slice(points: &[(i32, PointXYZIT)]) -> PointXYZIT {
                 + (b.z - centroid.z).powi(2);
             dist_a
                 .partial_cmp(&dist_b)
-                .unwrap_or(std::cmp::Ordering::Equal)
+                .unwrap_or(::core::cmp::Ordering::Equal)
                 .then_with(|| {
                     a.timestamp
                         .partial_cmp(&b.timestamp)
-                        .unwrap_or(std::cmp::Ordering::Equal)
+                        .unwrap_or(::core::cmp::Ordering::Equal)
                 })
-                .then_with(|| a.x.partial_cmp(&b.x).unwrap_or(std::cmp::Ordering::Equal))
-                .then_with(|| a.y.partial_cmp(&b.y).unwrap_or(std::cmp::Ordering::Equal))
-                .then_with(|| a.z.partial_cmp(&b.z).unwrap_or(std::cmp::Ordering::Equal))
+                .then_with(|| {
+                    a.x.partial_cmp(&b.x)
+                        .unwrap_or(::core::cmp::Ordering::Equal)
+                })
+                .then_with(|| {
+                    a.y.partial_cmp(&b.y)
+                        .unwrap_or(::core::cmp::Ordering::Equal)
+                })
+                .then_with(|| {
+                    a.z.partial_cmp(&b.z)
+                        .unwrap_or(::core::cmp::Ordering::Equal)
+                })
                 .then_with(|| {
                     a.intensity
                         .partial_cmp(&b.intensity)
-                        .unwrap_or(std::cmp::Ordering::Equal)
+                        .unwrap_or(::core::cmp::Ordering::Equal)
                 })
         })
         .unwrap()
@@ -1414,12 +1432,12 @@ impl DownsampleBuffers {
 }
 
 #[inline]
-fn compare_f32(a: f32, b: f32) -> std::cmp::Ordering {
-    a.partial_cmp(&b).unwrap_or(std::cmp::Ordering::Equal)
+fn compare_f32(a: f32, b: f32) -> ::core::cmp::Ordering {
+    a.partial_cmp(&b).unwrap_or(::core::cmp::Ordering::Equal)
 }
 
 #[inline]
-fn compare_point_timestamp(a: &PointXYZIT, b: &PointXYZIT) -> std::cmp::Ordering {
+fn compare_point_timestamp(a: &PointXYZIT, b: &PointXYZIT) -> ::core::cmp::Ordering {
     compare_f32(a.timestamp, b.timestamp)
         .then_with(|| compare_f32(a.x, b.x))
         .then_with(|| compare_f32(a.y, b.y))
@@ -2122,7 +2140,7 @@ fn filter_downsample_inner<const N: usize, P: PointConvertible<N> + Send + Sync>
                 if sort_by_timestamp {
                     sort_bypass_cloud(&mut buffers.filtered_cloud, eval, mode)?;
                 }
-                raw_out = Some(std::mem::take(&mut buffers.filtered_cloud));
+                raw_out = Some(::core::mem::take(&mut buffers.filtered_cloud));
             }
         } else if bypass_output_downsample {
             cpu_key_downsample(
@@ -2187,7 +2205,7 @@ fn filter_downsample_inner<const N: usize, P: PointConvertible<N> + Send + Sync>
                 }
             }
 
-            raw_out = Some(std::mem::take(&mut buffers.filtered_cloud));
+            raw_out = Some(::core::mem::take(&mut buffers.filtered_cloud));
         } else {
             cpu_downsample(
                 buffers,
@@ -2219,6 +2237,7 @@ fn filter_downsample_inner<const N: usize, P: PointConvertible<N> + Send + Sync>
 ///
 /// With `imu.calibration.gyroscope` enabled, startup samples are used to update
 /// the gyroscope bias and are withheld until calibration completes.
+#[cfg(feature = "std")]
 struct ImuIntrinsicCorrection {
     corrector: imu_calib::ImuCorrector,
     intrinsics: imu_calib::ImuIntrinsics,
@@ -2226,7 +2245,19 @@ struct ImuIntrinsicCorrection {
     announced: bool,
 }
 
+/// Without `std` there is no file to read the intrinsics from, so no correction exists.
+#[cfg(not(feature = "std"))]
+enum ImuIntrinsicCorrection {}
+
+#[cfg(not(feature = "std"))]
+impl ImuIntrinsicCorrection {
+    fn correct(&mut self, _accel: [f64; 3], _gyro: [f64; 3]) -> Option<([f64; 3], [f64; 3])> {
+        match *self {}
+    }
+}
+
 /// Running mean of the first stationary samples.
+#[cfg(feature = "std")]
 struct GyroBiasWarmup {
     remaining: usize,
     accel_sum: [f64; 3],
@@ -2234,6 +2265,7 @@ struct GyroBiasWarmup {
     count: usize,
 }
 
+#[cfg(feature = "std")]
 impl ImuIntrinsicCorrection {
     fn load(path: &str, recalibrate_gyro: bool, gyro_samples: usize) -> anyhow::Result<Self> {
         let intrinsics = imu_calib::ImuIntrinsics::from_kalibr_yaml(path)?;
@@ -2876,11 +2908,16 @@ fn load_imu_intrinsics(
 ) -> Result<Option<ImuIntrinsicCorrection>> {
     match (imu_disabled, params.imu_intrinsics_calib_file_path.as_ref()) {
         (true, _) | (false, None) => Ok(None),
+        #[cfg(feature = "std")]
         (false, Some(path)) => Ok(Some(ImuIntrinsicCorrection::load(
             path,
             params.imu_calibrate_gyros,
             params.gyro_calibration_samples,
         )?)),
+        #[cfg(not(feature = "std"))]
+        (false, Some(path)) => {
+            anyhow::bail!("Loading the IMU intrinsics '{path}' from a file needs the std feature")
+        }
     }
 }
 
@@ -3038,7 +3075,7 @@ impl SteppedSynchronizer {
                     return None;
                 }
             }
-            if let Some(synced) = self.core.finish_scan(std::mem::take(&mut self.odom)) {
+            if let Some(synced) = self.core.finish_scan(::core::mem::take(&mut self.odom)) {
                 return Some(synced);
             }
         }
@@ -3108,7 +3145,7 @@ impl ImuInitWindow {
         let buffer = self.buffer.take().unwrap_or_default();
         // Initialization needs at least one sample.
         if !buffer.is_empty() {
-            (callback.lock().unwrap())(&buffer);
+            (callback.lock())(&buffer);
             info!("EKF: IMU initialization samples collected");
         }
         ImuInitProgress::Completed

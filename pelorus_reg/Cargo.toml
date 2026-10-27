@@ -28,12 +28,24 @@ serde.workspace = true
 either.workspace = true
 
 [features]
-webgpu = ["dep:pelorus_wgpu"]
-default = ["rayon", "threads"]
+webgpu = ["std", "dep:pelorus_wgpu"]
+default = ["std", "rayon", "threads"]
+std = [
+    "pelorus_core/std",
+    "pelorus_sync/std",
+    "pelorus_localmap/std",
+    "anyhow/std",
+    "nalgebra/std",
+    "faer/std",
+    "either/std",
+    "serde/std",
+    "ros_pointcloud2/std",
+]
 # The threaded synchronizer and the realtime predictor.
-threads = ["pelorus_sync/threads"]
+threads = ["std", "pelorus_sync/threads"]
 processing-time-export = []
 rayon = [
+    "std",
     "dep:rayon",
     "pelorus_sync/rayon",
     "pelorus_localmap/rayon",
@@ -42,13 +54,12 @@ rayon = [
     "pelorus_cuda?/rayon",
     "pelorus_vulkan?/rayon",
 ]
-nn_kdt = ["pelorus_localmap/nn_kdt"]
-os-rng-seed = ["pelorus_localmap/os-rng-seed"]
+os-rng-seed = ["std", "pelorus_localmap/os-rng-seed"]
 lru-eviction = ["pelorus_localmap/lru-eviction"]
 plain-update = ["pelorus_localmap/plain-update"]
-cuda = ["dep:pelorus_cuda", "pelorus_cuda/cuda_available", "pelorus_cuda/cuda_enable", "pelorus_sync/cuda"]
-metal = ["dep:pelorus_metal", "pelorus_metal/metal_available", "pelorus_metal/metal_enable", "pelorus_sync/metal"]
-vulkan = ["dep:pelorus_vulkan", "pelorus_vulkan/vulkan_available", "pelorus_vulkan/vulkan_enable", "pelorus_sync/vulkan"]
+cuda = ["std", "dep:pelorus_cuda", "pelorus_cuda/cuda_available", "pelorus_cuda/cuda_enable", "pelorus_sync/cuda"]
+metal = ["std", "dep:pelorus_metal", "pelorus_metal/metal_available", "pelorus_metal/metal_enable", "pelorus_sync/metal"]
+vulkan = ["std", "dep:pelorus_vulkan", "pelorus_vulkan/vulkan_available", "pelorus_vulkan/vulkan_enable", "pelorus_sync/vulkan"]
 
 [dev-dependencies]
 futures-lite.workspace = true

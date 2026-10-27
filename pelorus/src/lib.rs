@@ -4,6 +4,10 @@
 //! needs the `threads` feature. [`Odometer`] runs every step on the calling
 //! thread and is always available.
 //!
+//! Without the `std` feature the crate is `no_std` and needs only an allocator.
+//! The [`Odometer`] then takes its configuration as a [`LioConfig`], for example
+//! [`LioConfig::defaults`], instead of reading `.rl` files.
+//!
 //! # Example
 //!
 //! ```rust,no_run
@@ -20,9 +24,15 @@
 //! }
 //! ```
 
+#![cfg_attr(not(feature = "std"), no_std)]
 #![warn(clippy::std_instead_of_alloc, clippy::std_instead_of_core)]
 
 extern crate alloc;
+
+use alloc::boxed::Box;
+use alloc::string::{String, ToString};
+use alloc::vec;
+use alloc::vec::Vec;
 
 #[cfg(feature = "threads")]
 use alloc::sync::Arc;
@@ -35,25 +45,27 @@ use std::sync::{Mutex, mpsc};
 #[cfg(feature = "threads")]
 use std::thread;
 
+#[cfg(feature = "std")]
 use anyhow::anyhow;
 use log::error;
+pub use pelorus_core::LioConfig;
 pub use pelorus_core::PointXYZIT;
 #[cfg(feature = "threads")]
 use pelorus_core::SyncProcessedCloud;
+#[cfg(feature = "std")]
 use pelorus_core::config::{ast_to_config, layer_overrides};
-use pelorus_core::{ImuMsg, LidarVendor, LioConfig, OdomMsg};
+use pelorus_core::{ImuMsg, LidarVendor, OdomMsg};
 use pelorus_reg::lio::{LioCore, LioScan, LioStep};
 use pelorus_reg::pipeline::Pipeline;
 use pelorus_sync::SteppedIngress;
 #[cfg(feature = "threads")]
 use pelorus_sync::{ScanAdmission, Synchronizer};
 pub use ros_pointcloud2::PointCloud2Msg;
-use ros_pointcloud2::prelude::*;
-use ros2_interfaces_jazzy_serde::sensor_msgs::msg::{PointCloud2, PointField};
+use ros_pointcloud2::ros::{HeaderMsg, PointFieldMsg, TimeMsg};
+use ros_pointcloud2::{CloudDimensions, Denseness, Endian};
 
+#[cfg(feature = "std")]
 const DEFAULT_CONFIG_STR: &str = pelorus_core::DEFAULT_CONFIG_STR;
-
-impl_pointcloud2_for_ros2_interfaces_jazzy_serde!();
 
 /// Errors returned by [`Handle`] operations.
 #[derive(Debug, thiserror::Error)]
@@ -219,53 +231,35 @@ fn build_cloud_msg(
         data.extend_from_slice(&t.to_le_bytes());
     }
 
-    let cloud = PointCloud2 {
-        header: ros2_interfaces_jazzy_serde::std_msgs::msg::Header {
-            stamp: ros2_interfaces_jazzy_serde::builtin_interfaces::msg::Time { sec, nanosec },
+    let field = |name: &'static str, offset: u32, datatype: u8| PointFieldMsg {
+        name: name.into(),
+        offset,
+        datatype,
+        count: 1,
+    };
+    PointCloud2Msg {
+        header: HeaderMsg {
+            seq: 0,
+            stamp: TimeMsg { sec, nanosec },
             frame_id: String::new(),
         },
-        height: 1,
-        width: num_points as u32,
+        dimensions: CloudDimensions {
+            width: num_points as u32,
+            height: 1,
+        },
         fields: vec![
-            PointField {
-                name: "x".to_string(),
-                offset: 0,
-                datatype: 7,
-                count: 1,
-            },
-            PointField {
-                name: "y".to_string(),
-                offset: 4,
-                datatype: 7,
-                count: 1,
-            },
-            PointField {
-                name: "z".to_string(),
-                offset: 8,
-                datatype: 7,
-                count: 1,
-            },
-            PointField {
-                name: "intensity".to_string(),
-                offset: 12,
-                datatype: 7,
-                count: 1,
-            },
-            PointField {
-                name: "t".to_string(),
-                offset: 16,
-                datatype: 6,
-                count: 1,
-            },
+            field("x", 0, 7),
+            field("y", 4, 7),
+            field("z", 8, 7),
+            field("intensity", 12, 7),
+            field("t", 16, 6),
         ],
-        is_bigendian: false,
+        endian: Endian::Little,
         point_step: point_step as u32,
         row_step: (num_points * point_step) as u32,
         data,
-        is_dense: true,
-    };
-
-    impl_ros2_interfaces_jazzy_serde::to_pointcloud2_msg(cloud)
+        dense: Denseness::Dense,
+    }
 }
 
 fn imu_msg(imu: ImuMeasurement) -> ImuMsg {
@@ -340,35 +334,35 @@ fn raw_cloud_msg(cloud: RawPointCloud<'_>) -> PointCloud2Msg {
         data,
         is_dense,
     } = cloud;
-    let ros_fields: Vec<PointField> = fields
-        .iter()
-        .map(|f| PointField {
-            name: f.name.clone(),
-            offset: f.offset,
-            datatype: f.datatype,
-            count: 1,
-        })
-        .collect();
-
-    let cloud = PointCloud2 {
-        header: ros2_interfaces_jazzy_serde::std_msgs::msg::Header {
-            stamp: ros2_interfaces_jazzy_serde::builtin_interfaces::msg::Time {
+    PointCloud2Msg {
+        header: HeaderMsg {
+            seq: 0,
+            stamp: TimeMsg {
                 sec: header_sec,
                 nanosec: header_nanosec,
             },
             frame_id: String::new(),
         },
-        height: 1,
-        width,
-        fields: ros_fields,
-        is_bigendian: false,
+        dimensions: CloudDimensions { width, height: 1 },
+        fields: fields
+            .iter()
+            .map(|f| PointFieldMsg {
+                name: f.name.clone().into(),
+                offset: f.offset,
+                datatype: f.datatype,
+                count: 1,
+            })
+            .collect(),
+        endian: Endian::Little,
         point_step,
         row_step,
         data: data.to_vec(),
-        is_dense,
-    };
-
-    impl_ros2_interfaces_jazzy_serde::to_pointcloud2_msg(cloud)
+        dense: if is_dense {
+            Denseness::Dense
+        } else {
+            Denseness::Sparse
+        },
+    }
 }
 
 fn prepare_config(
@@ -383,10 +377,12 @@ fn prepare_config(
     (config, pipeline)
 }
 
+#[cfg(feature = "std")]
 fn is_config_url(location: &str) -> bool {
     location.starts_with("http://") || location.starts_with("https://")
 }
 
+#[cfg(feature = "std")]
 fn read_config_source(location: &str) -> anyhow::Result<String> {
     #[cfg(not(feature = "http-config"))]
     if is_config_url(location) {
@@ -412,7 +408,11 @@ fn read_config_source(location: &str) -> anyhow::Result<String> {
         .map_err(|error| anyhow!("Failed to read configuration '{location}': {error}"))
 }
 
-fn load_config(config_path: Option<&str>) -> anyhow::Result<LioConfig> {
+/// Resolve the configuration an [`Odometer`] created with `config_path` uses:
+/// the embedded defaults, with a local path or HTTP(S) URL to a `.rl` config
+/// layered over them.
+#[cfg(feature = "std")]
+pub fn load_config(config_path: Option<&str>) -> anyhow::Result<LioConfig> {
     let source = config_path
         .map(read_config_source)
         .transpose()?
@@ -430,6 +430,7 @@ fn load_config(config_path: Option<&str>) -> anyhow::Result<LioConfig> {
 
 /// Layer `.rl` source over the embedded defaults. Relative includes resolve
 /// from `parent`.
+#[cfg(feature = "std")]
 fn compile_config(source: &str, parent: &std::path::Path) -> anyhow::Result<LioConfig> {
     let default_ast = ratslang::compile_code(DEFAULT_CONFIG_STR)
         .map_err(|e| anyhow!("Failed to compile embedded default config: {e}"))?;
@@ -949,33 +950,42 @@ impl Odometer {
     /// Create an odometer using the embedded default configuration.
     ///
     /// Pass a local path or HTTP(S) URL to overlay a `.rl` config on the defaults.
+    #[cfg(feature = "std")]
     pub fn new(config_path: Option<&str>) -> Result<Self, Error> {
         Self::new_with_options(config_path, true)
     }
 
     /// Create an odometer with additional creation-time options. See
     /// [`Handle::new_with_options`].
+    #[cfg(feature = "std")]
     pub fn new_with_options(
         config_path: Option<&str>,
         device_specific_pointcloud2: bool,
     ) -> Result<Self, Error> {
-        Self::with_config(load_config(config_path)?, device_specific_pointcloud2)
+        Self::from_config(load_config(config_path)?, device_specific_pointcloud2)
     }
 
     /// Create an odometer from `.rl` source text layered over the embedded
     /// defaults, for platforms without a file system such as the browser.
     /// Relative includes resolve from `.`. See [`Handle::new_with_options`] for
     /// `device_specific_pointcloud2`.
+    #[cfg(feature = "std")]
     pub fn from_config_source(
         source: &str,
         device_specific_pointcloud2: bool,
     ) -> Result<Self, Error> {
         let config = compile_config(source, std::path::Path::new("."))
             .map_err(|error| anyhow!("Failed to compile configuration source: {error:#}"))?;
-        Self::with_config(config, device_specific_pointcloud2)
+        Self::from_config(config, device_specific_pointcloud2)
     }
 
-    fn with_config(config: LioConfig, device_specific_pointcloud2: bool) -> Result<Self, Error> {
+    /// Create an odometer from a resolved configuration, which needs neither
+    /// `.rl` parsing nor a file system. See [`Handle::new_with_options`] for
+    /// `device_specific_pointcloud2`.
+    pub fn from_config(
+        config: LioConfig,
+        device_specific_pointcloud2: bool,
+    ) -> Result<Self, Error> {
         let (config, pipeline) = prepare_config(config, device_specific_pointcloud2);
         let ingress = SteppedIngress::new(
             pipeline.create_stepped_sync()?,

@@ -1,19 +1,31 @@
+#![cfg_attr(not(feature = "std"), no_std)]
+
+extern crate alloc;
+
+use alloc::borrow::ToOwned;
+use alloc::{string::String, vec::Vec};
 use bytemuck::{Pod, Zeroable};
 use either::Either;
+// Float maths through libm without std. With std the inherent methods take precedence.
+#[allow(unused_imports)]
+use nalgebra::ComplexField;
 use nalgebra::{Isometry3, Matrix3, Point2, Point3, Vector2, Vector3};
 use ros_pointcloud2::prelude::*;
 use serde::{Deserialize, Serialize};
 
 pub mod adaptive_execution;
+pub mod clock;
+#[cfg(feature = "std")]
 pub mod config;
+mod default_config;
 pub mod lie;
+pub mod sync;
 pub mod timing;
 
 pub mod log_debouncer;
 
+pub use clock::Instant;
 pub use lie::{SE3, SO3};
-/// Monotonic clock that also works in the browser, where `std::time::Instant` panics.
-pub use web_time::Instant;
 
 /// The reference default configuration, in Ratslang.
 pub const DEFAULT_CONFIG_STR: &str = include_str!("../default.rl");
@@ -848,6 +860,14 @@ pub struct LioConfig {
     pub pipelining: Pipelining,
 }
 
+impl LioConfig {
+    /// The reference configuration of `default.rl`, without parsing Ratslang.
+    pub fn defaults() -> Self {
+        postcard::from_bytes(default_config::DEFAULT_CONFIG)
+            .expect("the embedded default configuration matches LioConfig")
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 pub struct SensorDriverConfig {
     pub lidar: LidarDriverConfig,
@@ -1163,7 +1183,7 @@ pub struct PointXYZIT {
     pub timestamp: f32,
 }
 
-const _: [u8; 20] = [0u8; std::mem::size_of::<PointXYZIT>()];
+const _: [u8; 20] = [0u8; core::mem::size_of::<PointXYZIT>()];
 
 impl PointXYZIT {
     pub fn from_p(point: Point3<f32>, intensity: f32, timestamp: f32) -> Self {
@@ -1298,8 +1318,8 @@ pub enum LidarParseError {
     UnknownVendor,
 }
 
-impl std::fmt::Display for LidarParseError {
-    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+impl core::fmt::Display for LidarParseError {
+    fn fmt(&self, f: &mut core::fmt::Formatter) -> core::fmt::Result {
         match self {
             LidarParseError::UnknownVendor => write!(
                 f,
@@ -1344,9 +1364,9 @@ pub struct OdomMsg {
 /// The caller must select a path without asynchronous I/O. In particular, GPU
 /// browser readbacks must be awaited rather than passed to this function.
 #[doc(hidden)]
-pub fn complete_synchronously<F: std::future::Future>(future: F) -> F::Output {
-    use std::task::{Context, Poll, Waker};
-    let mut future = std::pin::pin!(future);
+pub fn complete_synchronously<F: core::future::Future>(future: F) -> F::Output {
+    use core::task::{Context, Poll, Waker};
+    let mut future = core::pin::pin!(future);
     match future
         .as_mut()
         .poll(&mut Context::from_waker(Waker::noop()))

@@ -11,6 +11,6 @@ version.workspace = true
 rust-version.workspace = true
 
 [dependencies]
-pelorus_core.workspace = true
+pelorus_core = { workspace = true, features = ["std"] }
 ratatui.workspace = true
 mt_log.workspace = true

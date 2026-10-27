@@ -17,35 +17,47 @@ pelorus_core.workspace = true
 pelorus_reg = { workspace = true, default-features = false }
 pelorus_sync = { workspace = true, default-features = false }
 ros_pointcloud2.workspace = true
-ros2-interfaces-jazzy-serde.workspace = true
 nalgebra.workspace = true
 anyhow.workspace = true
 ureq = { workspace = true, optional = true }
 log.workspace = true
-ratslang.workspace = true
+ratslang = { workspace = true, optional = true }
 thiserror.workspace = true
 rayon = { workspace = true, optional = true }
 
 [dev-dependencies]
 mcap.workspace = true
 cdr.workspace = true
+ros2-interfaces-jazzy-serde.workspace = true
 
 [features]
-webgpu = ["pelorus_reg/webgpu"]
-default = ["rayon", "threads", "http-config"]
+webgpu = ["std", "pelorus_reg/webgpu"]
+default = ["std", "rayon", "threads", "http-config"]
+# Load `.rl` configurations from files, measure time with the system clock and use std types.
+# Without it the `Odometer` takes a `LioConfig` and runs on a single thread.
+std = [
+    "dep:ratslang",
+    "pelorus_core/std",
+    "pelorus_sync/std",
+    "pelorus_reg/std",
+    "anyhow/std",
+    "nalgebra/std",
+    "thiserror/std",
+    "ros_pointcloud2/std",
+]
 # Load `.rl` configurations from HTTP(S) URLs.
-http-config = ["dep:ureq"]
+http-config = ["std", "dep:ureq"]
 # The threaded `Handle`. Without it only the `Odometer` is built.
-threads = ["pelorus_sync/threads", "pelorus_reg/threads"]
+threads = ["std", "pelorus_sync/threads", "pelorus_reg/threads"]
 processing-time-export = ["pelorus_reg/processing-time-export"]
-rayon = ["dep:rayon", "pelorus_sync/rayon", "pelorus_reg/rayon", "ros_pointcloud2/rayon"]
+rayon = ["std", "dep:rayon", "pelorus_sync/rayon", "pelorus_reg/rayon", "ros_pointcloud2/rayon"]
 downsample = ["pelorus_sync/downsample"]
-cuda = ["pelorus_sync/cuda", "pelorus_reg/cuda"]
-metal = ["pelorus_sync/metal", "pelorus_reg/metal"]
-vulkan = ["pelorus_sync/vulkan", "pelorus_reg/vulkan"]
+cuda = ["std", "pelorus_sync/cuda", "pelorus_reg/cuda"]
+metal = ["std", "pelorus_sync/metal", "pelorus_reg/metal"]
+vulkan = ["std", "pelorus_sync/vulkan", "pelorus_reg/vulkan"]
 no-imu-sync = ["pelorus_sync/no-imu-sync"]
 large-processing-queue = ["pelorus_sync/large-processing-queue"]
 # Seed the map's neighbor sampling from the OS instead of a fixed seed. Native only.
-os-rng-seed = ["pelorus_reg/os-rng-seed"]
+os-rng-seed = ["std", "pelorus_reg/os-rng-seed"]
 lru-eviction = ["pelorus_reg/lru-eviction"]
 plain-update = ["pelorus_reg/plain-update"]

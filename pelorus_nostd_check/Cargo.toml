@@ -1,0 +1,47 @@
+[package]
+name = "pelorus_nostd_check"
+description = "Checks that the no_std build of the Pelorus library computes what the std build computes."
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+version.workspace = true
+rust-version.workspace = true
+publish = false
+
+[[bin]]
+name = "pelorus-nostd-check"
+path = "src/main.rs"
+
+[dependencies]
+# Only crates without std features may be added here. A std feature on a crate the
+# library shares (serde, nalgebra, anyhow, ...) links std into the library's crate
+# graph, and the "no_std" build would then use std's float maths.
+pelorus = { workspace = true, default-features = false }
+pelorus_core.workspace = true
+ros_pointcloud2.workspace = true
+postcard.workspace = true
+mcap = { workspace = true, optional = true }
+cdr = { workspace = true, optional = true }
+cloudini = { workspace = true, optional = true }
+ros2-interfaces-jazzy-serde = { workspace = true, optional = true }
+either = { workspace = true, optional = true }
+faer = { workspace = true, optional = true }
+nalgebra = { workspace = true, optional = true }
+
+[features]
+default = []
+# Run the library with std.
+std = ["pelorus/std"]
+# Diagnosis: the library's no_std code with the maths of the std build. `either`'s
+# std feature links std into the library's crate graph, so the inherent f64 methods
+# win over libm. nalgebra and faer then also use std's maths, and faer its
+# runtime-dispatched SIMD kernels. The library itself stays without its std feature.
+system-maths = ["either/std", "nalgebra/std", "faer/std"]
+# Convert MCAP bags into the input stream. Needs std.
+convert = [
+  "std",
+  "dep:mcap",
+  "dep:cdr",
+  "dep:cloudini",
+  "dep:ros2-interfaces-jazzy-serde",
+]

@@ -12,7 +12,7 @@ rust-version.workspace = true
 [dependencies]
 nalgebra.workspace = true
 ros_pointcloud2.workspace = true
-pelorus_core.workspace = true
+pelorus_core = { workspace = true, features = ["std"] }
 log.workspace = true
 libc.workspace = true
 

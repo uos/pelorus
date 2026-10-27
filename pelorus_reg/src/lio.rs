@@ -5,8 +5,11 @@
 //! pose with its covariances. Every driver of the CLI runs this step, so they
 //! produce the same trajectory for the same input.
 
+use alloc::boxed::Box;
+use alloc::sync::Arc;
+use alloc::vec::Vec;
 use pelorus_core::Instant;
-use std::sync::{Arc, Mutex};
+use pelorus_core::sync::Mutex;
 
 use log::info;
 use nalgebra::{Isometry3, Translation3, UnitQuaternion};
@@ -238,7 +241,7 @@ impl LioCore {
     pub fn step(
         &mut self,
         processed: SyncProcessedCloud,
-        ready_for_next: Option<&std::sync::mpsc::Sender<u64>>,
+        ready_for_next: Option<&dyn crate::ReadyForNext>,
     ) -> LioStep {
         pelorus_core::complete_synchronously(self.step_inner(processed, ready_for_next, false))
     }
@@ -247,7 +250,7 @@ impl LioCore {
     pub async fn step_async(
         &mut self,
         processed: SyncProcessedCloud,
-        ready_for_next: Option<&std::sync::mpsc::Sender<u64>>,
+        ready_for_next: Option<&dyn crate::ReadyForNext>,
     ) -> LioStep {
         self.step_inner(processed, ready_for_next, true).await
     }
@@ -260,7 +263,7 @@ impl LioCore {
             "a native GPU backend is already active"
         );
         {
-            let state = self.map.lock().unwrap();
+            let state = self.map.lock();
             anyhow::ensure!(
                 state.map.multiresolution_snapshot().is_some()
                     || state.map.single_resolution_snapshot().is_some(),
@@ -286,11 +289,11 @@ impl LioCore {
     // A scan updates the map atomically for the predictor thread, as in the
     // synchronous path. The only await is the WebGPU readback, and no other task
     // contends for the map in the meantime.
-    #[expect(clippy::await_holding_lock)]
+    #[cfg_attr(feature = "std", expect(clippy::await_holding_lock))]
     async fn step_inner(
         &mut self,
         processed: SyncProcessedCloud,
-        ready_for_next: Option<&std::sync::mpsc::Sender<u64>>,
+        ready_for_next: Option<&dyn crate::ReadyForNext>,
         _use_webgpu: bool,
     ) -> LioStep {
         let SyncProcessedCloud {
@@ -308,7 +311,7 @@ impl LioCore {
         } = processed;
 
         if self.config.base_to_lidar_tf_override {
-            self.config.base_to_lidar = self.map.lock().unwrap().base_to_lidar;
+            self.config.base_to_lidar = self.map.lock().base_to_lidar;
         }
         self.eval.merge(&runtime_eval);
 
@@ -363,7 +366,7 @@ impl LioCore {
         let init_guess_lidar = self.init_guess_lidar(&end_of_frame_guess);
 
         let registration_result = {
-            let mut map = self.map.lock().unwrap();
+            let mut map = self.map.lock();
             let cloud_for_reg = match &self.active_backend {
                 ActiveBackend::Cpu => &self.ram_cloud,
                 #[cfg(feature = "cuda")]
@@ -423,7 +426,7 @@ impl LioCore {
         self.t_last_current = old_t_world.inverse() * self.t_world;
 
         let (pose_covariance, twist_covariance) = {
-            let guard = self.map.lock().unwrap();
+            let guard = self.map.lock();
             let lidar_to_child = if self.config.base_link_frame.is_some() {
                 self.config.base_to_lidar.inverse()
             } else {
@@ -489,7 +492,7 @@ impl LioCore {
 
     /// Scan time ran backwards: start over with an empty map.
     fn reset_map(&mut self) {
-        let mut map = self.map.lock().unwrap();
+        let mut map = self.map.lock();
         map.clear_localmap(&self.active_backend);
 
         info!("Resetting map");
@@ -570,7 +573,7 @@ impl LioCore {
         self.pipeline.release_gpu_buffers();
         #[cfg(feature = "vulkan")]
         if matches!(self.active_backend, ActiveBackend::Vulkan(_)) {
-            drop(core::mem::replace(
+            drop(::core::mem::replace(
                 &mut self.persistent_cloud_buf,
                 LocatedBufferView::Ram(Vec::new()),
             ));

@@ -2400,7 +2400,7 @@ fn lio_with_ready_signal(
         let map = map.clone();
         let realtime = realtime_predictor.as_ref().map(RealtimePredictorHandle::startup_tf_callback);
         let callback: pelorus_syncio::StartupTfCallback = Arc::new(std::sync::Mutex::new(move |imu: Option<Isometry3<f64>>, base: Option<Isometry3<f64>>| {
-            let mut registration = map.lock().unwrap();
+            let mut registration = map.lock();
             if let Some(imu) = imu {
                 registration.set_lidar_to_imu(imu);
                 info!("Applied Lidar-to-IMU TF before initialization: translation={:?}, rotation={:?}", imu.translation.vector, imu.rotation);
@@ -3181,7 +3181,7 @@ fn lio_with_ready_signal(
                 && let Some(predictor) = realtime_predictor.as_ref()
             {
                 let registration = core.map();
-                let registration = registration.lock().unwrap();
+                let registration = registration.lock();
                 predictor.prepare_export(&registration, &imu_buffer);
             }
 
@@ -3662,13 +3662,12 @@ fn lio_with_ready_signal(
                     {
                         if config.map_multiresolution {
                             let distributions =
-                                core.map().lock().unwrap().get_distributions_with_levels();
+                                core.map().lock().get_distributions_with_levels();
                             log_multires_snapshot_to_rerun(rec, distributions, map_config);
                         } else {
                             let distributions = core
                                 .map()
                                 .lock()
-                                .unwrap()
                                 .get_distributions_with_lru_scores();
                             log_map_snapshot_to_rerun(rec, distributions, map_config);
                         }
@@ -3779,7 +3778,7 @@ fn lio_with_ready_signal(
             // replays buffered IMUs and emits one caught-up state.
             if let Some(predictor) = realtime_predictor.as_ref() {
                 let registration = core.map();
-                let registration = registration.lock().unwrap();
+                let registration = registration.lock();
                 predictor.corrected(&registration);
             }
 
@@ -4017,7 +4016,10 @@ fn lio_with_ready_signal(
             } else {
                 ready_for_next_tx.as_ref()
             };
-            let step = core.step(processed, ready_for_registration);
+            let step = core.step(
+                processed,
+                ready_for_registration.map(|tx| tx as &dyn pelorus_reg::ReadyForNext),
+            );
             let outcome = ScanOutcome::of(&step);
             publish_step(&mut core, step)?;
             match outcome {

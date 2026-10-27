@@ -1,4 +1,9 @@
 //! Running the odometry without an IMU, by synthesizing one.
+use alloc::string::{String, ToString};
+use alloc::vec::Vec;
+// Float maths through libm without std. With std the inherent methods take precedence.
+#[allow(unused_imports)]
+use nalgebra::{ComplexField, RealField};
 use nalgebra::{Isometry3, Rotation3, Vector3};
 use pelorus_core::{ImuMsg, time_msg_from_secs};
 

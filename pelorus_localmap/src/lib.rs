@@ -1,3 +1,5 @@
+#![cfg_attr(not(feature = "std"), no_std)]
+
 #[cfg(all(feature = "os-rng-seed", target_arch = "wasm32", target_os = "unknown"))]
 compile_error!("the os-rng-seed feature is not available in the browser");
 
@@ -5,8 +7,9 @@ compile_error!("the os-rng-seed feature is not available in the browser");
 #[cfg(not(feature = "os-rng-seed"))]
 const SAMPLING_SEED: u64 = 0x5045_4c4f_5255_5321;
 
-#[cfg(feature = "nn_kdt")]
-use kiddo::SquaredEuclidean;
+extern crate alloc;
+
+use alloc::{vec, vec::Vec};
 use localmap::Livodish;
 
 pub mod localmap;
@@ -14,18 +17,25 @@ mod multiresolution;
 pub use multiresolution::{DistributionLevel, MultiResolutionSnapshot};
 use rand_distr::{Distribution, Normal};
 
+// Float maths through libm without std. With std the inherent methods take precedence.
+#[allow(unused_imports)]
+use nalgebra::ComplexField;
 use nalgebra::{Point3, Vector3};
 use rand::{Rng, SeedableRng};
 
 use nalgebra::{Cholesky, Matrix3};
 use pelorus_core::adaptive_execution::ExecutionMode;
-#[cfg(all(feature = "rayon", not(feature = "nn_kdt")))]
+#[cfg(feature = "rayon")]
 use rayon::slice::ParallelSliceMut;
 use ros_pointcloud2::points::PointXYZ;
 
 use serde::{Deserialize, Serialize};
 
-#[cfg(all(feature = "rayon", not(feature = "nn_kdt")))]
+/// Hash map with the fast Fx hash, for keys derived from voxel coordinates.
+type FxHashMap<K, V> = hashbrown::HashMap<K, V, rustc_hash::FxBuildHasher>;
+type FxHashSet<K> = hashbrown::HashSet<K, rustc_hash::FxBuildHasher>;
+
+#[cfg(feature = "rayon")]
 fn sort_unstable_by_key<T, K, F>(slice: &mut [T], f: F, mode: ExecutionMode)
 where
     T: Send,
@@ -38,7 +48,7 @@ where
     }
 }
 
-#[cfg(all(not(feature = "rayon"), not(feature = "nn_kdt")))]
+#[cfg(not(feature = "rayon"))]
 fn sort_unstable_by_key<T, K, F>(slice: &mut [T], f: F, _mode: ExecutionMode)
 where
     K: Ord,
@@ -52,17 +62,6 @@ pub struct IVoxHashMap {
     inverse_resolution: f32,
     resolution: f32,
     scan_number: usize,
-    #[cfg(feature = "nn_kdt")]
-    kd_map: kiddo::float::kdtree::KdTree<f32, u64, 3, 64, u32>,
-    #[cfg(feature = "nn_kdt")]
-    kd_points: std::collections::VecDeque<std::sync::Arc<(u64, nalgebra::Point3<f32>)>>,
-    #[cfg(feature = "nn_kdt")]
-    kd_points_lookup: std::collections::HashMap<u64, std::sync::Arc<(u64, nalgebra::Point3<f32>)>>,
-    #[cfg(feature = "nn_kdt")]
-    pt_id: u64,
-    #[cfg(feature = "nn_kdt")]
-    max_map_size: usize,
-
     livodish: localmap::Livodish,
     multiresolution: Option<multiresolution::MultiResolutionMap>,
     rng: rand_pcg::Pcg64Mcg,
@@ -386,7 +385,6 @@ pub fn encompassing_voxel_iter(grid_key: (i32, i32, i32), factor: i32) -> Encomp
     }
 }
 
-#[cfg(not(feature = "nn_kdt"))]
 fn hash(point: &Point3<f32>, voxel_size: f32) -> i32 {
     const PRIME_1: u32 = 73_856_093;
     const PRIME_2: u32 = 471_943;
@@ -418,10 +416,7 @@ impl IVoxHashMap {
     pub fn single_resolution_snapshot(
         &self,
     ) -> Option<(f32, impl Iterator<Item = (i32, &VoxelDistribution)>)> {
-        if cfg!(feature = "nn_kdt")
-            || self.multiresolution.is_some()
-            || !matches!(self.nearby_type, IVoxNearbyType::Nearby26)
-        {
+        if self.multiresolution.is_some() || !matches!(self.nearby_type, IVoxNearbyType::Nearby26) {
             return None;
         }
         Some((self.resolution, self.livodish.keyed_distributions()))
@@ -433,30 +428,17 @@ impl IVoxHashMap {
             inverse_resolution: 1.0 / resolution,
             resolution,
             scan_number: 0,
-            #[cfg(feature = "nn_kdt")]
-            kd_map: kiddo::float::kdtree::KdTree::<f32, u64, 3, 64, u32>::with_capacity(capacity),
-            #[cfg(feature = "nn_kdt")]
-            kd_points: std::collections::VecDeque::with_capacity(capacity),
-            #[cfg(feature = "nn_kdt")]
-            kd_points_lookup: std::collections::HashMap::new(),
             livodish: Livodish::new(capacity, sensitivity, resolution / 4.0),
             multiresolution: None,
             #[cfg(not(feature = "os-rng-seed"))]
             rng: rand_pcg::Pcg64Mcg::seed_from_u64(SAMPLING_SEED),
             #[cfg(feature = "os-rng-seed")]
             rng: rand_pcg::Pcg64Mcg::from_os_rng(),
-            #[cfg(feature = "nn_kdt")]
-            pt_id: 0,
-            #[cfg(feature = "nn_kdt")]
-            max_map_size: capacity,
         }
     }
 
     /// Enable the experimental CPU hierarchy. Call before inserting map points.
     pub fn enable_multiresolution(&mut self, capacity: usize, sensitivity: f32) {
-        if cfg!(feature = "nn_kdt") {
-            panic!("multiresolution is incompatible with nn_kdt");
-        }
         assert!(
             self.is_empty(),
             "enable multiresolution before inserting points"
@@ -474,11 +456,7 @@ impl IVoxHashMap {
         if let Some(map) = &self.multiresolution {
             return map.is_empty();
         }
-        #[cfg(feature = "nn_kdt")]
-        return self.kd_map.size() == 0;
-
-        #[cfg(not(feature = "nn_kdt"))]
-        return self.livodish.is_empty();
+        self.livodish.is_empty()
     }
 
     pub fn add(
@@ -507,169 +485,73 @@ impl IVoxHashMap {
             return None;
         }
 
-        #[cfg(feature = "nn_kdt")]
-        {
-            // The kd-tree map has no parallel insertion path.
-            let _ = execution_mode;
-            if self.scan_number == 1 {
-                points.iter().for_each(|point| {
-                    let point_global = transform
-                        .transform_point(&nalgebra::Point3::new(point.x, point.y, point.z).cast());
-                    if self
-                        .kd_map
-                        .nearest_n_within::<SquaredEuclidean>(
-                            &[
-                                point_global.x as f32,
-                                point_global.y as f32,
-                                point_global.z as f32,
-                            ],
-                            self.resolution * self.resolution,
-                            std::num::NonZero::new(1).unwrap(),
-                            false,
-                        )
-                        .is_empty()
-                    {
-                        self.pt_id += 1;
-                        self.kd_map.add(
-                            &[
-                                point_global.x as f32,
-                                point_global.y as f32,
-                                point_global.z as f32,
-                            ],
-                            self.pt_id,
-                        );
-                        let p = std::sync::Arc::new((self.pt_id, point_global.cast()));
-                        self.kd_points.push_front(p.clone());
-                        self.kd_points_lookup.insert(self.pt_id, p.clone());
-                    }
+        let current_scan_number = self.scan_number;
+
+        let mut keyed_points = points
+            .iter()
+            .map(|p| {
+                let transform_f32: nalgebra::Isometry3<f32> = transform.cast();
+                let global_p = transform_f32.transform_point(&Point3::new(p.x, p.y, p.z));
+                (global_p, hash(&global_p, self.resolution))
+            })
+            .collect::<Vec<_>>();
+
+        let sort_started = pelorus_core::Instant::now();
+        sort_unstable_by_key(&mut keyed_points, |(_, key)| *key, execution_mode);
+        let mut adaptive_nanos = sort_started.elapsed().as_nanos() as f64;
+
+        // TODO chunk by seems extremely fast on M3 Pro
+        // #[cfg(feature = "parallel")]
+        // {
+        // if keyed_points.len() > PAR_SORT_BOUNDARY {
+
+        // use rayon::{iter::ParallelIterator, slice::ParallelSlice};
+        // keyed_points
+        //     .par_chunk_by(|a, b| a.0 == b.0)
+        //     .map(|group_slice| {
+        //         let dist = VoxelDistribution::from_points(group_slice, current_scan_number);
+        //         let grid = self.pos2grid(&PointXYZ {
+        //             x: dist.mean.x,
+        //             y: dist.mean.y,
+        //             z: dist.mean.z,
+        //         });
+        //         let voxel_key = Self::hash_grid(&grid);
+        //         (dist, voxel_key)
+        //     })
+        //     .collect::<Vec<_>>()
+        //     .into_iter()
+        //     .for_each(|(dist, voxel_key)| {
+        //         self.livodish.add(dist, voxel_key, self.scan_number);
+        //     });
+        // } else {
+        //     keyed_points
+        //         .chunk_by(|a, b| a.0 == b.0)
+        //         .map(|group_slice| find_medoid_in_slice(group_slice))
+        //         .collect()
+        // }
+        // }
+        // #[cfg(not(feature = "parallel"))]
+        // {
+        keyed_points
+            .chunk_by(|a, b| a.1 == b.1)
+            .for_each(|group_slice| {
+                let dist = VoxelDistribution::from_points(group_slice, current_scan_number);
+                let grid = self.pos2grid(&PointXYZ {
+                    x: dist.mean.x,
+                    y: dist.mean.y,
+                    z: dist.mean.z,
                 });
-            } else {
-                // check if any point is closer than 25cm, if not, add to tree
-                let f = points
-                    .iter() // TODO as par iter
-                    .filter(|point| {
-                        let point_global = transform.transform_point(
-                            &nalgebra::Point3::new(point.x, point.y, point.z).cast(),
-                        );
-                        self.kd_map
-                            .nearest_n_within::<SquaredEuclidean>(
-                                &[
-                                    point_global.x as f32,
-                                    point_global.y as f32,
-                                    point_global.z as f32,
-                                ],
-                                self.resolution * self.resolution,
-                                std::num::NonZero::new(1).unwrap(),
-                                false,
-                            )
-                            .is_empty()
-                    })
-                    .collect::<Vec<_>>();
+                let voxel_key = Self::hash_grid(&grid);
+                self.livodish
+                    .add(dist, voxel_key, self.scan_number, execution_mode);
+            });
+        // }
 
-                let cur_len = self.kd_points.len();
-                let new_len = cur_len + f.len();
-                let target_len = self.max_map_size - f.len();
-                if new_len > self.max_map_size {
-                    while self.kd_points.len() >= target_len {
-                        if let Some(rc) = self.kd_points.pop_back() {
-                            self.kd_map.remove(&[rc.1.x, rc.1.y, rc.1.z], rc.0);
-                            self.kd_points_lookup.remove(&rc.0);
-                        }
-                    }
-                }
-
-                f.into_iter().for_each(|point| {
-                    let point_global = transform
-                        .transform_point(&nalgebra::Point3::new(point.x, point.y, point.z).cast());
-                    self.pt_id += 1;
-                    self.kd_map.add(
-                        &[
-                            point_global.x as f32,
-                            point_global.y as f32,
-                            point_global.z as f32,
-                        ],
-                        self.pt_id,
-                    );
-                    let p = std::sync::Arc::new((self.pt_id, point_global.cast()));
-                    self.kd_points.push_front(p.clone());
-                    self.kd_points_lookup.insert(self.pt_id, p.clone());
-                });
-            }
-        }
-
-        #[cfg(not(feature = "nn_kdt"))]
-        {
-            let current_scan_number = self.scan_number;
-
-            let mut keyed_points = points
-                .iter()
-                .map(|p| {
-                    let transform_f32: nalgebra::Isometry3<f32> = transform.cast();
-                    let global_p = transform_f32.transform_point(&Point3::new(p.x, p.y, p.z));
-                    (global_p, hash(&global_p, self.resolution))
-                })
-                .collect::<Vec<_>>();
-
-            let sort_started = pelorus_core::Instant::now();
-            sort_unstable_by_key(&mut keyed_points, |(_, key)| *key, execution_mode);
-            let mut adaptive_nanos = sort_started.elapsed().as_nanos() as f64;
-
-            // TODO chunk by seems extremely fast on M3 Pro
-            // #[cfg(feature = "parallel")]
-            // {
-            // if keyed_points.len() > PAR_SORT_BOUNDARY {
-
-            // use rayon::{iter::ParallelIterator, slice::ParallelSlice};
-            // keyed_points
-            //     .par_chunk_by(|a, b| a.0 == b.0)
-            //     .map(|group_slice| {
-            //         let dist = VoxelDistribution::from_points(group_slice, current_scan_number);
-            //         let grid = self.pos2grid(&PointXYZ {
-            //             x: dist.mean.x,
-            //             y: dist.mean.y,
-            //             z: dist.mean.z,
-            //         });
-            //         let voxel_key = Self::hash_grid(&grid);
-            //         (dist, voxel_key)
-            //     })
-            //     .collect::<Vec<_>>()
-            //     .into_iter()
-            //     .for_each(|(dist, voxel_key)| {
-            //         self.livodish.add(dist, voxel_key, self.scan_number);
-            //     });
-            // } else {
-            //     keyed_points
-            //         .chunk_by(|a, b| a.0 == b.0)
-            //         .map(|group_slice| find_medoid_in_slice(group_slice))
-            //         .collect()
-            // }
-            // }
-            // #[cfg(not(feature = "parallel"))]
-            // {
-            keyed_points
-                .chunk_by(|a, b| a.1 == b.1)
-                .for_each(|group_slice| {
-                    let dist = VoxelDistribution::from_points(group_slice, current_scan_number);
-                    let grid = self.pos2grid(&PointXYZ {
-                        x: dist.mean.x,
-                        y: dist.mean.y,
-                        z: dist.mean.z,
-                    });
-                    let voxel_key = Self::hash_grid(&grid);
-                    self.livodish
-                        .add(dist, voxel_key, self.scan_number, execution_mode);
-                });
-            // }
-
-            // Re-arranges the map to be ready for new inserts.
-            let build_started = pelorus_core::Instant::now();
-            self.livodish.build(self.scan_number, execution_mode);
-            adaptive_nanos += build_started.elapsed().as_nanos() as f64;
-            Some(adaptive_nanos / points.len().max(1) as f64)
-        }
-
-        #[cfg(feature = "nn_kdt")]
-        None
+        // Re-arranges the map to be ready for new inserts.
+        let build_started = pelorus_core::Instant::now();
+        self.livodish.build(self.scan_number, execution_mode);
+        adaptive_nanos += build_started.elapsed().as_nanos() as f64;
+        Some(adaptive_nanos / points.len().max(1) as f64)
     }
 
     #[inline(always)]
@@ -815,10 +697,10 @@ impl IVoxHashMap {
         let e1 = two_sqrt_neg_a_div_3 * (angle / 3.0).cos() - p_div_3;
         // Root 2
         let e2 =
-            two_sqrt_neg_a_div_3 * ((angle + 2.0 * std::f32::consts::PI) / 3.0).cos() - p_div_3;
+            two_sqrt_neg_a_div_3 * ((angle + 2.0 * core::f32::consts::PI) / 3.0).cos() - p_div_3;
         // Root 3
         let e3 =
-            two_sqrt_neg_a_div_3 * ((angle + 4.0 * std::f32::consts::PI) / 3.0).cos() - p_div_3;
+            two_sqrt_neg_a_div_3 * ((angle + 4.0 * core::f32::consts::PI) / 3.0).cos() - p_div_3;
 
         Vector3::new(e1, e2, e3)
     }
@@ -1084,18 +966,9 @@ impl IVoxHashMap {
                 .map(|(d, _)| d.mean)
                 .collect();
         }
-        #[cfg(feature = "nn_kdt")]
-        {
-            self.kd_points.iter().map(|rc| rc.1).collect()
-        }
-
-        #[cfg(not(feature = "nn_kdt"))]
-        {
-            self.livodish.get_map()
-        }
+        self.livodish.get_map()
     }
 
-    #[cfg(not(feature = "nn_kdt"))]
     #[must_use]
     pub fn get_distributions(&self) -> Vec<VoxelDistribution> {
         if let Some(map) = &self.multiresolution {
@@ -1104,7 +977,6 @@ impl IVoxHashMap {
         self.livodish.get_distributions()
     }
 
-    #[cfg(not(feature = "nn_kdt"))]
     #[must_use]
     pub fn get_distributions_with_lru_scores(&self) -> Vec<localmap::VoxelDistributionLru> {
         if let Some(map) = &self.multiresolution {
@@ -1137,7 +1009,6 @@ impl IVoxHashMap {
     /// behaves for the flat map. Unlike [`Self::get_distributions`], this
     /// does not collapse the pyramid to a single layer. The flat (non
     /// multiresolution) map reports level 0 for everything.
-    #[cfg(not(feature = "nn_kdt"))]
     #[must_use]
     pub fn get_distributions_with_levels(&self) -> Vec<(localmap::VoxelDistributionLru, u8)> {
         if let Some(map) = &self.multiresolution {

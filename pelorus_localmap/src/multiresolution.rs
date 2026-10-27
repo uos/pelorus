@@ -1,13 +1,16 @@
 //! Bounded CPU distribution pyramid. Each level receives the
 //! same observations exactly once. Only one level contributes a query residual.
 //! Inspired by VoxelMap's geometry-dependent support and MARS's surfel pyramid.
+use alloc::vec::Vec;
+use core::hash::BuildHasher;
+// Float maths through libm without std. With std the inherent methods take precedence.
+#[allow(unused_imports)]
+use nalgebra::ComplexField;
 use nalgebra::{Isometry3, Matrix3, Point3, Vector3};
 use pelorus_core::PointXYZIT;
-use rustc_hash::FxHashMap;
-use std::hash::{BuildHasher, BuildHasherDefault};
-use std::sync::{OnceLock, RwLock};
+use pelorus_core::sync::{OnceLock, RwLock};
 
-use crate::VoxelDistribution;
+use crate::{FxHashMap, FxHashSet, VoxelDistribution};
 
 type Grid = (i32, i32, i32);
 
@@ -23,12 +26,12 @@ struct MissCache {
 impl MissCache {
     fn new() -> Self {
         Self {
-            shards: std::array::from_fn(|_| RwLock::new(FxHashMap::default())),
+            shards: core::array::from_fn(|_| RwLock::new(FxHashMap::default())),
         }
     }
 
     fn shard(&self, key: &Grid) -> &RwLock<FxHashMap<Grid, Option<PlaneMatch>>> {
-        let hash = BuildHasherDefault::<rustc_hash::FxHasher>::default().hash_one(key);
+        let hash = rustc_hash::FxBuildHasher.hash_one(key);
         &self.shards[(hash >> 32) as usize % MISS_SHARDS]
     }
 
@@ -38,16 +41,16 @@ impl MissCache {
         fit: impl FnOnce() -> Option<PlaneMatch>,
     ) -> Option<PlaneMatch> {
         let shard = self.shard(&key);
-        if let Some(cached) = shard.read().unwrap().get(&key) {
+        if let Some(cached) = shard.read().get(&key) {
             return *cached;
         }
         let computed = fit();
-        *shard.write().unwrap().entry(key).or_insert(computed)
+        *shard.write().entry(key).or_insert(computed)
     }
 
     fn clear(&mut self) {
         for shard in &mut self.shards {
-            shard.get_mut().unwrap().clear();
+            shard.get_mut().clear();
         }
     }
 }
@@ -299,7 +302,7 @@ impl Level {
             }
         }
         let excess = (self.len() + new_cells.len()).saturating_sub(self.capacity);
-        let mut skipped = rustc_hash::FxHashSet::default();
+        let mut skipped = FxHashSet::default();
         if excess > 0 {
             let rank = |key: Grid, d: &CellDistribution| {
                 (
@@ -430,7 +433,7 @@ pub struct MultiResolutionSnapshot<'a> {
 impl MultiResolutionMap {
     pub fn snapshot(&self) -> MultiResolutionSnapshot<'_> {
         MultiResolutionSnapshot {
-            levels: std::array::from_fn(|index| DistributionLevel {
+            levels: core::array::from_fn(|index| DistributionLevel {
                 level: &self.levels[index],
             }),
             max_thickness: self.max_thickness,
@@ -441,7 +444,7 @@ impl MultiResolutionMap {
         assert!(resolution.is_finite() && resolution > 0.0);
         assert!(capacity >= 4);
         Self {
-            levels: std::array::from_fn(|index| {
+            levels: core::array::from_fn(|index| {
                 Level::new(
                     resolution * [0.5, 1.0, 2.0, 4.0][index],
                     capacity / 4 + usize::from(index < capacity % 4),
@@ -462,7 +465,6 @@ impl MultiResolutionMap {
         }
     }
 
-    #[cfg(not(feature = "nn_kdt"))]
     pub fn distributions(&self) -> Vec<VoxelDistribution> {
         // Visualize the base-resolution layer without duplicating pyramid points.
         self.levels[1]

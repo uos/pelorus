@@ -10,14 +10,14 @@ version.workspace = true
 rust-version.workspace = true
 
 [dependencies]
-pelorus_core.workspace = true
+pelorus_core = { workspace = true, features = ["std"] }
 pelorus_syncio = { workspace = true, default-features = false }
 pelorus_cuda = { optional = true, workspace = true }
 pelorus_metal = { optional = true, workspace = true }
 pelorus_vulkan = { optional = true, workspace = true }
 pelorus_sync = { workspace = true, default-features = false, features = ["threads"] }
 pelorus_reg = { workspace = true, default-features = false, features = ["threads"] }
-pelorus_localmap = { workspace = true, default-features = false }
+pelorus_localmap = { workspace = true, features = ["std"] }
 ros_pointcloud2.workspace = true
 ros2-client = { workspace = true, optional = true }
 mcap = { workspace = true }
@@ -45,7 +45,7 @@ hiroz-protocol = { workspace = true, optional = true }
 ros2-interfaces-jazzy-rkyv = { workspace = true, optional = true }
 tokio = { workspace = true, optional = true }
 mt_rat = { workspace = true, optional = true }
-rustc-hash.workspace = true
+rustc-hash = { workspace = true, features = ["std"] }
 ratslang.workspace = true
 petname.workspace = true
 colorous.workspace = true
@@ -163,8 +163,6 @@ vulkan = [
   "pelorus_vulkan/vulkan_enable",
 ]
 
-# Lidar + IMU with naiive kdtree for neighborsearch. Currently slow and unstable. Use only with good reason.
-kdtree = ["pelorus_reg/nn_kdt"]
 
 # Ablation: plain LRU local-map eviction (least recently updated first) instead of age / support relevance. CPU maps only.
 # Seed the map's neighbor sampling from the OS instead of a fixed seed.
@@ -220,7 +218,7 @@ r2r = ["dep:r2r", "pelorus_syncio/r2r"]
 [build-dependencies]
 anyhow.workspace = true
 env_logger.workspace = true
-pelorus_core.workspace = true
+pelorus_core = { workspace = true, features = ["std"] }
 ratslang.workspace = true
 
 [package.metadata.deb]

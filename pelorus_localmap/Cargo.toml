@@ -13,25 +13,29 @@ rust-version.workspace = true
 ros_pointcloud2.workspace = true
 nalgebra.workspace = true
 serde.workspace = true
-kiddo = { workspace = true, optional = true }
 log.workspace = true
 rayon = { workspace = true, optional = true }
 bytemuck.workspace = true
-morton-encoding.workspace = true
 rand.workspace = true
 rand_distr.workspace = true
 rand_pcg.workspace = true
 rustc-hash.workspace = true
-nohash-hasher.workspace = true
+hashbrown.workspace = true
 pelorus_core.workspace = true
 
 [features]
-default = ["rayon"]
-rayon = ["dep:rayon", "ros_pointcloud2/rayon"]
-nn_kdt = ["dep:kiddo"]
+default = ["std", "rayon"]
+std = [
+  "pelorus_core/std",
+  "nalgebra/std",
+  "serde/std",
+  "rand_distr/std",
+  "rustc-hash/std",
+]
+rayon = ["std", "dep:rayon", "ros_pointcloud2/rayon"]
 # Seed the neighbor sampling from the OS instead of a fixed seed, so runs on the same
 # input differ. Not available in the browser.
-os-rng-seed = ["rand/os_rng"]
+os-rng-seed = ["std", "rand/os_rng"]
 # Ablation: evict the least recently updated voxel instead of the least relevant (age / support).
 lru-eviction = []
 # Ablation: fuse scans into map cells by plain count-weighted merging instead of the maturity-weighted update.

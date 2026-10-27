@@ -2,11 +2,16 @@ use crate::ActiveBackend;
 use crate::ImuEkfPrediction;
 use crate::eqf::{Eqf, SO3, skew_symmetric_na};
 use crate::imu::ImuProcessing;
+use alloc::sync::Arc;
+use alloc::vec::Vec;
 use nalgebra::*;
 #[cfg(not(feature = "rayon"))]
 use pelorus_core::adaptive_execution::ExecutionMode;
 #[cfg(feature = "rayon")]
 use pelorus_core::adaptive_execution::{AdaptiveExecutionPlanner, ExecutionMode, HeavyPhase};
+#[cfg(feature = "rayon")]
+use pelorus_core::sync::Mutex;
+use pelorus_core::sync::RwLock;
 use pelorus_core::timing::RuntimeEvaluator;
 use pelorus_core::{ImuParameters, KinematicModel, PointXYZIT};
 use pelorus_localmap::*;
@@ -14,9 +19,6 @@ use pelorus_sync::LocatedBufferView;
 #[cfg(feature = "rayon")]
 use rayon::prelude::*;
 use ros_pointcloud2::prelude::*;
-#[cfg(feature = "rayon")]
-use std::sync::Mutex;
-use std::sync::{Arc, RwLock};
 
 #[cfg(feature = "cuda")]
 use pelorus_cuda::CudaBuffer;
@@ -92,19 +94,16 @@ impl RegistrationState {
         self.ekf.state.vel = velocity;
     }
 
-    #[cfg(not(feature = "nn_kdt"))]
     pub fn get_distributions(&self) -> Vec<VoxelDistribution> {
         self.map.get_distributions()
     }
 
-    #[cfg(not(feature = "nn_kdt"))]
     pub fn get_distributions_with_lru_scores(
         &self,
     ) -> Vec<pelorus_localmap::localmap::VoxelDistributionLru> {
         self.map.get_distributions_with_lru_scores()
     }
 
-    #[cfg(not(feature = "nn_kdt"))]
     pub fn get_distributions_with_levels(
         &self,
     ) -> Vec<(pelorus_localmap::localmap::VoxelDistributionLru, u8)> {
@@ -240,7 +239,7 @@ impl RegistrationState {
     fn execution_mode(&self, phase: pelorus_core::adaptive_execution::HeavyPhase) -> ExecutionMode {
         #[cfg(feature = "rayon")]
         {
-            self.execution_planner.lock().unwrap().mode_for(phase)
+            self.execution_planner.lock().mode_for(phase)
         }
         #[cfg(not(feature = "rayon"))]
         {
@@ -259,7 +258,6 @@ impl RegistrationState {
         if let Some(decision) =
             self.execution_planner
                 .lock()
-                .unwrap()
                 .record(phase, mode, normalized_duration)
         {
             log::info!(
@@ -456,7 +454,7 @@ impl RegistrationState {
     pub async fn register_and_map_async(
         &mut self,
         scan: crate::RegistrationScan<'_>,
-        ready_for_next: Option<&std::sync::mpsc::Sender<u64>>,
+        ready_for_next: Option<&dyn crate::ReadyForNext>,
         eval: &mut RuntimeEvaluator,
         backend: &ActiveBackend,
         #[cfg(feature = "webgpu")] mut webgpu: Option<&mut pelorus_wgpu::Correspondence>,
@@ -527,7 +525,7 @@ impl RegistrationState {
             };
             let cloud_len_alloc = (extra * cloud.len() as f32).ceil() as usize;
             {
-                eval_cb.write().unwrap().start("ekf_correct").unwrap();
+                eval_cb.write().start("ekf_correct").unwrap();
             }
 
             // Allocate / grow buffers based on the active backend
@@ -626,15 +624,15 @@ impl RegistrationState {
             Self::ensure_cloud_matches_backend(backend, cloud)?;
             Self::ensure_gpu_planes_buffer_matches_backend(backend, &self.planes_gpu_buffer)?;
 
-            let planes_cpu_buffer_ptr = std::ptr::addr_of_mut!(self.planes_cpu_buffer);
-            let planes_gpu_buffer_ptr = std::ptr::addr_of_mut!(self.planes_gpu_buffer);
+            let planes_cpu_buffer_ptr = ::core::ptr::addr_of_mut!(self.planes_cpu_buffer);
+            let planes_gpu_buffer_ptr = ::core::ptr::addr_of_mut!(self.planes_gpu_buffer);
             #[cfg(feature = "vulkan")]
             let planes_vulkan_download_buffer_ptr =
-                std::ptr::addr_of_mut!(self.planes_vulkan_download_buffer);
+                ::core::ptr::addr_of_mut!(self.planes_vulkan_download_buffer);
             #[cfg(feature = "vulkan")]
             let planes_vulkan_counter_buffer_ptr =
-                std::ptr::addr_of_mut!(self.planes_vulkan_counter_buffer);
-            let map_ptr = std::ptr::addr_of!(self.map);
+                ::core::ptr::addr_of_mut!(self.planes_vulkan_counter_buffer);
+            let map_ptr = ::core::ptr::addr_of!(self.map);
             #[cfg(feature = "rayon")]
             let execution_planner = Arc::clone(&self.execution_planner);
 
@@ -679,7 +677,6 @@ impl RegistrationState {
                             num_measurements: &mut usize| {
                     eval_cb_inner
                         .write()
-                        .unwrap()
                         .start("ekf_correct/model/planes")
                         .unwrap();
                     #[cfg(feature = "webgpu")]
@@ -708,7 +705,7 @@ impl RegistrationState {
                     };
                     #[cfg(not(feature = "webgpu"))]
                     let used_webgpu = false;
-                    let mut eval_guard = eval_cb_inner.write().unwrap();
+                    let mut eval_guard = eval_cb_inner.write();
                     let eval_actual = &mut **eval_guard;
 
                     // Try to retrieve previous GPU timing measurements (non-blocking)
@@ -808,7 +805,6 @@ impl RegistrationState {
                             #[cfg(feature = "rayon")]
                             let mode = execution_planner
                                 .lock()
-                                .unwrap()
                                 .mode_for(HeavyPhase::PlaneCorrespondence);
                             #[cfg(feature = "rayon")]
                             let started = pelorus_core::Instant::now();
@@ -827,7 +823,7 @@ impl RegistrationState {
                             #[cfg(not(feature = "rayon"))]
                             planes_buf.extend(cloud_pts.iter().filter_map(point_to_plane));
                             #[cfg(feature = "rayon")]
-                            if let Some(decision) = execution_planner.lock().unwrap().record(
+                            if let Some(decision) = execution_planner.lock().record(
                                 HeavyPhase::PlaneCorrespondence,
                                 mode,
                                 started.elapsed().as_nanos() as f64 / cloud_pts.len().max(1) as f64,
@@ -1090,7 +1086,7 @@ impl RegistrationState {
                 },
             );
             correction.await;
-            eval_cb.write().unwrap().stop("ekf_correct").unwrap();
+            eval_cb.write().stop("ekf_correct").unwrap();
         };
 
         let t_i_l = Isometry3::from_parts(
@@ -1111,7 +1107,7 @@ impl RegistrationState {
         let t_w_b = t_w_l * self.base_to_lidar.inverse();
 
         {
-            let mut eval_guard = eval_cb.write().unwrap();
+            let mut eval_guard = eval_cb.write();
             let eval_actual = &mut **eval_guard;
             eval_actual.start("map_update").unwrap();
         }
@@ -1166,13 +1162,13 @@ impl RegistrationState {
             }
         }
         {
-            let mut eval_guard = eval_cb.write().unwrap();
+            let mut eval_guard = eval_cb.write();
             let eval_actual = &mut **eval_guard;
             eval_actual.stop("map_update").unwrap();
         }
 
         if let Some(ready) = ready_for_next {
-            let _ = ready.send(scan_id as u64);
+            ready.ready(scan_id as u64);
         }
 
         Ok(Some(crate::CloudRegisterResult {
@@ -1187,7 +1183,7 @@ impl crate::Registration for RegistrationState {
     fn register_and_map(
         &mut self,
         scan: crate::RegistrationScan<'_>,
-        ready_for_next: Option<&std::sync::mpsc::Sender<u64>>,
+        ready_for_next: Option<&dyn crate::ReadyForNext>,
         eval: &mut RuntimeEvaluator,
         backend: &ActiveBackend,
     ) -> anyhow::Result<Option<crate::CloudRegisterResult>> {
@@ -1308,7 +1304,7 @@ mod covariance_tests {
         }
         let lidar_to_output = Isometry3::from_parts(
             Translation3::new(-0.38, 0.0, -0.29),
-            UnitQuaternion::from_euler_angles(0.0, 0.0, std::f64::consts::FRAC_PI_2),
+            UnitQuaternion::from_euler_angles(0.0, 0.0, ::core::f64::consts::FRAC_PI_2),
         );
 
         let covariance = output_pose_covariance(&ekf, &lidar_to_output);
@@ -1327,7 +1323,7 @@ mod covariance_tests {
         // Output 1 m ahead of the IMU along world x, yawed 90 degrees.
         let output_pose = Isometry3::from_parts(
             Translation3::new(1.0, 0.0, 0.0),
-            UnitQuaternion::from_euler_angles(0.0, 0.0, std::f64::consts::FRAC_PI_2),
+            UnitQuaternion::from_euler_angles(0.0, 0.0, ::core::f64::consts::FRAC_PI_2),
         );
 
         let covariance = output_twist_covariance(&ekf, &output_pose, &gyro_noise);

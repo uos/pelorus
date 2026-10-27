@@ -1,3 +1,8 @@
+#![cfg_attr(not(feature = "std"), no_std)]
+
+extern crate alloc;
+
+use alloc::vec::Vec;
 use nalgebra::*;
 use pelorus_core::{
     ImuMsg, KinematicModel, LidarVendor, OdomMsg, PointXYZIT, timing::RuntimeEvaluator,
@@ -110,11 +115,25 @@ pub struct UndistortScan<'a> {
     pub lidar_vendor: Option<LidarVendor>,
 }
 
+/// Receives the id of a scan once the map holds it, which releases a threaded
+/// synchronizer to the next scan.
+pub trait ReadyForNext {
+    fn ready(&self, scan_id: u64);
+}
+
+#[cfg(feature = "std")]
+impl ReadyForNext for std::sync::mpsc::Sender<u64> {
+    fn ready(&self, scan_id: u64) {
+        // A closed channel means nobody waits for the scan anymore.
+        let _ = self.send(scan_id);
+    }
+}
+
 pub trait Registration {
     fn register_and_map(
         &mut self,
         scan: RegistrationScan<'_>,
-        ready_for_next: Option<&std::sync::mpsc::Sender<u64>>,
+        ready_for_next: Option<&dyn ReadyForNext>,
         eval: &mut RuntimeEvaluator,
         backend: &ActiveBackend,
     ) -> Result<Option<CloudRegisterResult>>;
@@ -161,7 +180,7 @@ mod tests {
         let imu_pose = Isometry3::identity();
         let base_pose = Isometry3::from_parts(
             Translation3::new(1.0, 0.0, 0.0),
-            UnitQuaternion::from_euler_angles(0.0, 0.0, std::f64::consts::FRAC_PI_2),
+            UnitQuaternion::from_euler_angles(0.0, 0.0, ::core::f64::consts::FRAC_PI_2),
         );
         let state = ImuEkfPrediction {
             pose: imu_pose,

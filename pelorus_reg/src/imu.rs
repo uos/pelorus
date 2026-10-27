@@ -1,4 +1,4 @@
-use std::vec;
+use alloc::vec;
 
 use log::warn;
 use nalgebra::*;
@@ -332,7 +332,7 @@ impl ImuProcessing {
         let mut acc_avr_y = 0.0;
         let mut acc_avr_z = 0.0;
 
-        let mut all_imus = std::iter::once(&self.last_imu).chain(imu_msgs.iter());
+        let mut all_imus = ::core::iter::once(&self.last_imu).chain(imu_msgs.iter());
 
         let mut head = all_imus.next()?;
 
@@ -490,7 +490,7 @@ impl ImuProcessing {
                     .binary_search_by(|p| {
                         p.offset_time
                             .partial_cmp(&(point.timestamp as f64))
-                            .unwrap_or(std::cmp::Ordering::Less)
+                            .unwrap_or(::core::cmp::Ordering::Less)
                     })
                     .unwrap_or_else(|e| e);
 

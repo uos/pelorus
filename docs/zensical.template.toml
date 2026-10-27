@@ -65,6 +65,7 @@ nav = [
   { "Integrations" = [
     { "ROS 2" = "ros.md" },
     { "Standalone" = "standalone.md" },
+    { "Embedded (no_std)" = "nostd.md" },
     { "GLIM" = "glim.md" },
   ] },
   { "Configuration" = [

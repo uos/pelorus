@@ -265,7 +265,7 @@ use ros2_interfaces_jazzy_serde::{
 };
 use std::sync::{Arc, Mutex};
 
-pub type ImuInitCallback = Arc<Mutex<dyn FnMut(&[ImuMsg]) + Send + Sync>>;
+pub use pelorus_sync::ImuInitCallback;
 
 #[cfg(test)]
 mod startup_tf_tests {
@@ -278,9 +278,9 @@ mod startup_tf_tests {
         let initialized = events.clone();
         let mut gate = TfStartup {
             apply: Arc::new(Mutex::new(move |_, _| applied.lock().unwrap().push("tf"))),
-            initialize: Some(Arc::new(Mutex::new(move |_: &[ImuMsg]| {
-                initialized.lock().unwrap().push("init")
-            }))),
+            initialize: Some(Arc::new(pelorus_core::sync::Mutex::new(
+                move |_: &[ImuMsg]| initialized.lock().unwrap().push("init"),
+            ))),
             pending: None,
             resolved: false,
             initialized: false,
@@ -297,7 +297,7 @@ mod startup_tf_tests {
     fn tf_before_imu_still_waits_for_initialization() {
         let mut gate = TfStartup {
             apply: Arc::new(Mutex::new(|_, _| {})),
-            initialize: Some(Arc::new(Mutex::new(|_: &[ImuMsg]| {}))),
+            initialize: Some(Arc::new(pelorus_core::sync::Mutex::new(|_: &[ImuMsg]| {}))),
             pending: None,
             resolved: false,
             initialized: false,
@@ -345,7 +345,7 @@ impl TfStartup {
     fn initialize(&mut self, msgs: &[ImuMsg]) {
         if self.resolved {
             if let Some(init) = &self.initialize {
-                (init.lock().unwrap())(msgs);
+                (init.lock())(msgs);
                 info!("EKF: Imu initialized after requested sensor TF was applied");
             }
             self.initialized = true;
@@ -1330,7 +1330,7 @@ impl SyncNode {
             }));
             if !initialized {
                 let gate_for_init = gate.clone();
-                inputs.imu_pose_predictor_init = Some(Arc::new(Mutex::new(move |msgs: &[ImuMsg]| {
+                inputs.imu_pose_predictor_init = Some(Arc::new(pelorus_core::sync::Mutex::new(move |msgs: &[ImuMsg]| {
                     gate_for_init.lock().unwrap().initialize(msgs);
                 })));
             }

@@ -23,20 +23,29 @@ rayon = { workspace = true, optional = true }
 either.workspace = true
 rand.workspace = true
 imu-fusion.workspace = true
-imu-calib.workspace = true
-morton-encoding.workspace = true
+imu-calib = { workspace = true, optional = true }
 
 [features]
 downsample = []
-cuda = ["dep:pelorus_cuda", "pelorus_cuda/cuda_available", "pelorus_cuda/cuda_enable"]
-metal = ["dep:pelorus_metal", "pelorus_metal/metal_available", "pelorus_metal/metal_enable"]
-vulkan = ["dep:pelorus_vulkan", "pelorus_vulkan/vulkan_available", "pelorus_vulkan/vulkan_enable"]
+cuda = ["std", "dep:pelorus_cuda", "pelorus_cuda/cuda_available", "pelorus_cuda/cuda_enable"]
+metal = ["std", "dep:pelorus_metal", "pelorus_metal/metal_available", "pelorus_metal/metal_enable"]
+vulkan = ["std", "dep:pelorus_vulkan", "pelorus_vulkan/vulkan_available", "pelorus_vulkan/vulkan_enable"]
 no-imu-sync = []
 large-processing-queue = []
-default = ["rayon", "threads"]
+default = ["std", "rayon", "threads"]
+# IMU intrinsics from Kalibr files, the system clock and std types.
+std = [
+    "pelorus_core/std",
+    "dep:imu-calib",
+    "anyhow/std",
+    "nalgebra/std",
+    "either/std",
+    "ros_pointcloud2/std",
+]
 # The threaded `Synchronizer`. Without it only the stepped synchronizer is built.
-threads = []
+threads = ["std"]
 rayon = [
+    "std",
     "dep:rayon",
     "ros_pointcloud2/rayon",
     "pelorus_cuda?/rayon",

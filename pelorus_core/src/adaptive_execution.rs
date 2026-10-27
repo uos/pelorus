@@ -1,4 +1,7 @@
-use std::collections::HashMap;
+use hashbrown::HashMap;
+// Float maths through libm without std. With std the inherent methods take precedence.
+#[allow(unused_imports)]
+use nalgebra::ComplexField;
 
 use serde::{Deserialize, Serialize};
 

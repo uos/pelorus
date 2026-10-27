@@ -13,8 +13,8 @@ wgpu = { version = "29", default-features = false, features = ["std", "wgsl", "w
 bytemuck.workspace = true
 anyhow.workspace = true
 nalgebra.workspace = true
-pelorus_core.workspace = true
-pelorus_localmap.workspace = true
+pelorus_core = { workspace = true, features = ["std"] }
+pelorus_localmap = { workspace = true, features = ["std"] }
 ros_pointcloud2.workspace = true
 futures-channel = "0.3"
 

@@ -79,3 +79,39 @@ cd docs && zensical build
 cargo run -p pelorus_docs
 cd docs && zensical serve
 ~~~
+
+## nostd-check
+
+> Check that the no_std library computes what the std library computes, on the demo bags in web/demo (create them with `web/make-demo.sh`).
+>
+> Three builds of `pelorus-nostd-check` replay each bag on one thread. The std build and the no_std build differ in the float maths only, because no_std takes libm and faer's portable kernels. The third build runs the no_std code with the maths of the std build and has to match the std build bit for bit.
+
+~~~sh
+set -eu
+out=target/nostd-check
+rustup target add thumbv7em-none-eabihf
+cargo check -p pelorus_sdk --no-default-features --target thumbv7em-none-eabihf
+cargo build --release -p pelorus_nostd_check --features convert --target-dir "$out/std"
+cargo build --release -p pelorus_nostd_check --target-dir "$out/no-std"
+cargo build --release -p pelorus_nostd_check --features system-maths --target-dir "$out/system-maths"
+if cargo tree -p pelorus_nostd_check -e features --prefix none | grep -F 'feature "std"'; then
+  echo "a dependency of the no_std build turns on std" >&2
+  exit 1
+fi
+
+check="release/pelorus-nostd-check"
+mkdir -p "$out/runs"
+while read -r name config lidar imu; do
+  stream="$out/runs/$name.stream"
+  "$out/std/$check" convert "web/configs/$config" "web/demo/$name.mcap" "$lidar" "$imu" "$stream"
+  for build in std no-std system-maths; do
+    "$out/$build/$check" run "$stream" "$out/runs/$name.$build.scans"
+  done
+  "$out/std/$check" compare "$out/runs/$name.std.scans" "$out/runs/$name.system-maths.scans"
+  "$out/std/$check" compare "$out/runs/$name.std.scans" "$out/runs/$name.no-std.scans" || true
+done <<RUNS
+helipr_bridge02_20s pelorus-helipr-ouster.rl /ouster/points /imu/data_raw
+keble_college_02_30s pelorus-spires.rl /hesai/pandar /alphasense_driver_ros/imu
+grand_tour_eth1_30s pelorus-grandtour.rl /boxi/hesai/points /boxi/stim320/imu
+RUNS
+~~~

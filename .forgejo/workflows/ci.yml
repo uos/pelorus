@@ -168,6 +168,32 @@ jobs:
           cargo check --target x86_64-unknown-linux-musl -p pelorus_cli --no-default-features --features ros2-client,processing-time-export,rayon
           cargo check --target x86_64-unknown-linux-musl -p pelorus_cli --no-default-features --features offline-hiroz,processing-time-export,rayon
 
+  no-std-build:
+    runs-on: ubuntu-dev-resolute
+    container:
+      image: docker.io/stelzo/ubuntu-dev:resolute
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check the library on bare-metal targets
+        run: |
+          set -euo pipefail
+          rustup self update
+          rustup toolchain uninstall stable
+          rustup toolchain install stable
+          rustup default stable
+          rustc --version
+          rustup target add thumbv7em-none-eabihf riscv32imac-unknown-none-elf x86_64-unknown-none
+          for target in thumbv7em-none-eabihf riscv32imac-unknown-none-elf x86_64-unknown-none; do
+            cargo check --target "$target" --no-default-features -p pelorus_sdk -p pelorus_reg -p pelorus_sync -p pelorus_localmap -p pelorus_core
+          done
+      - name: Check no dependency of the no_std build turns on std
+        run: |
+          set -euo pipefail
+          if cargo tree -p pelorus_nostd_check -e features --prefix none | grep -F 'feature "std"'; then
+            echo "A dependency of the no_std build turns on std, so it would use std's float maths." >&2
+            exit 1
+          fi
+
   armv7-gnu-build:
     runs-on: ubuntu-dev-resolute
     container:

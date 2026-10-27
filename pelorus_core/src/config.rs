@@ -495,6 +495,33 @@ mod tests {
     use super::ast_to_config;
     use crate::{OdometryRate, OusterTimestampMode, SensorDriverConfig};
 
+    /// `LioConfig::defaults` must equal the configuration `default.rl` resolves to.
+    /// Run with `PELORUS_UPDATE_DEFAULTS=1` to regenerate `default_config.rs`.
+    #[test]
+    fn default_config_matches_default_rl() {
+        let defaults = ratslang::compile_code(include_str!("../default.rl")).unwrap();
+        let user = ratslang::compile_code("").unwrap();
+        let resolved = postcard::to_allocvec(&ast_to_config(defaults, user).unwrap()).unwrap();
+        if std::env::var_os("PELORUS_UPDATE_DEFAULTS").is_some() {
+            let path = concat!(env!("CARGO_MANIFEST_DIR"), "/src/default_config.rs");
+            std::fs::write(
+                path,
+                format!(
+                    "// Generated from default.rl by `default_config_matches_default_rl` in config.rs.\n\
+                     // The postcard encoding of the resolved LioConfig.\n\
+                     pub(crate) const DEFAULT_CONFIG: &[u8] = &{resolved:?};\n"
+                ),
+            )
+            .unwrap();
+            return;
+        }
+        let embedded = postcard::to_allocvec(&crate::LioConfig::defaults()).unwrap();
+        assert_eq!(
+            embedded, resolved,
+            "default_config.rs is stale, regenerate it with PELORUS_UPDATE_DEFAULTS=1"
+        );
+    }
+
     #[test]
     fn default_sensor_driver_config_parses() {
         let defaults = ratslang::compile_code(include_str!("../default.rl")).unwrap();

@@ -74,7 +74,7 @@ impl From<SO3> for UnitQuaternion<f64> {
     }
 }
 
-impl std::ops::Mul<SO3> for SO3 {
+impl core::ops::Mul<SO3> for SO3 {
     type Output = SO3;
     #[inline]
     fn mul(self, rhs: SO3) -> SO3 {
@@ -82,7 +82,7 @@ impl std::ops::Mul<SO3> for SO3 {
     }
 }
 
-impl std::ops::Mul<Vector3<f64>> for SO3 {
+impl core::ops::Mul<Vector3<f64>> for SO3 {
     type Output = Vector3<f64>;
     #[inline]
     fn mul(self, rhs: Vector3<f64>) -> Vector3<f64> {
@@ -168,7 +168,7 @@ impl From<SE3> for Isometry3<f64> {
     }
 }
 
-impl std::ops::Mul<SE3> for SE3 {
+impl core::ops::Mul<SE3> for SE3 {
     type Output = SE3;
     #[inline]
     fn mul(self, rhs: SE3) -> SE3 {
@@ -176,7 +176,7 @@ impl std::ops::Mul<SE3> for SE3 {
     }
 }
 
-impl std::ops::Mul<Vector3<f64>> for SE3 {
+impl core::ops::Mul<Vector3<f64>> for SE3 {
     type Output = Vector3<f64>;
     #[inline]
     fn mul(self, rhs: Vector3<f64>) -> Vector3<f64> {

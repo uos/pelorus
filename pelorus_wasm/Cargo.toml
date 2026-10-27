@@ -18,7 +18,7 @@ webgpu = ["pelorus/webgpu", "dep:wasm-bindgen-futures", "dep:gloo-timers"]
 
 [dependencies]
 wasm-bindgen-futures = { version = "0.4", optional = true }
-pelorus.workspace = true
+pelorus = { workspace = true, features = ["std"] }
 bytemuck.workspace = true
 wasm-bindgen = "0.2.129"
 js-sys = "0.3.106"
@@ -28,7 +28,7 @@ cdr.workspace = true
 ros2-interfaces-jazzy-serde.workspace = true
 ros_pointcloud2.workspace = true
 cloudini.workspace = true
-rustc-hash.workspace = true
+rustc-hash = { workspace = true, features = ["std"] }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 gloo-timers = { version = "0.3", features = ["futures"], optional = true }

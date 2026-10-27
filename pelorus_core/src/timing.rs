@@ -1,6 +1,12 @@
-use std::{collections::VecDeque, time::Duration};
-
-use std::ops::{AddAssign, Div, Sub};
+use alloc::collections::VecDeque;
+use alloc::string::{String, ToString};
+use alloc::vec::Vec;
+use alloc::{format, vec};
+use core::ops::{AddAssign, Div, Sub};
+use core::time::Duration;
+// Float maths through libm without std. With std the inherent methods take precedence.
+#[allow(unused_imports)]
+use nalgebra::ComplexField;
 
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct SlidingWindowFilter<T: Default> {
@@ -324,7 +330,7 @@ impl RuntimeEvaluator {
         let impacts: Vec<f64> = sorted_evals.iter().map(|e| e.impact_score()).collect();
         let max_impact = impacts.iter().cloned().fold(f64::NAN, f64::max).max(1.0);
 
-        let impact_map: std::collections::HashMap<String, f64> = sorted_evals
+        let impact_map: hashbrown::HashMap<String, f64> = sorted_evals
             .iter()
             .map(|e| (e.name.clone(), e.impact_score()))
             .collect();
@@ -351,7 +357,7 @@ impl RuntimeEvaluator {
                     // Sort by impact (highest first) at this level
                     return b_impact
                         .partial_cmp(&a_impact)
-                        .unwrap_or(std::cmp::Ordering::Equal);
+                        .unwrap_or(core::cmp::Ordering::Equal);
                 }
             }
 
@@ -363,16 +369,16 @@ impl RuntimeEvaluator {
             let depth = ef.name.matches('/').count();
             let indent = depth * 2;
             let display_name = ef.name.split('/').next_back().unwrap_or(&ef.name);
-            name_width = std::cmp::max(name_width, display_name.len() + indent);
+            name_width = core::cmp::max(name_width, display_name.len() + indent);
         }
-        name_width = std::cmp::max(name_width, table[0].len());
+        name_width = core::cmp::max(name_width, table[0].len());
         let name_width = name_width.clamp(10, 24);
 
         let mut max_numeric_header = 0usize;
         for label in &table[1..field_count] {
-            max_numeric_header = std::cmp::max(max_numeric_header, label.len());
+            max_numeric_header = core::cmp::max(max_numeric_header, label.len());
         }
-        let num_width = std::cmp::max(8usize, max_numeric_header); // narrower numeric columns
+        let num_width = core::cmp::max(8usize, max_numeric_header); // narrower numeric columns
 
         let mut ss = String::new();
         ss.push('\n');

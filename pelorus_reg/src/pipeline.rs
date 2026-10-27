@@ -1,4 +1,6 @@
-use std::sync::{Arc, Mutex};
+use alloc::boxed::Box;
+use alloc::sync::Arc;
+use pelorus_core::sync::Mutex;
 
 use crate::{
     Registration,
@@ -87,11 +89,11 @@ impl Pipeline {
 
     pub fn set_base_to_lidar(&mut self, base_to_lidar: Isometry3<f64>) {
         self.config.base_to_lidar = base_to_lidar;
-        self.map.lock().unwrap().set_base_to_lidar(base_to_lidar);
+        self.map.lock().set_base_to_lidar(base_to_lidar);
     }
 
     pub fn ext(&self) -> Isometry3<f64> {
-        self.map.lock().unwrap().get_state().lidar_imu_extrinsic
+        self.map.lock().get_state().lidar_imu_extrinsic
     }
 
     /// Drop the GPU-resident buffer the registration state owns.
@@ -101,10 +103,7 @@ impl Pipeline {
     /// has to be released explicitly. Safe to call more than once. The registration
     /// reallocates it on the next scan.
     pub fn release_gpu_buffers(&mut self) {
-        self.map
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .planes_gpu_buffer = None;
+        self.map.lock_ignoring_poison().planes_gpu_buffer = None;
     }
 
     pub fn lidar_vendor(&self) -> LidarVendor {
@@ -122,7 +121,7 @@ impl Pipeline {
             if lidar_only {
                 return;
             }
-            let mut map = map.lock().unwrap();
+            let mut map = map.lock();
             let _ = map.init_imu_ekf(msg);
         }))
     }
@@ -146,16 +145,15 @@ impl Pipeline {
                   cloud_end_time,
                   cloud,
                   cloud_passthrough| {
-                let mut map = map.lock().unwrap();
+                let mut map = map.lock();
                 // Feed synthetic samples through the normal estimation path.
                 let generated;
                 let imu_msgs: &[ImuMsg] = if lidar_only {
                     let pose = map.get_state().pose;
-                    let (messages, linear_velocity) = synthetic.lock().unwrap().generate(
-                        &pose,
-                        last_cloud_end_time,
-                        cloud_end_time,
-                    );
+                    let (messages, linear_velocity) =
+                        synthetic
+                            .lock()
+                            .generate(&pose, last_cloud_end_time, cloud_end_time);
                     if let Some(linear_velocity) = linear_velocity {
                         map.set_linear_velocity(linear_velocity);
                     }
@@ -189,7 +187,7 @@ impl Pipeline {
         let map = self.map();
 
         Box::new(move |_, _, _, _| {
-            let ekfstate = map.lock().unwrap().get_state();
+            let ekfstate = map.lock().get_state();
             ImuPosePrediction {
                 pose: ekfstate.pose,
                 linear_velocity: ekfstate.linear_velocity,

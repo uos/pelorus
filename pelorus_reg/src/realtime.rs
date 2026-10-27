@@ -310,7 +310,7 @@ fn worker(
                 let _ = completed.send(());
             }
             Command::SetStartupTf(imu, base, completed) => {
-                for worker in std::iter::once(&mut state).chain(export_state.iter_mut()) {
+                for worker in ::core::iter::once(&mut state).chain(export_state.iter_mut()) {
                     if let Some(imu) = imu {
                         worker.imu.set_lidar_to_imu(&imu);
                         worker.ekf.state.offset_t_l_i = imu.translation.vector;

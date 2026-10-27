@@ -18,11 +18,15 @@
 //! depend on the state only through equivariant quantities, which is what reduces
 //! the linearisation error and keeps the filter consistent through abrupt motion.
 
+use alloc::vec::Vec;
 use faer::linalg::matmul::matmul;
 use faer::linalg::solvers::DenseSolveCore;
 use faer::prelude::{Reborrow, ReborrowMut};
 use faer::{Col, Mat};
 use log::{error, warn};
+// Float maths through libm without std. With std the inherent methods take precedence.
+#[allow(unused_imports)]
+use nalgebra::ComplexField;
 use nalgebra::{DMatrix, Vector3}; // Keep Vector3 for sophus_lie interface
 use pelorus_core::{
     KinematicModel, OdomMsg, log_debouncer::should_log_once_default, timing::RuntimeEvaluator,
@@ -174,7 +178,7 @@ fn get_f(s: &StateIKFom, inp: &InputIKFom) -> Mat<f64> {
 /// ```
 pub fn skew_symmetric_na<T>(q: &Vector3<T>) -> nalgebra::Matrix3<T>
 where
-    T: nalgebra::Scalar + Copy + From<f64> + std::ops::Neg<Output = T>,
+    T: nalgebra::Scalar + Copy + From<f64> + ::core::ops::Neg<Output = T>,
 {
     nalgebra::Matrix3::new(
         T::from(0.0),
@@ -993,7 +997,7 @@ impl Eqf {
         measurement_noise_cov: f64,
         measurement_time: f64,
         max_iter: usize,
-        eval: std::sync::Arc<std::sync::RwLock<&mut RuntimeEvaluator>>,
+        eval: alloc::sync::Arc<pelorus_core::sync::RwLock<&mut RuntimeEvaluator>>,
         mut model: impl FnMut(
             &StateIKFom,
             &mut bool,     // valid
@@ -1019,7 +1023,7 @@ impl Eqf {
         measurement_noise_cov: f64,
         measurement_time: f64,
         max_iter: usize,
-        eval: std::sync::Arc<std::sync::RwLock<&mut RuntimeEvaluator>>,
+        eval: alloc::sync::Arc<pelorus_core::sync::RwLock<&mut RuntimeEvaluator>>,
         mut model: impl AsyncFnMut(
             &StateIKFom,
             &mut bool,     // valid
@@ -1040,7 +1044,7 @@ impl Eqf {
         }
 
         {
-            let mut eval = eval.write().unwrap();
+            let mut eval = eval.write();
             eval.start("ekf_correct/it").unwrap();
         }
         // Save propagated state and covariance
@@ -1058,7 +1062,7 @@ impl Eqf {
             let mut num_measurements = 0usize;
 
             {
-                let mut eval = eval.write().unwrap();
+                let mut eval = eval.write();
                 eval.start("ekf_correct/it/model").unwrap();
             }
 
@@ -1072,7 +1076,7 @@ impl Eqf {
             )
             .await;
 
-            let mut eval = eval.write().unwrap();
+            let mut eval = eval.write();
             eval.stop("ekf_correct/it/model").unwrap();
 
             if !valid || num_measurements == 0 {
@@ -1249,7 +1253,7 @@ impl Eqf {
                 break;
             }
         }
-        let mut eval = eval.write().unwrap();
+        let mut eval = eval.write();
         eval.stop("ekf_correct/it").unwrap();
         // Covariance update: P = (I - KH) * P  (equation 19)
         eval.start("ekf_correct/cov").unwrap();
@@ -1308,7 +1312,7 @@ mod tests {
             KinematicModel::Differential,
             Vector3::zeros(),
             &[0],
-            std::iter::once(1.0),
+            ::core::iter::once(1.0),
         );
 
         for index in 3..6 {
@@ -1328,7 +1332,7 @@ mod tests {
     #[test]
     fn differential_odom_corrects_forward_axis_not_world_x() {
         let mut filter = initialized_filter();
-        filter.state.rot = SO3::exp(Vector3::new(0.0, 0.0, std::f64::consts::FRAC_PI_2));
+        filter.state.rot = SO3::exp(Vector3::new(0.0, 0.0, ::core::f64::consts::FRAC_PI_2));
         let measurement = odom(Vector3::new(1.0, 0.0, 0.0), Matrix3::identity());
 
         filter.correct_with_body_velocities(
@@ -1345,9 +1349,11 @@ mod tests {
     #[test]
     fn configured_odom_frame_rotation_is_respected() {
         let mut filter = initialized_filter();
-        let frame_to_imu =
-            nalgebra::Rotation3::from_axis_angle(&Vector3::z_axis(), std::f64::consts::FRAC_PI_2)
-                .into_inner();
+        let frame_to_imu = nalgebra::Rotation3::from_axis_angle(
+            &Vector3::z_axis(),
+            ::core::f64::consts::FRAC_PI_2,
+        )
+        .into_inner();
         let measurement = odom(Vector3::new(1.0, 0.0, 0.0), frame_to_imu);
 
         filter.correct_with_body_velocities(

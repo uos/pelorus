@@ -10,7 +10,7 @@ repository.workspace = true
 rust-version.workspace = true
 
 [dependencies]
-pelorus_core.workspace = true
+pelorus_core = { workspace = true, features = ["std"] }
 thiserror.workspace = true
 log.workspace = true
 velodyne-lidar = { workspace = true, optional = true }

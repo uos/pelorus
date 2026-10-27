@@ -11,18 +11,31 @@ rust-version.workspace = true
 
 [dependencies]
 anyhow.workspace = true
-web-time = "1.1"
+web-time = { version = "1.1", optional = true }
 nalgebra.workspace = true
 faer.workspace = true
-ratslang.workspace = true
+ratslang = { workspace = true, optional = true }
 either.workspace = true
 ros_pointcloud2.workspace = true
 serde.workspace = true
+postcard.workspace = true
 log.workspace = true
 r2r = { workspace = true, optional = true }
-once_cell.workspace = true
 bytemuck.workspace = true
+hashbrown.workspace = true
+spin.workspace = true
 
 [features]
-default = []
-r2r = ["dep:r2r"]
+default = ["std"]
+# Load `.rl` configurations, measure time with the system clock and use std types.
+std = [
+  "dep:ratslang",
+  "dep:web-time",
+  "anyhow/std",
+  "nalgebra/std",
+  "faer/std",
+  "either/std",
+  "ros_pointcloud2/std",
+  "serde/std",
+]
+r2r = ["std", "dep:r2r"]

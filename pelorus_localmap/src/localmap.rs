@@ -8,13 +8,14 @@ use rayon::{
 };
 
 use crate::VoxelDistribution;
+use alloc::{vec, vec::Vec};
 use pelorus_core::adaptive_execution::ExecutionMode;
 
 #[cfg(feature = "rayon")]
 fn sort_unstable_by<T, F>(slice: &mut [T], cmp: F, mode: ExecutionMode)
 where
     T: Send,
-    F: Fn(&T, &T) -> std::cmp::Ordering + Sync,
+    F: Fn(&T, &T) -> core::cmp::Ordering + Sync,
 {
     match mode {
         ExecutionMode::Sequential => slice.sort_unstable_by(cmp),
@@ -25,7 +26,7 @@ where
 #[cfg(not(feature = "rayon"))]
 fn sort_unstable_by<T, F>(slice: &mut [T], cmp: F, _mode: ExecutionMode)
 where
-    F: Fn(&T, &T) -> std::cmp::Ordering,
+    F: Fn(&T, &T) -> core::cmp::Ordering,
 {
     slice.sort_unstable_by(cmp);
 }
@@ -60,7 +61,7 @@ pub struct Livodish {
     lru_mapping_keys: Vec<SortKey>,
     lru_cursor: usize,
     // lookup for hash to voxel idx in buffer
-    lookup: rustc_hash::FxHashMap<i32, usize>,
+    lookup: crate::FxHashMap<i32, usize>,
     capacity: usize,
     sensitivity: f32,
     min_dist: f32,
@@ -72,7 +73,7 @@ impl Livodish {
             buffer: vec![None; capacity],
             lru_mapping: vec![None; capacity],
             add_cursor: 0,
-            lookup: rustc_hash::FxHashMap::with_capacity_and_hasher(capacity, Default::default()),
+            lookup: crate::FxHashMap::with_capacity_and_hasher(capacity, Default::default()),
             lru_cursor: 0,
             capacity,
             sensitivity,
@@ -287,13 +288,13 @@ impl Livodish {
         #[cfg(not(feature = "lru-eviction"))]
         let cmp = |a: &SortKey, b: &SortKey| {
             if a.point_count == 0 && b.point_count == 0 {
-                return std::cmp::Ordering::Equal;
+                return core::cmp::Ordering::Equal;
             }
             if a.point_count == 0 {
-                return std::cmp::Ordering::Less; // a is Infinite -> comes first
+                return core::cmp::Ordering::Less; // a is Infinite -> comes first
             }
             if b.point_count == 0 {
-                return std::cmp::Ordering::Greater;
+                return core::cmp::Ordering::Greater;
             }
 
             // prevent overflow
