@@ -25,6 +25,10 @@ ratslang = { workspace = true, optional = true }
 thiserror.workspace = true
 rayon = { workspace = true, optional = true }
 
+[[example]]
+name = "replay_mcap"
+required-features = ["std"]
+
 [dev-dependencies]
 mcap.workspace = true
 cdr.workspace = true
