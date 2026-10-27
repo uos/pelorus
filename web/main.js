@@ -4,9 +4,9 @@ import init, { WebApp } from "./pkg/pelorus_web.js";
 import { HEIGHT_ABOVE_M, HEIGHT_BELOW_M, PointCloudView, turboGradient } from "./viewer.js";
 import { ratslangEditor } from "./rl-editor.js";
 
-const SPIRES = { cloud: "/hesai/pandar", imu: "/alphasense_driver_ros/imu", config: "configs/pelorus-spires.rl" };
-const GRAND_TOUR = { cloud: "/boxi/hesai/points", imu: "/boxi/stim320/imu", config: "configs/pelorus-grandtour.rl" };
-const HELIPR = { cloud: "/ouster/points", imu: "/imu/data_raw", config: "configs/pelorus-helipr-ouster.rl" };
+const SPIRES = { cloud: "/hesai/pandar", imu: "/alphasense_driver_ros/imu", config: "configs/oxford-spires.rl" };
+const GRAND_TOUR = { cloud: "/boxi/hesai/points", imu: "/boxi/stim320/imu", config: "configs/grandtour.rl" };
+const HELIPR = { cloud: "/ouster/points", imu: "/imu/data_raw", config: "configs/helipr-ouster.rl" };
 
 /** The demo recordings, grouped by dataset. */
 const DEMOS = [
@@ -35,14 +35,10 @@ const DEMOS = [
 
 const PRESETS = [
   ["Default", ""],
-  ["Oxford Spires (Hesai)", "configs/pelorus-spires.rl"],
-  ["GrandTour (Hesai, STIM320)", "configs/pelorus-grandtour.rl"],
-  ["HeLiPR (Ouster OS2-128)", "configs/pelorus-helipr-ouster.rl"],
-  ["Ouster", "configs/pelorus-ouster.rl"],
-  ["Newer College (Ouster)", "configs/pelorus-newer-college.rl"],
-  ["Velodyne", "configs/pelorus-velodyne.rl"],
-  ["HeLiPR (Livox Avia)", "configs/pelorus-helipr-avia.rl"],
-  ["Blickfeld", "configs/pelorus-blickfeld.rl"],
+  ["Oxford Spires (Hesai)", "configs/oxford-spires.rl"],
+  ["GrandTour (Hesai, STIM320)", "configs/grandtour.rl"],
+  ["HeLiPR (Ouster OS2-128)", "configs/helipr-ouster.rl"],
+  ["Newer College (Ouster)", "configs/newer-college.rl"],
 ];
 
 const $ = (id) => document.getElementById(id);

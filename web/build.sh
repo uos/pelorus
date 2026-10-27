@@ -5,7 +5,8 @@
 #
 # Needs the wasm32-unknown-unknown target, clang with WebAssembly support for
 # the zstd and lz4 C code, and wasm-bindgen-cli matching the wasm-bindgen crate
-# (cargo install wasm-bindgen-cli --version 0.2.129).
+# (cargo install wasm-bindgen-cli --version 0.2.129). web/deploy.sh uploads the
+# result to pelorus.steado.tech.
 set -euo pipefail
 
 web="$(cd "$(dirname "$0")" && pwd)"
@@ -33,10 +34,12 @@ cp "$root/docs/docs/images/pelorus.svg" "$web/pelorus.svg"
 mkdir -p "$web/fonts"
 cp "$root"/docs/docs/fonts/Libron-*.woff2 "$root/docs/docs/fonts/OFL.txt" "$web/fonts/"
 
+# The configuration presets come from a pelorus-configs checkout next to
+# pelorus (https://codeberg.org/stelzo/pelorus-configs), or from PELORUS_CONFIGS.
+configs="${PELORUS_CONFIGS:-$root/../pelorus-configs}"
 mkdir -p "$web/configs"
-for preset in pelorus-spires pelorus-grandtour pelorus-helipr-ouster pelorus-ouster pelorus-newer-college pelorus-velodyne \
-  pelorus-helipr-avia pelorus-blickfeld; do
-  cp "$root/$preset.rl" "$web/configs/"
+for preset in oxford-spires grandtour helipr-ouster newer-college; do
+  cp "$configs/$preset.rl" "$web/configs/"
 done
 
 if [[ ! -f "$web/demo/keble_college_02_30s.mcap" ]]; then

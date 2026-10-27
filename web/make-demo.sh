@@ -12,6 +12,11 @@
 # The HeLiPR Ouster OS2-128 clouds are about 120k points, so those demos keep
 # every third point and 20 seconds to stay below 80 MB.
 #
+# The CI deploys the bags from the marina dataset pelorus/web_demo. After
+# changing them, push them there without recompressing the clouds:
+#
+#   marina push --pointcloud-mode off pelorus/web_demo web/demo
+#
 # Usage: web/make-demo.sh
 set -euo pipefail
 

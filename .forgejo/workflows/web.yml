@@ -1,0 +1,119 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/SchemaStore/schemastore/refs/heads/master/src/schemas/json/github-workflow.json
+# Browser demo deployment for Pelorus. The schema is used until there is one for Forgejo.
+#
+# A release tag deploys the demo to https://pelorus.steado.tech right away,
+# without waiting for release.yml. Run the workflow by hand to deploy any branch,
+# or to dry-run it: the dry run builds the demo, checks the presets, the bags and
+# the deploy key, and lists what would change on the site without changing it.
+#
+# Secrets: WEB_DEPLOY_KEY, the private key of the pelorus-web user, which may
+# only rsync into /var/www/pelorus.steado.tech.
+
+name: web
+
+on:
+  push:
+    tags:
+      - v*
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "deploy uploads to pelorus.steado.tech, dry-run only lists the changes"
+        type: choice
+        options:
+          - deploy
+          - dry-run
+        default: deploy
+
+env:
+  DRY_RUN: ${{ inputs.mode == 'dry-run' }}
+  DEMO_DATASET: pelorus/web_demo
+
+jobs:
+  site:
+    runs-on: ubuntu-dev-resolute
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install the wasm toolchain
+        run: |
+          set -euo pipefail
+          ./scripts/update_mirror.bash
+          apt-get install -y --no-install-recommends clang llvm rsync openssh-client curl
+          rustup self update
+          rustup toolchain uninstall stable
+          rustup toolchain install stable
+          rustup default stable
+          rustup target add wasm32-unknown-unknown
+          rustc --version
+
+          # The CLI has to match the wasm-bindgen crate in Cargo.lock.
+          version="$(grep -A1 '^name = "wasm-bindgen"$' Cargo.lock | sed -n 's/^version = "\(.*\)"$/\1/p')"
+          name="wasm-bindgen-${version}-$(uname -m)-unknown-linux-musl"
+          curl -fsSL "https://github.com/wasm-bindgen/wasm-bindgen/releases/download/${version}/${name}.tar.gz" | tar xz -C /tmp
+          install -m 755 "/tmp/${name}/wasm-bindgen" /usr/local/bin/wasm-bindgen
+          wasm-bindgen --version
+      - name: Fetch the presets and the config grammar
+        run: |
+          git clone --depth 1 https://codeberg.org/stelzo/pelorus-configs.git ../pelorus-configs
+          git clone --depth 1 https://codeberg.org/stelzo/ratslang.git ../ratslang
+          git -C ../pelorus-configs log -1 --format='pelorus-configs %h %s'
+      - name: Build
+        run: web/build.sh
+      - name: Upload
+        env:
+          WEB_DEPLOY_KEY: ${{ secrets.WEB_DEPLOY_KEY }}
+        run: |
+          set -euo pipefail
+          export DEPLOY_KEY="$(mktemp)"
+          trap 'rm -f "$DEPLOY_KEY"' EXIT
+          printf '%s\n' "$WEB_DEPLOY_KEY" >"$DEPLOY_KEY"
+          if [ "$DRY_RUN" = true ]; then web/deploy.sh --dry-run site; else web/deploy.sh site; fi
+
+  # Only the noble runner has a key for the marina registry.
+  bags:
+    runs-on: noble
+    env:
+      MARINA_CONFIG_DIR: ${{ github.workspace }}/ci/marina
+      MARINA_CACHE_DIR: /tmp/marina-cache
+      MARINA_SSH_KEY: "/home/runner/.ssh/id_ed25519"
+      MARINA_SSH_TRANSPORT: "openssh"
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install marina
+        run: |
+          python3 -m venv .venv
+          source .venv/bin/activate
+          pip install marina-cli
+          command -v rsync >/dev/null || { echo "The noble runner needs rsync." >&2; exit 1; }
+      - name: Trust Marina registry host
+        run: |
+          mkdir -p "$HOME/.ssh"
+          chmod 700 "$HOME/.ssh"
+          cp ci/marina/known_hosts "$HOME/.ssh/known_hosts"
+          chmod 600 "$HOME/.ssh/known_hosts"
+      - name: Download the demo bags
+        run: |
+          source .venv/bin/activate
+          marina pull -y "$DEMO_DATASET"
+      - name: Upload
+        env:
+          WEB_DEPLOY_KEY: ${{ secrets.WEB_DEPLOY_KEY }}
+        run: |
+          set -euo pipefail
+          source .venv/bin/activate
+          export DEPLOY_KEY="$(mktemp)"
+          trap 'rm -f "$DEPLOY_KEY"' EXIT
+          printf '%s\n' "$WEB_DEPLOY_KEY" >"$DEPLOY_KEY"
+          bags="$(marina resolve -y "$DEMO_DATASET")"
+          if [ "$DRY_RUN" = true ]; then web/deploy.sh --dry-run bags "$bags"; else web/deploy.sh bags "$bags"; fi
+
+  check:
+    needs:
+      - site
+      - bags
+    if: ${{ inputs.mode != 'dry-run' }}
+    runs-on: ubuntu-dev-resolute
+    steps:
+      - uses: actions/checkout@v4
+      - name: Fetch every file the demo loads
+        run: web/deploy.sh check

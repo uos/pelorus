@@ -1,6 +1,6 @@
 const recordings = {
-  spires: { file: 'demo/keble_college_02_30s.mcap', config: 'configs/pelorus-spires.rl', cloud: '/hesai/pandar', imu: '/alphasense_driver_ros/imu' },
-  helipr: { file: 'demo/helipr_town02_20s.mcap', config: 'configs/pelorus-helipr-ouster.rl', cloud: '/ouster/points', imu: '/imu/data_raw' },
+  spires: { file: 'demo/keble_college_02_30s.mcap', config: 'configs/oxford-spires.rl', cloud: '/hesai/pandar', imu: '/alphasense_driver_ros/imu' },
+  helipr: { file: 'demo/helipr_town02_20s.mcap', config: 'configs/helipr-ouster.rl', cloud: '/ouster/points', imu: '/imu/data_raw' },
 };
 const result = document.querySelector('#result');
 const button = document.querySelector('#run');
