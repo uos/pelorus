@@ -417,7 +417,8 @@ export class PointCloudView {
       gl.disable(gl.DEPTH_TEST);
       gl.useProgram(this.lineProgram);
       gl.uniformMatrix4fv(gl.getUniformLocation(this.lineProgram, "u_view_proj"), false, viewProj);
-      gl.uniform4f(gl.getUniformLocation(this.lineProgram, "u_color"), 0.44, 0.76, 0.87, 1);
+      // The gold of the logo, #e5c65c.
+      gl.uniform4f(gl.getUniformLocation(this.lineProgram, "u_color"), 0.9, 0.78, 0.36, 1);
       gl.bindVertexArray(this.lineVao);
       gl.drawArrays(gl.LINE_STRIP, 0, this.trajectoryCount);
     }

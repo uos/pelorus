@@ -32,25 +32,63 @@
   font-display: swap;
 }
 
-/* The colours of the documentation: its dark "slate" scheme with the teal
-   primary and cyan accent palette (docs/zensical.template.toml). */
-:root {
+/* The colours of the documentation: the gold of the logo from
+   docs/docs/stylesheets/brand.css, in the dark "slate" scheme of its theme and
+   with the code colours of its highlighter. The renders and the run view stay
+   dark; the rest of the start page follows the system scheme like the
+   documentation does. */
+:root,
+.hero,
+#run {
   --night: #0b0c0f;
-  --deck: #14171f;
-  --rule: #24272e;
+  --deck: #14161f;
+  --rule: #24262b;
   --fog: #bbbdc2;
   --heading: #ffffff;
   --slate: #83858a;
-  --link: #00ccb8;
-  --primary: #009485;
-  --primary-hover: #26a699;
-  --on-primary: #ffffff;
-  --accent: #00bad6;
+  --link: #e7ce70;
+  --primary: #e5c65c;
+  --primary-hover: color-mix(in srgb, #e5c65c 80%, #fff);
+  --on-primary: #1f1d1a;
+  --accent: #e5c65c;
+  --hl-constant: #9383e2;
+  --hl-string: #2fb170;
+  --hl-number: #e6695b;
+  --hl-function: #c973d9;
+  --hl-keyword: #6791e0;
+  --hl-special: #f06090;
+  --hl-name: #c4cad8;
+  color-scheme: dark;
+  color: var(--fog);
+}
+
+/* The documentation's default scheme. */
+@media (prefers-color-scheme: light) {
+  :root {
+    --night: #ffffff;
+    --deck: #f5f5f5;
+    --rule: #e3e3e3;
+    --fog: #212121;
+    --heading: #1a1a1a;
+    --slate: #737373;
+    --link: #806308;
+    --accent: #806308;
+    --hl-constant: #6e59d9;
+    --hl-string: #1c7d4d;
+    --hl-number: #d52a2a;
+    --hl-function: #a846b9;
+    --hl-keyword: #3f6ec6;
+    --hl-special: #db1457;
+    --hl-name: #36464e;
+    color-scheme: light;
+  }
+}
+
+:root {
   --text: "Libron", Georgia, "Times New Roman", serif;
   --mono: ui-monospace, "JetBrains Mono", "Fira Code", Menlo, Consolas, monospace;
   /* Outlined buttons keep their weight next to bold labels on dense screens. */
   --outline: 1px;
-  color-scheme: dark;
 }
 
 * {
@@ -222,7 +260,7 @@ h1 {
 }
 
 .project-links a:hover {
-  background: rgb(0 204 184 / 0.12);
+  background: color-mix(in srgb, var(--link) 12%, transparent);
 }
 
 .choices {
@@ -325,6 +363,8 @@ button {
 .primary {
   padding: 0.6rem 1.25rem;
   border: none;
+  /* The pill shape of the documentation's buttons. */
+  border-radius: 999px;
   background: var(--primary);
   color: var(--on-primary);
   font-weight: 700;
@@ -351,14 +391,14 @@ button:disabled {
   display: inline-block;
   padding: 0.55rem 1.15rem;
   border: var(--outline) solid var(--link);
-  border-radius: 6px;
+  border-radius: 999px;
   color: var(--link);
   font-weight: 700;
   cursor: pointer;
 }
 
 .file span:hover {
-  background: rgb(0 204 184 / 0.1);
+  background: color-mix(in srgb, var(--link) 10%, transparent);
 }
 
 .file input:focus-visible + span {
@@ -809,7 +849,7 @@ footer p {
 }
 
 .rl-editor textarea::selection {
-  background: rgb(0 186 214 / 0.3);
+  background: color-mix(in srgb, var(--accent) 30%, transparent);
 }
 
 .rl-comment {
@@ -818,39 +858,39 @@ footer p {
 }
 
 .rl-annotation {
-  color: #9383e2;
+  color: var(--hl-constant);
   font-style: normal;
 }
 
 .rl-string,
 .rl-escape {
-  color: #2fb170;
+  color: var(--hl-string);
 }
 
 .rl-number,
 .rl-quantity {
-  color: #e6695b;
+  color: var(--hl-number);
 }
 
 .rl-constant {
-  color: #9383e2;
+  color: var(--hl-constant);
 }
 
 .rl-internal {
-  color: #c973d9;
+  color: var(--hl-function);
   font-style: italic;
 }
 
 .rl-namespace {
-  color: #6791e0;
+  color: var(--hl-keyword);
 }
 
 .rl-value {
-  color: #f06090;
+  color: var(--hl-special);
 }
 
 .rl-variable {
-  color: #c4cad8;
+  color: var(--hl-name);
 }
 
 .rl-operator,
