@@ -102,9 +102,11 @@ jobs:
           set -euo pipefail
           source .venv/bin/activate
           export DEPLOY_KEY="$(mktemp)"
-          trap 'rm -f "$DEPLOY_KEY"' EXIT
+          bags="$(mktemp -d)"
+          trap 'rm -f "$DEPLOY_KEY"; rm -rf "$bags"' EXIT
           printf '%s\n' "$WEB_DEPLOY_KEY" >"$DEPLOY_KEY"
-          bags="$(marina resolve -y "$DEMO_DATASET")"
+          # The bags are in a tar, as marina would otherwise decode their cloudini clouds on pull.
+          tar -xf "$(marina resolve -y "$DEMO_DATASET")/web_demo.tar" -C "$bags"
           if [ "$DRY_RUN" = true ]; then web/deploy.sh --dry-run bags "$bags"; else web/deploy.sh bags "$bags"; fi
 
   check:

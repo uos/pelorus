@@ -12,10 +12,15 @@
 # The HeLiPR Ouster OS2-128 clouds are about 120k points, so those demos keep
 # every third point and 20 seconds to stay below 80 MB.
 #
-# The CI deploys the bags from the marina dataset pelorus/web_demo. After
-# changing them, push them there without recompressing the clouds:
+# The CI deploys the bags from the marina dataset pelorus/web_demo, which holds
+# them in web_demo.tar: marina decodes cloudini clouds when it pulls an MCAP, and
+# that would double the downloads. After changing the bags, push them again:
 #
-#   marina push --pointcloud-mode off pelorus/web_demo web/demo
+#   mkdir -p /tmp/web_demo && cp web/demo/README.md /tmp/web_demo/
+#   tar -cf /tmp/web_demo/web_demo.tar -C web/demo $(cd web/demo && ls *.mcap) README.md
+#   marina push pelorus/web_demo /tmp/web_demo
+#
+# marina moves the pushed folder into its cache, so push a copy, never web/demo.
 #
 # Usage: web/make-demo.sh
 set -euo pipefail
