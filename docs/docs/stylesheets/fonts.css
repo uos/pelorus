@@ -2,16 +2,16 @@
 
    The theme would otherwise pull its fonts from Google on every page load, which
    is a third-party request we do not need and, for a German university, one with
-   paperwork attached. `font = false` in zensical.template.toml turns that off,
-   which also drops the --md-text-font the theme would have set, so it is set
-   here instead.
+   paperwork attached. `font = false` in the Zensical configuration turns that
+   off, which also drops the --md-text-font the theme would have set, so it is
+   set here instead.
 
    Libron is licensed under the SIL Open Font License 1.1. The licence travels
    with the files, in fonts/OFL.txt.
 
    Libron ships as four static files, regular and bold at weights 400 and 700,
    each upright and italic. The theme asks for weights 300 and 500 to 600 in a
-   few places; a browser picks the nearest of the two that exist. */
+   few places. A browser picks the nearest of the two that exist. */
 
 @font-face {
   font-family: "Libron";

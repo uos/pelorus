@@ -8,7 +8,6 @@ keywords.workspace = true
 license.workspace = true
 repository.workspace = true
 version.workspace = true
-authors.workspace = true
 rust-version.workspace = true
 
 [lib]
@@ -16,18 +15,11 @@ name = "pelorus_py"
 crate-type = ["cdylib"]
 
 [dependencies]
-pelorus_core.workspace = true
-pelorus_reg = { workspace = true, default-features = false, features = ["threads"] }
-pelorus_sync = { workspace = true, default-features = false, features = ["threads"] }
-pelorus_localmap = { workspace = true, default-features = false }
+pelorus = { workspace = true, default-features = false, features = ["threads", "http-config"] }
 ros_pointcloud2.workspace = true
 ros2-interfaces-jazzy-serde.workspace = true
-nalgebra.workspace = true
-anyhow.workspace = true
 log.workspace = true
 env_logger.workspace = true
-ratslang.workspace = true
-rayon = { workspace = true, optional = true }
 
 ndarray.workspace = true
 pyo3.workspace = true
@@ -35,17 +27,11 @@ numpy.workspace = true
 
 [features]
 default = ["processing-time-export", "rayon"]
-rayon = [
-    "dep:rayon",
-    "pelorus_sync/rayon",
-    "pelorus_reg/rayon",
-    "pelorus_localmap/rayon",
-    "ros_pointcloud2/rayon",
-]
-downsample = ["pelorus_sync/downsample"]
-cuda = ["pelorus_sync/cuda", "pelorus_reg/cuda"]
-metal = ["pelorus_sync/metal", "pelorus_reg/metal"]
-vulkan = ["pelorus_sync/vulkan", "pelorus_reg/vulkan"]
-no-imu-sync = ["pelorus_sync/no-imu-sync"]
-large-processing-queue = ["pelorus_sync/large-processing-queue"]
-processing-time-export = ["pelorus_reg/processing-time-export"]
+rayon = ["pelorus/rayon"]
+downsample = ["pelorus/downsample"]
+cuda = ["pelorus/cuda"]
+metal = ["pelorus/metal"]
+vulkan = ["pelorus/vulkan"]
+no-imu-sync = ["pelorus/no-imu-sync"]
+large-processing-queue = ["pelorus/large-processing-queue"]
+processing-time-export = ["pelorus/processing-time-export"]

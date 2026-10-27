@@ -30,4 +30,4 @@ The runtime deserializes the compiled default/user layers in one call into the
 `Deserialize` structs in `pelorus_core/src/config/input.rs`. Keep those structs
 in step with the `.rl` layout when adding settings. The conversion in
 `config.rs` assembles the runtime configuration and checks relationships between
-settings; units, ranges, and enum spellings use shared serde adapters.
+settings. Units, ranges, and enum spellings use shared serde adapters.

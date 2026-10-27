@@ -109,17 +109,10 @@ pub(super) struct RawImuCalibrationGyroscope {
 }
 
 #[derive(Deserialize)]
-pub(super) struct RawImuCalibrationParameterFile {
-    #[serde(rename = "$value", deserialize_with = "optional_string")]
-    pub(super) value: Option<String>,
-    pub(super) use_noise: bool,
-}
-
-#[derive(Deserialize)]
 pub(super) struct RawImuCalibration {
     pub(super) gyroscope: RawImuCalibrationGyroscope,
-    pub(super) noise_inflation: f64,
-    pub(super) parameter_file: RawImuCalibrationParameterFile,
+    #[serde(deserialize_with = "optional_string")]
+    pub(super) parameter_file: Option<String>,
     #[serde(deserialize_with = "seconds")]
     pub(super) time_offset: f64,
 }

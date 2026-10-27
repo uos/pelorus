@@ -1,6 +1,41 @@
-![Pelorus](images/pelorus_banner.jpg)
+---
+hide:
+  - toc
+---
 
-# About
+<div class="sk-intro">
+  <div class="sk-intro-copy">
+
+<div class="sk-wordmark"><img src="images/pelorus.svg" alt="" width="72" height="72"><h1>Pelorus</h1></div>
+
+<p class="sk-tagline">Resource-aware<br>lidar-inertial odometry.</p>
+
+<p>Accurate motion estimation that leaves room for the rest of your application.
+From embedded robots to desktop systems, with optional GPU acceleration.</p>
+
+<div class="sk-actions">
+  <a class="md-button md-button--primary" href="https://pelorus.steado.tech">Try in your browser ↗</a>
+  <a class="md-button" href="#how-to-run">Get started</a>
+</div>
+
+<p class="sk-note">Run Pelorus on a recording, directly in your browser.</p>
+
+  </div>
+  <figure class="sk-intro-visual">
+    <img src="images/pelorus-header.webp" alt="Pelorus lidar reconstruction of the Institute of Computer Science at Osnabrück University, with the trajectory shown in yellow." width="1346" height="1020">
+    <figcaption>Institute of Computer Science · Osnabrück University</figcaption>
+  </figure>
+</div>
+
+<div class="sk-highlights">
+  <div><strong>State-of-the-art accuracy</strong><span>Lidar and IMU motion estimation.</span></div>
+  <div><strong>Lightweight &amp; fast</strong><span>20+ Hz on Jetson Orin Nano with a 128-layer Ouster lidar.</span></div>
+  <div><strong>GPU accelerated</strong><span>CUDA, Vulkan and Metal, alongside the CPU pipeline.</span></div>
+</div>
+
+<p class="sk-links">Use it your way: <a href="ros/">ROS 2</a> · <a href="standalone/">Standalone CLI &amp; bag playback</a> · <a href="standalone/#c-and-c-library">C / C++</a> · <a href="standalone/#python">Python</a> · <a href="glim/">GLIM</a></p>
+
+## About
 
 **Pelorus**{ .small-caps } is a Resource-aware Lidar-Inertial Odometry written in Rust with optional GPU support for NVIDIA, AMD, Apple and Intel. It is developed and maintained by the [Computer Engineering Group](https://www.uni-osnabrueck.de/fb6/informatik/en/research-groups/computer-engineering) at Osnabrück University.
 
@@ -78,7 +113,7 @@ flowchart TB
     EQF --> INS{{"Map insert<br/>and eviction"}}
     INS --> MAP[("Distribution Map")]
     MAP --> NN
-    classDef gpu fill:#00bad640,stroke:#00bad6,stroke-width:3px
+    classDef gpu fill:#e5c65c40,stroke:#b68e24,stroke-width:3px
     class DS,NN,INS,MAP gpu
 ```
 

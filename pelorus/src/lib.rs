@@ -37,20 +37,16 @@ use std::thread;
 
 use anyhow::anyhow;
 use log::error;
-#[cfg(feature = "threads")]
-use nalgebra::{Isometry3, Matrix3, SMatrix};
 pub use pelorus_core::PointXYZIT;
 #[cfg(feature = "threads")]
 use pelorus_core::SyncProcessedCloud;
 use pelorus_core::config::{ast_to_config, layer_overrides};
 use pelorus_core::{ImuMsg, LidarVendor, LioConfig, OdomMsg};
 use pelorus_reg::lio::{LioCore, LioScan, LioStep};
-#[cfg(feature = "threads")]
-use pelorus_reg::pipeline::PelorusOutput;
 use pelorus_reg::pipeline::Pipeline;
 use pelorus_sync::SteppedIngress;
 #[cfg(feature = "threads")]
-use pelorus_sync::{ImuInitCallback, Synchronizer};
+use pelorus_sync::{ScanAdmission, Synchronizer};
 pub use ros_pointcloud2::PointCloud2Msg;
 use ros_pointcloud2::prelude::*;
 use ros2_interfaces_jazzy_serde::sensor_msgs::msg::{PointCloud2, PointField};
@@ -153,10 +149,28 @@ pub struct Odometry {
     pub processing_time_ns: u128,
 }
 
-#[cfg(feature = "threads")]
-struct ImuInitState {
-    start_time: Option<f64>,
-    buffer: Option<Vec<ImuMsg>>,
+/// A result at the origin with identity orientation, zero velocity, biases and
+/// covariances, and no points.
+impl Default for Odometry {
+    fn default() -> Self {
+        Odometry {
+            timestamp_sec: 0,
+            timestamp_nanosec: 0,
+            position: [0.0; 3],
+            orientation: [1.0, 0.0, 0.0, 0.0],
+            pose_covariance: [0.0; 36],
+            linear_velocity: [0.0; 3],
+            angular_velocity: [0.0; 3],
+            accel_bias: [0.0; 3],
+            gyro_bias: [0.0; 3],
+            twist_covariance: [0.0; 36],
+            scan_id: 0,
+            points: Vec::new(),
+            frame_id: String::new(),
+            #[cfg(feature = "processing-time-export")]
+            processing_time_ns: 0,
+        }
+    }
 }
 
 #[cfg(feature = "threads")]
@@ -164,123 +178,28 @@ type OdometryCallback = Arc<dyn Fn(Odometry) + Send + Sync>;
 #[cfg(feature = "threads")]
 type SharedOdometryCallback = Arc<Mutex<Option<OdometryCallback>>>;
 
-#[cfg(feature = "threads")]
-struct ProcessingThread {
-    pipeline: Pipeline,
-    sync_receiver: mpsc::Receiver<SyncProcessedCloud>,
-    result_sender: mpsc::Sender<PelorusOutput>,
-    ready_for_next: mpsc::Sender<u64>,
-    callback: SharedOdometryCallback,
-    shutdown: Arc<AtomicBool>,
-    config: LioConfig,
-    ext_lidar_to_imu: Isometry3<f64>,
-}
-
-#[cfg(feature = "threads")]
-fn to_odometry(raw: &PelorusOutput, config: &LioConfig, ext: &Isometry3<f64>) -> Odometry {
-    let pose = raw.pose * config.base_to_lidar.inverse();
-    let linvel = pose.rotation.inverse() * raw.linear_velocity;
-    let r_b_i = config.base_to_lidar.rotation.inverse() * ext.rotation.inverse();
-    let angvel = r_b_i * raw.angular_velocity;
-    let q = pose.rotation.quaternion();
-    let frame_id = config
-        .base_link_frame
-        .as_deref()
-        .unwrap_or(&raw.frame_id)
-        .to_string();
-    let (pose_covariance, twist_covariance) = if config.base_link_frame.is_some() {
-        let lidar_to_base = config.base_to_lidar.inverse();
-        (
-            transform_pose_covariance(raw.pose_covariance, &raw.pose, &lidar_to_base),
-            transform_twist_covariance(raw.twist_covariance, &lidar_to_base),
-        )
-    } else {
-        (raw.pose_covariance, raw.twist_covariance)
-    };
-    let points = raw
-        .cloud
-        .iter()
-        .map(|p| PointXyzi {
-            x: p.x,
-            y: p.y,
-            z: p.z,
-            intensity: p.intensity,
-        })
-        .collect();
-
-    Odometry {
-        timestamp_sec: raw.timestamp.sec,
-        timestamp_nanosec: raw.timestamp.nanosec,
-        position: [pose.translation.x, pose.translation.y, pose.translation.z],
-        orientation: [q.w, q.i, q.j, q.k],
-        pose_covariance,
-        linear_velocity: [linvel.x, linvel.y, linvel.z],
-        angular_velocity: [angvel.x, angvel.y, angvel.z],
-        accel_bias: [raw.accel_bias.x, raw.accel_bias.y, raw.accel_bias.z],
-        gyro_bias: [raw.gyro_bias.x, raw.gyro_bias.y, raw.gyro_bias.z],
-        twist_covariance,
-        scan_id: raw.scan_id,
-        points,
-        frame_id,
-        #[cfg(feature = "processing-time-export")]
-        processing_time_ns: raw.processing_time_ns,
-    }
-}
-
-#[cfg(feature = "threads")]
-fn transform_pose_covariance(
-    covariance: [f64; 36],
-    lidar_pose: &Isometry3<f64>,
-    lidar_to_output: &Isometry3<f64>,
-) -> [f64; 36] {
-    let r_wl = lidar_pose.rotation.to_rotation_matrix();
-    let r_lo = lidar_to_output.rotation.to_rotation_matrix();
-    let t_lo = lidar_to_output.translation.vector;
-
-    let mut jacobian = SMatrix::<f64, 6, 6>::identity();
-    jacobian
-        .fixed_view_mut::<3, 3>(0, 3)
-        .copy_from(&(-r_wl.matrix() * skew_symmetric(&t_lo)));
-    jacobian
-        .fixed_view_mut::<3, 3>(3, 3)
-        .copy_from(&r_lo.matrix().transpose());
-
-    let input_cov = SMatrix::<f64, 6, 6>::from_fn(|row, col| covariance[row * 6 + col]);
-    matrix6_to_array(jacobian * input_cov * jacobian.transpose())
-}
-
-#[cfg(feature = "threads")]
-fn transform_twist_covariance(
-    covariance: [f64; 36],
-    lidar_to_output: &Isometry3<f64>,
-) -> [f64; 36] {
-    let r_ol = lidar_to_output.rotation.inverse().to_rotation_matrix();
-    let mut transform = SMatrix::<f64, 6, 6>::zeros();
-    transform
-        .fixed_view_mut::<3, 3>(0, 0)
-        .copy_from(r_ol.matrix());
-    transform
-        .fixed_view_mut::<3, 3>(3, 3)
-        .copy_from(r_ol.matrix());
-
-    let input_cov = SMatrix::<f64, 6, 6>::from_fn(|row, col| covariance[row * 6 + col]);
-    matrix6_to_array(transform * input_cov * transform.transpose())
-}
-
-#[cfg(feature = "threads")]
-fn skew_symmetric(v: &nalgebra::Vector3<f64>) -> Matrix3<f64> {
-    Matrix3::new(0.0, -v.z, v.y, v.z, 0.0, -v.x, -v.y, v.x, 0.0)
-}
-
-#[cfg(feature = "threads")]
-fn matrix6_to_array(matrix: SMatrix<f64, 6, 6>) -> [f64; 36] {
-    let mut out = [0.0; 36];
-    for row in 0..6 {
-        for col in 0..6 {
-            out[row * 6 + col] = matrix[(row, col)];
+impl From<&Scan<'_>> for Odometry {
+    fn from(scan: &Scan<'_>) -> Self {
+        let (timestamp_sec, timestamp_nanosec) = scan.timestamp();
+        let (linear_velocity, angular_velocity) = scan.twist();
+        Odometry {
+            timestamp_sec,
+            timestamp_nanosec,
+            position: scan.position(),
+            orientation: scan.orientation(),
+            pose_covariance: *scan.pose_covariance(),
+            linear_velocity,
+            angular_velocity,
+            accel_bias: scan.accel_bias(),
+            gyro_bias: scan.gyro_bias(),
+            twist_covariance: *scan.twist_covariance(),
+            scan_id: scan.scan_id(),
+            points: scan.points_xyzi().collect(),
+            frame_id: scan.frame_id().to_string(),
+            #[cfg(feature = "processing-time-export")]
+            processing_time_ns: scan.processing_time_ns(),
         }
     }
-    out
 }
 
 fn build_cloud_msg(
@@ -452,18 +371,6 @@ fn raw_cloud_msg(cloud: RawPointCloud<'_>) -> PointCloud2Msg {
     impl_ros2_interfaces_jazzy_serde::to_pointcloud2_msg(cloud)
 }
 
-/// Load the configuration and build the pipeline of a [`Handle`].
-#[cfg(feature = "threads")]
-fn prepare(
-    config_path: Option<&str>,
-    device_specific_pointcloud2: bool,
-) -> anyhow::Result<(LioConfig, Pipeline)> {
-    Ok(prepare_config(
-        load_config(config_path)?,
-        device_specific_pointcloud2,
-    ))
-}
-
 fn prepare_config(
     mut config: LioConfig,
     device_specific_pointcloud2: bool,
@@ -530,55 +437,66 @@ fn compile_config(source: &str, parent: &std::path::Path) -> anyhow::Result<LioC
     ast_to_config(default_ast, user_ast).map_err(|e| anyhow!("Failed to build configuration: {e}"))
 }
 
+/// The calling side of a [`Handle`]: which clouds the odometry takes, and the
+/// synchronizer whose threads preprocess and synchronize them.
 #[cfg(feature = "threads")]
-fn processing_thread_main(thread: ProcessingThread) {
-    let mut sent_count: usize = 0;
+struct Intake {
+    admission: ScanAdmission,
+    sync: Synchronizer,
+}
 
-    while let Ok(processed) = thread.sync_receiver.recv() {
-        if thread.shutdown.load(Ordering::Relaxed) {
+/// Register every synchronized scan with the [`LioCore`], as the pipelined
+/// driver of `pelorus offline` does. Each scan releases the synchronizer to the
+/// next one once the map is updated.
+#[cfg(feature = "threads")]
+fn processing_main(
+    mut core: LioCore,
+    synced: mpsc::Receiver<SyncProcessedCloud>,
+    ready_for_next: mpsc::Sender<u64>,
+    results: mpsc::Sender<Odometry>,
+    callback: SharedOdometryCallback,
+    shutdown: Arc<AtomicBool>,
+) {
+    while let Ok(processed) = synced.recv() {
+        // Keep draining after shutdown so the synchronizer threads can finish.
+        if shutdown.load(Ordering::Relaxed) {
             continue;
         }
-
-        let scan_id = processed.scan_id;
-        let registration = thread
-            .pipeline
-            .register_processed_cloud(processed, Some(&thread.ready_for_next));
-
-        match registration {
-            Ok(Some(output)) => {
-                let cb_opt = thread
-                    .callback
-                    .lock()
-                    .ok()
-                    .and_then(|g| g.as_ref().map(Arc::clone));
-
-                if let Some(cb) = cb_opt {
-                    cb(to_odometry(
-                        &output,
-                        &thread.config,
-                        &thread.ext_lidar_to_imu,
-                    ));
-                } else {
-                    sent_count += 1;
-                    if let Err(e) = thread.result_sender.send(output) {
-                        error!("failed to send odometry #{sent_count}: {e}");
-                    }
-                }
+        #[cfg(feature = "processing-time-export")]
+        let started = pelorus_core::Instant::now();
+        let scan = match core.step(processed, Some(&ready_for_next)) {
+            LioStep::Registered(scan) => scan,
+            LioStep::MapOnly { scan_id } => {
+                let _ = ready_for_next.send(scan_id);
+                continue;
             }
-            Ok(None) => {
-                // Map-only scans return before the registration barrier, so the
-                // correction ack for this scan id has to come from here or
-                // Synchronizer waits on it forever.
-                if let Err(e) = thread.ready_for_next.send(scan_id) {
-                    error!("failed to acknowledge map-only scan #{scan_id}: {e}");
-                }
+            LioStep::Failed { scan_id, error } => {
+                error!("registration of scan #{scan_id} failed: {error:#}");
+                let _ = ready_for_next.send(scan_id);
+                continue;
             }
-            Err(e) => {
-                error!("fatal registration error. Stopping processing thread: {e:#}");
-                break;
+        };
+        let odometry = Odometry::from(&Scan {
+            scan: &scan,
+            core: &core,
+            #[cfg(feature = "processing-time-export")]
+            processing_time_ns: started.elapsed().as_nanos(),
+        });
+        let registered = callback
+            .lock()
+            .ok()
+            .and_then(|guard| guard.as_ref().map(Arc::clone));
+        match registered {
+            Some(callback) => callback(odometry),
+            None => {
+                let scan_id = odometry.scan_id;
+                if let Err(e) = results.send(odometry) {
+                    error!("failed to send odometry of scan #{scan_id}: {e}");
+                }
             }
         }
     }
+    core.shutdown();
 }
 
 #[cfg(feature = "rayon")]
@@ -627,6 +545,13 @@ fn configure_thread_pool(num_threads: usize) {
 /// undistortion, scan registration, and state estimation.  Dropping the handle
 /// shuts the pipeline down gracefully.
 ///
+/// The stages run on their own threads, as in the pipelined driver of
+/// `pelorus offline`: preprocessing, synchronization with the IMU, and
+/// registration. The next scan is preprocessed while the current one registers.
+/// No input is dropped. When the queues are full, the `add_*` calls block until
+/// the threads catch up. The same input sequence therefore produces the same
+/// results as the [`Odometer`] and as `pelorus offline`.
+///
 /// # Callback vs polling
 ///
 /// Results can be consumed in two ways (mutually exclusive):
@@ -637,16 +562,12 @@ fn configure_thread_pool(num_threads: usize) {
 ///   is registered, `recv`/`try_recv` return [`Error::CallbackActive`].
 #[cfg(feature = "threads")]
 pub struct Handle {
-    sync: Arc<Mutex<Option<Synchronizer>>>,
-    result_receiver: mpsc::Receiver<PelorusOutput>,
+    intake: Mutex<Option<Intake>>,
+    /// Behind a lock so the handle can be shared between threads.
+    result_receiver: Mutex<mpsc::Receiver<Odometry>>,
     callback: SharedOdometryCallback,
-    imu_init_cb: Option<ImuInitCallback>,
-    imu_init_state: Arc<Mutex<ImuInitState>>,
-    imu_predictor_init_time_sec: f64,
-    _processing_thread: Option<thread::JoinHandle<()>>,
+    processing: Option<thread::JoinHandle<()>>,
     shutdown: Arc<AtomicBool>,
-    config: LioConfig,
-    ext_lidar_to_imu: Isometry3<f64>,
 }
 
 #[cfg(feature = "threads")]
@@ -669,105 +590,75 @@ impl Handle {
         config_path: Option<&str>,
         device_specific_pointcloud2: bool,
     ) -> Result<Self, Error> {
-        let (config, pipeline) = prepare(config_path, device_specific_pointcloud2)?;
-        let imu_init_cb = (!config.imu_params.lidar_only).then(|| pipeline.build_init_callback());
-        let imu_predictor_init_time_sec = config.sync_node_params.imu_predictor_init_time_sec;
-        let imu_init_state = Arc::new(Mutex::new(ImuInitState {
-            start_time: None,
-            buffer: Some(Vec::new()),
-        }));
-
-        let (ready_tx, ready_rx) = mpsc::channel::<u64>();
-        let (sync, sync_receiver) = pipeline.create_sync(Some(ready_rx))?;
+        let (config, pipeline) =
+            prepare_config(load_config(config_path)?, device_specific_pointcloud2);
+        let admission = ScanAdmission::new(
+            (!config.imu_params.lidar_only).then(|| pipeline.build_init_callback()),
+            config.sync_node_params.imu_predictor_init_time_sec,
+        );
+        let (ready_tx, ready_rx) = mpsc::channel();
+        let (sync, synced_rx) = pipeline.create_sync(Some(ready_rx))?;
         let (result_tx, result_rx) = mpsc::channel();
-
         let callback: SharedOdometryCallback = Arc::new(Mutex::new(None));
         let shutdown = Arc::new(AtomicBool::new(false));
-        let ext_lidar_to_imu = pipeline.ext();
-
-        let processing_thread = ProcessingThread {
-            pipeline,
-            sync_receiver,
-            result_sender: result_tx,
-            ready_for_next: ready_tx,
-            callback: Arc::clone(&callback),
-            shutdown: Arc::clone(&shutdown),
-            config: config.clone(),
-            ext_lidar_to_imu,
-        };
-
-        let thread_handle = thread::spawn(move || processing_thread_main(processing_thread));
 
         // Paired with the release in `Drop`, so process-wide GPU resources are torn
         // down when the last handle goes away rather than at `exit()`.
         pelorus_reg::backend_session_retain();
 
+        let processing_callback = Arc::clone(&callback);
+        let processing_shutdown = Arc::clone(&shutdown);
+        let processing = thread::spawn(move || {
+            processing_main(
+                LioCore::new(config, pipeline),
+                synced_rx,
+                ready_tx,
+                result_tx,
+                processing_callback,
+                processing_shutdown,
+            );
+        });
+
         Ok(Handle {
-            sync: Arc::new(Mutex::new(Some(sync))),
-            result_receiver: result_rx,
+            intake: Mutex::new(Some(Intake { admission, sync })),
+            result_receiver: Mutex::new(result_rx),
             callback,
-            imu_init_cb,
-            imu_init_state,
-            imu_predictor_init_time_sec,
-            _processing_thread: Some(thread_handle),
+            processing: Some(processing),
             shutdown,
-            config,
-            ext_lidar_to_imu,
+        })
+    }
+
+    /// Run `f` on the open intake.
+    fn with_intake<T>(&self, f: impl FnOnce(&mut Intake) -> T) -> Result<T, Error> {
+        let mut intake = self.intake.lock().unwrap();
+        let intake = intake.as_mut().ok_or_else(|| anyhow!("Handle is closed"))?;
+        Ok(f(intake))
+    }
+
+    /// Pass a cloud on to synchronization. Returns its scan id, or `0` for a
+    /// cloud the odometry drops: one before the IMU initialization, an empty
+    /// one or one older than the previous cloud.
+    fn send_cloud(&self, cloud: PointCloud2Msg) -> Result<u64, Error> {
+        self.with_intake(|intake| {
+            let Some(scan_id) = intake.admission.admit(&cloud) else {
+                return 0;
+            };
+            let numbered = intake.sync.add_pointcloud(cloud);
+            debug_assert_eq!(
+                numbered, scan_id,
+                "the synchronizer numbers exactly the clouds the admission takes"
+            );
+            scan_id
         })
     }
 
     /// Add an IMU measurement.
     pub fn add_imu(&self, imu: ImuMeasurement) -> Result<(), Error> {
-        let timestamp = imu.timestamp_sec as f64 + (imu.timestamp_nanosec as f64 / 1e9);
-        let imu_msg = imu_msg(imu);
-
-        let mut init_buffer_to_apply: Option<Vec<ImuMsg>> = None;
-        if let Some(_cb) = self.imu_init_cb.as_ref() {
-            let mut init_state = self.imu_init_state.lock().unwrap();
-
-            if init_state.start_time.is_none() {
-                init_state.start_time = Some(timestamp);
-            }
-
-            if let Some(start_time) = init_state.start_time {
-                if timestamp < start_time {
-                    init_state.start_time = Some(timestamp);
-                    if let Some(buf) = init_state.buffer.as_mut() {
-                        buf.clear();
-                    }
-                }
-
-                let init_time = self.imu_predictor_init_time_sec;
-                let delta = timestamp - init_state.start_time.unwrap_or(timestamp);
-
-                if init_time <= 0.0 {
-                    if let Some(buf) = init_state.buffer.as_mut() {
-                        buf.push(imu_msg.clone());
-                    }
-                    init_buffer_to_apply = init_state.buffer.take();
-                } else if delta < init_time {
-                    if let Some(buf) = init_state.buffer.as_mut() {
-                        buf.push(imu_msg);
-                        return Ok(());
-                    }
-                } else {
-                    init_buffer_to_apply = init_state.buffer.take();
-                }
-            }
-        }
-
-        if let (Some(cb), Some(buffer)) = (self.imu_init_cb.as_ref(), init_buffer_to_apply)
-            && !buffer.is_empty()
-        {
-            cb.lock().unwrap()(&buffer);
-        }
-
-        let mut sync_guard = self.sync.lock().unwrap();
-        let sync = sync_guard
-            .as_mut()
-            .ok_or_else(|| anyhow!("Handle is closed"))?;
-        sync.add_imu(imu_msg);
-        Ok(())
+        let imu = imu_msg(imu);
+        self.with_intake(|intake| {
+            intake.admission.observe_imu(&imu);
+            intake.sync.add_imu(imu);
+        })
     }
 
     /// Add a wheel-odometry measurement.
@@ -779,20 +670,14 @@ impl Handle {
         twist_angular: [f64; 3],
         twist_covariance: [f64; 36],
     ) -> Result<(), Error> {
-        let odom_msg = odom_msg(
+        let odom = odom_msg(
             timestamp_sec,
             timestamp_nanosec,
             twist_linear,
             twist_angular,
             twist_covariance,
         );
-
-        let mut sync_guard = self.sync.lock().unwrap();
-        let sync = sync_guard
-            .as_mut()
-            .ok_or_else(|| anyhow!("Handle is closed"))?;
-        sync.add_odom(odom_msg);
-        Ok(())
+        self.with_intake(|intake| intake.sync.add_odom(odom))
     }
 
     /// Add a point cloud as `[x, y, z, intensity, t]` f32 tuples.
@@ -800,24 +685,14 @@ impl Handle {
     /// `t` is a per-point nanosecond offset relative to the scan header
     /// timestamp `(timestamp_sec, timestamp_nanosec)`.
     ///
-    /// Returns the scan ID assigned to this cloud, or `0` on failure.
+    /// Returns the scan ID assigned to this cloud, or `0` for a dropped cloud.
     pub fn add_points_xyzit(
         &self,
         timestamp_sec: i32,
         timestamp_nanosec: u32,
         points: &[[f32; 5]],
     ) -> Result<u64, Error> {
-        if points.is_empty() {
-            return Ok(0);
-        }
-
-        let cloud_msg = xyzit_cloud_msg(timestamp_sec, timestamp_nanosec, points);
-
-        let mut sync_guard = self.sync.lock().unwrap();
-        let sync = sync_guard
-            .as_mut()
-            .ok_or_else(|| anyhow!("Handle is closed"))?;
-        Ok(sync.add_pointcloud(cloud_msg))
+        self.send_cloud(xyzit_cloud_msg(timestamp_sec, timestamp_nanosec, points))
     }
 
     /// Add a point cloud as `[x, y, z, t]` f32 tuples (intensity defaults to 0).
@@ -830,17 +705,7 @@ impl Handle {
         timestamp_nanosec: u32,
         points: &[[f32; 4]],
     ) -> Result<u64, Error> {
-        if points.is_empty() {
-            return Ok(0);
-        }
-
-        let cloud_msg = xyzt_cloud_msg(timestamp_sec, timestamp_nanosec, points);
-
-        let mut sync_guard = self.sync.lock().unwrap();
-        let sync = sync_guard
-            .as_mut()
-            .ok_or_else(|| anyhow!("Handle is closed"))?;
-        Ok(sync.add_pointcloud(cloud_msg))
+        self.send_cloud(xyzt_cloud_msg(timestamp_sec, timestamp_nanosec, points))
     }
 
     /// Add a raw PointCloud2-formatted point cloud.
@@ -849,14 +714,17 @@ impl Handle {
     /// For simpler input formats prefer [`add_points_xyzit`](Handle::add_points_xyzit)
     /// or [`add_points_xyzt`](Handle::add_points_xyzt).
     ///
-    /// Returns the scan ID assigned to this cloud or fails if Handle is closed.
+    /// Returns the scan ID assigned to this cloud, or `0` for a dropped cloud.
     pub fn add_pointcloud_raw(&self, cloud: RawPointCloud<'_>) -> Result<u64, Error> {
-        let cloud_msg = raw_cloud_msg(cloud);
-        let mut sync_guard = self.sync.lock().unwrap();
-        let sync = sync_guard
-            .as_mut()
-            .ok_or_else(|| anyhow!("Handle is closed"))?;
-        Ok(sync.add_pointcloud(cloud_msg))
+        self.send_cloud(raw_cloud_msg(cloud))
+    }
+
+    /// Add a point cloud that is already a [`PointCloud2Msg`], as decoded from a
+    /// bag or a subscription.
+    ///
+    /// Returns the scan ID assigned to this cloud, or `0` for a dropped cloud.
+    pub fn add_pointcloud2(&self, cloud: PointCloud2Msg) -> Result<u64, Error> {
+        self.send_cloud(cloud)
     }
 
     /// Non-blocking receive.
@@ -868,12 +736,8 @@ impl Handle {
             return Err(Error::CallbackActive);
         }
 
-        match self.result_receiver.try_recv() {
-            Ok(raw) => Ok(Some(to_odometry(
-                &raw,
-                &self.config,
-                &self.ext_lidar_to_imu,
-            ))),
+        match self.result_receiver.lock().unwrap().try_recv() {
+            Ok(odometry) => Ok(Some(odometry)),
             Err(mpsc::TryRecvError::Empty) => Ok(None),
             Err(mpsc::TryRecvError::Disconnected) => Err(Error::Disconnected),
         }
@@ -887,10 +751,11 @@ impl Handle {
             return Err(Error::CallbackActive);
         }
 
-        match self.result_receiver.recv() {
-            Ok(raw) => Ok(to_odometry(&raw, &self.config, &self.ext_lidar_to_imu)),
-            Err(_) => Err(Error::Disconnected),
-        }
+        self.result_receiver
+            .lock()
+            .unwrap()
+            .recv()
+            .map_err(|_| Error::Disconnected)
     }
 
     /// Register an asynchronous callback invoked from the processing thread.
@@ -909,7 +774,8 @@ impl Handle {
         let mut guard = self.callback.lock().unwrap();
         // Drain any queued results while holding the lock to close the race
         // window where an output is enqueued after we think we've drained.
-        while self.result_receiver.try_recv().is_ok() {}
+        let receiver = self.result_receiver.lock().unwrap();
+        while receiver.try_recv().is_ok() {}
         *guard = Some(Arc::new(f));
     }
 
@@ -929,15 +795,16 @@ impl Drop for Handle {
     fn drop(&mut self) {
         self.shutdown.store(true, Ordering::Relaxed);
 
-        if let Ok(mut guard) = self.sync.lock() {
-            let _ = guard.take();
+        // Dropping the synchronizer closes its channels, which ends its threads
+        // and then the processing thread.
+        if let Ok(mut intake) = self.intake.lock() {
+            intake.take();
+        }
+        if let Some(processing) = self.processing.take() {
+            let _ = processing.join();
         }
 
-        if let Some(handle) = self._processing_thread.take() {
-            let _ = handle.join();
-        }
-
-        // After the worker is joined, so its GPU buffers are gone first.
+        // After the processing thread is joined, so its GPU buffers are gone first.
         pelorus_reg::backend_session_release();
     }
 }

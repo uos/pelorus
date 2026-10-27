@@ -418,26 +418,6 @@ pub struct RawArgs {
     #[arg(short = 'y', long, global = true, default_value_t = false)]
     pub yes: bool,
 
-    #[command(subcommand)]
-    pub mode: Option<RawMode>,
-}
-
-#[derive(Debug, Clone, Subcommand)]
-pub enum RawMode {
-    /// Walk through the orientations an IMU intrinsic calibration needs.
-    ///
-    /// Records prompted static poses and offers to fit them with `dedrunk`.
-    Intrinsics(IntrinsicsArgs),
-}
-
-#[derive(Debug, Clone, Parser)]
-pub struct IntrinsicsArgs {
-    /// How many static orientations to walk through.
-    ///
-    /// Nine is the minimum for the full scale-and-misalignment model. More,
-    /// spread over all octants, is better.
-    #[arg(long, default_value_t = 12)]
-    pub poses: usize,
 }
 
 /// Recording targets for raw sensor data.
@@ -1682,6 +1662,7 @@ struct LioRunOptions {
     keep_open: bool,
     /// Forwarded topics Minot has replayed completely, with their message
     /// counts, to pass on to the downstream consumer.
+    #[cfg(any(feature = "mt_pubsub", feature = "hiroz", feature = "rat"))]
     #[cfg_attr(not(feature = "mt_pubsub"), allow(dead_code))]
     stream_ends: Option<tokio::sync::mpsc::UnboundedReceiver<(String, u64)>>,
 }
@@ -1943,6 +1924,7 @@ fn lio_with_ready_signal(
         output_mcap,
         #[allow(unused_variables)]
         keep_open,
+        #[cfg(any(feature = "mt_pubsub", feature = "hiroz", feature = "rat"))]
         #[allow(unused_variables)]
         stream_ends,
     } = options;
@@ -2372,7 +2354,7 @@ fn lio_with_ready_signal(
     } else if config.sync_params.lidar_as_sync {
         ImuSyncMode::LidarDriven
     } else {
-        ImuSyncMode::Continuous
+        ImuSyncMode::Continuous { lossless: false }
     };
     let (filtered_imu_tx, filtered_imu_rx) =
         if output_mcap.is_some() && !config.imu_params.lidar_only {
@@ -3065,8 +3047,6 @@ fn lio_with_ready_signal(
                 current_cloud_time,
                 imu_buffer,
                 passthrough: cloud_out,
-                #[cfg(feature = "rerun")]
-                register_pose,
                 ekf_state,
                 t_world,
                 init_guess_lidar,
@@ -3357,10 +3337,36 @@ fn lio_with_ready_signal(
                 }
             };
 
+            // The scan is published in the odometry's child frame, so a consumer
+            // that reads only odometry and scans places it correctly. With a base
+            // link the odometry moves the base, and the scan moves into the base
+            // frame by the same extrinsic that /tf_static carries. Without a base
+            // link, or with one at the LiDAR itself, the points stay untouched.
+            let base_to_lidar = config
+                .base_link_frame
+                .is_some()
+                .then_some(config.base_to_lidar)
+                .filter(|transform| *transform != Isometry3::identity());
+            let in_child_frame = |mut points: Vec<pelorus_core::PointXYZIT>| {
+                if let Some(base_to_lidar) = base_to_lidar {
+                    for point in &mut points {
+                        let p = base_to_lidar.transform_point(&nalgebra::Point3::new(
+                            point.x as f64,
+                            point.y as f64,
+                            point.z as f64,
+                        ));
+                        point.x = p.x as f32;
+                        point.y = p.y as f32;
+                        point.z = p.z as f32;
+                    }
+                }
+                points
+            };
             let mut cloud: PointCloud2 = {
                 match (cloud_out, cloud_for_reg) {
                     (None, LocatedBufferView::Ram(items)) => {
-                        let msg = PointCloud2Msg::try_from_vec(items.to_vec()).expect("msg");
+                        let msg = PointCloud2Msg::try_from_vec(in_child_frame(items.to_vec()))
+                            .expect("msg");
                         #[cfg(feature = "ros2-client")]
                         let out =
                             pelorus_syncio::impl_ros2_interfaces_jazzy_serde::from_pointcloud2_msg(
@@ -3377,7 +3383,8 @@ fn lio_with_ready_signal(
                     }
                     // ignore downsampled one if we have the raw
                     (Some(items), _) => {
-                        let msg = PointCloud2Msg::try_from_vec(items.to_vec()).expect("msg");
+                        let msg = PointCloud2Msg::try_from_vec(in_child_frame(items.to_vec()))
+                            .expect("msg");
                         #[cfg(feature = "ros2-client")]
                         let out =
                             pelorus_syncio::impl_ros2_interfaces_jazzy_serde::from_pointcloud2_msg(
@@ -3410,7 +3417,9 @@ fn lio_with_ready_signal(
                             ) => buffer.into_cloud(stream),
                             _ => unreachable!("buffer/backend mismatch"),
                         };
-                        let msg = ros_pointcloud2::PointCloud2Msg::try_from_vec(buff).unwrap();
+                        let msg =
+                            ros_pointcloud2::PointCloud2Msg::try_from_vec(in_child_frame(buff))
+                                .unwrap();
                         #[cfg(feature = "ros2-client")]
                         let out =
                             pelorus_syncio::impl_ros2_interfaces_jazzy_serde::from_pointcloud2_msg(
@@ -3428,7 +3437,7 @@ fn lio_with_ready_signal(
                 }
             };
 
-            cloud.header.frame_id = orig_frame.clone();
+            cloud.header.frame_id = child_frame.clone();
             cloud.header.stamp = Time {
                 sec: odom_time.sec,
                 nanosec: odom_time.nanosec,
@@ -3610,7 +3619,8 @@ fn lio_with_ready_signal(
                 let ps = impl_hiroz::to_pointcloud2_msg(cloud.clone());
 
                 let gradient = colorous::TURBO;
-                let t_world_lidar_rerun = (ros_to_rerun * register_pose.pose).cast();
+                // The scan is in the odometry's child frame, which t_world places.
+                let t_world_lidar_rerun = (ros_to_rerun * t_world).cast();
                 let (positions, colors): (Vec<_>, Vec<_>) = ps
                     .try_into_iter()
                     .unwrap()
@@ -5089,34 +5099,8 @@ fn run_raw(
     // Raw mode leaves the terminal available for driver logs.
     set_tui_active(false);
 
-    let intrinsics = match &args.mode {
-        Some(RawMode::Intrinsics(intrinsics)) => {
-            // Guided calibration accepts IMU-only recordings.
-            if args.sensor != RawSensor::Imu {
-                return Err(anyhow::anyhow!(
-                    "`raw ... intrinsics` guides an IMU calibration, so it only applies to \
-                     `pelorus online raw imu`."
-                )
-                .into());
-            }
-            // Guided sessions require a saved recording for calibration.
-            if args.recording.output_rosbag.is_none() && args.recording.output_mcap.is_none() {
-                return Err(anyhow::anyhow!(
-                    "`raw imu intrinsics` needs somewhere to put the recording. \
-                     Pass --output-rosbag <DIR>."
-                )
-                .into());
-            }
-            Some(pelorus_cli::raw::IntrinsicsOptions {
-                poses: intrinsics.poses,
-            })
-        }
-        None => None,
-    };
-
     let options = pelorus_cli::raw::RawOptions {
         sensor: args.sensor,
-        intrinsics,
         output_mcap: args.recording.output_mcap,
         output_rosbag: args.recording.output_rosbag,
         output_rosbag_metadata: args.recording.output_rosbag_metadata,
@@ -5142,6 +5126,10 @@ fn run_raw(
         .into())
     }
 }
+
+/// This release's `default.rl`, attached to the release by CI; every
+/// generated configuration points at it with `# @schema`.
+const SCHEMA_URL: &str = ratslang::release_schema_url!();
 
 fn main() -> Result<(), Box<dyn CoreError>> {
     completions::activate_dynamic_completions(Args::command, "pelorus");
@@ -5301,6 +5289,7 @@ fn main() -> Result<(), Box<dyn CoreError>> {
                             mt_pubsub_coord_mode: lio_coord_mode,
                             output_mcap: lio_output_mcap,
                             keep_open: false,
+                            #[cfg(any(feature = "mt_pubsub", feature = "hiroz", feature = "rat"))]
                             stream_ends: None,
                         },
                     )
@@ -5374,6 +5363,7 @@ fn main() -> Result<(), Box<dyn CoreError>> {
                         mt_pubsub_coord_mode: config_args.coord_mode,
                         output_mcap: output_mcap_config,
                         keep_open: false,
+                        #[cfg(any(feature = "mt_pubsub", feature = "hiroz", feature = "rat"))]
                         stream_ends: None,
                     },
                 )
@@ -5845,6 +5835,11 @@ fn main() -> Result<(), Box<dyn CoreError>> {
                                 mt_pubsub_coord_mode: lio_coord_mode,
                                 output_mcap: output_mcap_config_for_run,
                                 keep_open: lio_keep_open,
+                                #[cfg(any(
+                                    feature = "mt_pubsub",
+                                    feature = "hiroz",
+                                    feature = "rat"
+                                ))]
                                 stream_ends: lio_stream_ends.take(),
                             },
                         )
@@ -6012,32 +6007,19 @@ fn main() -> Result<(), Box<dyn CoreError>> {
         }
         Command::Config(cmd) => match cmd {
             ConfigCommand::Generate(args) => {
-                match args.kind {
-                    GenerateKind::Full => {
-                        print!("{}", DEFAULT_CONFIG_STR);
-                        Ok(())
-                    }
+                let selection = match args.kind {
+                    GenerateKind::Full => ratslang::tooling::Selection::All,
                     GenerateKind::Recommended => {
-                        let mut default_ast =
-                            ratslang::compile_code(DEFAULT_CONFIG_STR).map_err(|e| {
-                                anyhow!("Failed to compile embedded default config: {}", e)
-                            })?;
-
-                        // Suppress unused-variable warnings when generating recommended config
-                        default_ast.vars = default_ast.vars.with_drop_warning(false);
-
-                        match default_ast.to_string_filtered("recommended") {
-                            Some(recommended_config) => {
-                                print!("{}", recommended_config);
-                                Ok(())
-                            }
-                            None => Err(anyhow!(
-                                "No @recommended annotations found in the default configuration"
-                            )
-                            .into()),
-                        }
+                        ratslang::tooling::Selection::Annotated("recommended")
                     }
-                }
+                };
+                // The rules stay in this release's schema, which the file
+                // points at for editors; the file keeps values and prose.
+                let config =
+                    ratslang::tooling::starter(DEFAULT_CONFIG_STR, selection, Some(SCHEMA_URL))
+                        .map_err(|e| anyhow!("Failed to generate the configuration: {e}"))?;
+                print!("{config}");
+                Ok(())
             }
             ConfigCommand::Verify(args) => {
                 let default_ast = ratslang::compile_code(DEFAULT_CONFIG_STR)
@@ -6355,6 +6337,39 @@ fn main() -> Result<(), Box<dyn CoreError>> {
 }
 
 #[cfg(test)]
+mod generated_config_tests {
+    use super::*;
+    use ratslang::tooling::{Selection, starter};
+
+    #[test]
+    fn generated_configurations_name_this_releases_schema() {
+        assert_eq!(
+            SCHEMA_URL,
+            format!(
+                "https://codeberg.org/stelzo/pelorus/releases/download/v{}/default.rl",
+                env!("CARGO_PKG_VERSION")
+            )
+        );
+        for selection in [Selection::All, Selection::Annotated("recommended")] {
+            let config = starter(
+                pelorus_core::DEFAULT_CONFIG_STR,
+                selection,
+                Some(SCHEMA_URL),
+            )
+            .unwrap();
+            assert!(config.starts_with(&format!("# @schema {SCHEMA_URL}\n")));
+            assert!(
+                !config
+                    .lines()
+                    .skip(1)
+                    .any(|line| line.trim_start().starts_with("# @"))
+            );
+            ratslang::compile_code(&config).unwrap();
+        }
+    }
+}
+
+#[cfg(test)]
 mod mcap_output_config_tests {
     use super::*;
 
@@ -6429,35 +6444,6 @@ mod mcap_output_config_tests {
         );
         assert_eq!(raw.recording.mcap_cloud_topic, None);
         assert_eq!(raw.recording.mcap_imu_topic, None);
-    }
-
-    #[cfg(feature = "mt_pubsub")]
-    #[test]
-    fn raw_imu_takes_the_intrinsics_sub_mode() {
-        let args = Args::parse_from([
-            "pelorus",
-            "online",
-            "raw",
-            "imu",
-            "intrinsics",
-            "--output-rosbag",
-            "/tmp/imu_poses",
-        ]);
-        let Command::Online(online) = args.command else {
-            panic!("expected online");
-        };
-        let Some(OnlineMode::Raw(raw)) = online.mode else {
-            panic!("expected raw");
-        };
-        assert_eq!(raw.sensor, RawSensor::Imu);
-        let Some(RawMode::Intrinsics(intrinsics)) = raw.mode else {
-            panic!("expected the intrinsics sub-mode");
-        };
-        assert_eq!(intrinsics.poses, 12);
-        assert_eq!(
-            raw.recording.output_rosbag,
-            Some(PathBuf::from("/tmp/imu_poses"))
-        );
     }
 
     #[cfg(feature = "mt_pubsub")]

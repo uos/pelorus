@@ -1,6 +1,5 @@
 pub mod imu;
 mod naive_preint;
-mod naive_preint_eth;
 #[cfg(not(feature = "rayon"))]
 use pelorus_core::adaptive_execution::ExecutionMode;
 #[cfg(feature = "rayon")]
@@ -27,6 +26,7 @@ use pelorus_core::{
     VelodynePoint, VelodynePointNoIntensity, time_msg_from_secs, timing::RuntimeEvaluator,
 };
 
+use pelorus_core::Instant;
 #[cfg(any(feature = "cuda", feature = "metal", feature = "vulkan"))]
 use pelorus_core::PreprocessingBackend;
 #[cfg(feature = "cuda")]
@@ -39,7 +39,6 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 #[cfg(feature = "threads")]
 use std::thread;
-use pelorus_core::Instant;
 
 use anyhow::Result;
 use either::Either::{Left, Right};
@@ -245,7 +244,12 @@ pub enum ImuSyncMode {
         lossless: bool,
     },
     /// Wait for timestamp-bracketing IMU messages from a continuous source.
-    Continuous,
+    Continuous {
+        /// Apply producer backpressure instead of dropping messages. Enable this
+        /// when the caller controls the pace of the input, as a library fed from
+        /// a recording, not for live sensor/topic input.
+        lossless: bool,
+    },
     /// Drain only the IMU messages already available when a Lidar scan arrives.
     LidarDriven,
     /// During bounded replay, advance one scan when timestamp-bracketing IMU data
@@ -556,7 +560,7 @@ mod tests {
         downsampled
     }
 
-    #[cfg(any(feature = "cuda", feature = "metal"))]
+    #[cfg(any(feature = "cuda", feature = "metal", feature = "vulkan"))]
     fn dense_downsample_cloud() -> Vec<PointXYZIT> {
         let voxel_count = 4096usize;
         let points_per_voxel = 16usize;
@@ -589,7 +593,7 @@ mod tests {
         points
     }
 
-    #[cfg(any(feature = "cuda", feature = "metal"))]
+    #[cfg(any(feature = "cuda", feature = "metal", feature = "vulkan"))]
     fn rounding_sensitive_medoid_cloud() -> Vec<PointXYZIT> {
         vec![
             PointXYZIT {
@@ -708,8 +712,6 @@ mod tests {
         Synchronizer::sync_lidar_imu_worker(
             SyncWorkerSettings {
                 initial_scan_accumulate: 0,
-                gravity: 9.81,
-                imu_intrinsic_calibration_given: false,
                 lidar_vendor: LidarVendor::Robosense,
             },
             &mut previous_lidar_end,
@@ -720,7 +722,7 @@ mod tests {
                 synced: &synced_tx,
                 ready_for_next: None,
             },
-            ImuProcess::new(9.81, false),
+            ImuProcess::new(9.81),
             None,
             None,
             ImuSyncMode::Disabled { lossless: false },
@@ -793,8 +795,6 @@ mod tests {
         Synchronizer::sync_lidar_imu_worker(
             SyncWorkerSettings {
                 initial_scan_accumulate: 0,
-                gravity: 9.81,
-                imu_intrinsic_calibration_given: false,
                 lidar_vendor: LidarVendor::Robosense,
             },
             &mut previous_lidar_end,
@@ -805,7 +805,7 @@ mod tests {
                 synced: &synced_tx,
                 ready_for_next: None,
             },
-            ImuProcess::new(9.81, false),
+            ImuProcess::new(9.81),
             None,
             None,
             ImuSyncMode::Disabled { lossless: false },
@@ -857,8 +857,6 @@ mod tests {
         Synchronizer::sync_lidar_imu_worker(
             SyncWorkerSettings {
                 initial_scan_accumulate: 2,
-                gravity: 9.81,
-                imu_intrinsic_calibration_given: false,
                 lidar_vendor: LidarVendor::NoTimestamp,
             },
             &mut previous_lidar_end,
@@ -869,7 +867,7 @@ mod tests {
                 synced: &synced_tx,
                 ready_for_next: None,
             },
-            ImuProcess::new(9.81, false),
+            ImuProcess::new(9.81),
             None,
             None,
             ImuSyncMode::Disabled { lossless: false },
@@ -922,8 +920,6 @@ mod tests {
     fn test_settings() -> SyncWorkerSettings {
         SyncWorkerSettings {
             initial_scan_accumulate: 1,
-            gravity: 9.81,
-            imu_intrinsic_calibration_given: false,
             lidar_vendor: LidarVendor::Robosense,
         }
     }
@@ -971,10 +967,10 @@ mod tests {
                 synced: &synced_tx,
                 ready_for_next: None,
             },
-            ImuProcess::new(9.81, false),
+            ImuProcess::new(9.81),
             None,
             None,
-            ImuSyncMode::Continuous,
+            ImuSyncMode::Continuous { lossless: false },
         );
         let threaded: Vec<_> = synced_rx.try_iter().map(|cloud| summary(&cloud)).collect();
 
@@ -982,7 +978,7 @@ mod tests {
             test_settings(),
             true,
             0.0,
-            ImuProcess::new(9.81, false),
+            ImuProcess::new(9.81),
             None,
             None,
         );
@@ -1058,7 +1054,7 @@ mod tests {
         let mut sync = SteppedSynchronizer::create(
             &params,
             params.lidar_vendor,
-            ImuSyncMode::Continuous,
+            ImuSyncMode::Continuous { lossless: false },
             SteppedSynchronizerHooks::default(),
         )
         .unwrap();
@@ -1207,6 +1203,35 @@ mod tests {
         let (actual, _) = pelorus_vulkan::downsample_points_vulkan(&stream, &points, 1, 1.0);
 
         assert_eq!(actual, expected);
+    }
+
+    #[cfg(feature = "vulkan")]
+    #[test]
+    fn vulkan_downsample_matches_cpu_for_rounding_sensitive_medoid() {
+        let points = rounding_sensitive_medoid_cloud();
+        let expected = cpu_downsample_reference(&points);
+        let stream = pelorus_vulkan::Stream::new();
+        let (actual, _) = pelorus_vulkan::downsample_points_vulkan(&stream, &points, 1, 1.0);
+
+        assert_eq!(expected, vec![points[0]]);
+        assert_eq!(actual, expected);
+    }
+
+    #[cfg(feature = "vulkan")]
+    #[test]
+    fn vulkan_downsample_matches_cpu_at_realistic_density() {
+        let points = dense_downsample_cloud();
+        let expected = cpu_downsample_reference(&points);
+        let stream = pelorus_vulkan::Stream::new();
+        let (actual, _) = pelorus_vulkan::downsample_points_vulkan(&stream, &points, 1, 1.0);
+
+        assert_eq!(actual.len(), expected.len());
+        for (index, (actual, expected)) in actual.iter().zip(&expected).enumerate() {
+            assert_eq!(
+                actual, expected,
+                "Vulkan downsample differs from CPU at output point {index}"
+            );
+        }
     }
 
     #[cfg(feature = "metal")]
@@ -2289,8 +2314,6 @@ pub struct SynchronizerHooks {
 #[derive(Debug, Clone, Copy)]
 pub struct SyncWorkerSettings {
     pub initial_scan_accumulate: usize,
-    pub gravity: f64,
-    pub imu_intrinsic_calibration_given: bool,
     pub lidar_vendor: LidarVendor,
 }
 
@@ -2319,6 +2342,7 @@ pub struct Synchronizer {
     realtime_imu_callback: Option<RealtimeImuCallback>,
     realtime_lidar_barrier_callback: Option<RealtimeLidarBarrierCallback>,
     lossless_replay: bool,
+    next_scan_id: u64,
 }
 
 #[cfg(feature = "threads")]
@@ -2345,7 +2369,9 @@ impl Synchronizer {
         // dataset or driver produces them faster than registration consumes them.
         let lossless_replay = matches!(
             &imu_sync_mode,
-            ImuSyncMode::Disabled { lossless: true } | ImuSyncMode::DemandDrivenReplay { .. }
+            ImuSyncMode::Disabled { lossless: true }
+                | ImuSyncMode::Continuous { lossless: true }
+                | ImuSyncMode::DemandDrivenReplay { .. }
         );
         #[cfg(not(feature = "rayon"))]
         if params.parallelism_execution_policy
@@ -2372,14 +2398,13 @@ impl Synchronizer {
 
         // sync and imu integration worker
         // TODO move to main processing, since else predict and correct is async
-        let intrinsic_given = imu_intrinsic_calibration.is_some();
         let initial_scan_accumulate = params.initial_scan_accumulate;
         // configure global default for the log debouncer from parameters
         set_default_debounce_secs(params.warning_debounce);
 
         thread::spawn(move || {
             let mut last_lidar_frame_time = 0.0;
-            let imu_process = ImuProcess::new(gravity, intrinsic_given);
+            let imu_process = ImuProcess::new(gravity);
 
             let imu_rx = if cfg!(feature = "no-imu-sync") || imu_disabled {
                 None
@@ -2390,8 +2415,6 @@ impl Synchronizer {
             Self::sync_lidar_imu_worker(
                 SyncWorkerSettings {
                     initial_scan_accumulate,
-                    gravity,
-                    imu_intrinsic_calibration_given: intrinsic_given,
                     lidar_vendor,
                 },
                 &mut last_lidar_frame_time,
@@ -2445,6 +2468,7 @@ impl Synchronizer {
             realtime_imu_callback,
             realtime_lidar_barrier_callback,
             lossless_replay,
+            next_scan_id: 1,
         })
     }
 
@@ -2486,9 +2510,9 @@ impl Synchronizer {
         let cloud_stamp = timestamp_to_secs(&cloud.header().stamp);
 
         self.last_cloud_time = cloud_stamp;
-        // Generate a unique scan id and send a labeled cloud into preprocessing.
-        static SCAN_ID_COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
-        let scan_id = SCAN_ID_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        // Number the clouds of this synchronizer from 1 and send them into preprocessing.
+        let scan_id = self.next_scan_id;
+        self.next_scan_id += 1;
         let labeled = LabeledPointCloud2Msg {
             scan_id,
             received_at,
@@ -2685,7 +2709,7 @@ impl Synchronizer {
                         loop {
                             let imu = match &mut imu_sync_mode {
                                 ImuSyncMode::Disabled { .. } => break,
-                                ImuSyncMode::Continuous => imu_receiver.recv(),
+                                ImuSyncMode::Continuous { .. } => imu_receiver.recv(),
                                 ImuSyncMode::LidarDriven => match imu_receiver.try_recv() {
                                     Ok(imu) => Ok(imu),
                                     Err(std::sync::mpsc::TryRecvError::Empty) => break,
@@ -2906,18 +2930,15 @@ impl SteppedSynchronizer {
             anyhow::bail!("parallelism.execution_mode=Rayon requires the rayon feature");
         }
         let imu_intrinsic_calibration = load_imu_intrinsics(imu_disabled, &params.imu.calibration)?;
-        let imu_intrinsic_calibration_given = imu_intrinsic_calibration.is_some();
         set_default_debounce_secs(params.warning_debounce);
         let core = SyncCore::new(
             SyncWorkerSettings {
                 initial_scan_accumulate: params.initial_scan_accumulate,
-                gravity: params.imu.gravity,
-                imu_intrinsic_calibration_given,
                 lidar_vendor,
             },
             !(cfg!(feature = "no-imu-sync") || imu_disabled),
             0.0,
-            ImuProcess::new(params.imu.gravity, imu_intrinsic_calibration_given),
+            ImuProcess::new(params.imu.gravity),
             hooks.imu_pose_prediction_undistort,
             hooks.imu_pose_prediction_init_guess,
         );
@@ -3024,6 +3045,17 @@ impl SteppedSynchronizer {
     }
 }
 
+/// Where the IMU initialization stands after an IMU message.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ImuInitProgress {
+    /// The message went into the initialization window.
+    Collecting,
+    /// The message closed the window and the initialization ran.
+    Completed,
+    /// The initialization ran before, or none is needed.
+    Complete,
+}
+
 /// Collects the IMU messages of the first seconds of a run and hands them to
 /// the EKF initialization.
 ///
@@ -3053,12 +3085,12 @@ impl ImuInitWindow {
     ///
     /// A message older than the window start, as when a bag loops, starts the
     /// window over.
-    pub fn observe(&mut self, imu: &ImuMsg) {
+    pub fn observe(&mut self, imu: &ImuMsg) -> ImuInitProgress {
         let Some(callback) = self.callback.as_ref() else {
-            return;
+            return ImuInitProgress::Complete;
         };
         let Some(buffer) = self.buffer.as_mut() else {
-            return;
+            return ImuInitProgress::Complete;
         };
         let stamp = timestamp_to_secs(&imu.stamp);
         let start = *self.start.get_or_insert(stamp);
@@ -3071,7 +3103,7 @@ impl ImuInitWindow {
             buffer.push(imu.clone());
         } else if stamp - start < self.init_time_sec {
             buffer.push(imu.clone());
-            return;
+            return ImuInitProgress::Collecting;
         }
         let buffer = self.buffer.take().unwrap_or_default();
         // Initialization needs at least one sample.
@@ -3079,6 +3111,7 @@ impl ImuInitWindow {
             (callback.lock().unwrap())(&buffer);
             info!("EKF: IMU initialization samples collected");
         }
+        ImuInitProgress::Completed
     }
 
     /// Whether the initialization ran, or none is needed.
@@ -3087,12 +3120,63 @@ impl ImuInitWindow {
     }
 }
 
-/// Sensor input in front of a [`SteppedSynchronizer`], with the rules of the
-/// Pelorus node: IMU initialization, and dropping empty and out-of-order clouds.
-pub struct SteppedIngress {
-    sync: SteppedSynchronizer,
+/// Which clouds a [`SteppedIngress`] takes, and the scan id each one gets.
+///
+/// A cloud is taken once the IMU initialization is complete, unless it is empty
+/// or older than the previous cloud taken. A cloud before the initialization
+/// has no gravity reference to start from, and a Minot replay holds the clouds
+/// back until then as well. Taken clouds are numbered from 1 in arrival order,
+/// so a caller that applies this to the same inputs in the same order knows
+/// every scan id up front.
+pub struct ScanAdmission {
     imu_init: ImuInitWindow,
     last_lidar_time: Option<f64>,
+    taken: u64,
+}
+
+impl ScanAdmission {
+    /// `imu_init` receives the IMU messages of the first `imu_init_time_sec`
+    /// seconds. Without it no initialization is needed and clouds are taken
+    /// from the start.
+    pub fn new(imu_init: Option<ImuInitCallback>, imu_init_time_sec: f64) -> Self {
+        Self {
+            imu_init: ImuInitWindow::new(imu_init, imu_init_time_sec),
+            last_lidar_time: None,
+            taken: 0,
+        }
+    }
+
+    /// Record an IMU message for the initialization.
+    pub fn observe_imu(&mut self, imu: &ImuMsg) -> ImuInitProgress {
+        self.imu_init.observe(imu)
+    }
+
+    /// Whether the IMU initialization is complete, or not needed.
+    pub fn imu_initialized(&self) -> bool {
+        self.imu_init.is_complete()
+    }
+
+    /// The scan id `cloud` gets, or `None` when it is dropped.
+    pub fn admit(&mut self, cloud: &dyn PreprocessingPointCloud) -> Option<u64> {
+        if !self.imu_initialized() || cloud.source().point_count() == 0 {
+            return None;
+        }
+        let time = timestamp_to_secs(&cloud.header().stamp);
+        if self.last_lidar_time.is_some_and(|last| time < last) {
+            return None;
+        }
+        self.last_lidar_time = Some(time);
+        self.taken += 1;
+        Some(self.taken)
+    }
+}
+
+/// Sensor input in front of a [`SteppedSynchronizer`], with the rules of the
+/// Pelorus node: IMU initialization, and dropping clouds before it as well as
+/// empty and out-of-order clouds.
+pub struct SteppedIngress {
+    sync: SteppedSynchronizer,
+    admission: ScanAdmission,
 }
 
 impl SteppedIngress {
@@ -3105,38 +3189,36 @@ impl SteppedIngress {
     ) -> Self {
         Self {
             sync,
-            imu_init: ImuInitWindow::new(imu_init, imu_init_time_sec),
-            last_lidar_time: None,
+            admission: ScanAdmission::new(imu_init, imu_init_time_sec),
         }
     }
 
-    /// Queue a point cloud. Returns its scan id, or `None` for an empty cloud
-    /// or one older than the previous cloud.
+    /// Queue a point cloud. Returns its scan id, or `None` for a cloud before
+    /// the IMU initialization, an empty cloud or one older than the previous
+    /// cloud. See [`ScanAdmission`].
     pub fn push_cloud(
         &mut self,
         cloud: Box<dyn PreprocessingPointCloud>,
         received_at: Instant,
     ) -> Option<u64> {
-        if cloud.source().point_count() == 0 {
-            return None;
-        }
-        let time = timestamp_to_secs(&cloud.header().stamp);
-        if self.last_lidar_time.is_some_and(|last| time < last) {
-            return None;
-        }
-        self.last_lidar_time = Some(time);
-        Some(self.sync.add_pointcloud_source(cloud, received_at))
+        let admitted = self.admission.admit(cloud.as_ref())?;
+        let scan_id = self.sync.add_pointcloud_source(cloud, received_at);
+        debug_assert_eq!(
+            scan_id, admitted,
+            "the synchronizer numbers exactly the clouds the admission takes"
+        );
+        Some(scan_id)
     }
 
     /// Queue an IMU message. Returns the filtered message for republishing.
     pub fn push_imu(&mut self, imu: ImuMsg) -> Option<ImuMsg> {
-        self.imu_init.observe(&imu);
+        self.admission.observe_imu(&imu);
         self.sync.add_imu(imu)
     }
 
     /// Whether the IMU initialization is complete, or not needed.
     pub fn imu_initialized(&self) -> bool {
-        self.imu_init.is_complete()
+        self.admission.imu_initialized()
     }
 
     /// Queue a wheel-odometry message.
@@ -3585,12 +3667,7 @@ impl SyncCore {
             abs_lidar_end,
             mut imu_data,
         } = self.pending.take()?;
-        let SyncWorkerSettings {
-            gravity,
-            imu_intrinsic_calibration_given,
-            lidar_vendor,
-            ..
-        } = self.settings;
+        let SyncWorkerSettings { lidar_vendor, .. } = self.settings;
 
         if self.imu_enabled && imu_data.is_empty() {
             warn!("No imu data in span");
@@ -3718,38 +3795,19 @@ impl SyncCore {
                         lidar_begin_time,
                         imu_span_end_time,
                     ),
-                    None => {
-                        let estimated_pose = if imu_intrinsic_calibration_given {
-                            self.eval.start("preint imu").unwrap();
-                            // given a calibration, we trust the IMU data and use it for the pose
-                            naive_preint_eth::integrate_imu(
-                                &imu_data,
-                                self.prev_lidar_end_time,
-                                false, // TODO check ahrs orientation via config or if enabled
-                                gravity,
-                            )
-                        } else {
-                            // no calibration, gyro is used for rotation but nothing else
-                            Isometry3::from_parts(
-                                Translation::identity(),
-                                imu_cloud.end_of_frame_guess.rotation,
-                            )
-                        };
-
-                        if imu_intrinsic_calibration_given {
-                            self.eval.stop("preint imu").unwrap();
-                        }
-
-                        ImuPosePrediction {
-                            pose: estimated_pose,
-                            linear_velocity: Vector3::zeros(),
-                            angular_velocity: Vector3::new(
-                                imu_cloud.last_twist[3],
-                                imu_cloud.last_twist[4],
-                                imu_cloud.last_twist[5],
-                            ),
-                        }
-                    }
+                    // Without a predictor, the gyro rotation is the only guess.
+                    None => ImuPosePrediction {
+                        pose: Isometry3::from_parts(
+                            Translation::identity(),
+                            imu_cloud.end_of_frame_guess.rotation,
+                        ),
+                        linear_velocity: Vector3::zeros(),
+                        angular_velocity: Vector3::new(
+                            imu_cloud.last_twist[3],
+                            imu_cloud.last_twist[4],
+                            imu_cloud.last_twist[5],
+                        ),
+                    },
                 };
 
                 SyncProcessedCloud {

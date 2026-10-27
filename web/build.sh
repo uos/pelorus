@@ -26,6 +26,9 @@ else
   echo "No ratslang checkout next to pelorus. The config editor stays plain." >&2
 fi
 
+# Share the documentation logo with the browser demo.
+cp "$root/docs/docs/images/pelorus.svg" "$web/pelorus.svg"
+
 # Libron, the typeface of the documentation, with its licence.
 mkdir -p "$web/fonts"
 cp "$root"/docs/docs/fonts/Libron-*.woff2 "$root/docs/docs/fonts/OFL.txt" "$web/fonts/"

@@ -192,66 +192,6 @@ pub fn user_config_with_checked_overrides(
 ///
 /// Returns (config, (assigned_vars, evaluated_vars))
 #[allow(unreachable_patterns, clippy::unnecessary_fallible_conversions)]
-/// The four process-noise variances implied by an IMU calibration file.
-struct DerivedNoise {
-    gyr: f64,
-    acc: f64,
-    gyr_bias: f64,
-    acc_bias: f64,
-}
-
-/// Turn the stochastic half of a Kalibr calibration into filter covariances.
-///
-/// The filter propagates `P += F_w Q F_w^T` with `F_w = f_w * dt`
-/// (`pelorus_reg::eqf::predict`), so every entry of `Q` picks up a `dt^2`. For
-/// the covariance of a white-noise-driven state to grow as `sigma^2 * t`, `Q`
-/// `Q` therefore holds *discrete-time* variances converted from the
-/// continuous-time densities in the file:
-///
-/// ```text
-/// Q = (density * inflation)^2 * update_rate
-/// ```
-///
-/// The inflation is not derivable and has to be chosen. Allan variance is
-/// measured on a completely still sensor at constant temperature. A moving
-/// robot has vibration, thermal drift and timing jitter on top, and those
-/// dominate. Feeding the bench figures in raw makes the filter trust the IMU
-/// far more than it deserves.
-fn derive_noise_covariances(path: &str, inflation: f64) -> anyhow::Result<DerivedNoise> {
-    anyhow::ensure!(
-        inflation > 0.0 && inflation.is_finite(),
-        "imu.calibration.noise_inflation must be a positive, finite value"
-    );
-
-    let intrinsics = imu_calib::ImuIntrinsics::from_kalibr_yaml(path)
-        .map_err(|error| anyhow::anyhow!("Failed to read the IMU calibration '{path}': {error}"))?;
-    let noise = intrinsics.noise;
-
-    // Zero densities mean the calibration file has no noise run.
-    anyhow::ensure!(
-        noise.accel_noise_density > 0.0
-            && noise.gyro_noise_density > 0.0
-            && noise.accel_random_walk > 0.0
-            && noise.gyro_random_walk > 0.0,
-        "'{path}' carries no noise parameters, so imu.calibration.parameter_file.use_noise has \
-         nothing to derive from. Record a few hours of stationary data, run \
-         `dedrunk noise` on it, and `dedrunk merge` the result with the intrinsics."
-    );
-    anyhow::ensure!(
-        noise.update_rate > 0.0,
-        "'{path}' has a non-positive update_rate, which the covariances scale with"
-    );
-
-    let variance = |density: f64| (density * inflation).powi(2) * noise.update_rate;
-
-    Ok(DerivedNoise {
-        gyr: variance(noise.gyro_noise_density),
-        acc: variance(noise.accel_noise_density),
-        gyr_bias: variance(noise.gyro_random_walk),
-        acc_bias: variance(noise.accel_random_walk),
-    })
-}
-
 /// Config variable names as `(assigned, evaluated)`, used to detect unused variables.
 pub type ConfigUsage = (Vec<String>, Vec<String>);
 
@@ -335,32 +275,6 @@ mod override_tests {
         assert!(config.rerun.map.enabled);
         assert_eq!(config.rerun.map.publish_interval_sec, 2.0);
         assert_eq!(config.rerun.map.visual_scale, 4.5);
-    }
-
-    /// Writes the merged calibration format produced by `dedrunk merge`.
-    fn write_calibration(directory: &std::path::Path, with_noise: bool) -> std::path::PathBuf {
-        let (accel_density, accel_walk, gyro_density, gyro_walk) = if with_noise {
-            (0.002, 0.0004, 0.0003, 2.0e-5)
-        } else {
-            (0.0, 0.0, 0.0, 0.0)
-        };
-
-        let mut contents = String::from("imu0:\n");
-        contents.push_str("  model: scale-misalignment\n");
-        contents.push_str("  update_rate: 200.0\n");
-        contents.push_str(&format!("  accelerometer_noise_density: {accel_density}\n"));
-        contents.push_str(&format!("  accelerometer_random_walk: {accel_walk}\n"));
-        contents.push_str(&format!("  gyroscope_noise_density: {gyro_density}\n"));
-        contents.push_str(&format!("  gyroscope_random_walk: {gyro_walk}\n"));
-        contents.push_str("  accelerometers:\n");
-        contents.push_str("    M:\n");
-        contents.push_str("    - [1.0, 0.0, 0.0]\n");
-        contents.push_str("    - [0.0, 1.0, 0.0]\n");
-        contents.push_str("    - [0.0, 0.0, 1.0]\n");
-
-        let path = directory.join("imu.yaml");
-        std::fs::write(&path, contents).unwrap();
-        path
     }
 
     fn config_with(source: &str) -> crate::LioConfig {
@@ -478,102 +392,12 @@ offline.cache_stream = false
     }
 
     #[test]
-    fn the_tuned_covariances_are_kept_unless_asked_otherwise() {
+    fn the_tuned_covariances_are_the_defaults() {
         let config = config_with("");
         assert_eq!(config.imu_params.cov_gyr[0], 0.1);
         assert_eq!(config.imu_params.cov_acc[0], 0.1);
         assert_eq!(config.imu_params.cov_gyr_bias[0], 0.0001);
         assert_eq!(config.imu_params.cov_acc_bias[0], 0.0001);
-    }
-
-    /// `Q` is sandwiched with `dt^2` in the propagation, so it holds discrete
-    /// variances: `(density * inflation)^2 * rate`.
-    #[test]
-    fn covariances_can_be_derived_from_the_calibration_file() {
-        let directory = std::env::temp_dir().join(format!("pelorus-noise-{}", std::process::id()));
-        std::fs::create_dir_all(&directory).unwrap();
-        let path = write_calibration(&directory, true);
-
-        let config = config_with(&format!(
-            "imu.calibration.parameter_file = \"{}\"\n\
-             imu.calibration.parameter_file.use_noise = true\n\
-             imu.calibration.noise_inflation = 1.0\n",
-            path.display()
-        ));
-
-        let close = |actual: f64, expected: f64| {
-            assert!(
-                (actual / expected - 1.0).abs() < 1e-9,
-                "{actual:e} vs expected {expected:e}"
-            );
-        };
-        // density^2 * update_rate, with the rate 200 Hz.
-        close(config.imu_params.cov_gyr[0], 0.0003_f64.powi(2) * 200.0);
-        close(config.imu_params.cov_acc[0], 0.002_f64.powi(2) * 200.0);
-        close(
-            config.imu_params.cov_gyr_bias[0],
-            2.0e-5_f64.powi(2) * 200.0,
-        );
-        close(
-            config.imu_params.cov_acc_bias[0],
-            0.0004_f64.powi(2) * 200.0,
-        );
-
-        assert!(config.imu_params.cov_gyr[0] < 0.1);
-
-        std::fs::remove_dir_all(&directory).unwrap();
-    }
-
-    #[test]
-    fn the_inflation_applies_before_squaring() {
-        let directory =
-            std::env::temp_dir().join(format!("pelorus-inflation-{}", std::process::id()));
-        std::fs::create_dir_all(&directory).unwrap();
-        let path = write_calibration(&directory, true);
-
-        let config = config_with(&format!(
-            "imu.calibration.parameter_file = \"{}\"\n\
-             imu.calibration.parameter_file.use_noise = true\n\
-             imu.calibration.noise_inflation = 10.0\n",
-            path.display()
-        ));
-
-        let expected = (0.0003_f64 * 10.0).powi(2) * 200.0;
-        assert!(
-            (config.imu_params.cov_gyr[0] / expected - 1.0).abs() < 1e-9,
-            "{:e} vs expected {expected:e}",
-            config.imu_params.cov_gyr[0]
-        );
-        std::fs::remove_dir_all(&directory).unwrap();
-    }
-
-    #[test]
-    fn a_calibration_without_noise_parameters_is_refused() {
-        let directory =
-            std::env::temp_dir().join(format!("pelorus-nonoise-{}", std::process::id()));
-        std::fs::create_dir_all(&directory).unwrap();
-        let path = write_calibration(&directory, false);
-
-        let user = ratslang::compile_code(&format!(
-            "imu.calibration.parameter_file = \"{}\"\n\
-             imu.calibration.parameter_file.use_noise = true\n",
-            path.display()
-        ))
-        .unwrap();
-        let defaults = ratslang::compile_code(DEFAULTS).unwrap();
-        let error = ast_to_config(defaults, user).unwrap_err().to_string();
-        assert!(error.contains("dedrunk noise"), "{error}");
-
-        std::fs::remove_dir_all(&directory).unwrap();
-    }
-
-    #[test]
-    fn deriving_without_a_calibration_file_is_refused() {
-        let user =
-            ratslang::compile_code("imu.calibration.parameter_file.use_noise = true\n").unwrap();
-        let defaults = ratslang::compile_code(DEFAULTS).unwrap();
-        let error = ast_to_config(defaults, user).unwrap_err().to_string();
-        assert!(error.contains("parameter_file"), "{error}");
     }
 
     #[test]
@@ -861,33 +685,6 @@ fn ast_to_config_inner(
             .user
             .evaluate_stats_only("wheel.ackermann.imu_to_rear_axle");
     }
-    let (cov_gyr, cov_acc, cov_gyr_bias, cov_acc_bias) = if imu.calibration.parameter_file.use_noise
-    {
-        let path = imu.calibration.parameter_file.value.as_deref().ok_or_else(|| anyhow!(
-            "imu.calibration.parameter_file.use_noise is on but imu.calibration.parameter_file is empty, so there is no file to take the noise parameters from"
-        ))?;
-        let noise = derive_noise_covariances(path, imu.calibration.noise_inflation)?;
-        log::info!(
-            "IMU covariances from {path} (inflation {}x): gyroscope {:.3e} (was {:.3e}), acceleration {:.3e} (was {:.3e}), gyroscope bias {:.3e} (was {:.3e}), acceleration bias {:.3e} (was {:.3e})",
-            imu.calibration.noise_inflation,
-            noise.gyr,
-            imu.covariance_gyroscope,
-            noise.acc,
-            imu.covariance_acceleration,
-            noise.gyr_bias,
-            imu.covariance_gyroscope_bias,
-            noise.acc_bias,
-            imu.covariance_acceleration_bias
-        );
-        (noise.gyr, noise.acc, noise.gyr_bias, noise.acc_bias)
-    } else {
-        (
-            imu.covariance_gyroscope,
-            imu.covariance_acceleration,
-            imu.covariance_gyroscope_bias,
-            imu.covariance_acceleration_bias,
-        )
-    };
     let (translation, rotation) = if imu.lidar_only {
         if imu.from_lidar_transform.translation != Vector3::zeros()
             || imu.from_lidar_transform.rotation != Matrix3::identity()
@@ -908,10 +705,10 @@ fn ast_to_config_inner(
         initial_rotation_lidar_to_imu: rotation,
         estimate_extrinsic_online: imu.from_lidar_transform.estimate_online,
         lidar_only: imu.lidar_only,
-        cov_gyr: Vector3::repeat(cov_gyr),
-        cov_acc: Vector3::repeat(cov_acc),
-        cov_gyr_bias: Vector3::repeat(cov_gyr_bias),
-        cov_acc_bias: Vector3::repeat(cov_acc_bias),
+        cov_gyr: Vector3::repeat(imu.covariance_gyroscope),
+        cov_acc: Vector3::repeat(imu.covariance_acceleration),
+        cov_gyr_bias: Vector3::repeat(imu.covariance_gyroscope_bias),
+        cov_acc_bias: Vector3::repeat(imu.covariance_acceleration_bias),
         kinematic_constraint_std: wheel.kinematic_constraint_std,
         kinematic_model,
         wheel_odom_cov_override: wheel.covariance,
@@ -922,7 +719,7 @@ fn ast_to_config_inner(
         calibration: ImuCalibrationParameters {
             imu_calibrate_gyros: imu.calibration.gyroscope.value,
             gyro_calibration_samples: imu.calibration.gyroscope.samples,
-            imu_intrinsics_calib_file_path: imu.calibration.parameter_file.value,
+            imu_intrinsics_calib_file_path: imu.calibration.parameter_file,
             time_offset: imu.calibration.time_offset,
         },
         ..Default::default()
@@ -1061,7 +858,11 @@ fn ast_to_config_inner(
                     * map.resolution.value) as f32,
                 bypass_output_downsample: preprocessing.downsample.bypass_output_downsample,
                 point_skip: preprocessing.downsample.point_skip,
-                backend: preprocessing.downsample.backend,
+                backend: if parallelism.cpu_only {
+                    PreprocessingBackend::Cpu
+                } else {
+                    preprocessing.downsample.backend
+                },
             },
             passthrough_filter,
             global_zero_frame: filter.polygon_2d.global_zero_frame,
@@ -1077,7 +878,6 @@ fn ast_to_config_inner(
         },
         registered_cloud_qos: Qos::Sensor(Reliability::Reliable),
         cloud_publisher_mode: output.publisher_mode,
-        enable_live_extrinsic_calibration: false,
         num_threads: parallelism.num_threads,
         pipelining: parallelism.pipelining,
     };

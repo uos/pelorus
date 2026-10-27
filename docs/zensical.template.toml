@@ -36,6 +36,10 @@ site_author = "stelzo <stelzo@steado.de>"
 # Read more: https://zensical.org/docs/setup/basics/#site_url
 site_url = "https://stelzo.codeberg.page/pelorus/"
 
+# Link to the repository in the header, as on the other SeaKit sites.
+repo_url = "https://codeberg.org/stelzo/pelorus"
+repo_name = "stelzo/pelorus"
+
 # The copyright notice appears in the page footer and can contain an HTML
 # fragment.
 #
@@ -80,12 +84,7 @@ nav = [
       # pelorus_docs:end
     ] },
   ] },
-  { "Calibration" = [
-    "calibration/index.md",
-    { "Scale, misalignment and bias" = "calibration/imu-intrinsics.md" },
-    { "Noise densities and random walks" = "calibration/imu-noise.md" },
-    { "Lidar to IMU extrinsics" = "calibration/extrinsics.md" },
-  ] },
+  { "Calibration" = "calibration/index.md" },
 ]
 
 # With the "extra_css" option you can add your own CSS styling to customize
@@ -99,6 +98,8 @@ nav = [
 # The configuration reference uses this for its copy-to-clipboard lines.
 extra_css = [
   "stylesheets/fonts.css",
+  "stylesheets/seakit.css",
+  "stylesheets/brand.css",
   "stylesheets/config-reference.css",
 ]
 
@@ -114,8 +115,8 @@ extra_javascript = ["javascripts/config-reference.js"]
 # Section for configuring theme options
 # ----------------------------------------------------------------------------
 [project.theme]
-# Pelorus has no logo yet. Without one, zensical falls back to its own header
-# icon and favicon. Set "logo" and "favicon" here when there is an image to use.
+logo = "images/pelorus.svg"
+favicon = "images/pelorus.svg"
 
 # Do not load any font from Google.
 #
@@ -331,8 +332,8 @@ scheme = "default"
 toggle.icon = "lucide/sun"
 toggle.name = "Switch to dark mode"
 
-primary = "teal"
-accent = "cyan"
+primary = "custom"
+accent = "custom"
 
 # Palette toggle for dark mode
 [[project.theme.palette]]
@@ -341,8 +342,8 @@ scheme = "slate"
 toggle.icon = "lucide/moon"
 toggle.name = "Switch to system preference"
 
-primary = "teal"
-accent = "cyan"
+primary = "custom"
+accent = "custom"
 
 # ----------------------------------------------------------------------------
 # In the "font" subsection you can configure the fonts used. By default, fonts
@@ -370,9 +371,8 @@ accent = "cyan"
 # - https://zensical.org/docs/setup/logo-and-icons
 # - https://zensical.org/docs/authoring/icons-emojis/#search
 # ----------------------------------------------------------------------------
-#[project.theme.icon]
-#logo = "lucide/smile"
-#repo = "lucide/smile"
+[project.theme.icon]
+repo = "fontawesome/brands/git-alt"
 
 # ----------------------------------------------------------------------------
 # The "extra" section contains miscellaneous settings.

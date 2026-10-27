@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" fill="none" role="img" aria-labelledby="title desc">
+  <title id="title">Pelorus</title>
+  <desc id="desc">An open bearing ring with a needle pointing northeast.</desc>
+  <path d="M77 24A42 42 0 1 0 104 51" stroke="#efd374" stroke-width="10" stroke-linecap="round"/>
+  <path d="m100 28-26 45-30 11 11-30Z" fill="#efd374"/>
+  <path d="m100 28-36 36-20 20 11-30Z" fill="#b68e24"/>
+</svg>

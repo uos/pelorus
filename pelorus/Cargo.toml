@@ -7,7 +7,6 @@ keywords.workspace = true
 license.workspace = true
 repository.workspace = true
 version.workspace = true
-authors.workspace = true
 rust-version.workspace = true
 
 [lib]
@@ -26,6 +25,10 @@ log.workspace = true
 ratslang.workspace = true
 thiserror.workspace = true
 rayon = { workspace = true, optional = true }
+
+[dev-dependencies]
+mcap.workspace = true
+cdr.workspace = true
 
 [features]
 webgpu = ["pelorus_reg/webgpu"]

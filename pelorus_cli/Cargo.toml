@@ -7,11 +7,9 @@ keywords.workspace = true
 license.workspace = true
 repository.workspace = true
 version.workspace = true
-authors.workspace = true
 rust-version.workspace = true
 
 [dependencies]
-imu-calib.workspace = true
 pelorus_core.workspace = true
 pelorus_syncio = { workspace = true, default-features = false }
 pelorus_cuda = { optional = true, workspace = true }
@@ -227,7 +225,7 @@ ratslang.workspace = true
 
 [package.metadata.deb]
 name = "pelorus"
-depends = "minot (>= 0.13.0), minot (<< 0.14.0~), dedrunk, marina"
+depends = "minot (>= 0.14.0), minot (<< 0.15.0~), dedrunk, marina"
 section = "science"
 priority = "optional"
 assets = [["target/release/pelorus", "usr/bin/pelorus", "755"]]
@@ -239,7 +237,7 @@ assets = [
 ]
 
 [package.metadata.generate-rpm.requires]
-minot = ">= 0.13.0, < 0.14.0"
+minot = ">= 0.14.0, < 0.15.0"
 
 [package.metadata.multivers.x86_64]
 cpus = [

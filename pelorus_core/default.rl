@@ -9,7 +9,6 @@ registration {
     # registration can resolve. This is the option with the largest effect on
     # both accuracy and runtime, so change it before anything else.
     # @type length
-    # @finite true
     resolution = 50cm
 
     # Single | Multi
@@ -31,7 +30,6 @@ registration {
     # How strongly a new scan moves the distribution stored in a voxel. Higher
     # values track changes in the environment faster and keep less history.
     # @type number
-    # @finite true
     distribution_update_sensitivity = 10.0
   }
 
@@ -43,7 +41,6 @@ registration {
   # Largest distance at which a map voxel is still considered a neighbor of a
   # point. The default is fine unless you reduce map.resolution by a lot.
   # @type length
-  # @finite true
   neighbors_max_range = 5m
 }
 
@@ -74,7 +71,6 @@ preprocessing {
     # Expected feature size in the incoming scan, as a factor of
     # registration.map.resolution. Values between 0.0 and 1.0 are expected.
     # @type number
-    # @finite true
     query_resolution_factor = 0.5
   }
 
@@ -137,7 +133,6 @@ preprocessing {
 
       # Axis the angular range is measured from, as [x, y] in the LiDAR frame.
       # @type array<number>
-      # @finite true
       forward = [1.0, 0.0]
 
       # Keep the points outside the sector instead of the ones inside it.
@@ -152,7 +147,6 @@ preprocessing {
       # Vertices in order, for example [ [1.0m, -1.5m], [-1.0m, 1.5m], [0m, 0m] ].
       # An empty list disables the filter.
       # @type array<array<length>>
-      # @finite true
       coords = []
 
       # TF frame the coordinates are given in. When set, the polygon is
@@ -228,14 +222,12 @@ sensor_drivers {
 
       # Largest accepted difference between sensor UTC and host UTC in Ptp mode.
       # @type time
-      # @finite true
       # @min_exclusive 0s
       max_host_skew = 20ms
 
       # How long to wait for usable packets before giving up. If the clock mode
       # above cannot be satisfied, Pelorus fails startup and says so.
       # @type time
-      # @finite true
       # @min_exclusive 0s
       startup_timeout = 15s
     }
@@ -291,7 +283,6 @@ lidar {
       # A scan is emitted whenever azimuth crosses this angle. Expected range is
       # 0.0 (inclusive) to 2*pi (exclusive). Ratslang currently has no angle quantity type.
       # @type number
-      # @finite true
       cut_angle = 0.0
 
       timestamp {
@@ -316,7 +307,6 @@ lidar {
         # host UTC. Must be positive. Used by Sensor mode. Host mode already uses
         # host time.
         # @type time
-        # @finite true
         # @min_exclusive 0s
         max_host_skew = 20ms
 
@@ -324,7 +314,6 @@ lidar {
         # during startup. If the configured clock mode cannot be satisfied,
         # Pelorus fails startup and says so.
         # @type time
-        # @finite true
         # @min_exclusive 0s
         startup_timeout = 15s
       }
@@ -388,7 +377,6 @@ lidar {
         # over the first seconds of a run and logs what it saw, warning when the
         # observed drift would use up this budget within a minute.
         # @type time
-        # @finite true
         # @min_exclusive 0s
         max_host_skew = 20ms
 
@@ -396,7 +384,6 @@ lidar {
         # If the configured clock mode cannot be satisfied, Pelorus fails
         # startup and says so.
         # @type time
-        # @finite true
         # @min_exclusive 0s
         startup_timeout = 15s
       }
@@ -435,7 +422,6 @@ lidar {
   # How far the filter trusts the scan match against the map. Lower values pull
   # the estimate harder towards the registration result.
   # @type number
-  # @finite true
   covariance = 0.001
 
   # Use incoming LiDAR messages as a forced synchronization trigger. This costs
@@ -510,14 +496,12 @@ imu {
         # Maximum accepted absolute difference between Xsens UTC and host UTC.
         # Must be positive. Used by Utc mode. Host mode already uses host time.
         # @type time
-        # @finite true
         # @min_exclusive 0s
         max_host_skew = 20ms
 
         # Maximum positive duration to wait for usable MTData2 input during
         # startup. If Utc cannot be satisfied, Pelorus fails startup and says so.
         # @type time
-        # @finite true
         # @min_exclusive 0s
         startup_timeout = 15s
       }
@@ -541,7 +525,6 @@ imu {
   # These samples give the filter its initial gravity direction, so the platform
   # has to stand still for at least this long after start-up.
   # @type time
-  # @finite true
   initial_setup = 100ms
 
   # @recommended
@@ -557,13 +540,11 @@ imu {
     use_tf_tree = false
 
     # Transform from the LiDAR frame into the IMU frame, so a point in LiDAR
-    # coordinates becomes a point in IMU coordinates. `dedrunk extrinsics`
+    # coordinates becomes a point in IMU coordinates. `dedrunk extrinsics lidar-imu`
     # prints both values in this form, ready to paste.
     # @type array<length>
-    # @finite true
     translation = [-6.253mm, 11.775mm, 28.535mm]
     # @type array<array<number>>
-    # @finite true
     rotation = [  [1.0, 0.0, 0.0],
                   [0.0, 1.0, 0.0],
                   [0.0, 0.0, 1.0] ]
@@ -606,33 +587,27 @@ imu {
   # Magnitude of gravity in m/s^2, used as the starting point for the filter.
   # 9.81 is close enough everywhere on Earth. The filter refines it from there.
   # @type number
-  # @finite true
   gravity = 9.81
 
   # How far the filter trusts the IMU between LiDAR corrections. Larger values
   # mean less trust, so the scan match pulls the estimate further on each update.
   #
   # The defaults are the FAST-LIO tuning values and are not a noise model of any
-  # particular sensor. `calibration.parameter_file.use_noise` below replaces them
-  # with figures measured from your own IMU.
+  # particular sensor. `dedrunk imu noise` prints values measured from your own IMU.
   # @type number
-  # @finite true
   covariance_gyroscope = 0.1
 
   # Process noise on the gyroscope bias, i.e. how fast the filter lets that bias
   # wander.
   # @type number
-  # @finite true
   covariance_gyroscope_bias = 0.0001
 
   # How far the filter trusts the accelerometer between LiDAR corrections.
   # @type number
-  # @finite true
   covariance_acceleration = 0.1
 
   # Process noise on the accelerometer bias.
   # @type number
-  # @finite true
   covariance_acceleration_bias = 0.0001
 
   # Corrections applied to every IMU sample before the filter sees it.
@@ -653,44 +628,19 @@ imu {
     # axis misalignment and biases. Relative path "./<path>" from this config
     # file, or absolute "/<path>".
     #
-    # Produced by https://github.com/stelzo/dedrunk, or by Kalibr itself with
-    # --imu-models scale-misalignment. Record the bag for it with
-    # `pelorus online raw imu intrinsics --output-rosbag <dir>`.
+    # Produced by https://codeberg.org/stelzo/dedrunk, or by Kalibr itself
+    # with --imu-models scale-misalignment.
     parameter_file = ""
 
-    # Take the covariances above from parameter_file instead of the
-    # constants, deriving them from its measured noise densities and bias
-    # random walks. This needs a file that carries the stochastic half too, so
-    # one from `dedrunk merge`. `dedrunk intrinsics` alone does not produce one.
-    #
-    # Off by default because it moves numbers the odometry is tuned around.
-    # Both the derived and the configured values are logged at startup, so the
-    # ratio for this sensor is visible before you commit to it.
-    # @type boolean
-    parameter_file.use_noise = false
-
     # Seconds the IMU clock runs ahead of the Lidar clock, as reported by
-    # `dedrunk extrinsics`. Pelorus subtracts it from every IMU timestamp, so
+    # `dedrunk extrinsics lidar-imu`. Pelorus subtracts it from every IMU timestamp, so
     # paste the number exactly as dedrunk prints it, sign included.
     #
     # This is a constant skew between the two sensors' clocks, not jitter. It
     # matters most while turning: at 1 rad/s, 10 ms of skew smears the scan by
     # about half a degree, which the registration then has to absorb.
     # @type time
-    # @finite true
     time_offset = 0s
-
-    # Multiplier on the measured densities before they become covariances.
-    #
-    # Allan variance is measured on a completely still sensor at constant
-    # temperature. A moving robot has vibration, thermal drift and timing
-    # jitter that dominate it, so the honest noise level in operation is
-    # higher than the one on the bench, and no amount of measuring will tell
-    # you by how much. The Kalibr wiki suggests 10x or more for MEMS parts.
-    # @type number
-    # @finite true
-    # @min_exclusive 0
-    noise_inflation = 10.0
   }
 
 }
@@ -722,7 +672,6 @@ wheel {
 
     # Rotation from the wheel odometry frame into the IMU frame.
     # @type array<array<number>>
-    # @finite true
     rotation = [ [1.0, 0.0, 0.0],
                  [0.0, 1.0, 0.0],
                  [0.0, 0.0, 1.0] ]
@@ -735,7 +684,6 @@ wheel {
   # Standard deviation of the kinematic constraints applied during undistortion.
   # Lower values constrain harder.
   # @type number
-  # @finite true
   kinematic_constraint_std = 0.001
 
   # @recommended
@@ -750,7 +698,6 @@ wheel {
   # Offset from the IMU to the centre of the rear axle, in the IMU frame. Only
   # used when kinematic_model is Ackermann.
   # @type array<length>
-  # @finite true
   ackermann.imu_to_rear_axle = [0.0m, 0.0m, 0.0m]
 }
 
@@ -796,7 +743,6 @@ output {
     # Shortest interval at which a repeating warning is printed again, so that a
     # condition holding for a whole run does not fill the terminal.
     # @type time
-    # @finite true
     warning_debounce = 1s
      
     # @recommended
@@ -815,7 +761,9 @@ output {
   base_link {
     # Frame the odometry and TF are published for. Empty publishes the pose of
     # the LiDAR itself. Set it to your robot's body frame to have Pelorus apply
-    # the transform below and publish that pose.
+    # the transform below and publish that pose. The registered scans are
+    # published in the same frame, so odometry and scans alone build a
+    # consistent map. /tf_static carries the transform back to the LiDAR.
     frame_id = ""
 
     from_lidar_transform {
@@ -826,10 +774,8 @@ output {
 
       # Pose of the Lidar in the base_link frame.
       # @type array<length>
-      # @finite true
       translation = [0.0mm, 0.0mm, 0.0mm]
       # @type array<array<number>>
-      # @finite true
       rotation = [ [1.0, 0.0, 0.0],
                    [0.0, 1.0, 0.0],
                    [0.0, 0.0, 1.0] ]
@@ -851,13 +797,11 @@ output {
     map {
       # Shortest interval between two snapshots.
       # @type time
-      # @finite true
       # @min 0s
       publish_interval = 1s
 
       # Size of the ellipsoid drawn per voxel, scaled by that voxel's covariance.
       # @type number
-      # @finite true
       # @min_exclusive 0
       visual_scale = 3.0
     }
@@ -999,7 +943,6 @@ parallelism {
   # Number of standard errors by which one CPU execution mode must beat the other
   # before Pelorus decides the execution mode for the next phase.
   # @type number
-  # @finite true
   # @min 0
   decision_threshold_stddevs = 2.0
 

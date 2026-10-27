@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Pelorus WebGPU comparison</title>
+<style>
+body { max-width: 850px; margin: 3rem auto; padding: 0 1rem; font: 16px system-ui; color: #ddd; background: #111318; }
+button, select { font: inherit; padding: .5rem; margin: .3rem 0; }
+pre { white-space: pre-wrap; line-height: 1.5; }
+a { color: #7dd3fc; }
+</style>
+<h1>CPU / WebGPU comparison</h1>
+<p>Runs the same recording twice with the selected map, first on CPU,
+then WebGPU. No 3D renderer. Downloads and GPU initialization are excluded
+from replay time. A CPU fallback is reported and does not count as a GPU result.</p>
+<label>Recording <select id="recording">
+<option value="spires">Keble College, 30 seconds</option>
+<option value="helipr">HeLiPR Town02, 20 seconds</option>
+</select></label>
+<label>Map <select id="map">
+<option value="Multi">Multiresolution</option>
+<option value="Single">Single resolution</option>
+</select></label>
+<button id="run">Run comparison</button>
+<pre id="result" role="status">Ready.</pre>
+<p><a href="./">Back to the demo</a></p>
+<script type="module" src="./benchmark.js"></script>
+</html>

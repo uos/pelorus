@@ -57,7 +57,9 @@ pub struct pelorus_pointcloud2 {
     pub header_timestamp_sec: i32,
     pub header_timestamp_nanosec: u32,
     pub width: u32,
+    /// The point fields, `num_fields` entries long.
     pub fields: *const pelorus_point_field,
+    pub num_fields: usize,
     pub point_step: u32,
     pub row_step: u32,
     pub data: *const u8,
@@ -356,10 +358,13 @@ pub unsafe extern "C" fn pelorus_add_odom(
 ///
 /// # Safety
 /// - `handle` must be a valid pointer returned from `pelorus_create`
-/// - `cloud` must be a valid pointer to a pelorus_pointcloud2
+/// - `cloud` must be a valid pointer to a pelorus_pointcloud2 whose `fields`
+///   points to `num_fields` fields with null-terminated names
 ///
 /// # Returns
-/// 0 on error, >0 scan ID on success
+/// The scan ID, which is greater than 0, on success. 0 on error, and for a cloud
+/// the odometry drops: one before the IMU initialization, an empty one or one
+/// older than the previous cloud.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn pelorus_add_pointcloud(
     handle: *mut PelorusHandle,
@@ -370,27 +375,30 @@ pub unsafe extern "C" fn pelorus_add_pointcloud(
     }
     let handle = unsafe { &*handle };
     let cloud = unsafe { &*cloud };
-    if cloud.fields.is_null() || cloud.data.is_null() {
+    if cloud.fields.is_null() || cloud.num_fields == 0 || cloud.data.is_null() {
         return 0;
     }
-    let f = unsafe { &*cloud.fields };
-    if f.name.is_null() {
-        return 0;
+    let c_fields = unsafe { slice::from_raw_parts(cloud.fields, cloud.num_fields) };
+    let mut fields = Vec::with_capacity(c_fields.len());
+    for field in c_fields {
+        if field.name.is_null() {
+            return 0;
+        }
+        let Ok(name) = unsafe { CStr::from_ptr(field.name) }.to_str() else {
+            return 0;
+        };
+        fields.push(Pcloud2Field {
+            name: name.to_string(),
+            offset: field.offset,
+            datatype: field.datatype,
+        });
     }
-    let name = match unsafe { CStr::from_ptr(f.name) }.to_str() {
-        Ok(s) => s.to_string(),
-        Err(_) => return 0,
-    };
     let data = unsafe { slice::from_raw_parts(cloud.data, cloud.data_len) };
     match handle.inner.add_pointcloud_raw(RawPointCloud {
         header_sec: cloud.header_timestamp_sec,
         header_nanosec: cloud.header_timestamp_nanosec,
         width: cloud.width,
-        fields: &[Pcloud2Field {
-            name,
-            offset: f.offset,
-            datatype: f.datatype,
-        }],
+        fields: &fields,
         point_step: cloud.point_step,
         row_step: cloud.row_step,
         data,
@@ -734,17 +742,11 @@ mod tests {
         let odometry = RsOdometry {
             timestamp_sec: 1,
             timestamp_nanosec: 2,
-            position: [0.0; 3],
-            orientation: [1.0, 0.0, 0.0, 0.0],
-            pose_covariance: [0.0; 36],
-            linear_velocity: [0.0; 3],
-            angular_velocity: [0.0; 3],
             accel_bias: [0.1, -0.2, 0.3],
             gyro_bias: [-0.01, 0.02, -0.03],
-            twist_covariance: [0.0; 36],
             scan_id: 7,
-            points: Vec::new(),
             frame_id: "lidar".to_string(),
+            ..Default::default()
         };
 
         let c_bias = rs_to_c_imu_bias(&odometry);

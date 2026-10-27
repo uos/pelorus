@@ -16,7 +16,6 @@ use pelorus_syncio::pelorus_drivers::{
 };
 use ros2_interfaces_jazzy_rkyv::sensor_msgs::msg::{Imu, PointCloud2};
 
-use super::guide::Guide;
 use super::{RawOptions, RawPlan, RawSensor, plan_raw_run};
 use crate::mcap_output::{
     IMU_MSG, McapWriter, POINTCLOUD2_MSG, TopicId, cloud_msg_to_ros, imu_msg_to_ros, stamp_to_nanos,
@@ -294,11 +293,7 @@ pub fn run(config: LioConfig, options: RawOptions, shutdown: Arc<AtomicBool>) ->
         counters: Arc::clone(&counters),
     };
 
-    let guide = options
-        .intrinsics
-        .map(|intrinsics| Guide::new(intrinsics.poses));
-
-    let result = drain(rx, &sink, recording, &shutdown, options.sensor, guide);
+    let result = drain(rx, &sink, recording, &shutdown, options.sensor);
 
     // Stop the drivers before reporting the result, so a failure surfacing
     // during teardown is not attributed to the sink.
@@ -312,14 +307,6 @@ pub fn run(config: LioConfig, options: RawOptions, shutdown: Arc<AtomicBool>) ->
     // Report the sink error first when both the sink and a driver failed.
     result?;
     driver_result.map_err(|error| anyhow!("Native sensor driver failed: {error}"))?;
-
-    // The bag is closed by now, so dedrunk can read it.
-    if options.intrinsics.is_some() {
-        super::dedrunk::offer_fit(
-            options.output_rosbag.as_deref().or(mcap_path.as_deref()),
-            options.yes,
-        )?;
-    }
     Ok(())
 }
 
@@ -330,16 +317,11 @@ fn drain(
     mut recording: Option<RawRecording>,
     shutdown: &AtomicBool,
     sensor: RawSensor,
-    mut guide: Option<Guide>,
 ) -> Result<()> {
     let mut last_report = Instant::now();
     while !shutdown.load(Ordering::Acquire) {
         match rx.recv_timeout(Duration::from_millis(100)) {
-            Ok(sample) => {
-                if handle_sample(sample, sink, recording.as_mut(), guide.as_mut())? {
-                    break;
-                }
-            }
+            Ok(sample) => handle_sample(sample, sink, recording.as_mut())?,
             Err(RecvTimeoutError::Timeout) => {}
             Err(RecvTimeoutError::Disconnected) => break,
         }
@@ -354,7 +336,7 @@ fn drain(
     // The drivers are still running here, so this drains what is queued rather
     // than waiting for the stream to end.
     while let Ok(sample) = rx.try_recv() {
-        handle_sample(sample, sink, recording.as_mut(), guide.as_mut())?;
+        handle_sample(sample, sink, recording.as_mut())?;
     }
 
     report(&sink.counters, sensor);
@@ -368,13 +350,11 @@ fn drain(
     Ok(())
 }
 
-/// Returns true when the guided recording has captured every orientation.
 fn handle_sample(
     sample: RawSample,
     sink: &Sink<'_>,
     recording: Option<&mut RawRecording>,
-    guide: Option<&mut Guide>,
-) -> Result<bool> {
+) -> Result<()> {
     match sample {
         RawSample::Lidar(scan) => {
             let cloud = pelorus_syncio::native_scan_to_cloud(*scan, &sink.lidar_driver_type)
@@ -396,11 +376,12 @@ fn handle_sample(
                 sink.counters
                     .lidar_published
                     .fetch_add(1, Ordering::Relaxed);
-                return Ok(false);
+                return Ok(());
             }
 
             if let Some(publisher) = sink.cloud_publisher.as_ref() {
-                let msg = pelorus_syncio::impl_ros2_interfaces_jazzy_rkyv::from_pointcloud2_msg(cloud);
+                let msg =
+                    pelorus_syncio::impl_ros2_interfaces_jazzy_rkyv::from_pointcloud2_msg(cloud);
                 sink.rt.block_on(publisher.publish(&msg))?;
                 sink.counters
                     .lidar_published
@@ -416,24 +397,14 @@ fn handle_sample(
                 recording.writer.write(topic, &msg, time)?;
             }
 
-            // Prompt from the same samples that go into the bag, so what the
-            // operator is told matches what will be fitted.
-            let mut finished = false;
-            if let Some(guide) = guide {
-                let t = imu.stamp.sec as f64 + imu.stamp.nanosec as f64 * 1e-9;
-                finished = guide.push(t, imu.linear_acceleration, imu.angular_velocity);
-            }
-
             if let Some(publisher) = sink.imu_publisher.as_ref() {
                 let msg = pelorus_syncio::sync_to_imu(*imu);
                 sink.rt.block_on(publisher.publish(&msg))?;
                 sink.counters.imu_published.fetch_add(1, Ordering::Relaxed);
             }
-
-            return Ok(finished);
         }
     }
-    Ok(false)
+    Ok(())
 }
 
 fn report(counters: &RawCounters, sensor: RawSensor) {

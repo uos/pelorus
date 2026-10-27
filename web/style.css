@@ -175,6 +175,18 @@ h1 {
   letter-spacing: -0.01em;
 }
 
+.project-brand {
+  display: flex;
+  align-items: center;
+  gap: 0.18em;
+}
+
+.project-brand img {
+  width: 0.95em;
+  height: 0.95em;
+  flex: none;
+}
+
 .hero-text p {
   margin: 0.6rem 0 0;
   max-width: 40rem;

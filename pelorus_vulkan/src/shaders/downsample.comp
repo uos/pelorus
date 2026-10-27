@@ -16,6 +16,18 @@ layout(std430, set = 0, binding = 10) readonly buffer Counters {
 };
 layout(std430, set = 0, binding = 15) buffer Medoids { Point medoids[]; };
 
+// Rust evaluates the CPU medoid distance as separate f32 subtractions,
+// multiplies and adds, left to right. `precise` keeps the compiler from
+// contracting them into FMAs, which breaks exact distance ties and picks a
+// different point than the CPU.
+float squared_distance_cpu_order(Point p, vec3 center) {
+    precise float dx = p.x - center.x;
+    precise float dy = p.y - center.y;
+    precise float dz = p.z - center.z;
+    precise float dist = (dx * dx + dy * dy) + dz * dz;
+    return dist;
+}
+
 bool point_lexicographically_less(Point lhs, Point rhs) {
     if (lhs.t != rhs.t) return lhs.t < rhs.t;
     if (lhs.x != rhs.x) return lhs.x < rhs.x;
@@ -67,19 +79,18 @@ void main() {
         return;
     }
 
-    vec3 sum = vec3(0.0);
+    precise vec3 sum = vec3(0.0);
     for (uint i = start; i < end; i++) {
         Point p = selected_points[indices[i]];
         sum += vec3(p.x, p.y, p.z);
     }
 
-    vec3 center = sum / float(end - start);
+    precise vec3 center = sum / float(end - start);
     Point best = selected_points[indices[start]];
-    float best_dist = dot(vec3(best.x, best.y, best.z) - center, vec3(best.x, best.y, best.z) - center);
+    float best_dist = squared_distance_cpu_order(best, center);
     for (uint i = start + 1u; i < end; i++) {
         Point p = selected_points[indices[i]];
-        vec3 delta = vec3(p.x, p.y, p.z) - center;
-        float dist = dot(delta, delta);
+        float dist = squared_distance_cpu_order(p, center);
         if (dist < best_dist || (dist == best_dist && point_lexicographically_less(p, best))) {
             best_dist = dist;
             best = p;

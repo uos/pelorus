@@ -71,7 +71,11 @@ typedef struct pelorus_pointcloud2 {
   int32_t header_timestamp_sec;
   uint32_t header_timestamp_nanosec;
   uint32_t width;
+  /**
+   * The point fields, `num_fields` entries long.
+   */
   const struct pelorus_point_field *fields;
+  uintptr_t num_fields;
   uint32_t point_step;
   uint32_t row_step;
   const uint8_t *data;
@@ -187,10 +191,13 @@ int32_t pelorus_add_odom(struct PelorusHandle *handle, const struct pelorus_odom
  *
  * # Safety
  * - `handle` must be a valid pointer returned from `pelorus_create`
- * - `cloud` must be a valid pointer to a pelorus_pointcloud2
+ * - `cloud` must be a valid pointer to a pelorus_pointcloud2 whose `fields`
+ *   points to `num_fields` fields with null-terminated names
  *
  * # Returns
- * 0 on error, >0 scan ID on success
+ * The scan ID, which is greater than 0, on success. 0 on error, and for a cloud
+ * the odometry drops: one before the IMU initialization, an empty one or one
+ * older than the previous cloud.
  */
 uint64_t pelorus_add_pointcloud(struct PelorusHandle *handle,
                                 const struct pelorus_pointcloud2 *cloud);

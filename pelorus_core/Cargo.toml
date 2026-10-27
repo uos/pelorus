@@ -7,13 +7,11 @@ keywords.workspace = true
 license.workspace = true
 repository.workspace = true
 version.workspace = true
-authors.workspace = true
 rust-version.workspace = true
 
 [dependencies]
 anyhow.workspace = true
 web-time = "1.1"
-imu-calib.workspace = true
 nalgebra.workspace = true
 faer.workspace = true
 ratslang.workspace = true

@@ -12,7 +12,7 @@
 //! * A comment block followed by a blank line documents the surrounding block.
 //! * A line of the form `# A | B | C` lists the accepted values of the option
 //!   below it and is rendered separately from the prose.
-//! * `# @type`, `# @enum`, `# @min`, `# @max`, exclusive bounds and `# @finite`
+//! * `# @type`, `# @enum`, `# @min`, `# @max` and exclusive bounds
 //!   use the compiler constraint parser and are shown separately from prose.
 //! * `# @recommended` marks an option as part of the starter configuration that
 //!   `pelorus config generate recommended` writes.
@@ -412,12 +412,11 @@ pub fn parse(source: &str) -> Result<Parsed, String> {
                 if comment.doc.is_empty()
                     && comment.values.is_empty()
                     && !comment.annotations.is_empty()
+                    && let Some(previous) = &carried
                 {
-                    if let Some(previous) = &carried {
-                        comment.doc = previous.doc.clone();
-                        comment.values = previous.values.clone();
-                        comment.recommended |= previous.recommended;
-                    }
+                    comment.doc = previous.doc.clone();
+                    comment.values = previous.values.clone();
+                    comment.recommended |= previous.recommended;
                 }
                 let mut shared = comment.clone();
                 shared.annotations.clear();

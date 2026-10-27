@@ -1,6 +1,6 @@
-# Pelorus
+<img src="docs/docs/images/pelorus.svg" alt="Pelorus logo" width="160" align="right">
 
-![Pelorus banner](docs/docs/images/pelorus_banner.jpg)
+# Pelorus
 
 **Resource-aware Lidar-Inertial Odometry**, written in Rust, CUDA, Vulkan and Metal. Developed by the Computer Engineering Group at Osnabrück University.
 
@@ -10,6 +10,8 @@
 Supporting various 3D Lidar sensors, IMUs, odometry sources and kinematic models, Pelorus provides real-time performance on embedded hardware while pushing state-of-the-art accuracy. The online mode reaches more than 20 Hz odometry on a Jetson Orin Nano with a 128-layer Ouster Lidar, keeping resource usage low so the rest of your application has room to run.
 
 Scale your compute down to single-core CPU usage or up to full parallel compute on CPU and **GPU**, supporting NVIDIA, AMD, Intel and Apple Silicon.
+
+![Pelorus banner](docs/docs/images/pelorus_banner.jpg)
 
 ## Ways to use
 

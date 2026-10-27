@@ -62,6 +62,7 @@ fn render_index_page(parsed: &Parsed) -> String {
          file `pelorus config generate full` writes, so these pages and the configuration on \
          your disk stay in step.\n\n",
     );
+    out.push_str("All numbers and physical quantities must be finite. Literal and unit-conversion overflow are rejected automatically.\n\n");
     out.push_str("| Block | Options | Contents |\n| --- | --- | --- |\n");
     for section in &parsed.sections {
         out.push_str(&format!(
@@ -274,11 +275,8 @@ fn render_constraints(rules: &ratslang::Constraints, out: &mut String) {
             ));
         }
     }
-    if rules.finite == Some(true) || rules.minimum.is_some() || rules.maximum.is_some() {
-        rows.push("Numeric values must be finite.".into());
-    }
     if matches!(rules.value_type, Some(ratslang::ValueType::Array(_)))
-        && (rules.minimum.is_some() || rules.maximum.is_some() || rules.finite == Some(true))
+        && (rules.minimum.is_some() || rules.maximum.is_some())
     {
         rows.push("Numeric constraints apply to every array element.".into());
     }

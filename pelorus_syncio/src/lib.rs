@@ -18,13 +18,13 @@ use pelorus_core::OdomMsg;
 #[cfg(feature = "mt_pubsub")]
 use pelorus_core::PointCloudMode;
 use pelorus_core::SyncProcessedCloud;
-#[cfg(feature = "native-drivers")]
-use pelorus_core::{
-    ImuDriverType, LidarDriverType, OusterPoint, RobosensePoint, SensorDriverConfig, VelodynePoint,
-    time_msg_from_secs,
-};
 use pelorus_core::{
     ImuMsg, ImuPredictor, ImuPredictorUndistort, LidarVendor, SyncNodeParameters, SyncParameters,
+};
+#[cfg(feature = "native-drivers")]
+use pelorus_core::{
+    LidarDriverType, OusterPoint, RobosensePoint, SensorDriverConfig, VelodynePoint,
+    time_msg_from_secs,
 };
 #[cfg(feature = "native-drivers")]
 use pelorus_drivers::{DriverError, DriverManager, RawLidarScan, SensorIngress, SensorOutputSink};
@@ -42,14 +42,7 @@ pub use pelorus_drivers;
     feature = "hiroz"
 ))]
 use anyhow::anyhow;
-#[cfg(any(
-    feature = "ros2-client",
-    feature = "mt_pubsub",
-    feature = "r2r",
-    feature = "hiroz",
-    feature = "native-drivers",
-))]
-use pelorus_sync::timestamp_to_secs;
+use pelorus_sync::ScanAdmission;
 
 #[cfg(feature = "hiroz")]
 use hiroz::Builder;
@@ -80,6 +73,12 @@ use r2r::{
     sensor_msgs::msg::{Imu, PointCloud2},
     std_msgs::msg::Header,
 };
+#[cfg(any(
+    feature = "ros2-client",
+    feature = "mt_pubsub",
+    feature = "r2r",
+    feature = "hiroz"
+))]
 use ros_pointcloud2::prelude::*;
 
 #[cfg(feature = "mt_pubsub")]
@@ -241,7 +240,10 @@ enum MtCloudSubscriber {
     Compressed(mt_pubsub::Subscriber<CompressedPointCloud2>),
 }
 #[cfg(feature = "ros2-client")]
-use ros2_client::ros2;
+use ros2_client::{
+    QosProfile,
+    qos::{History, Reliability, WhenFull},
+};
 #[cfg(all(
     feature = "mt_pubsub",
     not(feature = "r2r"),
@@ -258,12 +260,9 @@ use ros2_interfaces_jazzy_rkyv::{
 use ros2_interfaces_jazzy_serde::{
     builtin_interfaces::msg::Time,
     geometry_msgs::msg::{Quaternion, Vector3},
-    nav_msgs::msg::Odometry,
     sensor_msgs::msg::{Imu, PointCloud2},
     std_msgs::msg::Header,
 };
-#[cfg(feature = "native-drivers")]
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 pub type ImuInitCallback = Arc<Mutex<dyn FnMut(&[ImuMsg]) + Send + Sync>>;
@@ -418,6 +417,17 @@ const MINOT_IMU_INIT_TICK: &str = "imu_init_tick";
 #[cfg(feature = "rat")]
 const MINOT_LIO_START_TICK: &str = "lio_start_tick";
 
+/// The Minot bootstrap tick an IMU message triggers: the next initialization
+/// message while the window collects, and the start of the LIO once it closes.
+#[cfg(feature = "rat")]
+fn minot_init_tick(progress: pelorus_sync::ImuInitProgress) -> Option<&'static str> {
+    match progress {
+        pelorus_sync::ImuInitProgress::Collecting => Some(MINOT_IMU_INIT_TICK),
+        pelorus_sync::ImuInitProgress::Completed => Some(MINOT_LIO_START_TICK),
+        pelorus_sync::ImuInitProgress::Complete => None,
+    }
+}
+
 #[cfg(all(
     feature = "rat",
     any(feature = "ros2-client", feature = "mt_pubsub", feature = "r2r")
@@ -481,7 +491,9 @@ pub struct State {
     #[cfg(feature = "rerun")]
     pub rec: Option<Arc<rerun::RecordingStream>>,
 
-    pub last_lidar_time: Option<f64>,
+    /// Which clouds the odometry takes, shared by every cloud and IMU ingress.
+    /// It has its own lock because the IMU initialization it runs locks the map.
+    pub admission: Arc<Mutex<ScanAdmission>>,
 }
 
 impl State {
@@ -490,6 +502,7 @@ impl State {
         #[cfg(feature = "rerun")] rec: Option<Arc<rerun::RecordingStream>>,
         imu_sync_mode: pelorus_sync::ImuSyncMode,
         hooks: pelorus_sync::SynchronizerHooks,
+        admission: ScanAdmission,
     ) -> anyhow::Result<Self> {
         let wait_for_sensor_tf = matches!(
             imu_sync_mode,
@@ -523,7 +536,7 @@ impl State {
             ))]
             take_nth_scan: N_NTH_SCAN,
             lidar_vendor: config.lidar_vendor,
-            last_lidar_time: None,
+            admission: Arc::new(Mutex::new(admission)),
         })
     }
 }
@@ -863,17 +876,13 @@ fn cloud_callback(
             }
         }
 
+        // A cloud before the IMU initialization, an empty one or an out-of-order one is dropped.
+        let admission = state.lock().unwrap().admission.clone();
+        if admission.lock().unwrap().admit(in_msg.as_ref()).is_none() {
+            return Ok(());
+        }
         {
             let mut state = state.lock().unwrap();
-            let header = in_msg.header();
-            let time = timestamp_to_secs(&header.stamp);
-            if let Some(last_lidar_time) = state.last_lidar_time
-                && time < last_lidar_time
-            {
-                // Skip out of order cloud
-                return Ok(());
-            }
-            state.last_lidar_time.replace(time);
             state.sensor_tf = Some(sensor_tf);
             state.imu_tf = Some(imu_tf);
         }
@@ -1051,28 +1060,15 @@ pub struct SyncNode {
     pub logger: String,
     #[cfg(feature = "native-drivers")]
     native_drivers: Option<DriverManager>,
-    #[cfg(feature = "native-drivers")]
-    native_imu_init: Option<ImuInitCallback>,
-    #[cfg(feature = "native-drivers")]
-    native_imu_init_time: f64,
-}
-
-#[cfg(feature = "native-drivers")]
-#[derive(Default)]
-struct NativeImuInitState {
-    start_time: Option<f64>,
-    buffer: Option<Vec<ImuMsg>>,
 }
 
 #[cfg(feature = "native-drivers")]
 struct NativeIngress {
     state: Arc<Mutex<State>>,
+    /// The admission of [`State`], shared with the subscribed sensor topics.
+    admission: Arc<Mutex<ScanAdmission>>,
     lidar_driver_type: LidarDriverType,
     filtered_imu_sender: Option<std::sync::mpsc::Sender<ImuMsg>>,
-    imu_init: Option<ImuInitCallback>,
-    imu_init_time: f64,
-    imu_init_state: Mutex<NativeImuInitState>,
-    imu_initialized: AtomicBool,
 }
 
 #[cfg(feature = "native-drivers")]
@@ -1175,10 +1171,10 @@ pub fn native_scan_to_cloud(
 #[cfg(feature = "native-drivers")]
 impl SensorIngress for NativeIngress {
     fn push_lidar(&self, scan: RawLidarScan) -> Result<(), DriverError> {
-        if !self.imu_initialized.load(Ordering::Acquire) {
+        let cloud = native_scan_to_cloud(scan, &self.lidar_driver_type)?;
+        if self.admission.lock().unwrap().admit(&cloud).is_none() {
             return Ok(());
         }
-        let cloud = native_scan_to_cloud(scan, &self.lidar_driver_type)?;
         self.state
             .lock()
             .unwrap()
@@ -1189,21 +1185,7 @@ impl SensorIngress for NativeIngress {
         Ok(())
     }
     fn push_imu(&self, imu: ImuMsg) -> Result<(), DriverError> {
-        if let Some(init) = self.imu_init.as_ref() {
-            let imu_time = timestamp_to_secs(&imu.stamp);
-            let mut state = self.imu_init_state.lock().unwrap();
-            let start = *state.start_time.get_or_insert(imu_time);
-            if imu_time - start < self.imu_init_time {
-                if let Some(buffer) = state.buffer.as_mut() {
-                    buffer.push(imu.clone());
-                }
-            } else if let Some(buffer) = state.buffer.take() {
-                if !buffer.is_empty() {
-                    init.lock().unwrap()(&buffer);
-                }
-                self.imu_initialized.store(true, Ordering::Release);
-            }
-        }
+        self.admission.lock().unwrap().observe_imu(&imu);
         let filtered = self.state.lock().unwrap().sync.lock().unwrap().add_imu(imu);
         if let (Some(v), Some(tx)) = (filtered, self.filtered_imu_sender.as_ref()) {
             let _ = tx.send(v);
@@ -1231,35 +1213,19 @@ pub fn qos_to_mt(qos: pelorus_core::Qos) -> mt_pubsub::Qos {
 }
 
 #[cfg(feature = "ros2-client")]
-pub fn qos_to_ros2(value: pelorus_core::Qos) -> ros2::QosPolicies {
+pub fn qos_to_ros2(value: pelorus_core::Qos) -> QosProfile {
     match value {
-        pelorus_core::Qos::Sensor(rel) => ros2::QosPolicyBuilder::new()
-            .durability(ros2::policy::Durability::Volatile)
-            .deadline(ros2::policy::Deadline(ros2::Duration::INFINITE))
-            .ownership(ros2::policy::Ownership::Shared)
+        pelorus_core::Qos::Sensor(rel) => QosProfile::subscription_default()
             .reliability(match rel {
-                pelorus_core::Reliability::Reliable => ros2::policy::Reliability::Reliable {
-                    max_blocking_time: ros2::Duration::INFINITE,
+                pelorus_core::Reliability::Reliable => Reliability::Reliable {
+                    when_full: WhenFull::Block,
                 },
-                pelorus_core::Reliability::BestEffort => ros2::policy::Reliability::BestEffort,
+                pelorus_core::Reliability::BestEffort => Reliability::BestEffort,
             })
-            .history(ros2::policy::History::KeepLast { depth: 5 })
-            .lifespan(ros2::policy::Lifespan {
-                duration: ros2::Duration::INFINITE,
-            })
-            .build(),
-        _ => ros2::QosPolicyBuilder::new()
-            .durability(ros2::policy::Durability::Volatile)
-            .deadline(ros2::policy::Deadline(ros2::Duration::INFINITE))
-            .ownership(ros2::policy::Ownership::Shared)
-            .reliability(ros2::policy::Reliability::Reliable {
-                max_blocking_time: ros2::Duration::from_millis(100),
-            })
-            .history(ros2::policy::History::KeepLast { depth: 1 })
-            .lifespan(ros2::policy::Lifespan {
-                duration: ros2::Duration::INFINITE,
-            })
-            .build(),
+            .history(History::KeepLast { depth: 5 }),
+        _ => QosProfile::publisher_default()
+            .reliability_reliable(WhenFull::Wait(std::time::Duration::from_millis(100)))
+            .history(History::KeepLast { depth: 1 }),
     }
 }
 
@@ -1335,19 +1301,12 @@ impl SyncNode {
     ) -> anyhow::Result<()> {
         let lidar_vendor = self.state.lock().unwrap().lidar_vendor;
         validate_native_lidar_vendor(&config.lidar.driver_type, lidar_vendor)?;
+        let admission = Arc::clone(&self.state.lock().unwrap().admission);
         let ingress = Arc::new(NativeIngress {
             state: Arc::clone(&self.state),
+            admission,
             lidar_driver_type: config.lidar.driver_type.clone(),
             filtered_imu_sender,
-            imu_init: self.native_imu_init.clone(),
-            imu_init_time: self.native_imu_init_time,
-            imu_init_state: Mutex::new(NativeImuInitState {
-                start_time: None,
-                buffer: Some(Vec::new()),
-            }),
-            imu_initialized: AtomicBool::new(
-                self.native_imu_init.is_none() || config.imu.driver_type == ImuDriverType::Disabled,
-            ),
         });
         self.native_drivers = Some(DriverManager::start(config, ingress, sink)?);
         Ok(())
@@ -1394,7 +1353,6 @@ impl SyncNode {
             feature = "mt_pubsub",
             feature = "r2r",
             feature = "hiroz",
-            feature = "native-drivers",
         ))]
         let node_params = inputs.node_params;
         #[cfg(any(
@@ -1403,16 +1361,7 @@ impl SyncNode {
             feature = "r2r",
             feature = "hiroz"
         ))]
-        let imu_pose_predictor_init = inputs.imu_pose_predictor_init.clone();
-        #[cfg(any(
-            feature = "ros2-client",
-            feature = "mt_pubsub",
-            feature = "r2r",
-            feature = "hiroz"
-        ))]
         let filtered_imu_sender = inputs.filtered_imu_sender.clone();
-        #[cfg(feature = "native-drivers")]
-        let native_imu_init = inputs.imu_pose_predictor_init.clone();
         #[cfg(feature = "ros2-client")]
         let tf_listener = Arc::new(tf::TfListener::new(node));
 
@@ -1436,6 +1385,19 @@ impl SyncNode {
         #[cfg(feature = "rat")]
         let synchronous_mode = node_params.synchronous_mode;
 
+        // Without IMU input nothing initializes, so clouds are taken from the start.
+        let imu_ingress = !cfg!(feature = "no-imu-sync")
+            && !matches!(
+                &inputs.imu_sync_mode,
+                pelorus_sync::ImuSyncMode::Disabled { .. }
+            );
+        let admission = ScanAdmission::new(
+            inputs
+                .imu_pose_predictor_init
+                .clone()
+                .filter(|_| imu_ingress),
+            inputs.node_params.imu_predictor_init_time_sec,
+        );
         let mut state = State::new(
             params,
             #[cfg(feature = "rerun")]
@@ -1448,6 +1410,7 @@ impl SyncNode {
                 realtime_imu_callback: inputs.realtime_imu_callback,
                 realtime_lidar_barrier_callback: inputs.realtime_lidar_barrier_callback,
             },
+            admission,
         )?;
         state.startup_tf = startup_tf;
         state.startup_base_frame = inputs.startup_base_frame;
@@ -1555,32 +1518,13 @@ impl SyncNode {
             replay_inputs_imu_ingress,
         ));
 
-        #[cfg(all(
-            not(feature = "no-imu-sync"),
-            any(
-                feature = "ros2-client",
-                feature = "mt_pubsub",
-                feature = "r2r",
-                feature = "hiroz"
-            )
+        #[cfg(any(
+            feature = "ros2-client",
+            feature = "mt_pubsub",
+            feature = "r2r",
+            feature = "hiroz"
         ))]
-        struct ImuInitState {
-            start_time: Option<f64>,
-            buffer: Option<Vec<ImuMsg>>,
-        }
-        #[cfg(all(
-            not(feature = "no-imu-sync"),
-            any(
-                feature = "ros2-client",
-                feature = "mt_pubsub",
-                feature = "r2r",
-                feature = "hiroz"
-            )
-        ))]
-        let imu_init_state = Arc::new(Mutex::new(ImuInitState {
-            start_time: None,
-            buffer: Some(Vec::new()),
-        }));
+        let imu_admission = Arc::clone(&state.lock().unwrap().admission);
 
         #[cfg(any(
             feature = "ros2-client",
@@ -1917,20 +1861,12 @@ impl SyncNode {
             feature = "hiroz"
         ))]
         let imu_tf_frame_lidar_inner = Arc::clone(&imu_tf_frame);
-        #[cfg(any(
-            feature = "ros2-client",
-            feature = "mt_pubsub",
-            feature = "r2r",
-            feature = "hiroz"
-        ))]
-        let init_imu_time = node_params.imu_predictor_init_time_sec;
         #[cfg(feature = "ros2-client")]
         std::thread::spawn(move || {
             if !enable_imu_ingress {
                 return;
             }
             // TODO use while let
-            let imu_pose_predictor_init = imu_pose_predictor_init.clone();
             loop {
                 match imu_subscription.take() {
                     Err(e) => {
@@ -1944,50 +1880,14 @@ impl SyncNode {
                             .lock()
                             .unwrap()
                             .get_or_insert(msg.header.frame_id.clone());
-                        let imu_init_state = imu_init_state.clone();
+                        let imu_admission = imu_admission.clone();
 
                         let imu_sync = imu_to_sync(msg.clone());
-                        let curr_stamp = timestamp_to_secs(&imu_sync.stamp);
                         #[cfg(feature = "rat")]
-                        let mut minot_bootstrap_trigger: Option<
-                            &'static str,
-                        > = None;
-
-                        if let Some(imu_pose_predictor_init) = imu_pose_predictor_init.as_ref() {
-                            let mut imu_pose_predictor_init =
-                                imu_pose_predictor_init.lock().unwrap();
-                            let mut init_state = imu_init_state.lock().unwrap();
-
-                            if init_state.start_time.is_none() {
-                                init_state.start_time = Some(curr_stamp);
-                            }
-
-                            if let Some(init_time) = init_state.start_time {
-                                let delta = curr_stamp - init_time;
-                                if delta < init_imu_time {
-                                    if let Some(ref mut buffer) = init_state.buffer {
-                                        // Buffer IMU for EKF init callback, but still forward it
-                                        // to sync so scan/IMU sync is not backend-timing dependent.
-                                        buffer.push(imu_sync.clone());
-
-                                        #[cfg(feature = "rat")]
-                                        {
-                                            minot_bootstrap_trigger = Some(MINOT_IMU_INIT_TICK);
-                                        }
-                                    }
-                                } else {
-                                    // apply the init buffer
-                                    if let Some(buffer) = init_state.buffer.take() {
-                                        imu_pose_predictor_init(&buffer);
-                                        info!("EKF: IMU initialization samples collected");
-                                        #[cfg(feature = "rat")]
-                                        {
-                                            minot_bootstrap_trigger = Some(MINOT_LIO_START_TICK);
-                                        }
-                                    }
-                                }
-                            }
-                        }
+                        let minot_bootstrap_trigger =
+                            minot_init_tick(imu_admission.lock().unwrap().observe_imu(&imu_sync));
+                        #[cfg(not(feature = "rat"))]
+                        imu_admission.lock().unwrap().observe_imu(&imu_sync);
 
                         let sync = state_clone.lock().unwrap().sync.clone();
                         let filtered = sync.lock().unwrap().add_imu(imu_sync);
@@ -2030,10 +1930,9 @@ impl SyncNode {
                 .unwrap()
             });
 
-            let imu_imu_init_state = imu_init_state.clone();
+            let thread_imu_admission = imu_admission.clone();
             let imu_replay_inputs = Arc::clone(&replay_inputs);
             std::thread::spawn(move || {
-                let imu_pose_predictor_init = imu_pose_predictor_init.clone();
                 while let Some(msg) = imu_sub_rt.block_on(imu_sub.next()) {
                     // debug!("received imu");
                     let sync = {
@@ -2045,47 +1944,14 @@ impl SyncNode {
                             .get_or_insert(msg.header.frame_id.clone());
                         state.sync.clone()
                     };
-                    let imu_init_state = imu_imu_init_state.clone();
+                    let imu_admission = thread_imu_admission.clone();
 
                     let imu_sync = imu_to_sync(msg.clone());
-                    let curr_stamp = timestamp_to_secs(&imu_sync.stamp);
                     #[cfg(feature = "rat")]
-                    let mut minot_bootstrap_trigger: Option<&'static str> = None;
-
-                    if let Some(imu_pose_predictor_init) = imu_pose_predictor_init.as_ref() {
-                        let mut imu_pose_predictor_init = imu_pose_predictor_init.lock().unwrap();
-                        let mut init_state = imu_init_state.lock().unwrap();
-
-                        if init_state.start_time.is_none() {
-                            init_state.start_time = Some(curr_stamp);
-                        }
-
-                        if let Some(init_time) = init_state.start_time {
-                            let delta = curr_stamp - init_time;
-                            if delta < init_imu_time {
-                                if let Some(ref mut buffer) = init_state.buffer {
-                                    // Buffer IMU for EKF init callback, but still forward it
-                                    // to sync so scan/IMU sync is not backend-timing dependent.
-                                    buffer.push(imu_sync.clone());
-
-                                    #[cfg(feature = "rat")]
-                                    {
-                                        minot_bootstrap_trigger = Some(MINOT_IMU_INIT_TICK);
-                                    }
-                                }
-                            } else {
-                                // apply the init buffer
-                                if let Some(buffer) = init_state.buffer.take() {
-                                    imu_pose_predictor_init(&buffer);
-                                    info!("EKF: IMU initialization samples collected");
-                                    #[cfg(feature = "rat")]
-                                    {
-                                        minot_bootstrap_trigger = Some(MINOT_LIO_START_TICK);
-                                    }
-                                }
-                            }
-                        }
-                    }
+                    let minot_bootstrap_trigger =
+                        minot_init_tick(imu_admission.lock().unwrap().observe_imu(&imu_sync));
+                    #[cfg(not(feature = "rat"))]
+                    imu_admission.lock().unwrap().observe_imu(&imu_sync);
 
                     let filtered = sync.lock().unwrap().add_imu(imu_sync);
                     #[cfg(feature = "rat")]
@@ -2111,7 +1977,6 @@ impl SyncNode {
             if !enable_imu_ingress {
                 return;
             }
-            let imu_pose_predictor_init = imu_pose_predictor_init.clone();
             while let Some(msg) = future::block_on(imu_subscription.next()) {
                 let sync = {
                     let state = state_clone.lock().unwrap();
@@ -2122,47 +1987,14 @@ impl SyncNode {
                         .get_or_insert(msg.header.frame_id.clone());
                     state.sync.clone()
                 };
-                let imu_init_state = imu_init_state.clone();
+                let imu_admission = imu_admission.clone();
 
                 let imu_sync = imu_to_sync(msg.clone());
-                let curr_stamp = timestamp_to_secs(&imu_sync.stamp);
                 #[cfg(feature = "rat")]
-                let mut minot_bootstrap_trigger: Option<&'static str> = None;
-
-                if let Some(imu_pose_predictor_init) = imu_pose_predictor_init.as_ref() {
-                    let mut imu_pose_predictor_init = imu_pose_predictor_init.lock().unwrap();
-                    let mut init_state = imu_init_state.lock().unwrap();
-
-                    if init_state.start_time.is_none() {
-                        init_state.start_time = Some(curr_stamp);
-                    }
-
-                    if let Some(init_time) = init_state.start_time {
-                        let delta = curr_stamp - init_time;
-                        if delta < init_imu_time {
-                            if let Some(ref mut buffer) = init_state.buffer {
-                                // Buffer IMU for EKF init callback, but still forward it
-                                // to sync so scan/IMU sync is not backend-timing dependent.
-                                buffer.push(imu_sync.clone());
-
-                                #[cfg(feature = "rat")]
-                                {
-                                    minot_bootstrap_trigger = Some(MINOT_IMU_INIT_TICK);
-                                }
-                            }
-                        } else {
-                            // apply the init buffer
-                            if let Some(buffer) = init_state.buffer.take() {
-                                imu_pose_predictor_init(&buffer);
-                                info!("EKF: IMU initialization samples collected");
-                                #[cfg(feature = "rat")]
-                                {
-                                    minot_bootstrap_trigger = Some(MINOT_LIO_START_TICK);
-                                }
-                            }
-                        }
-                    }
-                }
+                let minot_bootstrap_trigger =
+                    minot_init_tick(imu_admission.lock().unwrap().observe_imu(&imu_sync));
+                #[cfg(not(feature = "rat"))]
+                imu_admission.lock().unwrap().observe_imu(&imu_sync);
 
                 let filtered = sync.lock().unwrap().add_imu(imu_sync);
                 #[cfg(feature = "rat")]
@@ -2189,9 +2021,8 @@ impl SyncNode {
         if enable_imu_ingress {
             let filtered_imu_sender_hiroz = filtered_imu_sender.clone();
             let imu_sub_rt = Arc::clone(&rt);
-            let imu_imu_init_state = imu_init_state.clone();
+            let thread_imu_admission = imu_admission.clone();
             imu_sub_rt.spawn(async move {
-                let imu_pose_predictor_init = imu_pose_predictor_init.clone();
                 let mut received_first = false;
                 while let Ok(msg) = imu_subscription.async_recv().await {
                     if !received_first {
@@ -2210,42 +2041,14 @@ impl SyncNode {
                             .get_or_insert(msg.header.frame_id.clone());
                         state.sync.clone()
                     };
-                    let imu_init_state = imu_imu_init_state.clone();
+                    let imu_admission = thread_imu_admission.clone();
 
                     let imu_sync = imu_to_sync(msg.clone());
-                    let curr_stamp = timestamp_to_secs(&imu_sync.stamp);
                     #[cfg(feature = "rat")]
-                    let mut minot_bootstrap_trigger: Option<&'static str> = None;
-
-                    if let Some(imu_pose_predictor_init) = imu_pose_predictor_init.as_ref() {
-                        let mut imu_pose_predictor_init = imu_pose_predictor_init.lock().unwrap();
-                        let mut init_state = imu_init_state.lock().unwrap();
-
-                        if init_state.start_time.is_none() {
-                            init_state.start_time = Some(curr_stamp);
-                        }
-
-                        if let Some(init_time) = init_state.start_time {
-                            let delta = curr_stamp - init_time;
-                            if delta < init_imu_time {
-                                if let Some(ref mut buffer) = init_state.buffer {
-                                    buffer.push(imu_sync.clone());
-
-                                    #[cfg(feature = "rat")]
-                                    {
-                                        minot_bootstrap_trigger = Some(MINOT_IMU_INIT_TICK);
-                                    }
-                                }
-                            } else if let Some(buffer) = init_state.buffer.take() {
-                                imu_pose_predictor_init(&buffer);
-                                info!("EKF: IMU initialization samples collected");
-                                #[cfg(feature = "rat")]
-                                {
-                                    minot_bootstrap_trigger = Some(MINOT_LIO_START_TICK);
-                                }
-                            }
-                        }
-                    }
+                    let minot_bootstrap_trigger =
+                        minot_init_tick(imu_admission.lock().unwrap().observe_imu(&imu_sync));
+                    #[cfg(not(feature = "rat"))]
+                    imu_admission.lock().unwrap().observe_imu(&imu_sync);
 
                     let filtered = sync.lock().unwrap().add_imu(imu_sync);
                     #[cfg(feature = "rat")]
@@ -2281,10 +2084,6 @@ impl SyncNode {
                 logger: "".to_string(), // TODO rm logger prefix
                 #[cfg(feature = "native-drivers")]
                 native_drivers: None,
-                #[cfg(feature = "native-drivers")]
-                native_imu_init,
-                #[cfg(feature = "native-drivers")]
-                native_imu_init_time: node_params.imu_predictor_init_time_sec,
             },
             rx,
         ))

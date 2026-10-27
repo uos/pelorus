@@ -45,7 +45,6 @@ keywords = ["robotics"]
 license = "MIT OR Apache-2.0"
 repository = "https://codeberg.org/stelzo/pelorus"
 version = "0.0.9"
-authors = ["stelzo <stelzo@steado.de>"]
 rust-version = "1.96.0"
 
 [workspace.dependencies]
@@ -63,7 +62,7 @@ pelorus_vulkan = { path = "pelorus_vulkan", version = "0.0.9", default-features 
 pelorus_wgpu = { path = "pelorus_wgpu", version = "0.0.9" }
 pelorus_drivers = { path = "pelorus_drivers", version = "0.0.9", default-features = false }
 
-transforms_io = { version = "0.7.0", default-features = false }
+transforms_io = { version = "0.8.0", default-features = false }
 ros_pointcloud2 = { version = "1.0.0-rc.5", features = [
   "derive",
   "r2r",
@@ -71,14 +70,14 @@ ros_pointcloud2 = { version = "1.0.0-rc.5", features = [
   "ros2_interfaces_jazzy_rkyv",
   "nalgebra",
 ] }
-ratslang = { path = "../ratslang/ratslang", features = ["serde"] }
-mt_pubsub = { version = "0.13.0", default-features = false }
-mt_service = { version = "0.13.0", default-features = false }
-mt_log = { version = "0.13.0", features = ["tui", "env"] }
-mt_rat = { version = "0.13.0", default-features = false }
+ratslang = { version = "0.5.0", features = ["serde"] }
+mt_pubsub = { version = "0.14.0", default-features = false }
+mt_service = { version = "0.14.0", default-features = false }
+mt_log = { version = "0.14.0", features = ["tui", "env"] }
+mt_rat = { version = "0.14.0", default-features = false }
 cloudini = { version = "0.3.2", default-features = false, features = ["ros"] }
 imu-calib = "0.3"
-ros2-interfaces-jazzy-serde = { version = "0.0.6", default-features = false, features = [
+ros2-interfaces-jazzy-serde = { version = "0.0.7", default-features = false, features = [
   "std_msgs",
   "geometry_msgs",
   "nav_msgs",
@@ -107,7 +106,7 @@ faer = { version = "0.24", default-features = false, features = [
   "sparse-linalg",
 ] }
 r2r = { version = "0.9.7" }
-ros2-client = { version = "0.10" }
+ros2-client = { version = "0.12" }
 hiroz = { version = "0.2.0", default-features = false, features = [
   "rmw-zenoh",
   "jazzy",
@@ -223,16 +222,9 @@ inherits = "release"
 opt-level = 3
 
 [patch.crates-io]
-# Message-only builds avoid the ROS client and DDS runtime.
-ros2-interfaces-jazzy-serde = { path = "../ros2-interfaces-jazzy-serde" }
 # imu-calib 0.4 is not published yet; drop this once it is.
 # imu-calib = { path = "../imu-calib" }
 # ros_pointcloud2 = { path = "../ros_pointcloud2/ros_pointcloud2" }
-mt_pubsub = { path = "../minot/mt_pubsub" }
-mt_service = { path = "../minot/mt_service" }
-mt_rat = { path = "../minot/mt_rat" }
-mt_log = { path = "../minot/mt_log" }
-transforms_io = { git = "https://git.steado.tech/transforms_io.git", branch = "main" }
 # For local development against sibling checkouts:
 # mt_pubsub = { path = "../minot/mt_pubsub" }
 # mt_service = { path = "../minot/mt_service" }

@@ -831,7 +831,6 @@ pub struct LioConfig {
     pub map_multiresolution: bool,
     pub imu_params: ImuParameters,
     pub lidar_odom_cov: f64,
-    pub enable_live_extrinsic_calibration: bool,
     pub sync_params: SyncParameters,
     pub sync_node_params: SyncNodeParameters,
     pub neighbor_max_range: f64,

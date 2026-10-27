@@ -1,0 +1,12 @@
+/* Pelorus colours, from the gold needle of the logo. seakit.css does the rest. */
+[data-md-color-scheme="default"] {
+  --sk-brand: #806308;
+  --sk-brand-strong: #604906;
+  --sk-brand-soft: #e5c65c;
+}
+
+[data-md-color-scheme="slate"] {
+  --sk-brand: #e7ce70;
+  --sk-brand-strong: #ac8824;
+  --sk-brand-soft: #e5c65c;
+}

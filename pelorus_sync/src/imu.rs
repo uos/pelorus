@@ -225,7 +225,6 @@ pub struct ImuProcess {
     integrated_guess: (Isometry3<f64>, TimeMsg),
     runtime_eval: crate::RuntimeEvaluator,
 
-    pub intrinsic_calibration_given: bool,
     pub gravity: f64,
 }
 
@@ -246,7 +245,7 @@ pub struct ImuProcessedCloud<'a> {
 }
 
 impl ImuProcess {
-    pub fn new(gravity: f64, intrinsic_calibration_given: bool) -> Self {
+    pub fn new(gravity: f64) -> Self {
         Self {
             gravity,
             last_lidar_stamp: None,
@@ -254,7 +253,6 @@ impl ImuProcess {
             gyr_int: GyrInt::new(),
             integrated_guess: (Isometry3::identity(), TimeMsg::default()),
             runtime_eval: crate::RuntimeEvaluator::new(),
-            intrinsic_calibration_given,
         }
     }
 
@@ -265,11 +263,6 @@ impl ImuProcess {
         config: Option<&UndistortParameters>,
     ) -> (Isometry3<f64>, SE3) {
         self.integrate_gyr(imu_data, start_time);
-
-        // only use translation in integration if we have calibration
-        /*let mut t_l_be = if self.intrinsic_calibration_given {
-            self.gyr_int.get_pose()
-        } else {*/
 
         let mut t_l_be = SE3::from_rotation_and_translation(
             self.gyr_int.get_rot(),
