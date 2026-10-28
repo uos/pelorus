@@ -27,8 +27,10 @@ else
   echo "No ratslang checkout next to pelorus. The config editor stays plain." >&2
 fi
 
-# Share the documentation logo with the browser demo.
+# Share the documentation logo with the browser demo, and its tab icons with
+# the script that picks one for the browser's colour scheme.
 cp "$root/docs/docs/images/pelorus.svg" "$web/pelorus.svg"
+cp "$root"/docs/docs/images/favicon{,-light,-dark}.svg "$root/docs/docs/javascripts/favicon.js" "$web/"
 
 # Libron, the typeface of the documentation, with its licence.
 mkdir -p "$web/fonts"

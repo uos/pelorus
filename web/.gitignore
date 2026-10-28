@@ -3,3 +3,5 @@
 /demo/*.mcap
 /syntaxes/
 /fonts/
+/favicon*.svg
+/favicon.js

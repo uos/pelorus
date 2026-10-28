@@ -46,7 +46,7 @@ rsync=(rsync -rlt --checksum --delay-updates --chmod=D755,F644 --itemize-changes
 case "$mode" in
   site)
     missing=0
-    for file in index.html main.js pkg/pelorus_web.js pkg/pelorus_web_bg.wasm pelorus.svg; do
+    for file in index.html main.js pkg/pelorus_web.js pkg/pelorus_web_bg.wasm pelorus.svg favicon.svg favicon.js; do
       [[ -f "$web/$file" ]] || { echo "Missing $file. Run web/build.sh first." >&2; missing=1; }
     done
     for file in $(referenced | grep '^configs/'); do
