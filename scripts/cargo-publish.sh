@@ -30,10 +30,12 @@ PACKAGES=(
     "pelorus_cuda"
     "pelorus_metal"
     "pelorus_vulkan"
+    "pelorus_wgpu"
     "pelorus_sync"
     "pelorus_reg"
     "pelorus_syncio"
     "pelorus_sdk"
+    "pelorus_tui"
     "pelorus_cli"
 )
 
