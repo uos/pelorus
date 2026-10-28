@@ -236,8 +236,8 @@ impl ImuProcessing {
 
         // Initialize R_W_I so the world frame aligns with the base frame (not the IMU or Lidar frame).
         // R_W_B = R_W_I * R_I_L * R_L_B = I  =>  R_W_I = (R_I_L * R_L_B)^{-1} = R_B_L * R_L_I
-        // Note: self.lidar_to_base_r is R_B_L.
-        let r_b_l = self.lidar_to_base_r;
+        // self.lidar_to_base_r is R_L_B, the inverse of the configured base_to_lidar.
+        let r_b_l = self.lidar_to_base_r.transpose();
         let r_l_i = self.lidar_to_imu_r.transpose();
         let r_w_i_mat = r_b_l * r_l_i;
         ekf.state.rot = SO3::try_from_mat(&r_w_i_mat).unwrap();

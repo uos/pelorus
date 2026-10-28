@@ -79,6 +79,8 @@ pub struct LioCore {
     webgpu: Option<pelorus_wgpu::Correspondence>,
     t_world: Isometry3<f64>,
     t_last_current: Isometry3<f64>,
+    /// Whether `t_world` holds a registered pose yet.
+    t_world_registered: bool,
     last_scan_time: Option<f64>,
     eval: RuntimeEvaluator,
     #[cfg(feature = "cuda")]
@@ -169,6 +171,7 @@ impl LioCore {
             webgpu: None,
             t_world: Isometry3::identity(),
             t_last_current: Isometry3::identity(),
+            t_world_registered: false,
             last_scan_time: None,
             eval: RuntimeEvaluator::new(),
             #[cfg(feature = "cuda")]
@@ -424,6 +427,7 @@ impl LioCore {
         };
         // transformation from the last pose to the current pose in the local frame
         self.t_last_current = old_t_world.inverse() * self.t_world;
+        self.t_world_registered = true;
 
         let (pose_covariance, twist_covariance) = {
             let guard = self.map.lock();
@@ -472,16 +476,22 @@ impl LioCore {
             ))
         };
         if position.x == 0.0 && position.y == 0.0 && position.z == 0.0 {
+            let (world_lidar, last_current_lidar) = lidar_motion(
+                self.t_world_registered.then_some(&self.t_world),
+                &self.t_last_current,
+                self.config.base_link_frame.is_some(),
+                &self.config.base_to_lidar,
+            );
             // sync did not return a orientation (for example when not using IMU at all), use the last difference as guess
             if orientation.w == 1.0
                 && orientation.i == 0.0
                 && orientation.j == 0.0
                 && orientation.k == 0.0
             {
-                self.t_world * self.t_last_current
+                world_lidar * last_current_lidar
             } else {
                 // there is an orientation calculated by sync for undeskewing the cloud, so we can use that
-                self.t_world * Isometry3::from_parts(self.t_last_current.translation, rotation())
+                world_lidar * Isometry3::from_parts(last_current_lidar.translation, rotation())
             }
         } else {
             let translation = Translation3::new(position.x, position.y, position.z);
@@ -534,6 +544,7 @@ impl LioCore {
         drop(map);
         self.t_world = Isometry3::identity();
         self.t_last_current = Isometry3::identity();
+        self.t_world_registered = false;
     }
 
     /// Quiesce the backend and release this core's GPU buffers.
@@ -583,4 +594,30 @@ impl LioCore {
         let Self { active_backend, .. } = self;
         active_backend
     }
+}
+
+/// The last Lidar pose and the Lidar motion of the last step, from `t_world`
+/// and `t_last_current`.
+///
+/// Those follow the output frame, which is the base when one is configured,
+/// while the map takes Lidar poses. Before the first registration
+/// (`t_world` is `None`) the filter has the base at the world origin, which puts
+/// the Lidar at `base_to_lidar`.
+fn lidar_motion(
+    t_world: Option<&Isometry3<f64>>,
+    t_last_current: &Isometry3<f64>,
+    output_is_base: bool,
+    base_to_lidar: &Isometry3<f64>,
+) -> (Isometry3<f64>, Isometry3<f64>) {
+    let output_to_lidar = if output_is_base {
+        *base_to_lidar
+    } else {
+        Isometry3::identity()
+    };
+    let world_lidar = match t_world {
+        Some(t_world) => t_world * output_to_lidar,
+        None => *base_to_lidar,
+    };
+    let last_current_lidar = output_to_lidar.inverse() * t_last_current * output_to_lidar;
+    (world_lidar, last_current_lidar)
 }
