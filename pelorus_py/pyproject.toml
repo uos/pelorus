@@ -20,14 +20,15 @@ classifiers = [
 ]
 dependencies = ["numpy>=1.16"]
 
+[project.urls]
+Homepage = "https://pelorus.steado.tech"
+Documentation = "https://pelorus.steado.tech/docs/"
+Repository = "https://codeberg.org/stelzo/pelorus"
+
 [project.optional-dependencies]
 mcap = ["mcap-ros2-support>=0.5.7,<0.6.0"]
 cli = ["pelorus-cli[rerun]"]
 all = ["pelorus-cli[rerun]", "mcap-ros2-support>=0.5.7,<0.6.0", "dedrunk-cli", "marina-cli"]
-
-[project.urls]
-Homepage = "https://github.com/uos/pelorus"
-Repository = "https://github.com/uos/pelorus"
 
 [tool.maturin]
 python-source = "python"

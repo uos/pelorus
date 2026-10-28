@@ -45,6 +45,8 @@ include = [
 keywords = ["robotics"]
 license = "MIT OR Apache-2.0"
 repository = "https://codeberg.org/stelzo/pelorus"
+homepage = "https://pelorus.steado.tech"
+documentation = "https://pelorus.steado.tech/docs/"
 version = "0.0.9"
 rust-version = "1.96.0"
 

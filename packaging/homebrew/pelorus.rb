@@ -3,7 +3,7 @@
 # before publishing to the tap.
 class Pelorus < Formula
   desc "Highly efficient Lidar Inertial Odometry"
-  homepage "https://codeberg.org/stelzo/pelorus"
+  homepage "https://pelorus.steado.tech"
   version "VERSION_PLACEHOLDER"
   license any_of: ["MIT", "Apache-2.0"]
 
