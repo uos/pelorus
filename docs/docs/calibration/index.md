@@ -8,7 +8,7 @@ Calibration is optional. Pelorus produces a usable trajectory on the defaults wi
 | Noise densities and bias random walks | Hours, sensor completely undisturbed | `dedrunk imu noise` | `imu.covariance_*` |
 | Lidar to IMU transform and clock offset | Minutes of driving, turning and tilting | `dedrunk extrinsics lidar-imu` | `imu.from_lidar_transform`, `imu.calibration.time_offset` |
 
-[Dedrunk](https://dedrunk.steado.tech/) does the fitting. It reads MCAP recordings and ROS 2 bags and writes Kalibr format YAML. It ships with `pelorus[all]` and the Homebrew package, and installs on its own with `cargo install dedrunk`. Its documentation covers the motion each fit needs, how to read the results and what to do when a fit refuses. This page covers the Pelorus side: recording and applying the results.
+[Dedrunk](https://dedrunk.steado.tech/docs/) does the fitting. It reads MCAP recordings and ROS 2 bags and writes Kalibr format YAML. It ships with `pelorus[all]` and the Homebrew package, and installs on its own with `cargo install dedrunk`. Its documentation covers the motion each fit needs, how to read the results and what to do when a fit refuses. This page covers the Pelorus side: recording and applying the results.
 
 The steps can be done in any order. The extrinsic fit is cleaner with the intrinsics already applied.
 
@@ -24,7 +24,7 @@ pelorus online raw --output-rosbag calib_drive
 pelorus online raw imu --output-rosbag imu_static
 ```
 
-One drive with both sensors covers intrinsics and extrinsics if it follows [Dedrunk's recording guide](https://dedrunk.steado.tech/recording/). The noise measurement needs its own recording of at least three hours. `dedrunk topics <bag>` lists what was recorded. `--output-mcap` works as well.
+One drive with both sensors covers intrinsics and extrinsics if it follows [Dedrunk's recording guide](https://dedrunk.steado.tech/docs/recording/). The noise measurement needs its own recording of at least three hours. `dedrunk topics <bag>` lists what was recorded. `--output-mcap` works as well.
 
 !!! warning "Calibrate against raw IMU output"
 
@@ -78,7 +78,7 @@ dedrunk extrinsics lidar-imu lidar_traj --imu-bag calib_drive --pelorus lidar_im
 
 [`imu.lidar_only`](../configuration/reference/imu.md#imu-lidar-only) ignores the IMU and `imu.from_lidar_transform`. Roll and pitch are relative to the start pose in this mode, so use it only for calibration.
 
-Read [Dedrunk's observability report](https://dedrunk.steado.tech/extrinsics/#results) before accepting the output. A level loop drive does not constrain every parameter, and an existing calibration is better than an unconstrained replacement. Dedrunk prints a block with `imu.from_lidar_transform` and `imu.calibration.time_offset` to paste into the configuration, and `--pelorus lidar_imu.rl` writes the same block to a file to include with `= ./lidar_imu.rl`. Includes resolve relative to the including file, and a setting assigned after an include overrides it.
+Read [Dedrunk's observability report](https://dedrunk.steado.tech/docs/extrinsics/#results) before accepting the output. A level loop drive does not constrain every parameter, and an existing calibration is better than an unconstrained replacement. Dedrunk prints a block with `imu.from_lidar_transform` and `imu.calibration.time_offset` to paste into the configuration, and `--pelorus lidar_imu.rl` writes the same block to a file to include with `= ./lidar_imu.rl`. Includes resolve relative to the including file, and a setting assigned after an include overrides it.
 
 [`imu.calibration.time_offset`](../configuration/reference/imu.md#imu-calibration-time-offset) is how far the IMU clock runs ahead of the Lidar clock. Pelorus subtracts it from every IMU timestamp. The effect grows with turn rate. At 1 rad/s, 10 ms of skew rotates the scan by about half a degree.
 
