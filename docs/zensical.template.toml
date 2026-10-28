@@ -110,7 +110,7 @@ extra_css = [
 # The path provided should be relative to the "docs_dir".
 #
 # Read more: https://zensical.org/docs/customization/#additional-javascript
-extra_javascript = ["javascripts/config-reference.js"]
+extra_javascript = ["javascripts/config-reference.js", "javascripts/favicon.js"]
 
 # ----------------------------------------------------------------------------
 # Section for configuring theme options

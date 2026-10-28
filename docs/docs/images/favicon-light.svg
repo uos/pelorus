@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" fill="none">
+  <!-- The tab icon for light browsers: the darker gold of the documentation,
+       as the logo's light gold disappears on a light tab bar. -->
+  <path d="M77 24A42 42 0 1 0 104 51" stroke="#806308" stroke-width="10" stroke-linecap="round"/>
+  <path d="m100 28-26 45-30 11 11-30Z" fill="#806308"/>
+  <path d="m100 28-36 36-20 20 11-30Z" fill="#604906"/>
+</svg>
