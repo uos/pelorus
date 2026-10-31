@@ -12,6 +12,15 @@ cargo add pelorus_sdk --no-default-features
 
 The target needs atomic compare-and-swap. Every Cortex-M3 or newer, every RISC-V core with the A extension such as `riscv32imac`, and every 32-bit or 64-bit application processor has it. Cortex-M0 and RISC-V cores without the A extension, such as `riscv32i` and `riscv32imc`, do not. The binary needs an `#[global_allocator]`.
 
+Pelorus computes in `f64`, so a core with a double-precision FPU runs it much faster. The Cortex-M7 has one, but the target `thumbv7em-none-eabihf` assumes the single-precision FPU of the Cortex-M4F and turns every `f64` operation into a software routine. Name the CPU in `.cargo/config.toml`:
+
+```toml
+[target.thumbv7em-none-eabihf]
+rustflags = ["-C", "target-cpu=cortex-m7"]
+```
+
+Cortex-M4F and Cortex-M33 cores only have a single-precision FPU, and there `f64` always runs in software.
+
 ## Running the odometry
 
 Without std, Pelorus cannot read Ratslang configuration files. The `Odometer` takes a resolved `LioConfig` instead. `LioConfig::defaults()` is the configuration the embedded `default.rl` resolves to. Change its fields for your sensors before you create the odometer:
@@ -37,7 +46,7 @@ pub fn run(
 ) -> Result<(), pelorus::Error> {
     let mut config = LioConfig::defaults();
     config.map_resolution = 0.5;
-    let mut odometer = Odometer::from_config(config, true)?;
+    let mut odometer = Odometer::from_config(config, false)?;
 
     loop {
         match receive() {
@@ -56,6 +65,8 @@ pub fn run(
     }
 }
 ```
+
+The second argument of `from_config` is `false` because `add_points_xyzit` hands over generic points, with `t` as the nanosecond offset to the scan stamp. With `true`, Pelorus reads every cloud in the layout of the configured `lidar.vendor` instead. The default vendor `NoTimestamp` has no time field, so the scans would not be deskewed.
 
 Everything runs on the calling thread:
 

@@ -7,7 +7,7 @@ name = "pelorus"
 dynamic = ["version"]
 description = "Pelorus - Resource-aware Lidar-Inertial Odometry"
 readme = "README.md"
-requires-python = ">=3.8"
+requires-python = ">=3.9"
 license = { text = "MIT OR Apache-2.0" }
 keywords = ["robotics", "lidar", "odometry", "lio", "slam"]
 classifiers = [

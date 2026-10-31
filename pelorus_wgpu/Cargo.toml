@@ -11,7 +11,7 @@ include.workspace = true
 rust-version.workspace = true
 
 [dependencies]
-wgpu = { version = "29", default-features = false, features = ["std", "wgsl", "webgpu", "vulkan", "metal", "dx12"] }
+wgpu = { version = "30", default-features = false, features = ["std", "wgsl", "webgpu", "vulkan", "metal", "dx12"] }
 bytemuck.workspace = true
 anyhow.workspace = true
 nalgebra.workspace = true
@@ -22,4 +22,4 @@ futures-channel = "0.3"
 
 [dev-dependencies]
 futures-lite.workspace = true
-naga = { version = "29", features = ["wgsl-in"] }
+naga = { version = "30", features = ["wgsl-in"] }

@@ -332,7 +332,9 @@ impl<W: Write + Seek> McapWriter<W> {
         if let Some(qos) = qos {
             metadata.insert("offered_qos_profiles".to_string(), qos.to_string());
         }
-        let channel = self.writer.add_channel(schema_id, topic, "cdr", &metadata)?;
+        let channel = self
+            .writer
+            .add_channel(schema_id, topic, "cdr", &metadata)?;
         self.topics.push(TopicEntry {
             name: topic.to_string(),
             ros_type: schema.name,
@@ -873,10 +875,18 @@ mod tests {
             .split("- topic_metadata:")
             .find(|entry| entry.contains("'/tf_static'"))
             .expect("metadata lists /tf_static");
-        assert!(static_entry.contains("durability: transient_local"), "{static_entry}");
+        assert!(
+            static_entry.contains("durability: transient_local"),
+            "{static_entry}"
+        );
         assert!(static_entry.contains("message_count: 1"), "{static_entry}");
         // Every other topic keeps the default QoS.
-        assert!(!messages[1].channel.metadata.contains_key("offered_qos_profiles"));
+        assert!(
+            !messages[1]
+                .channel
+                .metadata
+                .contains_key("offered_qos_profiles")
+        );
         Ok(())
     }
 

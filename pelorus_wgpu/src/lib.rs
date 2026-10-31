@@ -393,7 +393,9 @@ impl Correspondence {
             .context("WebGPU readback cancelled")?
             .context("WebGPU readback")?;
         {
-            let data = slice.get_mapped_range();
+            let data = slice
+                .get_mapped_range()
+                .context("mapping the WebGPU readback")?;
             // read_unaligned avoids relying on the browser's mapped allocation alignment.
             for (p, bytes) in self.host_points.iter().zip(data.chunks_exact(16)) {
                 let plane: [f32; 4] = bytemuck::pod_read_unaligned(bytes);

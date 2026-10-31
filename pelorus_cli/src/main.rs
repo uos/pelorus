@@ -417,7 +417,6 @@ pub struct RawArgs {
     /// Answer yes to overwrite prompts.
     #[arg(short = 'y', long, global = true, default_value_t = false)]
     pub yes: bool,
-
 }
 
 /// Recording targets for raw sensor data.
@@ -2058,7 +2057,11 @@ fn lio_with_ready_signal(
             rt.as_ref()
                 .expect("rt always exists with mt_pubsub feat")
                 .spawn(async move {
-                    if consumer_registered.wait_for(|registered| *registered).await.is_err() {
+                    if consumer_registered
+                        .wait_for(|registered| *registered)
+                        .await
+                        .is_err()
+                    {
                         return;
                     }
                     while let Some((topic, messages)) = stream_ends.recv().await {
@@ -3661,14 +3664,11 @@ fn lio_with_ready_signal(
                     #[cfg(not(any(feature = "cuda", feature = "metal", feature = "vulkan")))]
                     {
                         if config.map_multiresolution {
-                            let distributions =
-                                core.map().lock().get_distributions_with_levels();
+                            let distributions = core.map().lock().get_distributions_with_levels();
                             log_multires_snapshot_to_rerun(rec, distributions, map_config);
                         } else {
-                            let distributions = core
-                                .map()
-                                .lock()
-                                .get_distributions_with_lru_scores();
+                            let distributions =
+                                core.map().lock().get_distributions_with_lru_scores();
                             log_map_snapshot_to_rerun(rec, distributions, map_config);
                         }
                     }
@@ -4255,10 +4255,11 @@ fn lio_with_ready_signal(
         loop {
             node.spin_once(spin_timeout);
             if let Some(ref flag) = spinner_shutdown_flag
-                && flag.load(Ordering::Relaxed) {
-                    info!("Shutdown flag detected in r2r spinner");
-                    break;
-                }
+                && flag.load(Ordering::Relaxed)
+            {
+                info!("Shutdown flag detected in r2r spinner");
+                break;
+            }
             if processing_handle.is_finished() {
                 info!("Processing thread finished");
                 break;
@@ -4919,7 +4920,9 @@ pf! [i, t, s], i 2
 
 #[cfg(all(test, feature = "rat"))]
 mod offline_minot_config_tests {
-    use super::{ForwardedTopic, build_offline_minot_config, build_offline_minot_config_with_topics};
+    use super::{
+        ForwardedTopic, build_offline_minot_config, build_offline_minot_config_with_topics,
+    };
 
     #[test]
     fn lidar_only_replay_requests_clouds_without_declaring_imu() {
@@ -5004,10 +5007,15 @@ mod offline_minot_config_tests {
         let line = r#"{"lvl":"INFO","src":"Minot","tgt":"minot::replay","msg":"stream /boxi/alphasense/left/image_raw/compressed ended after 4380 messages"}"#;
         assert_eq!(
             parse_minot_stream_end(line),
-            Some(("/boxi/alphasense/left/image_raw/compressed".to_owned(), 4380))
+            Some((
+                "/boxi/alphasense/left/image_raw/compressed".to_owned(),
+                4380
+            ))
         );
         assert_eq!(
-            parse_minot_stream_end("[INFO] [Minot] minot::replay: stream /cam ended after 0 messages"),
+            parse_minot_stream_end(
+                "[INFO] [Minot] minot::replay: stream /cam ended after 0 messages"
+            ),
             Some(("/cam".to_owned(), 0))
         );
         assert_eq!(parse_minot_stream_end("reached end of bagfile"), None);
@@ -6129,15 +6137,17 @@ fn main() -> Result<(), Box<dyn CoreError>> {
                     node.spin_once(Duration::from_millis(10));
 
                     if lidar_frame.is_none()
-                        && let Ok(f) = lidar_rx.try_recv() {
-                            eprintln!("Lidar frame ID: {}", f);
-                            lidar_frame = Some(f);
-                        }
+                        && let Ok(f) = lidar_rx.try_recv()
+                    {
+                        eprintln!("Lidar frame ID: {}", f);
+                        lidar_frame = Some(f);
+                    }
                     if imu_frame.is_none()
-                        && let Ok(f) = imu_rx.try_recv() {
-                            eprintln!("IMU frame ID: {}", f);
-                            imu_frame = Some(f);
-                        }
+                        && let Ok(f) = imu_rx.try_recv()
+                    {
+                        eprintln!("IMU frame ID: {}", f);
+                        imu_frame = Some(f);
+                    }
                     if lidar_frame.is_some() && imu_frame.is_some() {
                         break;
                     }
@@ -6451,10 +6461,7 @@ mod mcap_output_config_tests {
     #[cfg(feature = "mt_pubsub")]
     #[test]
     fn pipeline_flags_cannot_be_combined_with_raw() {
-        assert!(
-            Args::try_parse_from(["pelorus", "online", "--local-only", "raw", "imu"])
-                .is_err()
-        );
+        assert!(Args::try_parse_from(["pelorus", "online", "--local-only", "raw", "imu"]).is_err());
     }
 
     #[test]

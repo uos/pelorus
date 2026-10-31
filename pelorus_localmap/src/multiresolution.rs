@@ -482,7 +482,11 @@ impl MultiResolutionMap {
         self.levels
             .iter()
             .enumerate()
-            .flat_map(|(level, l)| l.cells.iter().map(move |c| (c.distribution.export(), level as u8)))
+            .flat_map(|(level, l)| {
+                l.cells
+                    .iter()
+                    .map(move |c| (c.distribution.export(), level as u8))
+            })
             .collect()
     }
 

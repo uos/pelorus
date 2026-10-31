@@ -433,7 +433,7 @@ impl IVoxHashMap {
             #[cfg(not(feature = "os-rng-seed"))]
             rng: rand_pcg::Pcg64Mcg::seed_from_u64(SAMPLING_SEED),
             #[cfg(feature = "os-rng-seed")]
-            rng: rand_pcg::Pcg64Mcg::from_os_rng(),
+            rng: rand::make_rng(),
         }
     }
 

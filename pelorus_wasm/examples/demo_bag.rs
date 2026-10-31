@@ -200,9 +200,9 @@ fn main() -> Result<()> {
 
     let mut options = IndexedReaderOptions::new()
         .include_topics(std::iter::once(args.cloud.clone()).chain(args.imu.clone()))
-        .log_time_on_or_after(start);
+        .starting_at(start);
     if let Some(duration) = args.duration_s {
-        options = options.log_time_before(start + (duration * 1e9) as u64);
+        options = options.ending_before(start + (duration * 1e9) as u64);
     }
     let mut reader = IndexedReader::new_with_options(&summary, options)?;
 

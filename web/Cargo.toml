@@ -24,7 +24,7 @@ pelorus_tui.workspace = true
 pelorus_core = { workspace = true, features = ["std"] }
 mt_log.workspace = true
 ratzilla = "0.3.1"
-wasm-bindgen = "0.2.129"
-js-sys = "0.3.106"
+wasm-bindgen = "0.2.130"
+js-sys = "0.3.107"
 console_error_panic_hook = "0.1"
 serde.workspace = true

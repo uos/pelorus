@@ -7,11 +7,10 @@ use crate::types::{Point, PointNormal as GpuPointNormal, Quaternion, Vector3};
 use bytemuck::{Pod, Zeroable};
 use objc2::rc::Retained;
 use objc2::runtime::ProtocolObject;
-use rayon::prelude::*;
 use objc2_metal::{
-    MTLBarrierScope, MTLCommandBuffer, MTLCommandEncoder, MTLCommandQueue,
-    MTLComputeCommandEncoder,
+    MTLBarrierScope, MTLCommandBuffer, MTLCommandEncoder, MTLCommandQueue, MTLComputeCommandEncoder,
 };
+use rayon::prelude::*;
 use ros_pointcloud2::points::PointXYZINormal;
 use std::cmp::Ordering;
 use std::mem::size_of;
@@ -105,7 +104,11 @@ struct MissWork {
 }
 const _: () = assert!(size_of::<MissWork>() == 20);
 
-fn set_params(enc: &ProtocolObject<dyn MTLComputeCommandEncoder>, params: &CacheParams, index: usize) {
+fn set_params(
+    enc: &ProtocolObject<dyn MTLComputeCommandEncoder>,
+    params: &CacheParams,
+    index: usize,
+) {
     unsafe {
         enc.setBytes_length_atIndex(
             std::ptr::NonNull::new(params as *const _ as *mut _).unwrap(),
@@ -131,7 +134,11 @@ fn coordinate(p: f32, r: f32) -> i32 {
 }
 
 fn grid_key(p: [f32; 3], r: f32) -> [i32; 3] {
-    [coordinate(p[0], r), coordinate(p[1], r), coordinate(p[2], r)]
+    [
+        coordinate(p[0], r),
+        coordinate(p[1], r),
+        coordinate(p[2], r),
+    ]
 }
 
 fn parent_coord(x: i32) -> i32 {
@@ -420,7 +427,11 @@ impl MultiResolutionMap {
         assert!(capacity >= LEVELS && base.is_finite() && base > 0.0);
         let levels = std::array::from_fn(|i| {
             let budget = capacity / LEVELS + usize::from(i < capacity % LEVELS);
-            Level { len: 0, cur: 0, budget }
+            Level {
+                len: 0,
+                cur: 0,
+                budget,
+            }
         });
         // +1 so a scan can always be folded in before eviction trims back.
         let gpu_cells: [[MetalBuffer; 2]; LEVELS] = std::array::from_fn(|i: usize| {
@@ -429,10 +440,12 @@ impl MultiResolutionMap {
             })
         });
         let gpu_fits = std::array::from_fn(|i: usize| {
-            std::array::from_fn(|_| MetalBuffer::new(stream, size_of::<Fit>(), levels[i].budget.max(1)))
+            std::array::from_fn(|_| {
+                MetalBuffer::new(stream, size_of::<Fit>(), levels[i].budget.max(1))
+            })
         });
-        let table_cap = (levels.iter().map(|l| l.budget).max().unwrap_or(1).max(1) * 2)
-            .next_power_of_two();
+        let table_cap =
+            (levels.iter().map(|l| l.budget).max().unwrap_or(1).max(1) * 2).next_power_of_two();
         let gpu_tables = std::array::from_fn(|_| {
             std::array::from_fn(|_| {
                 let mut table = MetalBuffer::new(stream, size_of::<u32>(), table_cap);
@@ -440,9 +453,11 @@ impl MultiResolutionMap {
                 table
             })
         });
-        let gpu_dirty =
-            std::array::from_fn(|i: usize| MetalBuffer::new(stream, size_of::<u32>(), levels[i].budget.max(1)));
-        let gpu_changed = std::array::from_fn(|_| MetalBuffer::new(stream, size_of::<[i32; 4]>(), 1));
+        let gpu_dirty = std::array::from_fn(|i: usize| {
+            MetalBuffer::new(stream, size_of::<u32>(), levels[i].budget.max(1))
+        });
+        let gpu_changed =
+            std::array::from_fn(|_| MetalBuffer::new(stream, size_of::<[i32; 4]>(), 1));
         let miss_cap = 131072usize;
         // State 0 belongs to version 0, which is never current: all slots empty.
         let mut miss_state = MetalBuffer::new(stream, size_of::<u32>(), miss_cap);
@@ -470,7 +485,14 @@ impl MultiResolutionMap {
         }
     }
 
-    fn add(&mut self, stream: &Stream, cloud: &MetalBuffer, t: &Vector3, q: &Quaternion, scan: usize) {
+    fn add(
+        &mut self,
+        stream: &Stream,
+        cloud: &MetalBuffer,
+        t: &Vector3,
+        q: &Quaternion,
+        scan: usize,
+    ) {
         if let Some(fence) = self.last_add_cb.take() {
             fence.0.waitUntilCompleted();
         }
@@ -593,7 +615,8 @@ impl MultiResolutionMap {
             let excess = w.saturating_sub(budget);
             let changed_n = batch.len() + excess;
             if self.gpu_changed[level].capacity() < changed_n {
-                self.gpu_changed[level] = MetalBuffer::new(stream, size_of::<[i32; 4]>(), changed_n);
+                self.gpu_changed[level] =
+                    MetalBuffer::new(stream, size_of::<[i32; 4]>(), changed_n);
             }
             self.gpu_changed[level].n = changed_n;
             let changed = self.gpu_changed[level].as_slice_mut::<[i32; 4]>();
@@ -679,7 +702,11 @@ impl MultiResolutionMap {
                     continue;
                 }
                 unsafe {
-                    enc.setBuffer_offset_atIndex(Some(self.gpu_tables[level][next(level)].metal_buffer()), 0, 0);
+                    enc.setBuffer_offset_atIndex(
+                        Some(self.gpu_tables[level][next(level)].metal_buffer()),
+                        0,
+                        0,
+                    );
                 }
                 set_params(&enc, &params[level], 1);
                 enc.dispatchThreads_threadsPerThreadgroup(grid1d(self.table_cap), group1d());
@@ -693,8 +720,16 @@ impl MultiResolutionMap {
                     continue;
                 }
                 unsafe {
-                    enc.setBuffer_offset_atIndex(Some(self.gpu_tables[level][next(level)].metal_buffer()), 0, 0);
-                    enc.setBuffer_offset_atIndex(Some(self.gpu_cells[level][next(level)].metal_buffer()), 0, 1);
+                    enc.setBuffer_offset_atIndex(
+                        Some(self.gpu_tables[level][next(level)].metal_buffer()),
+                        0,
+                        0,
+                    );
+                    enc.setBuffer_offset_atIndex(
+                        Some(self.gpu_cells[level][next(level)].metal_buffer()),
+                        0,
+                        1,
+                    );
                 }
                 set_params(&enc, &params[level], 2);
                 enc.dispatchThreads_threadsPerThreadgroup(grid1d(n), group1d());
@@ -708,11 +743,26 @@ impl MultiResolutionMap {
                 if !updated[level] || n == 0 || n_changed[level] == 0 {
                     continue;
                 }
-                let mark = CacheParams { n: n_changed[level] as u32, ..params[level] };
+                let mark = CacheParams {
+                    n: n_changed[level] as u32,
+                    ..params[level]
+                };
                 unsafe {
-                    enc.setBuffer_offset_atIndex(Some(self.gpu_changed[level].metal_buffer()), 0, 0);
-                    enc.setBuffer_offset_atIndex(Some(self.gpu_cells[level][next(level)].metal_buffer()), 0, 1);
-                    enc.setBuffer_offset_atIndex(Some(self.gpu_tables[level][next(level)].metal_buffer()), 0, 2);
+                    enc.setBuffer_offset_atIndex(
+                        Some(self.gpu_changed[level].metal_buffer()),
+                        0,
+                        0,
+                    );
+                    enc.setBuffer_offset_atIndex(
+                        Some(self.gpu_cells[level][next(level)].metal_buffer()),
+                        0,
+                        1,
+                    );
+                    enc.setBuffer_offset_atIndex(
+                        Some(self.gpu_tables[level][next(level)].metal_buffer()),
+                        0,
+                        2,
+                    );
                     enc.setBuffer_offset_atIndex(Some(self.gpu_dirty[level].metal_buffer()), 0, 3);
                 }
                 set_params(&enc, &mark, 4);
@@ -727,12 +777,36 @@ impl MultiResolutionMap {
                     continue;
                 }
                 unsafe {
-                    enc.setBuffer_offset_atIndex(Some(self.gpu_cells[level][prev(level)].metal_buffer()), 0, 0);
-                    enc.setBuffer_offset_atIndex(Some(self.gpu_fits[level][prev(level)].metal_buffer()), 0, 1);
-                    enc.setBuffer_offset_atIndex(Some(self.gpu_tables[level][prev(level)].metal_buffer()), 0, 2);
-                    enc.setBuffer_offset_atIndex(Some(self.gpu_cells[level][next(level)].metal_buffer()), 0, 3);
-                    enc.setBuffer_offset_atIndex(Some(self.gpu_fits[level][next(level)].metal_buffer()), 0, 4);
-                    enc.setBuffer_offset_atIndex(Some(self.gpu_tables[level][next(level)].metal_buffer()), 0, 5);
+                    enc.setBuffer_offset_atIndex(
+                        Some(self.gpu_cells[level][prev(level)].metal_buffer()),
+                        0,
+                        0,
+                    );
+                    enc.setBuffer_offset_atIndex(
+                        Some(self.gpu_fits[level][prev(level)].metal_buffer()),
+                        0,
+                        1,
+                    );
+                    enc.setBuffer_offset_atIndex(
+                        Some(self.gpu_tables[level][prev(level)].metal_buffer()),
+                        0,
+                        2,
+                    );
+                    enc.setBuffer_offset_atIndex(
+                        Some(self.gpu_cells[level][next(level)].metal_buffer()),
+                        0,
+                        3,
+                    );
+                    enc.setBuffer_offset_atIndex(
+                        Some(self.gpu_fits[level][next(level)].metal_buffer()),
+                        0,
+                        4,
+                    );
+                    enc.setBuffer_offset_atIndex(
+                        Some(self.gpu_tables[level][next(level)].metal_buffer()),
+                        0,
+                        5,
+                    );
                     enc.setBuffer_offset_atIndex(Some(self.gpu_dirty[level].metal_buffer()), 0, 6);
                 }
                 set_params(&enc, &params[level], 7);
@@ -792,7 +866,12 @@ impl MultiResolutionMap {
         let q: nalgebra::UnitQuaternion<f64> = (*q).into();
         let ext_q: nalgebra::UnitQuaternion<f64> = (*ext_q).into();
         let params = QueryParams {
-            lidar_to_imu_quat: [ext_q.i as f32, ext_q.j as f32, ext_q.k as f32, ext_q.w as f32],
+            lidar_to_imu_quat: [
+                ext_q.i as f32,
+                ext_q.j as f32,
+                ext_q.k as f32,
+                ext_q.w as f32,
+            ],
             lidar_to_imu_pos: [ext_t.x as f32, ext_t.y as f32, ext_t.z as f32],
             _pad0: 0.0,
             pose_quat: [q.i as f32, q.j as f32, q.k as f32, q.w as f32],
@@ -827,8 +906,16 @@ impl MultiResolutionMap {
             unsafe {
                 enc.setBuffer_offset_atIndex(Some(cloud.metal_buffer()), 0, 0);
                 for level in 0..LEVELS {
-                    enc.setBuffer_offset_atIndex(Some(self.gpu_cells[level][cur(level)].metal_buffer()), 0, 1 + level);
-                    enc.setBuffer_offset_atIndex(Some(self.gpu_tables[level][cur(level)].metal_buffer()), 0, 5 + level);
+                    enc.setBuffer_offset_atIndex(
+                        Some(self.gpu_cells[level][cur(level)].metal_buffer()),
+                        0,
+                        1 + level,
+                    );
+                    enc.setBuffer_offset_atIndex(
+                        Some(self.gpu_tables[level][cur(level)].metal_buffer()),
+                        0,
+                        5 + level,
+                    );
                 }
                 enc.setBuffer_offset_atIndex(Some(self.miss_state.metal_buffer()), 0, 9);
                 enc.setBuffer_offset_atIndex(Some(self.miss_keys.metal_buffer()), 0, 10);
@@ -846,8 +933,16 @@ impl MultiResolutionMap {
                 enc.setBuffer_offset_atIndex(Some(self.miss_work.metal_buffer()), 0, 0);
                 enc.setBuffer_offset_atIndex(Some(self.work_count.metal_buffer()), 0, 1);
                 for level in 0..LEVELS {
-                    enc.setBuffer_offset_atIndex(Some(self.gpu_cells[level][cur(level)].metal_buffer()), 0, 2 + level);
-                    enc.setBuffer_offset_atIndex(Some(self.gpu_tables[level][cur(level)].metal_buffer()), 0, 6 + level);
+                    enc.setBuffer_offset_atIndex(
+                        Some(self.gpu_cells[level][cur(level)].metal_buffer()),
+                        0,
+                        2 + level,
+                    );
+                    enc.setBuffer_offset_atIndex(
+                        Some(self.gpu_tables[level][cur(level)].metal_buffer()),
+                        0,
+                        6 + level,
+                    );
                 }
                 enc.setBuffer_offset_atIndex(Some(self.miss_state.metal_buffer()), 0, 10);
                 enc.setBuffer_offset_atIndex(Some(self.miss_fits.metal_buffer()), 0, 11);
@@ -860,18 +955,66 @@ impl MultiResolutionMap {
             enc.setComputePipelineState(&pipes.mr_query);
             unsafe {
                 enc.setBuffer_offset_atIndex(Some(cloud.metal_buffer()), 0, 0);
-                enc.setBuffer_offset_atIndex(Some(self.gpu_cells[0][self.levels[0].cur].metal_buffer()), 0, 1);
-                enc.setBuffer_offset_atIndex(Some(self.gpu_cells[1][self.levels[1].cur].metal_buffer()), 0, 2);
-                enc.setBuffer_offset_atIndex(Some(self.gpu_cells[2][self.levels[2].cur].metal_buffer()), 0, 3);
-                enc.setBuffer_offset_atIndex(Some(self.gpu_cells[3][self.levels[3].cur].metal_buffer()), 0, 4);
-                enc.setBuffer_offset_atIndex(Some(self.gpu_fits[0][self.levels[0].cur].metal_buffer()), 0, 5);
-                enc.setBuffer_offset_atIndex(Some(self.gpu_fits[1][self.levels[1].cur].metal_buffer()), 0, 6);
-                enc.setBuffer_offset_atIndex(Some(self.gpu_fits[2][self.levels[2].cur].metal_buffer()), 0, 7);
-                enc.setBuffer_offset_atIndex(Some(self.gpu_fits[3][self.levels[3].cur].metal_buffer()), 0, 8);
-                enc.setBuffer_offset_atIndex(Some(self.gpu_tables[0][self.levels[0].cur].metal_buffer()), 0, 9);
-                enc.setBuffer_offset_atIndex(Some(self.gpu_tables[1][self.levels[1].cur].metal_buffer()), 0, 10);
-                enc.setBuffer_offset_atIndex(Some(self.gpu_tables[2][self.levels[2].cur].metal_buffer()), 0, 11);
-                enc.setBuffer_offset_atIndex(Some(self.gpu_tables[3][self.levels[3].cur].metal_buffer()), 0, 12);
+                enc.setBuffer_offset_atIndex(
+                    Some(self.gpu_cells[0][self.levels[0].cur].metal_buffer()),
+                    0,
+                    1,
+                );
+                enc.setBuffer_offset_atIndex(
+                    Some(self.gpu_cells[1][self.levels[1].cur].metal_buffer()),
+                    0,
+                    2,
+                );
+                enc.setBuffer_offset_atIndex(
+                    Some(self.gpu_cells[2][self.levels[2].cur].metal_buffer()),
+                    0,
+                    3,
+                );
+                enc.setBuffer_offset_atIndex(
+                    Some(self.gpu_cells[3][self.levels[3].cur].metal_buffer()),
+                    0,
+                    4,
+                );
+                enc.setBuffer_offset_atIndex(
+                    Some(self.gpu_fits[0][self.levels[0].cur].metal_buffer()),
+                    0,
+                    5,
+                );
+                enc.setBuffer_offset_atIndex(
+                    Some(self.gpu_fits[1][self.levels[1].cur].metal_buffer()),
+                    0,
+                    6,
+                );
+                enc.setBuffer_offset_atIndex(
+                    Some(self.gpu_fits[2][self.levels[2].cur].metal_buffer()),
+                    0,
+                    7,
+                );
+                enc.setBuffer_offset_atIndex(
+                    Some(self.gpu_fits[3][self.levels[3].cur].metal_buffer()),
+                    0,
+                    8,
+                );
+                enc.setBuffer_offset_atIndex(
+                    Some(self.gpu_tables[0][self.levels[0].cur].metal_buffer()),
+                    0,
+                    9,
+                );
+                enc.setBuffer_offset_atIndex(
+                    Some(self.gpu_tables[1][self.levels[1].cur].metal_buffer()),
+                    0,
+                    10,
+                );
+                enc.setBuffer_offset_atIndex(
+                    Some(self.gpu_tables[2][self.levels[2].cur].metal_buffer()),
+                    0,
+                    11,
+                );
+                enc.setBuffer_offset_atIndex(
+                    Some(self.gpu_tables[3][self.levels[3].cur].metal_buffer()),
+                    0,
+                    12,
+                );
                 enc.setBuffer_offset_atIndex(Some(self.miss_state.metal_buffer()), 0, 13);
                 enc.setBuffer_offset_atIndex(Some(self.miss_keys.metal_buffer()), 0, 14);
                 enc.setBuffer_offset_atIndex(Some(self.miss_fits.metal_buffer()), 0, 15);
@@ -940,7 +1083,12 @@ pub(crate) fn is_active() -> bool {
 }
 
 pub(crate) fn init(stream: &Stream, capacity: usize, resolution: f32, sensitivity: f32) {
-    *state() = Some(MultiResolutionMap::new(stream, capacity, resolution, sensitivity));
+    *state() = Some(MultiResolutionMap::new(
+        stream,
+        capacity,
+        resolution,
+        sensitivity,
+    ));
     USING_MULTIRES.store(true, AtomicOrdering::Release);
 }
 

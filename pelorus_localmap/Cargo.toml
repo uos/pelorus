@@ -37,7 +37,7 @@ std = [
 rayon = ["std", "dep:rayon", "ros_pointcloud2/rayon"]
 # Seed the neighbor sampling from the OS instead of a fixed seed, so runs on the same
 # input differ. Not available in the browser.
-os-rng-seed = ["std", "rand/os_rng"]
+os-rng-seed = ["std", "rand/sys_rng"]
 # Ablation: evict the least recently updated voxel instead of the least relevant (age / support).
 lru-eviction = []
 # Ablation: fuse scans into map cells by plain count-weighted merging instead of the maturity-weighted update.
