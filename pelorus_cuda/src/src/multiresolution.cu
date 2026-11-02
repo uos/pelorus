@@ -1,19 +1,17 @@
-#define THRUST_CUB_WRAPPED_NAMESPACE pelorus_multires_cccl
+#define CUB_WRAPPED_NAMESPACE pelorus_multires_cccl
 #include <algorithm>
 #include <cassert>
 #include <climits>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
+#include <cub/device/device_merge_sort.cuh>
+#include <cub/device/device_select.cuh>
 #include <cuda_runtime.h>
 #include <localmap.cuh>
-#include <thrust/copy.h>
-#include <thrust/merge.h>
-#include <thrust/sort.h>
-#include <thrust/system/cuda/execution_policy.h>
 #include <vector>
 
-namespace thrust = pelorus_multires_cccl::thrust;
+namespace cub = pelorus_multires_cccl::cub;
 
 #define MR_CHECK(expr)                                                         \
   do {                                                                         \
@@ -115,6 +113,15 @@ struct State {
   Buffer<EvictKey> evict;
   Buffer<unsigned char> evicted;
   Buffer<Cell> evicted_cells;
+  // Temporary storage of the CUB calls, kept between calls, and the count the
+  // compactions select, read back through pinned memory.
+  Buffer<unsigned char> temp;
+  Buffer<uint32_t> selected;
+  uint32_t *selected_host = nullptr;
+  ~State() {
+    if (selected_host)
+      cudaFreeHost(selected_host);
+  }
 };
 static State *state = nullptr;
 __host__ __device__ bool less(int3 a, int3 b) {
@@ -323,6 +330,40 @@ __global__ void combine(const Cell *in, uint32_t n, Cell *out, bool temporal,
       pool(c.d, in[j].d);
   }
   out[i] = c;
+}
+// Stable merge of two key-sorted runs: at equal keys the cells of `a` come
+// first. Each cell finds its output slot by binary search in the other run.
+__global__ void merge_cells(const Cell *a, uint32_t na, const Cell *b,
+                            uint32_t nb, Cell *out) {
+  uint32_t i = blockIdx.x * blockDim.x + threadIdx.x;
+  if (i >= na + nb)
+    return;
+  if (i < na) {
+    // Cells of b with a smaller key.
+    int3 k = a[i].key;
+    uint32_t lo = 0, hi = nb;
+    while (lo < hi) {
+      uint32_t m = (lo + hi) / 2;
+      if (less(b[m].key, k))
+        lo = m + 1;
+      else
+        hi = m;
+    }
+    out[i + lo] = a[i];
+  } else {
+    // Cells of a with a smaller or equal key.
+    uint32_t j = i - na;
+    int3 k = b[j].key;
+    uint32_t lo = 0, hi = na;
+    while (lo < hi) {
+      uint32_t m = (lo + hi) / 2;
+      if (!less(k, a[m].key))
+        lo = m + 1;
+      else
+        hi = m;
+    }
+    out[j + lo] = b[j];
+  }
 }
 // The fields eviction ranks by, so it sorts 32 instead of 80 bytes per cell.
 struct EvictKey {
@@ -634,6 +675,56 @@ __global__ void query(const Point *cloud, uint32_t n, Pose ext, Pose pose,
   flags[i] = 1;
 }
 static int blocks(uint32_t n) { return (n + 255) / 256; }
+// Runs a CUB call once to size its temporary storage, then for real.
+template <class F> static void cub_call(F f) {
+  auto &s = *state;
+  size_t bytes = 0;
+  MR_CHECK(f(nullptr, bytes));
+  s.temp.reserve(bytes);
+  MR_CHECK(f(s.temp.p, bytes));
+}
+static uint32_t selected_count(cudaStream_t stream) {
+  auto &s = *state;
+  MR_CHECK(cudaMemcpyAsync(s.selected_host, s.selected.p, sizeof(uint32_t),
+                           cudaMemcpyDeviceToHost, stream));
+  MR_CHECK(cudaStreamSynchronize(stream));
+  return *s.selected_host;
+}
+// Order-preserving compaction of the items `op` keeps. Returns their count.
+template <class In, class Out, class Op>
+static uint32_t select_if(cudaStream_t stream, In in, Out out, uint32_t n,
+                          Op op) {
+  if (!n)
+    return 0;
+  uint32_t *selected = state->selected.p;
+  cub_call([&](void *temp, size_t &bytes) {
+    return cub::DeviceSelect::If(temp, bytes, in, out, selected, n, op, stream);
+  });
+  return selected_count(stream);
+}
+// Order-preserving compaction of the items whose flag `op` keeps.
+template <class In, class Flags, class Out, class Op>
+static uint32_t select_flagged_if(cudaStream_t stream, In in, Flags flags,
+                                  Out out, uint32_t n, Op op) {
+  if (!n)
+    return 0;
+  uint32_t *selected = state->selected.p;
+  cub_call([&](void *temp, size_t &bytes) {
+    return cub::DeviceSelect::FlaggedIf(temp, bytes, in, flags, out, selected,
+                                        n, op, stream);
+  });
+  return selected_count(stream);
+}
+// Stable in-place sort by `less`.
+template <class T, class Less>
+static void stable_sort(cudaStream_t stream, T *items, uint32_t n, Less less) {
+  if (n < 2)
+    return;
+  cub_call([&](void *temp, size_t &bytes) {
+    return cub::DeviceMergeSort::StableSortKeys(temp, bytes, items, n, less,
+                                                stream);
+  });
+}
 static Level view(int i) {
   auto &s = *state;
   auto &l = s.level[i];
@@ -659,6 +750,8 @@ void init_multiresolution_impl(uint32_t capacity, float base,
   s.base = base;
   s.sensitivity = sensitivity;
   s.counters.reserve(1);
+  s.selected.reserve(1);
+  MR_CHECK(cudaMallocHost(&s.selected_host, sizeof(uint32_t)));
   for (int i = 0; i < 4; ++i) {
     auto &l = s.level[i];
     l.budget = capacity / 4 + uint32_t(i < int(capacity % 4));
@@ -687,7 +780,6 @@ void add_multiresolution_impl(cudaStream_t stream, Point *points, uint32_t n,
   using namespace mr;
   auto &s = *state;
 
-  auto policy = thrust::cuda::par_nosync.on(stream);
   s.samples.reserve(n);
   s.valid_samples.reserve(n);
   s.scratch.reserve(n);
@@ -695,28 +787,22 @@ void add_multiresolution_impl(cudaStream_t stream, Point *points, uint32_t n,
   s.parents.reserve(n);
   transform_samples<<<blocks(n), 256, 0, stream>>>(points, n, pose,
                                                    s.base * .5f, s.samples.p);
-  n = thrust::copy_if(policy, s.samples.p, s.samples.p + n, s.valid_samples.p,
-                      ValidSample{}) -
-      s.valid_samples.p;
+  n = select_if(stream, s.samples.p, s.valid_samples.p, n, ValidSample{});
   if (!n)
     return;
-  thrust::stable_sort(policy, s.valid_samples.p, s.valid_samples.p + n,
-                      SampleLess{});
+  stable_sort(stream, s.valid_samples.p, n, SampleLess{});
   scan_cells<<<blocks(n), 256, 0, stream>>>(s.valid_samples.p, n, scan,
                                             s.scratch.p);
-  uint32_t batches = thrust::copy_if(policy, s.scratch.p, s.scratch.p + n,
-                                     s.batches.p, ValidCell{}) -
-                     s.batches.p;
+  uint32_t batches =
+      select_if(stream, s.scratch.p, s.batches.p, n, ValidCell{});
   for (int i = 0; i < 4; ++i) {
     if (i) {
       parent_keys<<<blocks(batches), 256, 0, stream>>>(s.batches.p, batches);
-      thrust::stable_sort(policy, s.batches.p, s.batches.p + batches,
-                          CellLess{});
+      stable_sort(stream, s.batches.p, batches, CellLess{});
       combine<<<blocks(batches), 256, 0, stream>>>(
           s.batches.p, batches, s.parents.p, false, s.sensitivity);
-      batches = thrust::copy_if(policy, s.parents.p, s.parents.p + batches,
-                                s.batches.p, ValidCell{}) -
-                s.batches.p;
+      batches =
+          select_if(stream, s.parents.p, s.batches.p, batches, ValidCell{});
     }
     auto &l = s.level[i];
     uint32_t total = l.n + batches;
@@ -725,13 +811,13 @@ void add_multiresolution_impl(cudaStream_t stream, Point *points, uint32_t n,
 
     // Both inputs are already key-sorted. Stable merge keeps the old map
     // before this scan at equal keys.
-    thrust::merge(policy, l.cells.p, l.cells.p + l.n, s.batches.p,
-                  s.batches.p + batches, s.scratch.p, CellLess{});
+    if (total)
+      merge_cells<<<blocks(total), 256, 0, stream>>>(
+          l.cells.p, l.n, s.batches.p, batches, s.scratch.p);
     combine<<<blocks(total), 256, 0, stream>>>(s.scratch.p, total, s.merged.p,
                                                true, s.sensitivity);
-    uint32_t count = thrust::copy_if(policy, s.merged.p, s.merged.p + total,
-                                     s.scratch.p, ValidCell{}) -
-                     s.scratch.p;
+    uint32_t count =
+        select_if(stream, s.merged.p, s.scratch.p, total, ValidCell{});
     uint32_t excess = count > l.budget ? count - l.budget : 0;
     uint32_t n_next = count - excess;
     if (excess) {
@@ -743,14 +829,12 @@ void add_multiresolution_impl(cudaStream_t stream, Point *points, uint32_t n,
       s.evicted_cells.reserve(excess);
       evict_keys<<<blocks(count), 256, 0, stream>>>(s.scratch.p, count, scan,
                                                     s.evict.p);
-      thrust::sort(policy, s.evict.p, s.evict.p + count, EvictKeyLess{});
+      stable_sort(stream, s.evict.p, count, EvictKeyLess{});
       MR_CHECK(cudaMemsetAsync(s.evicted.p, 0, count, stream));
       flag_evicted<<<blocks(excess), 256, 0, stream>>>(
           s.evict.p, excess, s.scratch.p, s.evicted.p, s.evicted_cells.p);
-      uint32_t kept = thrust::copy_if(policy, s.scratch.p, s.scratch.p + count,
-                                      s.evicted.p, l.cells_next.p,
-                                      NotFlagged{}) -
-                      l.cells_next.p;
+      uint32_t kept = select_flagged_if(stream, s.scratch.p, s.evicted.p,
+                                        l.cells_next.p, count, NotFlagged{});
       assert(kept == n_next);
       (void)kept;
     } else {
@@ -806,9 +890,7 @@ uint32_t planes_multiresolution_impl(cudaStream_t stream, Point *cloud,
                                        view(2), view(3), s.base, s.version,
                                        s.planes.p, s.flags.p);
   uint32_t count =
-      thrust::copy_if(thrust::cuda::par_nosync.on(stream), s.planes.p,
-                      s.planes.p + n, s.flags.p, out, Flag{}) -
-      out;
+      select_flagged_if(stream, s.planes.p, s.flags.p, out, n, Flag{});
   MR_CHECK(cudaGetLastError());
   return count;
 }
