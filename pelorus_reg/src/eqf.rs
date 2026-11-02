@@ -22,7 +22,7 @@ use alloc::vec::Vec;
 use faer::linalg::matmul::matmul;
 use faer::linalg::solvers::DenseSolveCore;
 use faer::prelude::{Reborrow, ReborrowMut};
-use faer::{Col, Mat};
+use faer::{Col, Mat, MatRef};
 use log::{error, warn};
 // Float maths through libm without std. With std the inherent methods take precedence.
 #[allow(unused_imports)]
@@ -193,6 +193,76 @@ where
     )
 }
 
+/// The nonzero 3x3 blocks of a block-sparse matrix, each with its block row
+/// and block column. The process Jacobians below have at most 12 of them.
+#[derive(Clone, Copy)]
+pub struct Blocks {
+    list: [(usize, usize, nalgebra::Matrix3<f64>); 12],
+    len: usize,
+}
+
+impl Blocks {
+    fn new() -> Self {
+        Self {
+            list: [(0, 0, nalgebra::Matrix3::zeros()); 12],
+            len: 0,
+        }
+    }
+
+    fn push(&mut self, row: usize, col: usize, block: nalgebra::Matrix3<f64>) {
+        self.list[self.len] = (row, col, block);
+        self.len += 1;
+    }
+
+    /// The blocks as (block row, block column, block).
+    pub fn iter(&self) -> impl Iterator<Item = &(usize, usize, nalgebra::Matrix3<f64>)> {
+        self.list[..self.len].iter()
+    }
+
+    /// The dense `rows x cols` matrix.
+    pub fn to_dense(&self, rows: usize, cols: usize) -> Mat<f64> {
+        let mut dense = Mat::<f64>::zeros(rows, cols);
+        for (row, col, block) in self.iter() {
+            for i in 0..3 {
+                for j in 0..3 {
+                    dense[(3 * row + i, 3 * col + j)] = block[(i, j)];
+                }
+            }
+        }
+        dense
+    }
+
+    /// `out += scale * self * x`.
+    fn add_left_product(&self, out: &mut Mat<f64>, x: &Mat<f64>, scale: f64) {
+        for (row, col, block) in self.iter() {
+            for c in 0..x.ncols() {
+                for i in 0..3 {
+                    let mut sum = 0.0;
+                    for k in 0..3 {
+                        sum += block[(i, k)] * x[(3 * col + k, c)];
+                    }
+                    out[(3 * row + i, c)] += scale * sum;
+                }
+            }
+        }
+    }
+
+    /// `out += scale * x * self^T`.
+    fn add_right_product_transposed(&self, out: &mut Mat<f64>, x: &Mat<f64>, scale: f64) {
+        for (row, col, block) in self.iter() {
+            for r in 0..x.nrows() {
+                for i in 0..3 {
+                    let mut sum = 0.0;
+                    for k in 0..3 {
+                        sum += x[(r, 3 * col + k)] * block[(i, k)];
+                    }
+                    out[(r, 3 * row + i)] += scale * sum;
+                }
+            }
+        }
+    }
+}
+
 /// Jacobian of the error dynamics with respect to the error state (Eq-LIO eq. (7)).
 ///
 /// The equivariant error uses the global frame of the semi-direct product. Its
@@ -207,7 +277,18 @@ pub fn df_dx(
     extrinsic_est: bool,
     anchor: &Vector3<f64>,
 ) -> Mat<f64> {
-    let mut cov = Mat::<f64>::zeros(24, 24);
+    df_dx_blocks(s, inp, extrinsic_est, anchor).to_dense(24, 24)
+}
+
+/// The nonzero 3x3 blocks of [`df_dx`], in block rows and columns of the
+/// ordering pos, rot, offset_R_L_I, offset_T_L_I, vel, bg, ba, grav.
+pub fn df_dx_blocks(
+    s: &StateIKFom,
+    inp: &InputIKFom,
+    extrinsic_est: bool,
+    anchor: &Vector3<f64>,
+) -> Blocks {
+    let mut blocks = Blocks::new();
     let pos_a = s.pos - anchor;
 
     let id3 = nalgebra::Matrix3::<f64>::identity();
@@ -218,86 +299,104 @@ pub fn df_dx(
     let omega_world = rot_mat * (inp.gyro - s.bg);
     let x_blk = skew_symmetric_na(&omega_world);
 
-    let mut copy_block = |row: usize, col: usize, src: &nalgebra::Matrix3<f64>| {
-        for i in 0..3 {
-            for j in 0..3 {
-                cov[(row + i, col + j)] = src[(i, j)];
-            }
-        }
-    };
-
-    copy_block(0, 12, &id3); // pos -- vel
-    copy_block(0, 15, &(-skew_symmetric_na(&pos_a))); // pos -- gyro bias
-    copy_block(3, 15, &(-id3)); // rot -- gyro bias
+    blocks.push(0, 4, id3); // pos -- vel
+    blocks.push(0, 5, -skew_symmetric_na(&pos_a)); // pos -- gyro bias
+    blocks.push(1, 5, -id3); // rot -- gyro bias
 
     if extrinsic_est {
         // Couples the lever arm to the extrinsic rotation error.
         let z_blk = skew_symmetric_na(&(skew_symmetric_na(&pos_a) * omega_world + s.vel));
-        copy_block(6, 6, &x_blk); // extrinsic rot -- extrinsic rot
-        copy_block(9, 6, &z_blk); // lever arm -- extrinsic rot
-        copy_block(9, 9, &x_blk); // lever arm -- lever arm
+        blocks.push(2, 2, x_blk); // extrinsic rot -- extrinsic rot
+        blocks.push(3, 2, z_blk); // lever arm -- extrinsic rot
+        blocks.push(3, 3, x_blk); // lever arm -- lever arm
     }
 
-    copy_block(12, 3, &skew_symmetric_na(&s.grav)); // vel -- rot
-    copy_block(12, 18, &(-id3)); // vel -- accel bias
-    copy_block(12, 21, &id3); // vel -- gravity
+    blocks.push(4, 1, skew_symmetric_na(&s.grav)); // vel -- rot
+    blocks.push(4, 6, -id3); // vel -- accel bias
+    blocks.push(4, 7, id3); // vel -- gravity
 
-    copy_block(15, 15, &x_blk); // gyro bias -- gyro bias
+    blocks.push(5, 5, x_blk); // gyro bias -- gyro bias
 
     // Couples the accelerometer bias to the gyro bias error.
     let y_blk = skew_symmetric_na(
         &(rot_mat * (inp.acc - s.ba) + skew_symmetric_na(&s.vel) * omega_world + s.grav),
     );
-    copy_block(18, 15, &y_blk); // accel bias -- gyro bias
-    copy_block(18, 18, &x_blk); // accel bias -- accel bias
+    blocks.push(6, 5, y_blk); // accel bias -- gyro bias
+    blocks.push(6, 6, x_blk); // accel bias -- accel bias
 
-    cov
+    blocks
 }
 
 /// Jacobian of the error dynamics with respect to the IMU noise.
 ///
 /// Every block carries the world rotation because the noise enters in the body
 /// frame while the equivariant error state is expressed globally.
-pub fn df_dw(s: &StateIKFom, _inp: &InputIKFom, anchor: &Vector3<f64>) -> Mat<f64> {
-    let mut cov = Mat::<f64>::zeros(24, 12);
+pub fn df_dw(s: &StateIKFom, inp: &InputIKFom, anchor: &Vector3<f64>) -> Mat<f64> {
+    df_dw_blocks(s, inp, anchor).to_dense(24, 12)
+}
+
+/// The nonzero 3x3 blocks of [`df_dw`]. The block columns are the gyro, accel,
+/// gyro bias and accel bias noise.
+pub fn df_dw_blocks(s: &StateIKFom, _inp: &InputIKFom, anchor: &Vector3<f64>) -> Blocks {
+    let mut blocks = Blocks::new();
 
     let rot_mat = s.rot.matrix();
     let pos_skew_rot = skew_symmetric_na(&(s.pos - anchor)) * rot_mat;
     let vel_skew_rot = skew_symmetric_na(&s.vel) * rot_mat;
 
-    let mut copy_block = |row: usize, col: usize, src: &nalgebra::Matrix3<f64>| {
-        for i in 0..3 {
-            for j in 0..3 {
-                cov[(row + i, col + j)] = src[(i, j)];
-            }
-        }
-    };
+    blocks.push(0, 0, pos_skew_rot); // pos -- gyro noise
+    blocks.push(1, 0, rot_mat); // rot -- gyro noise
+    blocks.push(4, 0, vel_skew_rot); // vel -- gyro noise
+    blocks.push(4, 1, rot_mat); // vel -- accel noise
+    blocks.push(5, 2, -rot_mat); // gyro bias -- gyro bias noise
+    blocks.push(6, 2, -vel_skew_rot); // accel bias -- gyro bias noise
+    blocks.push(6, 3, -rot_mat); // accel bias -- accel bias noise
 
-    copy_block(0, 0, &pos_skew_rot); // pos -- gyro noise
-    copy_block(3, 0, &rot_mat); // rot -- gyro noise
-    copy_block(12, 0, &vel_skew_rot); // vel -- gyro noise
-    copy_block(12, 3, &rot_mat); // vel -- accel noise
-    copy_block(15, 6, &(-rot_mat)); // gyro bias -- gyro bias noise
-    copy_block(18, 6, &(-vel_skew_rot)); // accel bias -- gyro bias noise
-    copy_block(18, 9, &(-rot_mat)); // accel bias -- accel bias noise
+    blocks
+}
 
-    cov
+/// The first `active` columns of the gain front `(P^-1 + C)^-1`, where `C` is
+/// `info` in its top-left `active x active` block and zero elsewhere.
+///
+/// By the push-through identity they equal `P[:, ..active] * (I + C_aa * P_aa)^-1`,
+/// which needs one `active x active` inverse instead of inverting `P` and the
+/// 24 x 24 sum.
+fn gain_front_columns(p: &Mat<f64>, info: MatRef<f64>, active: usize) -> Mat<f64> {
+    let mut lhs = Mat::<f64>::identity(active, active);
+    matmul(
+        lhs.rb_mut(),
+        faer::Accum::Add,
+        info,
+        p.submatrix(0, 0, active, active),
+        1.0,
+        faer::Par::Seq,
+    );
+    let lhs_inv = lhs.partial_piv_lu().inverse();
+    let mut out = Mat::<f64>::zeros(p.nrows(), active);
+    matmul(
+        out.rb_mut(),
+        faer::Accum::Replace,
+        p.subcols(0, active),
+        lhs_inv.rb(),
+        1.0,
+        faer::Par::Seq,
+    );
+    out
 }
 
 pub struct Eqf {
     pub state: StateIKFom,
-    pub cov: Mat<f64>,           // 24x24 covariance matrix in faer
-    pub f_w_q_w_t_dt2: Mat<f64>, // 24x24 temporary for cov update in predict
-    pub fxtcov: Mat<f64>,        // 24x24 temporary for cov update in predict
-    pub fxcov: Mat<f64>,         // 24x24 temporary for cov update in predict
-    pub q_f_w_t: Mat<f64>,       // 12x24 temporary for cov update in predict
-    pub id: Mat<f64>,            // 24x24 temporary for cov update in scalar constraint
-    pub k_mat: Mat<f64>,         // 24x1 temporary for cov update in scalar constraint
-    pub h_t_mat: Mat<f64>,       // 1x24 temporary for cov update in scalar constraint
-    pub k_h_t: Mat<f64>,         // 24x24 temporary for cov update in scalar constraint
-    pub k_k: Mat<f64>,           // 24x24 temporary for cov update in scalar constraint
-    pub cov_i_kh: Mat<f64>,      // 24x24 temporary for cov update in scalar constraint
-    pub i_cov_i_kh: Mat<f64>,    // 24x24 temporary for cov update in scalar constraint
+    pub cov: Mat<f64>,        // 24x24 covariance matrix in faer
+    pub fxtcov: Mat<f64>,     // 24x24 temporary for cov update in predict
+    pub fxcov: Mat<f64>,      // 24x24 temporary for cov update in predict
+    pub f_w_q: Mat<f64>,      // 24x12 temporary for cov update in predict
+    pub id: Mat<f64>,         // 24x24 temporary for cov update in scalar constraint
+    pub k_mat: Mat<f64>,      // 24x1 temporary for cov update in scalar constraint
+    pub h_t_mat: Mat<f64>,    // 1x24 temporary for cov update in scalar constraint
+    pub k_h_t: Mat<f64>,      // 24x24 temporary for cov update in scalar constraint
+    pub k_k: Mat<f64>,        // 24x24 temporary for cov update in scalar constraint
+    pub cov_i_kh: Mat<f64>,   // 24x24 temporary for cov update in scalar constraint
+    pub i_cov_i_kh: Mat<f64>, // 24x24 temporary for cov update in scalar constraint
     pub initialized: bool,
     /// Origin the equivariant error is measured about. The global rotation error
     /// displaces a point by its distance from this anchor, so leaving it at the
@@ -311,9 +410,7 @@ pub struct Eqf {
     pub last_time: f64,
     pub h: Col<f64>,   // measurement residual vector
     pub h_x: Mat<f64>, // measurement Jacobian matrix (m x 12, sparse - only first 12 cols non-zero)
-    pub k: Mat<f64>,   // Kalman gain (24 x m)
     pub k_h: Mat<f64>, // K * H (24 x 24)
-    pub hth: Mat<f64>, // H^T * H (24 x 24, but only 12x12 block is non-zero)
     pub base_to_lidar: nalgebra::Isometry3<f64>,
 }
 
@@ -524,12 +621,10 @@ impl Eqf {
             last_time: 0.0,
             h: Col::<f64>::zeros(0),
             h_x: Mat::<f64>::zeros(0, 12), // Sparse: only first 12 cols non-zero
-            k: Mat::<f64>::zeros(24, 10000),
             k_h: Mat::<f64>::zeros(24, 24),
-            f_w_q_w_t_dt2: Mat::<f64>::zeros(24, 24),
             fxtcov: Mat::<f64>::zeros(24, 24),
             fxcov: Mat::<f64>::zeros(24, 24),
-            q_f_w_t: Mat::<f64>::zeros(12, 24),
+            f_w_q: Mat::<f64>::zeros(24, 12),
             id: Mat::<f64>::identity(24, 24),
             k_mat: Mat::<f64>::zeros(24, 1),
             h_t_mat: Mat::<f64>::zeros(1, 24),
@@ -537,7 +632,6 @@ impl Eqf {
             k_k: Mat::<f64>::zeros(24, 24),
             cov_i_kh: Mat::<f64>::zeros(24, 24),
             i_cov_i_kh: Mat::<f64>::zeros(24, 24),
-            hth: Mat::<f64>::zeros(24, 24),
             base_to_lidar,
         }
     }
@@ -565,55 +659,28 @@ impl Eqf {
         self.last_time += dt;
 
         let f = get_f(&self.state, i_in);
-        let f_x_raw = df_dx(&self.state, i_in, self.extrinsic_est, &self.anchor);
-        let f_w_raw = df_dw(&self.state, i_in, &self.anchor);
+        // Both Jacobians are block-sparse, so the covariance update multiplies
+        // only their nonzero 3x3 blocks.
+        let f_x = df_dx_blocks(&self.state, i_in, self.extrinsic_est, &self.anchor);
+        let f_w = df_dw_blocks(&self.state, i_in, &self.anchor);
 
         // State update: x = propagate(x, f * dt)
         let f_dt = &f * dt;
         self.state = propagate(&self.state, &f_dt);
 
-        let id24 = Mat::<f64>::identity(24, 24);
-        let f_x = &id24 + &f_x_raw * dt;
-        let f_x_t = f_x.transpose();
-
-        // F_w = f_w * dt
-        let f_w = &f_w_raw * dt;
-        let f_w_t = f_w.transpose();
-
-        // Cov update: P = F_x * P * F_x^T + F_w * Q * F_w^T
-        matmul(
-            self.q_f_w_t.rb_mut(),
-            faer::Accum::Replace,
-            q.rb(),
-            f_w_t.rb(),
-            1.0,
-            faer::Par::Seq,
-        );
-        matmul(
-            self.f_w_q_w_t_dt2.rb_mut(),
-            faer::Accum::Replace,
-            f_w.rb(),
-            self.q_f_w_t.rb(),
-            1.0,
-            faer::Par::Seq,
-        );
-        matmul(
-            self.fxtcov.rb_mut(),
-            faer::Accum::Replace,
-            self.cov.rb(),
-            f_x_t.rb(),
-            1.0,
-            faer::Par::Seq,
-        );
-        matmul(
-            self.fxcov.rb_mut(),
-            faer::Accum::Replace,
-            f_x.rb(),
-            self.fxtcov.rb(),
-            1.0,
-            faer::Par::Seq,
-        );
-        self.cov = self.fxcov.rb() + self.f_w_q_w_t_dt2.rb();
+        // Cov update: P = F_x * P * F_x^T + F_w * Q * F_w^T with
+        // F_x = I + f_x * dt and F_w = f_w * dt.
+        // P * F_x^T = P + dt * P * f_x^T
+        self.fxtcov.copy_from(&self.cov);
+        f_x.add_right_product_transposed(&mut self.fxtcov, &self.cov, dt);
+        // F_x * (P * F_x^T) = (P * F_x^T) + dt * f_x * (P * F_x^T)
+        self.fxcov.copy_from(&self.fxtcov);
+        f_x.add_left_product(&mut self.fxcov, &self.fxtcov, dt);
+        // F_w * Q * F_w^T = dt^2 * (f_w * Q) * f_w^T
+        self.f_w_q.fill(0.0);
+        f_w.add_left_product(&mut self.f_w_q, q, dt);
+        f_w.add_right_product_transposed(&mut self.fxcov, &self.f_w_q, dt);
+        self.cov.copy_from(&self.fxcov);
     }
 
     /// Move a posterior covariance from error coordinates about `base` into
@@ -1099,14 +1166,18 @@ impl Eqf {
             // H is m x 12 (sparse - only first 12 columns non-zero)
             // We only use the first m rows of h_x (the actual measurements)
             // HTH is 24 x 24 but only 12x12 top-left block is non-zero
+            // The extrinsic columns 6..12 are only active with online extrinsic
+            // estimation. Without it they are zero and add nothing to H^T * H
+            // or H^T * h, so only the first 6 columns enter the products.
+            let active = if self.extrinsic_est { 12 } else { 6 };
             let h_full = &self.h_x;
-            let h = h_full.subrows(0, m);
-            let h_t = h.transpose(); // 12 x m
+            let h = h_full.subrows(0, m).subcols(0, active);
+            let h_t = h.transpose(); // active x m
 
             // Compute H^T * H (12 x 12)
             let mut hth_12x12 = Mat::<f64>::zeros(12, 12);
             matmul(
-                hth_12x12.rb_mut(),
+                hth_12x12.as_mut().submatrix_mut(0, 0, active, active),
                 faer::Accum::Replace,
                 h_t.rb(),
                 h.rb(),
@@ -1114,88 +1185,55 @@ impl Eqf {
                 faer::Par::Seq,
             );
 
-            // Build 24x24 HTH with sparse structure
-            for i in 0..24 {
-                for j in 0..24 {
-                    self.hth[(i, j)] = 0.0;
+            // H^T * h (12 x 1)
+            let mut ht_residual = Mat::<f64>::zeros(12, 1);
+            for j in 0..active {
+                let column = h.col(j);
+                let mut sum = 0.0;
+                for i in 0..m {
+                    sum += column[i] * self.h[i];
                 }
-            }
-            for i in 0..12 {
-                for j in 0..12 {
-                    self.hth[(i, j)] = hth_12x12[(i, j)];
-                }
+                ht_residual[(j, 0)] = sum;
             }
 
             eval.stop("ekf_correct/it/info_mat").unwrap();
             eval.start("ekf_correct/it/lhs").unwrap();
 
-            // K_front = (HTH / R + P^-1)^-1
-            let p_inv = p_propagated.partial_piv_lu().inverse();
-            let lhs = &self.hth * r_inv + &p_inv;
-            let k_front = lhs.partial_piv_lu().inverse();
-
-            // K = K_front[:, 0:12] * H^T / R  (24 x m)
-            if self.k.ncols() < m {
-                self.k.reserve(24, m);
-            }
-            if self.k.ncols() != m {
-                self.k.resize_with(24, m, |_, _| 0.0);
-            }
-
-            // K_front_12 = K_front[:, 0:12] (24 x 12)
-            let mut k_front_12 = Mat::<f64>::zeros(24, 12);
-            for i in 0..24 {
-                for j in 0..12 {
-                    k_front_12[(i, j)] = k_front[(i, j)];
-                }
-            }
-
-            // K = K_front_12 * H^T / R  (24 x 12 * 12 x m = 24 x m)
-            matmul(
-                self.k.rb_mut(),
-                faer::Accum::Replace,
-                k_front_12.rb(),
-                h_t.rb(),
-                r_inv,
-                faer::Par::Seq,
-            );
+            // C = H^T * H / R in its active block.
+            let info = hth_12x12.submatrix(0, 0, active, active) * r_inv;
+            // K_front = (P^-1 + C)^-1, needed only in its active columns.
+            let k_front_active = gain_front_columns(&p_propagated, info.rb(), active);
 
             eval.stop("ekf_correct/it/lhs").unwrap();
             eval.start("ekf_correct/it/gain").unwrap();
 
-            // KH = K * H (24 x m * m x 12 = 24 x 12, but we store as 24 x 24 with zeros)
-            let mut kh_12 = Mat::<f64>::zeros(24, 12);
-            matmul(
-                kh_12.rb_mut(),
-                faer::Accum::Replace,
-                self.k.rb(),
-                h.rb(),
-                1.0,
-                faer::Par::Seq,
-            );
-
-            // Build full 24x24 KH matrix (sparse)
+            // The gain K = K_front * H^T / R is 24 x m, but only its products
+            // with H and h are needed. Both go through H^T, so they come from
+            // the products above and nothing here grows with m:
+            // K * H = K_front * C and K * h = K_front * (H^T * h) / R.
             for i in 0..24 {
                 for j in 0..24 {
                     self.k_h[(i, j)] = 0.0;
                 }
             }
-            for i in 0..24 {
-                for j in 0..12 {
-                    self.k_h[(i, j)] = kh_12[(i, j)];
-                }
-            }
+            matmul(
+                self.k_h.as_mut().submatrix_mut(0, 0, 24, active),
+                faer::Accum::Replace,
+                k_front_active.rb(),
+                info.rb(),
+                1.0,
+                faer::Par::Seq,
+            );
 
             // dx_ = K * h + (KH - I) * dx_new  (equation 18)
             // K * h (24 x 1)
             let mut kh_vec = Mat::<f64>::zeros(24, 1);
-            let h_col = Mat::from_fn(m, 1, |i, _| self.h[i]);
             matmul(
                 kh_vec.rb_mut(),
                 faer::Accum::Replace,
-                self.k.rb(),
-                h_col.rb(),
-                1.0,
+                k_front_active.rb(),
+                ht_residual.subrows(0, active),
+                r_inv,
                 faer::Par::Seq,
             );
 
@@ -1298,6 +1336,83 @@ mod tests {
         let mut filter = Eqf::new(9.81, Isometry3::identity());
         filter.initialized = true;
         filter
+    }
+
+    #[test]
+    fn gain_front_columns_match_dense_inverse() {
+        let p = Mat::from_fn(24, 24, |i, j| {
+            let (a, b) = (i.min(j) as f64, i.max(j) as f64);
+            0.01 * (a * 0.37 + b * 0.11).sin() + if i == j { 0.5 + 0.01 * a } else { 0.0 }
+        });
+        for active in [6, 12] {
+            let h = Mat::from_fn(40, active, |i, j| ((i * 7 + j * 3) as f64 * 0.13).cos());
+            let info = h.transpose() * &h * 1000.0;
+            let mut full_info = Mat::<f64>::zeros(24, 24);
+            for i in 0..active {
+                for j in 0..active {
+                    full_info[(i, j)] = info[(i, j)];
+                }
+            }
+            let expected = (p.partial_piv_lu().inverse() + &full_info)
+                .partial_piv_lu()
+                .inverse();
+
+            // The dense reference inverts twice, so it carries more rounding.
+            let scale = (0..24)
+                .flat_map(|i| (0..active).map(move |j| (i, j)))
+                .map(|(i, j)| expected[(i, j)].abs())
+                .fold(0.0, f64::max);
+            let columns = gain_front_columns(&p, info.rb(), active);
+            for i in 0..24 {
+                for j in 0..active {
+                    let difference = (columns[(i, j)] - expected[(i, j)]).abs();
+                    assert!(
+                        difference < 1e-10 * scale,
+                        "({i}, {j}) differs by {difference}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn block_sparse_prediction_matches_dense_products() {
+        let mut filter = initialized_filter();
+        filter.extrinsic_est = true;
+        filter.state.rot = SO3::exp(Vector3::new(0.2, -0.1, 0.7));
+        filter.state.pos = Vector3::new(4.0, 1.0, -2.0);
+        filter.state.vel = Vector3::new(2.0, -0.4, 0.3);
+        filter.cov = Mat::from_fn(24, 24, |i, j| {
+            let (a, b) = (i.min(j) as f64, i.max(j) as f64);
+            0.01 * (a * 0.37 + b * 0.11).sin() + if i == j { 1.0 } else { 0.0 }
+        });
+        let q = Mat::from_fn(12, 12, |i, j| {
+            if i / 3 == j / 3 {
+                0.01 * (1.0 + i as f64) + 0.001 * j as f64
+            } else {
+                0.0
+            }
+        });
+        let input = InputIKFom {
+            acc: Vector3::new(0.3, -0.2, 9.7),
+            gyro: Vector3::new(0.05, 0.1, -0.2),
+        };
+        let dt = 0.005;
+
+        let f_x =
+            Mat::<f64>::identity(24, 24) + df_dx(&filter.state, &input, true, &filter.anchor) * dt;
+        let f_w = df_dw(&filter.state, &input, &filter.anchor) * dt;
+        let fp = &f_x * &filter.cov;
+        let fw_q = &f_w * &q;
+        let expected = &fp * f_x.transpose() + &fw_q * f_w.transpose();
+
+        filter.predict(dt, &q, &input);
+        for i in 0..24 {
+            for j in 0..24 {
+                let difference = (filter.cov[(i, j)] - expected[(i, j)]).abs();
+                assert!(difference < 1e-12, "({i}, {j}) differs by {difference}");
+            }
+        }
     }
 
     #[test]

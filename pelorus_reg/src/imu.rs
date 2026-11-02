@@ -614,17 +614,13 @@ impl ImuProcessing {
         Ok(crate::ImuEkfPrediction {
             pose: Isometry3::from_parts(
                 Translation3::from(ekf.state.pose().translation()),
-                UnitQuaternion::from_rotation_matrix(&Rotation3::from_matrix(
-                    &ekf.state.pose().rotation().matrix(),
-                )),
+                *ekf.state.pose().rotation().quaternion(),
             ),
             linear_velocity: ekf.state.vel,
             angular_velocity: self.angvel_last,
             lidar_imu_extrinsic: Isometry3::from_parts(
                 Translation3::from(ekf.state.offset_t_l_i),
-                UnitQuaternion::from_rotation_matrix(&Rotation3::from_matrix(
-                    &ekf.state.offset_r_l_i.matrix(),
-                )),
+                *ekf.state.offset_r_l_i.quaternion(),
             ),
             accel_bias: ekf.state.ba,
             gyro_bias: ekf.state.bg,

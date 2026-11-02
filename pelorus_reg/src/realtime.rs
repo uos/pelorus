@@ -10,7 +10,7 @@ use std::{
     thread,
 };
 
-use nalgebra::{Isometry3, Rotation3, Translation3, UnitQuaternion, Vector3};
+use nalgebra::{Isometry3, Translation3, UnitQuaternion, Vector3};
 use pelorus_core::{ImuMsg, ImuParameters, LioConfig};
 use ros_pointcloud2::prelude::TimeMsg;
 
@@ -392,15 +392,13 @@ impl WorkerState {
         let state = ImuEkfPrediction {
             pose: Isometry3::from_parts(
                 Translation3::from(self.ekf.state.pos),
-                UnitQuaternion::from_rotation_matrix(&Rotation3::from_matrix(
-                    &self.ekf.state.rot.matrix(),
-                )),
+                *self.ekf.state.rot.quaternion(),
             ),
             linear_velocity: self.ekf.state.vel,
             angular_velocity: self.imu.angvel_last,
             lidar_imu_extrinsic: Isometry3::from_parts(
                 Translation3::from(self.ekf.state.offset_t_l_i),
-                UnitQuaternion::from_matrix(&self.ekf.state.offset_r_l_i.matrix()),
+                *self.ekf.state.offset_r_l_i.quaternion(),
             ),
             accel_bias: self.ekf.state.ba,
             gyro_bias: self.ekf.state.bg,

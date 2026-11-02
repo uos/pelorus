@@ -683,11 +683,11 @@ impl RegistrationState {
                     let used_webgpu = if let Some(gpu) = webgpu.as_deref_mut() {
                         let pose = Isometry3::from_parts(
                             Translation3::from(ekf_state.pos),
-                            UnitQuaternion::from_matrix(&ekf_state.rot.matrix()),
+                            *ekf_state.rot.quaternion(),
                         );
                         let offset = Isometry3::from_parts(
                             Translation3::from(ekf_state.offset_t_l_i),
-                            UnitQuaternion::from_matrix(&ekf_state.offset_r_l_i.matrix()),
+                            *ekf_state.offset_r_l_i.quaternion(),
                         );
                         // The filter awaits this callback before touching its buffers again.
                         let out = unsafe { &mut *planes_cpu_buffer_ptr };
@@ -746,21 +746,15 @@ impl RegistrationState {
                             let map = unsafe { &*map_ptr };
                             // Match the GPU backends' f32 transform precision so CPU↔GPU
                             // plane selection stays numerically equivalent. GPU shaders do
-                            // the lidar→imu→world transform in f32, via UnitQuaternion cast
-                            // from the f64 pose rotation matrix. Doing the same here keeps
-                            // the query point, pd2 and score bit-close to the GPU path.
+                            // the lidar→imu→world transform in f32, with the state's
+                            // quaternions cast to f32. Doing the same here keeps the
+                            // query point, pd2 and score bit-close to the GPU path.
                             let offset_q_f32: nalgebra::UnitQuaternion<f32> =
-                                nalgebra::UnitQuaternion::from_matrix(
-                                    &ekf_state.offset_r_l_i.matrix().clone(),
-                                )
-                                .cast();
+                                (*ekf_state.offset_r_l_i.quaternion()).cast();
                             let offset_t_f32: nalgebra::Vector3<f32> =
                                 ekf_state.offset_t_l_i.cast();
                             let pose_q_f32: nalgebra::UnitQuaternion<f32> =
-                                nalgebra::UnitQuaternion::from_matrix(
-                                    &ekf_state.pose().rotation().matrix().clone(),
-                                )
-                                .cast();
+                                (*ekf_state.pose().rotation().quaternion()).cast();
                             let pose_t_f32: nalgebra::Vector3<f32> = ekf_state
                                 .pose()
                                 .matrix()
@@ -855,14 +849,10 @@ impl RegistrationState {
                                 *num_measurements = 0;
                                 return;
                             };
-                            let pose_q: pelorus_cuda::Quaternion = UnitQuaternion::from_matrix(
-                                &ekf_state.pose().rotation().matrix().clone(),
-                            )
-                            .into();
-                            let offset_q: pelorus_cuda::Quaternion = UnitQuaternion::from_matrix(
-                                &ekf_state.offset_r_l_i.matrix().clone(),
-                            )
-                            .into();
+                            let pose_q: pelorus_cuda::Quaternion =
+                                (*ekf_state.pose().rotation().quaternion()).into();
+                            let offset_q: pelorus_cuda::Quaternion =
+                                (*ekf_state.offset_r_l_i.quaternion()).into();
                             let pose_t = ekf_state
                                 .pose()
                                 .matrix()
@@ -917,15 +907,10 @@ impl RegistrationState {
                                 *num_measurements = 0;
                                 return;
                             };
-                            let pose_q: pelorus_metal::Quaternion = {
-                                let mat: Matrix3<f64> =
-                                    ekf_state.pose().rotation().matrix().clone();
-                                UnitQuaternion::from_matrix(&mat).into()
-                            };
-                            let offset_q: pelorus_metal::Quaternion = {
-                                let mat: Matrix3<f64> = ekf_state.offset_r_l_i.matrix().clone();
-                                UnitQuaternion::from_matrix(&mat).into()
-                            };
+                            let pose_q: pelorus_metal::Quaternion =
+                                (*ekf_state.pose().rotation().quaternion()).into();
+                            let offset_q: pelorus_metal::Quaternion =
+                                (*ekf_state.offset_r_l_i.quaternion()).into();
                             let pose_t = ekf_state
                                 .pose()
                                 .matrix()
@@ -966,14 +951,10 @@ impl RegistrationState {
                                 *num_measurements = 0;
                                 return;
                             };
-                            let pose_q: pelorus_vulkan::Quaternion = UnitQuaternion::from_matrix(
-                                &ekf_state.pose().rotation().matrix().clone(),
-                            )
-                            .into();
-                            let offset_q: pelorus_vulkan::Quaternion = UnitQuaternion::from_matrix(
-                                &ekf_state.offset_r_l_i.matrix().clone(),
-                            )
-                            .into();
+                            let pose_q: pelorus_vulkan::Quaternion =
+                                (*ekf_state.pose().rotation().quaternion()).into();
+                            let offset_q: pelorus_vulkan::Quaternion =
+                                (*ekf_state.offset_r_l_i.quaternion()).into();
                             let pose_t = ekf_state
                                 .pose()
                                 .matrix()
@@ -1091,16 +1072,12 @@ impl RegistrationState {
 
         let t_i_l = Isometry3::from_parts(
             Translation3::from(self.ekf.state.offset_t_l_i),
-            UnitQuaternion::from_rotation_matrix(&Rotation3::from_matrix(
-                &self.ekf.state.offset_r_l_i.matrix(),
-            )),
+            *self.ekf.state.offset_r_l_i.quaternion(),
         );
 
         let t_w_i = Isometry3::from_parts(
             Translation3::from(self.ekf.state.pos),
-            UnitQuaternion::from_rotation_matrix(&Rotation3::from_matrix(
-                &self.ekf.state.rot.matrix(),
-            )),
+            *self.ekf.state.rot.quaternion(),
         );
 
         let t_w_l = t_w_i * t_i_l;
@@ -1135,10 +1112,7 @@ impl RegistrationState {
                     anyhow::bail!("Metal backend requires Metal buffer");
                 };
                 let transl = &t_w_l.translation.vector.into();
-                let rot_quat: pelorus_metal::Quaternion = {
-                    let mat: Matrix3<f64> = t_w_l.rotation.to_rotation_matrix().matrix().clone();
-                    UnitQuaternion::from_matrix(&mat).into()
-                };
+                let rot_quat: pelorus_metal::Quaternion = t_w_l.rotation.into();
                 // No `stream.sync()` here, matching the Vulkan arm. The map
                 // build enqueues its kernels and returns; nothing on the CPU
                 // reads their results, and the next `planes_metal` is enqueued
@@ -1154,10 +1128,7 @@ impl RegistrationState {
                     anyhow::bail!("Vulkan backend requires Vulkan buffer");
                 };
                 let transl = &t_w_l.translation.vector.into();
-                let rot_quat: pelorus_vulkan::Quaternion = {
-                    let mat: Matrix3<f64> = *t_w_l.rotation.to_rotation_matrix().matrix();
-                    UnitQuaternion::from_matrix(&mat).into()
-                };
+                let rot_quat: pelorus_vulkan::Quaternion = t_w_l.rotation.into();
                 pelorus_vulkan::add_to_map(stream, buffer, transl, &rot_quat, scan_id);
             }
         }
@@ -1205,17 +1176,13 @@ impl crate::Registration for RegistrationState {
         crate::ImuEkfPrediction {
             pose: Isometry3::from_parts(
                 Translation3::from(self.ekf.state.pos),
-                UnitQuaternion::from_rotation_matrix(&Rotation3::from_matrix(
-                    &self.ekf.state.rot.matrix(),
-                )),
+                *self.ekf.state.rot.quaternion(),
             ),
             linear_velocity: self.ekf.state.vel,
             angular_velocity: self.imu_processing.angvel_last,
             lidar_imu_extrinsic: Isometry3::from_parts(
                 Translation3::from(self.ekf.state.offset_t_l_i),
-                UnitQuaternion::from_rotation_matrix(&Rotation3::from_matrix(
-                    &self.ekf.state.offset_r_l_i.matrix(),
-                )),
+                *self.ekf.state.offset_r_l_i.quaternion(),
             ),
             accel_bias: self.ekf.state.ba,
             gyro_bias: self.ekf.state.bg,
