@@ -1,12 +1,10 @@
 use crate::*;
 use chrono::{NaiveDate, TimeZone, Utc};
-use pelorus_core::{
-    CoordinateSystem, ImuDriverConfig, ImuMsg, XsensTimestampMode, time_msg_from_secs,
-};
+use pelorus_core::{CoordinateSystem, ImuDriverConfig, ImuMsg, XsensTimestampMode};
 use std::{
     io::Read,
     sync::{Arc, atomic::AtomicBool},
-    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
+    time::{Duration, Instant, SystemTime},
 };
 use xsens_mti::{
     decoder::Decoder,
@@ -43,18 +41,17 @@ fn quat(payload: &[u8], precision: Precision) -> Result<[f64; 4], DriverError> {
         )),
     }
 }
-fn utc_secs(v: UtcTime) -> Result<f64, DriverError> {
+fn utc_stamp(v: UtcTime) -> Result<Stamp, DriverError> {
     if !v.flags.utc_valid() {
         return Err(DriverError::Driver("Xsens UTC field is not valid".into()));
     }
     let date = NaiveDate::from_ymd_opt(v.year as i32, v.month as u32, v.day as u32)
         .and_then(|d| d.and_hms_nano_opt(v.hour as u32, v.minute as u32, v.second as u32, v.ns))
         .ok_or_else(|| DriverError::Driver("invalid Xsens UTC date".into()))?;
-    Ok(Utc
-        .from_utc_datetime(&date)
+    Utc.from_utc_datetime(&date)
         .timestamp_nanos_opt()
-        .ok_or_else(|| DriverError::Driver("Xsens UTC out of range".into()))? as f64
-        / 1e9)
+        .map(Stamp)
+        .ok_or_else(|| DriverError::Driver("Xsens UTC out of range".into()))
 }
 
 fn command(mid: u8, payload: &[u8]) -> Vec<u8> {
@@ -167,10 +164,7 @@ pub fn run(
         let Some((acc, rot, q)) = acc.zip(rot).zip(q).map(|((a, b), c)| (a, b, c)) else {
             continue;
         };
-        let host = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map_err(|e| DriverError::Driver(e.to_string()))?
-            .as_secs_f64();
+        let host = host_stamp(SystemTime::now())?;
         let stamp = match c.timestamp_mode {
             XsensTimestampMode::Host => host,
             XsensTimestampMode::Utc => {
@@ -178,7 +172,7 @@ pub fn run(
                     .ok_or_else(|| {
                         DriverError::Driver("Xsens MTData2 message is missing UTC".into())
                     })
-                    .and_then(utc_secs)?;
+                    .and_then(utc_stamp)?;
                 validate_timestamp(value, host, skew)?;
                 value
             }
@@ -188,7 +182,7 @@ pub fn run(
             angular_velocity: rot,
             linear_acceleration: acc,
             frame_id: c.frame_id.clone(),
-            stamp: time_msg_from_secs(stamp),
+            stamp: stamp.to_msg(),
             ..Default::default()
         };
         if let Some(sink) = sink.as_ref() {

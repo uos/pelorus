@@ -563,7 +563,8 @@ imu {
   }
 
   # Ignore the IMU entirely and run the odometry on the Lidar alone, with the
-  # filter propagating at a constant twist between scans.
+  # filter propagating at a constant twist between scans. The twist comes from
+  # the previous scan, so points within a scan are not deskewed.
   #
   # This exists to produce a trajectory for calibrating the IMU against, which
   # is circular if the IMU helped produce it. It is not a navigation mode: with

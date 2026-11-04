@@ -1139,6 +1139,127 @@ pub fn secs_to_timestamp(secs: f64) -> TimeMsg {
     TimeMsg { sec, nanosec }
 }
 
+const NANOS_PER_SEC: i64 = 1_000_000_000;
+
+/// A point in time in integer nanoseconds since the Unix epoch.
+///
+/// An `f64` resolves an absolute time to about 0.2 µs and an `f32` only to
+/// 128 s, so absolute times stay integers. Only the difference of two stamps
+/// becomes seconds, through [`Stamp::secs_since`].
+#[derive(
+    Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize,
+)]
+pub struct Stamp(pub i64);
+
+impl Stamp {
+    /// The epoch itself, which the pipeline treats as "no time yet".
+    pub const ZERO: Self = Self(0);
+
+    pub fn from_msg(t: &TimeMsg) -> Self {
+        Self(i64::from(t.sec) * NANOS_PER_SEC + i64::from(t.nanosec))
+    }
+
+    pub fn to_msg(self) -> TimeMsg {
+        TimeMsg {
+            sec: self.0.div_euclid(NANOS_PER_SEC) as i32,
+            nanosec: self.0.rem_euclid(NANOS_PER_SEC) as u32,
+        }
+    }
+
+    /// The stamp `secs` seconds after the epoch, to the nearest nanosecond.
+    pub fn from_secs(secs: f64) -> Self {
+        let whole = secs.floor();
+        Self(whole as i64 * NANOS_PER_SEC + ((secs - whole) * 1e9).round() as i64)
+    }
+
+    /// Seconds since the epoch, for output. Arithmetic on times goes through
+    /// [`Stamp::secs_since`] and [`Stamp::add_secs`].
+    pub fn as_secs(self) -> f64 {
+        self.0.div_euclid(NANOS_PER_SEC) as f64
+            + self.0.rem_euclid(NANOS_PER_SEC) as f64 / NANOS_PER_SEC as f64
+    }
+
+    /// Seconds from `earlier` to `self`, negative when `self` comes first.
+    pub fn secs_since(self, earlier: Self) -> f64 {
+        (self.0 - earlier.0) as f64 / NANOS_PER_SEC as f64
+    }
+
+    /// The stamp `secs` seconds later, or earlier for a negative `secs`.
+    pub fn add_secs(self, secs: f64) -> Self {
+        Self(self.0 + (secs * NANOS_PER_SEC as f64).round() as i64)
+    }
+
+    /// Whether this is a time after the epoch. Times not known yet are zero.
+    pub fn is_set(self) -> bool {
+        self.0 > 0
+    }
+}
+
+/// Seconds since the epoch with all nine decimals.
+impl core::fmt::Display for Stamp {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        let sign = if self.0 < 0 { "-" } else { "" };
+        let nanos = self.0.unsigned_abs();
+        write!(
+            f,
+            "{sign}{}.{:09}",
+            nanos / NANOS_PER_SEC as u64,
+            nanos % NANOS_PER_SEC as u64
+        )
+    }
+}
+
+impl From<TimeMsg> for Stamp {
+    fn from(t: TimeMsg) -> Self {
+        Self::from_msg(&t)
+    }
+}
+
+#[cfg(test)]
+mod stamp_tests {
+    use super::*;
+
+    #[test]
+    fn message_round_trip_keeps_every_nanosecond() {
+        let msg = TimeMsg {
+            sec: 1_710_754_089,
+            nanosec: 476_455_201,
+        };
+        let stamp = Stamp::from_msg(&msg);
+        assert_eq!(stamp, Stamp(1_710_754_089_476_455_201));
+        let back = stamp.to_msg();
+        assert_eq!((back.sec, back.nanosec), (msg.sec, msg.nanosec));
+        assert_eq!(stamp.add_secs(1e-9).to_msg().nanosec, 476_455_202);
+    }
+
+    #[test]
+    fn differences_are_exact_where_absolute_seconds_round() {
+        let earlier = Stamp(1_710_754_089_476_455_201);
+        let later = Stamp(1_710_754_089_476_455_301);
+        assert_eq!(later.secs_since(earlier), 1e-7);
+        assert_eq!(earlier.secs_since(later), -1e-7);
+        // The same two times as f64 seconds are 0.24 µs apart in resolution.
+        assert_ne!(later.as_secs() - earlier.as_secs(), 1e-7);
+    }
+
+    #[test]
+    fn times_before_the_epoch_keep_a_positive_nanosecond_field() {
+        let stamp = Stamp(-1);
+        let msg = stamp.to_msg();
+        assert_eq!((msg.sec, msg.nanosec), (-1, 999_999_999));
+        assert_eq!(Stamp::from_msg(&msg), stamp);
+        assert_eq!(stamp.to_string(), "-0.000000001");
+    }
+
+    #[test]
+    fn seconds_convert_to_the_nearest_nanosecond() {
+        assert_eq!(Stamp::from_secs(100.25), Stamp(100_250_000_000));
+        assert_eq!(Stamp(100_250_000_000).as_secs(), 100.25);
+        assert_eq!(Stamp(100_250_000_000).to_string(), "100.250000000");
+        assert!(!Stamp::ZERO.is_set());
+    }
+}
+
 pub trait PointXYZITimestamp<const N: usize>:
     PointConvertible<N> + Send + Sync + Sized + Copy
 {
@@ -1166,9 +1287,9 @@ pub trait PointXYZIntensity<const N: usize>:
 #[derive(Debug, Clone, Default)]
 pub struct MeasureGroup {
     pub cloud: Vec<PointXYZIT>,
-    pub last_lidar_end_stamp: f64,
-    pub lidar_start_stamp: f64,
-    pub lidar_end_stamp: f64,
+    pub last_lidar_end_stamp: Stamp,
+    pub lidar_start_stamp: Stamp,
+    pub lidar_end_stamp: Stamp,
     pub imu_buffer: Vec<ImuMsg>,
     pub odom_buffer: Vec<OdomMsg>,
 }
@@ -1253,16 +1374,21 @@ pub enum MadgwickSetting {
     Disable,
 }
 
-pub type ImuPredictor = dyn for<'a> Fn(&'a [ImuMsg], f64, f64, f64) -> ImuPosePrediction + Send;
+/// Predicts the pose at the end of a scan from its IMU messages, the end of the
+/// previous interval, the scan begin and the scan end.
+pub type ImuPredictor =
+    dyn for<'a> Fn(&'a [ImuMsg], Stamp, Stamp, Stamp) -> ImuPosePrediction + Send;
 
 pub type OdomCorrection = dyn Fn(OdomMsg) + Send;
 
+/// Deskews a scan with its IMU and odometry messages, given the end of the
+/// previous interval, the scan begin and the scan end.
 pub type ImuPredictorUndistort = dyn for<'a, 'b> Fn(
         &'a [ImuMsg],
         &'b [OdomMsg],
-        f64,
-        f64,
-        f64,
+        Stamp,
+        Stamp,
+        Stamp,
         &mut Vec<PointXYZIT>,
         Option<&mut Vec<PointXYZIT>>,
     ) -> Either<ImuPosePrediction, Isometry3<f64>>

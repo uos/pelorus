@@ -397,7 +397,7 @@ impl Correspondence {
                 .get_mapped_range()
                 .context("mapping the WebGPU readback")?;
             // read_unaligned avoids relying on the browser's mapped allocation alignment.
-            for (p, bytes) in self.host_points.iter().zip(data.chunks_exact(16)) {
+            for (p, bytes) in self.host_points.iter().zip(data.as_chunks::<16>().0) {
                 let plane: [f32; 4] = bytemuck::pod_read_unaligned(bytes);
                 if plane.iter().all(|v| v.is_finite()) && plane[..3].iter().any(|v| *v != 0.0) {
                     out.push(PointXYZINormal::new(

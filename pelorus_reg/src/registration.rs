@@ -318,7 +318,7 @@ impl RegistrationState {
         let mut vel_cov = [0.0; 9];
         for i in 0..3 {
             for j in 0..3 {
-                vel_cov[i * 3 + j] = self.ekf.cov[(i + 12, j + 12)];
+                vel_cov[i * 3 + j] = crate::eqf::double(self.ekf.cov[(i + 12, j + 12)]);
             }
         }
         (pose_cov, vel_cov)
@@ -379,7 +379,7 @@ pub(crate) fn output_pose_covariance(ekf: &Eqf, lidar_to_output: &Isometry3<f64>
     // that keeps the filter covariance nonsingular, so it does not enter the
     // output pose.
 
-    let cov = SMatrix::<f64, 24, 24>::from_fn(|row, col| ekf.cov[(row, col)]);
+    let cov = SMatrix::<f64, 24, 24>::from_fn(|row, col| crate::eqf::double(ekf.cov[(row, col)]));
     let output_cov = jacobian * cov * jacobian.transpose();
     matrix6_to_array(output_cov)
 }
@@ -426,7 +426,7 @@ pub(crate) fn output_twist_covariance(
         .copy_from(&Matrix3::identity());
     let gyro_noise_world = r_wi * gyro_noise * r_wi.transpose();
 
-    let cov = SMatrix::<f64, 24, 24>::from_fn(|row, col| ekf.cov[(row, col)]);
+    let cov = SMatrix::<f64, 24, 24>::from_fn(|row, col| crate::eqf::double(ekf.cov[(row, col)]));
     let twist_cov_world = jacobian * cov * jacobian.transpose()
         + noise_jacobian * gyro_noise_world * noise_jacobian.transpose();
 
@@ -672,8 +672,8 @@ impl RegistrationState {
                 async move |ekf_state: &crate::eqf::StateIKFom,
                             valid: &mut bool,
                             _converged: bool,
-                            h: &mut faer::Col<f64>,
-                            h_x: &mut faer::Mat<f64>,
+                            h: &mut faer::Col<crate::eqf::Real>,
+                            h_x: &mut faer::Mat<crate::eqf::Real>,
                             num_measurements: &mut usize| {
                     eval_cb_inner
                         .write()
@@ -1010,10 +1010,10 @@ impl RegistrationState {
                     eval_actual.start("ekf_correct/model/jacobian").unwrap();
 
                     if planes.len() > h.nrows() {
-                        *h = faer::Col::<f64>::zeros(cloud_len_alloc);
+                        *h = faer::Col::<crate::eqf::Real>::zeros(cloud_len_alloc);
                     }
                     if planes.len() > h_x.nrows() {
-                        *h_x = faer::Mat::<f64>::zeros(cloud_len_alloc, 12);
+                        *h_x = faer::Mat::<crate::eqf::Real>::zeros(cloud_len_alloc, 12);
                     }
 
                     for (i, normal_point) in planes.iter().enumerate() {
@@ -1039,29 +1039,29 @@ impl RegistrationState {
                         // the moment arm bounded by sensor range.
                         let a_vec = skew_symmetric_na(&(p_world - anchor)) * norm;
 
-                        h_x[(i, 0)] = norm.x;
-                        h_x[(i, 1)] = norm.y;
-                        h_x[(i, 2)] = norm.z;
+                        h_x[(i, 0)] = crate::eqf::real(norm.x);
+                        h_x[(i, 1)] = crate::eqf::real(norm.y);
+                        h_x[(i, 2)] = crate::eqf::real(norm.z);
 
-                        h_x[(i, 3)] = a_vec.x;
-                        h_x[(i, 4)] = a_vec.y;
-                        h_x[(i, 5)] = a_vec.z;
+                        h_x[(i, 3)] = crate::eqf::real(a_vec.x);
+                        h_x[(i, 4)] = crate::eqf::real(a_vec.y);
+                        h_x[(i, 5)] = crate::eqf::real(a_vec.z);
 
                         if extrinsic_est {
-                            h_x[(i, 6)] = a_vec.x;
-                            h_x[(i, 7)] = a_vec.y;
-                            h_x[(i, 8)] = a_vec.z;
+                            h_x[(i, 6)] = crate::eqf::real(a_vec.x);
+                            h_x[(i, 7)] = crate::eqf::real(a_vec.y);
+                            h_x[(i, 8)] = crate::eqf::real(a_vec.z);
 
-                            h_x[(i, 9)] = norm.x;
-                            h_x[(i, 10)] = norm.y;
-                            h_x[(i, 11)] = norm.z;
+                            h_x[(i, 9)] = crate::eqf::real(norm.x);
+                            h_x[(i, 10)] = crate::eqf::real(norm.y);
+                            h_x[(i, 11)] = crate::eqf::real(norm.z);
                         } else {
                             for col in 6..12 {
                                 h_x[(i, col)] = 0.0;
                             }
                         }
 
-                        h[i] = -pd2;
+                        h[i] = crate::eqf::real(-pd2);
                     }
                     eval_actual.stop("ekf_correct/model/jacobian").unwrap();
                 },
@@ -1242,7 +1242,7 @@ mod covariance_tests {
         ekf.anchor = Vector3::new(90.0, -40.0, 7.0);
         ekf.state.pos = Vector3::new(100.0, -35.0, 8.0);
         ekf.state.offset_t_l_i = Vector3::new(0.2, -0.1, 0.05);
-        ekf.cov = faer::Mat::<f64>::zeros(24, 24);
+        ekf.cov = faer::Mat::<crate::eqf::Real>::zeros(24, 24);
         ekf.cov[(6, 6)] = 1.0;
 
         let covariance = output_pose_covariance(&ekf, &Isometry3::identity());
@@ -1265,7 +1265,7 @@ mod covariance_tests {
         let mut ekf = Eqf::new(9.81, Isometry3::identity());
         ekf.extrinsic_est = false;
         ekf.state.offset_t_l_i = Vector3::new(0.2, -0.1, 0.05);
-        ekf.cov = faer::Mat::<f64>::zeros(24, 24);
+        ekf.cov = faer::Mat::<crate::eqf::Real>::zeros(24, 24);
         for index in 6..12 {
             ekf.cov[(index, index)] = 1.0;
         }
@@ -1282,7 +1282,7 @@ mod covariance_tests {
     #[test]
     fn twist_covariance_carries_gyro_noise_and_bias_into_a_yawed_lever_arm_frame() {
         let mut ekf = Eqf::new(9.81, Isometry3::identity());
-        ekf.cov = faer::Mat::<f64>::zeros(24, 24);
+        ekf.cov = faer::Mat::<crate::eqf::Real>::zeros(24, 24);
         for index in 15..18 {
             ekf.cov[(index, index)] = 0.5;
         }

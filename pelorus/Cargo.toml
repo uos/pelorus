@@ -67,3 +67,5 @@ large-processing-queue = ["pelorus_sync/large-processing-queue"]
 os-rng-seed = ["std", "pelorus_reg/os-rng-seed"]
 lru-eviction = ["pelorus_reg/lru-eviction"]
 plain-update = ["pelorus_reg/plain-update"]
+# Run the filter's covariance algebra in f32 instead of f64.
+f32-filter = ["pelorus_reg/f32-filter"]

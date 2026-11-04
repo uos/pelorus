@@ -68,7 +68,7 @@ fn async_registration_matches_cpu_and_survives_gpu_failure() {
                 let scan = || RegistrationScan {
                     cloud: &cloud,
                     imu_transform: Isometry3::identity(),
-                    lidar_timestamp: scan_id as f64 * 0.1,
+                    lidar_timestamp: pelorus_core::Stamp::from_secs(scan_id as f64 * 0.1),
                     scan_id,
                     map_only: scan_id == 0,
                 };

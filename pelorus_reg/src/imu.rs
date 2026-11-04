@@ -4,8 +4,8 @@ use log::warn;
 use nalgebra::*;
 use pelorus_core::log_debouncer::should_log_once_default;
 use pelorus_core::{
-    COV_IMU_BIAS_DEFAULT, COV_IMU_RAW_DEFAULT, ImuMsg, ImuParameters, KinematicModel, LidarVendor,
-    PointXYZIT, adaptive_execution::ExecutionMode, timestamp_to_secs,
+    COV_IMU_BIAS_DEFAULT, COV_IMU_RAW_DEFAULT, ImuMsg, ImuParameters, KinematicModel, PointXYZIT,
+    Stamp, adaptive_execution::ExecutionMode,
 };
 #[cfg(feature = "rayon")]
 use rayon::prelude::*;
@@ -257,23 +257,23 @@ impl ImuProcessing {
         // origin we declare here. Anchor on the robot so it means what the diagonal
         // below says it means.
         ekf.anchor = ekf.state.pos;
-        ekf.cov = faer::Mat::<f64>::identity(24, 24);
+        ekf.cov = faer::Mat::<crate::eqf::Real>::identity(24, 24);
 
         // 24-dim state: pos(0-2), rot(3-5), offset_R(6-8), offset_T(9-11), vel(12-14), bg(15-17), ba(18-20), grav(21-23)
         // bg bias covariance (15-17)
-        ekf.cov[(15, 15)] = COV2;
-        ekf.cov[(16, 16)] = COV2;
-        ekf.cov[(17, 17)] = COV2;
+        ekf.cov[(15, 15)] = crate::eqf::real(COV2);
+        ekf.cov[(16, 16)] = crate::eqf::real(COV2);
+        ekf.cov[(17, 17)] = crate::eqf::real(COV2);
 
         // ba bias covariance (18-20)
-        ekf.cov[(18, 18)] = COV3;
-        ekf.cov[(19, 19)] = COV3;
-        ekf.cov[(20, 20)] = COV3;
+        ekf.cov[(18, 18)] = crate::eqf::real(COV3);
+        ekf.cov[(19, 19)] = crate::eqf::real(COV3);
+        ekf.cov[(20, 20)] = crate::eqf::real(COV3);
 
         // grav covariance (21-23)
-        ekf.cov[(21, 21)] = COV1;
-        ekf.cov[(22, 22)] = COV1;
-        ekf.cov[(23, 23)] = COV1;
+        ekf.cov[(21, 21)] = crate::eqf::real(COV1);
+        ekf.cov[(22, 22)] = crate::eqf::real(COV1);
+        ekf.cov[(23, 23)] = crate::eqf::real(COV1);
 
         self.last_imu = msgs[msgs.len() - 1].clone();
 
@@ -296,19 +296,15 @@ impl ImuProcessing {
             odom_msgs,
             last_cloud_end_time,
             cloud_begin_time,
-            mut cloud_end_time,
+            cloud_end_time,
             cloud,
             cloud_passthrough,
-            lidar_vendor,
+            deskew,
         } = scan;
         debug_assert!(!imu_msgs.is_empty());
-        debug_assert!(last_cloud_end_time > 0.0);
-        debug_assert!(cloud_begin_time > 0.0);
-        debug_assert!(cloud_end_time > 0.0);
-
-        if !matches!(lidar_vendor, Some(LidarVendor::NoTimestamp)) {
-            cloud_end_time += cloud_begin_time;
-        }
+        debug_assert!(last_cloud_end_time.is_set());
+        debug_assert!(cloud_begin_time.is_set());
+        debug_assert!(cloud_end_time.is_set());
 
         const GRAVITY: f64 = 9.81; // TODO PARAM
 
@@ -341,8 +337,8 @@ impl ImuProcessing {
         let mut odom_iter = odom_msgs.iter().peekable();
 
         for tail in all_imus {
-            let head_stamp = timestamp_to_secs(&head.stamp);
-            let tail_stamp = timestamp_to_secs(&tail.stamp);
+            let head_stamp = Stamp::from_msg(&head.stamp);
+            let tail_stamp = Stamp::from_msg(&tail.stamp);
 
             if head_stamp == tail_stamp {
                 if should_log_once_default("imu_same_stamp_skip") {
@@ -371,12 +367,12 @@ impl ImuProcessing {
             // Process events in timestamp order: advance to each odometry sample,
             // correct there, and only then finish the interval at the IMU sample.
             while let Some(odom) = odom_iter.peek() {
-                let odom_time = timestamp_to_secs(&odom.stamp);
+                let odom_time = Stamp::from_msg(&odom.stamp);
                 if odom_time > tail_stamp {
                     break;
                 }
 
-                let dt_pred = odom_time - ekf.last_time;
+                let dt_pred = odom_time.secs_since(ekf.last_time);
                 if dt_pred > 0.0 {
                     _ = self.predict(ekf, avr_x, angvel_avr, dt_pred);
                     // Enforce kinematic constraints after prediction segment
@@ -398,7 +394,7 @@ impl ImuProcessing {
             }
 
             // Finish prediction to the tail timestamp.
-            let dt_to_tail = tail_stamp - ekf.last_time;
+            let dt_to_tail = tail_stamp.secs_since(ekf.last_time);
             if dt_to_tail > 0.0 {
                 _ = self.predict(ekf, avr_x, angvel_avr, dt_to_tail);
                 // Enforce kinematic constraints after final prediction
@@ -417,7 +413,7 @@ impl ImuProcessing {
             // A zero acceleration mean indicates missing initialization data.
             debug_assert!(!self.acc_s_last.iter().any(|a| a.is_nan()));
 
-            let offs_t = tail_stamp - cloud_begin_time;
+            let offs_t = tail_stamp.secs_since(cloud_begin_time);
             imu_poses.push(Pose6D::new(
                 offs_t,
                 self.acc_s_last,
@@ -436,12 +432,12 @@ impl ImuProcessing {
         let angvel_avr = [angvel_avr_x, angvel_avr_y, angvel_avr_z];
 
         while let Some(odom) = odom_iter.peek() {
-            let odom_time = timestamp_to_secs(&odom.stamp);
+            let odom_time = Stamp::from_msg(&odom.stamp);
             if odom_time > cloud_end_time {
                 break;
             }
 
-            let dt_pred = odom_time - ekf.last_time;
+            let dt_pred = odom_time.secs_since(ekf.last_time);
             if dt_pred > 0.0 {
                 _ = self.predict(ekf, avr_x, angvel_avr, dt_pred);
                 // Enforce kinematic constraints after prediction segment
@@ -464,7 +460,7 @@ impl ImuProcessing {
             odom_iter.next();
         }
 
-        let dt = cloud_end_time - ekf.last_time;
+        let dt = cloud_end_time.secs_since(ekf.last_time);
         assert!(dt >= 0.0);
         let _ = self.predict(ekf, avr_x, angvel_avr, dt);
         // Enforce kinematic constraints after final prediction to cloud end
@@ -472,7 +468,7 @@ impl ImuProcessing {
         ekf.correct_kinematics(kinematic, gyro, constraint_std);
         self.imu_state = ekf.state;
 
-        if !matches!(lidar_vendor, Some(LidarVendor::NoTimestamp)) {
+        if deskew {
             let imu_state_pose_translation = self.imu_state.pose().translation();
             let imu_state_pose_rotation_t = self.imu_state.pose().rotation().matrix().transpose();
             let imu_state_lidar_to_imu_t = self.imu_state.offset_t_l_i;
@@ -576,29 +572,29 @@ impl ImuProcessing {
         };
 
         let q = {
-            let mut q = faer::Mat::<f64>::zeros(12, 12);
+            let mut q = faer::Mat::<crate::eqf::Real>::zeros(12, 12);
             // Copy ekf_cov_gyr to block (0, 0)
             for i in 0..3 {
                 for j in 0..3 {
-                    q[(i, j)] = self.ekf_cov_gyr[(i, j)];
+                    q[(i, j)] = crate::eqf::real(self.ekf_cov_gyr[(i, j)]);
                 }
             }
             // Copy ekf_cov_acc to block (3, 3)
             for i in 0..3 {
                 for j in 0..3 {
-                    q[(3 + i, 3 + j)] = self.ekf_cov_acc[(i, j)];
+                    q[(3 + i, 3 + j)] = crate::eqf::real(self.ekf_cov_acc[(i, j)]);
                 }
             }
             // Copy ekf_cov_gyr_bias to block (6, 6)
             for i in 0..3 {
                 for j in 0..3 {
-                    q[(6 + i, 6 + j)] = self.ekf_cov_gyr_bias[(i, j)];
+                    q[(6 + i, 6 + j)] = crate::eqf::real(self.ekf_cov_gyr_bias[(i, j)]);
                 }
             }
             // Copy ekf_cov_acc_bias to block (9, 9)
             for i in 0..3 {
                 for j in 0..3 {
-                    q[(9 + i, 9 + j)] = self.ekf_cov_acc_bias[(i, j)];
+                    q[(9 + i, 9 + j)] = crate::eqf::real(self.ekf_cov_acc_bias[(i, j)]);
                 }
             }
 

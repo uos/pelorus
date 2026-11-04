@@ -4,9 +4,7 @@ extern crate alloc;
 
 use alloc::vec::Vec;
 use nalgebra::*;
-use pelorus_core::{
-    ImuMsg, KinematicModel, LidarVendor, OdomMsg, PointXYZIT, timing::RuntimeEvaluator,
-};
+use pelorus_core::{ImuMsg, KinematicModel, OdomMsg, PointXYZIT, timing::RuntimeEvaluator};
 use pelorus_sync::LocatedBufferView;
 use ros_pointcloud2::prelude::*;
 
@@ -97,7 +95,7 @@ impl ImuEkfPrediction {
 pub struct RegistrationScan<'a> {
     pub cloud: &'a LocatedBufferView<PointXYZIT>,
     pub imu_transform: Isometry3<f64>,
-    pub lidar_timestamp: f64,
+    pub lidar_timestamp: pelorus_core::Stamp,
     pub scan_id: usize,
     pub map_only: bool,
 }
@@ -107,12 +105,14 @@ pub struct RegistrationScan<'a> {
 pub struct UndistortScan<'a> {
     pub imu_msgs: &'a [ImuMsg],
     pub odom_msgs: &'a [OdomMsg],
-    pub last_cloud_end_time: f64,
-    pub cloud_begin_time: f64,
-    pub cloud_end_time: f64,
+    pub last_cloud_end_time: pelorus_core::Stamp,
+    pub cloud_begin_time: pelorus_core::Stamp,
+    pub cloud_end_time: pelorus_core::Stamp,
     pub cloud: &'a mut Vec<PointXYZIT>,
     pub cloud_passthrough: Option<&'a mut Vec<PointXYZIT>>,
-    pub lidar_vendor: Option<LidarVendor>,
+    /// Whether to move every point to the scan end along the propagated
+    /// motion. Needs per-point times and a motion estimate within the scan.
+    pub deskew: bool,
 }
 
 /// Receives the id of a scan once the map holds it, which releases a threaded

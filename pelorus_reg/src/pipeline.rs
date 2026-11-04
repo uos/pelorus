@@ -150,10 +150,17 @@ impl Pipeline {
                 let generated;
                 let imu_msgs: &[ImuMsg] = if lidar_only {
                     let pose = map.get_state().pose;
-                    let (messages, linear_velocity) =
-                        synthetic
-                            .lock()
-                            .generate(&pose, last_cloud_end_time, cloud_end_time);
+                    let estimates = crate::lidar_only::ImuEstimates {
+                        gyro_bias: map.ekf.state.bg,
+                        accel_bias: map.ekf.state.ba,
+                        gravity: map.ekf.state.grav,
+                    };
+                    let (messages, linear_velocity) = synthetic.lock().generate(
+                        &pose,
+                        &estimates,
+                        last_cloud_end_time,
+                        cloud_end_time,
+                    );
                     if let Some(linear_velocity) = linear_velocity {
                         map.set_linear_velocity(linear_velocity);
                     }
@@ -171,7 +178,10 @@ impl Pipeline {
                         cloud_end_time,
                         cloud,
                         cloud_passthrough,
-                        lidar_vendor: Some(lidar_vendor),
+                        // The synthetic twist is measured over the previous
+                        // scan. Under motion that changes from scan to scan it
+                        // misplaces points by more than skipping deskew does.
+                        deskew: !lidar_only && !matches!(lidar_vendor, LidarVendor::NoTimestamp),
                     },
                     kinematic_model,
                     constraint_std,

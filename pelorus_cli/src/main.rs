@@ -2868,7 +2868,7 @@ fn lio_with_ready_signal(
     let processing_handle = std::thread::spawn(move || -> anyhow::Result<()> {
         let mut filtered_imu_rx = filtered_imu_rx;
         #[cfg(feature = "rerun")]
-        let mut last_map_snapshot_time: Option<f64> = None;
+        let mut last_map_snapshot_time: Option<pelorus_core::Stamp> = None;
         let mut mcap_writer = match output_mcap {
             Some(output) => Some(McapOutputWriter::create(
                 &output.path,
@@ -3067,7 +3067,7 @@ fn lio_with_ready_signal(
             // --- Adapting Coordinate Systems ---
             #[cfg(feature = "rerun")]
             if let Some(ref rec) = rec {
-                rec.set_timestamp_secs_since_epoch("sensor", current_cloud_time);
+                rec.set_timestamp_secs_since_epoch("sensor", current_cloud_time.as_secs());
             }
 
             #[cfg(feature = "rerun")]
@@ -3450,7 +3450,7 @@ fn lio_with_ready_signal(
                 (latency_file.as_mut(), latency_started)
             {
                 let latency_ns = latency_started.elapsed().as_nanos();
-                let content_to_write = format!("{current_cloud_time} {latency_ns}\n");
+                let content_to_write = format!("{} {latency_ns}\n", current_cloud_time.as_secs());
 
                 std::io::Write::write_all(latency_file, content_to_write.as_bytes())?;
             }
@@ -3470,13 +3470,20 @@ fn lio_with_ready_signal(
                 &child_frame,
             )?;
             if let Some(samples) = trajectory_samples.as_mut() {
-                samples.push((current_cloud_time, t_world));
+                samples.push((current_cloud_time.as_secs(), t_world));
             } else if let Some(file) = trajectory_file.as_mut() {
                 let t = t_world.translation.vector;
                 let q = t_world.rotation.quaternion();
                 let line = format!(
                     "{} {} {} {} {} {} {} {}\n",
-                    current_cloud_time, t.x, t.y, t.z, q.i, q.j, q.k, q.w
+                    current_cloud_time.as_secs(),
+                    t.x,
+                    t.y,
+                    t.z,
+                    q.i,
+                    q.j,
+                    q.k,
+                    q.w
                 );
                 std::io::Write::write_all(file, line.as_bytes())?;
             }
@@ -3655,7 +3662,8 @@ fn lio_with_ready_signal(
                     && last_map_snapshot_time
                         .map(|last| {
                             current_cloud_time < last
-                                || current_cloud_time - last >= map_config.publish_interval_sec
+                                || current_cloud_time.secs_since(last)
+                                    >= map_config.publish_interval_sec
                         })
                         .unwrap_or(true);
                 if due {
@@ -3851,7 +3859,8 @@ fn lio_with_ready_signal(
             #[cfg(feature = "processing-time-export")]
             if let Some(processing_time_file) = processing_time_file.as_mut() {
                 let processing_time_ns = (iteration_time_ms * 1_000_000.0).round() as u128;
-                let content_to_write = format!("{current_cloud_time} {processing_time_ns}\n");
+                let content_to_write =
+                    format!("{} {processing_time_ns}\n", current_cloud_time.as_secs());
 
                 std::io::Write::write_all(processing_time_file, content_to_write.as_bytes())?;
             }

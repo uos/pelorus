@@ -24,7 +24,6 @@ use pelorus_core::{
 #[cfg(feature = "native-drivers")]
 use pelorus_core::{
     LidarDriverType, OusterPoint, RobosensePoint, SensorDriverConfig, VelodynePoint,
-    time_msg_from_secs,
 };
 #[cfg(feature = "native-drivers")]
 use pelorus_drivers::{DriverError, DriverManager, RawLidarScan, SensorIngress, SensorOutputSink};
@@ -1151,7 +1150,7 @@ pub fn native_scan_to_cloud(
                     y: point.xyz[1],
                     z: point.xyz[2],
                     intensity: point.intensity * 255.0,
-                    timestamp: stamp + point.time_offset_secs,
+                    timestamp: stamp.as_secs() + point.time_offset_secs,
                 })
                 .collect();
             ros_pointcloud2::PointCloud2Msg::try_from_vec(points)
@@ -1164,7 +1163,7 @@ pub fn native_scan_to_cloud(
     }
     .map_err(|error| DriverError::Driver(format!("native cloud conversion: {error}")))?;
     cloud.header.frame_id = frame_id;
-    cloud.header.stamp = time_msg_from_secs(stamp);
+    cloud.header.stamp = stamp.to_msg();
     Ok(cloud)
 }
 
@@ -2244,7 +2243,7 @@ mod native_ingress_tests {
     fn scan(offset_seconds: f64) -> RawLidarScan {
         RawLidarScan {
             frame_id: "os_sensor".into(),
-            stamp: 1_700_000_000.25,
+            stamp: pelorus_drivers::Stamp(1_700_000_000_250_000_000),
             points: vec![RawLidarPoint {
                 xyz: [1.0, 2.0, 3.0],
                 intensity: 0.5,

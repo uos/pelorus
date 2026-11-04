@@ -2,7 +2,7 @@
 
 use nalgebra::Isometry3;
 use pelorus_core::timing::RuntimeEvaluator;
-use pelorus_core::{ImuParameters, PointXYZIT};
+use pelorus_core::{ImuParameters, PointXYZIT, Stamp};
 use pelorus_localmap::{IVoxHashMap, IVoxNearbyType};
 use pelorus_reg::{
     ActiveBackend, Registration, RegistrationScan,
@@ -202,7 +202,7 @@ fn test_backends() {
             RegistrationScan {
                 cloud: &simple_view,
                 imu_transform,
-                lidar_timestamp: 0.0,
+                lidar_timestamp: Stamp::ZERO,
                 scan_id: 1,
                 map_only: true,
             },
@@ -217,7 +217,7 @@ fn test_backends() {
             RegistrationScan {
                 cloud: &complex_view,
                 imu_transform,
-                lidar_timestamp: 0.1,
+                lidar_timestamp: Stamp::from_secs(0.1),
                 scan_id: 2,
                 map_only: false,
             },

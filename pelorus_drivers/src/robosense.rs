@@ -2,7 +2,7 @@
 
 use crate::{
     DriverError, DriverStartGate, RawLidarPoint, RawLidarScan, ReceiveMetadata, SensorIngress,
-    SensorOutputSink, validate_timestamp,
+    SensorOutputSink, Stamp, host_stamp, validate_timestamp,
 };
 use pelorus_core::{RobosenseConfig, RobosenseModel, RobosenseTimestampMode};
 use std::{
@@ -183,21 +183,15 @@ fn be_i16(bytes: &[u8], offset: usize) -> i16 {
 
 /// RSTimestampUTC: six big-endian seconds bytes then four big-endian
 /// microsecond bytes.
-fn parse_sensor_timestamp(header: &[u8]) -> f64 {
+fn parse_sensor_timestamp(header: &[u8]) -> Stamp {
     let seconds = header[10..16]
         .iter()
         .fold(0u64, |value, byte| (value << 8) | u64::from(*byte));
     let micros = header[16..20]
         .iter()
         .fold(0u64, |value, byte| (value << 8) | u64::from(*byte));
-    seconds as f64 + micros as f64 / 1e6
-}
-
-fn system_time_secs(value: SystemTime) -> Result<f64, DriverError> {
-    value
-        .duration_since(UNIX_EPOCH)
-        .map(|duration| duration.as_secs_f64())
-        .map_err(|error| DriverError::Driver(error.to_string()))
+    // Six bytes of seconds stay far inside i64 nanoseconds.
+    Stamp(seconds as i64 * 1_000_000_000 + micros as i64 * 1_000)
 }
 
 /// What the sensor clock did against the host clock during startup.
@@ -256,11 +250,16 @@ struct SyncMonitor {
 impl SyncMonitor {
     /// Records one packet. Returns the report exactly once, on the first packet
     /// after the sampling window closes.
-    fn observe(&mut self, sensor_stamp: f64, host_stamp: f64, now: Instant) -> Option<SyncReport> {
+    fn observe(
+        &mut self,
+        sensor_stamp: Stamp,
+        host_stamp: Stamp,
+        now: Instant,
+    ) -> Option<SyncReport> {
         if self.reported {
             return None;
         }
-        let offset = sensor_stamp - host_stamp;
+        let offset = sensor_stamp.secs_since(host_stamp);
         let begun = *self.begun.get_or_insert(now);
         if self.samples == 0 {
             self.first = offset;
@@ -374,7 +373,7 @@ struct ScanAssembler {
     sync_monitor: SyncMonitor,
     started: bool,
     /// Timestamp of the packet that opened the current frame.
-    stamp: f64,
+    stamp: Stamp,
     received_at: SystemTime,
     sender: Option<IpAddr>,
     packets_received: u64,
@@ -398,7 +397,7 @@ impl ScanAssembler {
             splitter: SequenceSplitter::default(),
             sync_monitor: SyncMonitor::default(),
             started: false,
-            stamp: 0.0,
+            stamp: Stamp::ZERO,
             received_at: UNIX_EPOCH,
             sender: None,
             packets_received: 0,
@@ -436,7 +435,13 @@ impl ScanAssembler {
         })
     }
 
-    fn begin_frame(&mut self, stamp: f64, received_at: SystemTime, sender: IpAddr, sequence: u16) {
+    fn begin_frame(
+        &mut self,
+        stamp: Stamp,
+        received_at: SystemTime,
+        sender: IpAddr,
+        sequence: u16,
+    ) {
         self.started = true;
         self.stamp = stamp;
         self.received_at = received_at;
@@ -466,7 +471,7 @@ impl ScanAssembler {
             ));
         }
         let sequence = be_u16(packet, 4);
-        let host_stamp = system_time_secs(received_at)?;
+        let host_stamp = host_stamp(received_at)?;
         // Sampled in both modes: in Host mode the sensor clock is not used for
         // stamping, but knowing what it was doing is how you decide whether
         // Sensor mode is available.
@@ -484,7 +489,7 @@ impl ScanAssembler {
             }
             // Roll back one packet so the stamp approximates when the first
             // block in this packet was measured rather than when it landed.
-            RobosenseTimestampMode::Host => host_stamp - self.spec.packet_duration_secs(),
+            RobosenseTimestampMode::Host => host_stamp.add_secs(-self.spec.packet_duration_secs()),
         };
 
         let completed = if self.splitter.is_frame_start(sequence) {
@@ -501,7 +506,7 @@ impl ScanAssembler {
         self.highest_sequence = self.highest_sequence.max(sequence);
 
         // Per-point offsets are relative to the scan stamp, not this packet.
-        let packet_offset = packet_stamp - self.stamp;
+        let packet_offset = packet_stamp.secs_since(self.stamp);
         self.decode_blocks(packet, packet_offset);
         Ok(completed)
     }
@@ -927,7 +932,10 @@ mod tests {
         let mut header = [0u8; HEADER_SIZE];
         header[10..16].copy_from_slice(&1_700_000_000u64.to_be_bytes()[2..]);
         header[16..20].copy_from_slice(&500_000u32.to_be_bytes());
-        assert!((parse_sensor_timestamp(&header) - 1_700_000_000.5).abs() < 1e-6);
+        assert_eq!(
+            parse_sensor_timestamp(&header),
+            Stamp(1_700_000_000_500_000_000)
+        );
     }
 
     #[test]
@@ -950,20 +958,36 @@ mod tests {
         let mut monitor = SyncMonitor::default();
         let start = Instant::now();
         // Inside the window: sampling, no report yet.
-        assert!(monitor.observe(100.0, 100.0, start).is_none());
         assert!(
             monitor
-                .observe(101.0, 101.0, start + Duration::from_secs(1))
+                .observe(Stamp::from_secs(100.0), Stamp::from_secs(100.0), start)
+                .is_none()
+        );
+        assert!(
+            monitor
+                .observe(
+                    Stamp::from_secs(101.0),
+                    Stamp::from_secs(101.0),
+                    start + Duration::from_secs(1)
+                )
                 .is_none()
         );
         let report = monitor
-            .observe(104.0, 104.0, start + SYNC_REPORT_WINDOW)
+            .observe(
+                Stamp::from_secs(104.0),
+                Stamp::from_secs(104.0),
+                start + SYNC_REPORT_WINDOW,
+            )
             .expect("window closed");
         assert_eq!(report.samples, 3);
         // Further packets never produce a second report.
         assert!(
             monitor
-                .observe(110.0, 110.0, start + Duration::from_secs(30))
+                .observe(
+                    Stamp::from_secs(110.0),
+                    Stamp::from_secs(110.0),
+                    start + Duration::from_secs(30)
+                )
                 .is_none()
         );
     }
@@ -973,10 +997,18 @@ mod tests {
         let mut monitor = SyncMonitor::default();
         let start = Instant::now();
         // Offsets of +10 ms, +20 ms, +30 ms: mean 20, spread 20, drift 20.
-        monitor.observe(100.010, 100.0, start);
-        monitor.observe(101.020, 101.0, start + Duration::from_secs(1));
+        monitor.observe(Stamp::from_secs(100.010), Stamp::from_secs(100.0), start);
+        monitor.observe(
+            Stamp::from_secs(101.020),
+            Stamp::from_secs(101.0),
+            start + Duration::from_secs(1),
+        );
         let report = monitor
-            .observe(103.030, 103.0, start + SYNC_REPORT_WINDOW)
+            .observe(
+                Stamp::from_secs(103.030),
+                Stamp::from_secs(103.0),
+                start + SYNC_REPORT_WINDOW,
+            )
             .expect("window closed");
         assert!((report.mean_offset_secs - 0.020).abs() < 1e-9);
         assert!((report.spread_secs - 0.020).abs() < 1e-9);

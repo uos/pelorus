@@ -1,3 +1,4 @@
+pub use pelorus_core::Stamp;
 use pelorus_core::{ImuDriverType, ImuMsg, LidarDriverType, SensorDriverConfig};
 use std::{
     sync::{
@@ -5,7 +6,7 @@ use std::{
         atomic::{AtomicBool, Ordering},
     },
     thread::JoinHandle,
-    time::Duration,
+    time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
 #[cfg(feature = "ouster-driver")]
@@ -33,8 +34,8 @@ pub struct ReceiveMetadata {
 #[derive(Debug, Clone, PartialEq)]
 pub struct RawLidarScan {
     pub frame_id: String,
-    /// Validated Unix UTC scan timestamp in seconds.
-    pub stamp: f64,
+    /// Validated Unix UTC scan timestamp.
+    pub stamp: Stamp,
     pub points: Vec<RawLidarPoint>,
     pub receive: ReceiveMetadata,
 }
@@ -114,36 +115,44 @@ pub enum DriverError {
 
 /// Reconstruct time-of-hour against the nearest host UTC hour, including rollover.
 pub fn velodyne_host_hour_timestamp(
-    host_unix_secs: f64,
+    host: Stamp,
     micros_since_hour: u32,
     max_skew: Duration,
-) -> Result<f64, DriverError> {
-    let within_hour = micros_since_hour as f64 / 1_000_000.0;
-    if within_hour >= 3600.0 {
+) -> Result<Stamp, DriverError> {
+    const HOUR_NANOS: i64 = 3_600_000_000_000;
+    let within_hour = i64::from(micros_since_hour) * 1_000;
+    if within_hour >= HOUR_NANOS {
         return Err(DriverError::Driver("invalid Velodyne time-of-hour".into()));
     }
-    let hour = (host_unix_secs / 3600.0).floor() * 3600.0;
-    let timestamp = [-3600.0, 0.0, 3600.0]
+    let hour = host.0.div_euclid(HOUR_NANOS) * HOUR_NANOS;
+    let timestamp = [-HOUR_NANOS, 0, HOUR_NANOS]
         .into_iter()
-        .map(|d| hour + d + within_hour)
-        .min_by(|a, b| {
-            (a - host_unix_secs)
-                .abs()
-                .total_cmp(&(b - host_unix_secs).abs())
-        })
+        .map(|d| Stamp(hour + d + within_hour))
+        .min_by_key(|candidate| (candidate.0 - host.0).abs())
         .unwrap();
-    validate_timestamp(timestamp, host_unix_secs, max_skew)?;
+    validate_timestamp(timestamp, host, max_skew)?;
     Ok(timestamp)
 }
+
+/// The host clock as a stamp.
+pub fn host_stamp(time: SystemTime) -> Result<Stamp, DriverError> {
+    let since_epoch = time
+        .duration_since(UNIX_EPOCH)
+        .map_err(|error| DriverError::Driver(error.to_string()))?;
+    i64::try_from(since_epoch.as_nanos())
+        .map(Stamp)
+        .map_err(|error| DriverError::Driver(error.to_string()))
+}
+
 pub fn validate_timestamp(
-    sensor_unix_secs: f64,
-    host_unix_secs: f64,
+    sensor: Stamp,
+    host: Stamp,
     maximum: Duration,
 ) -> Result<(), DriverError> {
-    if !sensor_unix_secs.is_finite() || sensor_unix_secs < 0.0 {
+    if sensor.0 < 0 {
         return Err(DriverError::Driver("invalid UTC timestamp".into()));
     }
-    let skew = Duration::from_secs_f64((sensor_unix_secs - host_unix_secs).abs());
+    let skew = Duration::from_nanos((sensor.0 - host.0).unsigned_abs());
     if skew > maximum {
         Err(DriverError::ClockSkew { skew, maximum })
     } else {
@@ -332,5 +341,33 @@ impl Drop for DriverManager {
         while let Some(t) = self.threads.pop() {
             drop(t.join());
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn velodyne_time_of_hour_takes_the_hour_closest_to_the_host() {
+        const HOUR: i64 = 3_600_000_000_000;
+        let host = Stamp(470_000 * HOUR + 1_000_000_000);
+        // 59 min 59 s into an hour, read one second after the hour turned.
+        let stamp =
+            velodyne_host_hour_timestamp(host, 3_599_000_000, Duration::from_secs(5)).unwrap();
+        assert_eq!(stamp, Stamp(470_000 * HOUR - 1_000_000_000));
+        let stamp = velodyne_host_hour_timestamp(host, 500, Duration::from_secs(5)).unwrap();
+        assert_eq!(stamp, Stamp(470_000 * HOUR + 500_000));
+    }
+
+    #[test]
+    fn host_skew_is_measured_in_nanoseconds() {
+        let host = Stamp(1_700_000_000_000_000_000);
+        let maximum = Duration::from_millis(10);
+        assert!(validate_timestamp(Stamp(host.0 + 10_000_000), host, maximum).is_ok());
+        assert!(matches!(
+            validate_timestamp(Stamp(host.0 - 10_000_001), host, maximum),
+            Err(DriverError::ClockSkew { .. })
+        ));
     }
 }

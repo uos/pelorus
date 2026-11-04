@@ -1,8 +1,8 @@
 use crate::{
     DriverError, DriverStartGate, RawLidarPoint, RawLidarScan, ReceiveMetadata, SensorIngress,
-    SensorOutputSink, validate_timestamp,
+    SensorOutputSink, Stamp, host_stamp, validate_timestamp,
 };
-use pelorus_core::{ImuMsg, OusterConfig, OusterTimestampMode, time_msg_from_secs};
+use pelorus_core::{ImuMsg, OusterConfig, OusterTimestampMode};
 use serde::Deserialize;
 use serde::de::DeserializeOwned;
 use serde_json::Value;
@@ -330,7 +330,7 @@ struct ScanAssembler {
     frame_id: String,
     current_frame: Option<u16>,
     first_sensor_ns: u64,
-    stamp: f64,
+    stamp: Stamp,
     received_at: SystemTime,
     sender: Option<IpAddr>,
     packets_received: u64,
@@ -349,7 +349,7 @@ impl ScanAssembler {
             frame_id: cfg.lidar_frame_id.clone(),
             current_frame: None,
             first_sensor_ns: 0,
-            stamp: 0.0,
+            stamp: Stamp::ZERO,
             received_at: UNIX_EPOCH,
             sender: None,
             packets_received: 0,
@@ -387,13 +387,13 @@ impl ScanAssembler {
         &mut self,
         frame: u16,
         first_sensor_ns: u64,
-        host_stamp: f64,
+        host_stamp: Stamp,
         received_at: SystemTime,
         sender: IpAddr,
     ) -> Result<(), DriverError> {
         let stamp = match self.timestamp_mode {
             OusterTimestampMode::Ptp => {
-                let stamp = first_sensor_ns as f64 / 1e9;
+                let stamp = sensor_stamp(first_sensor_ns)?;
                 validate_timestamp(stamp, host_stamp, self.maximum_skew)?;
                 stamp
             }
@@ -449,7 +449,7 @@ impl ScanAssembler {
                 .try_into()
                 .expect("column timestamp is present"),
         );
-        let host_stamp = system_time_secs(received_at)?;
+        let host_stamp = host_stamp(received_at)?;
         let completed = if self.current_frame != Some(frame) {
             let completed = self.finish_scan();
             self.begin_frame(frame, first_sensor_ns, host_stamp, received_at, sender)?;
@@ -517,10 +517,10 @@ fn signed_nanoseconds(value: u64, origin: u64) -> f64 {
     }
 }
 
-fn system_time_secs(value: SystemTime) -> Result<f64, DriverError> {
-    value
-        .duration_since(UNIX_EPOCH)
-        .map(|duration| duration.as_secs_f64())
+/// A sensor timestamp in nanoseconds since the epoch as a stamp.
+fn sensor_stamp(nanos: u64) -> Result<Stamp, DriverError> {
+    i64::try_from(nanos)
+        .map(Stamp)
         .map_err(|error| DriverError::Driver(error.to_string()))
 }
 
@@ -563,10 +563,10 @@ fn decode_imu(
     let gyro_timestamp = u64::from_le_bytes(packet[16..24].try_into().expect("timestamp exists"));
     let sensor_timestamp =
         accel_timestamp / 2 + gyro_timestamp / 2 + (accel_timestamp % 2 + gyro_timestamp % 2) / 2;
-    let host_stamp = system_time_secs(received_at)?;
+    let host_stamp = host_stamp(received_at)?;
     let stamp = match cfg.timestamp_mode {
         OusterTimestampMode::Ptp => {
-            let stamp = sensor_timestamp as f64 / 1e9;
+            let stamp = sensor_stamp(sensor_timestamp)?;
             validate_timestamp(
                 stamp,
                 host_stamp,
@@ -605,7 +605,7 @@ fn decode_imu(
         angular_velocity,
         linear_acceleration: acceleration,
         frame_id: cfg.imu_frame_id.clone(),
-        stamp: time_msg_from_secs(stamp),
+        stamp: stamp.to_msg(),
         ..Default::default()
     })
 }

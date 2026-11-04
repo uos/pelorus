@@ -4,14 +4,14 @@ use pelorus_core::{LidarDriverConfig, VelodyneModel, VelodyneTimestampMode};
 use std::{
     net::{IpAddr, UdpSocket},
     sync::{Arc, atomic::AtomicBool},
-    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
+    time::{Duration, Instant, SystemTime},
 };
 use velodyne_lidar::{
     Config, DataPacket, ReturnMode,
     types::{format::FormatKind, point::Point},
 };
 
-fn parse_rmc(nmea: &[u8]) -> Option<f64> {
+fn parse_rmc(nmea: &[u8]) -> Option<Stamp> {
     let s = std::str::from_utf8(nmea).ok()?;
     let start = s.find("$GPRMC").or_else(|| s.find("$GNRMC"))?;
     let fields: Vec<_> = s[start..].split(',').collect();
@@ -32,15 +32,15 @@ fn parse_rmc(nmea: &[u8]) -> Option<f64> {
     let date = NaiveDate::from_ymd_opt(if yy >= 70 { 1900 + yy } else { 2000 + yy }, month, day)?;
     let whole = sec.floor() as u32;
     let dt = date.and_hms_nano_opt(hour, minute, whole, ((sec - whole as f64) * 1e9) as u32)?;
-    Some(Utc.from_utc_datetime(&dt).timestamp_nanos_opt()? as f64 / 1e9)
+    Some(Stamp(Utc.from_utc_datetime(&dt).timestamp_nanos_opt()?))
 }
 
 /// Convert a return's packet-local firing time into the scan-relative seconds
 /// expected by Pelorus' Velodyne point type.  `packet_stamp` and `scan_stamp`
 /// use the selected (sensor or host) clock. `firing_offset` is always relative
 /// to the packet timestamp supplied by the Velodyne packet decoder.
-fn scan_relative_time(packet_stamp: f64, scan_stamp: f64, firing_offset: f64) -> f64 {
-    (packet_stamp - scan_stamp) + firing_offset
+fn scan_relative_time(packet_stamp: Stamp, scan_stamp: Stamp, firing_offset: f64) -> f64 {
+    packet_stamp.secs_since(scan_stamp) + firing_offset
 }
 
 /// `velodyne-lidar` uses +Y at azimuth zero and +X to the right.  Match the
@@ -63,7 +63,7 @@ pub fn run(
     let position = UdpSocket::bind((c.bind_address.as_str(), c.position_port))?;
     position.set_nonblocking(true)?;
     let mut pos_bytes = [0u8; 512];
-    let mut utc_anchor: Option<(f64, u32)> = None;
+    let mut utc_anchor: Option<(Stamp, u32)> = None;
     let expected: Option<IpAddr> = c
         .device_ip
         .as_deref()
@@ -78,7 +78,7 @@ pub fn run(
     let mut last_az = None;
     let mut packets = 0u64;
     let mut dropped = 0u64;
-    let mut scan_stamp = 0.0;
+    let mut scan_stamp = Stamp::ZERO;
     if let Some(barrier) = startup_barrier {
         barrier.wait(&stop)?;
     }
@@ -126,20 +126,19 @@ pub fn run(
                 c.model, packet.product_id
             )));
         }
-        let host = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map_err(|e| DriverError::Driver(e.to_string()))?
-            .as_secs_f64();
+        let host = host_stamp(SystemTime::now())?;
         let stamp = if c.timestamp_mode == VelodyneTimestampMode::Host {
             host
         } else if let Some((epoch, toh)) = utc_anchor {
-            let mut delta = (packet.toh as f64 - toh as f64) / 1e6;
-            if delta > 1800.0 {
-                delta -= 3600.0
-            } else if delta < -1800.0 {
-                delta += 3600.0
+            // Microseconds since the anchor, wrapped into one hour around it.
+            const HALF_HOUR_MICROS: i64 = 1_800_000_000;
+            let mut delta = i64::from(packet.toh) - i64::from(toh);
+            if delta > HALF_HOUR_MICROS {
+                delta -= 2 * HALF_HOUR_MICROS
+            } else if delta < -HALF_HOUR_MICROS {
+                delta += 2 * HALF_HOUR_MICROS
             }
-            let value = epoch + delta;
+            let value = Stamp(epoch.0 + delta * 1_000);
             validate_timestamp(value, host, max_skew)?;
             value
         } else if c.allow_host_hour_anchor {
@@ -236,7 +235,7 @@ pub fn run(
 
 #[cfg(test)]
 mod tests {
-    use super::{decoder_xyz_to_ros, scan_relative_time};
+    use super::{Stamp, decoder_xyz_to_ros, scan_relative_time};
 
     #[test]
     fn decoder_axes_are_converted_to_ros_rep_103() {
@@ -246,8 +245,8 @@ mod tests {
 
     #[test]
     fn point_time_accumulates_across_packets_in_a_scan() {
-        let scan_stamp = 1_700_000_000.0;
-        let packet_stamp = scan_stamp + 0.037;
+        let scan_stamp = Stamp(1_700_000_000_000_000_000);
+        let packet_stamp = scan_stamp.add_secs(0.037);
         let point_time = scan_relative_time(packet_stamp, scan_stamp, 0.000_421);
         assert!((point_time - 0.037_421).abs() < 1e-7);
     }

@@ -320,7 +320,7 @@ impl RuntimeEvaluator {
             .unwrap_or(10);
         let table: Vec<String> = vec![
             "task".to_string(),
-            format!("impact (rel)"),
+            "impact (rel)".to_string(),
             format!("avg(-{})", window_n),
             "avg(*)".to_string(),
             "std_dev".to_string(),

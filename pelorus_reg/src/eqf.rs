@@ -29,11 +29,46 @@ use log::{error, warn};
 use nalgebra::ComplexField;
 use nalgebra::{DMatrix, Vector3}; // Keep Vector3 for sophus_lie interface
 use pelorus_core::{
-    KinematicModel, OdomMsg, log_debouncer::should_log_once_default, timing::RuntimeEvaluator,
+    KinematicModel, OdomMsg, Stamp, log_debouncer::should_log_once_default,
+    timing::RuntimeEvaluator,
 };
-use pelorus_sync::timestamp_to_secs;
 
 pub use pelorus_core::{SE3, SO3};
+
+/// Scalar type of the filter's covariance algebra: the covariance, the process
+/// and measurement Jacobians, the gain and the error-state corrections. The
+/// state itself, and the numerical derivatives through [`compensate`] and
+/// [`box_minus`], stay in `f64`. The `f32-filter` feature makes it `f32`.
+#[cfg(not(feature = "f32-filter"))]
+pub type Real = f64;
+/// Scalar type of the filter's covariance algebra: the covariance, the process
+/// and measurement Jacobians, the gain and the error-state corrections. The
+/// state itself, and the numerical derivatives through [`compensate`] and
+/// [`box_minus`], stay in `f64`. The `f32-filter` feature makes it `f32`.
+#[cfg(feature = "f32-filter")]
+pub type Real = f32;
+
+/// `x` as [`Real`].
+#[inline]
+pub fn real(x: f64) -> Real {
+    nalgebra::convert(x)
+}
+
+/// `x` as `f64`.
+#[inline]
+pub fn double(x: Real) -> f64 {
+    nalgebra::convert(x)
+}
+
+/// An `f64` matrix in [`Real`].
+fn to_real(m: &Mat<f64>) -> Mat<Real> {
+    Mat::from_fn(m.nrows(), m.ncols(), |i, j| real(m[(i, j)]))
+}
+
+/// A [`Real`] matrix in `f64`.
+fn to_f64(m: &Mat<Real>) -> Mat<f64> {
+    Mat::from_fn(m.nrows(), m.ncols(), |i, j| double(m[(i, j)]))
+}
 
 // Helper to convert nalgebra Matrix3 from sophus to faer
 #[inline]
@@ -197,7 +232,7 @@ where
 /// and block column. The process Jacobians below have at most 12 of them.
 #[derive(Clone, Copy)]
 pub struct Blocks {
-    list: [(usize, usize, nalgebra::Matrix3<f64>); 12],
+    list: [(usize, usize, nalgebra::Matrix3<Real>); 12],
     len: usize,
 }
 
@@ -210,18 +245,18 @@ impl Blocks {
     }
 
     fn push(&mut self, row: usize, col: usize, block: nalgebra::Matrix3<f64>) {
-        self.list[self.len] = (row, col, block);
+        self.list[self.len] = (row, col, block.cast());
         self.len += 1;
     }
 
     /// The blocks as (block row, block column, block).
-    pub fn iter(&self) -> impl Iterator<Item = &(usize, usize, nalgebra::Matrix3<f64>)> {
+    pub fn iter(&self) -> impl Iterator<Item = &(usize, usize, nalgebra::Matrix3<Real>)> {
         self.list[..self.len].iter()
     }
 
     /// The dense `rows x cols` matrix.
-    pub fn to_dense(&self, rows: usize, cols: usize) -> Mat<f64> {
-        let mut dense = Mat::<f64>::zeros(rows, cols);
+    pub fn to_dense(&self, rows: usize, cols: usize) -> Mat<Real> {
+        let mut dense = Mat::<Real>::zeros(rows, cols);
         for (row, col, block) in self.iter() {
             for i in 0..3 {
                 for j in 0..3 {
@@ -233,7 +268,7 @@ impl Blocks {
     }
 
     /// `out += scale * self * x`.
-    fn add_left_product(&self, out: &mut Mat<f64>, x: &Mat<f64>, scale: f64) {
+    fn add_left_product(&self, out: &mut Mat<Real>, x: &Mat<Real>, scale: Real) {
         for (row, col, block) in self.iter() {
             for c in 0..x.ncols() {
                 for i in 0..3 {
@@ -248,7 +283,7 @@ impl Blocks {
     }
 
     /// `out += scale * x * self^T`.
-    fn add_right_product_transposed(&self, out: &mut Mat<f64>, x: &Mat<f64>, scale: f64) {
+    fn add_right_product_transposed(&self, out: &mut Mat<Real>, x: &Mat<Real>, scale: Real) {
         for (row, col, block) in self.iter() {
             for r in 0..x.nrows() {
                 for i in 0..3 {
@@ -276,7 +311,7 @@ pub fn df_dx(
     inp: &InputIKFom,
     extrinsic_est: bool,
     anchor: &Vector3<f64>,
-) -> Mat<f64> {
+) -> Mat<Real> {
     df_dx_blocks(s, inp, extrinsic_est, anchor).to_dense(24, 24)
 }
 
@@ -331,7 +366,7 @@ pub fn df_dx_blocks(
 ///
 /// Every block carries the world rotation because the noise enters in the body
 /// frame while the equivariant error state is expressed globally.
-pub fn df_dw(s: &StateIKFom, inp: &InputIKFom, anchor: &Vector3<f64>) -> Mat<f64> {
+pub fn df_dw(s: &StateIKFom, inp: &InputIKFom, anchor: &Vector3<f64>) -> Mat<Real> {
     df_dw_blocks(s, inp, anchor).to_dense(24, 12)
 }
 
@@ -361,8 +396,8 @@ pub fn df_dw_blocks(s: &StateIKFom, _inp: &InputIKFom, anchor: &Vector3<f64>) ->
 /// By the push-through identity they equal `P[:, ..active] * (I + C_aa * P_aa)^-1`,
 /// which needs one `active x active` inverse instead of inverting `P` and the
 /// 24 x 24 sum.
-fn gain_front_columns(p: &Mat<f64>, info: MatRef<f64>, active: usize) -> Mat<f64> {
-    let mut lhs = Mat::<f64>::identity(active, active);
+fn gain_front_columns(p: &Mat<Real>, info: MatRef<Real>, active: usize) -> Mat<Real> {
+    let mut lhs = Mat::<Real>::identity(active, active);
     matmul(
         lhs.rb_mut(),
         faer::Accum::Add,
@@ -372,7 +407,7 @@ fn gain_front_columns(p: &Mat<f64>, info: MatRef<f64>, active: usize) -> Mat<f64
         faer::Par::Seq,
     );
     let lhs_inv = lhs.partial_piv_lu().inverse();
-    let mut out = Mat::<f64>::zeros(p.nrows(), active);
+    let mut out = Mat::<Real>::zeros(p.nrows(), active);
     matmul(
         out.rb_mut(),
         faer::Accum::Replace,
@@ -386,17 +421,17 @@ fn gain_front_columns(p: &Mat<f64>, info: MatRef<f64>, active: usize) -> Mat<f64
 
 pub struct Eqf {
     pub state: StateIKFom,
-    pub cov: Mat<f64>,        // 24x24 covariance matrix in faer
-    pub fxtcov: Mat<f64>,     // 24x24 temporary for cov update in predict
-    pub fxcov: Mat<f64>,      // 24x24 temporary for cov update in predict
-    pub f_w_q: Mat<f64>,      // 24x12 temporary for cov update in predict
-    pub id: Mat<f64>,         // 24x24 temporary for cov update in scalar constraint
-    pub k_mat: Mat<f64>,      // 24x1 temporary for cov update in scalar constraint
-    pub h_t_mat: Mat<f64>,    // 1x24 temporary for cov update in scalar constraint
-    pub k_h_t: Mat<f64>,      // 24x24 temporary for cov update in scalar constraint
-    pub k_k: Mat<f64>,        // 24x24 temporary for cov update in scalar constraint
-    pub cov_i_kh: Mat<f64>,   // 24x24 temporary for cov update in scalar constraint
-    pub i_cov_i_kh: Mat<f64>, // 24x24 temporary for cov update in scalar constraint
+    pub cov: Mat<Real>,        // 24x24 covariance matrix in faer
+    pub fxtcov: Mat<Real>,     // 24x24 temporary for cov update in predict
+    pub fxcov: Mat<Real>,      // 24x24 temporary for cov update in predict
+    pub f_w_q: Mat<Real>,      // 24x12 temporary for cov update in predict
+    pub id: Mat<Real>,         // 24x24 temporary for cov update in scalar constraint
+    pub k_mat: Mat<Real>,      // 24x1 temporary for cov update in scalar constraint
+    pub h_t_mat: Mat<Real>,    // 1x24 temporary for cov update in scalar constraint
+    pub k_h_t: Mat<Real>,      // 24x24 temporary for cov update in scalar constraint
+    pub k_k: Mat<Real>,        // 24x24 temporary for cov update in scalar constraint
+    pub cov_i_kh: Mat<Real>,   // 24x24 temporary for cov update in scalar constraint
+    pub i_cov_i_kh: Mat<Real>, // 24x24 temporary for cov update in scalar constraint
     pub initialized: bool,
     /// Origin the equivariant error is measured about. The global rotation error
     /// displaces a point by its distance from this anchor, so leaving it at the
@@ -407,10 +442,10 @@ pub struct Eqf {
     /// the extrinsic blocks of the equivariant error dynamics and the
     /// corresponding measurement Jacobian columns become active.
     pub extrinsic_est: bool,
-    pub last_time: f64,
-    pub h: Col<f64>,   // measurement residual vector
-    pub h_x: Mat<f64>, // measurement Jacobian matrix (m x 12, sparse - only first 12 cols non-zero)
-    pub k_h: Mat<f64>, // K * H (24 x 24)
+    pub last_time: Stamp,
+    pub h: Col<Real>,   // measurement residual vector
+    pub h_x: Mat<Real>, // measurement Jacobian matrix (m x 12, sparse - only first 12 cols non-zero)
+    pub k_h: Mat<Real>, // K * H (24 x 24)
     pub base_to_lidar: nalgebra::Isometry3<f64>,
 }
 
@@ -614,24 +649,24 @@ impl Eqf {
     pub fn new(g: f64, base_to_lidar: nalgebra::Isometry3<f64>) -> Self {
         Self {
             state: StateIKFom::new(g),
-            cov: Mat::<f64>::identity(24, 24),
+            cov: Mat::<Real>::identity(24, 24),
             initialized: false,
             anchor: Vector3::zeros(),
             extrinsic_est: false,
-            last_time: 0.0,
-            h: Col::<f64>::zeros(0),
-            h_x: Mat::<f64>::zeros(0, 12), // Sparse: only first 12 cols non-zero
-            k_h: Mat::<f64>::zeros(24, 24),
-            fxtcov: Mat::<f64>::zeros(24, 24),
-            fxcov: Mat::<f64>::zeros(24, 24),
-            f_w_q: Mat::<f64>::zeros(24, 12),
-            id: Mat::<f64>::identity(24, 24),
-            k_mat: Mat::<f64>::zeros(24, 1),
-            h_t_mat: Mat::<f64>::zeros(1, 24),
-            k_h_t: Mat::<f64>::zeros(24, 24),
-            k_k: Mat::<f64>::zeros(24, 24),
-            cov_i_kh: Mat::<f64>::zeros(24, 24),
-            i_cov_i_kh: Mat::<f64>::zeros(24, 24),
+            last_time: Stamp::ZERO,
+            h: Col::<Real>::zeros(0),
+            h_x: Mat::<Real>::zeros(0, 12), // Sparse: only first 12 cols non-zero
+            k_h: Mat::<Real>::zeros(24, 24),
+            fxtcov: Mat::<Real>::zeros(24, 24),
+            fxcov: Mat::<Real>::zeros(24, 24),
+            f_w_q: Mat::<Real>::zeros(24, 12),
+            id: Mat::<Real>::identity(24, 24),
+            k_mat: Mat::<Real>::zeros(24, 1),
+            h_t_mat: Mat::<Real>::zeros(1, 24),
+            k_h_t: Mat::<Real>::zeros(24, 24),
+            k_k: Mat::<Real>::zeros(24, 24),
+            cov_i_kh: Mat::<Real>::zeros(24, 24),
+            i_cov_i_kh: Mat::<Real>::zeros(24, 24),
             base_to_lidar,
         }
     }
@@ -645,18 +680,18 @@ impl Eqf {
             return;
         }
         let s = skew_symmetric_na(&shift);
-        let mut ad = Mat::<f64>::identity(24, 24);
+        let mut ad = Mat::<Real>::identity(24, 24);
         for i in 0..3 {
             for j in 0..3 {
-                ad[(i, 3 + j)] = -s[(i, j)];
+                ad[(i, 3 + j)] = -real(s[(i, j)]);
             }
         }
         self.cov = &(&ad * &self.cov) * ad.transpose();
         self.anchor = new_anchor;
     }
 
-    pub fn predict(&mut self, dt: f64, q: &Mat<f64>, i_in: &InputIKFom) {
-        self.last_time += dt;
+    pub fn predict(&mut self, dt: f64, q: &Mat<Real>, i_in: &InputIKFom) {
+        self.last_time = self.last_time.add_secs(dt);
 
         let f = get_f(&self.state, i_in);
         // Both Jacobians are block-sparse, so the covariance update multiplies
@@ -670,6 +705,7 @@ impl Eqf {
 
         // Cov update: P = F_x * P * F_x^T + F_w * Q * F_w^T with
         // F_x = I + f_x * dt and F_w = f_w * dt.
+        let dt = real(dt);
         // P * F_x^T = P + dt * P * f_x^T
         self.fxtcov.copy_from(&self.cov);
         f_x.add_right_product_transposed(&mut self.fxtcov, &self.cov, dt);
@@ -686,7 +722,13 @@ impl Eqf {
     /// Move a posterior covariance from error coordinates about `base` into
     /// error coordinates about the current state after injecting `dx`.
     fn reset_covariance_after_update(&mut self, base: &StateIKFom, dx: &Mat<f64>) {
-        let j_reset = reset_jacobian(base, dx, &self.state, self.extrinsic_est, &self.anchor);
+        let j_reset = to_real(&reset_jacobian(
+            base,
+            dx,
+            &self.state,
+            self.extrinsic_est,
+            &self.anchor,
+        ));
         self.cov = &(&j_reset * &self.cov) * j_reset.transpose();
     }
 
@@ -701,8 +743,8 @@ impl Eqf {
             return;
         }
 
-        let t = timestamp_to_secs(&odom.stamp);
-        let dt_gap = t - self.last_time;
+        let t = Stamp::from_msg(&odom.stamp);
+        let dt_gap = t.secs_since(self.last_time);
         if dt_gap < 0.0 {
             // use global log debouncer to avoid spamming
             if should_log_once_default("odometry_msg_older_than_filter") {
@@ -869,6 +911,9 @@ impl Eqf {
         max_gain: Option<f64>,
         lock_pose: bool,
     ) {
+        let h = Col::<Real>::from_fn(h.nrows(), |i| real(h[i]));
+        let residual = real(residual);
+        let r_var = real(r_var);
         // Compute innovation variance: h^T * P * h + r_var
         let h_t = h.transpose();
         let cov_h = &self.cov * &h;
@@ -886,7 +931,7 @@ impl Eqf {
         }
 
         // Kalman gain: K = P * h / s (result is 24x1)
-        let mut k = &cov_h / s;
+        let mut k = &cov_h * faer::Scale(1.0 / s);
 
         if lock_pose {
             // Model-only non-holonomic constraints should not directly move the
@@ -898,19 +943,20 @@ impl Eqf {
 
         // automatic damping - cap the norm of the gain (prevents gigantic jumps)
         if let Some(k_max) = max_gain {
+            let k_max = real(k_max);
             let gain_norm = k.norm_l2();
             if gain_norm > k_max {
-                k = &k * (k_max / gain_norm);
+                k = &k * faer::Scale(k_max / gain_norm);
             }
         }
 
         // Update state: dx = k * residual (k is 24x1, result is 24x1)
-        let dx = &k * residual;
+        let dx = &k * faer::Scale(residual);
 
         // Convert Col to Mat for compensate
         let mut dx_mat = Mat::<f64>::zeros(24, 1);
         for i in 0..24 {
-            dx_mat[(i, 0)] = dx[i];
+            dx_mat[(i, 0)] = double(dx[i]);
         }
         let state_before = self.state;
         self.state = compensate(&state_before, &dx_mat, self.extrinsic_est, &self.anchor);
@@ -1062,16 +1108,16 @@ impl Eqf {
     pub fn correct(
         &mut self,
         measurement_noise_cov: f64,
-        measurement_time: f64,
+        measurement_time: Stamp,
         max_iter: usize,
         eval: alloc::sync::Arc<pelorus_core::sync::RwLock<&mut RuntimeEvaluator>>,
         mut model: impl FnMut(
             &StateIKFom,
-            &mut bool,     // valid
-            bool,          // converge (for re-searching correspondences if needed)
-            &mut Col<f64>, // residual h
-            &mut Mat<f64>, // jacobian H (m x 12, sparse)
-            &mut usize,    // num_measurements - actual number of valid measurements
+            &mut bool,      // valid
+            bool,           // converge (for re-searching correspondences if needed)
+            &mut Col<Real>, // residual h
+            &mut Mat<Real>, // jacobian H (m x 12, sparse)
+            &mut usize,     // num_measurements - actual number of valid measurements
         ),
     ) {
         pelorus_core::complete_synchronously(self.correct_async(
@@ -1088,16 +1134,16 @@ impl Eqf {
     pub async fn correct_async(
         &mut self,
         measurement_noise_cov: f64,
-        measurement_time: f64,
+        measurement_time: Stamp,
         max_iter: usize,
         eval: alloc::sync::Arc<pelorus_core::sync::RwLock<&mut RuntimeEvaluator>>,
         mut model: impl AsyncFnMut(
             &StateIKFom,
-            &mut bool,     // valid
-            bool,          // converge (for re-searching correspondences if needed)
-            &mut Col<f64>, // residual h
-            &mut Mat<f64>, // jacobian H (m x 12, sparse)
-            &mut usize,    // num_measurements - actual number of valid measurements
+            &mut bool,      // valid
+            bool,           // converge (for re-searching correspondences if needed)
+            &mut Col<Real>, // residual h
+            &mut Mat<Real>, // jacobian H (m x 12, sparse)
+            &mut usize,     // num_measurements - actual number of valid measurements
         ),
     ) {
         self.last_time = measurement_time;
@@ -1118,7 +1164,7 @@ impl Eqf {
         let state_propagated = self.state;
         let p_propagated = self.cov.clone();
 
-        let r_inv = 1.0 / measurement_noise_cov;
+        let r_inv = real(1.0 / measurement_noise_cov);
 
         let mut converge_count = 0;
         let mut converge_flag = true;
@@ -1156,12 +1202,12 @@ impl Eqf {
             eval.start("ekf_correct/it/info_mat").unwrap();
 
             // dx_new = boxminus(x_, x_propagated) - equation (18): x^k - x^
-            let dx_new = box_minus(
+            let dx_new = to_real(&box_minus(
                 &self.state,
                 &state_propagated,
                 self.extrinsic_est,
                 &self.anchor,
-            );
+            ));
 
             // H is m x 12 (sparse - only first 12 columns non-zero)
             // We only use the first m rows of h_x (the actual measurements)
@@ -1175,7 +1221,7 @@ impl Eqf {
             let h_t = h.transpose(); // active x m
 
             // Compute H^T * H (12 x 12)
-            let mut hth_12x12 = Mat::<f64>::zeros(12, 12);
+            let mut hth_12x12 = Mat::<Real>::zeros(12, 12);
             matmul(
                 hth_12x12.as_mut().submatrix_mut(0, 0, active, active),
                 faer::Accum::Replace,
@@ -1186,7 +1232,7 @@ impl Eqf {
             );
 
             // H^T * h (12 x 1)
-            let mut ht_residual = Mat::<f64>::zeros(12, 1);
+            let mut ht_residual = Mat::<Real>::zeros(12, 1);
             for j in 0..active {
                 let column = h.col(j);
                 let mut sum = 0.0;
@@ -1200,7 +1246,7 @@ impl Eqf {
             eval.start("ekf_correct/it/lhs").unwrap();
 
             // C = H^T * H / R in its active block.
-            let info = hth_12x12.submatrix(0, 0, active, active) * r_inv;
+            let info = hth_12x12.submatrix(0, 0, active, active) * faer::Scale(r_inv);
             // K_front = (P^-1 + C)^-1, needed only in its active columns.
             let k_front_active = gain_front_columns(&p_propagated, info.rb(), active);
 
@@ -1227,7 +1273,7 @@ impl Eqf {
 
             // dx_ = K * h + (KH - I) * dx_new  (equation 18)
             // K * h (24 x 1)
-            let mut kh_vec = Mat::<f64>::zeros(24, 1);
+            let mut kh_vec = Mat::<Real>::zeros(24, 1);
             matmul(
                 kh_vec.rb_mut(),
                 faer::Accum::Replace,
@@ -1238,7 +1284,7 @@ impl Eqf {
             );
 
             // (KH - I) * dx_new
-            let id24 = Mat::<f64>::identity(24, 24);
+            let id24 = Mat::<Real>::identity(24, 24);
             let kh_minus_i = &self.k_h - &id24;
             let kh_i_dx = &kh_minus_i * &dx_new;
 
@@ -1264,12 +1310,12 @@ impl Eqf {
                 return;
             }
 
-            self.state = compensate(&self.state, &dx_, self.extrinsic_est, &self.anchor);
+            self.state = compensate(&self.state, &to_f64(&dx_), self.extrinsic_est, &self.anchor);
 
             // Check convergence: if all |dx_[j]| < EPSI, converged
             converge_flag = true;
             for j in 0..24 {
-                if dx_[(j, 0)].abs() > measurement_noise_cov {
+                if double(dx_[(j, 0)].abs()) > measurement_noise_cov {
                     converge_flag = false;
                     eval.stop("ekf_correct/it/state").unwrap();
                     break;
@@ -1295,7 +1341,7 @@ impl Eqf {
         eval.stop("ekf_correct/it").unwrap();
         // Covariance update: P = (I - KH) * P  (equation 19)
         eval.start("ekf_correct/cov").unwrap();
-        let id24 = Mat::<f64>::identity(24, 24);
+        let id24 = Mat::<Real>::identity(24, 24);
         let i_kh = &id24 - &self.k_h;
         self.cov = &i_kh * &p_propagated;
 
@@ -1342,12 +1388,14 @@ mod tests {
     fn gain_front_columns_match_dense_inverse() {
         let p = Mat::from_fn(24, 24, |i, j| {
             let (a, b) = (i.min(j) as f64, i.max(j) as f64);
-            0.01 * (a * 0.37 + b * 0.11).sin() + if i == j { 0.5 + 0.01 * a } else { 0.0 }
+            real(0.01 * (a * 0.37 + b * 0.11).sin() + if i == j { 0.5 + 0.01 * a } else { 0.0 })
         });
         for active in [6, 12] {
-            let h = Mat::from_fn(40, active, |i, j| ((i * 7 + j * 3) as f64 * 0.13).cos());
-            let info = h.transpose() * &h * 1000.0;
-            let mut full_info = Mat::<f64>::zeros(24, 24);
+            let h = Mat::from_fn(40, active, |i, j| {
+                real(((i * 7 + j * 3) as f64 * 0.13).cos())
+            });
+            let info = h.transpose() * &h * faer::Scale(real(1000.0));
+            let mut full_info = Mat::<Real>::zeros(24, 24);
             for i in 0..active {
                 for j in 0..active {
                     full_info[(i, j)] = info[(i, j)];
@@ -1361,13 +1409,13 @@ mod tests {
             let scale = (0..24)
                 .flat_map(|i| (0..active).map(move |j| (i, j)))
                 .map(|(i, j)| expected[(i, j)].abs())
-                .fold(0.0, f64::max);
+                .fold(0.0, Real::max);
             let columns = gain_front_columns(&p, info.rb(), active);
             for i in 0..24 {
                 for j in 0..active {
                     let difference = (columns[(i, j)] - expected[(i, j)]).abs();
                     assert!(
-                        difference < 1e-10 * scale,
+                        difference < 1e5 * Real::EPSILON * scale,
                         "({i}, {j}) differs by {difference}"
                     );
                 }
@@ -1384,11 +1432,11 @@ mod tests {
         filter.state.vel = Vector3::new(2.0, -0.4, 0.3);
         filter.cov = Mat::from_fn(24, 24, |i, j| {
             let (a, b) = (i.min(j) as f64, i.max(j) as f64);
-            0.01 * (a * 0.37 + b * 0.11).sin() + if i == j { 1.0 } else { 0.0 }
+            real(0.01 * (a * 0.37 + b * 0.11).sin() + if i == j { 1.0 } else { 0.0 })
         });
         let q = Mat::from_fn(12, 12, |i, j| {
             if i / 3 == j / 3 {
-                0.01 * (1.0 + i as f64) + 0.001 * j as f64
+                real(0.01 * (1.0 + i as f64) + 0.001 * j as f64)
             } else {
                 0.0
             }
@@ -1399,9 +1447,9 @@ mod tests {
         };
         let dt = 0.005;
 
-        let f_x =
-            Mat::<f64>::identity(24, 24) + df_dx(&filter.state, &input, true, &filter.anchor) * dt;
-        let f_w = df_dw(&filter.state, &input, &filter.anchor) * dt;
+        let f_x = Mat::<Real>::identity(24, 24)
+            + df_dx(&filter.state, &input, true, &filter.anchor) * faer::Scale(real(dt));
+        let f_w = df_dw(&filter.state, &input, &filter.anchor) * faer::Scale(real(dt));
         let fp = &f_x * &filter.cov;
         let fw_q = &f_w * &q;
         let expected = &fp * f_x.transpose() + &fw_q * f_w.transpose();
@@ -1410,7 +1458,10 @@ mod tests {
         for i in 0..24 {
             for j in 0..24 {
                 let difference = (filter.cov[(i, j)] - expected[(i, j)]).abs();
-                assert!(difference < 1e-12, "({i}, {j}) differs by {difference}");
+                assert!(
+                    difference < 1e4 * Real::EPSILON,
+                    "({i}, {j}) differs by {difference}"
+                );
             }
         }
     }

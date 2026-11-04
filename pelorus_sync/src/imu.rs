@@ -3,15 +3,15 @@ use alloc::vec::Vec;
 use either::Either::{Left, Right};
 use imu_fusion::FusionAhrs;
 use pelorus_core::{
-    ImuMsg, ImuPredictorUndistort, PointXYZIT, UndistortParameters, imu_msg_to_cov,
-    imu_msg_to_twist, time_msg_from_secs,
+    ImuMsg, ImuPredictorUndistort, PointXYZIT, Stamp, UndistortParameters, imu_msg_to_cov,
+    imu_msg_to_twist,
 };
 #[cfg(feature = "rayon")]
 use rayon::iter::{IntoParallelIterator, ParallelIterator};
 
 use nalgebra::*;
 
-use crate::{MeasureGroup, timestamp_to_secs};
+use crate::MeasureGroup;
 
 use pelorus_core::{SE3, SO3};
 use ros_pointcloud2::ros::TimeMsg;
@@ -68,7 +68,7 @@ impl ImuMadgwick {
 
 #[derive(Debug)]
 pub struct GyrInt {
-    start_stamp: f64,
+    start_stamp: Stamp,
     last_imu: Option<ImuMsg>,
     v_imu: Vec<ImuMsg>,
     v_rot: Vec<SO3>,
@@ -85,7 +85,7 @@ impl Default for GyrInt {
 impl GyrInt {
     pub fn new() -> Self {
         Self {
-            start_stamp: -1.0,
+            start_stamp: Stamp::ZERO,
             last_imu: None,
             v_imu: Vec::new(),
             v_rot: Vec::new(),
@@ -94,7 +94,7 @@ impl GyrInt {
         }
     }
 
-    pub fn reset(&mut self, start_time: f64, imu: Option<ImuMsg>) {
+    pub fn reset(&mut self, start_time: Stamp, imu: Option<ImuMsg>) {
         self.start_stamp = start_time;
         self.last_imu = imu;
         self.v_imu.clear();
@@ -126,14 +126,16 @@ impl GyrInt {
         let gravity = Vector3::new(0.0, 0.0, -gravity);
 
         if self.v_imu.is_empty() {
-            debug_assert!(self.start_stamp > 0.0);
+            debug_assert!(self.start_stamp.is_set());
             let last_imu = self.last_imu.as_ref().unwrap_or(init_imu);
 
             self.v_rot.push(SO3::identity());
             self.v_se3.push(SE3::identity());
 
-            let dt1 = self.start_stamp - timestamp_to_secs(&last_imu.stamp).max(0.0);
-            let dt2 = timestamp_to_secs(&imu.stamp) - self.start_stamp;
+            let dt1 = self
+                .start_stamp
+                .secs_since(Stamp::from_msg(&last_imu.stamp).max(Stamp::ZERO));
+            let dt2 = Stamp::from_msg(&imu.stamp).secs_since(self.start_stamp);
             debug_assert!(dt2 >= 0.0);
 
             let w1 = dt2 / (dt1 + dt2 + 1e-9);
@@ -145,7 +147,7 @@ impl GyrInt {
             let acc2 = imu.linear_acceleration;
 
             let mut imu_interpolated = ImuMsg {
-                stamp: time_msg_from_secs(self.start_stamp),
+                stamp: self.start_stamp.to_msg(),
                 ..Default::default()
             };
             imu_interpolated.angular_velocity[0] = w1 * gyr1[0] + w2 * gyr2[0];
@@ -172,7 +174,7 @@ impl GyrInt {
         let rot_last = *self.v_rot.last().unwrap();
         let pose_last = *self.v_se3.last().unwrap();
         let imu_msg_last = self.v_imu.last().unwrap().clone();
-        let time_last = timestamp_to_secs(&imu_msg_last.stamp);
+        let time_last = Stamp::from_msg(&imu_msg_last.stamp);
         let gyr_last = Vector3::new(
             imu_msg_last.angular_velocity[0],
             imu_msg_last.angular_velocity[1],
@@ -183,14 +185,14 @@ impl GyrInt {
             imu.linear_acceleration[1],
             imu.linear_acceleration[2],
         );
-        let time = timestamp_to_secs(&imu.stamp);
-        debug_assert!(time >= 0.0);
+        let time = Stamp::from_msg(&imu.stamp);
+        debug_assert!(time >= Stamp::ZERO);
         let gyr = Vector3::new(
             imu.angular_velocity[0],
             imu.angular_velocity[1],
             imu.angular_velocity[2],
         );
-        let dt = time - time_last;
+        let dt = time.secs_since(time_last);
         let delta_angle = dt * 0.5 * (gyr + gyr_last);
 
         // Transform the acceleration to the world frame using the last pose's rotation
@@ -221,7 +223,7 @@ impl GyrInt {
 pub struct ImuProcess {
     // lidar to imu transform
     //transform_imu_lidar: SE3,
-    last_lidar_stamp: Option<f64>,
+    last_lidar_stamp: Option<Stamp>,
     last_imu: Option<ImuMsg>,
     pub gyr_int: GyrInt,
     integrated_guess: (Isometry3<f64>, TimeMsg),
@@ -261,7 +263,7 @@ impl ImuProcess {
     pub fn integrate_imu_for_undistortion(
         &mut self,
         imu_data: &Vec<ImuMsg>,
-        start_time: f64,
+        start_time: Stamp,
         config: Option<&UndistortParameters>,
     ) -> (Isometry3<f64>, SE3) {
         self.integrate_gyr(imu_data, start_time);
@@ -341,7 +343,7 @@ impl ImuProcess {
             last_twist: imu_msg_to_twist(&n_last_imu),
             integrated_covariance: self.gyr_int.get_kum_covariances(),
             end_of_frame_guess: estimated_pose,
-            end_of_frame_guess_time: time_msg_from_secs(meas.lidar_end_stamp), // TODO impl copy for time?
+            end_of_frame_guess_time: meas.lidar_end_stamp.to_msg(),
             runtime_eval: &self.runtime_eval,
         })
     }
@@ -349,11 +351,11 @@ impl ImuProcess {
     pub fn reset(&mut self) {
         self.last_lidar_stamp = None;
         self.last_imu = None;
-        self.gyr_int.reset(-1.0, None);
+        self.gyr_int.reset(Stamp::ZERO, None);
         self.integrated_guess = (Isometry3::identity(), TimeMsg::default());
     }
 
-    pub fn integrate_gyr(&mut self, v_imu: &Vec<ImuMsg>, init_time: f64) {
+    pub fn integrate_gyr(&mut self, v_imu: &Vec<ImuMsg>, init_time: Stamp) {
         let init_imu = match v_imu.first() {
             Some(imu) => imu.clone(),
             None => return,

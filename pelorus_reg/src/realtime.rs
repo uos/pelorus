@@ -39,12 +39,12 @@ pub struct RealtimePrediction {
 #[derive(Clone)]
 struct CorrectedSnapshot {
     state: crate::eqf::StateIKFom,
-    covariance: faer::Mat<f64>,
+    covariance: faer::Mat<crate::eqf::Real>,
     /// Origin used to interpret the covariance error coordinates.
     anchor: nalgebra::Vector3<f64>,
     extrinsic_est: bool,
     initialized: bool,
-    last_time: f64,
+    last_time: pelorus_core::Stamp,
     context: ImuPredictionContext,
 }
 
@@ -257,7 +257,7 @@ fn worker(
                         let interval: Vec<_> = imu_msgs
                             .iter()
                             .filter(|imu| {
-                                let stamp = pelorus_core::timestamp_to_secs(&imu.stamp);
+                                let stamp = pelorus_core::Stamp::from_msg(&imu.stamp);
                                 stamp > export_state.ekf.last_time && stamp < interval_end
                             })
                             .cloned()
@@ -286,7 +286,7 @@ fn worker(
                         .history
                         .iter()
                         .filter(|imu| {
-                            pelorus_core::timestamp_to_secs(&imu.stamp) > state.ekf.last_time
+                            pelorus_core::Stamp::from_msg(&imu.stamp) > state.ekf.last_time
                         })
                         .cloned()
                         .collect();
@@ -358,9 +358,9 @@ impl WorkerState {
     fn predict(&mut self, tail: &ImuMsg) -> Option<RealtimePrediction> {
         let context = self.imu.prediction_context();
         let head = &context.last_imu;
-        let head_stamp = pelorus_core::timestamp_to_secs(&head.stamp);
-        let tail_stamp = pelorus_core::timestamp_to_secs(&tail.stamp);
-        let dt = tail_stamp - self.ekf.last_time.max(head_stamp);
+        let head_stamp = pelorus_core::Stamp::from_msg(&head.stamp);
+        let tail_stamp = pelorus_core::Stamp::from_msg(&tail.stamp);
+        let dt = tail_stamp.secs_since(self.ekf.last_time.max(head_stamp));
         if !dt.is_finite() || dt <= 0.0 {
             return None;
         }

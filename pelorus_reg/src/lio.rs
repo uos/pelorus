@@ -14,7 +14,7 @@ use pelorus_core::sync::Mutex;
 use log::info;
 use nalgebra::{Isometry3, Translation3, UnitQuaternion};
 use pelorus_core::timing::RuntimeEvaluator;
-use pelorus_core::{ImuMsg, LioConfig, PointXYZIT, SyncProcessedCloud, timestamp_to_secs};
+use pelorus_core::{ImuMsg, LioConfig, PointXYZIT, SyncProcessedCloud};
 use pelorus_sync::LocatedBufferView;
 use ros_pointcloud2::ros::{HeaderMsg, TimeMsg};
 
@@ -33,8 +33,8 @@ pub struct LioScan {
     pub cloud_header: HeaderMsg,
     /// Stamp of the corrected pose: the absolute end of the scan.
     pub odom_time: TimeMsg,
-    /// `odom_time` in seconds.
-    pub current_cloud_time: f64,
+    /// `odom_time` as a stamp.
+    pub current_cloud_time: pelorus_core::Stamp,
     /// IMU messages of the scan interval.
     pub imu_buffer: Vec<ImuMsg>,
     /// The full-resolution deskewed cloud, when preprocessing kept one.
@@ -81,7 +81,7 @@ pub struct LioCore {
     t_last_current: Isometry3<f64>,
     /// Whether `t_world` holds a registered pose yet.
     t_world_registered: bool,
-    last_scan_time: Option<f64>,
+    last_scan_time: Option<pelorus_core::Stamp>,
     eval: RuntimeEvaluator,
     #[cfg(feature = "cuda")]
     persistent_cuda_cloud_bufs: Option<[LocatedBufferView<PointXYZIT>; 2]>,
@@ -357,14 +357,14 @@ impl LioCore {
         self.ram_cloud = LocatedBufferView::Ram(cloud);
 
         let orig_time = cloud_header.stamp;
-        let current_cloud_time = timestamp_to_secs(&odom_time);
+        let current_cloud_time = pelorus_core::Stamp::from_msg(&odom_time);
         if let Some(existing_last_scan_time) = self.last_scan_time
             && current_cloud_time < existing_last_scan_time
         {
             self.reset_map();
         }
 
-        self.last_scan_time = Some(timestamp_to_secs(&orig_time));
+        self.last_scan_time = Some(pelorus_core::Stamp::from_msg(&orig_time));
 
         let init_guess_lidar = self.init_guess_lidar(&end_of_frame_guess);
 

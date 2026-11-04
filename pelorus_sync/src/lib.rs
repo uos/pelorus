@@ -26,7 +26,7 @@ use pelorus_core::{
     LidarVendor, LivoxMid360Point, LivoxMid360PointNoIntensity, LivoxPoint, LivoxPointNoIntensity,
     LivoxPointOffsetTime, LivoxPointOffsetTimeNoIntensity, MadgwickSetting, OdomMsg, OusterPoint,
     OusterPointNoIntensity, PointXYZ, PointXYZI, PointXYZIT, PointXYZITimestamp, PointXYZIntensity,
-    RobosensePoint, RobosensePointNoIntensity, SyncParameters, SyncProcessedCloud, Twist,
+    RobosensePoint, RobosensePointNoIntensity, Stamp, SyncParameters, SyncProcessedCloud, Twist,
     VelodynePoint, VelodynePointNoIntensity, time_msg_from_secs, timing::RuntimeEvaluator,
 };
 
@@ -272,9 +272,9 @@ pub enum ImuSyncMode {
 pub struct MeasureGroup {
     cloud: Vec<PointXYZIT>,
     cloud_passthrough: Option<Vec<PointXYZIT>>,
-    last_lidar_end_stamp: f64,
-    lidar_start_stamp: f64,
-    lidar_end_stamp: f64,
+    last_lidar_end_stamp: Stamp,
+    lidar_start_stamp: Stamp,
+    lidar_end_stamp: Stamp,
     imu_buffer: Vec<ImuMsg>,
     odom_buffer: Vec<OdomMsg>,
 }
@@ -718,7 +718,7 @@ mod tests {
             .unwrap();
         drop(lidar_tx);
 
-        let mut previous_lidar_end = 0.0;
+        let mut previous_lidar_end = Stamp::ZERO;
         Synchronizer::sync_lidar_imu_worker(
             SyncWorkerSettings {
                 initial_scan_accumulate: 0,
@@ -746,7 +746,7 @@ mod tests {
             (end - (scan_stamp + 0.1)).abs() < 1e-3,
             "frame end {end} should sit at the header stamp plus the scan span"
         );
-        assert!((previous_lidar_end - (scan_stamp + 0.1)).abs() < 1e-3);
+        assert!((previous_lidar_end.as_secs() - (scan_stamp + 0.1)).abs() < 1e-3);
     }
 
     #[test]
@@ -801,7 +801,7 @@ mod tests {
         }
         drop(lidar_tx);
 
-        let mut previous_lidar_end = 0.0;
+        let mut previous_lidar_end = Stamp::ZERO;
         Synchronizer::sync_lidar_imu_worker(
             SyncWorkerSettings {
                 initial_scan_accumulate: 0,
@@ -826,7 +826,7 @@ mod tests {
         let scan_ids: Vec<_> = synced_rx.try_iter().map(|cloud| cloud.scan_id).collect();
         assert_eq!(scan_ids, vec![1, 2]);
         assert!(
-            (previous_lidar_end - 100.2).abs() < 1e-6,
+            (previous_lidar_end.as_secs() - 100.2).abs() < 1e-6,
             "interval end was {previous_lidar_end}"
         );
     }
@@ -863,7 +863,7 @@ mod tests {
         }
         drop(lidar_tx);
 
-        let mut previous_lidar_end = 0.0;
+        let mut previous_lidar_end = Stamp::ZERO;
         Synchronizer::sync_lidar_imu_worker(
             SyncWorkerSettings {
                 initial_scan_accumulate: 2,
@@ -966,7 +966,7 @@ mod tests {
         }
         drop(lidar_tx);
         drop(imu_tx);
-        let mut previous_lidar_end = 0.0;
+        let mut previous_lidar_end = Stamp::ZERO;
         Synchronizer::sync_lidar_imu_worker(
             test_settings(),
             &mut previous_lidar_end,
@@ -987,7 +987,7 @@ mod tests {
         let mut core = SyncCore::new(
             test_settings(),
             true,
-            0.0,
+            Stamp::ZERO,
             ImuProcess::new(9.81),
             None,
             None,
@@ -2368,7 +2368,7 @@ pub struct Synchronizer {
     imu_sender: Option<std::sync::mpsc::SyncSender<ImuMsg>>,
     odom_sender: Option<std::sync::mpsc::SyncSender<OdomMsg>>,
     synced_receiver: Option<std::sync::mpsc::Receiver<SyncProcessedCloud>>,
-    last_cloud_time: f64,
+    last_cloud_time: Stamp,
     imu_filter: ImuFilter,
     runtime_eval: RuntimeEvaluator,
     realtime_imu_callback: Option<RealtimeImuCallback>,
@@ -2435,7 +2435,7 @@ impl Synchronizer {
         set_default_debounce_secs(params.warning_debounce);
 
         thread::spawn(move || {
-            let mut last_lidar_frame_time = 0.0;
+            let mut last_lidar_frame_time = Stamp::ZERO;
             let imu_process = ImuProcess::new(gravity);
 
             let imu_rx = if cfg!(feature = "no-imu-sync") || imu_disabled {
@@ -2489,7 +2489,7 @@ impl Synchronizer {
             preproc_sender: Some(preproc_tx),
             preproc_queue_depth,
             last_preproc_warning_message: None,
-            last_cloud_time: 0.0,
+            last_cloud_time: Stamp::ZERO,
             imu_filter: ImuFilter::new(
                 gravity,
                 madgwick_filter,
@@ -2539,9 +2539,7 @@ impl Synchronizer {
         if let Some(callback) = self.realtime_lidar_barrier_callback.as_ref() {
             callback();
         }
-        let cloud_stamp = timestamp_to_secs(&cloud.header().stamp);
-
-        self.last_cloud_time = cloud_stamp;
+        self.last_cloud_time = Stamp::from_msg(&cloud.header().stamp);
         // Number the clouds of this synchronizer from 1 and send them into preprocessing.
         let scan_id = self.next_scan_id;
         self.next_scan_id += 1;
@@ -2682,7 +2680,7 @@ impl Synchronizer {
     /// `ready_for_next` before releasing the next scan.
     pub fn sync_lidar_imu_worker(
         settings: SyncWorkerSettings,
-        prev_lidar_end_time: &mut f64,
+        prev_lidar_end_time: &mut Stamp,
         channels: SyncWorkerChannels<'_>,
         imu_process: ImuProcess,
         imu_pose_prediction_undistort: Option<Box<ImuPredictorUndistort>>,
@@ -2814,7 +2812,7 @@ impl Synchronizer {
 /// message before synchronization.
 struct ImuFilter {
     imu_filter_fusion: ImuMadgwick,
-    last_imu_time: f64,
+    last_imu_time: Stamp,
     imu_calibration_apply: Option<ImuIntrinsicCorrection>,
     /// Seconds the IMU clock runs ahead of the Lidar clock.
     imu_time_offset: f64,
@@ -2830,7 +2828,7 @@ impl ImuFilter {
     ) -> Self {
         Self {
             imu_filter_fusion: ImuMadgwick::new(gravity),
-            last_imu_time: 0.0,
+            last_imu_time: Stamp::ZERO,
             imu_calibration_apply,
             imu_time_offset,
             madgwick_filter,
@@ -2842,13 +2840,13 @@ impl ImuFilter {
     fn filter(&mut self, mut imu: ImuMsg) -> Option<ImuMsg> {
         // Integration, undistortion, and pairing all use the corrected clock.
         if self.imu_time_offset != 0.0 {
-            imu.stamp = pelorus_core::time_msg_from_secs(
-                timestamp_to_secs(&imu.stamp) - self.imu_time_offset,
-            );
+            imu.stamp = Stamp::from_msg(&imu.stamp)
+                .add_secs(-self.imu_time_offset)
+                .to_msg();
         }
-        let imu_time = timestamp_to_secs(&imu.stamp);
+        let imu_time = Stamp::from_msg(&imu.stamp);
 
-        let dt = imu_time - self.last_imu_time;
+        let dt = imu_time.secs_since(self.last_imu_time);
         self.last_imu_time = imu_time;
 
         let mut gyro = [
@@ -2974,7 +2972,7 @@ impl SteppedSynchronizer {
                 lidar_vendor,
             },
             !(cfg!(feature = "no-imu-sync") || imu_disabled),
-            0.0,
+            Stamp::ZERO,
             ImuProcess::new(params.imu.gravity),
             hooks.imu_pose_prediction_undistort,
             hooks.imu_pose_prediction_init_guess,
@@ -3101,7 +3099,7 @@ pub enum ImuInitProgress {
 pub struct ImuInitWindow {
     callback: Option<ImuInitCallback>,
     init_time_sec: f64,
-    start: Option<f64>,
+    start: Option<Stamp>,
     buffer: Option<Vec<ImuMsg>>,
 }
 
@@ -3129,7 +3127,7 @@ impl ImuInitWindow {
         let Some(buffer) = self.buffer.as_mut() else {
             return ImuInitProgress::Complete;
         };
-        let stamp = timestamp_to_secs(&imu.stamp);
+        let stamp = Stamp::from_msg(&imu.stamp);
         let start = *self.start.get_or_insert(stamp);
         if stamp < start {
             self.start = Some(stamp);
@@ -3138,7 +3136,7 @@ impl ImuInitWindow {
         let start = self.start.unwrap_or(stamp);
         if self.init_time_sec <= 0.0 {
             buffer.push(imu.clone());
-        } else if stamp - start < self.init_time_sec {
+        } else if stamp.secs_since(start) < self.init_time_sec {
             buffer.push(imu.clone());
             return ImuInitProgress::Collecting;
         }
@@ -3167,7 +3165,7 @@ impl ImuInitWindow {
 /// every scan id up front.
 pub struct ScanAdmission {
     imu_init: ImuInitWindow,
-    last_lidar_time: Option<f64>,
+    last_lidar_time: Option<Stamp>,
     taken: u64,
 }
 
@@ -3198,7 +3196,7 @@ impl ScanAdmission {
         if !self.imu_initialized() || cloud.source().point_count() == 0 {
             return None;
         }
-        let time = timestamp_to_secs(&cloud.header().stamp);
+        let time = Stamp::from_msg(&cloud.header().stamp);
         if self.last_lidar_time.is_some_and(|last| time < last) {
             return None;
         }
@@ -3462,9 +3460,9 @@ struct PendingScan {
     /// Raw header-relative end stamp of the last point.
     lidar_end_time: f64,
     /// Absolute begin of the scan used for deskewing.
-    lidar_begin_time: f64,
-    imu_span_start_time: f64,
-    imu_span_end_time: f64,
+    lidar_begin_time: Stamp,
+    imu_span_start_time: Stamp,
+    imu_span_end_time: Stamp,
     no_previous_lidar_end_time: bool,
     use_point_timestamps_for_frame: bool,
     abs_lidar_end: TimeMsg,
@@ -3483,7 +3481,7 @@ struct PendingScan {
 pub struct SyncCore {
     settings: SyncWorkerSettings,
     imu_enabled: bool,
-    prev_lidar_end_time: f64,
+    prev_lidar_end_time: Stamp,
     imu_process: ImuProcess,
     imu_pose_prediction_undistort: Option<Box<ImuPredictorUndistort>>,
     imu_pose_prediction_init_guess: Option<Box<ImuPredictor>>,
@@ -3500,7 +3498,7 @@ impl SyncCore {
     pub fn new(
         settings: SyncWorkerSettings,
         imu_enabled: bool,
-        prev_lidar_end_time: f64,
+        prev_lidar_end_time: Stamp,
         imu_process: ImuProcess,
         imu_pose_prediction_undistort: Option<Box<ImuPredictorUndistort>>,
         imu_pose_prediction_init_guess: Option<Box<ImuPredictor>>,
@@ -3536,8 +3534,8 @@ impl SyncCore {
         self.imu_enabled
     }
 
-    /// End of the last synchronized interval, in seconds.
-    pub fn prev_lidar_end_time(&self) -> f64 {
+    /// End of the last synchronized interval.
+    pub fn prev_lidar_end_time(&self) -> Stamp {
         self.prev_lidar_end_time
     }
 
@@ -3573,8 +3571,8 @@ impl SyncCore {
             self.pending_skipped_scans = 0;
         }
         self.eval.merge(&sync_eval);
-        let lidar_time = timestamp_to_secs(&lidar_header.stamp);
-        let abs_lidar_end = secs_to_timestamp(lidar_time + lidar_end_time);
+        let lidar_time = Stamp::from_msg(&lidar_header.stamp);
+        let abs_lidar_end = lidar_time.add_secs(lidar_end_time).to_msg();
 
         if initializing {
             self.cloud_count += 1;
@@ -3611,17 +3609,20 @@ impl SyncCore {
             has_point_timestamps(lidar_vendor) && !livox_use_header_span;
         let (lidar_begin_time, imu_span_end_time) = match lidar_vendor {
             LidarVendor::Livox if livox_use_header_span => (lidar_time, lidar_time),
-            LidarVendor::LivoxMid360 => (lidar_time - lidar_end_time, lidar_time),
+            LidarVendor::LivoxMid360 => (lidar_time.add_secs(-lidar_end_time), lidar_time),
             LidarVendor::NoTimestamp => (lidar_time, lidar_time),
-            _ => (lidar_begin_time + lidar_time, lidar_end_time + lidar_time),
+            _ => (
+                lidar_time.add_secs(lidar_begin_time),
+                lidar_time.add_secs(lidar_end_time),
+            ),
         };
 
         // Use 0 as start if there was no last lidar frame which we can use as start for our time range
-        let no_previous_lidar_end_time = self.prev_lidar_end_time <= 0.0;
-        let imu_span_start_time = if self.prev_lidar_end_time > 0.0 {
+        let no_previous_lidar_end_time = !self.prev_lidar_end_time.is_set();
+        let imu_span_start_time = if self.prev_lidar_end_time.is_set() {
             self.prev_lidar_end_time
         } else if !has_point_timestamps(lidar_vendor) {
-            0.0
+            Stamp::ZERO
         } else {
             lidar_begin_time
         };
@@ -3633,7 +3634,7 @@ impl SyncCore {
 
         // Get last IMU message that was destructively taken
         if let Some(last_imu_extra) = self.to_next.take() {
-            let imu_time = timestamp_to_secs(&last_imu_extra.stamp);
+            let imu_time = Stamp::from_msg(&last_imu_extra.stamp);
             if imu_time > imu_span_start_time && imu_time < imu_span_end_time {
                 imu_data.push(last_imu_extra);
             }
@@ -3667,7 +3668,7 @@ impl SyncCore {
         let Some(pending) = self.pending.as_mut() else {
             return false;
         };
-        let imu_time = timestamp_to_secs(&imu.stamp);
+        let imu_time = Stamp::from_msg(&imu.stamp);
         if imu_time < pending.imu_span_start_time {
             return false;
         }
@@ -3713,7 +3714,7 @@ impl SyncCore {
 
         let mut odom_data = Vec::with_capacity(100);
         for odom in odom {
-            let odom_time = timestamp_to_secs(&odom.stamp);
+            let odom_time = Stamp::from_msg(&odom.stamp);
             if odom_time < imu_span_start_time {
                 if should_log_once_default("odom_msg_too_early") {
                     warn!("Odom msg too early, skipped.");
@@ -3730,27 +3731,19 @@ impl SyncCore {
         }
 
         // Sort buffers with timestamp to ensure correct order
-        imu_data.sort_by(|a, b| {
-            timestamp_to_secs(&a.stamp)
-                .partial_cmp(&timestamp_to_secs(&b.stamp))
-                .unwrap()
-        });
+        imu_data.sort_by_key(|imu| Stamp::from_msg(&imu.stamp));
         if !has_point_timestamps(lidar_vendor)
             && no_previous_lidar_end_time
             && let Some(first_imu) = imu_data.first()
         {
-            imu_span_start_time = timestamp_to_secs(&first_imu.stamp);
+            imu_span_start_time = Stamp::from_msg(&first_imu.stamp);
         }
-        odom_data.sort_by(|a, b| {
-            timestamp_to_secs(&a.stamp)
-                .partial_cmp(&timestamp_to_secs(&b.stamp))
-                .unwrap()
-        });
+        odom_data.sort_by_key(|odom| Stamp::from_msg(&odom.stamp));
 
-        // `undistort` takes the frame end in the same form the IMU path
-        // hands it over: header-relative when the points carry stamps.
+        // With point stamps the frame ends `lidar_end_time` after the deskew
+        // begin, otherwise at the end of the IMU span.
         let deskew_end_time = if use_point_timestamps_for_frame {
-            lidar_end_time
+            lidar_begin_time.add_secs(lidar_end_time)
         } else {
             imu_span_end_time
         };
@@ -3788,7 +3781,7 @@ impl SyncCore {
                 end_of_frame_time: if use_point_timestamps_for_frame {
                     secs_to_timestamp(lidar_end_time)
                 } else {
-                    secs_to_timestamp(lidar_begin_time)
+                    lidar_begin_time.to_msg()
                 },
                 pose_covariance: [0.0; 36],
                 twist_covariance: [0.0; 36],
@@ -3858,7 +3851,7 @@ impl SyncCore {
                     end_of_frame_time: if use_point_timestamps_for_frame {
                         imu_data.last().unwrap().stamp
                     } else {
-                        secs_to_timestamp(lidar_begin_time)
+                        lidar_begin_time.to_msg()
                     },
                     pose_covariance: imu_cloud.integrated_covariance,
                     twist_covariance: imu_cloud.last_covariance,
