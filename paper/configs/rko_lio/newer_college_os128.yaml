@@ -1,0 +1,22 @@
+imu_topic: /os_cloud_node/imu
+lidar_topic: /os_cloud_node/points
+base_frame: os_sensor
+imu_frame: os_sensor_imu
+lidar_frame: os_sensor
+extrinsic_imu2base_quat_xyzw_xyz: [0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0]
+extrinsic_lidar2base_quat_xyzw_xyz: [0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0]
+odom_topic: /rko_lio/odometry
+publish_deskewed_scan: true
+deskewed_scan_topic: /rko_lio/frame
+publish_local_map: false
+map_topic: /rko_lio/local_map
+voxel_size: 0.5
+max_range: 100.0
+min_range: 0.0
+dump_results: true
+dump_latency: true
+latency_file: newer_college_os128_latency.txt
+results_dir: results
+run_name: newer_college_os128_rko_lio
+initialization_phase: false
+tum_output_body_extrinsic_quat_xyzw_xyz: [0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0]

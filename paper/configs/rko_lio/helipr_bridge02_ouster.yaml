@@ -1,0 +1,18 @@
+imu_topic: /imu/data_raw
+lidar_topic: /ouster/points
+base_frame: ouster
+imu_frame: imu
+lidar_frame: ouster
+extrinsic_imu2base_quat_xyzw_xyz: [-0.006500050343084858, 0.004100031754868914, 0.011200086745007758, 0.9999077443154697, 0.41436619119136026, 0.008405422716698372, -0.30308301691023415]
+extrinsic_lidar2base_quat_xyzw_xyz: [0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0]
+odom_topic: /rko_lio/odometry
+publish_deskewed_scan: true
+deskewed_scan_topic: /rko_lio/frame
+publish_local_map: false
+map_topic: /rko_lio/local_map
+dump_results: true
+dump_latency: true
+latency_file: helipr_bridge02_ouster_latency.txt
+results_dir: results
+run_name: helipr_bridge02_ouster
+initialization_phase: false

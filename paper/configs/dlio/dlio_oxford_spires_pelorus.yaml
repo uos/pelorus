@@ -1,0 +1,29 @@
+/**:
+  ros__parameters:
+    version: 1.1.1
+
+    adaptive: true
+
+    pointcloud/deskew: true
+    pointcloud/voxelize: true
+
+    imu/calibration: true
+    imu/intrinsics/accel/bias: [0.0, 0.0, 0.0]
+    imu/intrinsics/accel/sm: [1.0, 0.0, 0.0,
+                              0.0, 1.0, 0.0,
+                              0.0, 0.0, 1.0]
+    imu/intrinsics/gyro/bias: [0.0, 0.0, 0.0]
+
+    extrinsics/baselink2imu/t: [0.0, 0.0, 0.0]
+    extrinsics/baselink2imu/R: [1.0, 0.0, 0.0,
+                                0.0, 1.0, 0.0,
+                                0.0, 0.0, 1.0]
+    extrinsics/baselink2lidar/t: [-0.00065171, -0.01551034, 0.08463266]
+    extrinsics/baselink2lidar/R: [-0.01663805, -0.99986011, 0.00171598,
+                                  0.99985526, -0.01663181, 0.00358431,
+                                  -0.00355527, 0.00177537, 0.9999921]
+
+    trajectory/save: true
+    trajectory/savePath: "/tmp/dlio_oxford_spires_pelorus_trajectory_tum.txt"
+    latency/save: true
+    latency/savePath: "/tmp/dlio_oxford_spires_pelorus_latency.txt"

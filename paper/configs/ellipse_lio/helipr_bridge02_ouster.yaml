@@ -1,0 +1,30 @@
+/**:
+    ros__parameters:
+
+        mapping:
+            map_resolution: 0.1
+            pub_map_n_secs: 10
+            latency_save: true
+            latency_file: "helipr_bridge02_ouster_latency.txt"
+            tum_trajectory_file: "ellipselio_helipr_bridge02_ouster_tum.txt"
+
+        lidar:
+            type: 3 # LIVOX = 1, VELODYNE = 2, OUSTER = 3, HESAI = 4
+            rate: 10
+            scan_lines: 128
+            vertical_fov: 90.0
+            min_range: 4.0
+            max_range: 150.0
+            topic: "/ouster/points"
+            t_imu_lidar: [-0.41696532, -0.00301141, 0.2996]
+            r_imu_lidar: [0.999715495593027, 0.0223448061210468, -0.00834490926264448,
+                          -0.0224514077723064, 0.999664614804883, -0.0129070599303583,
+                          0.00805370475188661, 0.0130907427756056, 0.999881878170293]
+
+        imu:
+            rate: 100
+            acc_noise: 0.1
+            gyr_noise: 0.1
+            acc_bias: 0.0001
+            gyr_bias: 0.0001
+            topic: "/imu/data_raw"

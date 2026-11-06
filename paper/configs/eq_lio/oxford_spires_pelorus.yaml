@@ -1,0 +1,56 @@
+# Eq-LIO (ROS 2 port) config for oxford_spires_pelorus.
+# All parameters shared with FAST-LIO2 are copied verbatim from FAST_LIO_ROS2/config/oxford_spires_pelorus.yaml so both
+# methods run with identical settings. The cov/others blocks are Eq-LIO specific and set to the upstream
+# defaults (Eq-LIO config/avia.yaml and velodyne.yaml; the upstream ouster64.yaml has no cov block).
+/**:
+  ros__parameters:
+    feature_extract_enable: false
+    point_filter_num: 1
+    max_iteration: 3
+    filter_size_surf: 0.5
+    filter_size_map: 0.5
+    cube_side_length: 1000.0
+    runtime_pos_log_enable: false
+    map_file_path: "./oxford_spires_pelorus.pcd"
+    common:
+      lid_topic: "/hesai/pandar"
+      imu_topic: "/alphasense_driver_ros/imu"
+      time_sync_en: false
+      time_offset_lidar_to_imu: 0.0
+    preprocess:
+      lidar_type: 5
+      scan_line: 64
+      timestamp_unit: 3
+      blind: 4.0
+    mapping:
+      acc_cov: 0.1
+      gyr_cov: 0.1
+      b_acc_cov: 0.0001
+      b_gyr_cov: 0.0001
+      fov_degree: 360.0
+      det_range: 150.0
+      extrinsic_est_en: false
+      extrinsic_T: [-0.00065171, -0.01551034, 0.08463266]
+      extrinsic_R: [-0.01663805, -0.99986011, 0.00171598,
+                    0.99985526, -0.01663181, 0.00358431,
+                    -0.00355527, 0.00177537, 0.9999921]
+    publish:
+      path_en: false
+      scan_publish_en: true
+      dense_publish_en: true
+      scan_bodyframe_pub_en: true
+    pcd_save:
+      pcd_save_en: false
+      interval: -1
+    traj_save:
+      traj_save_en: true
+      traj_save_path: "eqlio_oxford_spires_pelorus_trajectory.txt"
+    latency_save:
+      latency_save_en: true
+      latency_save_path: "eqlio_oxford_spires_pelorus_latency.txt"
+    cov:
+      lidar_point_cov: 0.001            # Eq-LIO upstream default (same value as FAST-LIO2 LASER_POINT_COV)
+      # initial covariance diagonal, order: pos, rot, extrinsic rot, extrinsic trans, vel, bg, ba, grav
+      init_P: [1.0, 1.0, 0.00001, 0.00001, 1.0, 0.0001, 0.001, 0.00001]
+    others:
+      grav_S2: true                     # Eq-LIO upstream default: gravity on S2 (23-dim filter)

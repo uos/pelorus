@@ -1,0 +1,30 @@
+/**:
+    ros__parameters:
+
+        mapping:
+            map_resolution: 0.1
+            pub_map_n_secs: 10
+            tum_trajectory_file: "ellipselio_oxford_spires_pelorus_tum.txt"
+            latency_save: true
+            latency_file: "oxford_spires_pelorus_latency.txt"
+
+        lidar:
+            type: 4 # LIVOX = 1, VELODYNE = 2, OUSTER = 3, HESAI = 4
+            rate: 10
+            scan_lines: 64
+            vertical_fov: 40.0
+            min_range: 4.0
+            max_range: 150.0
+            topic:  "/hesai/pandar"
+            t_imu_lidar: [-0.00065171, -0.01551034, 0.08463266]
+            r_imu_lidar: [-0.01663805, -0.99986011, 0.00171598,
+                          0.99985526, -0.01663181, 0.00358431,
+                          -0.00355527, 0.00177537, 0.9999921]
+
+        imu:
+            rate: 100
+            acc_noise: 0.1
+            gyr_noise: 0.1
+            acc_bias: 0.0001
+            gyr_bias: 0.0001
+            topic:  "/alphasense_driver_ros/imu"

@@ -1,0 +1,40 @@
+lidar_topic: /ouster/points
+imu_topic: /imu/data_raw
+lidar_type: ouster
+min_radius: 4.0
+max_radius: 150.0
+point_filter_num: 2
+time_scale: 1.0
+enable_ahrs_initalization: false
+enable_acc_correct: false
+
+scan_resolution: 0.5
+voxel_map_resolution: 0.5
+max_iterations: 10
+
+acc_cov: 0.1
+gyr_cov: 0.1
+ba_cov: 0.0001
+bg_cov: 0.0001
+
+gicp_constraints_gain: 100.0
+point2plane_constraints_gain: 1000.0
+enable_undistort: true
+enable_outlier_rejection: true
+
+gravity: 9.80665
+init_ori_cov: 0.0001
+init_pos_cov: 0.0001
+init_vel_cov: 100.0
+init_ba_cov: 0.000001
+init_bg_cov: 0.000001
+
+t_imu_lidar: [-0.41696532, -0.00301141, 0.2996]
+R_imu_lidar: [0.999715495593027, 0.0223448061210468, -0.00834490926264448,
+              -0.0224514077723064, 0.999664614804883, -0.0129070599303583,
+              0.00805370475188661, 0.0130907427756056, 0.999881878170293]
+
+traj_save.traj_save_en: true
+traj_save.traj_save_path: helipr_bridge02_ouster_iglio_tum.txt
+latency_save.latency_save_en: true
+latency_save.latency_save_path: helipr_bridge02_ouster_iglio_latency.txt

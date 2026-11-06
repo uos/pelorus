@@ -1,0 +1,22 @@
+imu_topic: /alphasense_driver_ros/imu
+lidar_topic: /hesai/pandar
+base_frame: hesai_pandar
+imu_frame: alphasense_imu
+lidar_frame: hesai_pandar
+extrinsic_imu2base_quat_xyzw_xyz: [0.000644945632, -0.001879369403, -0.712962475155, 0.701199373243, 0.015798143806941, -0.001059838145788, -0.084575279213895]
+extrinsic_lidar2base_quat_xyzw_xyz: [0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0]
+odom_topic: /rko_lio/odometry
+publish_deskewed_scan: true
+deskewed_scan_topic: /rko_lio/frame
+publish_local_map: false
+map_topic: /rko_lio/local_map
+voxel_size: 0.5
+max_range: 150.0
+min_range: 4.0
+dump_results: true
+dump_latency: true
+latency_file: oxford_spires_pelorus_latency.txt
+results_dir: results
+run_name: oxford_spires_pelorus_rko_lio
+initialization_phase: false
+tum_output_body_extrinsic_quat_xyzw_xyz: [0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0]
