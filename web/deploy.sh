@@ -6,8 +6,8 @@
 #   web/deploy.sh [--dry-run] bags <folder> the demo bags, found anywhere below <folder>
 #   web/deploy.sh check                     fetch every file the page loads
 #
-# The two uploads are independent: the site upload never touches demo/*.mcap
-# or docs/, which docs.yml uploads, and the bag upload touches nothing else. Before uploading, both check that
+# The two uploads are independent: the site upload never touches demo/*.mcap,
+# docs/, which docs.yml uploads, or bench/, which the pelorus-bench CI uploads, and the bag upload touches nothing else. Before uploading, both check that
 # every file main.js and benchmark.js reference is there, so a missing preset or
 # bag fails here and not in a visitor's browser. --dry-run lists the changes
 # without making them.
@@ -56,10 +56,11 @@ case "$mode" in
     [[ -f "$web/syntaxes/ratslang.tmLanguage.json" ]] || echo "No ratslang grammar. The config editor stays plain." >&2
     ((missing == 0)) || exit 1
 
-    # Excluded files are also kept on the server, which keeps the bags and the
-    # documentation that docs.yml uploads to docs/.
+    # Excluded files are also kept on the server, which keeps the bags, the
+    # documentation that docs.yml uploads to docs/ and the benchmark page that
+    # pelorus-bench uploads to bench/.
     "${rsync[@]}" --delete \
-      --exclude='/demo/*.mcap' --exclude='/docs/' --exclude='/src/' --exclude='/Cargo.toml' --exclude='/*.sh' \
+      --exclude='/demo/*.mcap' --exclude='/docs/' --exclude='/bench/' --exclude='/src/' --exclude='/Cargo.toml' --exclude='/*.sh' \
       --exclude='/serve.py' --exclude='/.gitignore' \
       "$web/" "$target"
     ;;

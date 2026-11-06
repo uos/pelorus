@@ -63,6 +63,38 @@ const status = (text) => {
   }
 }
 
+// The demo list is static: build it before the WebAssembly loads, so the page below it (the benchmark)
+// does not move down once the module is ready. A click before that waits for it.
+let markReady;
+const ready = new Promise((resolve) => { markReady = resolve; });
+{
+  const buttons = [];
+  for (const group of DEMOS) {
+    const heading = document.createElement("li");
+    heading.className = "dataset";
+    heading.textContent = group.dataset;
+    $("demos").append(heading);
+    for (const demo of group.demos) {
+      const item = document.createElement("li");
+      const text = document.createElement("div");
+      const title = document.createElement("strong");
+      title.textContent = demo.title;
+      const detail = document.createElement("span");
+      detail.textContent = demo.detail;
+      text.append(title, detail);
+      const button = document.createElement("button");
+      button.className = "primary";
+      button.textContent = "Run";
+      button.setAttribute("aria-label", `Run the ${demo.title} demo`);
+      demo.name = `${group.dataset.split(",")[0]} ${demo.title}`;
+      button.onclick = () => ready.then(() => runDemo(demo, button, buttons));
+      buttons.push(button);
+      item.append(text, button);
+      $("demos").append(item);
+    }
+  }
+}
+
 await init();
 let worker = null;
 let app = null;
@@ -444,33 +476,8 @@ async function runDemo(demo, button, buttons) {
   }
 }
 
-{
-  const buttons = [];
-  for (const group of DEMOS) {
-    const heading = document.createElement("li");
-    heading.className = "dataset";
-    heading.textContent = group.dataset;
-    $("demos").append(heading);
-    for (const demo of group.demos) {
-      const item = document.createElement("li");
-      const text = document.createElement("div");
-      const title = document.createElement("strong");
-      title.textContent = demo.title;
-      const detail = document.createElement("span");
-      detail.textContent = demo.detail;
-      text.append(title, detail);
-      const button = document.createElement("button");
-      button.className = "primary";
-      button.textContent = "Run";
-      button.setAttribute("aria-label", `Run the ${demo.title} demo`);
-      demo.name = `${group.dataset.split(",")[0]} ${demo.title}`;
-      button.onclick = () => runDemo(demo, button, buttons);
-      buttons.push(button);
-      item.append(text, button);
-      $("demos").append(item);
-    }
-  }
-}
+// The demo list was built before the WebAssembly loaded; its buttons work from here on.
+markReady();
 
 $("bag-file").onchange = () => {
   const file = $("bag-file").files[0];
