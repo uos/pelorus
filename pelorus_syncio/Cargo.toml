@@ -10,7 +10,8 @@ documentation.workspace = true
 license.workspace = true
 keywords.workspace = true
 include.workspace = true
-rust-version.workspace = true
+# Rerun needs a newer Rust than the libraries.
+rust-version = "1.98.0"
 
 [dependencies]
 pelorus_core = { workspace = true, features = ["std"] }

@@ -127,7 +127,7 @@ hiroz-msgs = { version = "0.2.1", default-features = false, features = [
 hiroz-protocol = { version = "0.2.1", default-features = false }
 zenoh-buffers = "1.10.2"
 tokio = { version = "1.54", default-features = false }
-rerun = { version = "0.41.0", default-features = false, features = [
+rerun = { version = "0.43.2", default-features = false, features = [
   "sdk",
   "glam",
 ] }
