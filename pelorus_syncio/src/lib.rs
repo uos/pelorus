@@ -794,9 +794,9 @@ fn cloud_callback(
                                 Ok(tf) => tf,
                                 Err(error) => {
                                     if wait_for_sensor_tf {
-                                        warn!("Dropping scan, IMU-to-Lidar TF is missing: {error}");
+                                        warn!("Dropping scan, IMU-to-lidar TF is missing: {error}");
                                     } else {
-                                        debug!("Waiting for IMU-to-Lidar TF: {error}");
+                                        debug!("Waiting for IMU-to-lidar TF: {error}");
                                     }
                                     return Ok(());
                                 }
@@ -841,9 +841,9 @@ fn cloud_callback(
                     Ok(tf) => tf,
                     Err(error) => {
                         if wait_for_sensor_tf {
-                            warn!("Dropping scan, base-to-Lidar TF is missing: {error}");
+                            warn!("Dropping scan, base-to-lidar TF is missing: {error}");
                         } else {
-                            debug!("Waiting for base-to-Lidar TF: {error}");
+                            debug!("Waiting for base-to-lidar TF: {error}");
                         }
                         return Ok(());
                     }

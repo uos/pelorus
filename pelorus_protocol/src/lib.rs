@@ -110,7 +110,7 @@ pub struct CompressedPointFieldMsg {
 }
 
 /// Published after Pelorus has published the matching registered cloud and
-/// corrected Lidar odometry.
+/// corrected lidar odometry.
 #[derive(
     Archive, RkyvSerialize, RkyvDeserialize, Serialize, Deserialize, Debug, Clone, PartialEq, Eq,
 )]

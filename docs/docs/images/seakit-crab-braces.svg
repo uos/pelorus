@@ -1,0 +1,5 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" fill="none" role="img" aria-labelledby="title desc"><title id="title">SeaKit — Crab, Braces</title><desc id="desc">A compact crab whose two open pincers are curly braces, referencing the toolkit’s code and configuration language.</desc><path d="m44 66-15-5m55 5 15-5M41 79 27 87l-5 10M47 87 38 99m49-20 14 8 5 10M81 87l9 12" stroke="#405c70" stroke-width="7" stroke-linecap="round" stroke-linejoin="round"/>
+<path d="M29 22c-8 0-8 8-8 12s-1 8-8 8c7 0 8 4 8 8s0 11 8 11m70-39c8 0 8 8 8 12s1 8 8 8c-7 0-8 4-8 8s0 11-8 11" stroke="#8aafb3" stroke-width="8" stroke-linecap="round" stroke-linejoin="round"/>
+<path d="M38 66c0-29 52-29 52 0v11c-3 23-49 23-52 0Z" fill="#405c70"/>
+<path d="M42 58c9-15 35-15 44 0L64 68Z" fill="#8aafb3"/>
+<circle cx="54" cy="75" r="2.5" fill="#faf9f6"/><circle cx="74" cy="75" r="2.5" fill="#faf9f6"/></svg>

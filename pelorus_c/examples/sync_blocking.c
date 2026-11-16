@@ -87,7 +87,7 @@ int main(int argc, char **argv)
     fclose(f);
 
     if (target_scan_id == 0) {
-        fprintf(stderr, "Dataset did not contain a valid Lidar scan\n");
+        fprintf(stderr, "Dataset did not contain a valid lidar scan\n");
         pelorus_destroy(pelorus);
         return 1;
     }

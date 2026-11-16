@@ -24,7 +24,7 @@ site_name = "Pelorus"
 # meaningful description of the site content for use by search engines.
 #
 # Read more: https://zensical.org/docs/setup/basics/#site_description
-site_description = "Resource-aware Lidar-Inertial Odometry."
+site_description = "Resource-Aware Lidar-Inertial Odometry"
 
 # The site_author attribute. This is used in the HTML head element.
 #

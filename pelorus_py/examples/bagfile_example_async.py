@@ -2,7 +2,7 @@
 """\
 Example using Pelorus Python bindings with MCAP bagfile data (async callback).
 
-This example reads IMU and Lidar data from an MCAP bagfile and processes it
+This example reads IMU and lidar data from an MCAP bagfile and processes it
 through Pelorus to produce odometry estimates.
 
 Unlike bagfile_example.py (blocking recv), this script uses the async callback
@@ -100,9 +100,9 @@ def main() -> None:
 
     if target_scan_id is None:
         lio.clear_callback()
-        raise RuntimeError("The bag must contain at least two Lidar scans")
+        raise RuntimeError("The bag must contain at least two lidar scans")
 
-    # The final Lidar message is a support scan for the target immediately
+    # The final lidar message is a support scan for the target immediately
     # before it. Wait for that exact result; no wall-clock timeout is needed.
     with completion:
         while target_scan_id not in received_scan_ids:

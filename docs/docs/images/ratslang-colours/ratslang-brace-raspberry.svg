@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" fill="none" role="img" aria-labelledby="title desc">
+  <title id="title">Ratslang — brace tail — raspberry</title>
+  <desc id="desc">A rat with a curly-brace tail connected to its body, inspired by namespaces and bounds.</desc>
+  <path d="M34 23c-12 0-14 5-14 17v9c0 9-3 13-10 15 7 2 10 6 10 15v9c0 12 4 17 19 13l10-4" stroke="#bb5686" stroke-width="8" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M40 94C29 81 32 64 43 54c10-10 24-12 36-3-3-9 3-17 10-15 8 2 10 10 5 16l23 18c-10 8-19 10-27 8l-7 10 7 7q3 4-3 4H76l-8-7-9 7H44Z" fill="#bb5686"/>
+  <circle cx="100" cy="65" r="2.5" fill="#fff"/>
+</svg>

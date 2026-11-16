@@ -1,6 +1,6 @@
 //! Cut a demo bag for the browser from a ROS 2 MCAP bag.
 //!
-//! Keeps one Lidar and one IMU topic over a time window and stores the clouds
+//! Keeps one lidar and one IMU topic over a time window and stores the clouds
 //! compressed with cloudini, the way marina stores them, so [`McapBag`] plays
 //! the result like any other bag.
 //!

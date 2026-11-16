@@ -58,9 +58,9 @@ public:
     std::string effective_rl_path = rl_path;
     if (use_glim_config && effective_rl_path.empty()) {
       try {
-        // GLIM's `T_lidar_imu_` variable is IMU->Lidar per config comment:
-        // "T_lidar_imu transforms points in IMU into Lidar"
-        // Pelorus expects `from_lidar_transform` as Lidar->IMU.
+        // GLIM's `T_lidar_imu_` variable is IMU->lidar per config comment:
+        // "T_lidar_imu transforms points in IMU into lidar"
+        // Pelorus expects `from_lidar_transform` as lidar->IMU.
         const Eigen::Isometry3d T_imu_lidar = T_lidar_imu_.inverse();
         const Eigen::Vector3d t = T_imu_lidar.translation();
         const Eigen::Matrix3d R = T_imu_lidar.linear();
@@ -332,7 +332,7 @@ private:
     uint64_t scan_id = odom_c->scan_id;
     CachedResult result;
 
-    // Pelorus poses and deskewed clouds are always expressed in the Lidar
+    // Pelorus poses and deskewed clouds are always expressed in the lidar
     // frame.
     const double *p = odom_c->position;
     const double *q = odom_c->orientation; // w, x, y, z
@@ -516,7 +516,7 @@ private:
     frame->imu_bias << res.accel_bias, res.gyro_bias;
     frame->frame_id = FrameID::LIDAR;
 
-    // Keep the returned deskewed points in the Lidar frame so the cloud and
+    // Keep the returned deskewed points in the lidar frame so the cloud and
     // T_world_lidar use the same coordinates.
     if (res.cloud) {
       std::vector<Eigen::Vector4d> points_lidar(res.cloud->size());

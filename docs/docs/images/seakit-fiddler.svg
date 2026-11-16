@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" fill="none" role="img" aria-labelledby="title desc"><title id="title">SeaKit — Survey fiddler</title><desc id="desc">An asymmetric survey crab with one broad claw, a smaller precision pincer, and a topographic map shell.</desc><defs><clipPath id="seakit-map-face"><path d="m34 58 30-19 30 19-30 20Z" /></clipPath></defs><g stroke="#405c70" stroke-width="7" stroke-linecap="round" stroke-linejoin="round">
+<path d="m39 69-16 8-7 13m28-9-10 19m55-31 16 8 7 13M84 81l10 19M40 56 27 45m61 11 13-11" />
+</g>
+<path d="M34 58 64 39 94 58v17L64 95 34 75Z" fill="#405c70" />
+<path d="m34 58 30-19 30 19-30 20Z" fill="#8aafb3" />
+<g stroke="#405c70" stroke-width="1.7" stroke-linecap="round" fill="none" clip-path="url(#seakit-map-face)"><path d="M52.600 38.620C71.500 41.850 73.000 50.400 65.500 55.150S64.000 65.600 80.500 70.350" /><path d="M44.500 45.650C61.600 44.320 63.400 50.780 55.000 54.200S53.500 66.550 74.500 76.050" /></g><path d="M27 51C4 48 5 27 20 14l6 18 18-13c11 17 6 30-17 32Zm75 2c-12-2-14-14-8-22l6 10 10-7c7 10 4 18-8 19Z" fill="#8aafb3" /></svg>

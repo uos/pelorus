@@ -20,9 +20,9 @@ Add `-DPELORUS_FEATURE_CUDA=ON`, `-DPELORUS_FEATURE_VULKAN=ON` or `-DPELORUS_FEA
 
 We need to tell GLIM to use our plugin now. 
 
-When build from source, the json is in the install folder.
+When built from source, the json is in the install folder.
 ```sh
-sudo ln -s "$(pwd)/install/pelorus/share/pelorus_glim_odometry/config/config_odometry_pelorus.json \
+sudo ln -s "$(pwd)/install/pelorus/share/pelorus_glim_odometry/config/config_odometry_pelorus.json" \
   /opt/ros/jazzy/share/glim/config/config_odometry_pelorus.json
 ```
 

@@ -1,4 +1,4 @@
-/* Pelorus C Library - Resource-aware Lidar Inertial Odometry.
+/* Pelorus C Library - Resource-Aware Lidar-Inertial Odometry
  *
  * Threading and async processing are handled internally.
  *

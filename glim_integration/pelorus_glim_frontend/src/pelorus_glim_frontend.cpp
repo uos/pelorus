@@ -57,10 +57,10 @@ public:
         const Eigen::Isometry3d T_imu_lidar = T_lidar_imu.inverse();
 
         // Store the GLIM extrinsic for the auxiliary IMU pose attached to each
-        // Lidar-frame estimate.
+        // lidar-frame estimate.
         T_lidar_imu_ = T_lidar_imu;
 
-        // Pelorus expects Lidar->IMU transform (translation in meters + 3x3
+        // Pelorus expects lidar->IMU transform (translation in meters + 3x3
         // rotation).
         const Eigen::Vector3d t = T_imu_lidar.translation();
         const Eigen::Matrix3d R = T_imu_lidar.linear();
@@ -195,7 +195,7 @@ private:
   // Store per-frame pose covariances when odometry gets attached to frames
   std::map<long, Eigen::Matrix<double, 6, 6>> pelorus_pose_cov_by_id_;
 
-  // GLIM's IMU-to-Lidar extrinsic transform.
+  // GLIM's IMU-to-lidar extrinsic transform.
   Eigen::Isometry3d T_lidar_imu_{Eigen::Isometry3d::Identity()};
 
   // Last known transform (fallback)
@@ -552,7 +552,7 @@ private:
 
     uint64_t scan_id = odom_c->scan_id;
 
-    // Pelorus poses and deskewed clouds are always expressed in the Lidar
+    // Pelorus poses and deskewed clouds are always expressed in the lidar
     // frame.
     const double *p = odom_c->position;
     const double *q = odom_c->orientation; // w, x, y, z

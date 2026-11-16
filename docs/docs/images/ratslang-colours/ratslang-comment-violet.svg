@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" fill="none" role="img" aria-labelledby="title desc">
+  <title id="title">Ratslang — comment rat — violet</title>
+  <desc id="desc">A rat and comment bubble joined in one silhouette, with the language's hash comment marker inside.</desc>
+  <path d="M39 84C20 80 18 62 26 48c9-14 29-16 46-7-2-11 11-15 17-7 5 6 2 12-1 14l28 17c-6 9-16 13-28 11-7 11-22 16-39 11-10 14-26 16-30 9 8 0 15-4 20-12Z" fill="#8b5cf6"/>
+  <path d="m48 51-4 20m16-20-4 20M40 57h25M38 65h25" stroke="#fff" stroke-width="3.5" stroke-linecap="round"/>
+  <circle cx="100" cy="62" r="2.5" fill="#fff"/>
+</svg>

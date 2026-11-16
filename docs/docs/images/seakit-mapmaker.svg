@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" fill="none" role="img" aria-labelledby="title desc">
+<title id="title">SeaKit — Mapmaker</title>
+<desc id="desc">A compact crab shapes one tilted map plane between its pincers. A single folded corner defines the sheet, with no internal symbols.</desc>
+<g stroke="#405c70" stroke-linecap="round" stroke-linejoin="round">
+<path d="m42 72-17 9-7 11m26-8-9 17m51-29 17 9 7 11M84 84l9 17" stroke-width="7" />
+<path d="M43 62C29 62 25 54 26 46m59 16c14 0 18-8 17-16" stroke-width="7" />
+<path d="m51 57-2-14m28 8 2-14" stroke-width="6" />
+<circle cx="49" cy="41" r="4.5" fill="#405c70" stroke="none" />
+<circle cx="79" cy="35" r="4.5" fill="#405c70" stroke="none" />
+<path d="M35 68c0-25 58-25 58 0v9c-4 23-54 23-58 0Z" fill="#405c70" stroke="none" />
+</g>
+<path d="m38 60 41-11 12 9-3 22-50 13Z" fill="#8aafb3" />
+<path d="m79 49 12 9-14 4Z" fill="#405c70" />
+<path d="M27 55C11 52 10 36 20 27c-2 10 2 15 10 16l-1-15c13 10 14 24-2 27Zm74 0c16-3 17-19 7-28 2 10-2 15-10 16l1-15c-13 10-14 24 2 27Z" fill="#8aafb3" />
+</svg>

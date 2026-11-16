@@ -1,6 +1,6 @@
 # Configuration
 
-Pelorus is configured with a single [ratslang](https://codeberg.org/stelzo/ratslang) file. The binary ships the complete default configuration, so a file of your own only has to carry what differs from it.
+Pelorus is configured with a single [Ratslang](https://ratslang.steado.tech/docs/) file. The binary ships the complete default configuration, so a file of your own only has to carry what differs from it.
 
 ```mermaid
 flowchart LR
@@ -28,11 +28,11 @@ pelorus config verify pelorus.rl
 
 Nothing printed means the file is valid. The path defaults to `pelorus.rl`, and `-` reads from standard input. Pelorus runs the same validation at start-up, where a problem either stops the run or produces a warning. Running it yourself catches mistakes earlier.
 
-Unknown keys are an error. The configuration is type checked and usage checked at compile time, so an invalid configuration cannot reach the pipeline at all.
+Unknown keys are an error. Pelorus checks the whole file, types and units included, when it loads it, so an invalid configuration never reaches the pipeline.
 
 ## Overriding a single value
 
-Any key can be overridden on the command line. The flag is repeatable and takes ratslang syntax, units included:
+Any key can be overridden on the command line. The flag is repeatable and takes Ratslang syntax, units included:
 
 ```sh
 pelorus offline my_bag -c pelorus.rl \

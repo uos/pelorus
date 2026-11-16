@@ -1,12 +1,5 @@
 # Installation
 
-!!! warning "Beta"
-
-    Prebuilt binaries exist for Linux on x86_64 and aarch64 and for macOS on
-    Apple Silicon, but they are
-    experimental during the 0.0.x beta. Building from source is the recommended
-    path, and each integration page describes how.
-
 ## Ubuntu packages
 
 Install Pelorus from the [steado PPA](https://ppa.steado.tech/) for your Ubuntu LTS version and receive updates automatically. Every package comes in a plain CPU build and in CUDA and Vulkan variants.
@@ -133,7 +126,7 @@ curl -LsSf https://astral.sh/uv/install.sh | sh
 
 The [uos Homebrew tap](https://github.com/uos/homebrew-tools) carries the CLI
 and the C library for Apple Silicon, built with Metal support. It pulls in
-`minot`, `dedrunk` and `marina` as well.
+[`minot`](https://minot.steado.tech/docs/), `dedrunk` and [`marina`](https://marina.steado.tech/docs/) as well.
 
 ```sh
 brew install uos/tools/pelorus

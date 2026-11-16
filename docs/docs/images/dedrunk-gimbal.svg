@@ -1,0 +1,5 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" fill="none" role="img" aria-labelledby="title desc"><title id="title">Dedrunk — Gimbal</title><desc id="desc">Two spatial orientation rings share a stable center, evoking calibration of sensor frames.</desc><ellipse cx="64" cy="64" rx="44" ry="25" transform="rotate(-36 64 64)" stroke="#61448e" stroke-width="9" />
+<ellipse cx="64" cy="64" rx="44" ry="25" transform="rotate(36 64 64)" stroke="#b19add" stroke-width="9" />
+<path d="M64 39v50" stroke="#61448e" stroke-width="8" stroke-linecap="round" />
+<circle cx="64" cy="64" r="11" fill="#61448e" />
+<path d="M64 53a11 11 0 0 1 11 11H64Z" fill="#b19add" /></svg>

@@ -192,7 +192,7 @@ pelorus config generate recommended > my_config.rl
 pelorus config generate full > my_config.rl
 ```
 
-All parameters (map resolution, IMU covariances, Lidar vendor, filtering options, etc.) are configurable.
+All parameters (map resolution, IMU covariances, lidar vendor, filtering options, etc.) are configurable.
 
 ## API Design
 

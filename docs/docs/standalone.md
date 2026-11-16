@@ -8,9 +8,9 @@ This page gets Pelorus running on a recording first, then covers the library bin
 
 The quickest path uses the SeaKit tools, which we built during Pelorus' development to fix determinism and efficiency problems we had with ROS. [Installing Pelorus with uv](./index.md#how-to-run) gives you everything you need at once. This includes:
 
-- `marina` manages bags
-- `dedrunk` for IMU intrinsics and Lidar, camera and IMU extrinsics
-- `minot` for synchronized playback of bags
+- [`marina`](https://marina.steado.tech/docs/) for managing bags
+- `dedrunk` for IMU intrinsics and lidar, camera and IMU extrinsics
+- [`minot`](https://minot.steado.tech/docs/) for synchronized playback of bags
 
 First we get our dataset:
 
@@ -35,11 +35,11 @@ pelorus completions
 
 This detects the current shell and installs self-refreshing completions for the current user. Restart the shell afterwards.
 
-## Running with ROS 2 Zenoh Middleware
+## Running with the ROS 2 Zenoh middleware
 
-Thanks to [hiroz](https://github.com/ZettaScaleLabs/hiroz) we can run connect to other ROS 2 nodes without needing a ROS installation.
+Thanks to [hiroz](https://github.com/ZettaScaleLabs/hiroz) we can connect to other ROS 2 nodes without needing a ROS installation.
 
-First uninstall the default `minot` and `pelorus` CLI. We need to set some feature flags. You'll need Rust to be installed for this.
+The default `pelorus` and `minot` builds talk Minot's own publish/subscribe, not ROS 2. For Zenoh, replace them with builds that have the hiroz features. Remove the default ones the way you installed them, for example with `uv pip uninstall pelorus-cli minot-cli` in the environment of the quick start. Building the replacements needs [Rust](https://www.rust-lang.org/tools/install).
 
 ```sh
 cargo install minot --no-default-features --features default-hiroz
@@ -65,10 +65,11 @@ pelorus online -c $(marina resolve wachsbleiche/parking_25:hunter)/pelorus.rl
 minot async $(marina resolve wachsbleiche/parking_25:hunter) --clock --rate 1.0
 ```
 
-RViz, started from a ROS-enabled shell, then shows the result:
+RViz, started from a ROS-enabled shell, then shows the result with the Pelorus view:
 
 ```sh
-rviz2 -d ./pelorus_cli/rviz/lio.rviz
+curl -fsSLO https://codeberg.org/stelzo/pelorus/raw/branch/main/pelorus_cli/rviz/lio.rviz
+rviz2 -d lio.rviz
 ```
 
 ## C and C++ library

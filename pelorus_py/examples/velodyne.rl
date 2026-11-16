@@ -1,4 +1,4 @@
-# Demo configuration for a custom robot setup with a Velodyne Lidar
+# Demo configuration for a custom robot setup with a Velodyne lidar
 # Adjust the parameters as needed for your specific setup of the bagfile.
 
 lidar.vendor = Velodyne

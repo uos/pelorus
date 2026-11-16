@@ -395,10 +395,10 @@ pub struct McapTopics {
     pub odom: String,
     pub path: String,
     pub tf: String,
-    /// Static transforms: the base link to Lidar extrinsic, when Pelorus
-    /// reports poses for a base link other than the Lidar frame.
+    /// Static transforms: the base link to lidar extrinsic, when Pelorus
+    /// reports poses for a base link other than the lidar frame.
     pub tf_static: String,
-    /// Omitted for Lidar-only output, including its channel and schema.
+    /// Omitted for lidar-only output, including its channel and schema.
     pub filtered_imu: Option<String>,
 }
 

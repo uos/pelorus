@@ -1,0 +1,4 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" fill="none" role="img" aria-labelledby="title desc"><title id="title">SeaKit — Signal</title><desc id="desc">A nautical signal flag with an opening shaped like a terminal prompt, joining the fleet metaphor and the developer toolkit.</desc><defs><mask id="signal-opening" maskUnits="userSpaceOnUse" x="0" y="0" width="128" height="128" style="mask-type:luminance"><path d="M0 0h128v128H0Z" fill="white" /><path d="m55 45 17 14-17 14-4-5 12-9-12-9Z" fill="black" /></mask></defs>
+<path d="M28 25v79" stroke="#405c70" stroke-width="7" stroke-linecap="round" />
+<g mask="url(#signal-opening)"><path d="M31 29c23-12 46 14 72-6l-8 55c-25 18-44-9-64 6Z" fill="#405c70" />
+<path d="M31 55c21-14 45 14 68-4.5L95 78c-25 18-44-9-64 6Z" fill="#8aafb3" /></g></svg>

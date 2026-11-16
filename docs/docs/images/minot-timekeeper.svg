@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" fill="none" role="img" aria-labelledby="title desc">
+  <title id="title">Minot — timekeeper</title>
+  <desc id="desc">A beacon shaped like a metronome, with a sweeping light arm representing precise control of time and execution.</desc>
+  <path d="m29 103 27-78q8-14 16 0l27 78Z" stroke="#aa435b" stroke-width="8" stroke-linejoin="round"/>
+  <path d="M56 25 29 103h35" stroke="#dfa0ae" stroke-width="8" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="m64 86 23-42" stroke="#aa435b" stroke-width="8" stroke-linecap="round"/>
+  <path d="m87 44 19-18v31Z" fill="#dfa0ae"/>
+  <path d="M47 83h34" stroke="#aa435b" stroke-width="7" stroke-linecap="round"/>
+</svg>

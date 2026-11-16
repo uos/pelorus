@@ -8,7 +8,7 @@ Install [Rust](https://www.rust-lang.org/tools/install) first, then:
 
 ```sh
 cd ~/ros2_ws/src
-git clone ssh://git.steado.tech/pelorus.git
+git clone https://codeberg.org/stelzo/pelorus.git
 cd ..
 
 rosdep install --from-paths src -y --ignore-src
@@ -50,6 +50,6 @@ colcon build --packages-select pelorus --cmake-args -D PELORUS_CUDA=ON
 | `PELORUS_LARGE_PROCESSING_QUEUE` | Larger internal processing queues. |
 | `PELORUS_NO_VIZ` | Drop visualization support entirely. |
 
-`rat` and `rayon` are on by default. `rat` synchronizes input and output for use with [Minot](https://codeberg.org/stelzo/minot) through the `-r` flag, and `rayon` uses all available CPU cores. Turn both off with `-D PELORUS_ALL_DEFAULTS=OFF`.
+`rat` and `rayon` are on by default. `rat` synchronizes input and output for use with [Minot](https://minot.steado.tech/docs/) through the `-r` flag, and `rayon` uses all available CPU cores. Turn both off with `-D PELORUS_ALL_DEFAULTS=OFF`.
 
 Rerun's server address and map settings live under `output.rerun` in the configuration file and can be overridden per run, for example with `-o output.rerun.server_addr="192.168.1.2:9876"`.

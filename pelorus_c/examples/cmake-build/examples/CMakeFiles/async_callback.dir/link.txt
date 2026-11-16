@@ -1,0 +1,1 @@
+/usr/bin/cc -O3 -DNDEBUG -Wl,--dependency-file=CMakeFiles/async_callback.dir/link.d CMakeFiles/async_callback.dir/async_callback.c.o -o async_callback   -L/home/chsieh/projects/pelorus/pelorus_c/../target/release  -Wl,-rpath,/home/chsieh/projects/pelorus/pelorus_c/examples/../../target/release:/home/chsieh/projects/pelorus/pelorus_c/../target/release: -lpelorus -lm

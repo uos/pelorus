@@ -107,7 +107,7 @@ int main(int argc, char **argv)
         fclose(f);
 
         if (target_scan_id == 0) {
-            std::cerr << "Dataset did not contain a valid Lidar scan\n";
+            std::cerr << "Dataset did not contain a valid lidar scan\n";
             return 1;
         }
 

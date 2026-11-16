@@ -1,6 +1,6 @@
 # Pelorus Python Bindings
 
-Python bindings for Pelorus, a resource-aware Lidar-Inertial Odometry.
+Python bindings for Pelorus, a resource-aware lidar-inertial odometry.
 
 ## Installation
 
@@ -83,7 +83,7 @@ scan_id = lio.add_pointcloud(
     timestamp_nanosec=0,
 )
 
-# After feeding enough synchronized IMU and Lidar data, receive odometry:
+# After feeding enough synchronized IMU and lidar data, receive odometry:
 odom = lio.try_recv()
 if odom:
     print(f"Position: {odom['position']}")

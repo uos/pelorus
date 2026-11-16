@@ -2,12 +2,12 @@
 
 # Pelorus
 
-**Resource-aware Lidar-Inertial Odometry**, written in Rust, CUDA, Vulkan and Metal. Developed by the Computer Engineering Group at Osnabrück University.
+**Resource-Aware Lidar-Inertial Odometry**, written in Rust, CUDA, Vulkan and Metal. Developed by the Computer Engineering Group at Osnabrück University.
 
 [![License](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue)](#license)
 [![Docs](https://img.shields.io/badge/docs-pelorus.steado.tech-e5c65c)](https://pelorus.steado.tech/docs/)
 
-Supporting various 3D Lidar sensors, IMUs, odometry sources and kinematic models, Pelorus provides real-time performance on embedded hardware while pushing state-of-the-art accuracy. The online mode reaches more than 20 Hz odometry on a Jetson Orin Nano with a 128-layer Ouster Lidar, keeping resource usage low so the rest of your application has room to run.
+Supporting various 3D lidar sensors, IMUs, odometry sources and kinematic models, Pelorus provides real-time performance on embedded hardware while pushing state-of-the-art accuracy. The online mode reaches more than 20 Hz odometry on a Jetson Orin Nano with a 128-layer Ouster lidar, keeping resource usage low so the rest of your application has room to run.
 
 Scale your compute down to single-core CPU usage or up to full parallel compute on CPU and **GPU**, supporting NVIDIA, AMD, Intel and Apple Silicon.
 
@@ -71,7 +71,7 @@ pelorus config generate recommended > pelorus.rl
 pelorus offline path/to/your.mcap -c pelorus.rl
 ```
 
-See the [standalone docs](https://pelorus.steado.tech/docs/standalone/) for pulling sample bags with Marina, running Zenoh/ROS-compatible middleware, and visualizing results with Rerun or RViz.
+See the [standalone docs](https://pelorus.steado.tech/docs/standalone/) for pulling sample bags with [Marina](https://marina.steado.tech/docs/), running Zenoh/ROS-compatible middleware, and visualizing results with Rerun or RViz.
 
 Please see the **[docs](https://pelorus.steado.tech/docs/)** for more info about ROS, standalone usage, libraries, [sensor/IMU calibration](https://pelorus.steado.tech/docs/calibration/) and [configuration](https://pelorus.steado.tech/docs/configuration/).
 

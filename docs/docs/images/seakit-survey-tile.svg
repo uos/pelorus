@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" fill="none" role="img" aria-labelledby="title desc"><title id="title">SeaKit — Survey tile</title><desc id="desc">A crab built around one spatial map tile. The map plane forms its carapace, with pincers meeting the upper corners.</desc><g stroke="#405c70" stroke-width="7" stroke-linecap="round" stroke-linejoin="round">
+<path d="m39 69-16 8-7 13m28-9-10 19m55-31 16 8 7 13M84 81l10 19M40 56 27 45m61 11 13-11" />
+</g>
+<path d="M34 58 64 39 94 58v17L64 95 34 75Z" fill="#405c70" />
+<path d="m34 58 30-19 30 19-30 20Z" fill="#8aafb3" />
+<path d="M27 49C10 45 10 30 20 20l5 14 13-10c7 12 4 23-11 25Zm74 0c17-4 17-19 7-29l-5 14-13-10c-7 12-4 23 11 25Z" fill="#8aafb3" /></svg>

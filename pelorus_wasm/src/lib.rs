@@ -1,4 +1,4 @@
-//! WebAssembly bindings for Pelorus Lidar-Inertial Odometry.
+//! WebAssembly bindings for Pelorus lidar-inertial odometry.
 //!
 //! Wraps the thread-free [`pelorus::Odometer`] for JavaScript. Every call runs
 //! on the calling thread and returns once its work is done.
@@ -86,7 +86,7 @@ impl Odometer {
     ///
     /// With `deviceSpecificPointcloud2 = false` the per-point time is a
     /// nanosecond offset from the scan stamp. It defaults to `true`, which
-    /// reads the time the way the configured Lidar vendor writes it.
+    /// reads the time the way the configured lidar vendor writes it.
     #[wasm_bindgen(constructor)]
     pub fn new(
         config: Option<String>,
@@ -256,7 +256,7 @@ impl Odometer {
     }
 
     /// The deskewed points of the scan the last [`nextScan`](Self::next_scan)
-    /// returned, in the Lidar frame, with [`POINT_STRIDE`] values per point:
+    /// returned, in the lidar frame, with [`POINT_STRIDE`] values per point:
     /// x, y, z, intensity and the time within the scan.
     ///
     /// The array is a view into the odometer's memory, not a copy. It is only
@@ -310,7 +310,7 @@ impl Odometer {
         self.inner.pending_scans()
     }
 
-    /// The Lidar vendor the configuration sets, for example `Hesai`.
+    /// The lidar vendor the configuration sets, for example `Hesai`.
     #[wasm_bindgen(js_name = lidarVendor)]
     pub fn lidar_vendor(&self) -> String {
         format!("{:?}", self.inner.config().sync_params.lidar_vendor)
@@ -325,7 +325,7 @@ impl Odometer {
 /// Odometry of one registered scan.
 ///
 /// The world frame is Z-up and aligned with the IMU at initialization. The
-/// body frame is the configured base link, or the Lidar frame without one.
+/// body frame is the configured base link, or the lidar frame without one.
 #[wasm_bindgen]
 pub struct Scan {
     scan_id: u64,

@@ -87,7 +87,7 @@ preprocessing {
   filter {
     bounding_box {
       # Keeps points inside an axis-aligned box, given as one range per axis in
-      # the LiDAR frame. An open end means no limit on that side, so the default
+      # the lidar frame. An open end means no limit on that side, so the default
       # ".." on all three axes is a box of infinite size and keeps everything.
 
       # Range along x, for example 1m..3m.
@@ -131,7 +131,7 @@ preprocessing {
       # @type range<number>
       degrees = ..
 
-      # Axis the angular range is measured from, as [x, y] in the LiDAR frame.
+      # Axis the angular range is measured from, as [x, y] in the lidar frame.
       # @type array<number>
       forward = [1.0, 0.0]
 
@@ -152,7 +152,7 @@ preprocessing {
       # TF frame the coordinates are given in. When set, the polygon is
       # transformed into the sensor frame before it is applied, which makes it
       # possible to express a boundary that stays fixed in the world while the
-      # robot moves. Empty means the coordinates are in the LiDAR frame.
+      # robot moves. Empty means the coordinates are in the lidar frame.
       global_zero_frame = ""
 
       # Keep the points outside the polygon instead of the ones inside it.
@@ -424,7 +424,7 @@ lidar {
   # @type number
   covariance = 0.001
 
-  # Use incoming LiDAR messages as a forced synchronization trigger. This costs
+  # Use incoming lidar messages as a forced synchronization trigger. This costs
   # accuracy, but some surrounding libraries work better with it.
   # @type boolean
   as_sync = false
@@ -432,7 +432,7 @@ lidar {
 
 
 # Where IMU measurements come from and how far they can be trusted. This also
-# holds the transform to the LiDAR. Both that transform and the noise figures
+# holds the transform to the lidar. Both that transform and the noise figures
 # are measurements, and the calibration section of the documentation covers how
 # to take them.
 imu {
@@ -529,7 +529,7 @@ imu {
 
   # @recommended
   from_lidar_transform {
-    # Where the IMU sits relative to the LiDAR. Measure this. A value taken from
+    # Where the IMU sits relative to the lidar. Measure this. A value taken from
     # a drawing is often a few millimetres out, and a wrong lever arm shows up as
     # drift that scales with how hard the platform turns. See the calibration
     # section of the documentation.
@@ -539,7 +539,7 @@ imu {
     # @type boolean
     use_tf_tree = false
 
-    # Transform from the LiDAR frame into the IMU frame, so a point in LiDAR
+    # Transform from the lidar frame into the IMU frame, so a point in lidar
     # coordinates becomes a point in IMU coordinates. `dedrunk extrinsics lidar-imu`
     # prints both values in this form, ready to paste.
     # @type array<length>
@@ -562,7 +562,7 @@ imu {
     estimate_online = false
   }
 
-  # Ignore the IMU entirely and run the odometry on the Lidar alone, with the
+  # Ignore the IMU entirely and run the odometry on the lidar alone, with the
   # filter propagating at a constant twist between scans. The twist comes from
   # the previous scan, so points within a scan are not deskewed.
   #
@@ -590,7 +590,7 @@ imu {
   # @type number
   gravity = 9.81
 
-  # How far the filter trusts the IMU between LiDAR corrections. Larger values
+  # How far the filter trusts the IMU between lidar corrections. Larger values
   # mean less trust, so the scan match pulls the estimate further on each update.
   #
   # The defaults are the FAST-LIO tuning values and are not a noise model of any
@@ -603,7 +603,7 @@ imu {
   # @type number
   covariance_gyroscope_bias = 0.0001
 
-  # How far the filter trusts the accelerometer between LiDAR corrections.
+  # How far the filter trusts the accelerometer between lidar corrections.
   # @type number
   covariance_acceleration = 0.1
 
@@ -633,7 +633,7 @@ imu {
     # with --imu-models scale-misalignment.
     parameter_file = ""
 
-    # Seconds the IMU clock runs ahead of the Lidar clock, as reported by
+    # Seconds the IMU clock runs ahead of the lidar clock, as reported by
     # `dedrunk extrinsics lidar-imu`. Pelorus subtracts it from every IMU timestamp, so
     # paste the number exactly as dedrunk prints it, sign included.
     #
@@ -664,7 +664,7 @@ wheel {
   # Orientation of the wheel odometry frame relative to the IMU. The velocity
   # and its covariance stay in this frame until the filter evaluates the
   # observation. The reference-point offset is taken from the platform
-  # base/Lidar/IMU calibration (or ackermann.imu_to_rear_axle).
+  # base/lidar/IMU calibration (or ackermann.imu_to_rear_axle).
   to_imu_transform {
     # Look the rotation up in the TF tree instead of using the value below. The
     # lookup happens once, when the first odometry message arrives.
@@ -710,7 +710,7 @@ output {
   # @recommended
   # Lidar | ImuAndLidar
   # How often odometry is published. ImuAndLidar adds low-latency IMU predictions
-  # between the LiDAR corrections, published at the IMU rate.
+  # between the lidar corrections, published at the IMU rate.
   # @enum lidar, imuandlidar, imu_and_lidar
   # @enum_case insensitive
   odometry_rate = Lidar
@@ -761,10 +761,10 @@ output {
   # @recommended
   base_link {
     # Frame the odometry and TF are published for. Empty publishes the pose of
-    # the LiDAR itself. Set it to your robot's body frame to have Pelorus apply
+    # the lidar itself. Set it to your robot's body frame to have Pelorus apply
     # the transform below and publish that pose. The registered scans are
     # published in the same frame, so odometry and scans alone build a
-    # consistent map. /tf_static carries the transform back to the LiDAR.
+    # consistent map. /tf_static carries the transform back to the lidar.
     frame_id = ""
 
     from_lidar_transform {
@@ -773,7 +773,7 @@ output {
       # @type boolean
       use_tf_tree = false
 
-      # Pose of the Lidar in the base_link frame.
+      # Pose of the lidar in the base_link frame.
       # @type array<length>
       translation = [0.0mm, 0.0mm, 0.0mm]
       # @type array<array<number>>
@@ -809,13 +809,13 @@ output {
   }
 
   # Reliable | BestEffort | SystemDefault
-  # QoS of the LiDAR-rate odometry topic.
+  # QoS of the lidar-rate odometry topic.
   # @enum besteffort, reliable, systemdefault
   # @enum_case insensitive
   lio_odometry_msg_qos = Reliable
 
   # Reliable | BestEffort | SystemDefault
-  # QoS of the LiDAR-rate path topic. The path is a visualization aid, so
+  # QoS of the lidar-rate path topic. The path is a visualization aid, so
   # dropping messages under load is usually acceptable.
   # @enum besteffort, reliable, systemdefault
   # @enum_case insensitive
