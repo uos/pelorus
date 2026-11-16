@@ -26,6 +26,7 @@ r2r = { workspace = true, optional = true }
 bytemuck.workspace = true
 hashbrown.workspace = true
 spin.workspace = true
+libm.workspace = true
 
 [features]
 default = ["std"]
@@ -41,3 +42,5 @@ std = [
   "serde/std",
 ]
 r2r = ["std", "dep:r2r"]
+# Compute the odometry in f32 instead of f64 (see `Real`).
+f32 = []

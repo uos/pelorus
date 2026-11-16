@@ -1,6 +1,7 @@
 //! Running the odometry without an IMU, by synthesizing one.
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
+use pelorus_core::{Real, double};
 // Float maths through libm without std. With std the inherent methods take precedence.
 #[allow(unused_imports)]
 use nalgebra::{ComplexField, RealField};
@@ -8,7 +9,7 @@ use nalgebra::{Isometry3, Rotation3, Vector3};
 use pelorus_core::{ImuMsg, Stamp};
 
 /// The rotation vector taking `from` to `to`, in the `from` body frame.
-fn rotation_increment(from: &Rotation3<f64>, to: &Rotation3<f64>) -> Vector3<f64> {
+fn rotation_increment(from: &Rotation3<Real>, to: &Rotation3<Real>) -> Vector3<Real> {
     let delta = nalgebra::UnitQuaternion::from_rotation_matrix(&(from.inverse() * to));
 
     // q and −q are the same rotation. The positive-scalar one is the short way.
@@ -26,10 +27,10 @@ fn rotation_increment(from: &Rotation3<f64>, to: &Rotation3<f64>) -> Vector3<f64
 }
 
 /// Longest plausible interval for a roughly 10 Hz scan stream.
-const MAX_INTERVAL: f64 = 1.0;
+const MAX_INTERVAL: Real = 1.0;
 
 /// Interval assumed when the one on offer makes no sense.
-const NOMINAL_INTERVAL: f64 = 0.1;
+const NOMINAL_INTERVAL: Real = 0.1;
 
 /// Caps allocation when timestamps are invalid.
 const MAX_STEPS: usize = 4096;
@@ -41,33 +42,49 @@ const MAX_STEPS: usize = 4096;
 /// turns them into a false rotation and acceleration between scans.
 #[derive(Clone, Copy, Debug)]
 pub struct ImuEstimates {
-    pub gyro_bias: Vector3<f64>,
-    pub accel_bias: Vector3<f64>,
+    pub gyro_bias: Vector3<Real>,
+    pub accel_bias: Vector3<Real>,
     /// Gravity in the world frame, pointing down.
-    pub gravity: Vector3<f64>,
+    pub gravity: Vector3<Real>,
 }
 
 /// Generates the IMU stream a rigidly-moving body would have produced under a
 /// constant-twist model.
 pub struct SyntheticImu {
-    gravity: f64,
-    rate: f64,
+    gravity: Real,
+    rate: Real,
     frame_id: String,
     /// Rotation and time of the previous propagation, which is what the
     /// angular rate is measured across.
-    previous: Option<(Isometry3<f64>, Stamp)>,
+    previous: Option<(Isometry3<Real>, Stamp)>,
+    /// The map cells of the computation frame that `previous` is in.
+    cells: [i64; 3],
 }
 
 impl SyntheticImu {
     /// `rate` is how densely to sample the interval. It only has to be fine
     /// enough that the rotation between samples is small.
-    pub fn new(gravity: f64, rate: f64) -> Self {
+    pub fn new(gravity: Real, rate: Real) -> Self {
         Self {
             gravity,
             rate: rate.max(1.0),
             frame_id: "imu_synthetic".to_string(),
             previous: None,
+            cells: [0; 3],
         }
+    }
+
+    /// Moves the previous pose into the current computation frame, so the
+    /// next twist does not include the frame's own move.
+    pub fn follow(&mut self, origin: &pelorus_core::Origin) {
+        if origin.cells == self.cells {
+            return;
+        }
+        let shift = [0, 1, 2].map(|axis| origin.cells[axis] - self.cells[axis]);
+        if let Some((pose, _)) = &mut self.previous {
+            pose.translation.vector -= origin.shift_in_metres(shift);
+        }
+        self.cells = origin.cells;
     }
 
     /// A stationary, level buffer used to initialize gravity and attitude.
@@ -75,7 +92,7 @@ impl SyntheticImu {
         (0..samples.max(2))
             .map(|i| {
                 self.message(
-                    Stamp::from_secs(i as f64 / self.rate),
+                    Stamp::from_secs(double(i as Real / self.rate)),
                     Vector3::zeros(),
                     Vector3::new(0.0, 0.0, self.gravity),
                 )
@@ -89,11 +106,11 @@ impl SyntheticImu {
     /// its boundary sample.
     pub fn generate(
         &mut self,
-        pose: &Isometry3<f64>,
+        pose: &Isometry3<Real>,
         estimates: &ImuEstimates,
         from: Stamp,
         to: Stamp,
-    ) -> (Vec<ImuMsg>, Option<Vector3<f64>>) {
+    ) -> (Vec<ImuMsg>, Option<Vector3<Real>>) {
         let rotation = pose.rotation.to_rotation_matrix();
 
         let (omega, linear_velocity) = match self.previous {
@@ -105,7 +122,7 @@ impl SyntheticImu {
                 )
             }
             // The first interval has no previous pose to difference, so it
-            // propagates as pure translation and lets the Lidar correct it.
+            // propagates as pure translation and lets the lidar correct it.
             _ => (Vector3::zeros(), None),
         };
         self.previous = Some((*pose, from));
@@ -120,9 +137,10 @@ impl SyntheticImu {
         let steps = ((span * self.rate).ceil() as usize).clamp(1, MAX_STEPS);
         let messages = (1..=steps)
             .map(|k| {
-                let tau = span * k as f64 / steps as f64;
+                let tau = span * k as Real / steps as Real;
                 // Rotate gravity with attitude to keep modelled acceleration zero.
-                let attitude = rotation * Rotation3::from_scaled_axis(omega * tau);
+                let attitude =
+                    rotation * pelorus_core::math::rotation_from_scaled_axis(omega * tau);
                 let specific_force = attitude.inverse() * -estimates.gravity;
                 // The integrator scales accelerations by 9.81 over the mean
                 // of the initialization buffer, whose magnitude is `gravity`.
@@ -133,7 +151,7 @@ impl SyntheticImu {
         (messages, linear_velocity)
     }
 
-    fn message(&self, stamp: Stamp, gyro: Vector3<f64>, accel: Vector3<f64>) -> ImuMsg {
+    fn message(&self, stamp: Stamp, gyro: Vector3<Real>, accel: Vector3<Real>) -> ImuMsg {
         ImuMsg {
             orientation: [0.0, 0.0, 0.0, 1.0],
             orientation_covariance: [0.0; 9],
@@ -185,16 +203,18 @@ mod tests {
         );
 
         for (k, message) in messages.iter().enumerate() {
-            let omega = Vector3::from(message.angular_velocity) - estimates.gyro_bias;
-            assert!((omega - Vector3::new(0.0, 0.0, 0.5)).norm() < 1e-9);
+            let omega = message.gyro() - estimates.gyro_bias;
+            assert!((omega - Vector3::new(0.0, 0.0, 0.5)).norm() < crate::tolerance(1e-9));
             // What the filter integrates: the rotated, bias-free reading plus gravity.
-            let tau = 0.1 * (k + 1) as f64 / messages.len() as f64;
-            let attitude =
-                second.rotation.to_rotation_matrix() * Rotation3::from_scaled_axis(omega * tau);
-            let acceleration = attitude
-                * (Vector3::from(message.linear_acceleration) - estimates.accel_bias)
-                + estimates.gravity;
-            assert!(acceleration.norm() < 1e-9, "sample {k}: {acceleration}");
+            let tau = 0.1 * (k + 1) as Real / messages.len() as Real;
+            let attitude = second.rotation.to_rotation_matrix()
+                * pelorus_core::math::rotation_from_scaled_axis(omega * tau);
+            let acceleration =
+                attitude * (message.acc() - estimates.accel_bias) + estimates.gravity;
+            assert!(
+                acceleration.norm() < crate::tolerance(1e-9),
+                "sample {k}: {acceleration}"
+            );
         }
     }
 
@@ -246,6 +266,30 @@ mod tests {
 
         assert!(first_velocity.is_none());
         let velocity = second_velocity.unwrap();
-        assert!((velocity - Vector3::new(2.0, -1.0, 4.0)).norm() < 1e-12);
+        assert!((velocity - Vector3::new(2.0, -1.0, 4.0)).norm() < crate::tolerance(1e-12));
+    }
+
+    #[test]
+    fn a_moved_computation_frame_is_no_velocity() {
+        let mut synthetic = SyntheticImu::new(9.81, 200.0);
+        let mut origin = pelorus_core::Origin::new(0.5);
+        synthetic.generate(
+            &Isometry3::translation(70.0, 0.0, 0.0),
+            &LEVEL,
+            Stamp::from_secs(10.0),
+            Stamp::from_secs(10.1),
+        );
+        // The frame moves 128 cells along x, and the robot 0.2 m.
+        origin.cells[0] += 128;
+        synthetic.follow(&origin);
+        let (_, velocity) = synthetic.generate(
+            &Isometry3::translation(6.2, 0.0, 0.0),
+            &LEVEL,
+            Stamp::from_secs(10.1),
+            Stamp::from_secs(10.2),
+        );
+
+        let velocity = velocity.unwrap();
+        assert!((velocity - Vector3::new(2.0, 0.0, 0.0)).norm() < crate::tolerance(1e-9));
     }
 }

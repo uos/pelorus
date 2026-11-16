@@ -2406,11 +2406,11 @@ fn lio_with_ready_signal(
             let mut registration = map.lock();
             if let Some(imu) = imu {
                 registration.set_lidar_to_imu(imu);
-                info!("Applied Lidar-to-IMU TF before initialization: translation={:?}, rotation={:?}", imu.translation.vector, imu.rotation);
+                info!("Applied lidar-to-IMU TF before initialization: translation={:?}, rotation={:?}", imu.translation.vector, imu.rotation);
             }
             if let Some(base) = base {
                 registration.set_base_to_lidar(base);
-                info!("Applied base-to-Lidar TF before scan processing: translation={:?}, rotation={:?}", base.translation.vector, base.rotation);
+                info!("Applied base-to-lidar TF before scan processing: translation={:?}, rotation={:?}", base.translation.vector, base.rotation);
             }
             if let Some(realtime) = &realtime { realtime(imu, base); }
         }));
@@ -3053,10 +3053,16 @@ fn lio_with_ready_signal(
                 ekf_state,
                 t_world,
                 init_guess_lidar,
+                origin,
                 pose_covariance: pose_cov_eqf,
                 twist_covariance: twist_cov_eqf,
                 ..
             } = *scan;
+            // The filter state is in the computation frame, so its twist
+            // needs the pose in that frame too.
+            let (lin_vel_body, ang_vel_body) = ekf_state.body_twist(&t_world);
+            let t_world = origin.to_world(&t_world);
+            let init_guess_lidar = origin.to_world(&init_guess_lidar);
             let config = core.config();
             let cloud_for_reg = core.registered_cloud();
             #[cfg(any(feature = "cuda", feature = "metal", feature = "vulkan"))]
@@ -3117,7 +3123,7 @@ fn lio_with_ready_signal(
                     },
                 };
                 // The bag needs the extrinsic just as much: without it nothing
-                // connects the cloud's Lidar frame to the base link the
+                // connects the cloud's lidar frame to the base link the
                 // recorded /tf moves. Written ahead of this frame's cloud.
                 if let Some(writer) = mcap_writer.as_mut() {
                     writer.write_tf_static(&serde_tf_message(&base_to_lidar_tf))?;
@@ -3158,7 +3164,6 @@ fn lio_with_ready_signal(
             pelorus_odom.pose.pose.orientation.z = t_world.rotation.k;
             pelorus_odom.pose.pose.orientation.w = t_world.rotation.w;
 
-            let (lin_vel_body, ang_vel_body) = ekf_state.body_twist(&t_world);
             pelorus_odom.twist.twist.linear.x = lin_vel_body.x;
             pelorus_odom.twist.twist.linear.y = lin_vel_body.y;
             pelorus_odom.twist.twist.linear.z = lin_vel_body.z;
@@ -3344,7 +3349,7 @@ fn lio_with_ready_signal(
             // that reads only odometry and scans places it correctly. With a base
             // link the odometry moves the base, and the scan moves into the base
             // frame by the same extrinsic that /tf_static carries. Without a base
-            // link, or with one at the LiDAR itself, the points stay untouched.
+            // link, or with one at the lidar itself, the points stay untouched.
             let base_to_lidar = config
                 .base_link_frame
                 .is_some()
@@ -3671,12 +3676,24 @@ fn lio_with_ready_signal(
 
                     #[cfg(not(any(feature = "cuda", feature = "metal", feature = "vulkan")))]
                     {
+                        // The map is in the computation frame, the rest of the
+                        // recording in the world.
+                        let map = core.map();
+                        let map = map.lock();
+                        let offset = map.origin.offset().cast::<f32>();
                         if config.map_multiresolution {
-                            let distributions = core.map().lock().get_distributions_with_levels();
+                            let mut distributions = map.get_distributions_with_levels();
+                            drop(map);
+                            for (voxel, _) in &mut distributions {
+                                voxel.distribution.mean += offset;
+                            }
                             log_multires_snapshot_to_rerun(rec, distributions, map_config);
                         } else {
-                            let distributions =
-                                core.map().lock().get_distributions_with_lru_scores();
+                            let mut distributions = map.get_distributions_with_lru_scores();
+                            drop(map);
+                            for voxel in &mut distributions {
+                                voxel.distribution.mean += offset;
+                            }
                             log_map_snapshot_to_rerun(rec, distributions, map_config);
                         }
                     }
@@ -3693,7 +3710,7 @@ fn lio_with_ready_signal(
                         // GPU backends have no true LRU list, but every backend's map
                         // cell carries the scan it was last touched on. A raw age-based
                         // decay would make almost the entire map read as "irrelevant"
-                        // within a scan or two (a LiDAR does not revisit every voxel
+                        // within a scan or two (a lidar does not revisit every voxel
                         // every tick), so relevance is ranked by recency *within each
                         // level* instead, same as the CPU multires path
                         // (see `rank_scores_by_recency`). Each level gets its own

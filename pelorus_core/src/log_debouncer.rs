@@ -3,13 +3,12 @@
 //! Without `std` the clock never advances (see [`crate::clock`]), so each message
 //! is logged once.
 
-use crate::Instant;
 use crate::sync::Mutex;
+use crate::{Instant, Real};
 use alloc::vec::Vec;
-use core::time::Duration;
 
 struct Debouncer {
-    default_secs: f64,
+    default_secs: Real,
     /// When each message was last logged. Few distinct messages exist, so a list is enough.
     logged: Vec<(&'static str, Instant)>,
 }
@@ -19,15 +18,15 @@ static DEBOUNCER: Mutex<Debouncer> = Mutex::new(Debouncer {
     logged: Vec::new(),
 });
 
-pub fn set_default_debounce_secs(secs: f64) {
+pub fn set_default_debounce_secs(secs: Real) {
     DEBOUNCER.lock().default_secs = secs;
 }
 
-pub fn get_default_debounce_secs() -> f64 {
+pub fn get_default_debounce_secs() -> Real {
     DEBOUNCER.lock().default_secs
 }
 
-pub fn should_log_once(key: &'static str, debounce_secs: f64) -> bool {
+pub fn should_log_once(key: &'static str, debounce_secs: Real) -> bool {
     let mut debouncer = DEBOUNCER.lock();
     let now = Instant::now();
     match debouncer
@@ -36,7 +35,7 @@ pub fn should_log_once(key: &'static str, debounce_secs: f64) -> bool {
         .find(|(logged_key, _)| *logged_key == key)
     {
         Some((_, last)) => {
-            if now.duration_since(*last) > Duration::from_secs_f64(debounce_secs) {
+            if now.duration_since(*last) > crate::duration_from_secs(debounce_secs) {
                 *last = now;
                 true
             } else {

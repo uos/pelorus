@@ -1,6 +1,6 @@
 [package]
 name = "pelorus_sync"
-description = "Normalizing and synchronizing Lidar and IMU measurements for odometry estimation, including pre-integration."
+description = "Normalizing and synchronizing lidar and IMU measurements for odometry estimation, including pre-integration."
 
 version.workspace = true
 edition.workspace = true
@@ -24,8 +24,12 @@ nalgebra.workspace = true
 rayon = { workspace = true, optional = true }
 either.workspace = true
 rand.workspace = true
-imu-fusion.workspace = true
+libm.workspace = true
 imu-calib = { workspace = true, optional = true }
+
+[dev-dependencies]
+# The AHRS port is checked against the crate it comes from.
+imu-fusion.workspace = true
 
 [features]
 downsample = []

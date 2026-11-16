@@ -14,6 +14,7 @@ use pelorus_core::sync::Mutex;
 use pelorus_core::sync::RwLock;
 use pelorus_core::timing::RuntimeEvaluator;
 use pelorus_core::{ImuParameters, KinematicModel, PointXYZIT};
+use pelorus_core::{Origin, Real};
 use pelorus_localmap::*;
 use pelorus_sync::LocatedBufferView;
 #[cfg(feature = "rayon")]
@@ -39,17 +40,17 @@ pub enum GpuPlanesBuffer {
 /// Filter and execution settings of a [`RegistrationState`].
 #[derive(Debug, Clone, Copy)]
 pub struct RegistrationSettings {
-    pub gravity: f64,
-    pub laser_point_noise_cov: f64,
+    pub gravity: Real,
+    pub laser_point_noise_cov: Real,
     pub ekf_max_iterations: usize,
-    pub parallelism_decision_threshold_stddevs: f64,
+    pub parallelism_decision_threshold_stddevs: Real,
     pub parallelism_decision_samples_per_mode: usize,
     pub parallelism_execution_policy: pelorus_core::adaptive_execution::ExecutionPolicy,
 }
 
 impl RegistrationSettings {
     /// Settings with the default adaptive execution policy.
-    pub fn new(gravity: f64, laser_point_noise_cov: f64, ekf_max_iterations: usize) -> Self {
+    pub fn new(gravity: Real, laser_point_noise_cov: Real, ekf_max_iterations: usize) -> Self {
         Self {
             gravity,
             laser_point_noise_cov,
@@ -61,13 +62,19 @@ impl RegistrationSettings {
     }
 }
 
+/// How far the robot may move from the computation frame's origin before the
+/// frame follows it. An `f32` resolves 7.6 µm at this distance.
+pub const RECENTER_DISTANCE: Real = 64.0;
+
 pub struct RegistrationState {
+    /// Where the computation frame of the filter and the map sits in the world.
+    pub origin: Origin,
     pub ekf: Eqf,
     pub imu_processing: ImuProcessing,
     pub map: IVoxHashMap,
-    pub laser_point_noise_cov: f64,
+    pub laser_point_noise_cov: Real,
     pub ekf_max_iterations: usize,
-    pub base_to_lidar: Isometry3<f64>,
+    pub base_to_lidar: Isometry3<Real>,
     pub planes_cpu_buffer: Vec<PointXYZINormal>,
     pub planes_gpu_buffer: Option<GpuPlanesBuffer>,
     #[cfg(feature = "rayon")]
@@ -79,7 +86,7 @@ pub struct RegistrationState {
 }
 
 impl RegistrationState {
-    pub fn set_lidar_to_imu(&mut self, transform: Isometry3<f64>) {
+    pub fn set_lidar_to_imu(&mut self, transform: Isometry3<Real>) {
         assert!(
             !self.ekf.initialized,
             "Cannot change startup extrinsics after initialization"
@@ -90,7 +97,32 @@ impl RegistrationState {
             SO3::try_from_mat(transform.rotation.to_rotation_matrix().matrix()).unwrap();
     }
 
-    pub(crate) fn set_linear_velocity(&mut self, velocity: Vector3<f64>) {
+    /// Moves the computation frame onto the robot once it is more than
+    /// [`RECENTER_DISTANCE`] away, and with it the filter state and the map.
+    /// Returns how far the frame moved, in its old coordinates.
+    ///
+    /// Only the CPU map can move. The GPU backends keep theirs, so their
+    /// frame stays where it is.
+    pub fn recenter(&mut self) -> Option<Vector3<Real>> {
+        let shift = self
+            .origin
+            .recentering(&self.ekf.state.pos, RECENTER_DISTANCE)?;
+        let cells = shift.map(|c| i32::try_from(c).ok());
+        let cells = [cells[0]?, cells[1]?, cells[2]?];
+        let metres = self.origin.shift_in_metres(shift);
+        // The error state is measured about the anchor, which moves along, so
+        // the covariance stays as it is.
+        self.ekf.state.pos -= metres;
+        self.ekf.anchor -= metres;
+        self.imu_processing.shift(&metres);
+        self.map.shift_origin(cells);
+        for (axis, cells) in shift.iter().enumerate() {
+            self.origin.cells[axis] += cells;
+        }
+        Some(metres)
+    }
+
+    pub(crate) fn set_linear_velocity(&mut self, velocity: Vector3<Real>) {
         self.ekf.state.vel = velocity;
     }
 
@@ -173,8 +205,8 @@ impl RegistrationState {
     pub fn new(
         map: IVoxHashMap,
         imu_params: &ImuParameters,
-        lidar_to_imu: &Isometry3<f64>,
-        base_to_lidar: &Isometry3<f64>,
+        lidar_to_imu: &Isometry3<Real>,
+        base_to_lidar: &Isometry3<Real>,
         settings: RegistrationSettings,
         initial_guess: Option<ImuEkfPrediction>,
     ) -> Self {
@@ -215,6 +247,7 @@ impl RegistrationState {
         }
 
         Self {
+            origin: Origin::new(pelorus_core::real(map.origin_cell())),
             ekf,
             imu_processing: ImuProcessing::new(imu_params, lidar_to_imu, base_to_lidar),
             map,
@@ -225,7 +258,7 @@ impl RegistrationState {
             planes_gpu_buffer: None,
             #[cfg(feature = "rayon")]
             execution_planner: Arc::new(Mutex::new(AdaptiveExecutionPlanner::new(
-                parallelism_decision_threshold_stddevs,
+                pelorus_core::double(parallelism_decision_threshold_stddevs),
                 parallelism_decision_samples_per_mode,
                 parallelism_execution_policy,
             ))),
@@ -252,14 +285,14 @@ impl RegistrationState {
         &self,
         phase: pelorus_core::adaptive_execution::HeavyPhase,
         mode: ExecutionMode,
-        normalized_duration: f64,
+        normalized_duration: Real,
     ) {
         #[cfg(feature = "rayon")]
-        if let Some(decision) =
-            self.execution_planner
-                .lock()
-                .record(phase, mode, normalized_duration)
-        {
+        if let Some(decision) = self.execution_planner.lock().record(
+            phase,
+            mode,
+            pelorus_core::double(normalized_duration),
+        ) {
             log::info!(
                 "{}: using {} ({:.2}x faster)",
                 phase.name(),
@@ -274,7 +307,7 @@ impl RegistrationState {
     fn add_to_map(
         &mut self,
         cloud: &LocatedBufferView<PointXYZIT>,
-        pose: Isometry3<f64>,
+        pose: Isometry3<Real>,
         scan_id: usize,
     ) -> anyhow::Result<()> {
         #[allow(irrefutable_let_patterns)]
@@ -313,32 +346,32 @@ impl RegistrationState {
         }
     }
 
-    pub fn get_odometry_covariances(&self) -> ([f64; 36], [f64; 9]) {
+    pub fn get_odometry_covariances(&self) -> ([Real; 36], [Real; 9]) {
         let pose_cov = self.get_output_pose_covariance(&Isometry3::identity());
         let mut vel_cov = [0.0; 9];
         for i in 0..3 {
             for j in 0..3 {
-                vel_cov[i * 3 + j] = crate::eqf::double(self.ekf.cov[(i + 12, j + 12)]);
+                vel_cov[i * 3 + j] = self.ekf.cov[(i + 12, j + 12)];
             }
         }
         (pose_cov, vel_cov)
     }
 
-    pub fn get_output_pose_covariance(&self, lidar_to_output: &Isometry3<f64>) -> [f64; 36] {
+    pub fn get_output_pose_covariance(&self, lidar_to_output: &Isometry3<Real>) -> [Real; 36] {
         output_pose_covariance(&self.ekf, lidar_to_output)
     }
 
     /// Twist covariance of the IMU frame itself.
-    pub fn get_twist_covariance_6x6(&self) -> [f64; 36] {
+    pub fn get_twist_covariance_6x6(&self) -> [Real; 36] {
         self.get_output_twist_covariance(&crate::Registration::get_state(self).pose)
     }
 
-    pub fn get_output_twist_covariance(&self, output_pose: &Isometry3<f64>) -> [f64; 36] {
+    pub fn get_output_twist_covariance(&self, output_pose: &Isometry3<Real>) -> [Real; 36] {
         output_twist_covariance(&self.ekf, output_pose, &self.imu_processing.ekf_cov_gyr)
     }
 }
 
-pub(crate) fn output_pose_covariance(ekf: &Eqf, lidar_to_output: &Isometry3<f64>) -> [f64; 36] {
+pub(crate) fn output_pose_covariance(ekf: &Eqf, lidar_to_output: &Isometry3<Real>) -> [Real; 36] {
     let r_wi = ekf.state.rot.matrix();
     let r_il = ekf.state.offset_r_l_i.matrix();
     let r_lo = lidar_to_output.rotation.to_rotation_matrix();
@@ -351,7 +384,7 @@ pub(crate) fn output_pose_covariance(ekf: &Eqf, lidar_to_output: &Isometry3<f64>
     let p_out = ekf.state.pos + r_wi * t_io;
     let r_out = r_wi * r_io;
 
-    let mut jacobian = SMatrix::<f64, 6, 24>::zeros();
+    let mut jacobian = SMatrix::<Real, 6, 24>::zeros();
     jacobian
         .fixed_view_mut::<3, 3>(0, 0)
         .copy_from(&Matrix3::identity());
@@ -379,7 +412,7 @@ pub(crate) fn output_pose_covariance(ekf: &Eqf, lidar_to_output: &Isometry3<f64>
     // that keeps the filter covariance nonsingular, so it does not enter the
     // output pose.
 
-    let cov = SMatrix::<f64, 24, 24>::from_fn(|row, col| crate::eqf::double(ekf.cov[(row, col)]));
+    let cov = SMatrix::<Real, 24, 24>::from_fn(|row, col| ekf.cov[(row, col)]);
     let output_cov = jacobian * cov * jacobian.transpose();
     matrix6_to_array(output_cov)
 }
@@ -390,9 +423,9 @@ pub(crate) fn output_pose_covariance(ekf: &Eqf, lidar_to_output: &Isometry3<f64>
 /// uncertainty. The linear velocity carries the same through its lever arm.
 pub(crate) fn output_twist_covariance(
     ekf: &Eqf,
-    output_pose: &Isometry3<f64>,
-    gyro_noise: &Matrix3<f64>,
-) -> [f64; 36] {
+    output_pose: &Isometry3<Real>,
+    gyro_noise: &Matrix3<Real>,
+) -> [Real; 36] {
     let r_ow = *output_pose.rotation.inverse().to_rotation_matrix().matrix();
     let r_wi = ekf.state.rot.matrix();
     let lever_arm = output_pose.translation.vector - ekf.state.pos;
@@ -402,7 +435,7 @@ pub(crate) fn output_twist_covariance(
     // w = R_WI (gyro - bg). The equivariant velocity error is
     // v <- dv + exp(dtheta) v, so it picks up the rotation block through
     // -hat(v). The bias error is d_bg = R_WI (bg - bg_hat), so w moves by -d_bg.
-    let mut jacobian = SMatrix::<f64, 6, 24>::zeros();
+    let mut jacobian = SMatrix::<Real, 6, 24>::zeros();
     jacobian
         .fixed_view_mut::<3, 3>(0, 3)
         .copy_from(&(-skew_symmetric_na(&ekf.state.vel)));
@@ -417,7 +450,7 @@ pub(crate) fn output_twist_covariance(
         .copy_from(&(-Matrix3::identity()));
 
     // The gyro noise enters w directly and v through the lever arm.
-    let mut noise_jacobian = SMatrix::<f64, 6, 3>::zeros();
+    let mut noise_jacobian = SMatrix::<Real, 6, 3>::zeros();
     noise_jacobian
         .fixed_view_mut::<3, 3>(0, 0)
         .copy_from(&(-lever_arm_hat));
@@ -426,11 +459,11 @@ pub(crate) fn output_twist_covariance(
         .copy_from(&Matrix3::identity());
     let gyro_noise_world = r_wi * gyro_noise * r_wi.transpose();
 
-    let cov = SMatrix::<f64, 24, 24>::from_fn(|row, col| crate::eqf::double(ekf.cov[(row, col)]));
+    let cov = SMatrix::<Real, 24, 24>::from_fn(|row, col| ekf.cov[(row, col)]);
     let twist_cov_world = jacobian * cov * jacobian.transpose()
         + noise_jacobian * gyro_noise_world * noise_jacobian.transpose();
 
-    let mut world_to_output = SMatrix::<f64, 6, 6>::zeros();
+    let mut world_to_output = SMatrix::<Real, 6, 6>::zeros();
     world_to_output
         .fixed_view_mut::<3, 3>(0, 0)
         .copy_from(&r_ow);
@@ -440,7 +473,7 @@ pub(crate) fn output_twist_covariance(
     matrix6_to_array(world_to_output * twist_cov_world * world_to_output.transpose())
 }
 
-fn matrix6_to_array(matrix: SMatrix<f64, 6, 6>) -> [f64; 36] {
+fn matrix6_to_array(matrix: SMatrix<Real, 6, 6>) -> [Real; 36] {
     let mut out = [0.0; 36];
     for row in 0..6 {
         for col in 0..6 {
@@ -1018,16 +1051,16 @@ impl RegistrationState {
 
                     for (i, normal_point) in planes.iter().enumerate() {
                         let point_local = Vector3::new(
-                            normal_point.x as f64,
-                            normal_point.y as f64,
-                            normal_point.z as f64,
+                            normal_point.x as Real,
+                            normal_point.y as Real,
+                            normal_point.z as Real,
                         );
                         let norm = Vector3::new(
-                            normal_point.normal_x as f64,
-                            normal_point.normal_y as f64,
-                            normal_point.normal_z as f64,
+                            normal_point.normal_x as Real,
+                            normal_point.normal_y as Real,
+                            normal_point.normal_z as Real,
                         );
-                        let plane_d = normal_point.intensity as f64;
+                        let plane_d = normal_point.intensity as Real;
 
                         let p_imu =
                             ekf_state.offset_r_l_i.matrix() * point_local + ekf_state.offset_t_l_i;
@@ -1039,29 +1072,29 @@ impl RegistrationState {
                         // the moment arm bounded by sensor range.
                         let a_vec = skew_symmetric_na(&(p_world - anchor)) * norm;
 
-                        h_x[(i, 0)] = crate::eqf::real(norm.x);
-                        h_x[(i, 1)] = crate::eqf::real(norm.y);
-                        h_x[(i, 2)] = crate::eqf::real(norm.z);
+                        h_x[(i, 0)] = norm.x;
+                        h_x[(i, 1)] = norm.y;
+                        h_x[(i, 2)] = norm.z;
 
-                        h_x[(i, 3)] = crate::eqf::real(a_vec.x);
-                        h_x[(i, 4)] = crate::eqf::real(a_vec.y);
-                        h_x[(i, 5)] = crate::eqf::real(a_vec.z);
+                        h_x[(i, 3)] = a_vec.x;
+                        h_x[(i, 4)] = a_vec.y;
+                        h_x[(i, 5)] = a_vec.z;
 
                         if extrinsic_est {
-                            h_x[(i, 6)] = crate::eqf::real(a_vec.x);
-                            h_x[(i, 7)] = crate::eqf::real(a_vec.y);
-                            h_x[(i, 8)] = crate::eqf::real(a_vec.z);
+                            h_x[(i, 6)] = a_vec.x;
+                            h_x[(i, 7)] = a_vec.y;
+                            h_x[(i, 8)] = a_vec.z;
 
-                            h_x[(i, 9)] = crate::eqf::real(norm.x);
-                            h_x[(i, 10)] = crate::eqf::real(norm.y);
-                            h_x[(i, 11)] = crate::eqf::real(norm.z);
+                            h_x[(i, 9)] = norm.x;
+                            h_x[(i, 10)] = norm.y;
+                            h_x[(i, 11)] = norm.z;
                         } else {
                             for col in 6..12 {
                                 h_x[(i, col)] = 0.0;
                             }
                         }
 
-                        h[i] = crate::eqf::real(-pd2);
+                        h[i] = -pd2;
                     }
                     eval_actual.stop("ekf_correct/model/jacobian").unwrap();
                 },
@@ -1080,8 +1113,8 @@ impl RegistrationState {
             *self.ekf.state.rot.quaternion(),
         );
 
-        let t_w_l = t_w_i * t_i_l;
-        let t_w_b = t_w_l * self.base_to_lidar.inverse();
+        let mut t_w_l = t_w_i * t_i_l;
+        let mut t_w_b = t_w_l * self.base_to_lidar.inverse();
 
         {
             let mut eval_guard = eval_cb.write();
@@ -1136,6 +1169,15 @@ impl RegistrationState {
             let mut eval_guard = eval_cb.write();
             let eval_actual = &mut **eval_guard;
             eval_actual.stop("map_update").unwrap();
+        }
+
+        // Before the next scan is released, so its prediction already sees the
+        // moved frame.
+        if matches!(backend, ActiveBackend::Cpu)
+            && let Some(shift) = self.recenter()
+        {
+            t_w_l.translation.vector -= shift;
+            t_w_b.translation.vector -= shift;
         }
 
         if let Some(ready) = ready_for_next {
@@ -1193,7 +1235,7 @@ impl crate::Registration for RegistrationState {
         &mut self,
         scan: crate::UndistortScan<'_>,
         kinematic: KinematicModel,
-        constraint_std: f64,
+        constraint_std: Real,
     ) {
         let mode = self.execution_mode(pelorus_core::adaptive_execution::HeavyPhase::PointDeskew);
         let measurement =
@@ -1210,21 +1252,21 @@ impl crate::Registration for RegistrationState {
 
     fn imu_ekf_predict(
         &mut self,
-        acc: [f64; 3],
-        gyro: [f64; 3],
-        dt: f64,
+        acc: [Real; 3],
+        gyro: [Real; 3],
+        dt: Real,
     ) -> crate::ImuEkfPrediction {
         self.imu_processing
             .predict(&mut self.ekf, acc, gyro, dt)
             .unwrap()
     }
 
-    fn init_imu_ekf(&mut self, message_buffer: &[crate::ImuMsg]) -> Vector3<f64> {
+    fn init_imu_ekf(&mut self, message_buffer: &[crate::ImuMsg]) -> Vector3<Real> {
         self.imu_processing
             .initialize(message_buffer, &mut self.ekf)
     }
 
-    fn set_base_to_lidar(&mut self, base_to_lidar: Isometry3<f64>) {
+    fn set_base_to_lidar(&mut self, base_to_lidar: Isometry3<Real>) {
         self.base_to_lidar = base_to_lidar;
         self.ekf.base_to_lidar = base_to_lidar;
         self.imu_processing.set_base_to_lidar(&base_to_lidar);
@@ -1253,7 +1295,8 @@ mod covariance_tests {
         for row in 0..3 {
             for col in 0..3 {
                 assert!(
-                    (covariance[row * 6 + col] - expected[(row, col)]).abs() < 1e-12,
+                    (covariance[row * 6 + col] - expected[(row, col)]).abs()
+                        < crate::tolerance(1e-12),
                     "anchored extrinsic covariance mismatch at ({row}, {col})"
                 );
             }
@@ -1274,7 +1317,7 @@ mod covariance_tests {
             UnitQuaternion::from_euler_angles(0.0, 0.0, ::core::f64::consts::FRAC_PI_2),
         );
 
-        let covariance = output_pose_covariance(&ekf, &lidar_to_output);
+        let covariance = output_pose_covariance(&ekf, &lidar_to_output.cast());
 
         assert!(covariance.iter().all(|value| value.abs() < 1e-12));
     }
@@ -1293,22 +1336,56 @@ mod covariance_tests {
             UnitQuaternion::from_euler_angles(0.0, 0.0, ::core::f64::consts::FRAC_PI_2),
         );
 
-        let covariance = output_twist_covariance(&ekf, &output_pose, &gyro_noise);
+        let covariance = output_twist_covariance(&ekf, &output_pose.cast(), &gyro_noise);
         let at = |row: usize, col: usize| covariance[row * 6 + col];
 
         // World angular variances are (0.75, 0.75, 1.5). Yawing swaps x and y.
-        assert!((at(3, 3) - 0.75).abs() < 1e-12);
-        assert!((at(4, 4) - 0.75).abs() < 1e-12);
-        assert!((at(5, 5) - 1.5).abs() < 1e-12);
+        assert!((at(3, 3) - 0.75).abs() < crate::tolerance(1e-12));
+        assert!((at(4, 4) - 0.75).abs() < crate::tolerance(1e-12));
+        assert!((at(5, 5) - 1.5).abs() < crate::tolerance(1e-12));
         // v_out = -hat(r) w with r = x: only w_y and w_z move it, along world
         // y and z. The yawed frame's x axis is world y.
-        assert!((at(0, 0) - 1.5).abs() < 1e-12);
-        assert!(at(1, 1).abs() < 1e-12);
-        assert!((at(2, 2) - 0.75).abs() < 1e-12);
+        assert!((at(0, 0) - 1.5).abs() < crate::tolerance(1e-12));
+        assert!(at(1, 1).abs() < crate::tolerance(1e-12));
+        assert!((at(2, 2) - 0.75).abs() < crate::tolerance(1e-12));
         for row in 0..6 {
             for col in 0..6 {
-                assert!((at(row, col) - at(col, row)).abs() < 1e-12);
+                assert!((at(row, col) - at(col, row)).abs() < crate::tolerance(1e-12));
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod origin_tests {
+    use super::*;
+    use crate::Registration;
+
+    #[test]
+    fn recentering_keeps_the_world_pose_and_the_anchor_offset() {
+        let mut map = IVoxHashMap::new(0.5, 1024, IVoxNearbyType::Nearby26, 0.01);
+        map.enable_multiresolution(1024, 0.01);
+        let mut state = RegistrationState::new(
+            map,
+            &ImuParameters::default(),
+            &Isometry3::identity(),
+            &Isometry3::identity(),
+            RegistrationSettings::new(9.81, 0.001, 4),
+            None,
+        );
+        state.ekf.state.pos = Vector3::new(130.3, -70.6, 2.0);
+        state.ekf.anchor = Vector3::new(129.0, -71.0, 1.5);
+        let world_before = state.origin.to_world(&state.get_state().pose);
+        let anchor_offset = state.ekf.state.pos - state.ekf.anchor;
+
+        assert!(state.recenter().is_some());
+
+        let world_after = state.origin.to_world(&state.get_state().pose);
+        let moved = world_after.translation.vector - world_before.translation.vector;
+        assert!(moved.norm() < 1e-4, "{moved}");
+        assert!(state.ekf.state.pos.iter().all(|p| p.abs() <= 1.0));
+        assert!((state.ekf.state.pos - state.ekf.anchor - anchor_offset).norm() < 1e-4);
+        // Close to the origin nothing moves.
+        assert!(state.recenter().is_none());
     }
 }

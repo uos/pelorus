@@ -1,15 +1,15 @@
 use nalgebra::*;
-use pelorus_core::{ImuMsg, UndistortParameters};
+use pelorus_core::{ImuMsg, Real, UndistortParameters, real};
 
 // TODO gravity is hardcoded on axis z, should be like eth with global gravity
 #[allow(dead_code, unused_variables)]
 pub fn integrate_imu(
     imu_data: &[ImuMsg],
-    start_time: f64,
+    start_time: Real,
     config: Option<&UndistortParameters>,
-    gravity: f64,
-) -> Isometry3<f64> {
-    let mut pose: Isometry<f64, Unit<Quaternion<f64>>, 3> = Isometry3::identity();
+    gravity: Real,
+) -> Isometry3<Real> {
+    let mut pose: Isometry<Real, Unit<Quaternion<Real>>, 3> = Isometry3::identity();
     let mut velocity = Vector3::zeros();
     let mut position = Vector3::zeros();
 
@@ -21,7 +21,7 @@ pub fn integrate_imu(
     for (i, imu_entry) in imu_data.iter().enumerate() {
         let accel_sample = &imu_entry.linear_acceleration;
         let gyro_sample = &imu_entry.angular_velocity;
-        let t = crate::timestamp_to_secs(&imu_entry.stamp);
+        let t = real(crate::timestamp_to_secs(&imu_entry.stamp));
 
         let dt = if i == 0 { 0.0 } else { t - prev_time };
 
@@ -32,8 +32,8 @@ pub fn integrate_imu(
         // Integrate rotation using the gyroscope data
         if dt > 0.0 {
             let angular_velocity = gyro * dt;
-            let rotation: Unit<Quaternion<f64>> =
-                UnitQuaternion::from_scaled_axis(angular_velocity);
+            let rotation: Unit<Quaternion<Real>> =
+                pelorus_core::math::quaternion_from_scaled_axis(angular_velocity);
             pose.rotation *= rotation;
         }
 

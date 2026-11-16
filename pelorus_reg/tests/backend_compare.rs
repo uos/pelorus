@@ -1,4 +1,6 @@
 // AI generated for testing equivalency of different backends.
+// The backends other than the CPU exist only in `f64`.
+#![cfg(not(feature = "f32"))]
 
 use nalgebra::Isometry3;
 use pelorus_core::timing::RuntimeEvaluator;

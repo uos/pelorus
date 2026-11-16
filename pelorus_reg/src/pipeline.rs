@@ -1,5 +1,6 @@
 use alloc::boxed::Box;
 use alloc::sync::Arc;
+use pelorus_core::Real;
 use pelorus_core::sync::Mutex;
 
 use crate::{
@@ -7,7 +8,7 @@ use crate::{
     registration::{RegistrationSettings, RegistrationState},
 };
 use either::Either;
-use nalgebra::{Isometry3, Translation3, UnitQuaternion};
+use nalgebra::{Isometry3, Translation3};
 #[cfg(feature = "threads")]
 use pelorus_core::SyncProcessedCloud;
 use pelorus_core::{
@@ -21,7 +22,7 @@ use pelorus_sync::{Synchronizer, SynchronizerHooks};
 
 /// How densely the constant-twist model is sampled into IMU messages. It only
 /// has to be fine enough that the rotation between two samples stays small.
-const IMU_SYNTHESIS_RATE: f64 = 200.0;
+const IMU_SYNTHESIS_RATE: Real = 200.0;
 
 pub struct Pipeline {
     map: Arc<Mutex<RegistrationState>>,
@@ -36,11 +37,13 @@ impl Pipeline {
                 config.imu_params.initial_translation_lidar_to_imu.y,
                 config.imu_params.initial_translation_lidar_to_imu.z,
             ),
-            UnitQuaternion::from_matrix(&config.imu_params.initial_rotation_lidar_to_imu),
+            pelorus_core::math::quaternion_from_matrix(
+                &config.imu_params.initial_rotation_lidar_to_imu,
+            ),
         );
 
         let mut ivox = IVoxHashMap::new(
-            config.map_resolution as f32,
+            pelorus_core::single(config.map_resolution),
             config.map_capacity,
             IVoxNearbyType::Nearby26,
             config.dist_update_sensitivity,
@@ -87,12 +90,12 @@ impl Pipeline {
         Arc::clone(&self.map)
     }
 
-    pub fn set_base_to_lidar(&mut self, base_to_lidar: Isometry3<f64>) {
+    pub fn set_base_to_lidar(&mut self, base_to_lidar: Isometry3<Real>) {
         self.config.base_to_lidar = base_to_lidar;
         self.map.lock().set_base_to_lidar(base_to_lidar);
     }
 
-    pub fn ext(&self) -> Isometry3<f64> {
+    pub fn ext(&self) -> Isometry3<Real> {
         self.map.lock().get_state().lidar_imu_extrinsic
     }
 
@@ -155,12 +158,10 @@ impl Pipeline {
                         accel_bias: map.ekf.state.ba,
                         gravity: map.ekf.state.grav,
                     };
-                    let (messages, linear_velocity) = synthetic.lock().generate(
-                        &pose,
-                        &estimates,
-                        last_cloud_end_time,
-                        cloud_end_time,
-                    );
+                    let mut synthetic = synthetic.lock();
+                    synthetic.follow(&map.origin);
+                    let (messages, linear_velocity) =
+                        synthetic.generate(&pose, &estimates, last_cloud_end_time, cloud_end_time);
                     if let Some(linear_velocity) = linear_velocity {
                         map.set_linear_velocity(linear_velocity);
                     }

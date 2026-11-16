@@ -11,7 +11,7 @@ use std::{
 };
 
 use nalgebra::{Isometry3, Translation3, UnitQuaternion, Vector3};
-use pelorus_core::{ImuMsg, ImuParameters, LioConfig};
+use pelorus_core::{ImuMsg, ImuParameters, LioConfig, Origin};
 use ros_pointcloud2::prelude::TimeMsg;
 
 use crate::{
@@ -46,6 +46,8 @@ struct CorrectedSnapshot {
     initialized: bool,
     last_time: pelorus_core::Stamp,
     context: ImuPredictionContext,
+    /// The computation frame the state is in.
+    origin: Origin,
 }
 
 enum Command {
@@ -140,6 +142,7 @@ impl RealtimePredictorHandle {
             initialized: registration.ekf.initialized,
             last_time: registration.ekf.last_time,
             context: registration.imu_processing.prediction_context(),
+            origin: registration.origin,
         }
     }
 
@@ -204,6 +207,8 @@ struct WorkerState {
     params: ImuParameters,
     base_to_lidar: Isometry3<f64>,
     output_base: bool,
+    /// The computation frame the state is in.
+    origin: Origin,
 }
 
 fn worker(
@@ -226,6 +231,7 @@ fn worker(
         params: config.imu_params,
         base_to_lidar: config.base_to_lidar,
         output_base: config.base_link_frame.is_some(),
+        origin: Origin::default(),
     };
     let mut export_state = export_tx.as_ref().map(|_| WorkerState {
         ekf: Eqf::new(config.sync_params.imu.gravity, config.base_to_lidar),
@@ -235,6 +241,7 @@ fn worker(
         params: config.imu_params,
         base_to_lidar: config.base_to_lidar,
         output_base: config.base_link_frame.is_some(),
+        origin: Origin::default(),
     });
 
     while let Ok(command) = command_rx.recv() {
@@ -353,6 +360,7 @@ impl WorkerState {
         self.ekf.last_time = snapshot.last_time;
         self.imu.restore_prediction_context(&snapshot.context);
         self.seeded = snapshot.context.ekf_inited;
+        self.origin = snapshot.origin;
     }
 
     fn predict(&mut self, tail: &ImuMsg) -> Option<RealtimePrediction> {
@@ -417,7 +425,7 @@ impl WorkerState {
         let (linear_velocity_body, angular_velocity_body) = state.body_twist(&pose);
         RealtimePrediction {
             stamp,
-            pose,
+            pose: self.origin.to_world(&pose),
             linear_velocity_body,
             angular_velocity_body,
             pose_covariance: output_pose_covariance(&self.ekf, &lidar_to_output),

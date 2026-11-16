@@ -1,4 +1,4 @@
-//! High-level Rust Interface for Pelorus Lidar-Inertial Odometry.
+//! High-level Rust Interface for Pelorus lidar-inertial odometry.
 //!
 //! [`Handle`] runs synchronization and registration on background threads and
 //! needs the `threads` feature. [`Odometer`] runs every step on the calling
@@ -50,11 +50,14 @@ use anyhow::anyhow;
 use log::error;
 pub use pelorus_core::LioConfig;
 pub use pelorus_core::PointXYZIT;
+/// The scalar of the poses, covariances and measurements: `f64`, or `f32`
+/// with the `f32` feature.
+pub use pelorus_core::Real;
 #[cfg(feature = "threads")]
 use pelorus_core::SyncProcessedCloud;
 #[cfg(feature = "std")]
 use pelorus_core::config::{ast_to_config, layer_overrides};
-use pelorus_core::{ImuMsg, LidarVendor, OdomMsg};
+use pelorus_core::{ImuMsg, LidarVendor, OdomMsg, real, single};
 use pelorus_reg::lio::{LioCore, LioScan, LioStep};
 use pelorus_reg::pipeline::Pipeline;
 use pelorus_sync::SteppedIngress;
@@ -107,12 +110,12 @@ pub struct ImuMeasurement {
     pub timestamp_sec: i32,
     pub timestamp_nanosec: u32,
     /// Orientation quaternion `[w, x, y, z]`.
-    pub orientation: [f64; 4],
-    pub orientation_covariance: [f64; 9],
-    pub angular_velocity: [f64; 3],
-    pub angular_velocity_covariance: [f64; 9],
-    pub linear_acceleration: [f64; 3],
-    pub linear_acceleration_covariance: [f64; 9],
+    pub orientation: [Real; 4],
+    pub orientation_covariance: [Real; 9],
+    pub angular_velocity: [Real; 3],
+    pub angular_velocity_covariance: [Real; 9],
+    pub linear_acceleration: [Real; 3],
+    pub linear_acceleration_covariance: [Real; 9],
 }
 
 /// A single output point with XYZ coordinates and intensity.
@@ -129,27 +132,27 @@ pub struct PointXyzi {
 /// # Frame conventions
 /// - **World frame (W)**: fixed global reference, Z-up, aligned with IMU at init.
 /// - **IMU frame (I)**: body-fixed frame attached to the IMU sensor.
-/// - **Lidar frame (L)**: sensor-fixed frame attached to the Lidar.
+/// - **Lidar frame (L)**: sensor-fixed frame attached to the lidar.
 #[derive(Debug, Clone)]
 pub struct Odometry {
     pub timestamp_sec: i32,
     pub timestamp_nanosec: u32,
     /// Position `[x, y, z]` in world frame (metres).
-    pub position: [f64; 3],
+    pub position: [Real; 3],
     /// Orientation quaternion `[w, x, y, z]`.
-    pub orientation: [f64; 4],
+    pub orientation: [Real; 4],
     /// 6×6 pose covariance (row-major).
-    pub pose_covariance: [f64; 36],
+    pub pose_covariance: [Real; 36],
     /// Linear velocity `[vx, vy, vz]` in body frame (m/s).
-    pub linear_velocity: [f64; 3],
+    pub linear_velocity: [Real; 3],
     /// Angular velocity `[wx, wy, wz]` in body frame (rad/s).
-    pub angular_velocity: [f64; 3],
+    pub angular_velocity: [Real; 3],
     /// Accelerometer bias `[bx, by, bz]` in IMU frame (m/s²).
-    pub accel_bias: [f64; 3],
+    pub accel_bias: [Real; 3],
     /// Gyroscope bias `[bx, by, bz]` in IMU frame (rad/s).
-    pub gyro_bias: [f64; 3],
+    pub gyro_bias: [Real; 3],
     /// 6×6 twist covariance (row-major).
-    pub twist_covariance: [f64; 36],
+    pub twist_covariance: [Real; 36],
     /// Scan ID matching the input point cloud.
     pub scan_id: u64,
     /// Registered point cloud in the lidar-world frame.
@@ -291,9 +294,9 @@ fn imu_msg(imu: ImuMeasurement) -> ImuMsg {
 fn odom_msg(
     timestamp_sec: i32,
     timestamp_nanosec: u32,
-    twist_linear: [f64; 3],
-    twist_angular: [f64; 3],
-    twist_covariance: [f64; 36],
+    twist_linear: [Real; 3],
+    twist_angular: [Real; 3],
+    twist_covariance: [Real; 36],
 ) -> OdomMsg {
     OdomMsg {
         twist_linear: nalgebra::Vector3::new(twist_linear[0], twist_linear[1], twist_linear[2]),
@@ -540,7 +543,7 @@ fn configure_thread_pool(num_threads: usize) {
 
 // ---------- public API ----------
 
-/// Handle for the Pelorus Lidar-Inertial Odometry pipeline.
+/// Handle for the Pelorus lidar-inertial odometry pipeline.
 ///
 /// Manages the full processing pipeline: IMU pre-integration, point-cloud
 /// undistortion, scan registration, and state estimation.  Dropping the handle
@@ -667,9 +670,9 @@ impl Handle {
         &self,
         timestamp_sec: i32,
         timestamp_nanosec: u32,
-        twist_linear: [f64; 3],
-        twist_angular: [f64; 3],
-        twist_covariance: [f64; 36],
+        twist_linear: [Real; 3],
+        twist_angular: [Real; 3],
+        twist_covariance: [Real; 36],
     ) -> Result<(), Error> {
         let odom = odom_msg(
             timestamp_sec,
@@ -818,7 +821,7 @@ impl Drop for Handle {
 ///
 /// # Frame conventions
 /// - **World frame (W)**: fixed global reference, Z-up, aligned with IMU at init.
-/// - **Body frame**: the configured base link, or the Lidar frame without one.
+/// - **Body frame**: the configured base link, or the lidar frame without one.
 pub struct Scan<'a> {
     scan: &'a LioScan,
     core: &'a LioCore,
@@ -838,44 +841,78 @@ impl Scan<'_> {
     }
 
     /// Position `[x, y, z]` of the body frame in world frame (metres).
-    pub fn position(&self) -> [f64; 3] {
+    ///
+    /// This is [`origin_cells`](Self::origin_cells) times
+    /// [`cell_size`](Self::cell_size) plus [`local_position`](Self::local_position),
+    /// added in [`Real`]. An `f32` resolves about 1 mm at 10 km from the start
+    /// and 8 mm at 100 km. For full precision, send the cells and the local
+    /// position and add them where `f64` or integers are available.
+    pub fn position(&self) -> [Real; 3] {
+        self.world_pose().translation.vector.into()
+    }
+
+    /// Position `[x, y, z]` of the body frame in the local frame (metres).
+    ///
+    /// The filter and the map compute in a frame that follows the body in whole
+    /// cells, so this stays within about 64 m of zero and keeps the full
+    /// precision of [`Real`] however far the body drives. The local frame has the
+    /// orientation of the world frame, so [`orientation`](Self::orientation)
+    /// holds in both.
+    pub fn local_position(&self) -> [Real; 3] {
         self.scan.t_world.translation.vector.into()
     }
 
+    /// Position of the local frame in the world frame, in whole cells of
+    /// [`cell_size`](Self::cell_size). It changes only when the body moves more
+    /// than about 64 m from it.
+    pub fn origin_cells(&self) -> [i64; 3] {
+        self.scan.origin.cells
+    }
+
+    /// Edge length of one cell of [`origin_cells`](Self::origin_cells) in metres.
+    pub fn cell_size(&self) -> Real {
+        self.scan.origin.cell
+    }
+
+    /// The reported pose in world coordinates.
+    fn world_pose(&self) -> nalgebra::Isometry3<Real> {
+        self.scan.origin.to_world(&self.scan.t_world)
+    }
+
     /// Orientation quaternion `[w, x, y, z]` of the body frame.
-    pub fn orientation(&self) -> [f64; 4] {
-        let q = self.scan.t_world.rotation.quaternion();
+    pub fn orientation(&self) -> [Real; 4] {
+        let q = self.world_pose().rotation;
         [q.w, q.i, q.j, q.k]
     }
 
     /// 6×6 pose covariance (row-major).
-    pub fn pose_covariance(&self) -> &[f64; 36] {
+    pub fn pose_covariance(&self) -> &[Real; 36] {
         &self.scan.pose_covariance
     }
 
     /// Linear velocity `[vx, vy, vz]` and angular velocity `[wx, wy, wz]` in
     /// body frame (m/s, rad/s).
-    pub fn twist(&self) -> ([f64; 3], [f64; 3]) {
+    pub fn twist(&self) -> ([Real; 3], [Real; 3]) {
         let (linear, angular) = self.scan.ekf_state.body_twist(&self.scan.t_world);
         (linear.into(), angular.into())
     }
 
     /// 6×6 twist covariance (row-major).
-    pub fn twist_covariance(&self) -> &[f64; 36] {
+    pub fn twist_covariance(&self) -> &[Real; 36] {
         &self.scan.twist_covariance
     }
 
     /// Accelerometer bias `[bx, by, bz]` in IMU frame (m/s²).
-    pub fn accel_bias(&self) -> [f64; 3] {
+    pub fn accel_bias(&self) -> [Real; 3] {
         self.scan.ekf_state.accel_bias.into()
     }
 
     /// Gyroscope bias `[bx, by, bz]` in IMU frame (rad/s).
-    pub fn gyro_bias(&self) -> [f64; 3] {
+    pub fn gyro_bias(&self) -> [Real; 3] {
         self.scan.ekf_state.gyro_bias.into()
     }
 
-    /// Frame whose pose is reported: the base link, or the Lidar frame without one.
+    /// Frame whose pose is reported: the base link, or the lidar frame without one.
     pub fn frame_id(&self) -> &str {
         self.core
             .config()
@@ -884,7 +921,7 @@ impl Scan<'_> {
             .unwrap_or(&self.scan.cloud_header.frame_id)
     }
 
-    /// The deskewed scan in the Lidar frame.
+    /// The deskewed scan in the lidar frame.
     pub fn points(&self) -> &[PointXYZIT] {
         self.scan
             .passthrough
@@ -903,16 +940,28 @@ impl Scan<'_> {
     }
 
     /// [`points`](Self::points) in the world frame, transformed with the
-    /// registered Lidar pose while iterating.
+    /// registered lidar pose while iterating. Their coordinates are `f32`, with
+    /// the precision limit of [`position`](Self::position).
     pub fn world_points(&self) -> impl ExactSizeIterator<Item = PointXyzi> + '_ {
-        let lidar_pose = self.scan.register_pose.pose;
+        self.transformed_points(self.scan.origin.to_world(&self.scan.register_pose.pose))
+    }
+
+    /// [`points`](Self::points) in the local frame of
+    /// [`local_position`](Self::local_position), at full precision.
+    pub fn local_points(&self) -> impl ExactSizeIterator<Item = PointXyzi> + '_ {
+        self.transformed_points(self.scan.register_pose.pose)
+    }
+
+    fn transformed_points(
+        &self,
+        lidar_pose: nalgebra::Isometry3<Real>,
+    ) -> impl ExactSizeIterator<Item = PointXyzi> + '_ {
         self.points().iter().map(move |p| {
-            let world =
-                lidar_pose * nalgebra::Point3::new(f64::from(p.x), f64::from(p.y), f64::from(p.z));
+            let world = lidar_pose * nalgebra::Point3::new(real(p.x), real(p.y), real(p.z));
             PointXyzi {
-                x: world.x as f32,
-                y: world.y as f32,
-                z: world.z as f32,
+                x: single(world.x),
+                y: single(world.y),
+                z: single(world.z),
                 intensity: p.intensity,
             }
         })
@@ -1015,9 +1064,9 @@ impl Odometer {
         &mut self,
         timestamp_sec: i32,
         timestamp_nanosec: u32,
-        twist_linear: [f64; 3],
-        twist_angular: [f64; 3],
-        twist_covariance: [f64; 36],
+        twist_linear: [Real; 3],
+        twist_angular: [Real; 3],
+        twist_covariance: [Real; 36],
     ) {
         self.ingress.push_odom(odom_msg(
             timestamp_sec,

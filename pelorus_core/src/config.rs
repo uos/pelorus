@@ -7,6 +7,7 @@ use ratslang::uom::si::time::second;
 use ratslang::{Evaluated, VariableHistory};
 use serde::{Deserialize, Deserializer};
 
+use crate::real;
 use crate::{
     CoordinateSystem, DownsampleParameters, ImuCalibrationParameters, ImuConfigParameter,
     ImuDriverConfig, ImuDriverType, ImuParameters, KinematicModel, LidarDriverConfig,
@@ -496,20 +497,27 @@ mod tests {
     use crate::{OdometryRate, OusterTimestampMode, SensorDriverConfig};
 
     /// `LioConfig::defaults` must equal the configuration `default.rl` resolves to.
-    /// Run with `PELORUS_UPDATE_DEFAULTS=1` to regenerate `default_config.rs`.
+    /// Run with `PELORUS_UPDATE_DEFAULTS=1` to regenerate `default_config.rs`,
+    /// and with the `f32` feature as well to regenerate `default_config_f32.rs`.
     #[test]
     fn default_config_matches_default_rl() {
         let defaults = ratslang::compile_code(include_str!("../default.rl")).unwrap();
         let user = ratslang::compile_code("").unwrap();
         let resolved = postcard::to_allocvec(&ast_to_config(defaults, user).unwrap()).unwrap();
+        let file = if crate::REAL_IS_F32 {
+            "default_config_f32.rs"
+        } else {
+            "default_config.rs"
+        };
         if std::env::var_os("PELORUS_UPDATE_DEFAULTS").is_some() {
-            let path = concat!(env!("CARGO_MANIFEST_DIR"), "/src/default_config.rs");
+            let path = format!("{}/src/{file}", env!("CARGO_MANIFEST_DIR"));
             std::fs::write(
                 path,
                 format!(
                     "// Generated from default.rl by `default_config_matches_default_rl` in config.rs.\n\
-                     // The postcard encoding of the resolved LioConfig.\n\
-                     pub(crate) const DEFAULT_CONFIG: &[u8] = &{resolved:?};\n"
+                     // The postcard encoding of the resolved LioConfig with `Real` as `{}`.\n\
+                     pub(crate) const DEFAULT_CONFIG: &[u8] = &{resolved:?};\n",
+                    if crate::REAL_IS_F32 { "f32" } else { "f64" }
                 ),
             )
             .unwrap();
@@ -518,7 +526,7 @@ mod tests {
         let embedded = postcard::to_allocvec(&crate::LioConfig::defaults()).unwrap();
         assert_eq!(
             embedded, resolved,
-            "default_config.rs is stale, regenerate it with PELORUS_UPDATE_DEFAULTS=1"
+            "{file} is stale, regenerate it with PELORUS_UPDATE_DEFAULTS=1"
         );
     }
 
@@ -699,7 +707,7 @@ fn ast_to_config_inner(
     };
     let kinematic_model = match wheel.kinematic_model {
         KinematicModel::Ackermann { .. } => KinematicModel::Ackermann {
-            imu_to_rear_axle: wheel.ackermann.imu_to_rear_axle,
+            imu_to_rear_axle: wheel.ackermann.imu_to_rear_axle.cast(),
         },
         model => model,
     };
@@ -717,7 +725,7 @@ fn ast_to_config_inner(
             || imu.from_lidar_transform.rotation != Matrix3::identity()
         {
             log::info!(
-                "imu.lidar_only is on, so imu.from_lidar_transform is ignored and the trajectory is the Lidar's own."
+                "imu.lidar_only is on, so imu.from_lidar_transform is ignored and the trajectory is the lidar's own."
             );
         }
         (Vector3::zeros(), Matrix3::identity())
@@ -728,26 +736,26 @@ fn ast_to_config_inner(
         )
     };
     let imu_params = ImuParameters {
-        initial_translation_lidar_to_imu: translation,
-        initial_rotation_lidar_to_imu: rotation,
+        initial_translation_lidar_to_imu: translation.cast(),
+        initial_rotation_lidar_to_imu: rotation.cast(),
         estimate_extrinsic_online: imu.from_lidar_transform.estimate_online,
         lidar_only: imu.lidar_only,
-        cov_gyr: Vector3::repeat(imu.covariance_gyroscope),
-        cov_acc: Vector3::repeat(imu.covariance_acceleration),
-        cov_gyr_bias: Vector3::repeat(imu.covariance_gyroscope_bias),
-        cov_acc_bias: Vector3::repeat(imu.covariance_acceleration_bias),
-        kinematic_constraint_std: wheel.kinematic_constraint_std,
+        cov_gyr: Vector3::repeat(real(imu.covariance_gyroscope)),
+        cov_acc: Vector3::repeat(real(imu.covariance_acceleration)),
+        cov_gyr_bias: Vector3::repeat(real(imu.covariance_gyroscope_bias)),
+        cov_acc_bias: Vector3::repeat(real(imu.covariance_acceleration_bias)),
+        kinematic_constraint_std: real(wheel.kinematic_constraint_std),
         kinematic_model,
-        wheel_odom_cov_override: wheel.covariance,
+        wheel_odom_cov_override: wheel.covariance.map(real),
     };
     let imu_sync_params = ImuConfigParameter {
         madgwick_setting: imu.ahrs_filtering.method,
-        gravity: imu.gravity,
+        gravity: real(imu.gravity),
         calibration: ImuCalibrationParameters {
             imu_calibrate_gyros: imu.calibration.gyroscope.value,
             gyro_calibration_samples: imu.calibration.gyroscope.samples,
             imu_intrinsics_calib_file_path: imu.calibration.parameter_file,
-            time_offset: imu.calibration.time_offset,
+            time_offset: real(imu.calibration.time_offset),
         },
         ..Default::default()
     };
@@ -839,13 +847,13 @@ fn ast_to_config_inner(
             processing_time: export_path(output.processing_time),
         },
         offline,
-        neighbor_max_range: registration.neighbors_max_range,
-        map_resolution: map.resolution.value,
+        neighbor_max_range: real(registration.neighbors_max_range),
+        map_resolution: real(map.resolution.value),
         map_capacity: map.capacity,
         map_multiresolution: map.resolution.r#type,
         dist_update_sensitivity: map.distribution_update_sensitivity,
         ekf_max_iterations: registration.max_iter,
-        lidar_odom_cov: lidar.covariance,
+        lidar_odom_cov: real(lidar.covariance),
         show_tui: terminal.ui,
         debug_fps,
         odom_qos: output.lio_odometry_msg_qos,
@@ -858,7 +866,8 @@ fn ast_to_config_inner(
         base_to_lidar: nalgebra::Isometry3::from_parts(
             nalgebra::Translation3::from(output.base_link.from_lidar_transform.translation),
             nalgebra::UnitQuaternion::from_matrix(&output.base_link.from_lidar_transform.rotation),
-        ),
+        )
+        .cast(),
         base_to_lidar_tf_override: output.base_link.from_lidar_transform.use_tf_tree,
         cpu_only: parallelism.cpu_only,
         sync_node_params: SyncNodeParameters {
@@ -869,7 +878,7 @@ fn ast_to_config_inner(
             cloud_subscriber_mode: lidar.subscriber_mode,
             imu_src_topic: imu.topic,
             imu_qos: imu.qos.reliability,
-            imu_predictor_init_time_sec: imu.initial_setup,
+            imu_predictor_init_time_sec: real(imu.initial_setup),
             logger_prefix: output.logger_prefix,
             imu_filtered_qos: output.imu_ahrs_filtered_msg_qos,
             imu_filtered_topic: output.imu_ahrs_filtered_topic,
@@ -895,11 +904,11 @@ fn ast_to_config_inner(
             global_zero_frame: filter.polygon_2d.global_zero_frame,
             initial_scan_accumulate: preprocessing.initial_scan_accumulate,
             wheel_imu_tf_override: wheel.to_imu_transform.use_tf_tree,
-            wheel_to_imu_rotation: wheel.to_imu_transform.rotation,
-            wheel_odom_cov: wheel.covariance,
+            wheel_to_imu_rotation: wheel.to_imu_transform.rotation.cast(),
+            wheel_odom_cov: wheel.covariance.map(real),
             lidar_as_sync: lidar.as_sync,
-            warning_debounce: terminal.warning_debounce,
-            parallelism_decision_threshold_stddevs: parallelism.decision_threshold_stddevs,
+            warning_debounce: real(terminal.warning_debounce),
+            parallelism_decision_threshold_stddevs: real(parallelism.decision_threshold_stddevs),
             parallelism_decision_samples_per_mode: parallelism.decision_samples_per_mode,
             parallelism_execution_policy: parallelism.execution_mode,
         },

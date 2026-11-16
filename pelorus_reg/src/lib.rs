@@ -2,8 +2,23 @@
 
 extern crate alloc;
 
+// `f32` targets cores without a double-precision FPU. Those run without threads
+// and without a GPU, and the code for both computes in `f64`.
+const _: () = assert!(
+    !(pelorus_core::REAL_IS_F32
+        && cfg!(any(
+            feature = "threads",
+            feature = "cuda",
+            feature = "metal",
+            feature = "vulkan",
+            feature = "webgpu"
+        ))),
+    "the `f32` feature works without `threads` and the GPU backends"
+);
+
 use alloc::vec::Vec;
 use nalgebra::*;
+use pelorus_core::Real;
 use pelorus_core::{ImuMsg, KinematicModel, OdomMsg, PointXYZIT, timing::RuntimeEvaluator};
 use pelorus_sync::LocatedBufferView;
 use ros_pointcloud2::prelude::*;
@@ -27,13 +42,13 @@ pub use pelorus_localmap::*;
 /// - **World Frame (W)**: Fixed global reference frame, aligned with IMU orientation at
 ///   initialization. Z-axis points upward (anti-gravity).
 /// - **IMU Frame (I)**: Body-fixed frame attached to the IMU sensor
-/// - **Lidar Frame (L)**: Sensor-fixed frame attached to the Lidar
+/// - **Lidar Frame (L)**: Sensor-fixed frame attached to the lidar
 #[derive(Clone, Default, Debug)]
 pub struct CloudRegisterResult {
     /// Pose of the lidar in world frame (T_W_L)
-    pub pose: Isometry3<f64>,
+    pub pose: Isometry3<Real>,
     /// Pose of the base link in world frame (T_W_B)
-    pub base_pose: Isometry3<f64>,
+    pub base_pose: Isometry3<Real>,
     pub avg_iterations: Option<u32>,
 }
 
@@ -43,21 +58,21 @@ pub struct CloudRegisterResult {
 /// - **World Frame (W)**: Fixed global reference frame, aligned with IMU at initialization,
 ///   Z-axis points upward (anti-gravity)
 /// - **IMU Frame (I)**: Body-fixed frame attached to the IMU sensor
-/// - **Lidar Frame (L)**: Sensor-fixed frame attached to the Lidar
+/// - **Lidar Frame (L)**: Sensor-fixed frame attached to the lidar
 #[derive(Clone, Debug, PartialEq)]
 pub struct ImuEkfPrediction {
     /// Pose of the IMU in world frame
-    pub pose: Isometry3<f64>,
+    pub pose: Isometry3<Real>,
     /// Linear velocity in world frame
-    pub linear_velocity: Vector3<f64>,
+    pub linear_velocity: Vector3<Real>,
     /// Angular velocity (bias-corrected) in body frame
-    pub angular_velocity: Vector3<f64>,
+    pub angular_velocity: Vector3<Real>,
     /// Extrinsic calibration from lidar to IMU (T_I_L)
-    pub lidar_imu_extrinsic: Isometry3<f64>,
+    pub lidar_imu_extrinsic: Isometry3<Real>,
     /// Accelerometer bias estimate
-    pub accel_bias: Vector3<f64>,
+    pub accel_bias: Vector3<Real>,
     /// Gyroscope bias estimate
-    pub gyro_bias: Vector3<f64>,
+    pub gyro_bias: Vector3<Real>,
 }
 
 impl Default for ImuEkfPrediction {
@@ -78,7 +93,7 @@ impl ImuEkfPrediction {
     /// expressed in that frame. `output_pose` is the frame's pose in the world
     /// frame (T_W_O) at the same instant as this state. The linear velocity
     /// includes the lever arm from the IMU to the frame's origin.
-    pub fn body_twist(&self, output_pose: &Isometry3<f64>) -> (Vector3<f64>, Vector3<f64>) {
+    pub fn body_twist(&self, output_pose: &Isometry3<Real>) -> (Vector3<Real>, Vector3<Real>) {
         let angular_velocity_world = self.pose.rotation * self.angular_velocity;
         let lever_arm_world = output_pose.translation.vector - self.pose.translation.vector;
         let linear_velocity_world =
@@ -94,7 +109,7 @@ impl ImuEkfPrediction {
 /// One preprocessed scan handed to [`Registration::register_and_map`].
 pub struct RegistrationScan<'a> {
     pub cloud: &'a LocatedBufferView<PointXYZIT>,
-    pub imu_transform: Isometry3<f64>,
+    pub imu_transform: Isometry3<Real>,
     pub lidar_timestamp: pelorus_core::Stamp,
     pub scan_id: usize,
     pub map_only: bool,
@@ -139,15 +154,15 @@ pub trait Registration {
     ) -> Result<Option<CloudRegisterResult>>;
     fn requested_register_and_map_cloud_type(&self) -> LocatedBufferView<PointXYZ>;
 
-    fn imu_ekf_predict(&mut self, acc: [f64; 3], gyro: [f64; 3], dt: f64) -> ImuEkfPrediction;
-    fn init_imu_ekf(&mut self, message_buffer: &[ImuMsg]) -> Vector3<f64>;
-    fn set_base_to_lidar(&mut self, base_to_lidar: Isometry3<f64>);
+    fn imu_ekf_predict(&mut self, acc: [Real; 3], gyro: [Real; 3], dt: Real) -> ImuEkfPrediction;
+    fn init_imu_ekf(&mut self, message_buffer: &[ImuMsg]) -> Vector3<Real>;
+    fn set_base_to_lidar(&mut self, base_to_lidar: Isometry3<Real>);
     fn get_state(&self) -> ImuEkfPrediction;
     fn undistort(
         &mut self,
         scan: UndistortScan<'_>,
         kinematic: KinematicModel,
-        constraint_std: f64,
+        constraint_std: Real,
     );
 }
 
@@ -169,6 +184,17 @@ pub fn backend_session_release() {
     pelorus_vulkan::session_release();
 }
 
+/// Absolute tolerance of a test written for `f64`. An `f32` build resolves
+/// about 1e-7 relative and differentiates with a larger step.
+#[cfg(test)]
+pub(crate) fn tolerance(f64_tolerance: Real) -> Real {
+    if pelorus_core::REAL_IS_F32 {
+        1e-4
+    } else {
+        f64_tolerance
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -176,7 +202,7 @@ mod tests {
     #[test]
     fn body_twist_rotates_into_a_yawed_output_frame_and_adds_the_lever_arm() {
         // IMU at the origin, base 1 m ahead of it along world x and yawed 90
-        // degrees, as with a Lidar mounted sideways on the robot.
+        // degrees, as with a lidar mounted sideways on the robot.
         let imu_pose = Isometry3::identity();
         let base_pose = Isometry3::from_parts(
             Translation3::new(1.0, 0.0, 0.0),
@@ -189,12 +215,12 @@ mod tests {
             ..Default::default()
         };
 
-        let (linear, angular) = state.body_twist(&base_pose);
+        let (linear, angular) = state.body_twist(&base_pose.cast());
 
         // World omega (0.1, 0, 0.5) seen from a frame yawed +90 degrees.
-        assert!((angular - Vector3::new(0.0, -0.1, 0.5)).norm() < 1e-12);
+        assert!((angular - Vector3::new(0.0, -0.1, 0.5)).norm() < crate::tolerance(1e-12));
         // World velocity (1, 0, 0) + omega x (1, 0, 0) = (1, 0.5, 0), seen
         // from the same frame.
-        assert!((linear - Vector3::new(0.5, -1.0, 0.0)).norm() < 1e-12);
+        assert!((linear - Vector3::new(0.5, -1.0, 0.0)).norm() < crate::tolerance(1e-12));
     }
 }

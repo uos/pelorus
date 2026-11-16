@@ -17,6 +17,23 @@ ros_pointcloud2::impl_pointcloud2_for_ros2_interfaces_jazzy_serde!();
 const CODEC_KEY: &str = "marina.pointcloud.codec";
 const CLOUDINI_CODEC: &str = "cloudini";
 
+/// The resolved configuration of `config`, postcard-encoded.
+fn resolve(config: &str) -> Result<Vec<u8>, Box<dyn Error>> {
+    // The std build resolves the `.rl` file. Both builds then read the same LioConfig.
+    let mut config = pelorus::load_config(Some(config))?;
+    // Both builds run on one thread, so neither sums in a parallel order.
+    config.sync_params.parallelism_execution_policy = ExecutionPolicy::SingleCore;
+    Ok(postcard::to_allocvec(&config)?)
+}
+
+/// Write the resolved configuration of `config` in the precision of this
+/// build, for `run` of a build in the same precision.
+pub fn config(config: &str, out: &str) -> Result<(), Box<dyn Error>> {
+    std::fs::write(out, resolve(config)?)?;
+    Ok(())
+}
+
+/// `-` is the standard output, so a stream can go straight into `run`.
 pub fn convert(
     config: &str,
     bag: &str,
@@ -24,17 +41,21 @@ pub fn convert(
     imu_topic: &str,
     out: &str,
 ) -> Result<(), Box<dyn Error>> {
-    // The std build resolves the `.rl` file. Both builds then read the same LioConfig.
-    let mut config = pelorus::load_config(Some(config))?;
-    // Both builds run on one thread, so neither sums in a parallel order.
-    config.sync_params.parallelism_execution_policy = ExecutionPolicy::SingleCore;
-    let data = std::fs::read(bag).map_err(|e| format!("reading {bag}: {e}"))?;
-    let mut out = io::BufWriter::new(std::fs::File::create(out)?);
+    let config = resolve(config)?;
+    // The bag is read as it streams, so its size does not matter.
+    let file = std::fs::File::open(bag).map_err(|e| format!("reading {bag}: {e}"))?;
+    let messages = mcap::io::MessageReader::new(io::BufReader::with_capacity(1 << 20, file));
+    let out: Box<dyn Write> = if out == "-" {
+        Box::new(io::stdout().lock())
+    } else {
+        Box::new(std::fs::File::create(out)?)
+    };
+    let mut out = io::BufWriter::with_capacity(1 << 20, out);
     out.write_all(MAGIC)?;
-    write_bytes(&mut out, &postcard::to_allocvec(&config)?)?;
+    write_bytes(&mut out, &config)?;
 
     let (mut imus, mut clouds) = (0_usize, 0_usize);
-    for message in mcap::MessageStream::new(&data)? {
+    for message in messages {
         let message = message?;
         let topic = message.channel.topic.as_str();
         if topic == imu_topic {

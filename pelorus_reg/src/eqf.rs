@@ -1,4 +1,4 @@
-//! Iterated equivariant filter (EqF) for tightly coupled Lidar-inertial odometry.
+//! Iterated equivariant filter (EqF) for tightly coupled lidar-inertial odometry.
 //!
 //! Follows "Equivariant Filter for Tightly Coupled LiDAR-Inertial Odometry"
 //! (Xu et al., ICRA 2025, <https://arxiv.org/abs/2409.06948>) and its reference
@@ -6,7 +6,7 @@
 //!
 //! The state and measurement model follow a FAST-LIO style iterated EKF. The
 //! error is a group element of the semi-direct product symmetry coupling the
-//! navigation state, IMU biases, and Lidar extrinsics. The correction acts on
+//! navigation state, IMU biases, and lidar extrinsics. The correction acts on
 //! the left:
 //!
 //! ```text
@@ -35,52 +35,19 @@ use pelorus_core::{
 
 pub use pelorus_core::{SE3, SO3};
 
-/// Scalar type of the filter's covariance algebra: the covariance, the process
-/// and measurement Jacobians, the gain and the error-state corrections. The
-/// state itself, and the numerical derivatives through [`compensate`] and
-/// [`box_minus`], stay in `f64`. The `f32-filter` feature makes it `f32`.
-#[cfg(not(feature = "f32-filter"))]
-pub type Real = f64;
-/// Scalar type of the filter's covariance algebra: the covariance, the process
-/// and measurement Jacobians, the gain and the error-state corrections. The
-/// state itself, and the numerical derivatives through [`compensate`] and
-/// [`box_minus`], stay in `f64`. The `f32-filter` feature makes it `f32`.
-#[cfg(feature = "f32-filter")]
-pub type Real = f32;
-
-/// `x` as [`Real`].
-#[inline]
-pub fn real(x: f64) -> Real {
-    nalgebra::convert(x)
-}
-
-/// `x` as `f64`.
-#[inline]
-pub fn double(x: Real) -> f64 {
-    nalgebra::convert(x)
-}
-
-/// An `f64` matrix in [`Real`].
-fn to_real(m: &Mat<f64>) -> Mat<Real> {
-    Mat::from_fn(m.nrows(), m.ncols(), |i, j| real(m[(i, j)]))
-}
-
-/// A [`Real`] matrix in `f64`.
-fn to_f64(m: &Mat<Real>) -> Mat<f64> {
-    Mat::from_fn(m.nrows(), m.ncols(), |i, j| double(m[(i, j)]))
-}
+pub use pelorus_core::{Real, double, real};
 
 // Helper to convert nalgebra Matrix3 from sophus to faer
 #[inline]
-fn mat3_to_faer(m: &nalgebra::Matrix3<f64>) -> Mat<f64> {
+fn mat3_to_faer(m: &nalgebra::Matrix3<Real>) -> Mat<Real> {
     Mat::from_fn(3, 3, |i, j| m[(i, j)])
 }
 
 // TODO use config, needs some refactor
-const GRAVITY_DEFAULT: f64 = 9.81;
+const GRAVITY_DEFAULT: Real = 9.81;
 
 /// Gain cap for the non-holonomic kinematic constraints.
-const KINEMATIC_MAX_GAIN: f64 = 0.8;
+const KINEMATIC_MAX_GAIN: Real = 0.8;
 
 /// Filter state. The index ranges are the layout of the 24-dimensional error
 /// vector used by the covariance, the Jacobians, [`compensate`] and [`box_minus`].
@@ -98,18 +65,18 @@ const KINEMATIC_MAX_GAIN: f64 = 0.8;
 /// - grav (21-23): gravity vector in world frame
 #[derive(Clone, Debug, Copy)]
 pub struct StateIKFom {
-    pub pos: Vector3<f64>,          // position in world frame
-    pub rot: SO3,                   // R_W_I: IMU to world rotation (T_W_I rotation part)
-    pub offset_r_l_i: SO3,          // R_I_L: lidar to IMU rotation (extrinsic calibration)
-    pub offset_t_l_i: Vector3<f64>, // t_I_L: lidar to IMU translation (extrinsic calibration)
-    pub vel: Vector3<f64>,          // velocity in world frame
-    pub bg: Vector3<f64>,           // estimated gyro bias
-    pub ba: Vector3<f64>,           // accelerometer bias
-    pub grav: Vector3<f64>,         // gravity vector in world frame
+    pub pos: Vector3<Real>,          // position in world frame
+    pub rot: SO3,                    // R_W_I: IMU to world rotation (T_W_I rotation part)
+    pub offset_r_l_i: SO3,           // R_I_L: lidar to IMU rotation (extrinsic calibration)
+    pub offset_t_l_i: Vector3<Real>, // t_I_L: lidar to IMU translation (extrinsic calibration)
+    pub vel: Vector3<Real>,          // velocity in world frame
+    pub bg: Vector3<Real>,           // estimated gyro bias
+    pub ba: Vector3<Real>,           // accelerometer bias
+    pub grav: Vector3<Real>,         // gravity vector in world frame
 }
 
 impl StateIKFom {
-    pub fn new(gravity: f64) -> Self {
+    pub fn new(gravity: Real) -> Self {
         StateIKFom {
             pos: Vector3::zeros(),
             rot: SO3::identity(),
@@ -149,12 +116,12 @@ impl Default for StateIKFom {
 }
 
 pub struct InputIKFom {
-    pub acc: Vector3<f64>,
-    pub gyro: Vector3<f64>,
+    pub acc: Vector3<Real>,
+    pub gyro: Vector3<Real>,
 }
 
 impl InputIKFom {
-    pub fn new(acc: Vector3<f64>, gyro: Vector3<f64>) -> Self {
+    pub fn new(acc: Vector3<Real>, gyro: Vector3<Real>) -> Self {
         Self { acc, gyro }
     }
 
@@ -175,7 +142,7 @@ impl InputIKFom {
 /// - (15-17): zeros (bg derivative)
 /// - (18-20): zeros (ba derivative)
 /// - (21-23): zeros (grav derivative)
-fn get_f(s: &StateIKFom, inp: &InputIKFom) -> Mat<f64> {
+fn get_f(s: &StateIKFom, inp: &InputIKFom) -> Mat<Real> {
     let omega = inp.gyro - s.bg; // angular velocity minus bias
     let rot_mat = mat3_to_faer(&s.rot.matrix());
     let acc_diff = inp.acc - s.ba;
@@ -185,7 +152,7 @@ fn get_f(s: &StateIKFom, inp: &InputIKFom) -> Mat<f64> {
     let grav_col = faer::col![s.grav.x, s.grav.y, s.grav.z];
     let acc_grav = &acc_inertial + &grav_col; // acceleration added gravity
 
-    let mut res = Mat::<f64>::zeros(24, 1);
+    let mut res = Mat::<Real>::zeros(24, 1);
     // vel derivative -> position derivative (rows 0-2)
     res[(0, 0)] = s.vel.x;
     res[(1, 0)] = s.vel.y;
@@ -213,7 +180,7 @@ fn get_f(s: &StateIKFom, inp: &InputIKFom) -> Mat<f64> {
 /// ```
 pub fn skew_symmetric_na<T>(q: &Vector3<T>) -> nalgebra::Matrix3<T>
 where
-    T: nalgebra::Scalar + Copy + From<f64> + ::core::ops::Neg<Output = T>,
+    T: nalgebra::Scalar + Copy + From<Real> + ::core::ops::Neg<Output = T>,
 {
     nalgebra::Matrix3::new(
         T::from(0.0),
@@ -244,7 +211,7 @@ impl Blocks {
         }
     }
 
-    fn push(&mut self, row: usize, col: usize, block: nalgebra::Matrix3<f64>) {
+    fn push(&mut self, row: usize, col: usize, block: nalgebra::Matrix3<Real>) {
         self.list[self.len] = (row, col, block.cast());
         self.len += 1;
     }
@@ -310,7 +277,7 @@ pub fn df_dx(
     s: &StateIKFom,
     inp: &InputIKFom,
     extrinsic_est: bool,
-    anchor: &Vector3<f64>,
+    anchor: &Vector3<Real>,
 ) -> Mat<Real> {
     df_dx_blocks(s, inp, extrinsic_est, anchor).to_dense(24, 24)
 }
@@ -321,12 +288,12 @@ pub fn df_dx_blocks(
     s: &StateIKFom,
     inp: &InputIKFom,
     extrinsic_est: bool,
-    anchor: &Vector3<f64>,
+    anchor: &Vector3<Real>,
 ) -> Blocks {
     let mut blocks = Blocks::new();
     let pos_a = s.pos - anchor;
 
-    let id3 = nalgebra::Matrix3::<f64>::identity();
+    let id3 = nalgebra::Matrix3::<Real>::identity();
     let rot_mat = s.rot.matrix();
 
     // Generator of the equivariant error dynamics: the bias-corrected angular
@@ -366,13 +333,13 @@ pub fn df_dx_blocks(
 ///
 /// Every block carries the world rotation because the noise enters in the body
 /// frame while the equivariant error state is expressed globally.
-pub fn df_dw(s: &StateIKFom, inp: &InputIKFom, anchor: &Vector3<f64>) -> Mat<Real> {
+pub fn df_dw(s: &StateIKFom, inp: &InputIKFom, anchor: &Vector3<Real>) -> Mat<Real> {
     df_dw_blocks(s, inp, anchor).to_dense(24, 12)
 }
 
 /// The nonzero 3x3 blocks of [`df_dw`]. The block columns are the gyro, accel,
 /// gyro bias and accel bias noise.
-pub fn df_dw_blocks(s: &StateIKFom, _inp: &InputIKFom, anchor: &Vector3<f64>) -> Blocks {
+pub fn df_dw_blocks(s: &StateIKFom, _inp: &InputIKFom, anchor: &Vector3<Real>) -> Blocks {
     let mut blocks = Blocks::new();
 
     let rot_mat = s.rot.matrix();
@@ -437,8 +404,8 @@ pub struct Eqf {
     /// displaces a point by its distance from this anchor, so leaving it at the
     /// world origin makes both the Jacobians and the covariance scale with distance
     /// travelled and destroys the conditioning of the update. Kept near the robot.
-    pub anchor: Vector3<f64>,
-    /// Estimate the Lidar-to-IMU extrinsics online. Off by default. When on,
+    pub anchor: Vector3<Real>,
+    /// Estimate the lidar-to-IMU extrinsics online. Off by default. When on,
     /// the extrinsic blocks of the equivariant error dynamics and the
     /// corresponding measurement Jacobian columns become active.
     pub extrinsic_est: bool,
@@ -446,7 +413,7 @@ pub struct Eqf {
     pub h: Col<Real>,   // measurement residual vector
     pub h_x: Mat<Real>, // measurement Jacobian matrix (m x 12, sparse - only first 12 cols non-zero)
     pub k_h: Mat<Real>, // K * H (24 x 24)
-    pub base_to_lidar: nalgebra::Isometry3<f64>,
+    pub base_to_lidar: nalgebra::Isometry3<Real>,
 }
 
 /// Forward propagation of the state along the IMU kinematics.
@@ -457,7 +424,7 @@ pub struct Eqf {
 /// Propagation is unaffected by the choice of error frame, so this stays the
 /// plain right-multiplied manifold update. The equivariance shows up in
 /// `compensate` and `box_minus`.
-fn propagate(x: &StateIKFom, f: &Mat<f64>) -> StateIKFom {
+fn propagate(x: &StateIKFom, f: &Mat<Real>) -> StateIKFom {
     let mut x_r = *x;
 
     x_r.pos = x.pos + Vector3::new(f[(0, 0)], f[(1, 0)], f[(2, 0)]);
@@ -483,9 +450,9 @@ fn propagate(x: &StateIKFom, f: &Mat<f64>) -> StateIKFom {
 /// inverse of [`box_minus`].
 fn compensate(
     x: &StateIKFom,
-    f: &Mat<f64>,
+    f: &Mat<Real>,
     extrinsic_est: bool,
-    anchor: &Vector3<f64>,
+    anchor: &Vector3<Real>,
 ) -> StateIKFom {
     let delta = |i: usize| Vector3::new(f[(i, 0)], f[(i + 1, 0)], f[(i + 2, 0)]);
 
@@ -539,13 +506,13 @@ fn compensate(
 /// subtly wrong.
 fn reset_jacobian(
     base: &StateIKFom,
-    dx: &Mat<f64>,
+    dx: &Mat<Real>,
     updated: &StateIKFom,
     extrinsic_est: bool,
-    anchor: &Vector3<f64>,
-) -> Mat<f64> {
-    const EPS: f64 = 1e-6;
-    let mut j = Mat::<f64>::identity(24, 24);
+    anchor: &Vector3<Real>,
+) -> Mat<Real> {
+    const EPS: Real = pelorus_core::CENTRAL_DIFFERENCE_STEP;
+    let mut j = Mat::<Real>::identity(24, 24);
     let mut probe = dx.clone();
 
     for c in 0..24 {
@@ -590,15 +557,15 @@ fn box_minus(
     x1: &StateIKFom,
     x2: &StateIKFom,
     extrinsic_est: bool,
-    anchor: &Vector3<f64>,
-) -> Mat<f64> {
+    anchor: &Vector3<Real>,
+) -> Mat<Real> {
     let rot_err = x1.rot.group_mul(x2.rot.inverse());
     let rot_err_mat = rot_err.matrix();
     let rot2_mat = x2.rot.matrix();
     let d_bg = rot2_mat * (x1.bg - x2.bg);
 
-    let mut x_r = Mat::<f64>::zeros(24, 1);
-    let mut set = |i: usize, v: Vector3<f64>| {
+    let mut x_r = Mat::<Real>::zeros(24, 1);
+    let mut set = |i: usize, v: Vector3<Real>| {
         x_r[(i, 0)] = v.x;
         x_r[(i + 1, 0)] = v.y;
         x_r[(i + 2, 0)] = v.z;
@@ -646,7 +613,7 @@ fn box_minus(
 }
 
 impl Eqf {
-    pub fn new(g: f64, base_to_lidar: nalgebra::Isometry3<f64>) -> Self {
+    pub fn new(g: Real, base_to_lidar: nalgebra::Isometry3<Real>) -> Self {
         Self {
             state: StateIKFom::new(g),
             cov: Mat::<Real>::identity(24, 24),
@@ -674,7 +641,7 @@ impl Eqf {
     /// Move the anchor. Re-anchoring is a group action, so the covariance is
     /// transformed by an exact congruence: `dp` measured about `a'` equals `dp`
     /// about `a` minus `S(a' - a) dtheta`. No approximation is involved.
-    pub fn set_anchor(&mut self, new_anchor: Vector3<f64>) {
+    pub fn set_anchor(&mut self, new_anchor: Vector3<Real>) {
         let shift = new_anchor - self.anchor;
         if shift.norm_squared() == 0.0 {
             return;
@@ -683,14 +650,14 @@ impl Eqf {
         let mut ad = Mat::<Real>::identity(24, 24);
         for i in 0..3 {
             for j in 0..3 {
-                ad[(i, 3 + j)] = -real(s[(i, j)]);
+                ad[(i, 3 + j)] = -s[(i, j)];
             }
         }
         self.cov = &(&ad * &self.cov) * ad.transpose();
         self.anchor = new_anchor;
     }
 
-    pub fn predict(&mut self, dt: f64, q: &Mat<Real>, i_in: &InputIKFom) {
+    pub fn predict(&mut self, dt: Real, q: &Mat<Real>, i_in: &InputIKFom) {
         self.last_time = self.last_time.add_secs(dt);
 
         let f = get_f(&self.state, i_in);
@@ -700,12 +667,11 @@ impl Eqf {
         let f_w = df_dw_blocks(&self.state, i_in, &self.anchor);
 
         // State update: x = propagate(x, f * dt)
-        let f_dt = &f * dt;
+        let f_dt = &f * faer::Scale(dt);
         self.state = propagate(&self.state, &f_dt);
 
         // Cov update: P = F_x * P * F_x^T + F_w * Q * F_w^T with
         // F_x = I + f_x * dt and F_w = f_w * dt.
-        let dt = real(dt);
         // P * F_x^T = P + dt * P * f_x^T
         self.fxtcov.copy_from(&self.cov);
         f_x.add_right_product_transposed(&mut self.fxtcov, &self.cov, dt);
@@ -721,14 +687,8 @@ impl Eqf {
 
     /// Move a posterior covariance from error coordinates about `base` into
     /// error coordinates about the current state after injecting `dx`.
-    fn reset_covariance_after_update(&mut self, base: &StateIKFom, dx: &Mat<f64>) {
-        let j_reset = to_real(&reset_jacobian(
-            base,
-            dx,
-            &self.state,
-            self.extrinsic_est,
-            &self.anchor,
-        ));
+    fn reset_covariance_after_update(&mut self, base: &StateIKFom, dx: &Mat<Real>) {
+        let j_reset = reset_jacobian(base, dx, &self.state, self.extrinsic_est, &self.anchor);
         self.cov = &(&j_reset * &self.cov) * j_reset.transpose();
     }
 
@@ -736,8 +696,8 @@ impl Eqf {
         &mut self,
         odom: OdomMsg,
         kinematic: KinematicModel,
-        cov_override: Option<f64>,
-        gyro_measurement: Vector3<f64>,
+        cov_override: Option<Real>,
+        gyro_measurement: Vector3<Real>,
     ) {
         if !self.initialized {
             return;
@@ -764,7 +724,7 @@ impl Eqf {
         };
 
         let covariance_scale = 1.0 + dt_gap * 5.0;
-        let mut measurement_cov = DMatrix::<f64>::zeros(components.len(), components.len());
+        let mut measurement_cov = DMatrix::<Real>::zeros(components.len(), components.len());
         if let Some(variance) = cov_override {
             if !variance.is_finite() || variance <= 0.0 {
                 warn!("Invalid wheel odometry covariance override");
@@ -831,8 +791,8 @@ impl Eqf {
         &self,
         odom: &OdomMsg,
         kinematic: KinematicModel,
-        gyro_measurement: Vector3<f64>,
-    ) -> Vector3<f64> {
+        gyro_measurement: Vector3<Real>,
+    ) -> Vector3<Real> {
         self.predict_odom_velocity_for_state(&self.state, odom, kinematic, gyro_measurement)
     }
 
@@ -841,8 +801,8 @@ impl Eqf {
         state: &StateIKFom,
         odom: &OdomMsg,
         kinematic: KinematicModel,
-        gyro_measurement: Vector3<f64>,
-    ) -> Vector3<f64> {
+        gyro_measurement: Vector3<Real>,
+    ) -> Vector3<Real> {
         let r_il = state.offset_r_l_i.matrix();
         let r_bl = self.base_to_lidar.rotation.to_rotation_matrix();
         let p_i_ref = match kinematic {
@@ -855,7 +815,7 @@ impl Eqf {
 
         let omega_i = gyro_measurement - state.bg;
         let v_ref_i = state.rot.matrix().transpose() * state.vel + omega_i.cross(&p_i_ref);
-        odom.twist_frame_to_imu.transpose() * v_ref_i
+        odom.twist_frame_to_imu.transpose().cast::<Real>() * v_ref_i
     }
 
     /// Linearize a whitened wheel-velocity row in the EqF error coordinates.
@@ -867,14 +827,14 @@ impl Eqf {
         &self,
         odom: &OdomMsg,
         kinematic: KinematicModel,
-        gyro_measurement: Vector3<f64>,
+        gyro_measurement: Vector3<Real>,
         components: &[usize],
-        weights: impl Iterator<Item = f64>,
-    ) -> Col<f64> {
-        const EPS: f64 = 1e-6;
-        let weights: Vec<f64> = weights.collect();
-        let mut h = Col::<f64>::zeros(24);
-        let mut delta = Mat::<f64>::zeros(24, 1);
+        weights: impl Iterator<Item = Real>,
+    ) -> Col<Real> {
+        const EPS: Real = pelorus_core::CENTRAL_DIFFERENCE_STEP;
+        let weights: Vec<Real> = weights.collect();
+        let mut h = Col::<Real>::zeros(24);
+        let mut delta = Mat::<Real>::zeros(24, 1);
 
         for column in 0..24 {
             delta[(column, 0)] = EPS;
@@ -902,18 +862,15 @@ impl Eqf {
     /// Fuse one scalar measurement whose Jacobian is `h`.
     ///
     /// `lock_pose` keeps model-only non-holonomic constraints from directly
-    /// moving the Lidar pose. `max_gain` can damp those synthetic constraints.
+    /// moving the lidar pose. `max_gain` can damp those synthetic constraints.
     fn apply_scalar_constraint(
         &mut self,
-        h: Col<f64>,
-        residual: f64,
-        r_var: f64,
-        max_gain: Option<f64>,
+        h: Col<Real>,
+        residual: Real,
+        r_var: Real,
+        max_gain: Option<Real>,
         lock_pose: bool,
     ) {
-        let h = Col::<Real>::from_fn(h.nrows(), |i| real(h[i]));
-        let residual = real(residual);
-        let r_var = real(r_var);
         // Compute innovation variance: h^T * P * h + r_var
         let h_t = h.transpose();
         let cov_h = &self.cov * &h;
@@ -935,7 +892,7 @@ impl Eqf {
 
         if lock_pose {
             // Model-only non-holonomic constraints should not directly move the
-            // Lidar pose. Actual wheel observations use the complete Kalman gain.
+            // lidar pose. Actual wheel observations use the complete Kalman gain.
             for i in 0..6 {
                 k[i] = 0.0;
             }
@@ -943,7 +900,6 @@ impl Eqf {
 
         // automatic damping - cap the norm of the gain (prevents gigantic jumps)
         if let Some(k_max) = max_gain {
-            let k_max = real(k_max);
             let gain_norm = k.norm_l2();
             if gain_norm > k_max {
                 k = &k * faer::Scale(k_max / gain_norm);
@@ -954,9 +910,9 @@ impl Eqf {
         let dx = &k * faer::Scale(residual);
 
         // Convert Col to Mat for compensate
-        let mut dx_mat = Mat::<f64>::zeros(24, 1);
+        let mut dx_mat = Mat::<Real>::zeros(24, 1);
         for i in 0..24 {
-            dx_mat[(i, 0)] = double(dx[i]);
+            dx_mat[(i, 0)] = dx[i];
         }
         let state_before = self.state;
         self.state = compensate(&state_before, &dx_mat, self.extrinsic_est, &self.anchor);
@@ -1009,8 +965,8 @@ impl Eqf {
     pub fn correct_kinematics(
         &mut self,
         model_type: KinematicModel,
-        gyro_measurement: Vector3<f64>,
-        constraint_noise_std: f64,
+        gyro_measurement: Vector3<Real>,
+        constraint_noise_std: Real,
     ) {
         if let KinematicModel::Full3D = model_type {
             return;
@@ -1020,10 +976,10 @@ impl Eqf {
         let r_wi = self.state.rot.matrix();
         let r_iw = r_wi.transpose();
 
-        // Current Lidar-to-IMU rotation (R_IL from state)
+        // Current lidar-to-IMU rotation (R_IL from state)
         let r_il = self.state.offset_r_l_i.matrix();
 
-        // Static Lidar-to-Base rotation (R_BL from config)
+        // Static lidar-to-base rotation (R_BL from config)
         let r_bl_rot = self.base_to_lidar.rotation.to_rotation_matrix();
         let r_bl = r_bl_rot.matrix();
 
@@ -1057,7 +1013,7 @@ impl Eqf {
         match model_type {
             KinematicModel::Differential | KinematicModel::Ackermann { .. } => {
                 // lateral (y) constraint - velocity index is 12-14 in 24-dim state
-                let mut h_lat = Col::<f64>::zeros(24);
+                let mut h_lat = Col::<Real>::zeros(24);
                 // Jacobian H = d(v_ref_base.y) / d(v_i_world) = e_y^T * R_BI * R_WI^T = row 1 of R_BW
                 for j in 0..3 {
                     h_lat[12 + j] = r_bw[(1, j)];
@@ -1071,7 +1027,7 @@ impl Eqf {
                 );
 
                 // vertical (z) constraint
-                let mut h_vert = Col::<f64>::zeros(24);
+                let mut h_vert = Col::<Real>::zeros(24);
                 // Jacobian H = d(v_ref_base.z) / d(v_i_world) = e_z^T * R_BI * R_WI^T = row 2 of R_BW
                 for j in 0..3 {
                     h_vert[12 + j] = r_bw[(2, j)];
@@ -1086,7 +1042,7 @@ impl Eqf {
             }
             KinematicModel::Holonomic2D => {
                 // Only vertical (z) constraint: robot stays on ground
-                let mut h_vert = Col::<f64>::zeros(24);
+                let mut h_vert = Col::<Real>::zeros(24);
                 for j in 0..3 {
                     h_vert[12 + j] = r_bw[(2, j)];
                 }
@@ -1107,7 +1063,7 @@ impl Eqf {
     ///                          vel(12-14), bg(15-17), ba(18-20), grav(21-23)
     pub fn correct(
         &mut self,
-        measurement_noise_cov: f64,
+        measurement_noise_cov: Real,
         measurement_time: Stamp,
         max_iter: usize,
         eval: alloc::sync::Arc<pelorus_core::sync::RwLock<&mut RuntimeEvaluator>>,
@@ -1133,7 +1089,7 @@ impl Eqf {
 
     pub async fn correct_async(
         &mut self,
-        measurement_noise_cov: f64,
+        measurement_noise_cov: Real,
         measurement_time: Stamp,
         max_iter: usize,
         eval: alloc::sync::Arc<pelorus_core::sync::RwLock<&mut RuntimeEvaluator>>,
@@ -1164,7 +1120,7 @@ impl Eqf {
         let state_propagated = self.state;
         let p_propagated = self.cov.clone();
 
-        let r_inv = real(1.0 / measurement_noise_cov);
+        let r_inv = 1.0 / measurement_noise_cov;
 
         let mut converge_count = 0;
         let mut converge_flag = true;
@@ -1202,12 +1158,12 @@ impl Eqf {
             eval.start("ekf_correct/it/info_mat").unwrap();
 
             // dx_new = boxminus(x_, x_propagated) - equation (18): x^k - x^
-            let dx_new = to_real(&box_minus(
+            let dx_new = box_minus(
                 &self.state,
                 &state_propagated,
                 self.extrinsic_est,
                 &self.anchor,
-            ));
+            );
 
             // H is m x 12 (sparse - only first 12 columns non-zero)
             // We only use the first m rows of h_x (the actual measurements)
@@ -1310,12 +1266,12 @@ impl Eqf {
                 return;
             }
 
-            self.state = compensate(&self.state, &to_f64(&dx_), self.extrinsic_est, &self.anchor);
+            self.state = compensate(&self.state, &dx_, self.extrinsic_est, &self.anchor);
 
             // Check convergence: if all |dx_[j]| < EPSI, converged
             converge_flag = true;
             for j in 0..24 {
-                if double(dx_[(j, 0)].abs()) > measurement_noise_cov {
+                if dx_[(j, 0)].abs() > measurement_noise_cov {
                     converge_flag = false;
                     eval.stop("ekf_correct/it/state").unwrap();
                     break;
@@ -1364,7 +1320,7 @@ mod tests {
     use nalgebra::{Isometry3, Matrix3};
     use pelorus_core::time_msg_from_secs;
 
-    fn odom(linear: Vector3<f64>, frame_to_imu: Matrix3<f64>) -> OdomMsg {
+    fn odom(linear: Vector3<Real>, frame_to_imu: Matrix3<Real>) -> OdomMsg {
         let mut covariance = [0.0; 36];
         covariance[0] = 0.01;
         covariance[7] = 0.01;
@@ -1445,11 +1401,11 @@ mod tests {
             acc: Vector3::new(0.3, -0.2, 9.7),
             gyro: Vector3::new(0.05, 0.1, -0.2),
         };
-        let dt = 0.005;
+        let dt: Real = 0.005;
 
         let f_x = Mat::<Real>::identity(24, 24)
-            + df_dx(&filter.state, &input, true, &filter.anchor) * faer::Scale(real(dt));
-        let f_w = df_dw(&filter.state, &input, &filter.anchor) * faer::Scale(real(dt));
+            + df_dx(&filter.state, &input, true, &filter.anchor) * faer::Scale(dt);
+        let f_w = df_dw(&filter.state, &input, &filter.anchor) * faer::Scale(dt);
         let fp = &f_x * &filter.cov;
         let fw_q = &f_w * &q;
         let expected = &fp * f_x.transpose() + &fw_q * f_w.transpose();
@@ -1483,7 +1439,7 @@ mod tests {
 
         for index in 3..6 {
             assert!(
-                h[index].abs() < 1e-8,
+                h[index].abs() < crate::tolerance(1e-8),
                 "rotation column {index}: {}",
                 h[index]
             );
@@ -1491,14 +1447,14 @@ mod tests {
         let expected_matrix = filter.state.rot.matrix().transpose();
         let expected = expected_matrix.row(0);
         for index in 0..3 {
-            assert!((h[12 + index] - expected[index]).abs() < 1e-8);
+            assert!((h[12 + index] - expected[index]).abs() < crate::tolerance(1e-8));
         }
     }
 
     #[test]
     fn differential_odom_corrects_forward_axis_not_world_x() {
         let mut filter = initialized_filter();
-        filter.state.rot = SO3::exp(Vector3::new(0.0, 0.0, ::core::f64::consts::FRAC_PI_2));
+        filter.state.rot = SO3::exp(Vector3::new(0.0, 0.0, real(::core::f64::consts::FRAC_PI_2)));
         let measurement = odom(Vector3::new(1.0, 0.0, 0.0), Matrix3::identity());
 
         filter.correct_with_body_velocities(
@@ -1509,7 +1465,7 @@ mod tests {
         );
 
         assert!(filter.state.vel.y > 0.9);
-        assert!(filter.state.vel.x.abs() < 1e-8);
+        assert!(filter.state.vel.x.abs() < crate::tolerance(1e-8));
     }
 
     #[test]
@@ -1517,7 +1473,7 @@ mod tests {
         let mut filter = initialized_filter();
         let frame_to_imu = nalgebra::Rotation3::from_axis_angle(
             &Vector3::z_axis(),
-            ::core::f64::consts::FRAC_PI_2,
+            pelorus_core::real(::core::f64::consts::FRAC_PI_2),
         )
         .into_inner();
         let measurement = odom(Vector3::new(1.0, 0.0, 0.0), frame_to_imu);
@@ -1530,7 +1486,7 @@ mod tests {
         );
 
         assert!(filter.state.vel.y > 0.9);
-        assert!(filter.state.vel.x.abs() < 1e-8);
+        assert!(filter.state.vel.x.abs() < crate::tolerance(1e-8));
     }
 
     #[test]

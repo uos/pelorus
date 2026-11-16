@@ -452,6 +452,27 @@ impl IVoxHashMap {
         self.livodish = Livodish::new(0, sensitivity, self.resolution / 4.0);
     }
 
+    /// The step the map moves by exactly: one cell of its coarsest level.
+    pub fn origin_cell(&self) -> f32 {
+        match &self.multiresolution {
+            Some(map) => map.coarsest_resolution(),
+            None => self.resolution,
+        }
+    }
+
+    /// Moves the map by `cells` of [`origin_cell`](Self::origin_cell), so its
+    /// coordinates follow a computation frame that moved by as much.
+    pub fn shift_origin(&mut self, cells: [i32; 3]) {
+        let cell = self.origin_cell();
+        let offset = nalgebra::Vector3::from(cells.map(|c| c as f32 * cell));
+        match &mut self.multiresolution {
+            Some(map) => map.shift(cells, offset),
+            None => self
+                .livodish
+                .shift(Self::hash_grid(&(cells[0], cells[1], cells[2])), offset),
+        }
+    }
+
     pub fn is_empty(&self) -> bool {
         if let Some(map) = &self.multiresolution {
             return map.is_empty();
@@ -462,7 +483,7 @@ impl IVoxHashMap {
     pub fn add(
         &mut self,
         points: &[pelorus_core::PointXYZIT],
-        transform: &nalgebra::Isometry3<f64>,
+        transform: &nalgebra::Isometry3<pelorus_core::Real>,
         scan_id: usize,
     ) {
         #[cfg(feature = "rayon")]
@@ -475,10 +496,10 @@ impl IVoxHashMap {
     pub fn add_with_execution_mode(
         &mut self,
         points: &[pelorus_core::PointXYZIT],
-        transform: &nalgebra::Isometry3<f64>,
+        transform: &nalgebra::Isometry3<pelorus_core::Real>,
         scan_id: usize,
         execution_mode: ExecutionMode,
-    ) -> Option<f64> {
+    ) -> Option<pelorus_core::Real> {
         self.scan_number = scan_id;
         if let Some(map) = &mut self.multiresolution {
             map.add(points, transform, scan_id);
@@ -498,7 +519,7 @@ impl IVoxHashMap {
 
         let sort_started = pelorus_core::Instant::now();
         sort_unstable_by_key(&mut keyed_points, |(_, key)| *key, execution_mode);
-        let mut adaptive_nanos = sort_started.elapsed().as_nanos() as f64;
+        let mut adaptive_nanos = sort_started.elapsed().as_nanos() as pelorus_core::Real;
 
         // TODO chunk by seems extremely fast on M3 Pro
         // #[cfg(feature = "parallel")]
@@ -550,8 +571,8 @@ impl IVoxHashMap {
         // Re-arranges the map to be ready for new inserts.
         let build_started = pelorus_core::Instant::now();
         self.livodish.build(self.scan_number, execution_mode);
-        adaptive_nanos += build_started.elapsed().as_nanos() as f64;
-        Some(adaptive_nanos / points.len().max(1) as f64)
+        adaptive_nanos += build_started.elapsed().as_nanos() as pelorus_core::Real;
+        Some(adaptive_nanos / points.len().max(1) as pelorus_core::Real)
     }
 
     #[inline(always)]
@@ -690,17 +711,16 @@ impl IVoxHashMap {
             acos_arg.clamp(-1.0, 1.0).acos()
         };
 
+        use pelorus_core::math::cosf;
         let two_sqrt_neg_a_div_3 = 2.0 * (-a_cub / 3.0).sqrt();
         let p_div_3 = p / 3.0;
 
         // Root 1
-        let e1 = two_sqrt_neg_a_div_3 * (angle / 3.0).cos() - p_div_3;
+        let e1 = two_sqrt_neg_a_div_3 * cosf(angle / 3.0) - p_div_3;
         // Root 2
-        let e2 =
-            two_sqrt_neg_a_div_3 * ((angle + 2.0 * core::f32::consts::PI) / 3.0).cos() - p_div_3;
+        let e2 = two_sqrt_neg_a_div_3 * cosf((angle + 2.0 * core::f32::consts::PI) / 3.0) - p_div_3;
         // Root 3
-        let e3 =
-            two_sqrt_neg_a_div_3 * ((angle + 4.0 * core::f32::consts::PI) / 3.0).cos() - p_div_3;
+        let e3 = two_sqrt_neg_a_div_3 * cosf((angle + 4.0 * core::f32::consts::PI) / 3.0) - p_div_3;
 
         Vector3::new(e1, e2, e3)
     }
@@ -1001,7 +1021,7 @@ impl IVoxHashMap {
     /// (0 = finest, 3 = coarsest) and a relevance score in `[0, 1]`. The
     /// score ranks each cell by recency *within its level*
     /// (see [`rank_scores_by_recency`]) rather than a raw age-based decay:
-    /// a LiDAR scan does not revisit every voxel every tick, so a raw
+    /// a lidar scan does not revisit every voxel every tick, so a raw
     /// `1/(1+age)` decay would make almost the entire map read as
     /// "irrelevant" within one or two scans. Ranking spreads scores evenly
     /// across `[0, 1]` regardless of scan cadence, matching how
@@ -1065,4 +1085,68 @@ pub fn rank_scores_by_recency(ages: &[u64]) -> Vec<f32> {
         scores[idx] = 1.0 - (rank as f32 / denom);
     }
     scores
+}
+
+#[cfg(test)]
+mod origin_tests {
+    use super::*;
+
+    /// A tilted plane far from the world origin, sampled densely.
+    fn plane_patch() -> Vec<pelorus_core::PointXYZIT> {
+        (-20..=20)
+            .flat_map(|x| {
+                (-20..=20).map(move |y| {
+                    let (x, y) = (x as f32 * 0.05, y as f32 * 0.05);
+                    pelorus_core::PointXYZIT {
+                        x,
+                        y,
+                        z: 0.1 * x - 0.05 * y,
+                        intensity: 0.0,
+                        timestamp: 0.0,
+                    }
+                })
+            })
+            .collect()
+    }
+
+    fn fit_before_and_after_shift(mut map: IVoxHashMap) {
+        let at = nalgebra::Isometry3::translation(130.0, -70.0, 3.0);
+        map.add(&plane_patch(), &at, 0);
+        let query = PointXYZ::new(130.1, -70.05, 3.012);
+        let before = map.plane_fit_from_distributions(&query).unwrap();
+
+        let cells = [32, -16, 1];
+        map.shift_origin(cells);
+        let cell = map.origin_cell();
+        let shifted = PointXYZ::new(
+            query.x - cells[0] as f32 * cell,
+            query.y - cells[1] as f32 * cell,
+            query.z - cells[2] as f32 * cell,
+        );
+        let after = map.plane_fit_from_distributions(&shifted).unwrap();
+
+        // Same normal, and the plane passes through the shifted query alike.
+        for axis in 0..3 {
+            assert!(
+                (before[axis] - after[axis]).abs() < 1e-4,
+                "{before:?} {after:?}"
+            );
+        }
+        let distance = |plane: [f32; 4], p: &PointXYZ| {
+            plane[0] * p.x + plane[1] * p.y + plane[2] * p.z + plane[3]
+        };
+        assert!((distance(before, &query) - distance(after, &shifted)).abs() < 1e-3);
+    }
+
+    #[test]
+    fn multiresolution_map_fits_the_same_plane_after_moving() {
+        let mut map = IVoxHashMap::new(0.5, 4096, IVoxNearbyType::Nearby26, 0.01);
+        map.enable_multiresolution(4096, 0.01);
+        fit_before_and_after_shift(map);
+    }
+
+    #[test]
+    fn single_resolution_map_fits_the_same_plane_after_moving() {
+        fit_before_and_after_shift(IVoxHashMap::new(0.5, 4096, IVoxNearbyType::Nearby26, 0.01));
+    }
 }

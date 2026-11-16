@@ -39,6 +39,8 @@ std = ["pelorus/std"]
 # win over libm. nalgebra and faer then also use std's maths, and faer its
 # runtime-dispatched SIMD kernels. The library itself stays without its std feature.
 system-maths = ["either/std", "nalgebra/std", "faer/std"]
+# Run the library in `f32` (see `pelorus::Real`).
+f32 = ["pelorus/f32", "pelorus_core/f32"]
 # Convert MCAP bags into the input stream. Needs std.
 convert = [
   "std",

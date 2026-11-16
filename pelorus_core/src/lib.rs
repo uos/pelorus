@@ -17,8 +17,13 @@ pub mod adaptive_execution;
 pub mod clock;
 #[cfg(feature = "std")]
 pub mod config;
+#[cfg(not(feature = "f32"))]
+mod default_config;
+#[cfg(feature = "f32")]
+#[path = "default_config_f32.rs"]
 mod default_config;
 pub mod lie;
+pub mod math;
 pub mod sync;
 pub mod timing;
 
@@ -26,6 +31,79 @@ pub mod log_debouncer;
 
 pub use clock::Instant;
 pub use lie::{SE3, SO3};
+
+/// Scalar type of the odometry: the configuration, the messages, the filter,
+/// the registration and the public API. The `f32` feature makes it `f32` for
+/// cores with a single-precision FPU.
+#[cfg(not(feature = "f32"))]
+pub type Real = f64;
+/// Scalar type of the odometry: the configuration, the messages, the filter,
+/// the registration and the public API. The `f32` feature makes it `f32` for
+/// cores with a single-precision FPU.
+#[cfg(feature = "f32")]
+pub type Real = f32;
+
+/// Whether [`Real`] is `f32`, for tolerances that depend on its precision.
+pub const REAL_IS_F32: bool = cfg!(feature = "f32");
+
+/// Step of the central differences in [`Real`]. It balances truncation
+/// against rounding, which an `f32` reaches at a much larger step.
+#[cfg(not(feature = "f32"))]
+pub const CENTRAL_DIFFERENCE_STEP: Real = 1e-6;
+/// Step of the central differences in [`Real`]. It balances truncation
+/// against rounding, which an `f32` reaches at a much larger step.
+#[cfg(feature = "f32")]
+pub const CENTRAL_DIFFERENCE_STEP: Real = 5e-3;
+
+/// `x`, an `f32` or an `f64`, as [`Real`].
+#[inline]
+pub fn real<T: ToReal>(x: T) -> Real {
+    x.to_real()
+}
+
+/// `secs` seconds as a [`Duration`](core::time::Duration).
+#[inline]
+pub fn duration_from_secs(secs: Real) -> core::time::Duration {
+    #[cfg(feature = "f32")]
+    {
+        core::time::Duration::from_secs_f32(secs)
+    }
+    #[cfg(not(feature = "f32"))]
+    {
+        core::time::Duration::from_secs_f64(secs)
+    }
+}
+
+/// The floats [`real`] takes.
+pub trait ToReal: Copy {
+    fn to_real(self) -> Real;
+}
+
+impl ToReal for f32 {
+    #[inline]
+    fn to_real(self) -> Real {
+        nalgebra::convert(self)
+    }
+}
+
+impl ToReal for f64 {
+    #[inline]
+    fn to_real(self) -> Real {
+        nalgebra::convert(self)
+    }
+}
+
+/// `x` as `f64`.
+#[inline]
+pub fn double(x: Real) -> f64 {
+    nalgebra::convert(x)
+}
+
+/// `x` as `f32`.
+#[inline]
+pub fn single(x: Real) -> f32 {
+    nalgebra::convert(x)
+}
 
 /// The reference default configuration, in Ratslang.
 pub const DEFAULT_CONFIG_STR: &str = include_str!("../default.rl");
@@ -45,8 +123,8 @@ impl PointXYZITimestamp<5> for RobosensePoint {
         self.intensity / 255.0
     }
 
-    fn timestamp(&self) -> f64 {
-        self.timestamp * 1.0
+    fn timestamp(&self) -> PointTime {
+        PointTime::EpochSecs(self.timestamp)
     }
 
     fn xyz(&self) -> nalgebra::Point3<f32> {
@@ -68,8 +146,8 @@ impl PointXYZITimestamp<4> for RobosensePointNoIntensity {
         0.0
     }
 
-    fn timestamp(&self) -> f64 {
-        self.timestamp * 1.0
+    fn timestamp(&self) -> PointTime {
+        PointTime::EpochSecs(self.timestamp)
     }
 
     fn xyz(&self) -> nalgebra::Point3<f32> {
@@ -92,8 +170,8 @@ impl PointXYZITimestamp<5> for VelodynePoint {
         self.intensity / 255.0
     }
 
-    fn timestamp(&self) -> f64 {
-        self.time as f64
+    fn timestamp(&self) -> PointTime {
+        PointTime::Offset(self.time)
     }
 
     fn xyz(&self) -> nalgebra::Point3<f32> {
@@ -115,8 +193,8 @@ impl PointXYZITimestamp<4> for VelodynePointNoIntensity {
         1.0
     }
 
-    fn timestamp(&self) -> f64 {
-        self.time as f64
+    fn timestamp(&self) -> PointTime {
+        PointTime::Offset(self.time)
     }
 
     fn xyz(&self) -> nalgebra::Point3<f32> {
@@ -139,8 +217,8 @@ impl PointXYZITimestamp<5> for LivoxPoint {
         self.intensity as f32 / 255.0
     }
 
-    fn timestamp(&self) -> f64 {
-        self.t as f64 * 1e-9
+    fn timestamp(&self) -> PointTime {
+        PointTime::Offset(single(self.t as Real * 1e-9))
     }
 
     fn xyz(&self) -> nalgebra::Point3<f32> {
@@ -162,8 +240,8 @@ impl PointXYZITimestamp<4> for LivoxPointNoIntensity {
         1.0
     }
 
-    fn timestamp(&self) -> f64 {
-        self.t as f64 * 1e-9
+    fn timestamp(&self) -> PointTime {
+        PointTime::Offset(single(self.t as Real * 1e-9))
     }
 
     fn xyz(&self) -> nalgebra::Point3<f32> {
@@ -187,8 +265,8 @@ impl PointXYZITimestamp<5> for LivoxPointOffsetTime {
         self.intensity as f32 / 255.0
     }
 
-    fn timestamp(&self) -> f64 {
-        self.t as f64 * 1e-9
+    fn timestamp(&self) -> PointTime {
+        PointTime::Offset(single(self.t as Real * 1e-9))
     }
 
     fn xyz(&self) -> nalgebra::Point3<f32> {
@@ -211,8 +289,8 @@ impl PointXYZITimestamp<4> for LivoxPointOffsetTimeNoIntensity {
         1.0
     }
 
-    fn timestamp(&self) -> f64 {
-        self.t as f64 * 1e-9
+    fn timestamp(&self) -> PointTime {
+        PointTime::Offset(single(self.t as Real * 1e-9))
     }
 
     fn xyz(&self) -> nalgebra::Point3<f32> {
@@ -235,8 +313,8 @@ impl PointXYZITimestamp<5> for LivoxMid360Point {
         self.intensity / 255.0
     }
 
-    fn timestamp(&self) -> f64 {
-        self.timestamp * 1e-9
+    fn timestamp(&self) -> PointTime {
+        PointTime::EpochNanos(self.timestamp)
     }
 
     fn xyz(&self) -> nalgebra::Point3<f32> {
@@ -258,8 +336,8 @@ impl PointXYZITimestamp<4> for LivoxMid360PointNoIntensity {
         1.0
     }
 
-    fn timestamp(&self) -> f64 {
-        self.timestamp * 1e-9
+    fn timestamp(&self) -> PointTime {
+        PointTime::EpochNanos(self.timestamp)
     }
 
     fn xyz(&self) -> nalgebra::Point3<f32> {
@@ -282,8 +360,8 @@ impl PointXYZITimestamp<5> for HesaiPoint {
         self.intensity / 255.0
     }
 
-    fn timestamp(&self) -> f64 {
-        self.timestamp * 1.0
+    fn timestamp(&self) -> PointTime {
+        PointTime::EpochSecs(self.timestamp)
     }
 
     fn xyz(&self) -> nalgebra::Point3<f32> {
@@ -305,8 +383,8 @@ impl PointXYZITimestamp<4> for HesaiPointNoIntensity {
         1.0
     }
 
-    fn timestamp(&self) -> f64 {
-        self.timestamp * 1.0
+    fn timestamp(&self) -> PointTime {
+        PointTime::EpochSecs(self.timestamp)
     }
 
     fn xyz(&self) -> nalgebra::Point3<f32> {
@@ -329,8 +407,8 @@ impl PointXYZITimestamp<5> for SickMultiScanPoint {
         self.i / 65535.0
     }
 
-    fn timestamp(&self) -> f64 {
-        self.ts as f64
+    fn timestamp(&self) -> PointTime {
+        PointTime::Offset(self.ts)
     }
 
     fn xyz(&self) -> nalgebra::Point3<f32> {
@@ -352,8 +430,8 @@ impl PointXYZITimestamp<4> for SickMultiScanPointNoIntensity {
         1.0
     }
 
-    fn timestamp(&self) -> f64 {
-        self.ts as f64
+    fn timestamp(&self) -> PointTime {
+        PointTime::Offset(self.ts)
     }
 
     fn xyz(&self) -> nalgebra::Point3<f32> {
@@ -376,8 +454,8 @@ impl PointXYZITimestamp<5> for BlickfeldPoint {
         self.intensity as f32 / 255.0
     }
 
-    fn timestamp(&self) -> f64 {
-        self.point_time_offset as f64 * 1e-9
+    fn timestamp(&self) -> PointTime {
+        PointTime::Offset(single(self.point_time_offset as Real * 1e-9))
     }
 
     fn xyz(&self) -> nalgebra::Point3<f32> {
@@ -399,8 +477,8 @@ impl PointXYZITimestamp<4> for BlickfeldPointNoIntensity {
         1.0
     }
 
-    fn timestamp(&self) -> f64 {
-        self.point_time_offset as f64 * 1e-9
+    fn timestamp(&self) -> PointTime {
+        PointTime::Offset(single(self.point_time_offset as Real * 1e-9))
     }
 
     fn xyz(&self) -> nalgebra::Point3<f32> {
@@ -423,8 +501,8 @@ impl PointXYZITimestamp<5> for OusterPoint {
         self.intensity / 255.0
     }
 
-    fn timestamp(&self) -> f64 {
-        self.t as f64 * 1e-9
+    fn timestamp(&self) -> PointTime {
+        PointTime::Offset(single(self.t as Real * 1e-9))
     }
 
     fn xyz(&self) -> nalgebra::Point3<f32> {
@@ -446,8 +524,8 @@ impl PointXYZITimestamp<4> for OusterPointNoIntensity {
         1.0
     }
 
-    fn timestamp(&self) -> f64 {
-        self.t as f64 * 1e-9
+    fn timestamp(&self) -> PointTime {
+        PointTime::Offset(single(self.t as Real * 1e-9))
     }
 
     fn xyz(&self) -> nalgebra::Point3<f32> {
@@ -493,21 +571,21 @@ impl PointXYZIntensity<3> for PointXYZ {
 }
 
 // const MAX_INI_COUNT: usize = 100; # unused, using time instead
-pub const COV_IMU_RAW_DEFAULT: f64 = 0.001;
-pub const COV_IMU_BIAS_DEFAULT: f64 = 0.0001;
+pub const COV_IMU_RAW_DEFAULT: Real = 0.001;
+pub const COV_IMU_BIAS_DEFAULT: Real = 0.0001;
 
 #[derive(Clone, Debug, Copy, Serialize, Deserialize)]
 pub struct ImuParameters {
-    pub cov_acc: Vector3<f64>,
-    pub cov_gyr: Vector3<f64>,
-    pub cov_gyr_bias: Vector3<f64>,
-    pub cov_acc_bias: Vector3<f64>,
-    pub initial_translation_lidar_to_imu: Vector3<f64>,
-    pub initial_rotation_lidar_to_imu: Matrix3<f64>,
-    pub kinematic_constraint_std: f64,
+    pub cov_acc: Vector3<Real>,
+    pub cov_gyr: Vector3<Real>,
+    pub cov_gyr_bias: Vector3<Real>,
+    pub cov_acc_bias: Vector3<Real>,
+    pub initial_translation_lidar_to_imu: Vector3<Real>,
+    pub initial_rotation_lidar_to_imu: Matrix3<Real>,
+    pub kinematic_constraint_std: Real,
     pub kinematic_model: KinematicModel,
-    pub wheel_odom_cov_override: Option<f64>,
-    /// Refine the configured Lidar-to-IMU extrinsic during filtering.
+    pub wheel_odom_cov_override: Option<Real>,
+    /// Refine the configured lidar-to-IMU extrinsic during filtering.
     pub estimate_extrinsic_online: bool,
     /// Ignore the IMU and propagate at a constant twist instead.
     pub lidar_only: bool,
@@ -556,7 +634,7 @@ pub enum KinematicModel {
     /// 2D holonomic motion (can move in any direction on-plane)
     Holonomic2D,
     /// Ackermann steering model (car-like)
-    Ackermann { imu_to_rear_axle: Vector3<f64> },
+    Ackermann { imu_to_rear_axle: Vector3<Real> },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -569,12 +647,12 @@ pub struct SyncParameters {
     pub global_zero_frame: String,
     pub map_frame: String,
     pub initial_scan_accumulate: usize,
-    pub wheel_odom_cov: Option<f64>,
+    pub wheel_odom_cov: Option<Real>,
     pub wheel_imu_tf_override: bool,
-    pub wheel_to_imu_rotation: nalgebra::Matrix3<f64>,
-    pub warning_debounce: f64,
+    pub wheel_to_imu_rotation: nalgebra::Matrix3<Real>,
+    pub warning_debounce: Real,
     pub lidar_as_sync: bool,
-    pub parallelism_decision_threshold_stddevs: f64,
+    pub parallelism_decision_threshold_stddevs: Real,
     pub parallelism_decision_samples_per_mode: usize,
     pub parallelism_execution_policy: adaptive_execution::ExecutionPolicy,
 }
@@ -584,14 +662,14 @@ pub struct ImuCalibrationParameters {
     pub imu_intrinsics_calib_file_path: Option<String>,
     pub imu_calibrate_gyros: bool,
     pub gyro_calibration_samples: usize,
-    /// Seconds the IMU clock runs ahead of the Lidar clock. Subtracted from
+    /// Seconds the IMU clock runs ahead of the lidar clock. Subtracted from
     /// every IMU timestamp to put both sensors on one clock.
-    pub time_offset: f64,
+    pub time_offset: Real,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct UndistortParameters {
-    pub lidar_to_imu: Isometry3<f64>,
+    pub lidar_to_imu: Isometry3<Real>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -611,7 +689,7 @@ pub enum PreprocessingBackend {
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct ImuConfigParameter {
-    pub gravity: f64,
+    pub gravity: Real,
     pub imu_lidar_tf_override: bool,
     pub madgwick_setting: crate::MadgwickSetting,
     pub calibration: ImuCalibrationParameters,
@@ -645,7 +723,7 @@ pub struct SyncNodeParameters {
     pub imu_src_topic: String,
     pub logger_prefix: String,
     pub imu_filtered_topic: String,
-    pub imu_predictor_init_time_sec: f64,
+    pub imu_predictor_init_time_sec: Real,
     pub cloud_qos: Qos,
     pub cloud_subscriber_mode: PointCloudMode,
     pub wheel_qos: Qos,
@@ -704,10 +782,10 @@ pub enum PointCloudMode {
 /// Controls which estimator updates are published as odometry.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub enum OdometryRate {
-    /// Publish only Lidar-corrected states (legacy behavior).
+    /// Publish only lidar-corrected states (legacy behavior).
     #[default]
     Lidar,
-    /// Publish live IMU predictions and Lidar-corrected states.
+    /// Publish live IMU predictions and lidar-corrected states.
     ImuAndLidar,
 }
 
@@ -836,16 +914,16 @@ pub struct LioConfig {
     pub imu_odom_qos: Qos,
     pub imu_path_qos: Qos,
     pub path_qos: Qos,
-    pub map_resolution: f64,
+    pub map_resolution: Real,
     pub map_capacity: usize,
     /// Experimental CPU map with geometry-selected support at four resolutions.
     #[serde(default)]
     pub map_multiresolution: bool,
     pub imu_params: ImuParameters,
-    pub lidar_odom_cov: f64,
+    pub lidar_odom_cov: Real,
     pub sync_params: SyncParameters,
     pub sync_node_params: SyncNodeParameters,
-    pub neighbor_max_range: f64,
+    pub neighbor_max_range: Real,
     pub ekf_max_iterations: usize,
     pub dist_update_sensitivity: f32,
     pub rerun: RerunConfig,
@@ -853,7 +931,7 @@ pub struct LioConfig {
     pub export: ExportConfig,
     pub offline: OfflineConfig,
     pub base_link_frame: Option<String>,
-    pub base_to_lidar: Isometry3<f64>,
+    pub base_to_lidar: Isometry3<Real>,
     pub base_to_lidar_tf_override: bool,
     pub cpu_only: bool,
     pub num_threads: usize,
@@ -1139,6 +1217,58 @@ pub fn secs_to_timestamp(secs: f64) -> TimeMsg {
     TimeMsg { sec, nanosec }
 }
 
+/// Where the odometry's computation frame sits in the world frame.
+///
+/// The filter state and the map live in a frame that follows the robot, so
+/// their coordinates stay small and keep their precision in [`Real`]. The
+/// frame moves in whole cells of `cell` metres, which shifts the voxel grid of
+/// the map exactly. Only output converts to world coordinates.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct Origin {
+    /// Position of the computation frame in the world, in cells.
+    pub cells: [i64; 3],
+    /// Edge length of one cell in metres.
+    pub cell: Real,
+}
+
+impl Origin {
+    /// The computation frame at the world origin, moving in cells of `cell` metres.
+    pub fn new(cell: Real) -> Self {
+        Self {
+            cells: [0; 3],
+            cell,
+        }
+    }
+
+    /// Position of the computation frame in the world in metres.
+    pub fn offset(&self) -> Vector3<Real> {
+        self.shift_in_metres(self.cells)
+    }
+
+    /// A pose in the computation frame as a pose in the world.
+    pub fn to_world(&self, local: &Isometry3<Real>) -> Isometry3<Real> {
+        let mut world = *local;
+        world.translation.vector += self.offset();
+        world
+    }
+
+    /// The whole cells a frame moves by to bring `position` closest to its
+    /// origin, or `None` while every coordinate stays within `distance`.
+    pub fn recentering(&self, position: &Vector3<Real>, distance: Real) -> Option<[i64; 3]> {
+        if position.iter().all(|p| p.abs() <= distance) {
+            return None;
+        }
+        Some(core::array::from_fn(|axis| {
+            (position[axis] / self.cell).round() as i64
+        }))
+    }
+
+    /// `shift` cells in metres, in [`Real`].
+    pub fn shift_in_metres(&self, shift: [i64; 3]) -> Vector3<Real> {
+        Vector3::from(shift.map(|c| c as Real * self.cell))
+    }
+}
+
 const NANOS_PER_SEC: i64 = 1_000_000_000;
 
 /// A point in time in integer nanoseconds since the Unix epoch.
@@ -1180,13 +1310,51 @@ impl Stamp {
     }
 
     /// Seconds from `earlier` to `self`, negative when `self` comes first.
-    pub fn secs_since(self, earlier: Self) -> f64 {
-        (self.0 - earlier.0) as f64 / NANOS_PER_SEC as f64
+    pub fn secs_since(self, earlier: Self) -> Real {
+        (self.0 - earlier.0) as Real / NANOS_PER_SEC as Real
     }
 
     /// The stamp `secs` seconds later, or earlier for a negative `secs`.
-    pub fn add_secs(self, secs: f64) -> Self {
-        Self(self.0 + (secs * NANOS_PER_SEC as f64).round() as i64)
+    pub fn add_secs(self, secs: Real) -> Self {
+        Self(self.0 + (secs * NANOS_PER_SEC as Real).round() as i64)
+    }
+
+    /// The stamp `value` units of `nanos_per_unit` nanoseconds after the
+    /// epoch, to the nearest nanosecond, or `None` for NaN, the infinities
+    /// and stamps beyond `i64`.
+    ///
+    /// The bits are decoded with integer arithmetic only, so a core without a
+    /// double-precision FPU reads the `f64` stamps of a driver without one.
+    pub fn from_f64_bits(value: f64, nanos_per_unit: u32) -> Option<Self> {
+        let bits = value.to_bits();
+        let exponent = ((bits >> 52) & 0x7ff) as i32;
+        if exponent == 0x7ff {
+            return None;
+        }
+        if exponent == 0 {
+            // Zero, or a subnormal far below a nanosecond.
+            return Some(Self(0));
+        }
+        // `value` is `mantissa * 2^shift`.
+        let mantissa = u128::from((bits & ((1 << 52) - 1)) | (1 << 52));
+        let scaled = mantissa * u128::from(nanos_per_unit);
+        let shift = exponent - 1075;
+        let nanos = if shift >= 0 {
+            // `scaled` stays below 2^85, so a larger shift leaves `i64` anyway.
+            if shift > 42 {
+                return None;
+            }
+            scaled << shift
+        } else {
+            let down = shift.unsigned_abs();
+            if down >= 128 {
+                0
+            } else {
+                (scaled + (1 << (down - 1))) >> down
+            }
+        };
+        let nanos = i64::try_from(nanos).ok()?;
+        Some(Self(if bits >> 63 == 1 { -nanos } else { nanos }))
     }
 
     /// Whether this is a time after the epoch. Times not known yet are zero.
@@ -1252,6 +1420,37 @@ mod stamp_tests {
     }
 
     #[test]
+    fn f64_bits_decode_to_the_nearest_nanosecond() {
+        assert_eq!(
+            Stamp::from_f64_bits(100.25, 1_000_000_000),
+            Some(Stamp(100_250_000_000))
+        );
+        assert_eq!(
+            Stamp::from_f64_bits(-2.5, 1_000_000_000),
+            Some(Stamp(-2_500_000_000))
+        );
+        assert_eq!(
+            Stamp::from_f64_bits(1.5e18, 1),
+            Some(Stamp(1_500_000_000_000_000_000))
+        );
+        assert_eq!(Stamp::from_f64_bits(0.0, 1_000_000_000), Some(Stamp(0)));
+        assert_eq!(Stamp::from_f64_bits(1e-12, 1_000_000_000), Some(Stamp(0)));
+        assert_eq!(Stamp::from_f64_bits(f64::NAN, 1), None);
+        assert_eq!(Stamp::from_f64_bits(f64::INFINITY, 1), None);
+        assert_eq!(Stamp::from_f64_bits(1e30, 1), None);
+        // Epochs as Hesai and Robosense send them, against the exact value.
+        for i in 0..10_000 {
+            let secs = 1_788_966_795.0 + f64::from(i) * 0.000_123_7;
+            let exact = Stamp::from_f64_bits(secs, 1_000_000_000).unwrap();
+            let reference = (secs * 1e9).round() as i64;
+            // `secs * 1e9` rounds once more, by up to 128 ns at this size.
+            assert!((exact.0 - reference).abs() <= 128, "{secs}");
+            let back = exact.0 as f64 / 1e9;
+            assert!((back - secs).abs() <= 1e-9 + secs * f64::EPSILON, "{secs}");
+        }
+    }
+
+    #[test]
     fn seconds_convert_to_the_nearest_nanosecond() {
         assert_eq!(Stamp::from_secs(100.25), Stamp(100_250_000_000));
         assert_eq!(Stamp(100_250_000_000).as_secs(), 100.25);
@@ -1269,9 +1468,19 @@ pub trait PointXYZITimestamp<const N: usize>:
     /// When setting back the point, it will be converted to 0..255 (f32).
     fn intensity(&self) -> f32;
 
-    /// Normalize vendor specific timestamps to seconds.
-    /// The semantics of the per-point timestamp are handled elsewhere.
-    fn timestamp(&self) -> f64;
+    /// When the point was measured, in the form the driver stores it.
+    fn timestamp(&self) -> PointTime;
+}
+
+/// When a point was measured.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum PointTime {
+    /// Seconds after the scan header stamp.
+    Offset(f32),
+    /// Seconds since the epoch, as the driver stores them.
+    EpochSecs(f64),
+    /// Nanoseconds since the epoch, as the driver stores them.
+    EpochNanos(f64),
 }
 
 pub trait PointXYZIntensity<const N: usize>:
@@ -1320,15 +1529,15 @@ impl PointXYZIT {
 
 #[derive(Debug)]
 pub struct Twist {
-    pub linear: Vector3<f64>,
-    pub angular: Vector3<f64>,
+    pub linear: Vector3<Real>,
+    pub angular: Vector3<Real>,
 }
 
 #[derive(Debug, Clone, Default)]
 pub struct ImuPosePrediction {
-    pub pose: Isometry3<f64>,
-    pub linear_velocity: Vector3<f64>,
-    pub angular_velocity: Vector3<f64>,
+    pub pose: Isometry3<Real>,
+    pub linear_velocity: Vector3<Real>,
+    pub angular_velocity: Vector3<Real>,
     // pub lidar_imu_extrinsic_rotation: nalgebra::Matrix3<f64>,
     // pub lidar_imu_extrinsic_translation: nalgebra::Vector3<f64>,
 }
@@ -1339,16 +1548,16 @@ pub struct SyncProcessedCloud {
     pub received_at: Instant,
     pub cloud: Vec<PointXYZIT>,
     pub passthrough: Option<Vec<PointXYZIT>>,
-    /// IMU measurements synchronized to this Lidar frame.
+    /// IMU measurements synchronized to this lidar frame.
     pub imu_buffer: Vec<ImuMsg>,
     pub imu_frame: String,
     pub header: HeaderMsg,
-    pub end_of_frame_guess: Isometry3<f64>,
+    pub end_of_frame_guess: Isometry3<Real>,
     pub end_of_frame_time: TimeMsg,
     pub lidar_end_time_abs: TimeMsg, // TODO merge with upper end_frame_time. currently changing the upper leads to strange effects. probably misused
     pub end_of_frame_twist: Twist,
-    pub pose_covariance: [f64; 36],
-    pub twist_covariance: [f64; 36],
+    pub pose_covariance: [Real; 36],
+    pub twist_covariance: [Real; 36],
     pub should_map_only: bool,
     pub runtime_eval: timing::RuntimeEvaluator,
 }
@@ -1391,10 +1600,10 @@ pub type ImuPredictorUndistort = dyn for<'a, 'b> Fn(
         Stamp,
         &mut Vec<PointXYZIT>,
         Option<&mut Vec<PointXYZIT>>,
-    ) -> Either<ImuPosePrediction, Isometry3<f64>>
+    ) -> Either<ImuPosePrediction, Isometry3<Real>>
     + Send;
 
-pub fn imu_msg_to_cov(msg: &ImuMsg) -> [f64; 36] {
+pub fn imu_msg_to_cov(msg: &ImuMsg) -> [Real; 36] {
     let mut covariances = [0.0; 36];
     covariances[0] =
         (msg.linear_acceleration_covariance[0] + msg.angular_velocity_covariance[0]) / 2.0;
@@ -1413,7 +1622,7 @@ pub fn imu_msg_to_cov(msg: &ImuMsg) -> [f64; 36] {
     covariances
 }
 
-pub fn imu_msg_to_twist(msg: &ImuMsg) -> [f64; 6] {
+pub fn imu_msg_to_twist(msg: &ImuMsg) -> [Real; 6] {
     let mut twist = [0.0; 6];
     twist[0] = msg.linear_acceleration[0];
     twist[1] = msg.linear_acceleration[1];
@@ -1449,7 +1658,7 @@ impl core::fmt::Display for LidarParseError {
         match self {
             LidarParseError::UnknownVendor => write!(
                 f,
-                "Unknown Lidar vendor, can not assume per point timestamp format"
+                "Unknown lidar vendor, can not assume per point timestamp format"
             ),
         }
     }
@@ -1457,14 +1666,26 @@ impl core::fmt::Display for LidarParseError {
 
 #[derive(Debug, Clone, Default)]
 pub struct ImuMsg {
-    pub orientation: [f64; 4],
-    pub orientation_covariance: [f64; 9],
-    pub angular_velocity: [f64; 3],
-    pub angular_velocity_covariance: [f64; 9],
-    pub linear_acceleration: [f64; 3],
-    pub linear_acceleration_covariance: [f64; 9],
+    pub orientation: [Real; 4],
+    pub orientation_covariance: [Real; 9],
+    pub angular_velocity: [Real; 3],
+    pub angular_velocity_covariance: [Real; 9],
+    pub linear_acceleration: [Real; 3],
+    pub linear_acceleration_covariance: [Real; 9],
     pub frame_id: String,
     pub stamp: crate::TimeMsg,
+}
+
+impl ImuMsg {
+    /// The angular velocity in [`Real`].
+    pub fn gyro(&self) -> Vector3<Real> {
+        Vector3::from(self.angular_velocity)
+    }
+
+    /// The linear acceleration in [`Real`].
+    pub fn acc(&self) -> Vector3<Real> {
+        Vector3::from(self.linear_acceleration)
+    }
 }
 
 pub fn time_msg_from_secs(secs: f64) -> crate::TimeMsg {
@@ -1476,11 +1697,11 @@ pub fn time_msg_from_secs(secs: f64) -> crate::TimeMsg {
 #[derive(Debug, Clone, Copy)]
 pub struct OdomMsg {
     /// Linear velocity expressed in the odometry measurement frame.
-    pub twist_linear: nalgebra::Vector3<f64>,
-    pub twist_angular: nalgebra::Vector3<f64>,
-    pub twist_cov: [f64; 36],
+    pub twist_linear: nalgebra::Vector3<Real>,
+    pub twist_angular: nalgebra::Vector3<Real>,
+    pub twist_cov: [Real; 36],
     /// Rotation taking vectors from the odometry measurement frame to the IMU frame.
-    pub twist_frame_to_imu: nalgebra::Matrix3<f64>,
+    pub twist_frame_to_imu: nalgebra::Matrix3<Real>,
 
     pub stamp: crate::TimeMsg,
 }

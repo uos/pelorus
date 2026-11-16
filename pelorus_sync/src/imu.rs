@@ -1,10 +1,9 @@
 use alloc::boxed::Box;
 use alloc::vec::Vec;
 use either::Either::{Left, Right};
-use imu_fusion::FusionAhrs;
 use pelorus_core::{
-    ImuMsg, ImuPredictorUndistort, PointXYZIT, Stamp, UndistortParameters, imu_msg_to_cov,
-    imu_msg_to_twist,
+    ImuMsg, ImuPredictorUndistort, PointXYZIT, Real, Stamp, UndistortParameters, imu_msg_to_cov,
+    imu_msg_to_twist, real, single,
 };
 #[cfg(feature = "rayon")]
 use rayon::iter::{IntoParallelIterator, ParallelIterator};
@@ -17,51 +16,51 @@ use pelorus_core::{SE3, SO3};
 use ros_pointcloud2::ros::TimeMsg;
 
 pub struct ImuMadgwick {
-    fusion: imu_fusion::FusionAhrs,
-    gravity: f64,
+    fusion: crate::ahrs::Ahrs,
+    gravity: Real,
 }
 
 impl ImuMadgwick {
-    pub fn new(gravity: f64) -> Self {
+    pub fn new(gravity: Real) -> Self {
         ImuMadgwick {
-            fusion: FusionAhrs::new(),
+            fusion: crate::ahrs::Ahrs::new(),
             gravity,
         }
     }
     /// Update the AHRS with new sensor data.
     /// gyroscope units are radians/s
     /// accelerometer units are m/s^2
-    pub fn update_no_magnetometer_ros(&mut self, dt: f64, gyro: [f64; 3], accel: [f64; 3]) {
-        let gyro = gyro.map(|v| v.to_degrees());
-        let gyro = imu_fusion::FusionVector::new(gyro[0] as f32, gyro[1] as f32, gyro[2] as f32);
+    pub fn update_no_magnetometer_ros(&mut self, dt: Real, gyro: [Real; 3], accel: [Real; 3]) {
+        let gyro = gyro.map(|v| single(v.to_degrees()));
+        let gyro = crate::ahrs::Vector::new(gyro[0], gyro[1], gyro[2]);
 
         let accel = accel.map(|a| a / self.gravity);
-        let accel =
-            imu_fusion::FusionVector::new(accel[0] as f32, accel[1] as f32, accel[2] as f32);
+        let accel = accel.map(single);
+        let accel = crate::ahrs::Vector::new(accel[0], accel[1], accel[2]);
 
-        self.fusion.update_no_mag(gyro, accel, dt as f32)
+        self.fusion.update_no_mag(gyro, accel, single(dt))
     }
 
     /// Get orientation in world frame as a quaternion.
     /// The quaternion is in the form [w, x, y, z].
-    pub fn get_quaternion(&self) -> [f64; 4] {
+    pub fn get_quaternion(&self) -> [Real; 4] {
         [
-            self.fusion.quaternion.w as f64,
-            self.fusion.quaternion.x as f64,
-            self.fusion.quaternion.y as f64,
-            self.fusion.quaternion.z as f64,
+            real(self.fusion.quaternion.w),
+            real(self.fusion.quaternion.x),
+            real(self.fusion.quaternion.y),
+            real(self.fusion.quaternion.z),
         ]
     }
 
     /// Get linear acceleration in sensor frame.
     /// The acceleration is in the form [x, y, z].
     /// Units are g.
-    pub fn get_linear_acceleration(&self) -> [f64; 3] {
+    pub fn get_linear_acceleration(&self) -> [Real; 3] {
         let acc = self.fusion.linear_acc();
-        [acc.x as f64, acc.y as f64, acc.z as f64]
+        [real(acc.x), real(acc.y), real(acc.z)]
     }
 
-    pub fn get_linear_acceleration_ros(&self) -> [f64; 3] {
+    pub fn get_linear_acceleration_ros(&self) -> [Real; 3] {
         self.get_linear_acceleration().map(|a| a * self.gravity)
     }
 }
@@ -117,12 +116,12 @@ impl GyrInt {
         }
     }
 
-    pub fn get_kum_covariances(&self) -> [f64; 36] {
+    pub fn get_kum_covariances(&self) -> [Real; 36] {
         imu_msg_to_cov(&self.imu_kum)
     }
 
     // TODO remove acceleration usage
-    pub fn integrate(&mut self, imu: &ImuMsg, init_imu: &ImuMsg, gravity: f64) {
+    pub fn integrate(&mut self, imu: &ImuMsg, init_imu: &ImuMsg, gravity: Real) {
         let gravity = Vector3::new(0.0, 0.0, -gravity);
 
         if self.v_imu.is_empty() {
@@ -226,13 +225,13 @@ pub struct ImuProcess {
     last_lidar_stamp: Option<Stamp>,
     last_imu: Option<ImuMsg>,
     pub gyr_int: GyrInt,
-    integrated_guess: (Isometry3<f64>, TimeMsg),
+    integrated_guess: (Isometry3<Real>, TimeMsg),
     runtime_eval: crate::RuntimeEvaluator,
 
-    pub gravity: f64,
+    pub gravity: Real,
 }
 
-fn quaternion_to_so3_exp(q: &UnitQuaternion<f64>) -> SO3 {
+fn quaternion_to_so3_exp(q: &UnitQuaternion<Real>) -> SO3 {
     SO3(*q)
 }
 
@@ -240,16 +239,16 @@ fn quaternion_to_so3_exp(q: &UnitQuaternion<f64>) -> SO3 {
 pub struct ImuProcessedCloud<'a> {
     pub cloud: Vec<PointXYZIT>,
     pub cloud_output: Option<Vec<PointXYZIT>>,
-    pub last_covariance: [f64; 36],
-    pub last_twist: [f64; 6],
-    pub integrated_covariance: [f64; 36],
-    pub end_of_frame_guess: Isometry3<f64>,
+    pub last_covariance: [Real; 36],
+    pub last_twist: [Real; 6],
+    pub integrated_covariance: [Real; 36],
+    pub end_of_frame_guess: Isometry3<Real>,
     pub end_of_frame_guess_time: TimeMsg,
     pub runtime_eval: &'a crate::RuntimeEvaluator,
 }
 
 impl ImuProcess {
-    pub fn new(gravity: f64) -> Self {
+    pub fn new(gravity: Real) -> Self {
         Self {
             gravity,
             last_lidar_stamp: None,
@@ -265,7 +264,7 @@ impl ImuProcess {
         imu_data: &Vec<ImuMsg>,
         start_time: Stamp,
         config: Option<&UndistortParameters>,
-    ) -> (Isometry3<f64>, SE3) {
+    ) -> (Isometry3<Real>, SE3) {
         self.integrate_gyr(imu_data, start_time);
 
         let mut t_l_be = SE3::from_rotation_and_translation(
@@ -290,7 +289,7 @@ impl ImuProcess {
         }
 
         // quat from rot mat
-        let rot3 = Rotation3::from_matrix(&t_l_be.rotation().matrix());
+        let rot3 = pelorus_core::math::rotation_from_matrix(&t_l_be.rotation().matrix());
         let quat = UnitQuaternion::from_rotation_matrix(&rot3);
         let trans = Translation3::from(t_l_be.translation());
         (Isometry3::from_parts(trans, quat), t_l_be)
@@ -318,7 +317,9 @@ impl ImuProcess {
             )
         }) {
             Some(Left(pose)) => {
-                let rot = Rotation3::from_matrix(pose.pose.rotation.to_rotation_matrix().matrix());
+                let rot = pelorus_core::math::rotation_from_matrix(
+                    pose.pose.rotation.to_rotation_matrix().matrix(),
+                );
                 let quat = UnitQuaternion::from_rotation_matrix(&rot);
 
                 Isometry3::from_parts(pose.pose.translation, quat)
@@ -372,7 +373,7 @@ impl ImuProcess {
     pub fn undistort_cloud_livox(
         &self,
         cloud_in_out: Vec<PointXYZIT>,
-        delta_time: f64,
+        delta_time: Real,
         pose_end_of_frame: SE3,
     ) -> Vec<ros_pointcloud2::points::PointXYZI> {
         let tbe = pose_end_of_frame.translation();
@@ -384,19 +385,19 @@ impl ImuProcess {
         iter.map(|p| {
             let ring = p.timestamp.floor() as i64;
             let dt_bi = p.timestamp - ring as f32;
-            let ratio_bi = dt_bi / delta_time as f32;
+            let ratio_bi = dt_bi / single(delta_time);
             let ratio_ie = 1.0 - ratio_bi;
 
             let rso3_ie = ratio_ie * rso3_be.cast();
             let rie = SO3::exp(rso3_ie.cast());
 
             let tie = ratio_ie * tbe.cast();
-            let v_pt_i = Vector3::new(p.x as f64, p.y as f64, p.z as f64);
+            let v_pt_i = Vector3::new(real(p.x), real(p.y), real(p.z));
             let v_pt_comp_e = rie.inverse().matrix() * (v_pt_i - tie.cast());
             ros_pointcloud2::points::PointXYZI::new(
-                v_pt_comp_e.x as f32,
-                v_pt_comp_e.y as f32,
-                v_pt_comp_e.z as f32,
+                single(v_pt_comp_e.x),
+                single(v_pt_comp_e.y),
+                single(v_pt_comp_e.z),
                 p.intensity,
             )
         })

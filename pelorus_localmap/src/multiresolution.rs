@@ -7,8 +7,8 @@ use core::hash::BuildHasher;
 #[allow(unused_imports)]
 use nalgebra::ComplexField;
 use nalgebra::{Isometry3, Matrix3, Point3, Vector3};
-use pelorus_core::PointXYZIT;
 use pelorus_core::sync::{OnceLock, RwLock};
+use pelorus_core::{PointXYZIT, Real};
 
 use crate::{FxHashMap, FxHashSet, VoxelDistribution};
 
@@ -56,8 +56,14 @@ impl MissCache {
 }
 
 fn plane_eigen(covariance: Matrix3<f32>) -> (Vector3<f32>, Matrix3<f32>) {
-    let mut a = covariance.cast::<f64>();
-    let mut v = Matrix3::<f64>::identity();
+    let mut a = covariance.cast::<Real>();
+    let mut v = Matrix3::<Real>::identity();
+    // Off-diagonal size, relative to the trace, below which the rotation stops.
+    let tolerance: Real = if pelorus_core::REAL_IS_F32 {
+        1e-6
+    } else {
+        1e-14
+    };
     for _ in 0..24 {
         let (mut p, mut q) = (0, 1);
         if a[(0, 2)].abs() > a[(p, q)].abs() {
@@ -66,7 +72,9 @@ fn plane_eigen(covariance: Matrix3<f32>) -> (Vector3<f32>, Matrix3<f32>) {
         if a[(1, 2)].abs() > a[(p, q)].abs() {
             (p, q) = (1, 2);
         }
-        if a[(p, q)].abs() < 1e-14 * (a[(0, 0)].abs() + a[(1, 1)].abs() + a[(2, 2)].abs() + 1e-20) {
+        if a[(p, q)].abs()
+            < tolerance * (a[(0, 0)].abs() + a[(1, 1)].abs() + a[(2, 2)].abs() + 1e-20)
+        {
             break;
         }
         let tau = (a[(q, q)] - a[(p, p)]) / (2.0 * a[(p, q)]);
@@ -100,8 +108,8 @@ fn plane_eigen(covariance: Matrix3<f32>) -> (Vector3<f32>, Matrix3<f32>) {
         }
     }
     (
-        Vector3::from_fn(|i, _| a[(indices[i], indices[i])] as f32),
-        Matrix3::from_fn(|r, c| v[(r, indices[c])] as f32),
+        Vector3::from_fn(|i, _| a[(indices[i], indices[i])]).cast::<f32>(),
+        Matrix3::from_fn(|r, c| v[(r, indices[c])]).cast::<f32>(),
     )
 }
 
@@ -350,6 +358,23 @@ impl Level {
         }
     }
 
+    /// Moves the level by `cells` of its own resolution, so every cell keeps
+    /// its points and only its key and mean change.
+    fn shift(&mut self, cells: Grid, offset: Vector3<f32>) {
+        for key in &mut self.keys {
+            *key = (key.0 - cells.0, key.1 - cells.1, key.2 - cells.2);
+        }
+        self.index.clear();
+        for (slot, key) in self.keys.iter().enumerate() {
+            self.index.insert(*key, slot as u32);
+        }
+        for cell in &mut self.cells {
+            cell.distribution.mean -= offset;
+            cell.neighborhood = OnceLock::new();
+        }
+        self.miss.clear();
+    }
+
     fn grid(&self, point: &Point3<f32>) -> Grid {
         (
             (point.x / self.resolution).floor() as i32,
@@ -459,6 +484,23 @@ impl MultiResolutionMap {
         self.levels.iter().all(|level| level.len() == 0)
     }
 
+    /// Edge length of the coarsest level, the step the map can move by exactly.
+    pub fn coarsest_resolution(&self) -> f32 {
+        self.levels[3].resolution
+    }
+
+    /// Moves the map by `cells` of the coarsest level, `offset` metres.
+    pub fn shift(&mut self, cells: [i32; 3], offset: Vector3<f32>) {
+        let coarsest = self.coarsest_resolution();
+        for level in &mut self.levels {
+            let factor = (coarsest / level.resolution).round() as i32;
+            level.shift(
+                (cells[0] * factor, cells[1] * factor, cells[2] * factor),
+                offset,
+            );
+        }
+    }
+
     pub fn clear(&mut self) {
         for level in &mut self.levels {
             level.clear();
@@ -490,7 +532,7 @@ impl MultiResolutionMap {
             .collect()
     }
 
-    pub fn add(&mut self, points: &[PointXYZIT], transform: &Isometry3<f64>, scan: usize) {
+    pub fn add(&mut self, points: &[PointXYZIT], transform: &Isometry3<Real>, scan: usize) {
         let mut keyed: Vec<_> = points
             .iter()
             .filter_map(|p| {

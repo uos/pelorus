@@ -174,6 +174,20 @@ impl Livodish {
         }
     }
 
+    /// Moves every voxel by `offset` metres. The voxel hash is linear in the
+    /// grid key, so a whole-cell move subtracts the hash of that move from
+    /// every key and keeps every collision as it was.
+    pub fn shift(&mut self, key_shift: i32, offset: nalgebra::Vector3<f32>) {
+        self.lookup.clear();
+        for (index, entry) in self.buffer.iter_mut().enumerate() {
+            if let Some(Value((key, distribution))) = entry {
+                *key = key.wrapping_sub(key_shift);
+                distribution.mean -= offset;
+                self.lookup.insert(*key, index);
+            }
+        }
+    }
+
     pub fn get_map(&self) -> Vec<nalgebra::Point3<f32>> {
         self.buffer
             .iter()

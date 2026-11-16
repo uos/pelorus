@@ -3,7 +3,8 @@
 //!
 //! ```text
 //! magic         b"PELORUS-STREAM-1"
-//! config        u32 length, postcard-encoded LioConfig
+//! config        u32 length, postcard-encoded LioConfig, in the precision of the
+//!               build that wrote it
 //! records until the end of the file:
 //!   1 IMU       i32 sec, u32 nanosec, 37 f64 (orientation [w x y z] and covariance,
 //!               angular velocity and covariance, linear acceleration and covariance)
@@ -16,7 +17,7 @@
 
 use std::io::{self, Read};
 
-use pelorus::{ImuMeasurement, LioConfig, PointCloud2Msg};
+use pelorus::{ImuMeasurement, PointCloud2Msg};
 use ros_pointcloud2::ros::{HeaderMsg, PointFieldMsg, TimeMsg};
 use ros_pointcloud2::{CloudDimensions, Denseness, Endian};
 
@@ -34,8 +35,8 @@ pub struct Reader<R> {
 }
 
 impl<R: Read> Reader<R> {
-    /// Check the magic and read the configuration.
-    pub fn open(mut inner: R) -> io::Result<(LioConfig, Self)> {
+    /// Check the magic and read the encoded configuration.
+    pub fn open(mut inner: R) -> io::Result<(Vec<u8>, Self)> {
         let mut magic = [0; 16];
         inner.read_exact(&mut magic)?;
         if &magic != MAGIC {
@@ -43,8 +44,6 @@ impl<R: Read> Reader<R> {
         }
         let mut reader = Self { inner };
         let config = reader.bytes()?;
-        let config = postcard::from_bytes(&config)
-            .map_err(|e| invalid(&format!("invalid configuration: {e}")))?;
         Ok((config, reader))
     }
 
@@ -77,7 +76,8 @@ impl<R: Read> Reader<R> {
                     .chain(&mut imu.linear_acceleration)
                     .chain(&mut imu.linear_acceleration_covariance)
                 {
-                    *value = self.f64()?;
+                    // The driver hands the library its scalar.
+                    *value = pelorus_core::real(self.f64()?);
                 }
                 Ok(Some(Record::Imu(imu)))
             }

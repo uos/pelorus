@@ -4,24 +4,30 @@ use alloc::vec::Vec;
 use alloc::{format, vec};
 use core::ops::{AddAssign, Div, Sub};
 use core::time::Duration;
+
+use crate::Real;
 // Float maths through libm without std. With std the inherent methods take precedence.
 #[allow(unused_imports)]
 use nalgebra::ComplexField;
 
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct SlidingWindowFilter<T: Default> {
-    window_size: f64,
+    window_size: Real,
     buffer: VecDeque<T>,
     pub mean: T,
 }
 
-impl<T: Default + Sub<T> + AddAssign<<T as Div<f64>>::Output> + Div<f64>> SlidingWindowFilter<T>
+impl<T: Default + Sub<T> + AddAssign<<T as Div<Real>>::Output> + Div<Real>> SlidingWindowFilter<T>
 where
-    T: Default + Sub<Output = T> + AddAssign<<T as Div<f64>>::Output> + Div<f64, Output = T> + Copy,
+    T: Default
+        + Sub<Output = T>
+        + AddAssign<<T as Div<Real>>::Output>
+        + Div<Real, Output = T>
+        + Copy,
 {
     pub fn new(window_size: usize) -> Self {
         Self {
-            window_size: window_size as f64,
+            window_size: window_size as Real,
             buffer: VecDeque::with_capacity(window_size),
             mean: Default::default(),
         }
@@ -57,9 +63,9 @@ pub struct EvaluationFormular {
     last_measurement: Duration,
     max_time: Duration,
     sum_time: Duration,
-    filter: SlidingWindowFilter<f64>,
-    mean_for_variance: f64,
-    m2: f64,
+    filter: SlidingWindowFilter<Real>,
+    mean_for_variance: Real,
+    m2: Real,
 }
 
 impl EvaluationFormular {
@@ -78,19 +84,19 @@ impl EvaluationFormular {
         }
     }
 
-    pub fn impact_score(&self) -> f64 {
+    pub fn impact_score(&self) -> Real {
         // total time spent in this task
-        self.filter.mean * self.num_measurements as f64
+        self.filter.mean * self.num_measurements as Real
     }
 
-    pub fn variance(&self) -> f64 {
+    pub fn variance(&self) -> Real {
         if self.num_measurements < 2 {
             return 0.0;
         }
-        self.m2 / (self.num_measurements - 1) as f64
+        self.m2 / (self.num_measurements - 1) as Real
     }
 
-    pub fn std_dev(&self) -> f64 {
+    pub fn std_dev(&self) -> Real {
         self.variance().sqrt()
     }
 }
@@ -217,11 +223,11 @@ impl RuntimeEvaluator {
                 e.last_measurement = acc_time;
                 e.sum_time += acc_time;
 
-                let micros = acc_time.as_micros() as f64;
+                let micros = acc_time.as_micros() as Real;
                 e.filter.update(micros);
 
                 let delta = micros - e.mean_for_variance;
-                e.mean_for_variance += delta / e.num_measurements as f64;
+                e.mean_for_variance += delta / e.num_measurements as Real;
                 let delta2 = micros - e.mean_for_variance;
                 e.m2 += delta * delta2;
 
@@ -230,10 +236,10 @@ impl RuntimeEvaluator {
                 }
 
                 if name == "total" {
-                    let time_ms = acc_time.as_micros() as f64;
+                    let time_ms = acc_time.as_micros() as Real;
 
-                    let bucket = time_ms / MAX_HISTOGRAM_SIZE as f64;
-                    let bucket = bucket.min(self.histogram.len() as f64 - 1.0);
+                    let bucket = time_ms / MAX_HISTOGRAM_SIZE as Real;
+                    let bucket = bucket.min(self.histogram.len() as Real - 1.0);
                     self.histogram[bucket as usize] += 1;
                 }
 
@@ -248,7 +254,7 @@ impl RuntimeEvaluator {
     /// Add an externally-measured timing (e.g., from GPU timestamps).
     /// Stops the measurement with a caller-provided duration.
     /// The duration should be provided in milliseconds.
-    pub fn add_external_measurement(&mut self, name: &str, duration_ms: f64) {
+    pub fn add_external_measurement(&mut self, name: &str, duration_ms: Real) {
         self.pause();
 
         let duration = Duration::from_micros((duration_ms * 1000.0) as u64);
@@ -259,11 +265,11 @@ impl RuntimeEvaluator {
             e.last_measurement = duration;
             e.sum_time += duration;
 
-            let micros = duration.as_micros() as f64;
+            let micros = duration.as_micros() as Real;
             e.filter.update(micros);
 
             let delta = micros - e.mean_for_variance;
-            e.mean_for_variance += delta / e.num_measurements as f64;
+            e.mean_for_variance += delta / e.num_measurements as Real;
             let delta2 = micros - e.mean_for_variance;
             e.m2 += delta * delta2;
 
@@ -276,23 +282,23 @@ impl RuntimeEvaluator {
             eval.num_measurements = 1;
             eval.last_measurement = duration;
             eval.sum_time = duration;
-            eval.filter.update(duration.as_micros() as f64);
+            eval.filter.update(duration.as_micros() as Real);
             self.evaluations.push(eval);
         }
 
         self.resume();
     }
 
-    pub fn get_last_total_time_ms(&self) -> Option<f64> {
+    pub fn get_last_total_time_ms(&self) -> Option<Real> {
         for e in self.evaluations.iter() {
             if e.name == "total" && e.num_measurements > 0 {
-                return Some(e.last_measurement.as_micros() as f64 / 1000.0);
+                return Some(e.last_measurement.as_micros() as Real / 1000.0);
             }
         }
         None
     }
 
-    pub fn get_sum_of_top_level_times_ms(&self) -> f64 {
+    pub fn get_sum_of_top_level_times_ms(&self) -> Real {
         let mut total_micros = 0.0;
         for e in self.evaluations.iter() {
             if !e.name.contains('/') && e.num_measurements > 0 {
@@ -327,10 +333,10 @@ impl RuntimeEvaluator {
         ];
         let field_count: usize = table.len();
 
-        let impacts: Vec<f64> = sorted_evals.iter().map(|e| e.impact_score()).collect();
-        let max_impact = impacts.iter().cloned().fold(f64::NAN, f64::max).max(1.0);
+        let impacts: Vec<Real> = sorted_evals.iter().map(|e| e.impact_score()).collect();
+        let max_impact = impacts.iter().cloned().fold(Real::NAN, Real::max).max(1.0);
 
-        let impact_map: hashbrown::HashMap<String, f64> = sorted_evals
+        let impact_map: hashbrown::HashMap<String, Real> = sorted_evals
             .iter()
             .map(|e| (e.name.clone(), e.impact_score()))
             .collect();
@@ -416,13 +422,13 @@ impl RuntimeEvaluator {
 
         let mut total_avg_micros: u128 = 0;
         let mut total_run_avg_micros: u128 = 0;
-        let mut total_variance: f64 = 0.0; // sum of variances
+        let mut total_variance: Real = 0.0; // sum of variances
         for ef in sorted_evals.iter().filter(|e| !e.name.contains('/')) {
             let avg = (ef.sum_time / ef.num_measurements as u32).as_micros();
             let run_avg = ef.filter.mean as u128;
             total_avg_micros += avg;
             total_run_avg_micros += run_avg;
-            let sd = ef.std_dev(); // f64 microseconds
+            let sd = ef.std_dev(); // Real microseconds
             total_variance += sd * sd;
         }
         let total_stddev = total_variance.sqrt();
@@ -530,7 +536,7 @@ impl RuntimeEvaluator {
                 let micros = value.as_micros() as u64;
 
                 if i == 0 {
-                    let rel = (micros as f64) / max_impact;
+                    let rel = (micros as Real) / max_impact;
                     let mut rel_text = format!("{:.2}", rel.max(0.0));
                     // omit leading zero for values < 1: 0.33 -> .33
                     if rel_text.starts_with('0') {
@@ -580,8 +586,8 @@ impl RuntimeEvaluator {
                 } else {
                     ss.push_str("  ");
                 }
-                let count = (self.histogram[i] as f64 * line_length as f64
-                    / form.num_measurements as f64)
+                let count = (self.histogram[i] as Real * line_length as Real
+                    / form.num_measurements as Real)
                     .ceil() as usize;
                 ss.push_str(&format!(": {}", "=".repeat(count)));
                 ss.push('\n');

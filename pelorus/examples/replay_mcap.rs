@@ -17,6 +17,11 @@ use ros2_interfaces_jazzy_serde::sensor_msgs::msg::{Imu, PointCloud2};
 
 impl_pointcloud2_for_ros2_interfaces_jazzy_serde!();
 
+/// ROS messages are f64. The odometer takes [`pelorus::Real`].
+fn real<const N: usize>(values: [f64; N]) -> [pelorus::Real; N] {
+    values.map(pelorus_core::real)
+}
+
 fn imu_measurement(imu: Imu) -> ImuMeasurement {
     let (o, w, a) = (
         imu.orientation,
@@ -26,12 +31,12 @@ fn imu_measurement(imu: Imu) -> ImuMeasurement {
     ImuMeasurement {
         timestamp_sec: imu.header.stamp.sec,
         timestamp_nanosec: imu.header.stamp.nanosec,
-        orientation: [o.w, o.x, o.y, o.z],
-        orientation_covariance: imu.orientation_covariance,
-        angular_velocity: [w.x, w.y, w.z],
-        angular_velocity_covariance: imu.angular_velocity_covariance,
-        linear_acceleration: [a.x, a.y, a.z],
-        linear_acceleration_covariance: imu.linear_acceleration_covariance,
+        orientation: real([o.w, o.x, o.y, o.z]),
+        orientation_covariance: real(imu.orientation_covariance),
+        angular_velocity: real([w.x, w.y, w.z]),
+        angular_velocity_covariance: real(imu.angular_velocity_covariance),
+        linear_acceleration: real([a.x, a.y, a.z]),
+        linear_acceleration_covariance: real(imu.linear_acceleration_covariance),
     }
 }
 

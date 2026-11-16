@@ -8,11 +8,16 @@
 //!
 //! ```text
 //! pelorus-nostd-check convert <config.rl> <bag.mcap> <lidar topic> <imu topic> <out.stream>
-//! pelorus-nostd-check run <in.stream> <out.scans>
+//! pelorus-nostd-check config <config.rl> <out.config>
+//! pelorus-nostd-check run <in.stream> <out.scans> [config]
 //! pelorus-nostd-check compare <a.scans> <b.scans>
 //! ```
 //!
-//! `convert` needs the `convert` feature. `run` writes one line per registered
+//! `convert` and `config` need the `convert` feature. `-` as the stream of
+//! `convert` and `run` is the standard output and input, so a bag can stream
+//! from one build into the other without a file. The stream carries the
+//! configuration in the precision of the build that converted it. `config`
+//! writes it in the precision of its own build, for `run` of an `f32` build. `run` writes one line per registered
 //! scan: id, stamp, position, orientation, and hashes of the covariances, the
 //! twist, the biases and the deskewed points. Floats are written so that they
 //! read back to the same bits.
@@ -24,7 +29,7 @@ mod stream;
 use std::error::Error;
 use std::io::{BufRead, BufWriter, Write};
 
-use pelorus::{Odometer, Scan};
+use pelorus::{LioConfig, Odometer, Real, Scan};
 use stream::{Reader, Record};
 
 fn main() -> Result<(), Box<dyn Error>> {
@@ -35,21 +40,36 @@ fn main() -> Result<(), Box<dyn Error>> {
         ["convert", config, bag, lidar_topic, imu_topic, out] => {
             convert::convert(config, bag, lidar_topic, imu_topic, out)
         }
-        ["run", input, out] => run(input, out),
+        #[cfg(feature = "convert")]
+        ["config", config, out] => convert::config(config, out),
+        ["run", input, out] => run(input, out, None),
+        ["run", input, out, config] => run(input, out, Some(config)),
         ["compare", a, b] => compare(a, b),
         _ => Err(concat!(
             "usage:\n",
             "  pelorus-nostd-check convert <config.rl> <bag.mcap> <lidar topic> <imu topic> <out.stream>\n",
-            "  pelorus-nostd-check run <in.stream> <out.scans>\n",
+            "  pelorus-nostd-check config <config.rl> <out.config>\n",
+            "  pelorus-nostd-check run <in.stream> <out.scans> [config]\n",
             "  pelorus-nostd-check compare <a.scans> <b.scans>"
         )
         .into()),
     }
 }
 
-fn run(input: &str, out: &str) -> Result<(), Box<dyn Error>> {
-    let file = std::io::BufReader::new(std::fs::File::open(input)?);
-    let (config, mut reader) = Reader::open(file)?;
+fn run(input: &str, out: &str, config: Option<&str>) -> Result<(), Box<dyn Error>> {
+    let file: Box<dyn std::io::Read> = if input == "-" {
+        Box::new(std::io::stdin().lock())
+    } else {
+        Box::new(std::fs::File::open(input)?)
+    };
+    let (stream_config, mut reader) =
+        Reader::open(std::io::BufReader::with_capacity(1 << 20, file))?;
+    let config = match config {
+        Some(path) => std::fs::read(path)?,
+        None => stream_config,
+    };
+    let config: LioConfig = postcard::from_bytes(&config)
+        .map_err(|e| format!("the configuration does not decode in this precision: {e}"))?;
     let mut odometer = Odometer::from_config(config, true)?;
     let mut out = BufWriter::new(std::fs::File::create(out)?);
     let mut scans = 0_usize;
@@ -66,10 +86,11 @@ fn run(input: &str, out: &str) -> Result<(), Box<dyn Error>> {
         }
     }
     out.flush()?;
-    let build = if cfg!(feature = "std") {
-        "std"
-    } else {
-        "no_std"
+    let build = match (cfg!(feature = "std"), pelorus_core::REAL_IS_F32) {
+        (true, false) => "std",
+        (true, true) => "std f32",
+        (false, false) => "no_std",
+        (false, true) => "no_std f32",
     };
     eprintln!("{build}: {scans} scans registered");
     Ok(())
@@ -88,7 +109,7 @@ fn scan_line(scan: &Scan<'_>) -> String {
             .chain(&angular)
             .chain(&scan.accel_bias())
             .chain(&scan.gyro_bias())
-            .map(|value| value.to_bits()),
+            .map(|value| bits(*value)),
     );
     let points = fnv1a(scan.points().iter().flat_map(|p| {
         [p.x, p.y, p.z, p.intensity, p.timestamp].map(|value| u64::from(value.to_bits()))
@@ -99,6 +120,15 @@ fn scan_line(scan: &Scan<'_>) -> String {
         scan.scan_id(),
         scan.points().len(),
     )
+}
+
+/// The bits of a [`Real`], widened to 64.
+fn bits(value: Real) -> u64 {
+    if pelorus_core::REAL_IS_F32 {
+        u64::from(pelorus_core::single(value).to_bits())
+    } else {
+        pelorus_core::double(value).to_bits()
+    }
 }
 
 fn fnv1a(values: impl Iterator<Item = u64>) -> u64 {

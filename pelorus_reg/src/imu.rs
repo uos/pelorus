@@ -1,4 +1,5 @@
 use alloc::vec;
+use pelorus_core::Real;
 
 use log::warn;
 use nalgebra::*;
@@ -15,39 +16,39 @@ pub type SE3 = crate::eqf::SE3;
 pub type SO3 = crate::eqf::SO3;
 
 // Initial state covariance. Changes with prediction (increase) and correction (decrease)
-const COV1: f64 = 0.00001;
-const COV2: f64 = 0.0001;
-const COV3: f64 = 0.001;
+const COV1: Real = 0.00001;
+const COV2: Real = 0.0001;
+const COV3: Real = 0.001;
 
 pub struct ImuProcessing {
     ekf_inited: bool,
     last_imu: crate::ImuMsg,
-    cov_acc: Vector3<f64>,
-    cov_acc_bias: Vector3<f64>,
-    cov_gyr: Vector3<f64>,
-    cov_gyr_bias: Vector3<f64>,
-    mean_acc: Vector3<f64>,
-    mean_gyr: Vector3<f64>,
-    lidar_to_imu_t: Vector3<f64>,
-    lidar_to_imu_r: Matrix3<f64>,
-    lidar_to_base_t: Vector3<f64>,
-    lidar_to_base_r: Matrix3<f64>,
-    pub angvel_last: Vector3<f64>,
-    acc_s_last: Vector3<f64>,
+    cov_acc: Vector3<Real>,
+    cov_acc_bias: Vector3<Real>,
+    cov_gyr: Vector3<Real>,
+    cov_gyr_bias: Vector3<Real>,
+    mean_acc: Vector3<Real>,
+    mean_gyr: Vector3<Real>,
+    lidar_to_imu_t: Vector3<Real>,
+    lidar_to_imu_r: Matrix3<Real>,
+    lidar_to_base_t: Vector3<Real>,
+    lidar_to_base_r: Matrix3<Real>,
+    pub angvel_last: Vector3<Real>,
+    acc_s_last: Vector3<Real>,
     imu_state: crate::eqf::StateIKFom,
-    pub ekf_cov_gyr_bias: Matrix3<f64>,
-    pub ekf_cov_acc_bias: Matrix3<f64>,
-    pub ekf_cov_acc: Matrix3<f64>,
-    pub ekf_cov_gyr: Matrix3<f64>,
-    pub wheel_odom_cov_override: Option<f64>,
+    pub ekf_cov_gyr_bias: Matrix3<Real>,
+    pub ekf_cov_acc_bias: Matrix3<Real>,
+    pub ekf_cov_acc: Matrix3<Real>,
+    pub ekf_cov_gyr: Matrix3<Real>,
+    pub wheel_odom_cov_override: Option<Real>,
 }
 
 #[cfg(feature = "threads")]
 #[derive(Clone)]
 pub(crate) struct ImuPredictionContext {
     pub last_imu: crate::ImuMsg,
-    pub mean_acc: Vector3<f64>,
-    pub angvel_last: Vector3<f64>,
+    pub mean_acc: Vector3<Real>,
+    pub angvel_last: Vector3<Real>,
     pub ekf_inited: bool,
 }
 
@@ -96,19 +97,19 @@ impl Default for ImuProcessing {
 
 #[derive(Clone, Debug, Copy)]
 struct Pose6D {
-    offset_time: f64,
-    acc: nalgebra::Vector3<f64>,
-    gyr: nalgebra::Vector3<f64>,
-    vel: nalgebra::Vector3<f64>,
+    offset_time: Real,
+    acc: nalgebra::Vector3<Real>,
+    gyr: nalgebra::Vector3<Real>,
+    vel: nalgebra::Vector3<Real>,
     pose: SE3,
 }
 
 impl Pose6D {
     pub fn new(
-        offset_time: f64,
-        acc: nalgebra::Vector3<f64>,
-        gyr: nalgebra::Vector3<f64>,
-        vel: nalgebra::Vector3<f64>,
+        offset_time: Real,
+        acc: nalgebra::Vector3<Real>,
+        gyr: nalgebra::Vector3<Real>,
+        vel: nalgebra::Vector3<Real>,
         pose: SE3,
     ) -> Self {
         Self {
@@ -148,18 +149,23 @@ impl ImuProcessing {
     ) {
         self.last_imu = tail.clone();
         self.imu_state = state;
-        self.angvel_last = Vector3::from(tail.angular_velocity) - state.bg;
+        self.angvel_last = tail.gyro() - state.bg;
+    }
+
+    /// Follows the computation frame that moved by `metres`.
+    pub(crate) fn shift(&mut self, metres: &Vector3<Real>) {
+        self.imu_state.pos -= metres;
     }
 
     #[cfg(feature = "threads")]
-    pub(crate) fn mean_acc_norm(&self) -> f64 {
+    pub(crate) fn mean_acc_norm(&self) -> Real {
         self.mean_acc.norm()
     }
 
     pub fn new(
         params: &ImuParameters,
-        lidar_to_imu: &Isometry3<f64>,
-        base_to_lidar: &Isometry3<f64>,
+        lidar_to_imu: &Isometry3<Real>,
+        base_to_lidar: &Isometry3<Real>,
     ) -> Self {
         let mut s = Self::default();
 
@@ -184,7 +190,6 @@ impl ImuProcessing {
         s.cov_gyr_bias = params.cov_gyr_bias;
         s.cov_acc_bias = params.cov_acc_bias;
         s.wheel_odom_cov_override = params.wheel_odom_cov_override;
-        s.wheel_odom_cov_override = params.wheel_odom_cov_override;
 
         s.lidar_to_imu_r = *lidar_to_imu.rotation.to_rotation_matrix().matrix();
         s.lidar_to_imu_t = lidar_to_imu.translation.vector;
@@ -196,26 +201,26 @@ impl ImuProcessing {
         s
     }
 
-    pub fn set_lidar_to_imu(&mut self, lidar_to_imu: &Isometry3<f64>) {
+    pub fn set_lidar_to_imu(&mut self, lidar_to_imu: &Isometry3<Real>) {
         self.lidar_to_imu_r = *lidar_to_imu.rotation.to_rotation_matrix().matrix();
         self.lidar_to_imu_t = lidar_to_imu.translation.vector;
     }
 
-    pub fn set_base_to_lidar(&mut self, base_to_lidar: &Isometry3<f64>) {
+    pub fn set_base_to_lidar(&mut self, base_to_lidar: &Isometry3<Real>) {
         let lidar_to_base = base_to_lidar.inverse();
         self.lidar_to_base_r = *lidar_to_base.rotation.to_rotation_matrix().matrix();
         self.lidar_to_base_t = lidar_to_base.translation.vector;
     }
 
-    pub fn initialize(&mut self, msgs: &[ImuMsg], ekf: &mut crate::eqf::Eqf) -> Vector3<f64> {
+    pub fn initialize(&mut self, msgs: &[ImuMsg], ekf: &mut crate::eqf::Eqf) -> Vector3<Real> {
         let mut n = 1.0;
         self.last_imu = crate::ImuMsg::default();
-        self.mean_acc = msgs[0].linear_acceleration.into();
-        self.mean_gyr = msgs[0].angular_velocity.into();
+        self.mean_acc = msgs[0].acc();
+        self.mean_gyr = msgs[0].gyro();
 
         for msg in msgs {
-            let cur_acc: Vector3<f64> = msg.linear_acceleration.into();
-            let cur_gyr: Vector3<f64> = msg.angular_velocity.into();
+            let cur_acc: Vector3<Real> = msg.acc();
+            let cur_gyr: Vector3<Real> = msg.gyro();
 
             self.mean_acc += (cur_acc - self.mean_acc) / n;
             self.mean_gyr += (cur_gyr - self.mean_gyr) / n;
@@ -234,7 +239,7 @@ impl ImuProcessing {
         ekf.state.offset_t_l_i = self.lidar_to_imu_t;
         ekf.state.offset_r_l_i = SO3::try_from_mat(&self.lidar_to_imu_r).unwrap();
 
-        // Initialize R_W_I so the world frame aligns with the base frame (not the IMU or Lidar frame).
+        // Initialize R_W_I so the world frame aligns with the base frame (not the IMU or lidar frame).
         // R_W_B = R_W_I * R_I_L * R_L_B = I  =>  R_W_I = (R_I_L * R_L_B)^{-1} = R_B_L * R_L_I
         // self.lidar_to_base_r is R_L_B, the inverse of the configured base_to_lidar.
         let r_b_l = self.lidar_to_base_r.transpose();
@@ -257,23 +262,23 @@ impl ImuProcessing {
         // origin we declare here. Anchor on the robot so it means what the diagonal
         // below says it means.
         ekf.anchor = ekf.state.pos;
-        ekf.cov = faer::Mat::<crate::eqf::Real>::identity(24, 24);
+        ekf.cov = faer::Mat::<Real>::identity(24, 24);
 
         // 24-dim state: pos(0-2), rot(3-5), offset_R(6-8), offset_T(9-11), vel(12-14), bg(15-17), ba(18-20), grav(21-23)
         // bg bias covariance (15-17)
-        ekf.cov[(15, 15)] = crate::eqf::real(COV2);
-        ekf.cov[(16, 16)] = crate::eqf::real(COV2);
-        ekf.cov[(17, 17)] = crate::eqf::real(COV2);
+        ekf.cov[(15, 15)] = COV2;
+        ekf.cov[(16, 16)] = COV2;
+        ekf.cov[(17, 17)] = COV2;
 
         // ba bias covariance (18-20)
-        ekf.cov[(18, 18)] = crate::eqf::real(COV3);
-        ekf.cov[(19, 19)] = crate::eqf::real(COV3);
-        ekf.cov[(20, 20)] = crate::eqf::real(COV3);
+        ekf.cov[(18, 18)] = COV3;
+        ekf.cov[(19, 19)] = COV3;
+        ekf.cov[(20, 20)] = COV3;
 
         // grav covariance (21-23)
-        ekf.cov[(21, 21)] = crate::eqf::real(COV1);
-        ekf.cov[(22, 22)] = crate::eqf::real(COV1);
-        ekf.cov[(23, 23)] = crate::eqf::real(COV1);
+        ekf.cov[(21, 21)] = COV1;
+        ekf.cov[(22, 22)] = COV1;
+        ekf.cov[(23, 23)] = COV1;
 
         self.last_imu = msgs[msgs.len() - 1].clone();
 
@@ -288,9 +293,9 @@ impl ImuProcessing {
         ekf: &mut Eqf,
         scan: crate::UndistortScan<'_>,
         kinematic: KinematicModel,
-        constraint_std: f64,
+        constraint_std: Real,
         execution_mode: ExecutionMode,
-    ) -> Option<f64> {
+    ) -> Option<Real> {
         let crate::UndistortScan {
             imu_msgs,
             odom_msgs,
@@ -306,7 +311,7 @@ impl ImuProcessing {
         debug_assert!(cloud_begin_time.is_set());
         debug_assert!(cloud_end_time.is_set());
 
-        const GRAVITY: f64 = 9.81; // TODO PARAM
+        const GRAVITY: Real = 9.81; // TODO PARAM
 
         let mean_acc = self.mean_acc.norm();
 
@@ -350,16 +355,15 @@ impl ImuProcessing {
 
             debug_assert!(head_stamp < tail_stamp);
 
-            angvel_avr_x = (head.angular_velocity[0] + tail.angular_velocity[0]) * 0.5;
-            angvel_avr_y = (head.angular_velocity[1] + tail.angular_velocity[1]) * 0.5;
-            angvel_avr_z = (head.angular_velocity[2] + tail.angular_velocity[2]) * 0.5;
+            let (head_gyro, tail_gyro) = (head.gyro(), tail.gyro());
+            let (head_acc, tail_acc) = (head.acc(), tail.acc());
+            angvel_avr_x = (head_gyro[0] + tail_gyro[0]) * 0.5;
+            angvel_avr_y = (head_gyro[1] + tail_gyro[1]) * 0.5;
+            angvel_avr_z = (head_gyro[2] + tail_gyro[2]) * 0.5;
 
-            acc_avr_x = (head.linear_acceleration[0] + tail.linear_acceleration[0]) * 0.5 * GRAVITY
-                / mean_acc;
-            acc_avr_y = (head.linear_acceleration[1] + tail.linear_acceleration[1]) * 0.5 * GRAVITY
-                / mean_acc;
-            acc_avr_z = (head.linear_acceleration[2] + tail.linear_acceleration[2]) * 0.5 * GRAVITY
-                / mean_acc;
+            acc_avr_x = (head_acc[0] + tail_acc[0]) * 0.5 * GRAVITY / mean_acc;
+            acc_avr_y = (head_acc[1] + tail_acc[1]) * 0.5 * GRAVITY / mean_acc;
+            acc_avr_z = (head_acc[2] + tail_acc[2]) * 0.5 * GRAVITY / mean_acc;
 
             let avr_x = [acc_avr_x, acc_avr_y, acc_avr_z];
             let angvel_avr = [angvel_avr_x, angvel_avr_y, angvel_avr_z];
@@ -376,7 +380,7 @@ impl ImuProcessing {
                 if dt_pred > 0.0 {
                     _ = self.predict(ekf, avr_x, angvel_avr, dt_pred);
                     // Enforce kinematic constraints after prediction segment
-                    ekf.correct_kinematics(kinematic, tail.angular_velocity.into(), constraint_std);
+                    ekf.correct_kinematics(kinematic, tail.gyro(), constraint_std);
                 } else if dt_pred < 0.0 {
                     if should_log_once_default("skip_odom_non_positive_dt") {
                         warn!("Skipping stale odom sample with dt: {dt_pred:.6}");
@@ -398,13 +402,13 @@ impl ImuProcessing {
             if dt_to_tail > 0.0 {
                 _ = self.predict(ekf, avr_x, angvel_avr, dt_to_tail);
                 // Enforce kinematic constraints after final prediction
-                ekf.correct_kinematics(kinematic, tail.angular_velocity.into(), constraint_std);
+                ekf.correct_kinematics(kinematic, tail.gyro(), constraint_std);
             }
 
             self.imu_state = ekf.state;
 
-            let tail_ang_vel: Vector3<f64> = tail.angular_velocity.into();
-            let tail_lin_acc: Vector3<f64> = tail.linear_acceleration.into();
+            let tail_ang_vel: Vector3<Real> = tail.gyro();
+            let tail_lin_acc: Vector3<Real> = tail.acc();
             self.angvel_last = tail_ang_vel - self.imu_state.bg;
             self.acc_s_last = self.imu_state.pose().rotation().matrix()
                 * ((tail_lin_acc * GRAVITY / mean_acc) - self.imu_state.ba)
@@ -485,7 +489,7 @@ impl ImuProcessing {
                 let tail_idx = imu_poses_for_downsampled
                     .binary_search_by(|p| {
                         p.offset_time
-                            .partial_cmp(&(point.timestamp as f64))
+                            .partial_cmp(&(point.timestamp as Real))
                             .unwrap_or(::core::cmp::Ordering::Less)
                     })
                     .unwrap_or_else(|e| e);
@@ -499,7 +503,7 @@ impl ImuProcessing {
                 let head = &imu_poses_for_downsampled[head_idx];
                 let tail = &imu_poses_for_downsampled[tail_idx];
 
-                let mut dt = point.timestamp as f64 - head.offset_time;
+                let mut dt = point.timestamp as Real - head.offset_time;
                 if dt < 0.0 {
                     dt = 0.0;
                 }
@@ -514,7 +518,7 @@ impl ImuProcessing {
                     - imu_state_pose_translation;
 
                 let p_imu_frame = imu_state_lidar_to_imu_r
-                    * Vector3::new(point.x as f64, point.y as f64, point.z as f64)
+                    * Vector3::new(point.x as Real, point.y as Real, point.z as Real)
                     + imu_state_lidar_to_imu_t;
 
                 let p_compensate = imu_state_lidar_to_imu_r_t
@@ -554,7 +558,7 @@ impl ImuProcessing {
                     passthrough.iter_mut().for_each(deskew);
                 }
             }
-            return Some(started.elapsed().as_nanos() as f64 / point_count.max(1) as f64);
+            return Some(started.elapsed().as_nanos() as Real / point_count.max(1) as Real);
         }
         None
     }
@@ -562,9 +566,9 @@ impl ImuProcessing {
     pub fn predict(
         &self,
         ekf: &mut Eqf,
-        acc: [f64; 3],
-        gyro: [f64; 3],
-        dt: f64,
+        acc: [Real; 3],
+        gyro: [Real; 3],
+        dt: Real,
     ) -> anyhow::Result<crate::ImuEkfPrediction> {
         let inp = crate::eqf::InputIKFom {
             acc: Vector3::new(acc[0], acc[1], acc[2]),
@@ -572,29 +576,29 @@ impl ImuProcessing {
         };
 
         let q = {
-            let mut q = faer::Mat::<crate::eqf::Real>::zeros(12, 12);
+            let mut q = faer::Mat::<Real>::zeros(12, 12);
             // Copy ekf_cov_gyr to block (0, 0)
             for i in 0..3 {
                 for j in 0..3 {
-                    q[(i, j)] = crate::eqf::real(self.ekf_cov_gyr[(i, j)]);
+                    q[(i, j)] = self.ekf_cov_gyr[(i, j)];
                 }
             }
             // Copy ekf_cov_acc to block (3, 3)
             for i in 0..3 {
                 for j in 0..3 {
-                    q[(3 + i, 3 + j)] = crate::eqf::real(self.ekf_cov_acc[(i, j)]);
+                    q[(3 + i, 3 + j)] = self.ekf_cov_acc[(i, j)];
                 }
             }
             // Copy ekf_cov_gyr_bias to block (6, 6)
             for i in 0..3 {
                 for j in 0..3 {
-                    q[(6 + i, 6 + j)] = crate::eqf::real(self.ekf_cov_gyr_bias[(i, j)]);
+                    q[(6 + i, 6 + j)] = self.ekf_cov_gyr_bias[(i, j)];
                 }
             }
             // Copy ekf_cov_acc_bias to block (9, 9)
             for i in 0..3 {
                 for j in 0..3 {
-                    q[(9 + i, 9 + j)] = crate::eqf::real(self.ekf_cov_acc_bias[(i, j)]);
+                    q[(9 + i, 9 + j)] = self.ekf_cov_acc_bias[(i, j)];
                 }
             }
 

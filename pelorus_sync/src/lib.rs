@@ -2,6 +2,20 @@
 
 extern crate alloc;
 
+// `f32` targets cores without a double-precision FPU. Those run without threads
+// and without a GPU, and the code for both computes in `f64`.
+const _: () = assert!(
+    !(pelorus_core::REAL_IS_F32
+        && cfg!(any(
+            feature = "threads",
+            feature = "cuda",
+            feature = "metal",
+            feature = "vulkan"
+        ))),
+    "the `f32` feature works without `threads` and the GPU backends"
+);
+
+pub mod ahrs;
 pub mod imu;
 mod naive_preint;
 #[cfg(not(feature = "rayon"))]
@@ -25,9 +39,10 @@ use pelorus_core::{
     ImuCalibrationParameters, ImuMsg, ImuPosePrediction, ImuPredictor, ImuPredictorUndistort,
     LidarVendor, LivoxMid360Point, LivoxMid360PointNoIntensity, LivoxPoint, LivoxPointNoIntensity,
     LivoxPointOffsetTime, LivoxPointOffsetTimeNoIntensity, MadgwickSetting, OdomMsg, OusterPoint,
-    OusterPointNoIntensity, PointXYZ, PointXYZI, PointXYZIT, PointXYZITimestamp, PointXYZIntensity,
-    RobosensePoint, RobosensePointNoIntensity, Stamp, SyncParameters, SyncProcessedCloud, Twist,
-    VelodynePoint, VelodynePointNoIntensity, time_msg_from_secs, timing::RuntimeEvaluator,
+    OusterPointNoIntensity, PointTime, PointXYZ, PointXYZI, PointXYZIT, PointXYZITimestamp,
+    PointXYZIntensity, REAL_IS_F32, Real, RobosensePoint, RobosensePointNoIntensity, Stamp,
+    SyncParameters, SyncProcessedCloud, Twist, VelodynePoint, VelodynePointNoIntensity, double,
+    real, time_msg_from_secs, timing::RuntimeEvaluator,
 };
 
 #[cfg(feature = "threads")]
@@ -60,8 +75,8 @@ pub type FilteredCloudMsg = (
     (
         Vec<PointXYZIT>,
         Option<Vec<PointXYZIT>>,
-        f64,
-        f64,
+        Real,
+        Real,
         HeaderMsg,
     ),
     u64,
@@ -74,7 +89,7 @@ pub type ImuInitCallback = Arc<Mutex<dyn FnMut(&[ImuMsg]) + Send + Sync>>;
 
 /// Output-only hook invoked after calibration and AHRS filtering.
 pub type RealtimeImuCallback = Arc<dyn Fn(ImuMsg) + Send + Sync>;
-/// Output-only hook invoked as soon as a Lidar scan enters preprocessing.
+/// Output-only hook invoked as soon as a lidar scan enters preprocessing.
 pub type RealtimeLidarBarrierCallback = Arc<dyn Fn() + Send + Sync>;
 
 #[cfg(all(feature = "threads", not(feature = "large-processing-queue")))]
@@ -177,9 +192,9 @@ impl BufferStream for pelorus_metal::Stream {}
 impl BufferStream for pelorus_vulkan::Stream {}
 
 #[inline]
-fn safe_angle(angle: f64) -> f64 {
-    let factor = (angle / (2.0 * ::core::f64::consts::PI)).floor() as i32;
-    angle - factor as f64 * 2.0 * ::core::f64::consts::PI
+fn safe_angle(angle: f32) -> f32 {
+    let factor = (angle / ::core::f32::consts::TAU).floor();
+    angle - factor * ::core::f32::consts::TAU
 }
 
 #[inline]
@@ -200,8 +215,8 @@ fn inside_horizontal_fov(
     forward: Vector2<f32>,
 ) -> bool {
     let angle = angle2d(forward, Vector2::new(p.x, p.y));
-    let fov_angle = safe_angle((fov_right - fov_left).into());
-    let local_angle = safe_angle((angle - fov_left).into());
+    let fov_angle = safe_angle(fov_right - fov_left);
+    let local_angle = safe_angle(angle - fov_left);
     local_angle <= fov_angle
 }
 
@@ -244,9 +259,16 @@ pub fn secs_to_timestamp(secs: f64) -> TimeMsg {
     TimeMsg { sec, nanosec }
 }
 
-/// Selects how the synchronizer obtains IMU messages for each Lidar interval.
+/// [`secs_to_timestamp`] for a span of a few seconds, in [`Real`].
+fn span_to_timestamp(secs: Real) -> TimeMsg {
+    let sec = secs as i32;
+    let nanosec = ((secs - sec as Real) * 1_000_000_000.0) as u32;
+    TimeMsg { sec, nanosec }
+}
+
+/// Selects how the synchronizer obtains IMU messages for each lidar interval.
 pub enum ImuSyncMode {
-    /// Process Lidar frames without consuming or waiting for IMU messages.
+    /// Process lidar frames without consuming or waiting for IMU messages.
     Disabled {
         /// Apply producer backpressure instead of dropping scans. Enable this
         /// for managed offline replay, not live sensor/topic input.
@@ -259,7 +281,7 @@ pub enum ImuSyncMode {
         /// a recording, not for live sensor/topic input.
         lossless: bool,
     },
-    /// Drain only the IMU messages already available when a Lidar scan arrives.
+    /// Drain only the IMU messages already available when a lidar scan arrives.
     LidarDriven,
     /// During bounded replay, advance one scan when timestamp-bracketing IMU data
     /// has not arrived yet.
@@ -750,26 +772,51 @@ mod tests {
     }
 
     #[test]
+    fn horizontal_fov_matches_the_reference_angles() {
+        // The reference in f64, compared away from the edges.
+        fn wrapped(angle: f64) -> f64 {
+            angle - (angle / ::core::f64::consts::TAU).floor() * ::core::f64::consts::TAU
+        }
+        let forward = Vector2::new(1.0f32, 0.0);
+        for (right, left) in [(-0.8f32, 0.8f32), (0.8, -0.8), (-3.0, 3.0), (1.0, 2.5)] {
+            for step in 0..720 {
+                let theta = step as f32 * ::core::f32::consts::TAU / 720.0 + 0.001;
+                let p = Point3::new(4.0 * theta.cos(), 4.0 * theta.sin(), 0.5);
+                let angle = f64::from(angle2d(forward, Vector2::new(p.x, p.y)));
+                let local = wrapped(angle - f64::from(left));
+                let span = wrapped(f64::from(right) - f64::from(left));
+                if (local - span).abs() < 1e-4
+                    || local < 1e-4
+                    || local > ::core::f64::consts::TAU - 1e-4
+                {
+                    continue;
+                }
+                assert_eq!(
+                    inside_horizontal_fov(p, right, left, forward),
+                    local <= span,
+                    "right {right} left {left} theta {theta}"
+                );
+            }
+        }
+    }
+
+    #[test]
     fn point_stamps_stay_representable_as_f32() {
-        let header = HeaderMsg {
-            seq: 0,
-            stamp: secs_to_timestamp(1_788_966_795.8),
-            frame_id: "rslidar".to_string(),
-        };
-        for vendor in [
-            LidarVendor::Robosense,
-            LidarVendor::LivoxMid360,
-            LidarVendor::Hesai,
+        let reference = ScanReference::new(&secs_to_timestamp(1_788_966_795.8));
+        for time in [
+            PointTime::EpochSecs(1_788_966_795.85),
+            PointTime::EpochNanos(1_788_966_795_850_000_000.0),
+            PointTime::Offset(0.05),
         ] {
-            let reference = lidar_scan_reference_time(vendor, &header);
-            let absolute = 1_788_966_795.85;
-            let internal = internal_point_timestamp(absolute, vendor, reference).unwrap();
-            let round_tripped = internal as f32 as f64;
+            let offset = reference.offset(time).expect("finite stamp");
             assert!(
-                (round_tripped - internal).abs() < 1e-3,
-                "{vendor:?} stamp {internal} does not survive the f32 in PointXYZIT"
+                (f64::from(offset) - 0.05).abs() < 1e-6,
+                "{time:?}: {offset}"
             );
         }
+        assert_eq!(reference.offset(PointTime::EpochSecs(f64::NAN)), None);
+        assert_eq!(reference.offset(PointTime::EpochNanos(f64::NAN)), None);
+        assert_eq!(reference.offset(PointTime::Offset(f32::NAN)), None);
     }
 
     #[cfg(feature = "threads")]
@@ -1386,8 +1433,8 @@ fn find_medoid_in_slice(points: &[(i32, PointXYZIT)]) -> PointXYZIT {
 type DownsampleCloudMeta = (
     Vec<PointXYZIT>,
     Option<Vec<PointXYZIT>>,
-    f64,
-    f64,
+    Real,
+    Real,
     HeaderMsg,
 );
 type DownsampleResult = (DownsampleCloudMeta, bool);
@@ -1466,38 +1513,53 @@ fn key_downsample_point(point: &PointXYZIT, voxel_size: f32) -> KeyedPoint {
     (key, *point)
 }
 
-#[inline]
-fn lidar_scan_reference_time(lidar_vendor: LidarVendor, header: &HeaderMsg) -> Option<f64> {
-    match lidar_vendor {
-        LidarVendor::Velodyne
-        | LidarVendor::LivoxMid360
-        | LidarVendor::Hesai
-        | LidarVendor::Robosense => Some(timestamp_to_secs(&header.stamp)),
-        _ => None,
-    }
+/// The header stamp that epoch point times are measured from.
+#[derive(Clone, Copy)]
+struct ScanReference {
+    stamp: Stamp,
+    /// The header in seconds. The `f64` build subtracts epochs from it in
+    /// `f64`, which is exact for two epochs this close. The `f32` build takes
+    /// the difference in integer nanoseconds and never needs it.
+    secs: f64,
 }
 
-#[inline]
-fn internal_point_timestamp(
-    timestamp: f64,
-    lidar_vendor: LidarVendor,
-    scan_reference_time: Option<f64>,
-) -> Option<f64> {
-    if timestamp.is_nan() {
-        return None;
+impl ScanReference {
+    fn new(header: &TimeMsg) -> Self {
+        Self {
+            stamp: Stamp::from_msg(header),
+            secs: if REAL_IS_F32 {
+                0.0
+            } else {
+                timestamp_to_secs(header)
+            },
+        }
     }
 
-    Some(match lidar_vendor {
-        // Absolute per-point epochs do not survive the f32 in `PointXYZIT`:
-        // near 1.8e9 the spacing is 128 s, so every point in a scan collapses
-        // onto one value and the scan span comes out empty. Store them
-        // relative to the header instead.
-        LidarVendor::LivoxMid360 | LidarVendor::Hesai | LidarVendor::Robosense => {
-            let scan_reference_time = scan_reference_time.expect("vendor match out of date");
-            (timestamp - scan_reference_time).max(0.0)
+    /// Seconds after the header, or `None` for an invalid time. Epochs do not
+    /// fit the `f32` in [`PointXYZIT`]: near 1.8e9 its spacing is 128 s.
+    #[inline]
+    fn offset(&self, time: PointTime) -> Option<f32> {
+        match time {
+            PointTime::Offset(offset) => (!offset.is_nan()).then_some(offset),
+            PointTime::EpochSecs(secs) if REAL_IS_F32 => {
+                self.offset_of(Stamp::from_f64_bits(secs, 1_000_000_000)?)
+            }
+            PointTime::EpochNanos(nanos) if REAL_IS_F32 => {
+                self.offset_of(Stamp::from_f64_bits(nanos, 1)?)
+            }
+            PointTime::EpochSecs(secs) => {
+                (!secs.is_nan()).then(|| (secs - self.secs).max(0.0) as f32)
+            }
+            PointTime::EpochNanos(nanos) => {
+                let secs = nanos * 1e-9;
+                (!secs.is_nan()).then(|| (secs - self.secs).max(0.0) as f32)
+            }
         }
-        _ => timestamp,
-    })
+    }
+
+    fn offset_of(&self, stamp: Stamp) -> Option<f32> {
+        Some((stamp.0 - self.stamp.0).max(0) as f32 / 1e9)
+    }
 }
 
 #[inline]
@@ -1742,12 +1804,12 @@ fn scan_time_bounds(
 fn add_gpu_downsample_timings(eval: &mut RuntimeEvaluator, timings: DownsamplePhaseTimings) {
     eval.add_external_measurement(
         "filter_downsample/gpu_downsample",
-        timings.gpu_downsample_us as f64 / 1000.0,
+        timings.gpu_downsample_us as Real / 1000.0,
     );
 
     let mut add_timing = |name: &str, us: u64| {
         if us > 0 {
-            eval.add_external_measurement(name, us as f64 / 1000.0);
+            eval.add_external_measurement(name, us as Real / 1000.0);
         }
     };
     add_timing("filter_downsample/gpu_upload", timings.gpu_upload_us);
@@ -1986,8 +2048,7 @@ fn filter_downsample<const N: usize, P: PointXYZITimestamp<N>>(
     buffers: &mut DownsampleBuffers,
     mode: ExecutionMode,
 ) -> Result<Option<DownsampleResult>> {
-    let header = cloud.header();
-    let scan_reference_time = lidar_scan_reference_time(sync_params.lidar_vendor, &header);
+    let reference = ScanReference::new(&cloud.header().stamp);
     filter_downsample_inner::<N, P>(
         cloud,
         sync_params,
@@ -1995,8 +2056,9 @@ fn filter_downsample<const N: usize, P: PointXYZITimestamp<N>>(
         buffers,
         true,
         |p| {
-            internal_point_timestamp(p.timestamp(), sync_params.lidar_vendor, scan_reference_time)
-                .map(|timestamp| PointXYZIT::from_p(p.xyz(), p.intensity(), timestamp as f32))
+            reference
+                .offset(p.timestamp())
+                .map(|timestamp| PointXYZIT::from_p(p.xyz(), p.intensity(), timestamp))
         },
         mode,
     )
@@ -2225,7 +2287,7 @@ fn filter_downsample_inner<const N: usize, P: PointConvertible<N> + Send + Sync>
 
     // TODO back to keeping the timestamp f64, only testing right now because of artefacts
     Ok(Some((
-        (downsampled, raw_out, first as f64, last as f64, header),
+        (downsampled, raw_out, real(first), real(last), header),
         used_cpu_downsample,
     )))
 }
@@ -2814,17 +2876,17 @@ struct ImuFilter {
     imu_filter_fusion: ImuMadgwick,
     last_imu_time: Stamp,
     imu_calibration_apply: Option<ImuIntrinsicCorrection>,
-    /// Seconds the IMU clock runs ahead of the Lidar clock.
-    imu_time_offset: f64,
+    /// Seconds the IMU clock runs ahead of the lidar clock.
+    imu_time_offset: Real,
     madgwick_filter: MadgwickSetting,
 }
 
 impl ImuFilter {
     fn new(
-        gravity: f64,
+        gravity: Real,
         madgwick_filter: MadgwickSetting,
         imu_calibration_apply: Option<ImuIntrinsicCorrection>,
-        imu_time_offset: f64,
+        imu_time_offset: Real,
     ) -> Self {
         Self {
             imu_filter_fusion: ImuMadgwick::new(gravity),
@@ -2863,9 +2925,11 @@ impl ImuFilter {
 
         // apply calibration if available
         if let Some(imu_calib) = &mut self.imu_calibration_apply {
-            let (corrected_accel, corrected_gyro) = imu_calib.correct(accel, gyro)?;
-            accel = corrected_accel;
-            gyro = corrected_gyro;
+            // The intrinsics come from a file, so they exist only with std, in f64.
+            let (corrected_accel, corrected_gyro) =
+                imu_calib.correct(accel.map(double), gyro.map(double))?;
+            accel = corrected_accel.map(real);
+            gyro = corrected_gyro.map(real);
         }
 
         // Madgwick filter for global orientation
@@ -3098,14 +3162,14 @@ pub enum ImuInitProgress {
 /// not depend on when the initialization runs.
 pub struct ImuInitWindow {
     callback: Option<ImuInitCallback>,
-    init_time_sec: f64,
+    init_time_sec: Real,
     start: Option<Stamp>,
     buffer: Option<Vec<ImuMsg>>,
 }
 
 impl ImuInitWindow {
     /// Without a callback the window is complete from the start.
-    pub fn new(callback: Option<ImuInitCallback>, init_time_sec: f64) -> Self {
+    pub fn new(callback: Option<ImuInitCallback>, init_time_sec: Real) -> Self {
         Self {
             callback,
             init_time_sec,
@@ -3173,7 +3237,7 @@ impl ScanAdmission {
     /// `imu_init` receives the IMU messages of the first `imu_init_time_sec`
     /// seconds. Without it no initialization is needed and clouds are taken
     /// from the start.
-    pub fn new(imu_init: Option<ImuInitCallback>, imu_init_time_sec: f64) -> Self {
+    pub fn new(imu_init: Option<ImuInitCallback>, imu_init_time_sec: Real) -> Self {
         Self {
             imu_init: ImuInitWindow::new(imu_init, imu_init_time_sec),
             last_lidar_time: None,
@@ -3220,7 +3284,7 @@ impl SteppedIngress {
     pub fn new(
         sync: SteppedSynchronizer,
         imu_init: Option<ImuInitCallback>,
-        imu_init_time_sec: f64,
+        imu_init_time_sec: Real,
     ) -> Self {
         Self {
             sync,
@@ -3292,7 +3356,7 @@ impl Preprocessor {
             downsample_buffers: DownsampleBuffers::default(),
             #[cfg(feature = "rayon")]
             execution_planner: AdaptiveExecutionPlanner::new(
-                params.parallelism_decision_threshold_stddevs,
+                double(params.parallelism_decision_threshold_stddevs),
                 params.parallelism_decision_samples_per_mode,
                 params.parallelism_execution_policy,
             ),
@@ -3458,7 +3522,7 @@ struct PendingScan {
     scan_id: u64,
     received_at: Instant,
     /// Raw header-relative end stamp of the last point.
-    lidar_end_time: f64,
+    lidar_end_time: Real,
     /// Absolute begin of the scan used for deskewing.
     lidar_begin_time: Stamp,
     imu_span_start_time: Stamp,
@@ -3604,7 +3668,7 @@ impl SyncCore {
         // Handle relative vs absolute timestamps
         let lidar_point_time_span = lidar_end_time - lidar_begin_time;
         let livox_use_header_span = matches!(lidar_vendor, LidarVendor::Livox)
-            && (lidar_point_time_span <= f64::EPSILON || lidar_end_time > 0.2);
+            && (lidar_point_time_span <= Real::EPSILON || lidar_end_time > 0.2);
         let use_point_timestamps_for_frame =
             has_point_timestamps(lidar_vendor) && !livox_use_header_span;
         let (lidar_begin_time, imu_span_end_time) = match lidar_vendor {
@@ -3749,7 +3813,7 @@ impl SyncCore {
         };
 
         let synced = if imu_data.is_empty() {
-            // A runtime Lidar-only pipeline still uses this callback to
+            // A runtime lidar-only pipeline still uses this callback to
             // synthesize constant-twist IMU samples, propagate the EKF,
             // and deskew the cloud. Only the generic no-callback case is
             // a true passthrough.
@@ -3779,7 +3843,7 @@ impl SyncCore {
                 header: lidar_header,
                 end_of_frame_guess,
                 end_of_frame_time: if use_point_timestamps_for_frame {
-                    secs_to_timestamp(lidar_end_time)
+                    span_to_timestamp(lidar_end_time)
                 } else {
                     lidar_begin_time.to_msg()
                 },

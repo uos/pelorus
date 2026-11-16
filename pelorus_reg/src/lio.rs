@@ -9,12 +9,13 @@ use alloc::boxed::Box;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 use pelorus_core::Instant;
+use pelorus_core::Real;
 use pelorus_core::sync::Mutex;
 
 use log::info;
 use nalgebra::{Isometry3, Translation3, UnitQuaternion};
 use pelorus_core::timing::RuntimeEvaluator;
-use pelorus_core::{ImuMsg, LioConfig, PointXYZIT, SyncProcessedCloud};
+use pelorus_core::{ImuMsg, LioConfig, Origin, PointXYZIT, SyncProcessedCloud};
 use pelorus_sync::LocatedBufferView;
 use ros_pointcloud2::ros::{HeaderMsg, TimeMsg};
 
@@ -41,14 +42,17 @@ pub struct LioScan {
     pub passthrough: Option<Vec<PointXYZIT>>,
     pub register_pose: CloudRegisterResult,
     pub ekf_state: ImuEkfPrediction,
-    /// Reported pose: the base link when one is configured, the Lidar otherwise.
-    pub t_world: Isometry3<f64>,
-    /// IMU-predicted Lidar pose the registration started from.
-    pub init_guess_lidar: Isometry3<f64>,
+    /// Reported pose: the base link when one is configured, the lidar otherwise.
+    /// Like every pose of the scan it is in the computation frame at `origin`.
+    pub t_world: Isometry3<Real>,
+    /// IMU-predicted lidar pose the registration started from.
+    pub init_guess_lidar: Isometry3<Real>,
+    /// Where the computation frame of this scan's poses sits in the world.
+    pub origin: Origin,
     /// Row-major 6x6 pose covariance of `t_world`.
-    pub pose_covariance: [f64; 36],
+    pub pose_covariance: [Real; 36],
     /// Row-major 6x6 twist covariance of `t_world`.
-    pub twist_covariance: [f64; 36],
+    pub twist_covariance: [Real; 36],
 }
 
 /// Outcome of [`LioCore::step`].
@@ -77,10 +81,12 @@ pub struct LioCore {
     active_backend: ActiveBackend,
     #[cfg(feature = "webgpu")]
     webgpu: Option<pelorus_wgpu::Correspondence>,
-    t_world: Isometry3<f64>,
-    t_last_current: Isometry3<f64>,
+    t_world: Isometry3<Real>,
+    t_last_current: Isometry3<Real>,
     /// Whether `t_world` holds a registered pose yet.
     t_world_registered: bool,
+    /// The computation frame `t_world` is in.
+    origin: Origin,
     last_scan_time: Option<pelorus_core::Stamp>,
     eval: RuntimeEvaluator,
     #[cfg(feature = "cuda")]
@@ -172,6 +178,7 @@ impl LioCore {
             t_world: Isometry3::identity(),
             t_last_current: Isometry3::identity(),
             t_world_registered: false,
+            origin: Origin::default(),
             last_scan_time: None,
             eval: RuntimeEvaluator::new(),
             #[cfg(feature = "cuda")]
@@ -183,7 +190,7 @@ impl LioCore {
         }
     }
 
-    /// The configuration, with the base-to-Lidar extrinsic the registration uses.
+    /// The configuration, with the base-to-lidar extrinsic the registration uses.
     pub fn config(&self) -> &LioConfig {
         &self.config
     }
@@ -407,17 +414,29 @@ impl LioCore {
                 )
                 .await
             {
-                Ok(Some(pose)) => Ok(Some((pose, map.get_state()))),
+                Ok(Some(pose)) => Ok(Some((pose, map.get_state(), map.origin))),
                 Ok(None) => Ok(None),
                 Err(err) => Err(err),
             }
         };
 
-        let (register_pose, ekf_state) = match registration_result {
+        let (register_pose, ekf_state, origin) = match registration_result {
             Ok(Some(result)) => result,
             Ok(None) => return LioStep::MapOnly { scan_id },
             Err(error) => return LioStep::Failed { scan_id, error },
         };
+
+        // The registration may have moved the computation frame. The previous
+        // pose and the guess follow it, so the motion between scans stays.
+        let mut init_guess_lidar = init_guess_lidar;
+        if origin.cells != self.origin.cells {
+            let shift: [i64; 3] =
+                core::array::from_fn(|axis| origin.cells[axis] - self.origin.cells[axis]);
+            let metres = origin.shift_in_metres(shift);
+            self.t_world.translation.vector -= metres;
+            init_guess_lidar.translation.vector -= metres;
+        }
+        self.origin = origin;
 
         let old_t_world = self.t_world;
         self.t_world = if self.config.base_link_frame.is_some() {
@@ -454,17 +473,18 @@ impl LioCore {
             ekf_state,
             t_world: self.t_world,
             init_guess_lidar,
+            origin,
             pose_covariance,
             twist_covariance,
         }))
     }
 
-    /// The Lidar pose to start the registration from.
+    /// The lidar pose to start the registration from.
     ///
     /// The synchronizer's prediction is the IMU pose T_W_I. Without a
     /// translation the last motion is reused, keeping the predicted rotation
     /// when there is one.
-    fn init_guess_lidar(&self, end_of_frame_guess: &Isometry3<f64>) -> Isometry3<f64> {
+    fn init_guess_lidar(&self, end_of_frame_guess: &Isometry3<Real>) -> Isometry3<Real> {
         let position = end_of_frame_guess.translation.vector;
         let orientation = end_of_frame_guess.rotation.quaternion();
         let rotation = || {
@@ -495,7 +515,7 @@ impl LioCore {
             }
         } else {
             let translation = Translation3::new(position.x, position.y, position.z);
-            // init_guess from sync is IMU pose T_W_I. Convert to Lidar pose T_W_L.
+            // init_guess from sync is IMU pose T_W_I. Convert to lidar pose T_W_L.
             Isometry3::from_parts(translation, rotation()) * self.pipeline.ext()
         }
     }
@@ -596,19 +616,19 @@ impl LioCore {
     }
 }
 
-/// The last Lidar pose and the Lidar motion of the last step, from `t_world`
+/// The last lidar pose and the lidar motion of the last step, from `t_world`
 /// and `t_last_current`.
 ///
 /// Those follow the output frame, which is the base when one is configured,
-/// while the map takes Lidar poses. Before the first registration
+/// while the map takes lidar poses. Before the first registration
 /// (`t_world` is `None`) the filter has the base at the world origin, which puts
-/// the Lidar at `base_to_lidar`.
+/// the lidar at `base_to_lidar`.
 fn lidar_motion(
-    t_world: Option<&Isometry3<f64>>,
-    t_last_current: &Isometry3<f64>,
+    t_world: Option<&Isometry3<Real>>,
+    t_last_current: &Isometry3<Real>,
     output_is_base: bool,
-    base_to_lidar: &Isometry3<f64>,
-) -> (Isometry3<f64>, Isometry3<f64>) {
+    base_to_lidar: &Isometry3<Real>,
+) -> (Isometry3<Real>, Isometry3<Real>) {
     let output_to_lidar = if output_is_base {
         *base_to_lidar
     } else {

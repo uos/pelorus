@@ -59,8 +59,8 @@ rayon = [
 os-rng-seed = ["std", "pelorus_localmap/os-rng-seed"]
 lru-eviction = ["pelorus_localmap/lru-eviction"]
 plain-update = ["pelorus_localmap/plain-update"]
-# Run the filter's covariance algebra in f32 instead of f64 (see `eqf::Real`).
-f32-filter = []
+# Compute the odometry in f32 instead of f64 (see `pelorus_core::Real`).
+f32 = ["pelorus_core/f32"]
 cuda = ["std", "dep:pelorus_cuda", "pelorus_cuda/cuda_available", "pelorus_cuda/cuda_enable", "pelorus_sync/cuda"]
 metal = ["std", "dep:pelorus_metal", "pelorus_metal/metal_available", "pelorus_metal/metal_enable", "pelorus_sync/metal"]
 vulkan = ["std", "dep:pelorus_vulkan", "pelorus_vulkan/vulkan_available", "pelorus_vulkan/vulkan_enable", "pelorus_sync/vulkan"]

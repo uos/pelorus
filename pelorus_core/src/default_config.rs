@@ -1,5 +1,5 @@
 // Generated from default.rl by `default_config_matches_default_rl` in config.rs.
-// The postcard encoding of the resolved LioConfig.
+// The postcard encoding of the resolved LioConfig with `Real` as `f64`.
 pub(crate) const DEFAULT_CONFIG: &[u8] = &[
     0, 1, 7, 48, 46, 48, 46, 48, 46, 48, 192, 18, 244, 64, 0, 8, 118, 101, 108, 111, 100, 121, 110,
     101, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 123, 20, 174, 71, 225, 122, 148, 63, 0, 0, 0, 0, 0, 0, 46,
