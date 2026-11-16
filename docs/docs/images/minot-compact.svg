@@ -1,8 +1,0 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" fill="none" role="img" aria-labelledby="title desc">
-  <title id="title">Minot — compact proportions</title>
-  <desc id="desc">A compact lighthouse with a shorter tapered base and a proportional pendulum cutout.</desc>
-  <g transform="translate(0 13)">
-    <path d="M74 36 106 24q8 16 0 32L74 42Z" fill="#dfa0ae"/>
-    <path d="m64 17 16 14h-6v18l11 31q1 4-3 4H46q-4 0-3-4l11-31V31h-6Zm-5 18v7h10v-7ZM61.2146 52.8858a3 3 0 0 1 5.5709 2.2283L62.0311 67.0000a4.5 4.5 0 1 1 -5.5709 -2.2283Z" fill="#aa435b" fill-rule="evenodd"/>
-  </g>
-</svg>

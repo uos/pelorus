@@ -1,8 +1,0 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" fill="none" role="img" aria-labelledby="title desc">
-  <title id="title">Minot — synchronized channels</title>
-  <desc id="desc">Three stepped data timelines cross one shared execution cursor, inside a returning playback loop.</desc>
-  <path d="M104 58c4 25-15 48-39 48S22 88 22 64s19-42 42-42c14 0 25 5 34 14" stroke="#aa435b" stroke-width="9" stroke-linecap="round"/>
-  <path d="M82 36h16V20" stroke="#aa435b" stroke-width="9" stroke-linecap="round" stroke-linejoin="round"/>
-  <path d="M37 46h13v9h40M37 64h53M37 82h21v-9h32" stroke="#dfa0ae" stroke-width="6" stroke-linecap="round" stroke-linejoin="round"/>
-  <path d="M75 44v40" stroke="#aa435b" stroke-width="7" stroke-linecap="round"/>
-</svg>

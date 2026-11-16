@@ -1,6 +1,0 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" fill="none" role="img" aria-labelledby="title desc"><title id="title">SeaKit — Atlas</title><desc id="desc">A rounded organic carapace carries contour lines across a continuous mapped surface.</desc><defs><clipPath id="atlas-map"><path d="M32 62c0-29 64-29 64 0-12 17-52 17-64 0Z" /></clipPath></defs><g stroke="#405c70" stroke-width="7" stroke-linecap="round" stroke-linejoin="round">
-<path d="m39 69-16 8-7 13m28-9-10 19m55-31 16 8 7 13M84 81l10 19M40 56 27 45m61 11 13-11" />
-</g>
-<path d="M32 62c0-29 64-29 64 0-1 35-63 35-64 0Z" fill="#405c70" />
-<path d="M32 62c0-29 64-29 64 0-12 17-52 17-64 0Z" fill="#8aafb3" />
-<g stroke="#405c70" stroke-width="1.8" stroke-linecap="round" fill="none" clip-path="url(#atlas-map)"><path d="M29 55C45 41 69 47 59 57S61 71 83 76" /><path d="M43 37C65 32 89 45 77 58S80 70 101 69" /></g><path d="M27 49C10 45 10 30 20 20l5 14 13-10c7 12 4 23-11 25Zm74 0c17-4 17-19 7-29l-5 14-13-10c-7 12-4 23 11 25Z" fill="#8aafb3" /></svg>

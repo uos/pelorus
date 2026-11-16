@@ -1,8 +1,0 @@
-{
-	"InstallScripts" : 
-	[
-		"/home/chsieh/projects/pelorus/pelorus_c/examples/cmake-build/cmake_install.cmake",
-		"/home/chsieh/projects/pelorus/pelorus_c/examples/cmake-build/examples/cmake_install.cmake"
-	],
-	"Parallel" : false
-}

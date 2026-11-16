@@ -1,8 +1,0 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" fill="none" role="img" aria-labelledby="title desc">
-  <title id="title">Minot — cursor loop</title>
-  <desc id="desc">A playback beam and a position cursor within a repeatable time loop.</desc>
-  <path d="M104 58c4 25-15 48-39 48S22 88 22 64s19-42 42-42c14 0 25 5 34 14" stroke="#aa435b" stroke-width="9" stroke-linecap="round"/>
-  <path d="M82 36h16V20" stroke="#aa435b" stroke-width="9" stroke-linecap="round" stroke-linejoin="round"/>
-  <path d="M55 43 83 64 55 85Z" fill="#dfa0ae" stroke="#dfa0ae" stroke-width="4" stroke-linejoin="round"/>
-  <path d="M46 43v42" stroke="#aa435b" stroke-width="7" stroke-linecap="round"/>
-</svg>

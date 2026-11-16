@@ -13,6 +13,7 @@ pelorus_c/examples/pico_equality
 pelorus_c/examples/sync_blocking
 pelorus_c/examples/cpp_wrapper
 pelorus_c/examples/*.bin
+pelorus_c/examples/cmake-build/
 **/build/
 **/imgui.ini
 docs/site/**

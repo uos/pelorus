@@ -1,9 +1,0 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" fill="none" role="img" aria-labelledby="title desc">
-  <title id="title">Scope — Turbo accents</title>
-  <desc id="desc">A spatial viewing aperture colored with samples of the Turbo intensity map used by Scope’s Vulkan and Metal renderers.</desc>
-  <path d="M16 66C40 23 83 20 112 54 77 35 48 42 16 66Z" fill="#4074f5" />
-  <path d="M16 66C48 86 77 87 112 54 91 103 47 105 16 66Z" fill="#c52a0b" />
-  <circle cx="53" cy="61" r="4" fill="#27d7c3" />
-  <circle cx="72" cy="55" r="3" fill="#aef445" />
-  <circle cx="70" cy="72" r="5" fill="#ff8e1f" />
-</svg>
