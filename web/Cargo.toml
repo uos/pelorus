@@ -1,6 +1,6 @@
 [package]
 name = "pelorus_web"
-description = "Browser demo of Pelorus Lidar-Inertial Odometry."
+description = "Browser demo of Pelorus lidar-inertial odometry."
 publish = false
 edition.workspace = true
 include.workspace = true

@@ -18,6 +18,8 @@ members = [
   "pelorus_drivers",
   "pelorus_localmap",
   "pelorus_nostd_check",
+  "pelorus_nostd_probe",
+  "pelorus_leszy_qemu",
   "glim_integration/pelorus_glim_odometry",
   "pelorus_wasm",
   "pelorus_tui",
@@ -47,25 +49,25 @@ license = "MIT OR Apache-2.0"
 repository = "https://codeberg.org/stelzo/pelorus"
 homepage = "https://pelorus.steado.tech"
 documentation = "https://pelorus.steado.tech/docs/"
-version = "0.0.10"
+version = "0.1.0"
 rust-version = "1.96.0"
 
 [workspace.dependencies]
-pelorus = { package = "pelorus_sdk", path = "pelorus", version = "0.0.10", default-features = false }
-pelorus_core = { path = "pelorus_core", version = "0.0.10", default-features = false }
-pelorus_tui = { path = "pelorus_tui", version = "0.0.10" }
-pelorus_protocol = { path = "pelorus_protocol", version = "0.0.10" }
-pelorus_reg = { path = "pelorus_reg", version = "0.0.10", default-features = false }
-pelorus_sync = { path = "pelorus_sync", version = "0.0.10", default-features = false }
-pelorus_syncio = { path = "pelorus_syncio", version = "0.0.10", default-features = false }
-pelorus_localmap = { path = "pelorus_localmap", version = "0.0.10", default-features = false }
-pelorus_cuda = { path = "pelorus_cuda", version = "0.0.10", default-features = false }
-pelorus_metal = { path = "pelorus_metal", version = "0.0.10" }
-pelorus_vulkan = { path = "pelorus_vulkan", version = "0.0.10", default-features = false }
-pelorus_wgpu = { path = "pelorus_wgpu", version = "0.0.10" }
-pelorus_drivers = { path = "pelorus_drivers", version = "0.0.10", default-features = false }
+pelorus = { package = "pelorus_sdk", path = "pelorus", version = "0.1.0", default-features = false }
+pelorus_core = { path = "pelorus_core", version = "0.1.0", default-features = false }
+pelorus_tui = { path = "pelorus_tui", version = "0.1.0" }
+pelorus_protocol = { path = "pelorus_protocol", version = "0.1.0" }
+pelorus_reg = { path = "pelorus_reg", version = "0.1.0", default-features = false }
+pelorus_sync = { path = "pelorus_sync", version = "0.1.0", default-features = false }
+pelorus_syncio = { path = "pelorus_syncio", version = "0.1.0", default-features = false }
+pelorus_localmap = { path = "pelorus_localmap", version = "0.1.0", default-features = false }
+pelorus_cuda = { path = "pelorus_cuda", version = "0.1.0", default-features = false }
+pelorus_metal = { path = "pelorus_metal", version = "0.1.0" }
+pelorus_vulkan = { path = "pelorus_vulkan", version = "0.1.0", default-features = false }
+pelorus_wgpu = { path = "pelorus_wgpu", version = "0.1.0" }
+pelorus_drivers = { path = "pelorus_drivers", version = "0.1.0", default-features = false }
 
-transforms_io = { version = "0.8.0", default-features = false }
+transforms_io = { version = "0.9.0", default-features = false }
 ros_pointcloud2 = { version = "1.0.0-rc.6", default-features = false, features = [
   "derive",
   "r2r",
@@ -74,10 +76,10 @@ ros_pointcloud2 = { version = "1.0.0-rc.6", default-features = false, features =
   "nalgebra",
 ] }
 ratslang = { version = "0.5.0", features = ["serde"] }
-mt_pubsub = { version = "0.14.1", default-features = false }
-mt_service = { version = "0.14.1", default-features = false }
-mt_log = { version = "0.14.1", features = ["tui", "env"] }
-mt_rat = { version = "0.14.1", default-features = false }
+mt_pubsub = { version = "0.15.0", default-features = false }
+mt_service = { version = "0.15.0", default-features = false }
+mt_log = { version = "0.15.0", features = ["tui", "env"] }
+mt_rat = { version = "0.15.0", default-features = false }
 cloudini = { version = "0.3.2", default-features = false, features = ["ros"] }
 imu-calib = "0.3"
 ros2-interfaces-jazzy-serde = { version = "0.0.7", default-features = false, features = [

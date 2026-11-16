@@ -4,13 +4,13 @@ build-backend = "maturin"
 
 [project]
 name = "pelorus-cli"
-description = "Pelorus CLI - Resource-aware Lidar-Inertial Odometry"
+description = "Pelorus CLI - Resource-Aware Lidar-Inertial Odometry"
 dynamic = ["version"]
 requires-python = ">=3.8"
 license = { text = "MIT OR Apache-2.0" }
 keywords = ["robotics", "lidar", "odometry", "lio", "slam"]
 classifiers = [
-  "Development Status :: 4 - Beta",
+  "Development Status :: 5 - Production/Stable",
   "Intended Audience :: Developers",
   "Intended Audience :: Science/Research",
   "License :: OSI Approved :: MIT License",
@@ -19,7 +19,7 @@ classifiers = [
   "Framework :: Robot Framework :: Tool",
 ]
 
-dependencies = ["minot-cli>=0.14.0,<0.15.0"]
+dependencies = ["minot-cli>=0.15.0,<0.16.0"]
 
 [project.optional-dependencies]
 rerun = ["rerun-sdk>=0.41.0,<0.42.0"]

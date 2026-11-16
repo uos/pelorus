@@ -1,6 +1,6 @@
 [package]
 name = "pelorus_cli"
-description = "Resource-aware Lidar-Inertial Odometry."
+description = "Resource-Aware Lidar-Inertial Odometry"
 edition.workspace = true
 include.workspace = true
 keywords.workspace = true
@@ -107,7 +107,7 @@ ros2c = ["r2r", "processing-time-export"]
 # ROS2 with Rust native implementation. No ROS2 installation required. See the lio.toml for controlling QoS.
 ros2-rust = ["ros2-client", "processing-time-export"]
 
-# Custom Rust-only pub/sub implementation used in my offline-mapping, development and debugging workflow (see https://uos.github.io/minot/#native-publishsubscribe).
+# Custom Rust-only pub/sub implementation used in my offline-mapping, development and debugging workflow (see https://minot.steado.tech/docs/).
 mt_pubsub = [
   "dep:mt_pubsub",
   "dep:mt_service",
@@ -171,10 +171,8 @@ vulkan = [
 os-rng-seed = ["pelorus_reg/os-rng-seed"]
 lru-eviction = ["pelorus_reg/lru-eviction", "pelorus_localmap/lru-eviction"]
 plain-update = ["pelorus_reg/plain-update", "pelorus_localmap/plain-update"]
-# Run the filter's covariance algebra in f32 instead of f64.
-f32-filter = ["pelorus_reg/f32-filter"]
 
-# Enables synchronization with a bagfile using Minot (https://uos.github.io/minot/)
+# Enables synchronization with a bagfile using Minot (https://minot.steado.tech/docs/)
 offline = ["mt_pubsub", "rat"]
 
 # Enables offline processing while using Hiroz instead of mt_pubsub for IO.
@@ -227,7 +225,7 @@ ratslang.workspace = true
 
 [package.metadata.deb]
 name = "pelorus"
-depends = "minot (>= 0.14.0), minot (<< 0.15.0~), dedrunk, marina"
+depends = "minot (>= 0.15.0), minot (<< 0.16.0~), dedrunk, marina"
 section = "science"
 priority = "optional"
 assets = [["target/release/pelorus", "usr/bin/pelorus", "755"]]
@@ -239,7 +237,7 @@ assets = [
 ]
 
 [package.metadata.generate-rpm.requires]
-minot = ">= 0.14.0, < 0.15.0"
+minot = ">= 0.15.0, < 0.16.0"
 
 [package.metadata.multivers.x86_64]
 cpus = [

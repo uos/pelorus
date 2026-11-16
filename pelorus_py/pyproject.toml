@@ -5,7 +5,7 @@ build-backend = "maturin"
 [project]
 name = "pelorus"
 dynamic = ["version"]
-description = "Pelorus - Resource-aware Lidar-Inertial Odometry"
+description = "Pelorus - Resource-Aware Lidar-Inertial Odometry"
 readme = "README.md"
 requires-python = ">=3.9"
 license = { text = "MIT OR Apache-2.0" }
