@@ -1,0 +1,21 @@
+[package]
+name = "pelorus_nostd_probe"
+description = "Every entry point of the no_std library as a bare-metal static library, to find the f64 operations a build contains."
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+documentation.workspace = true
+version.workspace = true
+rust-version.workspace = true
+publish = false
+
+[lib]
+crate-type = ["staticlib"]
+
+[dependencies]
+pelorus = { workspace = true, default-features = false }
+postcard.workspace = true
+
+[features]
+f32 = ["pelorus/f32"]

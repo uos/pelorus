@@ -1,0 +1,30 @@
+[package]
+name = "pelorus_leszy_qemu"
+description = "Runs the no_std f32 odometry on an emulated Leszy core, RV32IMF without atomic instructions, to compare it with the host build."
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+documentation.workspace = true
+version.workspace = true
+rust-version.workspace = true
+publish = false
+
+[[bin]]
+name = "pelorus-leszy-qemu"
+path = "src/main.rs"
+test = false
+bench = false
+
+[dependencies]
+pelorus = { workspace = true, default-features = false }
+pelorus_core.workspace = true
+ros_pointcloud2.workspace = true
+postcard.workspace = true
+
+[target.'cfg(target_arch = "riscv32")'.dependencies]
+critical-section = { version = "1.2", features = ["restore-state-bool"] }
+talc = { version = "4.4", default-features = false, features = ["lock_api"] }
+
+[features]
+f32 = ["pelorus/f32", "pelorus_core/f32"]

@@ -186,6 +186,13 @@ jobs:
           for target in thumbv7em-none-eabihf riscv32imac-unknown-none-elf x86_64-unknown-none; do
             cargo check --target "$target" --no-default-features -p pelorus_sdk -p pelorus_reg -p pelorus_sync -p pelorus_localmap -p pelorus_core
           done
+      - name: Build the f32 library for RV32IMF without atomics
+        run: |
+          set -euo pipefail
+          rustup toolchain install nightly --profile minimal --component rust-src
+          cargo +nightly build --release -Zbuild-std=core,alloc -Zbuild-std-features=compiler-builtins-mem \
+            -Zjson-target-spec -p pelorus_leszy_qemu --features f32 \
+            --target pelorus_leszy_qemu/riscv32imf-unknown-none-elf.json
       - name: Check no dependency of the no_std build turns on std
         run: |
           set -euo pipefail
