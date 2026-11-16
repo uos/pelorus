@@ -2865,6 +2865,12 @@ fn lio_with_ready_signal(
     let export_latency_for_worker = export_latency.clone();
     #[cfg(feature = "processing-time-export")]
     let export_processing_time_for_worker = export_processing_time.clone();
+    // mt_pubsub sends need a Tokio runtime, so the TF sends run as its tasks.
+    #[cfg(feature = "mt_pubsub")]
+    let tf_runtime = rt
+        .as_ref()
+        .expect("rt always exists with mt_pubsub feat")
+        .clone();
     let processing_handle = std::thread::spawn(move || -> anyhow::Result<()> {
         let mut filtered_imu_rx = filtered_imu_rx;
         #[cfg(feature = "rerun")]
@@ -3131,14 +3137,12 @@ fn lio_with_ready_signal(
                 #[cfg(feature = "mt_pubsub")]
                 {
                     let inner_tf_broad = Arc::clone(&tf_broadcaster);
-                    std::thread::spawn(move || {
-                        future::block_on(async move {
-                            if let Err(err) =
-                                inner_tf_broad.send_static_transform(base_to_lidar_tf).await
-                            {
-                                error!("Failed to send static base_link-to-lidar transform: {err}");
-                            }
-                        });
+                    tf_runtime.spawn(async move {
+                        if let Err(err) =
+                            inner_tf_broad.send_static_transform(base_to_lidar_tf).await
+                        {
+                            error!("Failed to send static base_link-to-lidar transform: {err}");
+                        }
                     });
                 }
                 #[cfg(not(feature = "mt_pubsub"))]
@@ -3520,12 +3524,10 @@ fn lio_with_ready_signal(
             #[cfg(feature = "mt_pubsub")]
             {
                 let inner_tf_broad = Arc::clone(&tf_broadcaster);
-                std::thread::spawn(move || {
-                    future::block_on(async move {
-                        if let Err(err) = inner_tf_broad.send_transform(tf).await {
-                            error!("Failed to send transform: {err}");
-                        }
-                    });
+                tf_runtime.spawn(async move {
+                    if let Err(err) = inner_tf_broad.send_transform(tf).await {
+                        error!("Failed to send transform: {err}");
+                    }
                 });
             }
             #[cfg(not(feature = "mt_pubsub"))]
