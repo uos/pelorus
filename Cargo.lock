@@ -4206,9 +4206,9 @@ dependencies = [
 
 [[package]]
 name = "mt_coord"
-version = "0.15.1"
+version = "0.15.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d4bb94dafcecf07a2d718b2186073e685b409e5d98e8e9487c04bd80aaf79912"
+checksum = "9219facdd87ddae6536be59cbdd87983367af5c91d2631c57292f6097c648f0d"
 dependencies = [
  "anyhow",
  "fs2",
@@ -4222,9 +4222,9 @@ dependencies = [
 
 [[package]]
 name = "mt_log"
-version = "0.15.1"
+version = "0.15.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "16052ca92ec278d9e2cd07c8c9cdc62318dc6b48473c83422718d1fd93ada72f"
+checksum = "76b4d6a2e6759c1cbf82f40b5842b544ba0d2e8611886662e725ca95e75c14e2"
 dependencies = [
  "env_filter",
  "env_logger",
@@ -4237,9 +4237,9 @@ dependencies = [
 
 [[package]]
 name = "mt_net"
-version = "0.15.1"
+version = "0.15.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "075dba5cfbc40c8c3a9fd0677d209ad417c1dba763405b1c7721940769a7a58d"
+checksum = "f1fd8b527a8a0a386871171f88493dbe0607d7441fb1ec052dfaaac4dcbf6727"
 dependencies = [
  "anyhow",
  "rkyv",
@@ -4249,9 +4249,9 @@ dependencies = [
 
 [[package]]
 name = "mt_pubsub"
-version = "0.15.1"
+version = "0.15.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d27daf4ac4674aa18bb15ec1de939f80505f69682bac17e57df78a1faebbdec0"
+checksum = "a9b75c24fdb5f7f8c23351b323b3b7a8b7a0fe9976a5902c5cbe19ce4b7835d9"
 dependencies = [
  "anyhow",
  "bytes",
@@ -4276,9 +4276,9 @@ dependencies = [
 
 [[package]]
 name = "mt_rat"
-version = "0.15.1"
+version = "0.15.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f178d93b453e6a9732dfef1528bec7ed7d369927c80c8bccbe917a06569c8abb"
+checksum = "de1f1440dbbf2ccd1d0a921c430eb38511954b67ce64dd140a4bd6093ebe8d0b"
 dependencies = [
  "anyhow",
  "log",
@@ -4290,9 +4290,9 @@ dependencies = [
 
 [[package]]
 name = "mt_scope"
-version = "0.15.1"
+version = "0.15.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3faf6e2dbf6ace8e288958aa6f0bc7b68fdf3dee8ac430f0006fddd0410cbd26"
+checksum = "388b825931af36a98a7c26779342fef46028dad6c897e0d1918df636dcc09fb1"
 dependencies = [
  "anyhow",
  "env_logger",
@@ -4305,9 +4305,9 @@ dependencies = [
 
 [[package]]
 name = "mt_sea"
-version = "0.15.1"
+version = "0.15.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3ac4f82b2f4944438e74293c2f51a8bf88d407176203c911bfb485dbdbc832a7"
+checksum = "0dbc25a8693f1a13d7bda49b6896c4c8a884a5b1ad7606288072376b35be0cca"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -4326,9 +4326,9 @@ dependencies = [
 
 [[package]]
 name = "mt_service"
-version = "0.15.1"
+version = "0.15.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ee2d3ef408bd522f125cc3507028c87deb067ebc4d1e3a2c995fcf3196f2e64b"
+checksum = "3c84747d50037c7f9d0fc4e8f66f0d83537a18f6ac0a5c32d94b63b5126e5dab"
 dependencies = [
  "anyhow",
  "log",

@@ -72,7 +72,10 @@ default = [
   "processing-time-export",
   "rayon",
   "rerun",
+  "shm",
 ]
+# Shared memory between Pelorus and Minot on one machine, for Zenoh and QUIC alike.
+shm = ["mt_pubsub?/shm", "mt_service?/shm", "mt_rat?/shm", "pelorus_syncio/shm"]
 
 rayon = [
   "dep:rayon",
@@ -220,7 +223,6 @@ r2r = ["dep:r2r", "pelorus_syncio/r2r"]
 
 [build-dependencies]
 anyhow.workspace = true
-env_logger.workspace = true
 pelorus_core = { workspace = true, features = ["std"] }
 ratslang.workspace = true
 

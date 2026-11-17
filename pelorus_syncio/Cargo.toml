@@ -46,6 +46,8 @@ default = ["rayon", "compressed-pointcloud"]
 rayon = ["pelorus_sync/rayon", "ros_pointcloud2/rayon"]
 rat = ["dep:mt_rat"]
 minot-full-transports = ["mt_pubsub?/zenoh-defaults", "mt_rat?/zenoh-defaults"]
+# Shared memory between Pelorus and Minot on one machine, for Zenoh and QUIC alike.
+shm = ["mt_pubsub?/shm", "mt_rat?/shm", "transforms_io/shm"]
 downsample = ["pelorus_sync/downsample"]
 cuda = ["pelorus_sync/cuda"]
 metal = ["pelorus_sync/metal"]

@@ -76,10 +76,10 @@ ros_pointcloud2 = { version = "1.0.0-rc.6", default-features = false, features =
   "nalgebra",
 ] }
 ratslang = { version = "0.5.0", features = ["serde"] }
-mt_pubsub = { version = "0.15.1", default-features = false }
-mt_service = { version = "0.15.1", default-features = false }
-mt_log = { version = "0.15.1", features = ["tui", "env"] }
-mt_rat = { version = "0.15.1", default-features = false }
+mt_pubsub = { version = "0.15.2", default-features = false }
+mt_service = { version = "0.15.2", default-features = false }
+mt_log = { version = "0.15.2", features = ["tui", "env"] }
+mt_rat = { version = "0.15.2", default-features = false }
 cloudini = { version = "0.3.2", default-features = false, features = ["ros"] }
 imu-calib = "0.3"
 ros2-interfaces-jazzy-serde = { version = "0.0.7", default-features = false, features = [
@@ -155,7 +155,6 @@ libc = "0.2"
 rand = { version = "0.10.3", default-features = false }
 rand_pcg = "0.10"
 rand_distr = { version = "0.6.0", default-features = false }
-nohash-hasher = { version = "0.2.0", default-features = false }
 serde = { version = "1.0", default-features = false, features = [
   "alloc",
   "derive",
