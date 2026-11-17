@@ -6,10 +6,13 @@
 
 [![License](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue)](#license)
 [![Docs](https://img.shields.io/badge/docs-pelorus.steado.tech-e5c65c)](https://pelorus.steado.tech/docs/)
+[![Demo](https://img.shields.io/badge/demo-in%20your%20browser-e5c65c)](https://pelorus.steado.tech/)
 
 Supporting various 3D lidar sensors, IMUs, odometry sources and kinematic models, Pelorus provides real-time performance on embedded hardware while pushing state-of-the-art accuracy. The online mode reaches more than 20 Hz odometry on a Jetson Orin Nano with a 128-layer Ouster lidar, keeping resource usage low so the rest of your application has room to run.
 
 Scale your compute down to single-core CPU usage or up to full parallel compute on CPU and **GPU**, supporting NVIDIA, AMD, Intel and Apple Silicon.
+
+Try it in the [browser demo](https://pelorus.steado.tech/): Pelorus runs locally in the tab on public datasets or on your own ROS 2 MCAP bag.
 
 ![Pelorus banner](docs/docs/images/pelorus_banner.jpg)
 
