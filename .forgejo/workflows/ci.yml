@@ -8,6 +8,7 @@ on:
       - "**"
     paths-ignore:
       - "docs/**"
+      - "README.md"
 
 env:
   RUST_BACKTRACE: "full"

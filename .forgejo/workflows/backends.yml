@@ -8,9 +8,11 @@ on:
       - "**"
     paths-ignore:
       - "docs/**"
+      - "README.md"
   pull_request:
     paths-ignore:
       - "docs/**"
+      - "README.md"
 
 env:
   RUST_FONTCONFIG_DLOPEN: 1
