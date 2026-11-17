@@ -17,13 +17,11 @@ Scale your compute down to single-core CPU usage or up to full parallel compute 
 
 Pick whichever fits your stack. All of them support both CPU-only and GPU-accelerated setups:
 
-| | |
-|---|---|
-| **[ROS 2 package](https://pelorus.steado.tech/docs/ros/)** | Drop-in integration for existing ROS 2 systems |
-| **[Standalone CLI](https://pelorus.steado.tech/docs/standalone/)** | Offline and online modes, no ROS required |
-| **[C / C++ library](https://pelorus.steado.tech/docs/standalone/)** | CMake integration with Eigen and PCL helpers |
-| **[Python package](https://pelorus.steado.tech/docs/standalone/)** | Published on PyPI for quick prototyping and offline processing |
-| **[GLIM plugin](https://pelorus.steado.tech/docs/glim/)** | Odometry source for [GLIM](https://koide3.github.io/glim/) mapping |
+- **[ROS 2 package](https://pelorus.steado.tech/docs/ros/)**: drop-in integration for existing ROS 2 systems
+- **[Standalone CLI](https://pelorus.steado.tech/docs/standalone/)**: offline and online modes, no ROS required
+- **[C / C++ library](https://pelorus.steado.tech/docs/standalone/#c-and-c-library)**: CMake integration with Eigen and PCL helpers
+- **[Python package](https://pelorus.steado.tech/docs/standalone/#python)**: published on PyPI for quick prototyping and offline processing
+- **[GLIM plugin](https://pelorus.steado.tech/docs/glim/)**: odometry source for [GLIM](https://koide3.github.io/glim/) mapping
 
 ## ROS 2 quick start
 

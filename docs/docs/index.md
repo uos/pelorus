@@ -51,14 +51,12 @@ uv pip install "pelorus[all]"
 
 In a real scenario, Pelorus can run in several ways: 
 
-| | |
-| --- | --- |
-| **[ROS 2 package](ros.md)** | Drop-in integration for existing ROS 2 systems |
-| **[Standalone CLI](standalone.md)** | Offline and online modes, no ROS required |
-| **[C and C++ library](standalone.md#c-and-c-library)** | CMake integration, with helpers for Eigen and PCL |
-| **[Python package](standalone.md#python)** | On PyPI, for prototyping and offline processing |
-| **[GLIM plugin](glim.md)** | Odometry source for [GLIM](https://koide3.github.io/glim/) mapping |
-| **[Embedded](nostd.md)** | `no_std` Rust library for microcontrollers |
+- **[ROS 2 package](ros.md)**: drop-in integration for existing ROS 2 systems
+- **[Standalone CLI](standalone.md)**: offline and online modes, no ROS required
+- **[C and C++ library](standalone.md#c-and-c-library)**: CMake integration, with helpers for Eigen and PCL
+- **[Python package](standalone.md#python)**: on PyPI, for prototyping and offline processing
+- **[GLIM plugin](glim.md)**: odometry source for [GLIM](https://koide3.github.io/glim/) mapping
+- **[Embedded](nostd.md)**: `no_std` Rust library for microcontrollers
 
 Prebuilt packages for Ubuntu, PyPI, Homebrew and the AUR, and release archives, are listed under [installation](install.md).
 
