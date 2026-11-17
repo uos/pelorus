@@ -495,7 +495,7 @@ jobs:
           mv "$tmp" "$updatetoml"
           tmp=$(mktemp)
           toml set "$updatetoml" 'package.metadata.deb.depends' \
-            'minot (>= 0.15.0), minot (<< 0.16.0~), libvulkan1' >"$tmp"
+            'minot (>= 0.15.2), minot (<< 0.16.0~), libvulkan1' >"$tmp"
           mv "$tmp" "$updatetoml"
 
           cargo deb --package pelorus_cli --features vulkan,rerun

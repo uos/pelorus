@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """
-Validates that packaging files (PKGBUILD, deb metadata, rpm metadata, pyproject.toml)
+Validates that packaging files (PKGBUILD, deb metadata, rpm metadata, pyproject.toml,
+the release workflow)
 have version constraints for minot/minot-cli and rerun-sdk that match the workspace
 Cargo.toml dependencies.
 
@@ -52,7 +53,8 @@ def get_workspace_info(root: Path):
     if not mt_ver:
         raise ValueError("Could not find mt_pubsub / minot dependency version in Cargo.toml workspace.dependencies")
 
-    min_ver, next_ver = compat_range(mt_ver, "minot")
+    # Pelorus needs the Minot fixes it is built against, so the minimum is the exact version.
+    min_ver, next_ver = compat_range(mt_ver, "minot", exact_min=True)
 
     # The Rust crate `rerun` and the Python package `rerun-sdk` are cut from the
     # same release and share version numbers, so the optional dependency that
@@ -132,10 +134,11 @@ def major_minor(version: str) -> str:
     return ".".join(version.lstrip("v").split(".")[:2])
 
 
-def compat_range(version: str, name: str) -> tuple[str, str]:
+def compat_range(version: str, name: str, exact_min: bool = False) -> tuple[str, str]:
     """Semver-compatible range for a dependency, as (minimum, exclusive upper).
 
     Below 1.0 a minor bump is breaking, so the range is pinned to one minor line.
+    The minimum is the start of that line, or the given version with exact_min.
     """
     match = re.match(r"^(\d+)\.(\d+)(?:\.(\d+))?", version)
     if not match:
@@ -144,9 +147,13 @@ def compat_range(version: str, name: str) -> tuple[str, str]:
     major = int(match.group(1))
     minor = int(match.group(2))
 
+    patch = int(match.group(3) or 0)
+
     if major == 0:
-        return f"0.{minor}.0", f"0.{minor + 1}.0"
-    return f"{major}.0.0", f"{major + 1}.0.0"
+        minimum = f"0.{minor}.{patch}" if exact_min else f"0.{minor}.0"
+        return minimum, f"0.{minor + 1}.0"
+    minimum = f"{major}.{minor}.{patch}" if exact_min else f"{major}.0.0"
+    return minimum, f"{major + 1}.0.0"
 
 
 def check_pkgbuild(root: Path, info: dict, fix: bool) -> list[str]:
@@ -257,6 +264,29 @@ def check_pelorus_cli_cargo(root: Path, info: dict, fix: bool) -> list[str]:
         print(f"Fixed {cli_cargo_path.relative_to(root)}")
 
     return errors
+
+
+def check_release_workflow(root: Path, info: dict, fix: bool) -> list[str]:
+    """The release builds the Vulkan deb with its own depends line."""
+    path = root / ".forgejo" / "workflows" / "release.yml"
+    content = path.read_text(encoding="utf-8")
+    expected = f'minot (>= {info["min_ver"]}), minot (<< {info["next_ver"]}~)'
+    found = re.findall(r"minot \(>= [^)]+\), minot \(<< [^)]+\)", content)
+    if not found:
+        return [f"Could not find the minot depends in {path.relative_to(root)}"]
+    stale = sorted({f for f in found if f != expected})
+    if not stale:
+        return []
+    if fix:
+        new_content = content
+        for f in stale:
+            new_content = new_content.replace(f, expected)
+        path.write_text(new_content, encoding="utf-8")
+        print(f"Fixed {path.relative_to(root)}")
+    return [
+        f"{path.relative_to(root)} minot depends mismatch:\n  found:    {f}\n  expected: {expected}"
+        for f in stale
+    ]
 
 
 def check_pyproject(root: Path, info: dict, fix: bool) -> list[str]:
@@ -455,6 +485,7 @@ def main():
         checks = [
             check_pkgbuild,
             check_pelorus_cli_cargo,
+            check_release_workflow,
             check_pyproject,
             check_rerun_pyproject,
             check_docs,

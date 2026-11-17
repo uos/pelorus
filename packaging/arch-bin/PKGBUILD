@@ -6,7 +6,7 @@ pkgdesc="Resource-Aware Lidar-Inertial Odometry"
 arch=('x86_64' 'aarch64')
 url="https://pelorus.steado.tech"
 license=('MIT' 'Apache-2.0')
-depends=('libgcc' 'glibc' 'minot>=0.15.0' 'minot<0.16.0' 'dedrunk' 'marina')
+depends=('libgcc' 'glibc' 'minot>=0.15.2' 'minot<0.16.0' 'dedrunk' 'marina')
 makedepends=()
 options=('!lto' '!strip' '!debug')
 source_x86_64=(
