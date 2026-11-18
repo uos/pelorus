@@ -128,3 +128,19 @@ The state is estimated through an [iterated equivariant Kalman filter](https://a
 2. Generate a [configuration](configuration/index.md) and set the topics, frame IDs and sensor parameters for your hardware.
 3. Run it against a recording before running it on a robot.
 4. Once it works, [calibrate the IMU](calibration/index.md). It removes drift that tuning cannot.
+
+## Citation
+
+The paper is under review at IEEE Robotics and Automation Letters (RA-L). Please cite the [arXiv preprint](https://arxiv.org/abs/2611.22850) when you use Pelorus:
+
+```bibtex
+@misc{sieh2026pelorus,
+  title         = {Pelorus: Resource-Aware Lidar-Inertial Odometry},
+  author        = {Sieh, Charlotte and Porrmann, Mario},
+  year          = {2026},
+  eprint        = {2611.22850},
+  archivePrefix = {arXiv},
+  primaryClass  = {cs.RO},
+  url           = {https://arxiv.org/abs/2611.22850},
+}
+```

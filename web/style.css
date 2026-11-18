@@ -903,3 +903,18 @@ footer p {
     --outline: 1.5px;
   }
 }
+
+/* The BibTeX entry under the paper note, selectable as one block. */
+footer pre.cite {
+  max-width: 44rem;
+  margin: 0 0 1.6rem;
+  padding: 0.8rem 1rem;
+  overflow-x: auto;
+  background: var(--deck);
+  border: 1px solid var(--rule);
+  border-radius: 6px;
+  color: var(--fog);
+  font-size: 0.78rem;
+  line-height: 1.5;
+  user-select: all;
+}

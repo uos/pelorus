@@ -7,6 +7,7 @@
 [![License](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue)](#license)
 [![Docs](https://img.shields.io/badge/docs-pelorus.steado.tech-e5c65c)](https://pelorus.steado.tech/docs/)
 [![Demo](https://img.shields.io/badge/demo-in%20your%20browser-e5c65c)](https://pelorus.steado.tech/)
+[![arXiv](https://img.shields.io/badge/arXiv-2611.22850-b31b1b)](https://arxiv.org/abs/2611.22850)
 
 Supporting various 3D lidar sensors, IMUs, odometry sources and kinematic models, Pelorus provides real-time performance on embedded hardware while pushing state-of-the-art accuracy. The online mode reaches more than 20 Hz odometry on a Jetson Orin Nano with a 128-layer Ouster lidar, keeping resource usage low so the rest of your application has room to run.
 
@@ -79,6 +80,22 @@ Please see the **[docs](https://pelorus.steado.tech/docs/)** for more info about
 ## Development
 
 See [CONTRIBUTE.md](CONTRIBUTE.md) for setting up a development environment with `mask` and `rerun`.
+
+## Citation
+
+The paper is under review at IEEE Robotics and Automation Letters (RA-L). Please cite the [arXiv preprint](https://arxiv.org/abs/2611.22850) when you use Pelorus:
+
+```bibtex
+@misc{sieh2026pelorus,
+  title         = {Pelorus: Resource-Aware Lidar-Inertial Odometry},
+  author        = {Sieh, Charlotte and Porrmann, Mario},
+  year          = {2026},
+  eprint        = {2611.22850},
+  archivePrefix = {arXiv},
+  primaryClass  = {cs.RO},
+  url           = {https://arxiv.org/abs/2611.22850},
+}
+```
 
 ## License
 
