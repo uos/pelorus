@@ -378,6 +378,13 @@ repo = "fontawesome/brands/git-alt"
 # ----------------------------------------------------------------------------
 # The "extra" section contains miscellaneous settings.
 # ----------------------------------------------------------------------------
-#[[project.extra.social]]
-#icon = "fontawesome/brands/github"
-#link = "https://github.com/user/repo"
+# Both code hosts in the footer, so the code stays reachable when one is down.
+[[project.extra.social]]
+icon = "simple/codeberg"
+link = "https://codeberg.org/stelzo/pelorus"
+name = "Code on Codeberg"
+
+[[project.extra.social]]
+icon = "simple/github"
+link = "https://github.com/uos/pelorus"
+name = "Mirror on GitHub"
