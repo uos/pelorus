@@ -2,11 +2,11 @@
 
 ## Building
 
-Install uv if you don't have it already, then zensical:
+The tasks run zensical through `uvx`, the same version as the CI. Install uv if you
+don't have it already:
 
 ```sh
 curl -LsSf https://astral.sh/uv/install.sh | sh
-uv tool install zensical
 ```
 
 Build the site, or serve it locally with live reload:

@@ -68,7 +68,7 @@ RUST_BACKTRACE=1 RUST_LOG=debug,minot=off,rat=off,tracing=off,mt_sea=off,h2=off,
 
 ~~~sh
 cargo run -p pelorus_docs
-cd docs && zensical build
+cd docs && uvx zensical build
 ~~~
 
 ## docs-serve
@@ -77,7 +77,7 @@ cd docs && zensical build
 
 ~~~sh
 cargo run -p pelorus_docs
-cd docs && zensical serve
+cd docs && uvx zensical serve
 ~~~
 
 ## nostd-check
