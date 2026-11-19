@@ -9,7 +9,7 @@ This page gets Pelorus running on a recording first, then covers the library bin
 The quickest path uses the SeaKit tools, which we built during Pelorus' development to fix determinism and efficiency problems we had with ROS. [Installing Pelorus with uv](./index.md#how-to-run) gives you everything you need at once. This includes:
 
 - [`marina`](https://marina.steado.tech/docs/) for managing bags
-- `dedrunk` for IMU intrinsics and lidar, camera and IMU extrinsics
+- [`dedrunk`](https://dedrunk.steado.tech/docs/) for calibrating the IMU, cameras and lidar
 - [`minot`](https://minot.steado.tech/docs/) for synchronized playback of bags
 
 First we get our dataset:

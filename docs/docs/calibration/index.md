@@ -10,7 +10,7 @@ You can calibrate three things, in any order:
 
 If you do both, apply the intrinsics before fitting the lidar to IMU transform. The fit comes out cleaner.
 
-Dedrunk does the fitting. It comes with `pelorus[all]` and the Homebrew package, or on its own with `cargo install dedrunk`. Its documentation explains the motion each fit needs and how to read the results. This page covers the Pelorus side: recording and applying the results.
+[Dedrunk](https://dedrunk.steado.tech/docs/) does the fitting. It comes with `pelorus[all]` and the Homebrew package, or on its own with `cargo install dedrunk`. [Its documentation](https://dedrunk.steado.tech/docs/) explains the motion each fit needs and how to read the results. This page covers the Pelorus side: recording and applying the results.
 
 ## Recording
 
@@ -24,7 +24,7 @@ pelorus online raw --output-rosbag calib_drive
 pelorus online raw imu --output-rosbag imu_static
 ```
 
-One drive that follows Dedrunk's recording guide covers both the intrinsics and the lidar to IMU fit. The noise measurement needs its own recording of at least three hours. Use `--output-mcap` for MCAP instead of a ROS 2 bag, and `dedrunk topics <bag>` to see what was recorded.
+One drive that follows [Dedrunk's recording guide](https://dedrunk.steado.tech/docs/recording/) covers both the intrinsics and the lidar to IMU fit. The noise measurement needs its own recording of at least three hours. Use `--output-mcap` for MCAP instead of a ROS 2 bag, and `dedrunk topics <bag>` to see what was recorded.
 
 !!! warning "Calibrate against raw IMU output"
 
@@ -91,7 +91,7 @@ dedrunk extrinsics lidar-imu lidar_traj --imu-bag calib_drive --pelorus lidar_im
 
 `imu.lidar_only` ignores the IMU and its transform, and roll and pitch are relative to the start pose. Use it only for calibration.
 
-Read Dedrunk's observability report before you accept the result. A flat loop does not pin down every parameter, and a known calibration is better than a poorly constrained new one.
+Read Dedrunk's observability report before you accept the result. [`dedrunk gui`](https://dedrunk.steado.tech/docs/gui/) plots the IMU against the fitted model. A flat loop does not pin down every parameter, and a known calibration is better than a poorly constrained new one.
 
 `lidar_imu.rl` sets `imu.from_lidar_transform` and [`imu.calibration.time_offset`](../configuration/reference/imu.md#imu-calibration-time-offset). Include it like the IMU file:
 

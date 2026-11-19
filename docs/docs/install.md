@@ -126,7 +126,7 @@ curl -LsSf https://astral.sh/uv/install.sh | sh
 
 The [uos Homebrew tap](https://github.com/uos/homebrew-tools) carries the CLI
 and the C library for Apple Silicon, built with Metal support. It pulls in
-[`minot`](https://minot.steado.tech/docs/), `dedrunk` and [`marina`](https://marina.steado.tech/docs/) as well.
+[`minot`](https://minot.steado.tech/docs/), [`dedrunk`](https://dedrunk.steado.tech/docs/) and [`marina`](https://marina.steado.tech/docs/) as well.
 
 ```sh
 brew install uos/tools/pelorus
