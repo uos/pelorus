@@ -228,6 +228,7 @@ ratslang.workspace = true
 
 [package.metadata.deb]
 name = "pelorus"
+maintainer = "stelzo <stelzo@steado.de>"
 depends = "minot (>= 0.15.2), minot (<< 0.16.0~), dedrunk, marina"
 section = "science"
 priority = "optional"

@@ -35,6 +35,7 @@ large-processing-queue = ["pelorus/large-processing-queue"]
 
 [package.metadata.deb]
 name = "libpelorus"
+maintainer = "stelzo <stelzo@steado.de>"
 section = "libs"
 priority = "optional"
 assets = [

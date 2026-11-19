@@ -14,6 +14,7 @@ rust-version.workspace = true
 
 [package.metadata.deb]
 name = "libpelorus-dev"
+maintainer = "stelzo <stelzo@steado.de>"
 section = "libs"
 priority = "optional"
 depends = "libpelorus ( = $VERSION )"
