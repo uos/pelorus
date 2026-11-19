@@ -121,12 +121,15 @@ def cuda_variants(root: Path) -> dict[str, set[str]]:
         if match:
             general.add(match.group(1))
 
-    glim = set(re.findall(r'glim_odometry-cuda([0-9]+-[0-9]+)"', text))
+    glim_script = root / "scripts" / "release" / "glim.bash"
+    glim = set(
+        re.findall(r'glim_odometry-cuda([0-9]+-[0-9]+)"', glim_script.read_text(encoding="utf-8"))
+    )
 
     if not general:
         raise ValueError(f"Could not find any cuda matrix entries in {release}")
     if not glim:
-        raise ValueError(f"Could not find any glim cuda package names in {release}")
+        raise ValueError(f"Could not find any glim cuda package names in {glim_script}")
     return {"general": general, "glim": glim}
 
 
@@ -268,7 +271,7 @@ def check_pelorus_cli_cargo(root: Path, info: dict, fix: bool) -> list[str]:
 
 def check_release_workflow(root: Path, info: dict, fix: bool) -> list[str]:
     """The release builds the Vulkan deb with its own depends line."""
-    path = root / ".forgejo" / "workflows" / "release.yml"
+    path = root / "scripts" / "release" / "rawlibs-vulkan.bash"
     content = path.read_text(encoding="utf-8")
     expected = f'minot (>= {info["min_ver"]}), minot (<< {info["next_ver"]}~)'
     found = re.findall(r"minot \(>= [^)]+\), minot \(<< [^)]+\)", content)

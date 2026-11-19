@@ -85,22 +85,356 @@ jobs:
             arch: amd64
             repo: resolute
             runner: ubuntu-latest
+          - image: docker.io/stelzo/ubuntu-dev:noble
+            arch: amd64
+            repo: noble
+            runner: ubuntu-latest
+          - image: docker.io/stelzo/ubuntu-dev:jammy
+            arch: amd64
+            repo: jammy
+            runner: ubuntu-latest
+    runs-on: ${{ matrix.runner }}
+    container:
+      image: ${{ matrix.image }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build
+        env:
+          IMAGE: ${{ matrix.image }}
+          ARCH: ${{ matrix.arch }}
+        run: bash scripts/release/rawlibs.bash
+
+      - name: Upload
+        uses: actions/upload-artifact@v3
+        with:
+          name: artifacts-rawlibs-${{ matrix.repo }}
+          path: dist/
+
+  rawlibs-cuda:
+    needs:
+      - sanity
+      - examples-regression
+    strategy:
+      matrix:
+        include:
+          - image: docker.io/stelzo/ubuntu-dev:noble-cu12-6
+            arch: amd64
+            repo: noble
+            cuda: 12-6
+            runner: ubuntu-latest
+          - image: docker.io/stelzo/ubuntu-dev:jammy-cu12-6
+            arch: amd64
+            repo: jammy
+            cuda: 12-6
+            runner: ubuntu-latest
+          - image: docker.io/stelzo/ubuntu-dev:noble-cu12-8
+            arch: amd64
+            repo: noble
+            cuda: 12-8
+            runner: ubuntu-latest
+          - image: docker.io/stelzo/ubuntu-dev:jammy-cu12-8
+            arch: amd64
+            repo: jammy
+            cuda: 12-8
+            runner: ubuntu-latest
+          - image: docker.io/stelzo/ubuntu-dev:noble-cu13-1
+            arch: amd64
+            repo: noble
+            cuda: 13-1
+            runner: ubuntu-latest
+          - image: docker.io/stelzo/ubuntu-dev:jammy-cu13-1
+            arch: amd64
+            repo: jammy
+            cuda: 13-1
+            runner: ubuntu-latest
+    runs-on: ${{ matrix.runner }}
+    container:
+      image: ${{ matrix.image }}
+    env:
+      CUDA_HOME: /usr/local/cuda
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build
+        env:
+          IMAGE: ${{ matrix.image }}
+          ARCH: ${{ matrix.arch }}
+        run: bash scripts/release/rawlibs-cuda.bash
+
+      - name: Upload
+        uses: actions/upload-artifact@v3
+        with:
+          name: artifacts-rawlibs-${{ matrix.repo }}-cuda${{ matrix.cuda }}
+          path: dist/
+
+  rawlibs-vulkan:
+    needs:
+      - sanity
+      - examples-regression
+    strategy:
+      matrix:
+        include:
+          - image: docker.io/stelzo/ubuntu-dev:resolute
+            arch: amd64
+            repo: resolute
+            runner: ubuntu-latest
+          - image: docker.io/stelzo/ubuntu-dev:noble
+            arch: amd64
+            repo: noble
+            runner: ubuntu-latest
+          - image: docker.io/stelzo/ubuntu-dev:jammy
+            arch: amd64
+            repo: jammy
+            runner: ubuntu-latest
+    runs-on: ${{ matrix.runner }}
+    container:
+      image: ${{ matrix.image }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build
+        env:
+          ARCH: ${{ matrix.arch }}
+        run: bash scripts/release/rawlibs-vulkan.bash
+
+      - name: Upload
+        uses: actions/upload-artifact@v3
+        with:
+          name: artifacts-rawlibs-${{ matrix.repo }}-vulkan
+          path: dist/
+
+  ros-debs:
+    needs:
+      - sanity
+      - examples-regression
+    strategy:
+      matrix:
+        include:
+          - image: docker.io/stelzo/ubuntu-dev:lyrical
+            repo: resolute
+            runner: ubuntu-latest
+          - image: docker.io/stelzo/ubuntu-dev:jazzy
+            repo: noble
+            runner: ubuntu-latest
+          - image: docker.io/stelzo/ubuntu-dev:humble
+            repo: jammy
+            runner: ubuntu-latest
+    runs-on: ${{ matrix.runner }}
+    container:
+      image: ${{ matrix.image }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build
+        run: bash scripts/release/ros-debs.bash
+
+      - name: Upload deb
+        uses: actions/upload-artifact@v3
+        with:
+          name: artifacts-ros-debs-${{ matrix.repo }}
+          path: |
+            *.deb
+
+  ros-debs-cuda:
+    needs:
+      - sanity
+      - examples-regression
+    strategy:
+      matrix:
+        include:
+          # NVIDIA publishes Ubuntu 26.04 images only for CUDA 13.3 and newer, so Lyrical gets 13.4.
+          - image: docker.io/stelzo/ubuntu-dev:lyrical-cu13-4
+            repo: resolute
+            cuda: 13-4
+            runner: ubuntu-latest
+          - image: docker.io/stelzo/ubuntu-dev:jazzy-cu12-6
+            repo: noble
+            cuda: 12-6
+            runner: ubuntu-latest
+          - image: docker.io/stelzo/ubuntu-dev:humble-cu12-6
+            repo: jammy
+            cuda: 12-6
+            runner: ubuntu-latest
+          - image: docker.io/stelzo/ubuntu-dev:jazzy-cu12-8
+            repo: noble
+            cuda: 12-8
+            runner: ubuntu-latest
+          - image: docker.io/stelzo/ubuntu-dev:humble-cu12-8
+            repo: jammy
+            cuda: 12-8
+            runner: ubuntu-latest
+          - image: docker.io/stelzo/ubuntu-dev:jazzy-cu13-1
+            repo: noble
+            cuda: 13-1
+            runner: ubuntu-latest
+          - image: docker.io/stelzo/ubuntu-dev:humble-cu13-1
+            repo: jammy
+            cuda: 13-1
+            runner: ubuntu-latest
+    runs-on: ${{ matrix.runner }}
+    container:
+      image: ${{ matrix.image }}
+    env:
+      CUDA_HOME: /usr/local/cuda
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build
+        env:
+          CUDA: ${{ matrix.cuda }}
+        run: bash scripts/release/ros-debs-cuda.bash
+
+      - name: Upload deb
+        uses: actions/upload-artifact@v3
+        with:
+          name: artifacts-ros-debs-${{ matrix.repo }}-${{ matrix.cuda }}
+          path: |
+            *.deb
+
+  ros-debs-vulkan:
+    needs:
+      - sanity
+      - examples-regression
+    strategy:
+      matrix:
+        include:
+          - image: docker.io/stelzo/ubuntu-dev:lyrical
+            repo: resolute
+            runner: ubuntu-latest
+          - image: docker.io/stelzo/ubuntu-dev:jazzy
+            repo: noble
+            runner: ubuntu-latest
+          - image: docker.io/stelzo/ubuntu-dev:humble
+            repo: jammy
+            runner: ubuntu-latest
+    runs-on: ${{ matrix.runner }}
+    container:
+      image: ${{ matrix.image }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build
+        run: bash scripts/release/ros-debs-vulkan.bash
+
+      - name: Upload deb
+        uses: actions/upload-artifact@v3
+        with:
+          name: artifacts-ros-debs-${{ matrix.repo }}-vulkan
+          path: |
+            *.deb
+
+  glim:
+    needs:
+      - rawlibs
+      - clean-1
+    strategy:
+      matrix:
+        include:
+          - image: docker.io/stelzo/ubuntu-dev:glim-noble
+            repo: noble
+            arch: amd64
+            runner: ubuntu-latest
+          - image: docker.io/stelzo/ubuntu-dev:glim-jammy
+            repo: jammy
+            arch: amd64
+            runner: ubuntu-latest
+    runs-on: ${{ matrix.runner }}
+    container:
+      image: ${{ matrix.image }}
+    env:
+      ARCH: ${{ matrix.arch }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Download libpelorus
+        uses: actions/download-artifact@v3
+        with:
+          name: artifacts-rawlibs-${{ matrix.repo }}
+          path: deb-artifacts
+      - name: Install libpelorus and build
+        run: bash scripts/release/glim.bash
+
+      - name: Upload deb
+        uses: actions/upload-artifact@v3
+        with:
+          name: artifacts-glim-${{ matrix.repo }}
+          path: |
+            dist/*
+
+  wheels-cuda:
+    needs:
+      - sanity
+      - examples-regression
+    strategy:
+      matrix:
+        include:
+          - image: docker.io/stelzo/ubuntu-dev:noble-cu12-6
+            target: x86_64-unknown-linux-gnu
+            runner: ubuntu-latest
+            cuda: 12-6
+          - image: docker.io/stelzo/ubuntu-dev:noble-cu12-8
+            target: x86_64-unknown-linux-gnu
+            runner: ubuntu-latest
+            cuda: 12-8
+          - image: docker.io/stelzo/ubuntu-dev:noble-cu13-1
+            target: x86_64-unknown-linux-gnu
+            runner: ubuntu-latest
+            cuda: 13-1
+    runs-on: ${{ matrix.runner }}
+    container:
+      image: ${{ matrix.image }}
+    env:
+      CUDA_HOME: /usr/local/cuda
+      TARGET: ${{ matrix.target }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build CUDA wheels
+        run: bash scripts/release/wheels-cuda.bash
+
+      - name: Upload wheels
+        uses: actions/upload-artifact@v3
+        with:
+          name: wheels-cuda${{ matrix.cuda }}
+          path: target/wheels
+
+  wheels-vulkan:
+    needs:
+      - sanity
+      - examples-regression
+    strategy:
+      matrix:
+        include:
+          - image: docker.io/stelzo/ubuntu-dev:noble
+            target: x86_64-unknown-linux-gnu
+            runner: ubuntu-latest
+    runs-on: ${{ matrix.runner }}
+    container:
+      image: ${{ matrix.image }}
+    env:
+      TARGET: ${{ matrix.target }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build Vulkan wheels
+        run: bash scripts/release/wheels-vulkan.bash
+
+      - name: Upload wheels
+        uses: actions/upload-artifact@v3
+        with:
+          name: wheels-vulkan
+          path: target/wheels
+
+  # arm64 jobs share stargazer and its disk. They run one stage after another,
+  # with a Docker prune in between, and a failed stage does not stop the next.
+
+  rawlibs-arm64:
+    needs:
+      - sanity
+      - examples-regression
+    strategy:
+      matrix:
+        include:
           - image: docker.io/stelzo/ubuntu-dev:resolute
             arch: arm64
             repo: resolute
             runner: ubuntu-latest-arm
           - image: docker.io/stelzo/ubuntu-dev:noble
-            arch: amd64
-            repo: noble
-            runner: ubuntu-latest
-          - image: docker.io/stelzo/ubuntu-dev:noble
             arch: arm64
             repo: noble
             runner: ubuntu-latest-arm
-          - image: docker.io/stelzo/ubuntu-dev:jammy
-            arch: amd64
-            repo: jammy
-            runner: ubuntu-latest
           - image: docker.io/stelzo/ubuntu-dev:jammy
             repo: jammy
             arch: arm64
@@ -114,76 +448,449 @@ jobs:
         env:
           IMAGE: ${{ matrix.image }}
           ARCH: ${{ matrix.arch }}
-        run: |
-          set -euo pipefail
-          ulimit -n 65536
-          apt-get install -y cmake
-          VERSION=$(toml get --raw Cargo.toml workspace.package.version)
-          VERSION=$VERSION-1
-          rustup self update
-          rustup toolchain uninstall stable
-          rustup toolchain install stable
-          rustup default stable
-          rustc --version
-          mkdir -p "dist/${ARCH}"
-
-          # ------- RAW
-          cargo build -p pelorus_c --release
-          mv target/release/libpelorus.so dist/${ARCH}/
-          mv target/release/libpelorus.a  dist/${ARCH}/
-
-          cargo build -p pelorus_cli --features rerun --release
-          mv target/release/pelorus dist/${ARCH}/
-
-          # ------- DEB
-          # -- lib
-          updatetoml=pelorus_c/Cargo.toml
-          DEB_NAME="libpelorus"
-          LIB_DEB=$DEB_NAME
-          tmp=$(mktemp)
-          toml set "$updatetoml" 'package.metadata.deb.name' "$DEB_NAME" >"$tmp"
-          mv "$tmp" "$updatetoml"
-
-          cargo deb --package pelorus_c
-
-          # -- dev
-          DEB_NAME="libpelorus-dev"
-          DEV_DEB=$DEB_NAME
-          updatetoml=pelorus_c/deb-dev/Cargo.toml
-          tmp=$(mktemp)
-          toml set "$updatetoml" 'package.metadata.deb.name' "$DEB_NAME" >"$tmp"
-          mv "$tmp" "$updatetoml"
-
-          # - pin dependencies
-          tmp=$(mktemp)
-          toml set "$updatetoml" 'package.metadata.deb.depends' "${LIB_DEB} ( = ${VERSION} )" >"$tmp"
-          mv "$tmp" "$updatetoml"
-
-          # Generate packaging artifacts with CMake and copy them into the dev crate
-          cmake -S pelorus_c -B pelorus_c/build -DCMAKE_INSTALL_PREFIX=/usr -DPELORUS_BUILD_SHARED=OFF -DPELORUS_BUILD_STATIC=OFF
-          cp pelorus_c/build/pelorus.pc pelorus_c/deb-dev/pelorus.pc
-          cp pelorus_c/build/pelorusConfig.cmake pelorus_c/deb-dev/pelorusConfig.cmake
-          cp pelorus_c/build/pelorusConfigVersion.cmake pelorus_c/deb-dev/pelorusConfigVersion.cmake
-
-          cargo deb --package libpelorus-dev
-
-          # -- bin
-          DEB_NAME="pelorus"
-          updatetoml=pelorus_cli/Cargo.toml
-          tmp=$(mktemp)
-          toml set "$updatetoml" 'package.metadata.deb.name' "$DEB_NAME" >"$tmp"
-          mv "$tmp" "$updatetoml"
-
-          cargo deb --package pelorus_cli --features rerun
-
-          # prepare upload
-          mv target/debian/*.deb dist/${ARCH}/
+        run: bash scripts/release/rawlibs.bash
 
       - name: Upload
         uses: actions/upload-artifact@v3
         with:
           name: artifacts-rawlibs-${{ matrix.repo }}
           path: dist/
+
+  clean-1:
+    if: always()
+    needs:
+      - rawlibs-arm64
+    strategy:
+      matrix:
+        include:
+          - runner: macos-latest
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - name: Docker clean
+        run: |
+          docker system prune -af --volumes
+          docker builder prune -af
+
+  rawlibs-cuda-arm64:
+    needs:
+      - sanity
+      - examples-regression
+      - clean-1
+    strategy:
+      matrix:
+        include:
+          - image: docker.io/stelzo/ubuntu-dev:noble-cu12-6
+            arch: arm64
+            repo: noble
+            cuda: 12-6
+            runner: ubuntu-latest-arm
+          - image: docker.io/stelzo/ubuntu-dev:jammy-cu12-6
+            arch: arm64
+            repo: jammy
+            cuda: 12-6
+            runner: ubuntu-latest-arm
+          - image: docker.io/stelzo/ubuntu-dev:noble-cu12-8
+            arch: arm64
+            repo: noble
+            cuda: 12-8
+            runner: ubuntu-latest-arm
+          - image: docker.io/stelzo/ubuntu-dev:jammy-cu12-8
+            arch: arm64
+            repo: jammy
+            cuda: 12-8
+            runner: ubuntu-latest-arm
+          - image: docker.io/stelzo/ubuntu-dev:noble-cu13-1
+            arch: arm64
+            repo: noble
+            cuda: 13-1
+            runner: ubuntu-latest-arm
+          - image: docker.io/stelzo/ubuntu-dev:jammy-cu13-1
+            arch: arm64
+            repo: jammy
+            cuda: 13-1
+            runner: ubuntu-latest-arm
+    runs-on: ${{ matrix.runner }}
+    container:
+      image: ${{ matrix.image }}
+    env:
+      CUDA_HOME: /usr/local/cuda
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build
+        env:
+          IMAGE: ${{ matrix.image }}
+          ARCH: ${{ matrix.arch }}
+        run: bash scripts/release/rawlibs-cuda.bash
+
+      - name: Upload
+        uses: actions/upload-artifact@v3
+        with:
+          name: artifacts-rawlibs-${{ matrix.repo }}-cuda${{ matrix.cuda }}
+          path: dist/
+
+  clean-2:
+    if: always()
+    needs:
+      - rawlibs-cuda-arm64
+    strategy:
+      matrix:
+        include:
+          - runner: macos-latest
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - name: Docker clean
+        run: |
+          docker system prune -af --volumes
+          docker builder prune -af
+
+  rawlibs-vulkan-arm64:
+    needs:
+      - sanity
+      - examples-regression
+      - clean-2
+    strategy:
+      matrix:
+        include:
+          - image: docker.io/stelzo/ubuntu-dev:resolute
+            arch: arm64
+            repo: resolute
+            runner: ubuntu-latest-arm
+          - image: docker.io/stelzo/ubuntu-dev:noble
+            arch: arm64
+            repo: noble
+            runner: ubuntu-latest-arm
+          - image: docker.io/stelzo/ubuntu-dev:jammy
+            arch: arm64
+            repo: jammy
+            runner: ubuntu-latest-arm
+    runs-on: ${{ matrix.runner }}
+    container:
+      image: ${{ matrix.image }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build
+        env:
+          ARCH: ${{ matrix.arch }}
+        run: bash scripts/release/rawlibs-vulkan.bash
+
+      - name: Upload
+        uses: actions/upload-artifact@v3
+        with:
+          name: artifacts-rawlibs-${{ matrix.repo }}-vulkan
+          path: dist/
+
+  clean-3:
+    if: always()
+    needs:
+      - rawlibs-vulkan-arm64
+    strategy:
+      matrix:
+        include:
+          - runner: macos-latest
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - name: Docker clean
+        run: |
+          docker system prune -af --volumes
+          docker builder prune -af
+
+  ros-debs-arm64:
+    needs:
+      - sanity
+      - examples-regression
+      - clean-3
+    strategy:
+      matrix:
+        include:
+          - image: docker.io/stelzo/ubuntu-dev:lyrical
+            repo: resolute
+            runner: ubuntu-latest-arm
+          - image: docker.io/stelzo/ubuntu-dev:jazzy
+            repo: noble
+            runner: ubuntu-latest-arm
+          - image: docker.io/stelzo/ubuntu-dev:humble
+            repo: jammy
+            runner: ubuntu-latest-arm
+    runs-on: ${{ matrix.runner }}
+    container:
+      image: ${{ matrix.image }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build
+        run: bash scripts/release/ros-debs.bash
+
+      - name: Upload deb
+        uses: actions/upload-artifact@v3
+        with:
+          name: artifacts-ros-debs-${{ matrix.repo }}
+          path: |
+            *.deb
+
+  clean-4:
+    if: always()
+    needs:
+      - ros-debs-arm64
+    strategy:
+      matrix:
+        include:
+          - runner: macos-latest
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - name: Docker clean
+        run: |
+          docker system prune -af --volumes
+          docker builder prune -af
+
+  ros-debs-cuda-arm64:
+    needs:
+      - sanity
+      - examples-regression
+      - clean-4
+    strategy:
+      matrix:
+        include:
+          # NVIDIA publishes Ubuntu 26.04 images only for CUDA 13.3 and newer, so Lyrical gets 13.4.
+          - image: docker.io/stelzo/ubuntu-dev:lyrical-cu13-4
+            repo: resolute
+            cuda: 13-4
+            runner: ubuntu-latest-arm
+          - image: docker.io/stelzo/ubuntu-dev:jazzy-cu12-6
+            repo: noble
+            cuda: 12-6
+            runner: ubuntu-latest-arm
+          - image: docker.io/stelzo/ubuntu-dev:humble-cu12-6
+            repo: jammy
+            cuda: 12-6
+            runner: ubuntu-latest-arm
+          - image: docker.io/stelzo/ubuntu-dev:jazzy-cu12-8
+            repo: noble
+            cuda: 12-8
+            runner: ubuntu-latest-arm
+          - image: docker.io/stelzo/ubuntu-dev:humble-cu12-8
+            repo: jammy
+            cuda: 12-8
+            runner: ubuntu-latest-arm
+          - image: docker.io/stelzo/ubuntu-dev:jazzy-cu13-1
+            repo: noble
+            cuda: 13-1
+            runner: ubuntu-latest-arm
+          - image: docker.io/stelzo/ubuntu-dev:humble-cu13-1
+            repo: jammy
+            cuda: 13-1
+            runner: ubuntu-latest-arm
+    runs-on: ${{ matrix.runner }}
+    container:
+      image: ${{ matrix.image }}
+    env:
+      CUDA_HOME: /usr/local/cuda
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build
+        env:
+          CUDA: ${{ matrix.cuda }}
+        run: bash scripts/release/ros-debs-cuda.bash
+
+      - name: Upload deb
+        uses: actions/upload-artifact@v3
+        with:
+          name: artifacts-ros-debs-${{ matrix.repo }}-${{ matrix.cuda }}
+          path: |
+            *.deb
+
+  clean-5:
+    if: always()
+    needs:
+      - ros-debs-cuda-arm64
+    strategy:
+      matrix:
+        include:
+          - runner: macos-latest
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - name: Docker clean
+        run: |
+          docker system prune -af --volumes
+          docker builder prune -af
+
+  ros-debs-vulkan-arm64:
+    needs:
+      - sanity
+      - examples-regression
+      - clean-5
+    strategy:
+      matrix:
+        include:
+          - image: docker.io/stelzo/ubuntu-dev:lyrical
+            repo: resolute
+            runner: ubuntu-latest-arm
+          - image: docker.io/stelzo/ubuntu-dev:jazzy
+            repo: noble
+            runner: ubuntu-latest-arm
+          - image: docker.io/stelzo/ubuntu-dev:humble
+            repo: jammy
+            runner: ubuntu-latest-arm
+    runs-on: ${{ matrix.runner }}
+    container:
+      image: ${{ matrix.image }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build
+        run: bash scripts/release/ros-debs-vulkan.bash
+
+      - name: Upload deb
+        uses: actions/upload-artifact@v3
+        with:
+          name: artifacts-ros-debs-${{ matrix.repo }}-vulkan
+          path: |
+            *.deb
+
+  clean-6:
+    if: always()
+    needs:
+      - ros-debs-vulkan-arm64
+    strategy:
+      matrix:
+        include:
+          - runner: macos-latest
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - name: Docker clean
+        run: |
+          docker system prune -af --volumes
+          docker builder prune -af
+
+  glim-arm64:
+    needs:
+      - sanity
+      - examples-regression
+      - rawlibs
+      - rawlibs-arm64
+      - clean-6
+    strategy:
+      matrix:
+        include:
+          - image: docker.io/stelzo/ubuntu-dev:glim-noble
+            repo: noble
+            arch: arm64
+            runner: ubuntu-latest-arm
+          - image: docker.io/stelzo/ubuntu-dev:glim-jammy
+            repo: jammy
+            arch: arm64
+            runner: ubuntu-latest-arm
+    runs-on: ${{ matrix.runner }}
+    container:
+      image: ${{ matrix.image }}
+    env:
+      ARCH: ${{ matrix.arch }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Download libpelorus
+        uses: actions/download-artifact@v3
+        with:
+          name: artifacts-rawlibs-${{ matrix.repo }}
+          path: deb-artifacts
+      - name: Install libpelorus and build
+        run: bash scripts/release/glim.bash
+
+      - name: Upload deb
+        uses: actions/upload-artifact@v3
+        with:
+          name: artifacts-glim-${{ matrix.repo }}
+          path: |
+            dist/*
+
+  wheels-cuda-arm64:
+    needs:
+      - sanity
+      - examples-regression
+    strategy:
+      matrix:
+        include:
+          - image: docker.io/stelzo/ubuntu-dev:noble-cu12-6
+            target: aarch64-unknown-linux-gnu
+            runner: ubuntu-latest-arm
+            cuda: 12-6
+          - image: docker.io/stelzo/ubuntu-dev:noble-cu12-8
+            target: aarch64-unknown-linux-gnu
+            runner: ubuntu-latest-arm
+            cuda: 12-8
+          - image: docker.io/stelzo/ubuntu-dev:noble-cu13-1
+            target: aarch64-unknown-linux-gnu
+            runner: ubuntu-latest-arm
+            cuda: 13-1
+    runs-on: ${{ matrix.runner }}
+    container:
+      image: ${{ matrix.image }}
+    env:
+      CUDA_HOME: /usr/local/cuda
+      TARGET: ${{ matrix.target }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build CUDA wheels
+        run: bash scripts/release/wheels-cuda.bash
+
+      - name: Upload wheels
+        uses: actions/upload-artifact@v3
+        with:
+          name: wheels-cuda${{ matrix.cuda }}
+          path: target/wheels
+
+  clean-7:
+    if: always()
+    needs:
+      - wheels-cuda-arm64
+    strategy:
+      matrix:
+        include:
+          - runner: macos-latest
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - name: Docker clean
+        run: |
+          docker system prune -af --volumes
+          docker builder prune -af
+
+  wheels-vulkan-arm64:
+    needs:
+      - sanity
+      - examples-regression
+      - clean-7
+    strategy:
+      matrix:
+        include:
+          - image: docker.io/stelzo/ubuntu-dev:noble
+            target: aarch64-unknown-linux-gnu
+            runner: ubuntu-latest-arm
+    runs-on: ${{ matrix.runner }}
+    container:
+      image: ${{ matrix.image }}
+    env:
+      TARGET: ${{ matrix.target }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build Vulkan wheels
+        run: bash scripts/release/wheels-vulkan.bash
+
+      - name: Upload wheels
+        uses: actions/upload-artifact@v3
+        with:
+          name: wheels-vulkan
+          path: target/wheels
+
+  clean-8:
+    if: always()
+    needs:
+      - wheels-vulkan-arm64
+    strategy:
+      matrix:
+        include:
+          - runner: macos-latest
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - name: Docker clean
+        run: |
+          docker system prune -af --volumes
+          docker builder prune -af
 
   macos:
     strategy:
@@ -227,363 +934,6 @@ jobs:
         with:
           name: artifacts-macos
           path: dist/
-
-  rawlibs-cuda:
-    needs:
-      - rawlibs
-    strategy:
-      matrix:
-        include:
-          - image: docker.io/stelzo/ubuntu-dev:noble-cu12-6
-            arch: amd64
-            repo: noble
-            cuda: 12-6
-            runner: ubuntu-latest
-          - image: docker.io/stelzo/ubuntu-dev:noble-cu12-6
-            arch: arm64
-            repo: noble
-            cuda: 12-6
-            runner: ubuntu-latest-arm
-          - image: docker.io/stelzo/ubuntu-dev:jammy-cu12-6
-            arch: amd64
-            repo: jammy
-            cuda: 12-6
-            runner: ubuntu-latest
-          - image: docker.io/stelzo/ubuntu-dev:jammy-cu12-6
-            arch: arm64
-            repo: jammy
-            cuda: 12-6
-            runner: ubuntu-latest-arm
-          - image: docker.io/stelzo/ubuntu-dev:noble-cu12-8
-            arch: amd64
-            repo: noble
-            cuda: 12-8
-            runner: ubuntu-latest
-          - image: docker.io/stelzo/ubuntu-dev:noble-cu12-8
-            arch: arm64
-            repo: noble
-            cuda: 12-8
-            runner: ubuntu-latest-arm
-          - image: docker.io/stelzo/ubuntu-dev:jammy-cu12-8
-            arch: amd64
-            repo: jammy
-            cuda: 12-8
-            runner: ubuntu-latest
-          - image: docker.io/stelzo/ubuntu-dev:jammy-cu12-8
-            arch: arm64
-            repo: jammy
-            cuda: 12-8
-            runner: ubuntu-latest-arm
-          - image: docker.io/stelzo/ubuntu-dev:noble-cu13-1
-            arch: amd64
-            repo: noble
-            cuda: 13-1
-            runner: ubuntu-latest
-          - image: docker.io/stelzo/ubuntu-dev:noble-cu13-1
-            arch: arm64
-            repo: noble
-            cuda: 13-1
-            runner: ubuntu-latest-arm
-          - image: docker.io/stelzo/ubuntu-dev:jammy-cu13-1
-            arch: amd64
-            repo: jammy
-            cuda: 13-1
-            runner: ubuntu-latest
-          - image: docker.io/stelzo/ubuntu-dev:jammy-cu13-1
-            arch: arm64
-            repo: jammy
-            cuda: 13-1
-            runner: ubuntu-latest-arm
-    runs-on: ${{ matrix.runner }}
-    container:
-      image: ${{ matrix.image }}
-    env:
-      CUDA_HOME: /usr/local/cuda
-    steps:
-      - uses: actions/checkout@v4
-      - name: Build
-        env:
-          IMAGE: ${{ matrix.image }}
-          ARCH: ${{ matrix.arch }}
-        run: |
-          set -euo pipefail
-          ulimit -n 65536
-          apt-get install -y cmake
-          VERSION=$(toml get --raw Cargo.toml workspace.package.version)
-          rustup self update
-          rustup toolchain uninstall stable
-          rustup toolchain install stable
-          rustup default stable
-          rustc --version
-
-          mkdir -p "dist/${ARCH}"
-
-          # Parse cuda tag
-          IMAGE_TAG="${IMAGE##*:}"
-          CUDA_PART="${IMAGE_TAG#*-cu}"
-
-          # ------- RAW
-          cargo build -p pelorus_c --release --features cuda
-          mv target/release/libpelorus.so dist/${ARCH}/
-          mv target/release/libpelorus.a  dist/${ARCH}/
-
-          cargo build -p pelorus_cli --release --features cuda,rerun
-          mv target/release/pelorus dist/${ARCH}/
-
-          # ------- DEB
-          # -- lib
-          updatetoml=pelorus_c/Cargo.toml
-          DEB_NAME="libpelorus-cuda${CUDA_PART}"
-          LIB_DEB=$DEB_NAME
-          tmp=$(mktemp)
-          toml set "$updatetoml" 'package.metadata.deb.name' "$DEB_NAME" >"$tmp"
-          mv "$tmp" "$updatetoml"
-
-          cargo deb --package pelorus_c
-
-          # -- dev
-          DEB_NAME="libpelorus-cuda${CUDA_PART}-dev"
-          DEV_DEB=$DEB_NAME
-          updatetoml=pelorus_c/deb-dev/Cargo.toml
-          tmp=$(mktemp)
-          toml set "$updatetoml" 'package.metadata.deb.name' "$DEB_NAME" >"$tmp"
-          mv "$tmp" "$updatetoml"
-
-          # - pin dependencies
-          tmp=$(mktemp)
-          toml set "$updatetoml" 'package.metadata.deb.depends' "${LIB_DEB} ( = ${VERSION} )" >"$tmp"
-          mv "$tmp" "$updatetoml"
-
-          # Generate packaging artifacts with CMake and copy them into the dev crate
-          cmake -S pelorus_c -B pelorus_c/build -DCMAKE_INSTALL_PREFIX=/usr
-          cp pelorus_c/build/pelorus.pc pelorus_c/deb-dev/pelorus.pc
-          cp pelorus_c/build/pelorusConfig.cmake pelorus_c/deb-dev/pelorusConfig.cmake
-          cp pelorus_c/build/pelorusConfigVersion.cmake pelorus_c/deb-dev/pelorusConfigVersion.cmake
-
-          cargo deb --package libpelorus-dev
-
-          # -- bin
-          DEB_NAME="pelorus-cuda${CUDA_PART}"
-          updatetoml=pelorus_cli/Cargo.toml
-          tmp=$(mktemp)
-          toml set "$updatetoml" 'package.metadata.deb.name' "$DEB_NAME" >"$tmp"
-          mv "$tmp" "$updatetoml"
-
-          cargo deb --package pelorus_cli --features cuda,rerun
-
-          # prepare upload
-          mv target/debian/*.deb dist/${ARCH}/
-
-      - name: Upload
-        uses: actions/upload-artifact@v3
-        with:
-          name: artifacts-rawlibs-${{ matrix.repo }}-cuda${{ matrix.cuda }}
-          path: dist/
-
-  clean-2:
-    if: always()
-    needs:
-      - rawlibs-cuda
-    strategy:
-      matrix:
-        include:
-          - runner: macos-latest
-    runs-on: ${{ matrix.runner }}
-    steps:
-      - name: Docker clean
-        run: |
-          docker system prune -af --volumes
-          docker builder prune -af
-
-  rawlibs-vulkan:
-    needs:
-      - clean-2
-      - rawlibs-cuda
-    strategy:
-      matrix:
-        include:
-          - image: docker.io/stelzo/ubuntu-dev:resolute
-            arch: amd64
-            repo: resolute
-            runner: ubuntu-latest
-          - image: docker.io/stelzo/ubuntu-dev:resolute
-            arch: arm64
-            repo: resolute
-            runner: ubuntu-latest-arm
-          - image: docker.io/stelzo/ubuntu-dev:noble
-            arch: amd64
-            repo: noble
-            runner: ubuntu-latest
-          - image: docker.io/stelzo/ubuntu-dev:noble
-            arch: arm64
-            repo: noble
-            runner: ubuntu-latest-arm
-          - image: docker.io/stelzo/ubuntu-dev:jammy
-            arch: amd64
-            repo: jammy
-            runner: ubuntu-latest
-          - image: docker.io/stelzo/ubuntu-dev:jammy
-            arch: arm64
-            repo: jammy
-            runner: ubuntu-latest-arm
-    runs-on: ${{ matrix.runner }}
-    container:
-      image: ${{ matrix.image }}
-    steps:
-      - uses: actions/checkout@v4
-      - name: Build
-        env:
-          ARCH: ${{ matrix.arch }}
-        run: |
-          set -euo pipefail
-          ulimit -n 65536
-          apt-get update
-          apt-get install -y cmake libvulkan-dev
-          VERSION=$(toml get --raw Cargo.toml workspace.package.version)
-          VERSION=$VERSION-1
-          rustup self update
-          rustup toolchain uninstall stable
-          rustup toolchain install stable
-          rustup default stable
-          rustc --version
-          mkdir -p "dist/${ARCH}"
-
-          # ------- RAW
-          cargo build -p pelorus_c --release --features vulkan
-          mv target/release/libpelorus.so dist/${ARCH}/
-          mv target/release/libpelorus.a dist/${ARCH}/
-
-          cargo build -p pelorus_cli --release --features vulkan,rerun
-          mv target/release/pelorus dist/${ARCH}/
-
-          # ------- DEB
-          # -- lib
-          updatetoml=pelorus_c/Cargo.toml
-          DEB_NAME="libpelorus-vulkan"
-          LIB_DEB=$DEB_NAME
-          tmp=$(mktemp)
-          toml set "$updatetoml" 'package.metadata.deb.name' "$DEB_NAME" >"$tmp"
-          mv "$tmp" "$updatetoml"
-          tmp=$(mktemp)
-          toml set "$updatetoml" 'package.metadata.deb.depends' 'libvulkan1' >"$tmp"
-          mv "$tmp" "$updatetoml"
-
-          cargo deb --package pelorus_c --features vulkan
-
-          # -- dev
-          DEB_NAME="libpelorus-vulkan-dev"
-          updatetoml=pelorus_c/deb-dev/Cargo.toml
-          tmp=$(mktemp)
-          toml set "$updatetoml" 'package.metadata.deb.name' "$DEB_NAME" >"$tmp"
-          mv "$tmp" "$updatetoml"
-          tmp=$(mktemp)
-          toml set "$updatetoml" 'package.metadata.deb.depends' "${LIB_DEB} ( = ${VERSION} )" >"$tmp"
-          mv "$tmp" "$updatetoml"
-
-          cmake -S pelorus_c -B pelorus_c/build -DCMAKE_INSTALL_PREFIX=/usr
-          cp pelorus_c/build/pelorus.pc pelorus_c/deb-dev/pelorus.pc
-          cp pelorus_c/build/pelorusConfig.cmake pelorus_c/deb-dev/pelorusConfig.cmake
-          cp pelorus_c/build/pelorusConfigVersion.cmake pelorus_c/deb-dev/pelorusConfigVersion.cmake
-
-          cargo deb --package libpelorus-dev
-
-          # -- bin
-          DEB_NAME="pelorus-vulkan"
-          updatetoml=pelorus_cli/Cargo.toml
-          tmp=$(mktemp)
-          toml set "$updatetoml" 'package.metadata.deb.name' "$DEB_NAME" >"$tmp"
-          mv "$tmp" "$updatetoml"
-          tmp=$(mktemp)
-          toml set "$updatetoml" 'package.metadata.deb.depends' \
-            'minot (>= 0.15.2), minot (<< 0.16.0~), libvulkan1' >"$tmp"
-          mv "$tmp" "$updatetoml"
-
-          cargo deb --package pelorus_cli --features vulkan,rerun
-
-          mv target/debian/*.deb dist/${ARCH}/
-
-      - name: Upload
-        uses: actions/upload-artifact@v3
-        with:
-          name: artifacts-rawlibs-${{ matrix.repo }}-vulkan
-          path: dist/
-
-  clean-3:
-    if: always()
-    needs:
-      - rawlibs-vulkan
-    strategy:
-      matrix:
-        include:
-          - runner: macos-latest
-    runs-on: ${{ matrix.runner }}
-    steps:
-      - name: Docker clean
-        run: |
-          docker system prune -af --volumes
-          docker builder prune -af
-
-  ros-debs:
-    needs:
-      - clean-3
-      - rawlibs-vulkan
-    strategy:
-      matrix:
-        include:
-          - image: docker.io/stelzo/ubuntu-dev:lyrical
-            repo: resolute
-            runner: ubuntu-latest
-          - image: docker.io/stelzo/ubuntu-dev:jazzy
-            repo: noble
-            runner: ubuntu-latest
-          - image: docker.io/stelzo/ubuntu-dev:humble
-            repo: jammy
-            runner: ubuntu-latest
-          - image: docker.io/stelzo/ubuntu-dev:lyrical
-            repo: resolute
-            runner: ubuntu-latest-arm
-          - image: docker.io/stelzo/ubuntu-dev:jazzy
-            repo: noble
-            runner: ubuntu-latest-arm
-          - image: docker.io/stelzo/ubuntu-dev:humble
-            repo: jammy
-            runner: ubuntu-latest-arm
-    runs-on: ${{ matrix.runner }}
-    container:
-      image: ${{ matrix.image }}
-    steps:
-      - uses: actions/checkout@v4
-      - name: Build
-        run: |
-          ulimit -n 65536
-          rustup self update
-          rustup toolchain uninstall stable
-          rustup toolchain install stable
-          rustup default stable
-          rustc --version
-
-          for distro in lyrical jazzy humble; do
-          if [ -f "/opt/ros/$distro/setup.bash" ]; then
-            echo "Sourcing ROS distro: $distro"
-            . "/opt/ros/$distro/setup.bash"
-            export ROS_DISTRO="$distro"
-            break
-          fi
-          done
-
-          if [ -z "${ROS_DISTRO:-}" ]; then
-            echo "No supported ROS distro found" >&2
-            exit 1
-          fi
-
-          bash ./scripts/make-deb.bash
-
-      - name: Upload deb
-        uses: actions/upload-artifact@v3
-        with:
-          name: artifacts-ros-debs-${{ matrix.repo }}
-          path: |
-            *.deb
 
   cli-musl:
     needs:
@@ -637,352 +987,6 @@ jobs:
         with:
           name: artifacts-cli-musl
           path: dist/
-
-  ros-debs-cuda:
-    needs:
-      - ros-debs
-    strategy:
-      matrix:
-        include:
-          # NVIDIA publishes Ubuntu 26.04 images only for CUDA 13.3 and newer, so Lyrical gets 13.4.
-          - image: docker.io/stelzo/ubuntu-dev:lyrical-cu13-4
-            repo: resolute
-            cuda: 13-4
-            runner: ubuntu-latest
-          - image: docker.io/stelzo/ubuntu-dev:lyrical-cu13-4
-            repo: resolute
-            cuda: 13-4
-            runner: ubuntu-latest-arm
-          - image: docker.io/stelzo/ubuntu-dev:jazzy-cu12-6
-            repo: noble
-            cuda: 12-6
-            runner: ubuntu-latest
-          - image: docker.io/stelzo/ubuntu-dev:humble-cu12-6
-            repo: jammy
-            cuda: 12-6
-            runner: ubuntu-latest
-          - image: docker.io/stelzo/ubuntu-dev:jazzy-cu12-6
-            repo: noble
-            cuda: 12-6
-            runner: ubuntu-latest-arm
-          - image: docker.io/stelzo/ubuntu-dev:humble-cu12-6
-            repo: jammy
-            cuda: 12-6
-            runner: ubuntu-latest-arm
-          - image: docker.io/stelzo/ubuntu-dev:jazzy-cu12-8
-            repo: noble
-            cuda: 12-8
-            runner: ubuntu-latest
-          - image: docker.io/stelzo/ubuntu-dev:humble-cu12-8
-            repo: jammy
-            cuda: 12-8
-            runner: ubuntu-latest
-          - image: docker.io/stelzo/ubuntu-dev:jazzy-cu12-8
-            repo: noble
-            cuda: 12-8
-            runner: ubuntu-latest-arm
-          - image: docker.io/stelzo/ubuntu-dev:humble-cu12-8
-            repo: jammy
-            cuda: 12-8
-            runner: ubuntu-latest-arm
-          - image: docker.io/stelzo/ubuntu-dev:jazzy-cu13-1
-            repo: noble
-            cuda: 13-1
-            runner: ubuntu-latest
-          - image: docker.io/stelzo/ubuntu-dev:humble-cu13-1
-            repo: jammy
-            cuda: 13-1
-            runner: ubuntu-latest
-          - image: docker.io/stelzo/ubuntu-dev:jazzy-cu13-1
-            repo: noble
-            cuda: 13-1
-            runner: ubuntu-latest-arm
-          - image: docker.io/stelzo/ubuntu-dev:humble-cu13-1
-            repo: jammy
-            cuda: 13-1
-            runner: ubuntu-latest-arm
-    runs-on: ${{ matrix.runner }}
-    container:
-      image: ${{ matrix.image }}
-    env:
-      CUDA_HOME: /usr/local/cuda
-    steps:
-      - uses: actions/checkout@v4
-      - name: Build
-        run: |
-          ulimit -n 65536
-          for distro in lyrical jazzy humble; do
-          if [ -f "/opt/ros/$distro/setup.bash" ]; then
-            echo "Sourcing ROS distro: $distro"
-            . "/opt/ros/$distro/setup.bash"
-            break
-          fi
-          done
-
-          if [ -z "${ROS_DISTRO:-}" ]; then
-            echo "No supported ROS distro found" >&2
-            exit 1
-          fi
-
-          rustup self update
-          rustup toolchain uninstall stable
-          rustup toolchain install stable
-          rustup default stable
-          rustc --version
-
-          # mark ROS package with CUDA suffix so the generated .deb is variant-specific
-          export CUDA_PART="${{ matrix.cuda }}"
-          sed -i "s|<name>pelorus</name>|<name>pelorus-cuda${CUDA_PART}</name>|" package.xml
-          sed -i "s|project(pelorus)|project(pelorus-cuda${CUDA_PART})|" CMakeLists.txt
-          sed -i "s/^\[features\]/[[bin]]\nname = \"pelorus-cuda${CUDA_PART}\"\npath = \"src\/main.rs\"\n\n[features]/" pelorus_cli/Cargo.toml
-
-          export PELORUS_CUDA=1
-          bash ./scripts/make-deb.bash
-
-      - name: Upload deb
-        uses: actions/upload-artifact@v3
-        with:
-          name: artifacts-ros-debs-${{ matrix.repo }}-${{ matrix.cuda }}
-          path: |
-            *.deb
-
-  clean-5:
-    if: always()
-    needs:
-      - ros-debs-cuda
-    strategy:
-      matrix:
-        include:
-          - runner: macos-latest
-    runs-on: ${{ matrix.runner }}
-    steps:
-      - name: Docker clean
-        run: |
-          docker system prune -af --volumes
-          docker builder prune -af
-
-  ros-debs-vulkan:
-    needs:
-      - clean-5
-      - ros-debs-cuda
-    strategy:
-      matrix:
-        include:
-          - image: docker.io/stelzo/ubuntu-dev:lyrical
-            repo: resolute
-            runner: ubuntu-latest
-          - image: docker.io/stelzo/ubuntu-dev:jazzy
-            repo: noble
-            runner: ubuntu-latest
-          - image: docker.io/stelzo/ubuntu-dev:humble
-            repo: jammy
-            runner: ubuntu-latest
-          - image: docker.io/stelzo/ubuntu-dev:lyrical
-            repo: resolute
-            runner: ubuntu-latest-arm
-          - image: docker.io/stelzo/ubuntu-dev:jazzy
-            repo: noble
-            runner: ubuntu-latest-arm
-          - image: docker.io/stelzo/ubuntu-dev:humble
-            repo: jammy
-            runner: ubuntu-latest-arm
-    runs-on: ${{ matrix.runner }}
-    container:
-      image: ${{ matrix.image }}
-    steps:
-      - uses: actions/checkout@v4
-      - name: Build
-        run: |
-          set -euo pipefail
-          ulimit -n 65536
-          apt-get update
-          apt-get install -y libvulkan-dev
-
-          for distro in lyrical jazzy humble; do
-            if [ -f "/opt/ros/$distro/setup.bash" ]; then
-              echo "Sourcing ROS distro: $distro"
-              set +eu
-              . "/opt/ros/$distro/setup.bash"
-              set -eu
-              export ROS_DISTRO="$distro"
-              break
-            fi
-          done
-
-          if [ -z "${ROS_DISTRO:-}" ]; then
-            echo "No supported ROS distro found" >&2
-            exit 1
-          fi
-
-          rustup self update
-          rustup toolchain uninstall stable
-          rustup toolchain install stable
-          rustup default stable
-          rustc --version
-
-          sed -i 's|<name>pelorus</name>|<name>pelorus-vulkan</name>|' package.xml
-          sed -i 's|project(pelorus)|project(pelorus-vulkan)|' CMakeLists.txt
-          sed -i '/^\[features\]/i [[bin]]\nname = "pelorus-vulkan"\npath = "src/main.rs"\n' pelorus_cli/Cargo.toml
-
-          export PELORUS_VULKAN=1
-          bash ./scripts/make-deb.bash
-
-      - name: Upload deb
-        uses: actions/upload-artifact@v3
-        with:
-          name: artifacts-ros-debs-${{ matrix.repo }}-vulkan
-          path: |
-            *.deb
-
-  clean-4:
-    if: always()
-    needs:
-      - ros-debs-vulkan
-    strategy:
-      matrix:
-        include:
-          - runner: macos-latest
-    runs-on: ${{ matrix.runner }}
-    steps:
-      - name: Docker clean
-        run: |
-          docker system prune -af --volumes
-          docker builder prune -af
-
-  glim:
-    needs:
-      - clean-4
-      - rawlibs
-      - ros-debs-vulkan
-    strategy:
-      matrix:
-        include:
-          - image: docker.io/stelzo/ubuntu-dev:glim-noble
-            repo: noble
-            arch: amd64
-            runner: ubuntu-latest
-          - image: docker.io/stelzo/ubuntu-dev:glim-noble
-            repo: noble
-            arch: arm64
-            runner: ubuntu-latest-arm
-          - image: docker.io/stelzo/ubuntu-dev:glim-jammy
-            repo: jammy
-            arch: amd64
-            runner: ubuntu-latest
-          - image: docker.io/stelzo/ubuntu-dev:glim-jammy
-            repo: jammy
-            arch: arm64
-            runner: ubuntu-latest-arm
-    runs-on: ${{ matrix.runner }}
-    container:
-      image: ${{ matrix.image }}
-    env:
-      ARCH: ${{ matrix.arch }}
-    steps:
-      - uses: actions/checkout@v4
-      - name: Download libpelorus
-        uses: actions/download-artifact@v3
-        with:
-          name: artifacts-rawlibs-${{ matrix.repo }}
-          path: deb-artifacts
-      - name: Install libpelorus
-        run: |
-          VERSION=$(toml get --raw Cargo.toml workspace.package.version)
-          VERSION=$VERSION-1
-          dpkg -i "./deb-artifacts/$ARCH/libpelorus_${VERSION}_${ARCH}.deb"
-          dpkg -i "./deb-artifacts/$ARCH/libpelorus-dev_${VERSION}_${ARCH}.deb"
-      - name: Build
-        run: |
-          ulimit -n 65536
-          VERSION=$(toml get --raw Cargo.toml workspace.package.version)
-          VERSION=$VERSION-1
-          mkdir -p dist/${ARCH}
-          rustup self update
-          rustup toolchain uninstall stable
-          rustup toolchain install stable
-          rustup default stable
-          rustc --version
-
-          # - set name
-          updatetoml=glim_integration/pelorus_glim_odometry/Cargo.toml
-          DEB_NAME="libpelorus_glim_odometry"
-          tmp=$(mktemp)
-          toml set "$updatetoml" 'package.metadata.deb.name' "$DEB_NAME" >"$tmp"
-          mv "$tmp" "$updatetoml"
-
-          WD=$(pwd)
-          BUILD_DIR="$WD/glim_integration/pelorus_glim_odometry/build"
-          mkdir -p $BUILD_DIR
-          cd $BUILD_DIR
-          cmake ..
-          make -j2
-          cd $WD
-          cp "$BUILD_DIR/libodometry_estimation_pelorus.so" dist/${ARCH}/
-
-          # ---- CPU
-          DEB_NAME="libpelorus_glim_odometry"
-          LIB_DEB="libpelorus"
-
-          tmp=$(mktemp)
-          toml set "$updatetoml" 'package.metadata.deb.name' "$DEB_NAME" >"$tmp"
-          mv "$tmp" "$updatetoml"
-          tmp=$(mktemp)
-          toml set "$updatetoml" 'package.metadata.deb.depends' "${LIB_DEB} ( = ${VERSION} )" >"$tmp"
-          mv "$tmp" "$updatetoml"
-          cargo deb --package pelorus_glim_odometry --no-build
-          mv target/debian/*.deb dist/${ARCH}/
-
-          # ---- CUDA 12.6
-          DEB_NAME="libpelorus_glim_odometry-cuda12-6"
-          LIB_DEB="libpelorus-cuda12-6"
-
-          tmp=$(mktemp)
-          toml set "$updatetoml" 'package.metadata.deb.name' "$DEB_NAME" >"$tmp"
-          mv "$tmp" "$updatetoml"
-          tmp=$(mktemp)
-          toml set "$updatetoml" 'package.metadata.deb.depends' "${LIB_DEB} ( = ${VERSION} )" >"$tmp"
-          mv "$tmp" "$updatetoml"
-
-          cargo deb --package pelorus_glim_odometry --no-build
-          mv target/debian/*.deb dist/${ARCH}/
-
-          # ---- CUDA 12.8
-          # GLIM upstream supports CUDA 12.6 and 12.8, so the plugin is only
-          # offered against those two libpelorus variants even though libpelorus
-          # itself is also built for 13.1.
-          DEB_NAME="libpelorus_glim_odometry-cuda12-8"
-          LIB_DEB="libpelorus-cuda12-8"
-
-          tmp=$(mktemp)
-          toml set "$updatetoml" 'package.metadata.deb.name' "$DEB_NAME" >"$tmp"
-          mv "$tmp" "$updatetoml"
-          tmp=$(mktemp)
-          toml set "$updatetoml" 'package.metadata.deb.depends' "${LIB_DEB} ( = ${VERSION} )" >"$tmp"
-          mv "$tmp" "$updatetoml"
-
-          cargo deb --package pelorus_glim_odometry --no-build
-          mv target/debian/*.deb dist/${ARCH}/
-
-          # ---- Vulkan
-          DEB_NAME="libpelorus_glim_odometry-vulkan"
-          LIB_DEB="libpelorus-vulkan"
-
-          tmp=$(mktemp)
-          toml set "$updatetoml" 'package.metadata.deb.name' "$DEB_NAME" >"$tmp"
-          mv "$tmp" "$updatetoml"
-          tmp=$(mktemp)
-          toml set "$updatetoml" 'package.metadata.deb.depends' "${LIB_DEB} ( = ${VERSION} )" >"$tmp"
-          mv "$tmp" "$updatetoml"
-
-          cargo deb --package pelorus_glim_odometry --no-build
-          mv target/debian/*.deb dist/${ARCH}/
-
-      - name: Upload deb
-        uses: actions/upload-artifact@v3
-        with:
-          name: artifacts-glim-${{ matrix.repo }}
-          path: |
-            dist/*
 
   wheels:
     needs:
@@ -1130,146 +1134,30 @@ jobs:
           name: wheels
           path: target/wheels
 
-  wheels-cuda:
-    needs:
-      - sanity
-      - examples-regression
-    strategy:
-      matrix:
-        include:
-          - image: docker.io/stelzo/ubuntu-dev:noble-cu12-6
-            target: x86_64-unknown-linux-gnu
-            runner: ubuntu-latest
-            cuda: 12-6
-          - image: docker.io/stelzo/ubuntu-dev:noble-cu12-6
-            target: aarch64-unknown-linux-gnu
-            runner: ubuntu-latest-arm
-            cuda: 12-6
-          - image: docker.io/stelzo/ubuntu-dev:noble-cu12-8
-            target: x86_64-unknown-linux-gnu
-            runner: ubuntu-latest
-            cuda: 12-8
-          - image: docker.io/stelzo/ubuntu-dev:noble-cu12-8
-            target: aarch64-unknown-linux-gnu
-            runner: ubuntu-latest-arm
-            cuda: 12-8
-          - image: docker.io/stelzo/ubuntu-dev:noble-cu13-1
-            target: x86_64-unknown-linux-gnu
-            runner: ubuntu-latest
-            cuda: 13-1
-          - image: docker.io/stelzo/ubuntu-dev:noble-cu13-1
-            target: aarch64-unknown-linux-gnu
-            runner: ubuntu-latest-arm
-            cuda: 13-1
-    runs-on: ${{ matrix.runner }}
-    container:
-      image: ${{ matrix.image }}
-    env:
-      CUDA_HOME: /usr/local/cuda
-      TARGET: ${{ matrix.target }}
-    steps:
-      - uses: actions/checkout@v4
-      - name: Build CUDA wheels
-        run: |
-          ulimit -n 65536
-          rustup self update
-          rustup toolchain uninstall stable
-          rustup toolchain install stable
-          rustup default stable
-          rustc --version
-          maturin build --manifest-path pelorus_cli/Cargo.toml --release --features cuda,rerun --target "$TARGET" --skip-auditwheel
-          maturin build --manifest-path pelorus_py/Cargo.toml --release --features cuda --target "$TARGET" --skip-auditwheel
-      - name: Upload wheels
-        uses: actions/upload-artifact@v3
-        with:
-          name: wheels-cuda${{ matrix.cuda }}
-          path: target/wheels
-
-  clean-6:
-    if: always()
-    needs:
-      - wheels-cuda
-    strategy:
-      matrix:
-        include:
-          - runner: macos-latest
-    runs-on: ${{ matrix.runner }}
-    steps:
-      - name: Docker clean
-        run: |
-          docker system prune -af --volumes
-          docker builder prune -af
-
-  wheels-vulkan:
-    needs:
-      - clean-6
-      - wheels-cuda
-    strategy:
-      matrix:
-        include:
-          - image: docker.io/stelzo/ubuntu-dev:noble
-            target: x86_64-unknown-linux-gnu
-            runner: ubuntu-latest
-          - image: docker.io/stelzo/ubuntu-dev:noble
-            target: aarch64-unknown-linux-gnu
-            runner: ubuntu-latest-arm
-    runs-on: ${{ matrix.runner }}
-    container:
-      image: ${{ matrix.image }}
-    env:
-      TARGET: ${{ matrix.target }}
-    steps:
-      - uses: actions/checkout@v4
-      - name: Build Vulkan wheels
-        run: |
-          set -euo pipefail
-          ulimit -n 65536
-          apt-get update
-          apt-get install -y cmake libvulkan-dev patchelf
-          rustup self update
-          rustup toolchain uninstall stable
-          rustup toolchain install stable
-          rustup default stable
-          rustc --version
-          rustup target add "$TARGET"
-          maturin build --manifest-path pelorus_cli/Cargo.toml --release --features vulkan,rerun --target "$TARGET" --skip-auditwheel
-          maturin build --manifest-path pelorus_py/Cargo.toml --release --features vulkan --target "$TARGET" --skip-auditwheel
-      - name: Upload wheels
-        uses: actions/upload-artifact@v3
-        with:
-          name: wheels-vulkan
-          path: target/wheels
-
-  clean-7:
-    if: always()
-    needs:
-      - wheels-vulkan
-    strategy:
-      matrix:
-        include:
-          - runner: macos-latest
-    runs-on: ${{ matrix.runner }}
-    steps:
-      - name: Docker clean
-        run: |
-          docker system prune -af --volumes
-          docker builder prune -af
-
   tarball:
     needs:
       - cli-musl
       - macos
+      - wheels
+      - wheels-aarch64-gnu
+      - rawlibs
+      - rawlibs-cuda
+      - rawlibs-vulkan
       - ros-debs
       - ros-debs-cuda
       - ros-debs-vulkan
       - glim
-      - rawlibs
-      - rawlibs-cuda
-      - rawlibs-vulkan
-      - wheels
-      - wheels-aarch64-gnu
       - wheels-cuda
       - wheels-vulkan
+      - rawlibs-arm64
+      - rawlibs-cuda-arm64
+      - rawlibs-vulkan-arm64
+      - ros-debs-arm64
+      - ros-debs-cuda-arm64
+      - ros-debs-vulkan-arm64
+      - glim-arm64
+      - wheels-cuda-arm64
+      - wheels-vulkan-arm64
     runs-on: ubuntu-dev-resolute
     steps:
       - uses: actions/checkout@v4
